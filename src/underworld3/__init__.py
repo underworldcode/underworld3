@@ -108,6 +108,7 @@ def view():
 # Bundle these utils
 # Needed everywhere
 import underworld3.mpi
+from .mpi import pprint, selective_ranks, collective_operation, CollectiveOperationError
 from ._var_types import *
 from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
@@ -131,9 +132,10 @@ import underworld3.utilities
 import underworld3.model
 import underworld3.parameters
 import underworld3.materials
-from .model import Model, create_model
+from .model import Model, create_model, get_default_model, reset_default_model
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
+from .constitutive_models import MultiMaterialConstitutiveModel
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
 # import underworld3.kdtree

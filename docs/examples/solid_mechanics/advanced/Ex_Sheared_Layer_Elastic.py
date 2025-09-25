@@ -434,8 +434,7 @@ for step in range(0, maxsteps):
     nodal_tau_inv2.uw_function = sympy.simplify(sympy.sqrt(((S**2).trace()) / 2))
     nodal_tau_inv2.solve()
 
-    if uw.mpi.rank == 0:
-        print(f"Stress Inv II -  {dev_stress_inv2.mean()}")
+    uw.pprint(0, f"Stress Inv II -  {dev_stress_inv2.mean()}")
 
     mesh1.write_timestep(
         expt_name,
@@ -444,8 +443,7 @@ for step in range(0, maxsteps):
         outputPath="output",
         index=ts)
 
-    if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(step, delta_t))
+    uw.pprint(0, "Timestep {}, dt {}".format(step, delta_t))
 
     ts += 1
     time += delta_t

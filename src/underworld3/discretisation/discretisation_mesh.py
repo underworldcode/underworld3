@@ -622,6 +622,9 @@ class Mesh(Stateful, uw_object):
             self.vector = uw.maths.vector_calculus(mesh=self)
 
         super().__init__()
+        
+        # Register with default model for orchestration
+        uw.get_default_model()._register_mesh(self)
 
     @property
     def dim(self) -> int:
@@ -660,55 +663,38 @@ class Mesh(Stateful, uw_object):
         import numpy as np
 
         if level == 0:
-            if uw.mpi.rank == 0:
-                print(f"\n")
-                print(f"Mesh # {self.instance}: {self.name}\n")
+            uw.pprint(0, f"\n")
+            uw.pprint(0, f"Mesh # {self.instance}: {self.name}\n")
 
-                # Only if notebook and serial
-                if uw.is_notebook and uw.mpi.size == 1:
-                    uw.visualisation.plot_mesh(self, window_size=(600, 400))
+            # Only if notebook and serial
+            if uw.is_notebook and uw.mpi.size == 1:
+                uw.visualisation.plot_mesh(self, window_size=(600, 400))
 
-                # Total number of cells
-                nstart, nend = self.dm.getHeightStratum(0)
-                num_cells = nend - nstart
+            # Total number of cells
+            nstart, nend = self.dm.getHeightStratum(0)
+            num_cells = nend - nstart
 
-                if uw.mpi.rank == 0:
-                    print(f"Number of cells: {num_cells}\n")
+            uw.pprint(0, f"Number of cells: {num_cells}\n")
 
-                    if len(self.vars) > 0:
-                        print(
-                            f"| Variable Name       | component | degree |     type        |"
-                        )
-                        print(
-                            f"| ---------------------------------------------------------- |"
-                        )
-                        for vname in self.vars.keys():
-                            v = self.vars[vname]
-                            print(
-                                f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
-                            )
+            if len(self.vars) > 0:
+                uw.pprint(0, f"| Variable Name       | component | degree |     type        |")
+                uw.pprint(0, f"| ---------------------------------------------------------- |")
+                for vname in self.vars.keys():
+                    v = self.vars[vname]
+                    uw.pprint(0, f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
 
-                        print(
-                            f"| ---------------------------------------------------------- |"
-                        )
-                        print("\n", flush=True)
-                    else:
-                        print(f"No variables are defined on the mesh\n", flush=True)
+                uw.pprint(0, f"| ---------------------------------------------------------- |")
+                uw.pprint(0, "\n")
+            else:
+                uw.pprint(0, f"No variables are defined on the mesh\n")
 
             ## Boundary information
 
-            if uw.mpi.rank == 0:
-                if len(self.boundaries) > 0:
-                    print(
-                        f"| Boundary Name            | ID    |",
-                        flush=True,
-                    )
-                    print(
-                        f"| -------------------------------- |",
-                        flush=True,
-                    )
-                else:
-                    print(f"No boundary labels are defined on the mesh\n", flush=True)
+            if len(self.boundaries) > 0:
+                uw.pprint(0, f"| Boundary Name            | ID    |")
+                uw.pprint(0, f"| -------------------------------- |")
+            else:
+                uw.pprint(0, f"No boundary labels are defined on the mesh\n")
 
             for bd in self.boundaries:
                 l = self.dm.getLabel(bd.name)
@@ -719,19 +705,11 @@ class Mesh(Stateful, uw_object):
 
                 ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-                if uw.mpi.rank == 0:
-                    print(
-                        f"| {bd.name:<20}     | {bd.value:<5} |",
-                        flush=True,
-                    )
+                uw.pprint(0, f"| {bd.name:<20}     | {bd.value:<5} |")
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            if uw.mpi.rank == 0:
-                print(
-                    f"| {'All_Boundaries':<20}     | 1001  |",
-                    flush=True,
-                )
+            uw.pprint(0, f"| {'All_Boundaries':<20}     | 1001  |")
 
             ## UW_Boundaries:
             l = self.dm.getLabel("UW_Boundaries")
@@ -742,15 +720,10 @@ class Mesh(Stateful, uw_object):
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            if uw.mpi.rank == 0:
-                print(
-                    f"| {'UW_Boundaries':<20}     | --    |",
-                    flush=True,
-                )
+            uw.pprint(0, f"| {'UW_Boundaries':<20}     | --    |")
 
-            if uw.mpi.rank == 0:
-                print(f"| -------------------------------- |")
-                print("\n", flush=True)
+            uw.pprint(0, f"| -------------------------------- |")
+            uw.pprint(0, "\n")
 
             ## Information on the mesh DM
             # self.dm.view()
@@ -789,18 +762,11 @@ class Mesh(Stateful, uw_object):
 
             ## Boundary information
 
-            if uw.mpi.rank == 0:
-                if len(self.boundaries) > 0:
-                    print(
-                        f"| Boundary Name            | ID    | Min Size | Max Size |",
-                        flush=True,
-                    )
-                    print(
-                        f"| ------------------------------------------------------ |",
-                        flush=True,
-                    )
-                else:
-                    print(f"No boundary labels are defined on the mesh\n", flush=True)
+            if len(self.boundaries) > 0:
+                uw.pprint(0, f"| Boundary Name            | ID    | Min Size | Max Size |")
+                uw.pprint(0, f"| ------------------------------------------------------ |")
+            else:
+                uw.pprint(0, f"No boundary labels are defined on the mesh\n")
 
             for bd in self.boundaries:
                 l = self.dm.getLabel(bd.name)
@@ -811,11 +777,7 @@ class Mesh(Stateful, uw_object):
 
                 ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-                if uw.mpi.rank == 0:
-                    print(
-                        f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |",
-                        flush=True,
-                    )
+                uw.pprint(0, f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |")
 
             # ## PETSc marked boundaries:
             # l = self.dm.getLabel("All_Boundaries")
@@ -826,11 +788,7 @@ class Mesh(Stateful, uw_object):
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            if uw.mpi.rank == 0:
-                print(
-                    f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |",
-                    flush=True,
-                )
+            uw.pprint(0, f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |")
 
             ## UW_Boundaries:
             l = self.dm.getLabel("UW_Boundaries")
@@ -841,15 +799,10 @@ class Mesh(Stateful, uw_object):
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            if uw.mpi.rank == 0:
-                print(
-                    f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |",
-                    flush=True,
-                )
+            uw.pprint(0, f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |")
 
-            if uw.mpi.rank == 0:
-                print(f"| ------------------------------------------------------ |")
-                print("\n", flush=True)
+            uw.pprint(0, f"| ------------------------------------------------------ |")
+            uw.pprint(0, "\n")
 
             ## Information on the mesh DM
             self.dm.view()
@@ -866,32 +819,28 @@ class Mesh(Stateful, uw_object):
 
         import numpy as np
 
-        if uw.mpi.rank == 0:
-            print(f"\n")
-            print(f"Mesh # {self.instance}: {self.name}\n")
+        uw.pprint(0, f"\n")
+        uw.pprint(0, f"Mesh # {self.instance}: {self.name}\n")
 
-            if len(self.vars) > 0:
-                print(f"| Variable Name       | component | degree |     type        |")
-                print(f"| ---------------------------------------------------------- |")
-                for vname in self.vars.keys():
-                    v = self.vars[vname]
-                    print(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
-                    )
+        if len(self.vars) > 0:
+            uw.pprint(0, f"| Variable Name       | component | degree |     type        |")
+            uw.pprint(0, f"| ---------------------------------------------------------- |")
+            for vname in self.vars.keys():
+                v = self.vars[vname]
+                uw.pprint(0, f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
 
-                print(f"| ---------------------------------------------------------- |")
-                print("\n", flush=True)
-            else:
-                print(f"No variables are defined on the mesh\n", flush=True)
+            uw.pprint(0, f"| ---------------------------------------------------------- |")
+            uw.pprint(0, "\n")
+        else:
+            uw.pprint(0, f"No variables are defined on the mesh\n")
 
         ## Boundary information on each proc
 
-        if uw.mpi.rank == 0:
-            if len(self.boundaries) > 0:
-                print(f"| Boundary Name            | ID    | Size | Proc ID      |")
-                print(f"| ------------------------------------------------------ |")
-            else:
-                print(f"No boundary labels are defined on the mesh\n")
+        if len(self.boundaries) > 0:
+            uw.pprint(0, f"| Boundary Name            | ID    | Size | Proc ID      |")
+            uw.pprint(0, f"| ------------------------------------------------------ |")
+        else:
+            uw.pprint(0, f"No boundary labels are defined on the mesh\n")
 
         ### goes through each processor and gets the label size
         with uw.mpi.call_pattern(pattern="sequential"):
@@ -941,11 +890,8 @@ class Mesh(Stateful, uw_object):
         self.dm.clearDS()
         self.dm.createDS()
 
-        if verbose and uw.mpi.rank == 0:
-            print(
-                f"PETScDS - (re) initialised",
-                flush=True,
-            )
+        if verbose:
+            uw.pprint(0, f"PETScDS - (re) initialised")
 
         self._coord_array = {}
 

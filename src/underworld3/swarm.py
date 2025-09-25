@@ -203,6 +203,9 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         # Array interface now unified using NDArray_With_Callback (no legacy/enhanced split)
         self._array_cache = None
         self._flat_data_cache = None
+        
+        # Register with default model for orchestration
+        uw.get_default_model()._register_variable(self.name, self)
 
         return
 
@@ -253,9 +256,11 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         array_obj.add_callback(variable_update_callback)
         return array_obj
     
-    def _create_flat_data_array(self, initial_data=None):
+    def _create_canonical_data_array(self, initial_data=None):
         """
-        Factory function to create NDArray_With_Callback for backward-compatible flat data.
+        Create the single canonical data array with PETSc synchronization.
+        This is the ONLY method that creates arrays with PETSc callbacks.
+        
         Returns data in shape (-1, num_components) using pack_raw/unpack_raw methods.
         
         Parameters
@@ -266,7 +271,7 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         Returns
         -------
         NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
+            Canonical array object with callback for automatic PETSc synchronization
         """
         if initial_data is None:
             # Use unpack_raw to get flat format (-1, num_components)
@@ -283,9 +288,9 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
             disable_inplace_operators=False,  # Allow operations like existing arrays
         )
         
-        # Callback for flat data format
-        def flat_data_update_callback(array, change_context):
-            """Callback to sync flat data changes back to PETSc"""
+        # Single canonical callback for PETSc synchronization
+        def canonical_data_callback(array, change_context):
+            """ONLY callback that handles PETSc synchronization - prevents conflicts"""
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
@@ -302,12 +307,172 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
             if array is None:
                 return
             
-            # Use pack_raw for flat data format
-            self.pack_raw_data_to_petsc(array, sync=True)
+            # STEP 1: Ensure array has correct canonical shape before PETSc sync
+            # The callback might receive wrong-shaped arrays from array view operations
+            import numpy as np
+            canonical_array = np.atleast_2d(array)
+            if canonical_array.shape != (array.shape[0], self.num_components):
+                # Reshape to canonical format: (-1, num_components)
+                canonical_array = canonical_array.reshape(-1, self.num_components)
+            
+            # STEP 1: Sync to PETSc using established method with correct shape
+            self.pack_raw_data_to_petsc(canonical_array, sync=True)
+            
+            # STEP 2: Handle variable-specific updates (like IndexSwarmVariable proxy marking)
+            if hasattr(self, '_on_data_changed'):
+                self._on_data_changed()
         
-        # Register the callback
-        array_obj.add_callback(flat_data_update_callback)
+        # Register the single canonical callback
+        array_obj.add_callback(canonical_data_callback)
         return array_obj
+
+    def _create_array_view(self):
+        """
+        Create array view of canonical data using appropriate conversion strategy.
+        
+        Strategy depends on variable complexity:
+        - Scalars/Vectors: Simple reshape operations 
+        - 2D+ Tensors: Complex pack/unpack operations
+        
+        Returns
+        -------
+        ArrayView
+            Array-like object that delegates changes back to canonical data
+        """
+        if self._is_simple_variable():
+            return self._create_simple_array_view()
+        else:
+            return self._create_tensor_array_view()
+    
+    def _is_simple_variable(self):
+        """Check if this is a simple scalar/vector variable (not a complex tensor)"""
+        return len(self.shape) <= 1 or (len(self.shape) == 2 and self.shape[1] == 1)
+    
+    def _create_simple_array_view(self):
+        """Array view for scalars/vectors using simple reshape operations"""
+        import numpy as np
+        
+        class SimpleSwarmArrayView:
+            def __init__(self, parent_var):
+                self.parent = parent_var
+                
+            def _get_array_data(self):
+                # Simple reshape: (-1, num_components) -> (N, a, b)
+                data = self.parent.data
+                # For simple variables, reshape to (N, a, b) format
+                return data.reshape(data.shape[0], *self.parent.shape)
+            
+            def __getitem__(self, key):
+                return self._get_array_data()[key]
+                
+            def __setitem__(self, key, value):
+                # Get current array view
+                array_data = self._get_array_data()
+                # Create a copy to modify (avoid modifying view directly)
+                modified_data = array_data.copy()
+                # Update the specific elements
+                modified_data[key] = value
+                # Reshape back to canonical data format: ensure exact shape match
+                reshaped_data = modified_data.reshape(-1, self.parent.num_components)
+                self.parent.data[:] = reshaped_data
+            
+            # Forward common array methods
+            def max(self): return self._get_array_data().max()
+            def min(self): return self._get_array_data().min()
+            def mean(self): return self._get_array_data().mean() 
+            def sum(self): return self._get_array_data().sum()
+            @property
+            def shape(self): return self._get_array_data().shape
+            @property
+            def dtype(self): return self._get_array_data().dtype
+            
+            def __array__(self):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
+                return self._get_array_data()
+            
+            def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+                """Support for numpy universal functions"""
+                # Convert all SimpleSwarmArrayView inputs to arrays
+                converted_inputs = []
+                for input in inputs:
+                    if hasattr(input, '_get_array_data'):  # Duck typing for array views
+                        converted_inputs.append(input._get_array_data())
+                    else:
+                        converted_inputs.append(input)
+                
+                # Apply the ufunc to the converted inputs
+                return ufunc(*converted_inputs, **kwargs)
+            
+            def delay_callback(self, description="array operation"):
+                """Delegate to parent's canonical data delay_callback method"""
+                return self.parent.data.delay_callback(description)
+        
+        return SimpleSwarmArrayView(self)
+    
+    def _create_tensor_array_view(self):
+        """Array view for complex tensors using pack/unpack operations"""
+        import numpy as np
+        
+        class TensorSwarmArrayView:
+            def __init__(self, parent_var):
+                self.parent = parent_var
+                
+            def _get_array_data(self):
+                # Use complex pack/unpack for tensor layouts
+                return self.parent.unpack_uw_data_from_petsc(squeeze=False)
+            
+            def __getitem__(self, key):
+                return self._get_array_data()[key]
+                
+            def __setitem__(self, key, value):
+                # Get current array view
+                array_data = self._get_array_data()
+                # Create a copy to modify (avoid modifying view directly)
+                modified_data = array_data.copy()
+                # Update the specific elements
+                modified_data[key] = value
+                # Pack back to canonical data format 
+                packed_data = self.parent._pack_array_to_data_format(modified_data)
+                self.parent.data[:] = packed_data
+            
+            # Forward common array methods
+            def max(self): return self._get_array_data().max()
+            def min(self): return self._get_array_data().min()
+            def mean(self): return self._get_array_data().mean()
+            def sum(self): return self._get_array_data().sum()
+            @property
+            def shape(self): return self._get_array_data().shape
+            @property 
+            def dtype(self): return self._get_array_data().dtype
+            
+            def __array__(self):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
+                return self._get_array_data()
+            
+            def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+                """Support for numpy universal functions"""
+                # Convert all TensorSwarmArrayView inputs to arrays
+                converted_inputs = []
+                for input in inputs:
+                    if hasattr(input, '_get_array_data'):  # Duck typing for array views
+                        converted_inputs.append(input._get_array_data())
+                    else:
+                        converted_inputs.append(input)
+                
+                # Apply the ufunc to the converted inputs
+                return ufunc(*converted_inputs, **kwargs)
+            
+            def delay_callback(self, description="array operation"):
+                """Delegate to parent's canonical data delay_callback method"""
+                return self.parent.data.delay_callback(description)
+        
+        return TensorSwarmArrayView(self)
+    
+    def _pack_array_to_data_format(self, array_data):
+        """Convert array format (N,a,b) back to canonical data format (N,components)"""
+        # Use existing pack logic but return numpy array instead of writing to PETSc
+        # This is a pure conversion method - no PETSc access
+        return array_data.reshape(array_data.shape[0], -1)
 
     # Legacy methods preserved for backward compatibility (now do nothing)
     def use_legacy_array(self):
@@ -828,52 +993,50 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
     @property
     def data(self):
         """
-        Backward-compatible data property that returns flat array shape (-1, num_components).
-        This property provides the legacy interface for compatibility with existing code.
+        Canonical data storage with PETSc synchronization.
+        Shape: (-1, num_components) - flat format for backward compatibility.
+        
+        This is the ONLY property that handles PETSc synchronization to avoid conflicts.
+        The .array property uses this as its underlying storage with format conversion.
         
         Returns
         -------
         NDArray_With_Callback
             Array with shape (-1, num_components) with automatic PETSc synchronization
-            
-        Notes
-        -----
-        This interface is deprecated. Use the `array` property instead for the new
-        interface with proper tensor shape (N, a, b).
         """
-        # Cache and reuse flat data array object to avoid field access conflicts
-        if not hasattr(self, "_flat_data_cache") or self._flat_data_cache is None:
-            # Create new flat data array with direct PETSc access
-            self._flat_data_cache = self._create_flat_data_array()
+        # Cache and reuse canonical data object to avoid field access conflicts
+        # Use direct __dict__ check to avoid MathematicalMixin recursion
+        if "_canonical_data" not in self.__dict__ or self._canonical_data is None:
+            # Create the single canonical data array with PETSc sync
+            self._canonical_data = self._create_canonical_data_array()
         
-        # Don't update cached array - NDArray_With_Callback handles sync automatically
-        # Updating here would cause nested field access conflicts
-        return self._flat_data_cache
+        return self._canonical_data
 
     @property
     def array(self):
         """
-        Access variable data as NDArray_With_Callback.
-        Follows the same caching and sync pattern as swarm.points.
+        Array view of canonical data with automatic format conversion.
+        Shape: (N, a, b) for tensor shape (a, b).
+        
+        This property is ALWAYS a view of the canonical .data property.
+        No direct PETSc access - all changes delegate back to canonical storage.
         """
-        # Cache and reuse NDArray_With_Callback object (following swarm.points pattern)
-        if self._array_cache is None:
-            # First access: create new NDArray_With_Callback object
-            self._array_cache = self._create_variable_array()
-        else:
-            # Subsequent accesses: efficiently sync new data (like swarm.points sync_data)
-            current_data = self.unpack_uw_data_from_petsc(squeeze=False, sync=True)
-            self._array_cache = self._array_cache.sync_data(current_data)
-
-        return self._array_cache
+        return self._create_array_view()
 
     @array.setter
     def array(self, array_value):
         """
-        Set variable data using pack method to handle shape transformation.
+        Set variable data through canonical data property with format conversion.
         """
-        # Use pack method to handle proper data transformation and shape conversion
-        self.pack_uw_data_to_petsc(array_value, sync=True)
+        if self._is_simple_variable():
+            # Simple case: reshape array format (N,a,b) to canonical format (N,components)
+            canonical_data = array_value.reshape(array_value.shape[0], -1)
+        else:
+            # Complex case: use pack operations for tensor layout conversion
+            canonical_data = self._pack_array_to_data_format(array_value)
+        
+        # Assign to canonical data property (triggers PETSc sync)
+        self.data[:] = canonical_data
 
     @property
     def sym(self):
@@ -966,8 +1129,7 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
     def write_proxy(self, filename: str):
         # if not proxied, nothing to do. return.
         if not self._meshVar:
-            if uw.mpi.rank == 0:
-                print("No proxy mesh variable that can be saved", flush=True)
+            uw.pprint(0, "No proxy mesh variable that can be saved")
             return
 
         self._meshVar.write(filename)
@@ -1060,6 +1222,7 @@ class IndexSwarmVariable(SwarmVariable):
         radius=0.5,
         npoints_bc=2,
         ind_bc=None,
+        varsymbol=None,
     ):
         self.indices = indices
         self.nnn = npoints
@@ -1076,7 +1239,10 @@ class IndexSwarmVariable(SwarmVariable):
             size=1,
             vtype=None,
             dtype=int,
+            proxy_degree=proxy_degree,
+            proxy_continuous=proxy_continuous,
             _proxy=False,
+            varsymbol=varsymbol,
         )
         """
         vtype = (None,)
@@ -1106,11 +1272,42 @@ class IndexSwarmVariable(SwarmVariable):
             )
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
+        # Initialize lazy evaluation state
+        self._proxy_stale = True  # Proxy variables need initial update
+        
         return
+
+    
+    def _update(self):
+        """
+        Backward compatibility wrapper for _update_proxy_variables.
+        
+        Maintains existing API while implementing lazy evaluation internally.
+        """
+        self._update_proxy_variables()
+
+    def _on_data_changed(self):
+        """
+        Hook called by unified data callback when canonical data changes.
+        
+        For IndexSwarmVariable, this marks proxy variables as stale for lazy evaluation.
+        This replaces the complex custom array override with a simple hook.
+        """
+        self._proxy_stale = True
 
     # This is the sympy vector interface - it's meaningless if these are not spatial arrays
     @property
     def sym(self):
+        """
+        Lazy evaluation of symbolic mask array.
+        
+        Only updates proxy variables when they're actually needed (when sym is accessed)
+        and only if the proxy variables are marked as stale due to data changes.
+        This avoids expensive RBF interpolation during data assignment operations.
+        """
+        if self._proxy_stale:
+            self._update_proxy_variables()
+            self._proxy_stale = False
         return self._MaskArray
 
     @property
@@ -1163,11 +1360,10 @@ class IndexSwarmVariable(SwarmVariable):
         """
         Show information on IndexSwarmVariable
         """
-        if uw.mpi.rank == 0:
-            print(f"IndexSwarmVariable {self}")
-            print(f"Numer of indices {self.indices}")
+        uw.pprint(0, f"IndexSwarmVariable {self}")
+        uw.pprint(0, f"Numer of indices {self.indices}")
 
-    def _update(self):
+    def _update_proxy_variables(self):
         """
         This method updates the proxy mesh (vector) variable for the index variable on the current swarm locations
 
@@ -1269,6 +1465,7 @@ class IndexSwarmVariable(SwarmVariable):
                     if len(ind_) > 0:
                         meshVar.data[ind_w0[ind_]] = 1.0
         return
+
 
 
 ## Import PIC-related classes from separate module to maintain compatibility
@@ -1473,6 +1670,9 @@ class Swarm(Stateful, uw_object):
         self._migration_disabled = False
 
         super().__init__()
+        
+        # Register with default model for orchestration
+        uw.get_default_model()._register_swarm(self)
 
     def __del__(self):
         """Cleanup swarm by unregistering from mesh to prevent memory leaks"""
@@ -1805,6 +2005,7 @@ class Swarm(Stateful, uw_object):
         return
 
     @timing.routine_timer_decorator
+    @uw.collective_operation
     def migrate(
         self,
         remove_sent_points=True,
@@ -1823,6 +2024,8 @@ class Swarm(Stateful, uw_object):
         Implementation note:
             We retained (above) the name `DMSwarmPIC_coor` for the particle field to allow this routine to be inherited by a PIC swarm
             which has this field pre-defined. (We'd need to add a cellid field as well, and re-compute it upon landing)
+        
+        Note: This is a COLLECTIVE operation - all MPI ranks must call it.
         """
 
         if self._migration_disabled:

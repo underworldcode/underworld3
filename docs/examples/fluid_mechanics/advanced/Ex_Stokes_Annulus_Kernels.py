@@ -206,8 +206,7 @@ pressure_solver.smoothing = 1.0e-6
 pstats0 = p_soln.stats()
 
 
-if uw.mpi.rank == 0:
-    print(f"AN: Pressure (C0): {pstats0}")
+uw.pprint(0, f"AN: Pressure (C0): {pstats0}")
     # print(f"Velocity: {vnorm}")
 
 # +

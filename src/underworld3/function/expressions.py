@@ -299,6 +299,29 @@ class UWexpression(uw_object, Symbol):
         self._description = new_description
         return
 
+    def set_display_name(self, new_latex_name):
+        """
+        Change the LaTeX display name while preserving the unique SymPy identity.
+        
+        This allows changing how the expression appears in LaTeX output and string 
+        representations without affecting the underlying SymPy symbol identity, which
+        must remain unique for proper symbolic computation.
+        
+        Parameters:
+        -----------
+        new_latex_name : str
+            The new LaTeX name for display purposes (e.g., r"\\eta_0")
+            
+        Example:
+        --------
+        >>> viscosity = uw.function.expression(r"\\eta", 1.0, "Viscosity")
+        >>> viscosity.set_display_name(r"\\eta_0")  # Now displays as η₀
+        """
+        self.symbol = new_latex_name
+        # Note: We don't change _given_name, _unique_name, or the SymPy Symbol identity
+        # This preserves uniqueness while allowing display customization
+        return
+
     def unwrap(self, keep_constants=True, return_self=True):
         return unwrap(self, keep_constants=keep_constants)
 

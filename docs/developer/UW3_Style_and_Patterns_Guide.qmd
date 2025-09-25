@@ -3,6 +3,8 @@ title: "Underworld3 Style and Patterns Guide"
 subtitle: "Development Standards and Architectural Patterns"
 author: "Underworld Development Team"
 date: today
+execute:
+  enabled: false
 format:
   html:
     toc: true
@@ -16,17 +18,6 @@ format:
     geometry: margin=1in
     toc: true
     number-sections: true
-jupyter:
-  jupytext:
-    text_representation:
-      extension: .qmd
-      format_name: quarto
-      format_version: '1.0'
-      jupytext_version: 1.16.6
-  kernelspec:
-    display_name: Python 3 (ipykernel)
-    language: python
-    name: python3
 ---
 
 ::: {.callout-note}

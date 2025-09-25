@@ -39,7 +39,7 @@ meshSimplex_box_regular = uw.meshing.UnstructuredSimplexBox(
 )
 
 
-# +
+# %%
 @pytest.mark.parametrize(
     "mesh",
     [
@@ -49,6 +49,7 @@ meshSimplex_box_regular = uw.meshing.UnstructuredSimplexBox(
     ],
 )
 def test_Darcy_boxmesh_G_and_noG(mesh):
+    """Test Darcy flow with layered permeability, with and without gravity."""
     # Reset the mesh if it still has things lying around from earlier tests
     # mesh.dm.clearDS()
     # mesh.dm.clearFields()
@@ -158,6 +159,70 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
 
     print(pressure_interp)
     print(pressure_analytic)
+    
+    # %%
+    if uw.is_notebook:
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+        
+        # Plot 1: Pressure field (no gravity)
+        ax1 = axes[0, 0]
+        coords = p_soln.coords
+        pressure_vals = p_soln.data.flatten()
+        scatter1 = ax1.scatter(coords[:, 0], coords[:, 1], c=pressure_vals, 
+                              s=15, cmap="viridis", alpha=0.8)
+        ax1.axhline(y=interfaceY, color='r', linestyle='--', linewidth=2, label=f'Interface (y={interfaceY})')
+        ax1.set_xlabel("x")
+        ax1.set_ylabel("y")
+        ax1.set_title("Pressure Field (with gravity)")
+        ax1.set_aspect("equal")
+        ax1.legend()
+        plt.colorbar(scatter1, ax=ax1, label="Pressure")
+        
+        # Plot 2: Velocity field
+        ax2 = axes[0, 1]
+        vel_coords = v_soln.coords
+        vel_vals = v_soln.data
+        ax2.quiver(vel_coords[::3, 0], vel_coords[::3, 1], 
+                  vel_vals[::3, 0], vel_vals[::3, 1], 
+                  alpha=0.6, scale=5, width=0.003)
+        ax2.axhline(y=interfaceY, color='r', linestyle='--', linewidth=2)
+        ax2.set_xlabel("x")
+        ax2.set_ylabel("y")
+        ax2.set_title(f"Velocity Field (k1={k1}, k2={k2})")
+        ax2.set_aspect("equal")
+        
+        # Plot 3: Pressure profile comparison (no gravity)
+        ax3 = axes[1, 0]
+        ax3.plot(ycoords, pressure_analytic_noG, 'r-', linewidth=2, label='Analytical (no G)')
+        
+        # Re-solve without gravity for profile comparison
+        darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
+        darcy.solve(verbose=False)
+        pressure_interp_noG = uw.function.evaluate(p_soln.sym[0], xy_coords).squeeze()
+        ax3.plot(ycoords, pressure_interp_noG, 'bo', markersize=4, alpha=0.6, label='Numerical (no G)')
+        
+        ax3.axvline(x=interfaceY, color='gray', linestyle='--', alpha=0.5)
+        ax3.set_xlabel("y coordinate")
+        ax3.set_ylabel("Pressure")
+        ax3.set_title("Vertical Pressure Profile (no gravity)")
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Pressure profile comparison (with gravity)
+        ax4 = axes[1, 1]
+        ax4.plot(ycoords, pressure_analytic, 'r-', linewidth=2, label='Analytical (with G)')
+        ax4.plot(ycoords, pressure_interp, 'go', markersize=4, alpha=0.6, label='Numerical (with G)')
+        ax4.axvline(x=interfaceY, color='gray', linestyle='--', alpha=0.5)
+        ax4.set_xlabel("y coordinate")
+        ax4.set_ylabel("Pressure")
+        ax4.set_title("Vertical Pressure Profile (with gravity)")
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
 
 
 #

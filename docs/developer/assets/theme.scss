@@ -1,0 +1,21 @@
+/*-- scss:defaults --*/
+
+// Fonts 
+
+/* Fonts: "Open Sans", "Roboto", "Yanone Kaffeesatz" */
+@import url("https://indestructibletype.com/fonts/Jost.css");
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible&family=Open+Sans:wght@300&family=Oswald:wght@300&family=Roboto:wght@300&family=Yanone+Kaffeesatz:wght@300&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Raleway:wght@300&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cinzel&family=Cormorant:wght@300&family=Lobster+Two&family=Noticia+Text&display=swap');
+
+
+// Base document colors
+// $body-bg: #181818;
+// $body-color: white;
+// $link-color: #75AADB;
+
+// Code blocks
+$code-block-bg-alpha: -.66;
+$code-block-bg-padding: 1em;
+// $code-block-bg: white;
+$code-block-border-left: true;

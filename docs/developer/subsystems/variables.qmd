@@ -1,0 +1,26 @@
+---
+title: "Variable System"
+---
+
+# Variable System Documentation
+
+::: {.callout-note}
+## Documentation In Progress
+This section is under development. Variable system documentation is being migrated from existing docstrings and implementation notes.
+:::
+
+## Overview
+
+The variable system in Underworld3 provides field storage and manipulation for both mesh-based and particle-based data.
+
+## Components
+
+- **MeshVariable**: Fields defined on mesh nodes or elements
+- **SwarmVariable**: Fields defined on particle swarms
+- **Proxy Variables**: Mesh representations of swarm data via RBF interpolation
+
+## Related Documentation
+
+- [Data Access Patterns](data-access.qmd) - How to read and write variable data
+- [NDArray System](../UW3_Developers_NDArrays.qmd) - Array interface details
+- [Swarm System](swarm-system.qmd) - Particle-based variables

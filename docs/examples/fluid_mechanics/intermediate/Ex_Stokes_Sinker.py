@@ -295,8 +295,7 @@ while step < nstep:
 
     ### estimate dt
     dt = stokes.estimate_dt()
-    if uw.mpi.rank == 0:
-        print(f"dt = {dt}", flush=True)
+    uw.pprint(0, f"dt = {dt}")
 
     ## This way should be a bit safer in parallel where particles can move
     ## processors in the middle of the calculation if you are not careful
@@ -319,8 +318,7 @@ while step < nstep:
 
 
 # %%
-if uw.mpi.rank == 0:
-    print("Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker[0]))
+uw.pprint(0, "Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker[0]))
     print(
         "Final position:   t = {0:.3f}, y = {1:.3f}".format(
             tSinker[nsteps - 1], ySinker[nsteps - 1]

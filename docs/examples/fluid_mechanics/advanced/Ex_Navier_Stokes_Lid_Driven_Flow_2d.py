@@ -322,8 +322,7 @@ for step in range(0, maxsteps):
     elapsed_time += delta_t
     timeVal[step] = elapsed_time
 
-    if uw.mpi.rank == 0:
-        print("Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
+    uw.pprint(0, "Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
 
     ts += 1
 

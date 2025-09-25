@@ -3,6 +3,8 @@ title: "Underworld3 NDArray Data Access System"
 subtitle: "Implementation and Migration Guide"
 author: "Underworld Development Team"
 date: today
+execute:
+  enabled: false
 format:
   html:
     toc: true
@@ -16,17 +18,6 @@ format:
     geometry: margin=1in
     toc: true
     number-sections: true
-jupyter:
-  jupytext:
-    text_representation:
-      extension: .qmd
-      format_name: quarto
-      format_version: '1.0'
-      jupytext_version: 1.16.6
-  kernelspec:
-    display_name: Python 3 (ipykernel)
-    language: python
-    name: python3
 ---
 
 ::: {.callout-note}
@@ -223,11 +214,11 @@ class SwarmVariable:
 ```{python}
 #| eval: false
 
-# ❌ OLD PATTERN
+# OLD PATTERN (deprecated)
 with mesh.access(temperature):
     temperature.data[...] = initial_temp
 
-# ✅ NEW PATTERN  
+# NEW PATTERN (recommended)
 temperature.array[:, 0, 0] = initial_temp
 ```
 
@@ -236,13 +227,13 @@ temperature.array[:, 0, 0] = initial_temp
 ```{python}
 #| eval: false
 
-# ❌ OLD PATTERN
+# OLD PATTERN (deprecated)
 with mesh.access(velocity, pressure, temperature):
     velocity.data[:, :] = vel_field
     pressure.data[:] = press_field
     temperature.data[:] = temp_field
 
-# ✅ NEW PATTERN
+# NEW PATTERN (recommended)
 with uw.synchronised_array_update():
     velocity.array[:, 0, :] = vel_field
     pressure.array[:, 0, 0] = press_field
@@ -254,12 +245,12 @@ with uw.synchronised_array_update():
 ```{python}
 #| eval: false
 
-# ❌ OLD PATTERN
+# OLD PATTERN (deprecated)
 with mesh.access(velocity):
     velocity.data[:, 0] = v_x
     velocity.data[:, 1] = v_y
 
-# ✅ NEW PATTERN
+# NEW PATTERN (recommended)
 with uw.synchronised_array_update():
     velocity.array[:, 0, 0] = v_x
     velocity.array[:, 0, 1] = v_y
@@ -309,10 +300,10 @@ vel_full_data = velocity.data[:, :]         # All components: (N, dim)
 ```{python}
 #| eval: false
 
-# ❌ WRONG - Missing middle index
+# WRONG - Missing middle index
 scalar.array[:, 0] = values  
 
-# ✅ CORRECT - Three indices for array property
+# CORRECT - Three indices for array property
 scalar.array[:, 0, 0] = values
 ```
 :::
@@ -322,10 +313,10 @@ scalar.array[:, 0, 0] = values
 ```{python}
 #| eval: false
 
-# ❌ WRONG - Incorrect index position
+# WRONG - Incorrect index position
 vector.array[:, i] = component_values  
 
-# ✅ CORRECT - Component is third index
+# CORRECT - Component is third index
 vector.array[:, 0, i] = component_values
 ```
 :::

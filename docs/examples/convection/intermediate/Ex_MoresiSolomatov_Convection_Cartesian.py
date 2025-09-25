@@ -68,8 +68,7 @@ expt_desc = uw.options.getString("expt_description", default=expt_desc)
 if expt_desc != "":
     expt_desc += "_"
 
-if uw.mpi.rank == 0:
-    print(f"Restarting from step {restart_step}")
+uw.pprint(0, f"Restarting from step {restart_step}")
 
 if resolution_in == -1:
     resolution_in = resolution
@@ -227,15 +226,13 @@ stokes.constitutive_model.Parameters.yield_stress = 1e7 + 1e7 * (1-y)
 stokes.constitutive_model.Parameters.shear_viscosity_min = 1.0
 stokes.solve(zero_init_guess=False)
 
-if uw.mpi.rank == 0:
-    print("NL Solve 1", flush=True)
+uw.pprint(0, "NL Solve 1")
 
 stokes.constitutive_model.Parameters.yield_stress = 1e5 + 1e7 * (1-y) 
 stokes.constitutive_model.Parameters.shear_viscosity_min = 1.0
 stokes.solve(zero_init_guess=False)
 
-if uw.mpi.rank == 0:
-    print("NL Solve 2", flush=True)
+uw.pprint(0, "NL Solve 2")
 
 eta_solver.solve()
 

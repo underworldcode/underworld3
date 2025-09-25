@@ -401,6 +401,9 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         # Use lazy initialization to avoid calling unpack during constructor
         self._array_cache = None  # Will be created lazily when first accessed
         self._data_cache = None  # Will be created lazily when first accessed
+        
+        # Register with default model for orchestration
+        uw.get_default_model()._register_variable(self.name, self)
 
         return
 
@@ -840,6 +843,7 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
 
     # ToDo: rename to vertex_checkpoint (or similar)
     @timing.routine_timer_decorator
+    @uw.collective_operation
     def write(
         self,
         filename: str,
@@ -847,6 +851,8 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         """
         Write variable data to the specified mesh hdf5
         data file. The file will be over-written.
+        
+        Note: This is a COLLECTIVE operation - all MPI ranks must call it.
 
         Parameters
         ----------
@@ -1220,37 +1226,182 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
     @property
     def array(self):
         """
-        Access variable data as NDArray_With_Callback.
-        Follows the simple mesh.points pattern - returns cached object with lazy creation.
+        Array view of canonical data with automatic format conversion.
+        Shape: (N, a, b) for tensor shape (a, b).
+        
+        This property is ALWAYS a view of the canonical .data property.
+        No direct PETSc access - all changes delegate back to canonical storage.
         """
-        # Lazy creation: create array cache on first access
-        if self._array_cache is None:
-            self._array_cache = self._create_variable_array()
-        return self._array_cache
+        return self._create_array_view()
+    
+    def _create_array_view(self):
+        """
+        Create array view of canonical data using appropriate conversion strategy.
+        
+        Strategy depends on variable complexity:
+        - Scalars/Vectors: Simple reshape operations 
+        - 2D+ Tensors: Complex pack/unpack operations
+        
+        Returns
+        -------
+        ArrayView
+            Array-like object that delegates changes back to canonical data
+        """
+        if self._is_simple_variable():
+            return self._create_simple_array_view()
+        else:
+            return self._create_tensor_array_view()
+    
+    def _is_simple_variable(self):
+        """Check if this is a simple scalar/vector variable (not a complex tensor)"""
+        return len(self.shape) <= 1 or (len(self.shape) == 2 and self.shape[1] == 1)
+    
+    def _create_simple_array_view(self):
+        """Array view for scalars/vectors using simple reshape operations"""
+        import numpy as np
+        
+        class SimpleMeshArrayView:
+            def __init__(self, parent_var):
+                self.parent = parent_var
+                
+            def _get_array_data(self):
+                # Simple reshape: (-1, num_components) -> (N, a, b)
+                data = self.parent.data
+                # For simple variables, reshape to (N, a, b) format
+                return data.reshape(data.shape[0], *self.parent.shape)
+            
+            def __getitem__(self, key):
+                return self._get_array_data()[key]
+                
+            def __setitem__(self, key, value):
+                # Get current array view
+                array_data = self._get_array_data()
+                # Create a copy to modify (avoid modifying view directly)
+                modified_data = array_data.copy()
+                modified_data[key] = value
+                # Reshape back to flat format and assign to canonical data
+                self.parent.data[...] = modified_data.reshape(-1, self.parent.num_components)
+                
+            @property
+            def shape(self):
+                return self._get_array_data().shape
+                
+            @property
+            def dtype(self):
+                return self._get_array_data().dtype
+                
+            def __repr__(self):
+                return f"SimpleMeshArrayView(shape={self.shape}, dtype={self.dtype})"
+            
+            def __array__(self):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
+                return self._get_array_data()
+            
+            def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+                """Support for numpy universal functions"""
+                # Convert all MeshArrayView inputs to arrays
+                converted_inputs = []
+                for input in inputs:
+                    if hasattr(input, '_get_array_data'):  # Duck typing for array views
+                        converted_inputs.append(input._get_array_data())
+                    else:
+                        converted_inputs.append(input)
+                
+                # Apply the ufunc to the converted inputs
+                return ufunc(*converted_inputs, **kwargs)
+        
+        return SimpleMeshArrayView(self)
+    
+    def _create_tensor_array_view(self):
+        """Array view for complex tensors using pack/unpack operations"""
+        import numpy as np
+        
+        class TensorMeshArrayView:
+            def __init__(self, parent_var):
+                self.parent = parent_var
+                
+            def _get_array_data(self):
+                # Use complex pack/unpack for tensor layouts
+                return self.parent.unpack_uw_data_from_petsc(squeeze=False)
+            
+            def __getitem__(self, key):
+                return self._get_array_data()[key]
+                
+            def __setitem__(self, key, value):
+                # Get current array view
+                array_data = self._get_array_data()
+                # Create a copy to modify (avoid modifying view directly)
+                modified_data = array_data.copy()
+                modified_data[key] = value
+                # Pack back to canonical data format
+                # Note: pack_uw_data_to_petsc() modifies PETSc directly and returns None
+                self.parent.pack_uw_data_to_petsc(modified_data)
+                # No need to assign anything - pack method handles PETSc update
+                
+            @property
+            def shape(self):
+                return self._get_array_data().shape
+                
+            @property
+            def dtype(self):
+                return self._get_array_data().dtype
+                
+            def __repr__(self):
+                return f"TensorMeshArrayView(shape={self.shape}, dtype={self.dtype})"
+            
+            def __array__(self):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
+                return self._get_array_data()
+            
+            def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+                """Support for numpy universal functions"""
+                # Convert all MeshArrayView inputs to arrays
+                converted_inputs = []
+                for input in inputs:
+                    if hasattr(input, '_get_array_data'):  # Duck typing for array views
+                        converted_inputs.append(input._get_array_data())
+                    else:
+                        converted_inputs.append(input)
+                
+                # Apply the ufunc to the converted inputs
+                return ufunc(*converted_inputs, **kwargs)
+        
+        return TensorMeshArrayView(self)
 
     @property
     def data(self):
         """
-        Backward-compatible data property that returns flat array shape (-1, num_components).
-        This property provides the legacy interface for compatibility with existing code.
-
+        Canonical data storage with PETSc synchronization.
+        Shape: (-1, num_components) - flat format for backward compatibility.
+        
+        This is the ONLY property that handles PETSc synchronization to avoid conflicts.
+        The .array property uses this as its underlying storage with format conversion.
+        
         Returns
         -------
         NDArray_With_Callback
             Array with shape (-1, num_components) with automatic PETSc synchronization
-
-        Notes
-        -----
-        This interface is deprecated. Use the `array` property instead for the new
-        interface with proper tensor shape (N, a, b).
         """
-        # Check if we have a cached data array
-        if hasattr(self, "_data_cache") and self._data_cache is not None:
-            return self._data_cache
+        # Cache and reuse canonical data object to avoid field access conflicts
+        # Use direct __dict__ check to avoid potential attribute access issues
+        if "_canonical_data" not in self.__dict__ or self._canonical_data is None:
+            # Create the single canonical data array with PETSc sync
+            self._canonical_data = self._create_canonical_data_array()
+        
+        return self._canonical_data
 
-        # For symmetric tensors, we need to access PETSc data directly in packed format
-        # rather than reshaping the array (which has different component count)
-
+    def _create_canonical_data_array(self):
+        """
+        Create the single canonical data array with PETSc synchronization for MeshVariable.
+        This is the ONLY method that creates arrays with PETSc callbacks.
+        
+        Handles mesh-specific requirements like locking and ghost value synchronization.
+        
+        Returns
+        -------
+        NDArray_With_Callback
+            Canonical array object with callback for automatic PETSc synchronization
+        """
         # Ensure PETSc vector is available
         self._set_vec(available=True)
         self.mesh._dm_initialized = True
@@ -1260,34 +1411,48 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
 
         # Create NDArray_With_Callback with proper shape and data
         from underworld3.utilities import NDArray_With_Callback
+        array_obj = NDArray_With_Callback(flat_petsc_data)
 
-        flat_view = NDArray_With_Callback(flat_petsc_data)
-
-        def flat_data_update_callback(array, change_context):
-            """Callback to sync flat data changes back to PETSc using raw pack method"""
+        # Single canonical callback for PETSc synchronization
+        def canonical_data_callback(array, change_context):
+            """ONLY callback that handles PETSc synchronization - prevents conflicts"""
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
+
+            # Check for None array to prevent copy errors
+            if array is None:
+                return
+            
+            # STEP 1: Ensure array has correct canonical shape before PETSc sync
+            # The callback might receive wrong-shaped arrays from array view operations
+            import numpy as np
+            canonical_array = np.atleast_2d(array)
+            
+            if canonical_array.shape != (canonical_array.shape[0], self.num_components):
+                # Only reshape if we actually need to
+                canonical_array = canonical_array.reshape(-1, self.num_components)
 
             # Skip updates during mesh coordinate changes to prevent corruption
             if hasattr(self.mesh, "_mesh_update_lock"):
                 if not self.mesh._mesh_update_lock.acquire(blocking=False):
                     return
                 try:
-                    # Use pack_raw for flat data format
-                    self.pack_raw_data_to_petsc(array, sync=True)
+                    # STEP 1: Sync to PETSc using established method with correct shape
+                    self.pack_raw_data_to_petsc(canonical_array, sync=True)
                 finally:
                     self.mesh._mesh_update_lock.release()
             else:
                 # Fallback if no lock exists
-                self.pack_raw_data_to_petsc(array, sync=True)
+                self.pack_raw_data_to_petsc(canonical_array, sync=True)
+            
+            # STEP 2: Handle variable-specific updates (extensible like SwarmVariable)
+            if hasattr(self, '_on_data_changed'):
+                self._on_data_changed()
 
-        flat_view.add_callback(flat_data_update_callback)
-
-        # Cache the data array for future access
-        self._data_cache = flat_view
-        return flat_view
+        array_obj.add_callback(canonical_data_callback)
+        return array_obj
 
     @array.setter
     def array(self, array_value):
@@ -1384,6 +1549,7 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
                 [self._gvec.strideSum(i) / vecsize for i in range(self.num_components)]
             )
 
+    @uw.collective_operation
     def stats(self):
         """
         The equivalent of mesh.stats but using the native coordinates for this variable
@@ -1399,6 +1565,8 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
           - sum
           - L2 norm
           - rms
+        
+        Note: This is a COLLECTIVE operation - all MPI ranks must call it.
         """
 
         if self.num_components > 1:

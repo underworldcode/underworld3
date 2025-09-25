@@ -22,6 +22,87 @@ Material physics and rheology implementations with 10 material models covering v
 - **Complexity**: High - requires physics knowledge
 - **Documentation Quality**: Good ✅
 
+## ⚠️ Critical Architecture: Solver-Authoritative State
+
+::: {.callout-important}
+## Fundamental Design Constraint
+
+**Constitutive models do NOT own field histories. The solver owns all unknowns and their time derivatives.**
+
+This is essential for multi-material systems where all materials must experience the same composite stress history.
+:::
+
+### State Ownership Architecture
+
+**Solver Responsibilities:**
+- Owns `Unknowns` object (velocity/temperature fields)
+- Manages $D\mathbf{F}/Dt$ system (flux/stress history tracking)
+- Updates field histories via DDT pre-solve/post-solve cycle
+- Provides single source of truth for all field state
+
+**Constitutive Model Responsibilities:**
+- Receives reference to solver's `Unknowns`
+- Computes `flux` property from current field state
+- Reads (never writes) stress history $\psi^*[0]$ via `self.Unknowns.DFDt.psi_star[0]`
+- Must NOT create independent field state
+
+### History Variable Pattern
+
+**Correct Implementation:**
+```python
+class ViscoElasticModel(Constitutive_Model):
+    def __init__(self, unknowns):
+        super().__init__(unknowns)  # Accept solver's unknowns
+        # DON'T create own $D\mathbf{F}/Dt$ - use solver's
+        
+    @property
+    def stress_star(self):
+        # Read shared history from solver's $D\mathbf{F}/Dt$
+        if self.Unknowns.DFDt is not None:
+            self._stress_star.sym = self.Unknowns.DFDt.psi_star[0].sym
+        return self._stress_star
+```
+
+**Multi-Material Pattern:**
+```python
+class MultiMaterialConstitutiveModel(Constitutive_Model):
+    def __init__(self, unknowns, material_var, constituent_models):
+        super().__init__(unknowns)
+        
+        # CRITICAL: All constituent models share same unknowns
+        for model in constituent_models:
+            model.Unknowns = self.Unknowns  # Share solver's state
+            
+    @property
+    def flux(self):
+        # Composite flux - becomes history for all materials
+        return sum(level_set_i * model_i.flux for i in range(n_materials))
+```
+
+::: {.callout-warning}
+## Common Pitfalls
+
+**❌ Never Do This:**
+```python
+# DON'T: Create independent histories per material
+for model in constituent_models:
+    model.Unknowns = create_new_unknowns()  # WRONG!
+
+# DON'T: Cache or store field derivatives
+self._cached_stress_history = DFDt.psi_star[0].copy()  # WRONG!
+```
+
+**✅ Always Do This:**
+```python
+# DO: Share solver's authoritative state
+for model in constituent_models:
+    model.Unknowns = solver.Unknowns  # Correct
+
+# DO: Read current state, don't cache
+stress_history = self.Unknowns.DFDt.psi_star[0]  # Correct $\psi^*[0]$
+```
+:::
+
 ### Key Material Models
 
 | Model Class | Physics | Documentation |

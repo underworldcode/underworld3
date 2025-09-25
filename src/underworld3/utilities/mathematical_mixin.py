@@ -313,7 +313,8 @@ class MathematicalMixin:
                 # If it's a property, return its value directly
                 return attr
         
-        # If attribute doesn't exist on sym, raise AttributeError normally
+        # If attribute doesn't exist on sym, let Python raise its normal AttributeError
+        # by re-raising the attribute lookup on self (which will fail naturally)
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
 

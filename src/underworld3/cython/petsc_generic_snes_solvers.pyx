@@ -2357,7 +2357,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if self.saddle_preconditioner is not None:
             self._pp_G0 = self.saddle_preconditioner
         else:
-            self._pp_G0 = sympy.simplify(1 / self.constitutive_model.viscosity)
+            self._pp_G0 = sympy.simplify(1 / self.constitutive_model.K)
 
         fns_jacobian.append(self._pp_G0)
 

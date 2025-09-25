@@ -469,8 +469,7 @@ stokes.petsc_options["ksp_monitor"] = None
 
 stokes.solve(zero_init_guess=True)
 
-if uw.mpi.rank == 0:
-    print("Linear solve complete", flush=True)
+uw.pprint(0, "Linear solve complete")
 # -
 
 
@@ -478,8 +477,7 @@ C0 = 75
 for i in range(1, 10, 2):
     mu = 0.75
     C = C0 + (1.0 - i / 9) * 100.0
-    if uw.mpi.rank == 0:
-        print(f"Mu - {mu}, C = {C}", flush=True)
+    uw.pprint(0, f"Mu - {mu}, C = {C}")
 
     tau_y = C + mu * p_soln.sym[0]
     viscosity_L = 999.0 * material.sym[0] + 1.0
@@ -501,8 +499,7 @@ for i in range(1, 10, 2):
     # stokes.snes.atol = 1e-3
 
     stokes.solve(zero_init_guess=False)
-    if uw.mpi.rank == 0:
-        print(f"Completed: Mu - {mu}, C = {C}", flush=True)
+    uw.pprint(0, f"Completed: Mu - {mu}, C = {C}")
 0 / 0
 
 

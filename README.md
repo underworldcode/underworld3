@@ -21,7 +21,7 @@ development branch
 
 ## Documentation
 
-Start with the online [Quick Start Guide](https://underworldcode.github.io/underworld3/development/_quickstart/index.html) for a brief overview of the code.
+Start with the online [Documentation](https://underworldcode.github.io/underworld3/development/docs/index.html) for a brief overview of the code.
 
 The `underworld3` module (API) documentation can be found online:
   - [stable version](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html)
@@ -31,15 +31,15 @@ The `underworld3` module (API) documentation can be found online:
 
 ## Binder demonstration version
 
- - [Main Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb)
- - [Development Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher-dev/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb)
+ - [Main Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb)
+ - [Development Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher-dev/HEAD?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb)
 
 
 ## Installation Guide
 
 The quickest option is **not to install** anything but try the binder demo above !
 
-If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba`. Create a separate virtual environment and install the code from source. More details on how to do that are in the [Installation Instructions](https://underworldcode.github.io/underworld3/development/_quickstart/Installation.html)
+If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba`. Create a separate virtual environment and install the code from source. More details on how to do that are in the [Installation Instructions](https://underworldcode.github.io/underworld3/development/docs/beginner/installation.html)
 
 ## References and Archives 
 

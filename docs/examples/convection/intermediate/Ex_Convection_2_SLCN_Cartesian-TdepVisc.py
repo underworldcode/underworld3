@@ -236,8 +236,7 @@ for step in range(0, 1000):
     # stats then loop
     tstats = t_soln.stats()
 
-    if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(step, delta_t))
+    uw.pprint(0, "Timestep {}, dt {}".format(step, delta_t))
     #         print(tstats)
 
     if t_step % 5 == 0:

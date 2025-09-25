@@ -39,6 +39,7 @@ unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
 )
 
 
+# %%
 @pytest.mark.parametrize(
     "mesh",
     [
@@ -48,6 +49,7 @@ unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
     ],
 )
 def test_SLVec_boxmesh(mesh):
+    """Test Semi-Lagrangian vector advection with Gaussian pulse."""
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
 
     # Create mesh vars
@@ -79,7 +81,7 @@ def test_SLVec_boxmesh(mesh):
     # with mesh.access(v):
     #     v.data[:, 1] = velocity
     
-    v.array[:, 1, 1] = velocity
+    v.array[:, 0, 1] = velocity  # Shape is (N, 1, 2) for 2D vectors
 
     x, y = mesh.X
 
@@ -96,8 +98,8 @@ def test_SLVec_boxmesh(mesh):
     
     gauss_2D = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * sdev**2))
     gauss_vals = 2 * velocity * uw.function.evaluate(gauss_2D, vect_test.coords).squeeze()
-    vect_test.array[:, 0, 0] = gauss_vals
-    vect_test.array[:, 1, 1] = gauss_vals
+    vect_test.array[:, 0, 0] = gauss_vals  # x component: array[i, 0, 0]
+    vect_test.array[:, 0, 1] = gauss_vals  # y component: array[i, 0, 1]
 
     # ### Create points to sample the UW results
     ### y coords to sample
@@ -152,6 +154,77 @@ def test_SLVec_boxmesh(mesh):
     ### compare - use high atol due to low resolution
     assert np.allclose(vx_to_eval, anax_to_eval, atol=0.01)
     assert np.allclose(vy_to_eval, anay_to_eval, atol=0.01)
+    
+    # %%
+    if uw.is_notebook:
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+        
+        # Plot 1: Initial vector field magnitude
+        ax1 = axes[0, 0]
+        coords_init = vect_test.coords
+        
+        # Recreate initial condition for visualization
+        gauss_init_vals = 2 * velocity * uw.function.evaluate(gauss_2D, coords_init).squeeze()
+        vec_mag_init = np.sqrt(2) * gauss_init_vals  # Both components equal
+        
+        scatter1 = ax1.scatter(coords_init[:, 0], coords_init[:, 1], 
+                              c=vec_mag_init, s=20, cmap="viridis", alpha=0.8)
+        ax1.set_xlabel("x")
+        ax1.set_ylabel("y")
+        ax1.set_title("Initial Vector Field Magnitude")
+        ax1.set_aspect("equal")
+        plt.colorbar(scatter1, ax=ax1, label="|A|")
+        
+        # Plot 2: Final vector field magnitude
+        ax2 = axes[0, 1]
+        vec_data = vect_test.data
+        vec_mag = np.sqrt(vec_data[:, 0]**2 + vec_data[:, 1]**2)
+        
+        scatter2 = ax2.scatter(coords_init[:, 0], coords_init[:, 1], 
+                              c=vec_mag, s=20, cmap="viridis", alpha=0.8)
+        ax2.set_xlabel("x")
+        ax2.set_ylabel("y")
+        ax2.set_title(f"After Advection (t={model_time:.3f})")
+        ax2.set_aspect("equal")
+        plt.colorbar(scatter2, ax=ax2, label="|A|")
+        
+        # Plot 3: Vector component profiles
+        ax3 = axes[1, 0]
+        ax3.plot(sample_y, vec_prof_init[:, 0], 'b--', label='Initial Vx', linewidth=2)
+        ax3.plot(sample_y, vec_prof_init[:, 1], 'r--', label='Initial Vy', linewidth=2)
+        ax3.plot(sample_y, vec_prof_uw[:, 0], 'bo', markersize=4, alpha=0.6, label='Final Vx')
+        ax3.plot(sample_y, vec_prof_uw[:, 1], 'ro', markersize=4, alpha=0.6, label='Final Vy')
+        
+        # Mark expected peak location
+        ax3.axvline(x=y_peak_loc, color='g', linestyle='--', alpha=0.5, label=f'Expected peak (y={y_peak_loc:.3f})')
+        
+        ax3.set_xlabel("y coordinate (at x=0.5)")
+        ax3.set_ylabel("Vector components")
+        ax3.set_title("Vertical Profiles")
+        ax3.legend(fontsize=9)
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Error analysis
+        ax4 = axes[1, 1]
+        error_x = np.abs(vx_to_eval - anax_to_eval)
+        error_y = np.abs(vy_to_eval - anay_to_eval)
+        
+        y_vals = sample_y[cond]
+        ax4.plot(y_vals, error_x, 'b-', label='|Error Vx|', linewidth=2)
+        ax4.plot(y_vals, error_y, 'r-', label='|Error Vy|', linewidth=2)
+        ax4.axhline(y=0.01, color='gray', linestyle='--', alpha=0.5, label='atol=0.01')
+        
+        ax4.set_xlabel("y coordinate")
+        ax4.set_ylabel("Absolute Error")
+        ax4.set_title(f"Error Analysis (max Vx: {error_x.max():.4f}, max Vy: {error_y.max():.4f})")
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        ax4.set_yscale('log')
+        
+        plt.tight_layout()
+        plt.show()
 
     del mesh
     del DuDt

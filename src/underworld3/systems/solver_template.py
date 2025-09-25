@@ -237,6 +237,7 @@ class SNES_MyEquation(SNES_Scalar):
         return self._constitutive_model._solver_is_setup
 
     @timing.routine_timer_decorator
+    @uw.collective_operation
     def solve(self, verbose=False, debug=False):
         """
         Solve the equation system.
@@ -251,6 +252,8 @@ class SNES_MyEquation(SNES_Scalar):
         Returns
         -------
         Convergence information from PETSc solver
+        
+        Note: This is a COLLECTIVE operation - all MPI ranks must call it.
         """
 
         # Set up problem if needed

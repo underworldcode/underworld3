@@ -1,0 +1,49 @@
+# Shared link registry for cross-references across all documentation
+# Usage: {{< var links.beginner.quickstart >}}
+
+links:
+  # Beginner section
+  beginner:
+    index: beginner/index.qmd
+    installation: beginner/installation.qmd
+    quickstart: beginner/quickstart.qmd
+    notebooks: beginner/tutorials/Notebook_Index.ipynb
+    meshes: beginner/tutorials/1-Meshes.ipynb
+    variables: beginner/tutorials/2-Variables.ipynb
+    symbolic: beginner/tutorials/3-Symbolic_Forms.ipynb
+    poisson: beginner/tutorials/4-Solvers-i-Poisson.ipynb
+    stokes: beginner/tutorials/5-Solvers-ii-Stokes.ipynb
+    timestepping: beginner/tutorials/6a-Timestepping-simple.ipynb
+    timestepping-coupled: beginner/tutorials/6b-Timestepping-coupled.ipynb
+    unsteady: beginner/tutorials/7-Unsteady_Flow.ipynb
+    swarms: beginner/tutorials/8-Particle_Swarms.ipynb
+    
+  # Advanced section
+  advanced:
+    index: advanced/index.qmd
+    parallel: advanced/parallel-computing.qmd
+    performance: advanced/performance.qmd
+    rheologies: advanced/complex-rheologies.qmd
+    adaptation: advanced/mesh-adaptation.qmd
+    troubleshooting: advanced/troubleshooting.qmd
+    api-patterns: advanced/api-patterns.qmd
+    
+  # Developer section
+  developer:
+    index: developer/index.qmd
+    architecture: developer/UW3_Architecture_and_Documentation_Overview.qmd
+    contributing: developer/contributing.qmd
+    setup: developer/development-setup.qmd
+    model: developer/subsystems/model-orchestration.qmd
+    data-access: developer/subsystems/data-access.qmd
+    ndarrays: developer/UW3_Developers_NDArrays.qmd
+    math-objects: developer/UW3_Developers_MathematicalObjects.qmd
+    meshing: developer/subsystems/meshing.qmd
+    discretisation: developer/subsystems/discretisation.qmd
+    solvers: developer/subsystems/solvers.qmd
+    swarms: developer/subsystems/swarm-system.qmd
+    variables: developer/subsystems/variables.qmd
+    style-guide: developer/UW3_Style_and_Patterns_Guide.qmd
+    testing: developer/guidelines/testing-patterns.qmd
+    solver-dev: developer/advanced/solver-development.qmd
+    build-system: developer/reference/build-system.qmd

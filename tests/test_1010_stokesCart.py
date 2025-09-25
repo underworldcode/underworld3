@@ -23,7 +23,7 @@ unstructured_quad_box_irregular_3D = uw.meshing.UnstructuredSimplexBox(
 
 # Maybe lower and upper would work better for the names of the box mesh boundaries too.
 
-
+# %%
 @pytest.mark.parametrize(
     "mesh",
     [
@@ -33,6 +33,7 @@ unstructured_quad_box_irregular_3D = uw.meshing.UnstructuredSimplexBox(
     ],
 )
 def test_stokes_boxmesh(mesh):
+    """Test Stokes flow with buoyancy force on 2D/3D Cartesian meshes."""
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
     mesh.dm.view()
 
@@ -103,10 +104,85 @@ def test_stokes_boxmesh(mesh):
     stokes.dm.ds.view()
 
     assert stokes.snes.getConvergedReason() > 0
+    
+    # %%
+    if uw.is_notebook:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        if mesh.dim == 2:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+            
+            # Plot velocity magnitude
+            coords = u.coords
+            vel_data = u.data
+            vel_mag = np.sqrt(vel_data[:, 0]**2 + vel_data[:, 1]**2)
+            
+            scatter1 = ax1.scatter(coords[:, 0], coords[:, 1], c=vel_mag, 
+                                  s=15, cmap="plasma", alpha=0.8)
+            ax1.set_xlabel("x")
+            ax1.set_ylabel("y")
+            ax1.set_title("Velocity Magnitude")
+            ax1.set_aspect("equal")
+            plt.colorbar(scatter1, ax=ax1, label="|v|")
+            
+            # Plot streamlines
+            skip = 2
+            ax2.quiver(coords[::skip, 0], coords[::skip, 1], 
+                      vel_data[::skip, 0], vel_data[::skip, 1], 
+                      alpha=0.6)
+            
+            # Plot pressure contours
+            p_coords = p.coords
+            p_vals = p.data.flatten()
+            scatter2 = ax2.scatter(p_coords[:, 0], p_coords[:, 1], c=p_vals, 
+                                  s=15, cmap="RdBu_r", alpha=0.3)
+            ax2.set_xlabel("x")
+            ax2.set_ylabel("y")
+            ax2.set_title("Velocity Vectors + Pressure")
+            ax2.set_aspect("equal")
+            plt.colorbar(scatter2, ax=ax2, label="Pressure")
+            
+        else:
+            # For 3D, show slice plots
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+            
+            coords = u.coords
+            vel_data = u.data
+            
+            # Mid-plane slice (z ~ 0.5)
+            z_slice = np.abs(coords[:, 2] - 0.5) < 0.1
+            coords_slice = coords[z_slice]
+            vel_slice = vel_data[z_slice]
+            vel_mag_slice = np.sqrt(vel_slice[:, 0]**2 + vel_slice[:, 1]**2 + vel_slice[:, 2]**2)
+            
+            scatter1 = ax1.scatter(coords_slice[:, 0], coords_slice[:, 1], 
+                                  c=vel_mag_slice, s=20, cmap="plasma", alpha=0.8)
+            ax1.set_xlabel("x")
+            ax1.set_ylabel("y")
+            ax1.set_title("3D Velocity Magnitude (z≈0.5 slice)")
+            ax1.set_aspect("equal")
+            plt.colorbar(scatter1, ax=ax1, label="|v|")
+            
+            # Pressure slice
+            p_coords = p.coords
+            p_vals = p.data.flatten()
+            p_slice = np.abs(p_coords[:, 2] - 0.5) < 0.1
+            
+            scatter2 = ax2.scatter(p_coords[p_slice, 0], p_coords[p_slice, 1], 
+                                  c=p_vals[p_slice], s=20, cmap="RdBu_r", alpha=0.8)
+            ax2.set_xlabel("x")
+            ax2.set_ylabel("y")
+            ax2.set_title("3D Pressure (z≈0.5 slice)")
+            ax2.set_aspect("equal")
+            plt.colorbar(scatter2, ax=ax2, label="Pressure")
+        
+        plt.tight_layout()
+        plt.show()
 
     return
 
-
+# %%
 def test_stokes_boxmesh_bc_failure():
     mesh = uw.meshing.UnstructuredSimplexBox(
         cellSize=0.2, regular=False, qdegree=2, refinement=1

@@ -21,40 +21,44 @@ Underworld3 is a Python library for computational geodynamics and geophysical mo
 ::: {.callout-tip}
 ## Quick Navigation for Developers
 
-- **🚀 New to UW3?** → Start with [Development Setup](development-setup.qmd)
-- **🏗️ Understanding the codebase?** → Read [Architecture Overview](UW3_Architecture_and_Documentation_Overview.qmd)
-- **🧮 Working with math expressions?** → See [Mathematical Objects](UW3_Developers_MathematicalObjects.qmd)
-- **📊 Handling data arrays?** → Check [NDArray System](UW3_Developers_NDArrays.qmd)
-- **📝 Need coding standards?** → Reference [Style Guide](UW3_Style_and_Patterns_Guide.qmd)
+- **New to UW3?** → Start with [Development Setup](development-setup.qmd)
+- **Understanding the codebase?** → Read [Architecture Overview](UW3_Architecture_and_Documentation_Overview.qmd)
+- **Working with math expressions?** → See [Mathematical Objects](UW3_Developers_MathematicalObjects.qmd)
+- **Handling data arrays?** → Check [NDArray System](UW3_Developers_NDArrays.qmd)
+- **Need coding standards?** → Reference [Style Guide](UW3_Style_and_Patterns_Guide.qmd)
 :::
 
 ## Documentation Structure
 
 This documentation is organized into focused sections:
 
-### 📚 Core Computational Systems
+### Core Computational Systems
 The foundation of Underworld3's numerical capabilities:
+
 - **Meshing**: Geometric mesh generation and manipulation
 - **Discretisation**: Finite element infrastructure and field management
 - **Solvers**: PDE solvers and numerical methods
 - **Constitutive Models**: Material physics and rheology
 
-### 💾 Data Management Systems  
+### Data Management Systems  
 How Underworld3 handles data across parallel systems:
+
 - **NDArray System**: Modern data access patterns (v0.99+)
 - **Swarm System**: Particle tracking and Lagrangian methods
 - **Variables**: Mesh and swarm field variables
 - **Parallel Data**: MPI and distributed memory management
 
-### 🧮 Mathematical & Symbolic Systems
+### Mathematical & Symbolic Systems
 The mathematical foundation enabling natural syntax:
+
 - **Mathematical Objects**: Natural math syntax implementation
 - **Expressions & Functions**: Symbolic expression handling
 - **Mathematics**: Vector calculus and tensor operations
 - **Coordinate Systems**: Transformations and spatial handling
 
-### 🛠️ Utility & Extension Systems
+### Utility & Extension Systems
 Supporting infrastructure and extensibility:
+
 - **Visualization**: Plotting and rendering capabilities
 - **Scaling**: Dimensional analysis and non-dimensionalization  
 - **Cython Integration**: Performance-critical compiled extensions
@@ -62,24 +66,24 @@ Supporting infrastructure and extensibility:
 
 ## Current Architecture Status
 
-Based on our comprehensive analysis, here's the current state of Underworld3 subsystems:
+Based on our comprehensive analysis, here's the current state of Underworld3 subsystems. Areas requiring significant documentation work are marked with (§).
 
-### Well-Documented Subsystems ✅
+### Well-Documented Subsystems
 - **Discretisation** (4,145 lines) - Finite element infrastructure
 - **Solvers** (3,907 lines) - PDE solving capabilities  
 - **Swarm** (4,484 lines) - Particle systems and tracking
 - **NDArray** (946 lines) - Modern data access (v0.99+)
 - **Constitutive Models** (1,967 lines) - Material physics
 
-### Partially Documented Subsystems ⚠️
-- **Meshing** (4,437 lines) - Needs geometric parameter details
-- **Mathematics** (962 lines) - Inconsistent documentation quality
+### Partially Documented Subsystems
+- **Meshing** (4,437 lines) - Needs geometric parameter details (§)
+- **Mathematics** (962 lines) - Inconsistent documentation quality (§)
 - **Visualization** (788 lines) - Basic documentation present
 
-### Documentation Gaps ❌
-- **Expressions/Functions** (1,192 lines) - Critical user-facing gap
-- **Scaling** (208 lines) - Minimal documentation
-- **Cython Integration** - No documentation for C bridge
+### Documentation Gaps
+- **Expressions/Functions** (1,192 lines) - Critical user-facing gap (§)
+- **Scaling** (208 lines) - Minimal documentation (§)
+- **Cython Integration** - No documentation for C bridge (§)
 
 ## Contributing to Documentation
 
@@ -95,10 +99,10 @@ We welcome contributions to improve this documentation! Each subsystem page incl
 
 Based on our analysis, these are the highest priority areas for contribution:
 
-1. **🔴 Critical**: [Expressions & Functions](subsystems/expressions-functions.qmd) - Core user functionality
-2. **🔴 Critical**: [Cython Integration](subsystems/cython-integration.qmd) - Bridge documentation missing
-3. **🟡 High**: [Meshing](subsystems/meshing.qmd) - Geometric parameter guidance
-4. **🟡 High**: [Mathematics](subsystems/mathematics.qmd) - Consistency improvements
+1. **Critical**: [Expressions & Functions](subsystems/expressions-functions.qmd) - Core user functionality
+2. **Critical**: [Cython Integration](subsystems/cython-integration.qmd) - Bridge documentation missing
+3. **High**: [Meshing](subsystems/meshing.qmd) - Geometric parameter guidance
+4. **High**: [Mathematics](subsystems/mathematics.qmd) - Consistency improvements
 
 ## Development Workflow
 

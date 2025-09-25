@@ -384,7 +384,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     the term in the `sympy` expression.
 
       - A preconditioner is usually required for the saddle point system and this is provided
-    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+    through the `saddle_preconditioner` property. The default choice is $1 / \eta$ for a scalar viscosity function.
 
     ## Notes
 
@@ -454,16 +454,16 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @property
     def F0(self):
 
-        # f0 = expression(
-        #     r"\mathbf{f}_0\left( \mathbf{u} \right)",
-        #     -self.bodyforce,
-        #     "Stokes pointwise force term: f_0(u)",
-        # )
+        f0 = expression(
+            r"\mathbf{f}_0\left( \mathbf{u} \right)",
+            -self.bodyforce.sym,
+            "Stokes pointwise force term: f_0(u)",
+        )
 
         # backward compatibility
-        self._u_f0 = self._bodyforce
+        self._u_f0 = f0
 
-        return self._bodyforce
+        return f0
 
     @property
     def F1(self):
@@ -573,9 +573,9 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     def bodyforce(self, value):
         self.is_setup = False
         if isinstance(value, uw.function.expressions.UWexpression):
-            self._bodyforce.sym = -1 * value.sym
+            self._bodyforce.sym = value.sym
         else:
-            self._bodyforce.sym = sympy.Matrix(-1 * value)
+            self._bodyforce.sym = sympy.Matrix(value)
 
     @property
     def saddle_preconditioner(self):

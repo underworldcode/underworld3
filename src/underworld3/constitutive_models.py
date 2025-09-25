@@ -84,6 +84,11 @@ class Constitutive_Model(uw_object):
     $ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} \right) $ which is the
     4th rank identity tensor accounting for symmetry in the flux and the gradient terms.
     """
+    
+    # Class-level instance counter for automatic symbol uniqueness across all constitutive models
+    _global_instance_count = 0
+    # Per-class instance counters for class-specific numbering
+    _class_instance_counts = {}
 
     @timing.routine_timer_decorator
     def __init__(self, unknowns):
@@ -94,6 +99,17 @@ class Constitutive_Model(uw_object):
 
         # We provide a function that converts gradients / gradient history terms
         # into the relevant flux term.
+
+        # Track instance numbers for automatic symbol uniqueness
+        Constitutive_Model._global_instance_count += 1
+        self._global_instance_number = Constitutive_Model._global_instance_count
+        
+        # Track per-class instance numbers (0-based indexing)
+        class_name = self.__class__.__name__
+        if class_name not in Constitutive_Model._class_instance_counts:
+            Constitutive_Model._class_instance_counts[class_name] = 0
+        self._class_instance_number = Constitutive_Model._class_instance_counts[class_name]
+        Constitutive_Model._class_instance_counts[class_name] += 1
 
         self.Unknowns = unknowns
 
@@ -122,6 +138,33 @@ class Constitutive_Model(uw_object):
         self._reset()
 
         super().__init__()
+
+    def create_unique_symbol(self, base_symbol, value, description):
+        """
+        Create a unique symbol name for constitutive model parameters.
+        
+        Parameters:
+        -----------
+        base_symbol : str
+            The base LaTeX symbol name (e.g., r"\\eta", r"\\kappa")
+        value : float or expression
+            The initial value for the symbol
+        description : str
+            Description of the parameter
+            
+        Returns:
+        --------
+        UWexpression
+            Expression with unique symbol name
+        """
+        if self._class_instance_number == 0:
+            # First instance of this class uses clean symbol
+            symbol_name = base_symbol
+        else:
+            # Subsequent instances get superscript (1-based for display)
+            symbol_name = rf"{{{base_symbol}}}^{{({self._class_instance_number})}}"
+        
+        return expression(symbol_name, value, description)
 
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
@@ -320,7 +363,7 @@ class ViscousFlowModel(Constitutive_Model):
 
 
     """
-
+    
     #     ```python
     # class ViscousFlowModel(Constitutive_Model)
     # ...
@@ -364,7 +407,11 @@ class ViscousFlowModel(Constitutive_Model):
         ):
 
             inner_self._owning_model = _owning_model
-            inner_self._shear_viscosity_0 = expression(r"\eta", 1, "Shear viscosity")
+            
+            # Create unique symbol using base class helper
+            inner_self._shear_viscosity_0 = _owning_model.create_unique_symbol(
+                r"\eta", 1, "Shear viscosity"
+            )
 
         @property
         def shear_viscosity_0(inner_self):
@@ -388,6 +435,11 @@ class ViscousFlowModel(Constitutive_Model):
         in the form of an uw.expression"""
 
         return self.Parameters._shear_viscosity_0
+
+    @property
+    def K(self):
+        """Effective stiffness parameter (viscosity for viscous flow)"""
+        return self.viscosity
 
     @property
     def flux(self):
@@ -1927,41 +1979,198 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         )
 
 
-class MultiMaterial_ViscoElasticPlastic(Constitutive_Model):
+class MultiMaterialConstitutiveModel(Constitutive_Model):
     r"""
-    Manage multiple materials in a constitutive framework.
-
-    Bundles multiple materials into a single consitutive law. The expectation
-    is that these all have compatible flux terms.
+    Multi-material constitutive model using level-set weighted flux averaging.
+    
+    Mathematical Foundation:
+    $\mathbf{f}_{\text{composite}}(\mathbf{x}) = \sum_{i=1}^{N} \phi_i(\mathbf{x}) \cdot \mathbf{f}_i(\mathbf{x})$
+    
+    Critical Architecture:
+    - Solver owns Unknowns (including $D\mathbf{F}/Dt$ stress history)
+    - All constituent models share solver's Unknowns
+    - Composite flux becomes stress history for all materials
     """
 
     def __init__(
         self,
-        material_swarmVariable: Optional[IndexSwarmVariable] = None,
-        constitutive_models: Optional[list] = [],
+        unknowns,
+        material_swarmVariable: IndexSwarmVariable,
+        constitutive_models: list,
+        normalize_levelsets: bool = False,
     ):
-        self._constitutive_models = constitutive_models
+        """
+        Parameters:
+        -----------
+        unknowns : UnknownSet
+            The solver's authoritative unknowns ($\mathbf{u}$, $D\mathbf{F}/Dt$, $D\mathbf{u}/Dt$)
+        material_swarmVariable : IndexSwarmVariable
+            Index variable tracking material distribution on particles
+        constitutive_models : List[Constitutive_Model]  
+            Pre-configured constitutive models for each material
+        normalize_levelsets : bool, optional
+            Whether to normalize level-set functions to enforce partition of unity.
+            Set to True if IndexSwarmVariable does not maintain partition of unity.
+            Default: False (assumes IndexSwarmVariable maintains partition of unity)
+        """
+        # Validate compatibility before initialization
+        self._validate_model_compatibility(constitutive_models)
+        
         self._material_var = material_swarmVariable
+        self._constitutive_models = constitutive_models
+        self._normalize_levelsets = normalize_levelsets
+        
+        # Ensure model count matches material indices
+        if len(constitutive_models) != material_swarmVariable.indices:
+            raise ValueError(
+                f"Model count ({len(constitutive_models)}) must match "
+                f"material indices ({material_swarmVariable.indices})"
+            )
+        
+        # CRITICAL: Share solver's unknowns with all constituent models
+        self._setup_shared_unknowns(constitutive_models, unknowns)
+        
+        super().__init__(unknowns)
 
-        return
+    def _setup_shared_unknowns(self, constitutive_models, unknowns):
+        """
+        Ensure all constituent models share the solver's authoritative unknowns.
+        This is critical for proper stress history management.
+        """
+        for i, model in enumerate(constitutive_models):
+            # Share solver's unknowns - this gives access to composite $D\mathbf{F}/Dt$ history
+            model.Unknowns = unknowns
+            
+            # Validation: Ensure sharing worked correctly
+            assert model.Unknowns is unknowns, \
+                f"Model {i} failed to share unknowns - memory issue?"
+            
+            # For elastic models, verify DFDt access
+            if hasattr(model, '_stress_star'):
+                assert hasattr(unknowns, 'DFDt'), \
+                    f"Model {i} needs stress history but $D\mathbf{{F}}/Dt$ not available"
+
+    def _validate_model_compatibility(self, models: list) -> bool:
+        """
+        Ensure all constituent models are compatible for flux averaging.
+        
+        Checks:
+        - Same u_dim (scalar vs vector problem compatibility)
+        - Same spatial dimension (2D/3D consistency)  
+        - Compatible flux tensor shapes
+        - All models properly initialized
+        """
+        if not models:
+            raise ValueError("At least one constitutive model required")
+        
+        reference_model = models[0]
+        reference_u_dim = reference_model.u_dim
+        reference_dim = reference_model.dim
+        
+        for i, model in enumerate(models):
+            if model.u_dim != reference_u_dim:
+                raise ValueError(
+                    f"Model {i} has u_dim={model.u_dim}, expected {reference_u_dim}"
+                )
+            if model.dim != reference_dim:
+                raise ValueError(
+                    f"Model {i} has dim={model.dim}, expected {reference_dim}"
+                )
+            # Validate model is properly initialized
+            if not hasattr(model, 'Unknowns'):
+                raise ValueError(f"Model {i} is not properly initialized")
+        
+        return True
+
+    @property
+    def flux(self):
+        """
+        Compute level-set weighted average of constituent model fluxes.
+        
+        CRITICAL: This composite flux becomes the stress history that
+        all constituent models (including elastic ones) will read via
+        $D\mathbf{F}/Dt.\psi^*[0]$ in the next time step.
+        """
+        # Get reference flux shape from first model
+        reference_flux = self._constitutive_models[0].flux
+        combined_flux = sympy.Matrix.zeros(*reference_flux.shape)
+        
+        if self._normalize_levelsets:
+            # Compute normalization factor to ensure partition of unity
+            total_levelset = sum(
+                self._material_var.sym[i] 
+                for i in range(self._material_var.indices)
+            )
+            
+            for i in range(self._material_var.indices):
+                # Get normalized level-set function for material i
+                material_fraction = self._material_var.sym[i] / total_levelset
+                
+                # Get flux contribution from constituent model i
+                model_flux = self._constitutive_models[i].flux
+                
+                # Add weighted contribution to composite flux
+                combined_flux += material_fraction * model_flux
+        else:
+            # Use level-sets directly (assuming they already maintain partition of unity)
+            for i in range(self._material_var.indices):
+                # Get flux contribution from constituent model i
+                model_flux = self._constitutive_models[i].flux
+                
+                # Add weighted contribution using level-set directly
+                combined_flux += self._material_var.sym[i] * model_flux
+        
+        # This combined_flux will become the stress history for ALL materials
+        return combined_flux
+
+    @property
+    def K(self):
+        """
+        Effective stiffness using level-set weighted harmonic average.
+        
+        For composite materials, harmonic averaging gives the correct effective
+        stiffness for preconditioning: 1/K_eff = Σ(φᵢ * (1/Kᵢ)) / Σ(φᵢ)
+        """
+        # Harmonic average: 1/K_eff = Σ(φᵢ * (1/Kᵢ)) / Σ(φᵢ)
+        combined_inv_K = sympy.sympify(0)
+        
+        if self._normalize_levelsets:
+            # Compute normalization factor to ensure partition of unity
+            total_levelset = sum(
+                self._material_var.sym[i] 
+                for i in range(self._material_var.indices)
+            )
+            
+            for i in range(self._material_var.indices):
+                # Get normalized level-set function for material i
+                material_fraction = self._material_var.sym[i] / total_levelset
+                
+                # Get stiffness from constituent model i
+                model_K = self._constitutive_models[i].K
+                
+                # Add weighted contribution to inverse stiffness
+                combined_inv_K += material_fraction / model_K
+        else:
+            # Use level-sets directly (assuming they already maintain partition of unity)
+            for i in range(self._material_var.indices):
+                # Get stiffness from constituent model i
+                model_K = self._constitutive_models[i].K
+                
+                # Add weighted contribution using level-set directly
+                combined_inv_K += self._material_var.sym[i] / model_K
+        
+        # Return harmonic average
+        return 1 / combined_inv_K
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
 
         super()._object_viewer()
-
-        ## feedback on this instance
-
-        ## IndexVariables etc
-
-    @property
-    def flux(
-        self,
-    ):
-        combined_flux = sympy.sympify(0)
-
-        for i in range(self._material_var.indices):
-            M = self._material_var[i]
-            combined_flux += self._constitutive_models[i].flux(ddu, ddu_dt, u, u_dt) * M
-
-        return
+        
+        display(Markdown(f"**Multi-Material Model**: {len(self._constitutive_models)} materials"))
+        
+        for i, model in enumerate(self._constitutive_models):
+            display(Markdown(f"**Material {i}**: {type(model).__name__}"))
+            
+        if self.flux is not None:
+            display(Latex(r"$\mathbf{f}_{\text{composite}} = " + sympy.latex(self.flux) + "$"))

@@ -337,8 +337,7 @@ for step in range(0, 2): #250
 
     # update swarm / swarm variables
 
-    if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(t_step, delta_t))
+    uw.pprint(0, "Timestep {}, dt {}".format(t_step, delta_t))
 
     # advect swarm
     swarm.advection(v_soln.sym, delta_t)
