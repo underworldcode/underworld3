@@ -1,3 +1,4 @@
+# %%
 # This is not a great test. The initial condition is not really representable in the mesh
 # so it would fail to match the numerical solution if we did not run the problem at all.
 
@@ -134,9 +135,9 @@ def test_advDiff_boxmesh(mesh):
 
     ### moderate atol due to evaluating onto points
     assert np.allclose(T_UW, T_analytical, atol=0.05)
-    
-    # %%
-    if uw.is_notebook:
+
+# %%
+if uw.is_notebook:
         import matplotlib.pyplot as plt
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
@@ -181,10 +182,12 @@ def test_advDiff_boxmesh(mesh):
         plt.tight_layout()
         plt.show()
 
-    del mesh
-    del adv_diff
+        del mesh
+        del adv_diff
 
 
 del meshStructuredQuadBox
 del unstructured_simplex_box_irregular
 del unstructured_simplex_box_regular
+
+# %%

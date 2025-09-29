@@ -24,3 +24,12 @@ from .read_medit_ascii import read_medit_ascii, print_medit_mesh_info
 from .create_dmplex_from_medit import create_dmplex_from_medit
 from .geometry_tools import *
 from .nd_array_callback import NDArray_With_Callback
+from .mathematical_mixin import MathematicalMixin
+from .units_mixin import (
+    UnitAwareMixin, 
+    UnitAwareMathematicalMixin, 
+    UnitsBackend, 
+    PintBackend, 
+    SymPyBackend,
+    make_units_aware
+)

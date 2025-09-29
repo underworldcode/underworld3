@@ -565,6 +565,7 @@ class Mesh(Stateful, uw_object):
             entities: tuple
             face_entities: tuple
 
+
         if self.dm.isSimplex():
             if self.dim == 2:
                 self._element = ElementInfo("triangle", (1, 3, 3), (0, 1, 2))
@@ -575,6 +576,9 @@ class Mesh(Stateful, uw_object):
                 self._element = ElementInfo("quadrilateral", (1, 4, 4), (0, 1, 2))
             else:
                 self._element = ElementInfo("hexahedron", (1, 6, 12, 8), (0, 1, 4, 4))
+
+        # Initialize generic parameters property - mesh factories can set this
+        self.parameters = None
 
         if verbose and uw.mpi.rank == 0:
             print(

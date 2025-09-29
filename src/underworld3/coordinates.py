@@ -488,10 +488,533 @@ class CoordinateSystem:
         else:
             return None
 
+    # Geometric direction properties for different coordinate systems
+    @property
+    def unit_vertical(self) -> sympy.Matrix:
+        """Primary vertical direction for this coordinate system"""
+        if self.coordinate_type in [CoordinateSystemType.CARTESIAN]:
+            # In Cartesian, vertical is the last coordinate direction
+            if self.mesh.dim == 2:
+                return self.unit_e_1  # y-direction in 2D
+            else:
+                return self.unit_e_2  # z-direction in 3D
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+            # In cylindrical 2D, "vertical" is ambiguous but typically means Cartesian y
+            return sympy.Matrix([0, 1])
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            # In spherical, "vertical" typically means radial outward
+            return self.unit_e_0
+        else:
+            raise NotImplementedError(f"unit_vertical not defined for coordinate system {self.coordinate_type}")
+
+    @property 
+    def unit_horizontal(self) -> sympy.Matrix:
+        """Primary horizontal direction for this coordinate system"""
+        if self.coordinate_type in [CoordinateSystemType.CARTESIAN]:
+            return self.unit_e_0  # x-direction
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+            # In cylindrical, horizontal could be radial or tangential - choose radial as primary
+            return self.unit_e_0  # radial direction
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            # In spherical, horizontal is typically tangential (theta direction)
+            return self.unit_e_1  # meridional direction
+        else:
+            raise NotImplementedError(f"unit_horizontal not defined for coordinate system {self.coordinate_type}")
+
+    @property
+    def unit_horizontal_0(self) -> sympy.Matrix:
+        """First horizontal direction (alias for unit_horizontal)"""
+        return self.unit_horizontal
+
+    @property
+    def unit_horizontal_1(self) -> sympy.Matrix:
+        """Second horizontal direction (for 3D systems)"""
+        if self.coordinate_type in [CoordinateSystemType.CARTESIAN]:
+            if self.mesh.dim >= 2:
+                return self.unit_e_1  # y-direction in 3D Cartesian
+            else:
+                raise ValueError("unit_horizontal_1 not available in 1D")
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+            return self.unit_e_1  # tangential direction
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            return self.unit_e_2  # azimuthal direction
+        else:
+            raise NotImplementedError(f"unit_horizontal_1 not defined for coordinate system {self.coordinate_type}")
+
+    @property
+    def unit_radial(self) -> sympy.Matrix:
+        """Radial direction (for cylindrical/spherical coordinate systems)"""
+        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE,
+                                     CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+            return self.unit_e_0
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            return self.unit_e_0
+        else:
+            raise NotImplementedError(f"unit_radial not defined for coordinate system {self.coordinate_type}")
+
+    @property
+    def unit_tangential(self) -> sympy.Matrix:
+        """Tangential direction (for cylindrical coordinate systems)"""
+        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE,
+                                     CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+            return self.unit_e_1
+        else:
+            raise NotImplementedError(f"unit_tangential not defined for coordinate system {self.coordinate_type}")
+
+    @property
+    def unit_meridional(self) -> sympy.Matrix:
+        """Meridional direction (for spherical coordinate systems)"""
+        if self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            return self.unit_e_1
+        else:
+            raise NotImplementedError(f"unit_meridional not defined for coordinate system {self.coordinate_type}")
+
+    @property
+    def unit_azimuthal(self) -> sympy.Matrix:
+        """Azimuthal direction (for spherical coordinate systems)"""
+        if self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            return self.unit_e_2
+        else:
+            raise NotImplementedError(f"unit_azimuthal not defined for coordinate system {self.coordinate_type}")
+
+    @property
+    def geometric_dimension_names(self) -> list:
+        """Names of geometric dimensions for this coordinate system"""
+        if self.coordinate_type in [CoordinateSystemType.CARTESIAN]:
+            if self.mesh.dim == 2:
+                return ['horizontal', 'vertical']
+            else:
+                return ['horizontal_x', 'horizontal_y', 'vertical']
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+            return ['radial', 'tangential']
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+            return ['radial', 'tangential', 'vertical']
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            return ['radial', 'meridional', 'azimuthal']
+        else:
+            return [f'dimension_{i}' for i in range(self.mesh.dim)]
+
+    @property
+    def primary_directions(self) -> dict:
+        """Dictionary of all available geometric directions for this mesh type"""
+        directions = {
+            'unit_e_0': self.unit_e_0,
+            'unit_e_1': self.unit_e_1,
+        }
+        if self.mesh.dim >= 3:
+            directions['unit_e_2'] = self.unit_e_2
+
+        # Add coordinate-system-specific directions
+        try:
+            directions['unit_horizontal'] = self.unit_horizontal
+            directions['unit_horizontal_0'] = self.unit_horizontal_0
+        except NotImplementedError:
+            pass
+
+        try:
+            directions['unit_horizontal_1'] = self.unit_horizontal_1  
+        except (NotImplementedError, ValueError):
+            pass
+
+        try:
+            directions['unit_vertical'] = self.unit_vertical
+        except NotImplementedError:
+            pass
+
+        try:
+            directions['unit_radial'] = self.unit_radial
+        except NotImplementedError:
+            pass
+
+        try:
+            directions['unit_tangential'] = self.unit_tangential
+        except NotImplementedError:
+            pass
+
+        try:
+            directions['unit_meridional'] = self.unit_meridional
+        except NotImplementedError:
+            pass
+
+        try:
+            directions['unit_azimuthal'] = self.unit_azimuthal
+        except NotImplementedError:
+            pass
+
+        return directions
+
+    def create_line_sample(self, start_point, direction_vector, length, num_points=50):
+        """
+        Create sample points along a line defined by sympy expressions.
+        
+        Parameters
+        ----------
+        start_point : list or numpy.ndarray
+            Starting point coordinates in Cartesian space
+        direction_vector : sympy.Matrix  
+            Direction vector (should be unit vector for accurate length)
+        length : float
+            Length of the line to sample
+        num_points : int, optional
+            Number of sample points to generate
+            
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'cartesian_coords': numpy array of Cartesian coordinates for global_evaluate()
+            - 'natural_coords': numpy array of natural coordinates for plotting
+            - 'parameters': numpy array of parameter values along the line (0 to length)
+        """
+        import numpy as np
+        
+        # Create parameter values along the line
+        t_values = np.linspace(0, length, num_points)
+        
+        # Convert start point to numpy array
+        start_point = np.array(start_point)
+        if len(start_point) != self.mesh.dim:
+            raise ValueError(f"Start point must have {self.mesh.dim} coordinates for {self.mesh.dim}D mesh")
+        
+        # Generate Cartesian coordinates by evaluating the direction vector
+        cartesian_coords = np.zeros((num_points, self.mesh.dim))
+        
+        # Get coordinate symbols
+        coord_symbols = list(self.mesh.X)
+        
+        for i, t in enumerate(t_values):
+            # Current point = start + t * direction
+            current_cartesian = start_point.copy()
+            
+            # Evaluate direction vector at start point to get Cartesian direction
+            direction_at_start = direction_vector
+            for j, symbol in enumerate(coord_symbols):
+                direction_at_start = direction_at_start.subs(symbol, start_point[j])
+            
+            # Convert to numpy for arithmetic
+            direction_vals = np.array([float(val) for val in direction_at_start])
+            current_cartesian = current_cartesian + t * direction_vals
+            
+            cartesian_coords[i] = current_cartesian
+        
+        # Convert Cartesian coordinates to natural coordinates
+        natural_coords = self._cartesian_to_natural_coords(cartesian_coords)
+        
+        return {
+            'cartesian_coords': cartesian_coords,
+            'natural_coords': natural_coords,
+            'parameters': t_values
+        }
+    
+    def _cartesian_to_natural_coords(self, cartesian_coords):
+        """
+        Convert Cartesian coordinates to natural coordinate system.
+        
+        Parameters
+        ----------
+        cartesian_coords : numpy.ndarray
+            Array of Cartesian coordinates (N_points, dim)
+            
+        Returns
+        -------
+        numpy.ndarray
+            Array of natural coordinates (N_points, dim)
+        """
+        import numpy as np
+        
+        if self.coordinate_type == CoordinateSystemType.CARTESIAN:
+            # For Cartesian, natural coordinates are the same as Cartesian
+            return cartesian_coords.copy()
+        
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+            # Convert (x, y) to (r, theta)
+            x = cartesian_coords[:, 0]
+            y = cartesian_coords[:, 1] 
+            
+            r = np.sqrt(x**2 + y**2)
+            theta = np.arctan2(y, x)
+            
+            natural_coords = np.column_stack([r, theta])
+            return natural_coords
+        
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+            # Convert (x, y, z) to (r, theta, z)
+            x = cartesian_coords[:, 0]
+            y = cartesian_coords[:, 1]
+            z = cartesian_coords[:, 2]
+            
+            r = np.sqrt(x**2 + y**2)
+            theta = np.arctan2(y, x)
+            
+            natural_coords = np.column_stack([r, theta, z])
+            return natural_coords
+        
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            # Convert (x, y, z) to (r, theta, phi)
+            x = cartesian_coords[:, 0]
+            y = cartesian_coords[:, 1]
+            z = cartesian_coords[:, 2]
+            
+            r = np.sqrt(x**2 + y**2 + z**2)
+            theta = np.arccos(z / (r + 1e-16))  # colatitude (0 to pi)
+            phi = np.arctan2(y, x)  # azimuth (-pi to pi)
+            
+            natural_coords = np.column_stack([r, theta, phi])
+            return natural_coords
+        
+        else:
+            # For unknown coordinate systems, return Cartesian coordinates
+            return cartesian_coords.copy()
+    
+    def create_profile_sample(self, profile_type, **params):
+        """
+        Create sample points for common profile types in this coordinate system.
+        
+        Parameters
+        ----------
+        profile_type : str
+            Type of profile to create. Options depend on coordinate system:
+            - Cartesian: 'horizontal', 'vertical', 'diagonal'
+            - Cylindrical: 'radial', 'tangential', 'vertical'  
+            - Spherical: 'radial', 'meridional', 'azimuthal'
+        **params
+            Profile-specific parameters (see individual profile documentation)
+            
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'cartesian_coords': numpy array of Cartesian coordinates for global_evaluate()
+            - 'natural_coords': numpy array of natural coordinates for plotting
+            - 'parameters': numpy array of parameter values along the profile
+        """
+        
+        if self.coordinate_type == CoordinateSystemType.CARTESIAN:
+            return self._create_cartesian_profile(profile_type, **params)
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+            return self._create_cylindrical_profile(profile_type, **params)
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+            return self._create_spherical_profile(profile_type, **params)
+        else:
+            raise NotImplementedError(f"Profile sampling not implemented for coordinate system {self.coordinate_type}")
+    
+    def _create_cartesian_profile(self, profile_type, **params):
+        """Create profiles for Cartesian coordinate systems"""
+        import numpy as np
+        
+        num_points = params.get('num_points', 50)
+        
+        if profile_type == 'horizontal':
+            # Horizontal line at specified y-position
+            y_position = params.get('y_position', 0.5)
+            x_range = params.get('x_range', (0.0, 1.0))
+            
+            x_values = np.linspace(x_range[0], x_range[1], num_points)
+            if self.mesh.dim == 2:
+                cartesian_coords = np.column_stack([x_values, np.full(num_points, y_position)])
+            else:  # 3D
+                z_position = params.get('z_position', 0.5)
+                cartesian_coords = np.column_stack([x_values, np.full(num_points, y_position), np.full(num_points, z_position)])
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': cartesian_coords.copy(),  # Same for Cartesian
+                'parameters': x_values
+            }
+        
+        elif profile_type == 'vertical':
+            # Vertical line at specified x-position
+            x_position = params.get('x_position', 0.5)
+            if self.mesh.dim == 2:
+                y_range = params.get('y_range', (0.0, 1.0))
+                y_values = np.linspace(y_range[0], y_range[1], num_points)
+                cartesian_coords = np.column_stack([np.full(num_points, x_position), y_values])
+                return {
+                    'cartesian_coords': cartesian_coords,
+                    'natural_coords': cartesian_coords.copy(),
+                    'parameters': y_values
+                }
+            else:  # 3D
+                y_position = params.get('y_position', 0.5)
+                z_range = params.get('z_range', (0.0, 1.0))
+                z_values = np.linspace(z_range[0], z_range[1], num_points)
+                cartesian_coords = np.column_stack([np.full(num_points, x_position), np.full(num_points, y_position), z_values])
+                return {
+                    'cartesian_coords': cartesian_coords,
+                    'natural_coords': cartesian_coords.copy(),
+                    'parameters': z_values
+                }
+        
+        elif profile_type == 'diagonal':
+            # Diagonal line from start to end point
+            start_point = params.get('start_point', [0.0] * self.mesh.dim)
+            end_point = params.get('end_point', [1.0] * self.mesh.dim)
+            
+            start_point = np.array(start_point)
+            end_point = np.array(end_point)
+            
+            t_values = np.linspace(0, 1, num_points)
+            cartesian_coords = np.array([start_point + t * (end_point - start_point) for t in t_values])
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': cartesian_coords.copy(),
+                'parameters': t_values
+            }
+        
+        else:
+            raise ValueError(f"Unknown Cartesian profile type: {profile_type}")
+    
+    def _create_cylindrical_profile(self, profile_type, **params):
+        """Create profiles for cylindrical coordinate systems"""
+        import numpy as np
+        
+        num_points = params.get('num_points', 50)
+        
+        if profile_type == 'radial':
+            # Radial line at specified angle
+            theta = params.get('theta', 0.0)  # Angle in radians
+            r_range = params.get('r_range', (0.5, 1.0))
+            
+            r_values = np.linspace(r_range[0], r_range[1], num_points)
+            
+            # Convert to Cartesian coordinates
+            x_values = r_values * np.cos(theta)
+            y_values = r_values * np.sin(theta)
+            cartesian_coords = np.column_stack([x_values, y_values])
+            
+            # Natural coordinates
+            natural_coords = np.column_stack([r_values, np.full(num_points, theta)])
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': natural_coords,
+                'parameters': r_values
+            }
+        
+        elif profile_type == 'tangential':
+            # Tangential (circular arc) at specified radius
+            radius = params.get('radius', 0.75)
+            theta_range = params.get('theta_range', (0.0, 2*np.pi))
+            
+            theta_values = np.linspace(theta_range[0], theta_range[1], num_points)
+            
+            # Convert to Cartesian coordinates
+            x_values = radius * np.cos(theta_values)
+            y_values = radius * np.sin(theta_values)
+            cartesian_coords = np.column_stack([x_values, y_values])
+            
+            # Natural coordinates
+            natural_coords = np.column_stack([np.full(num_points, radius), theta_values])
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': natural_coords,
+                'parameters': theta_values
+            }
+        
+        elif profile_type == 'vertical':
+            # Vertical line in Cartesian y-direction
+            x_position = params.get('x_position', 0.0)
+            y_range = params.get('y_range', (0.0, 1.0))
+            
+            y_values = np.linspace(y_range[0], y_range[1], num_points)
+            cartesian_coords = np.column_stack([np.full(num_points, x_position), y_values])
+            
+            # Convert to natural coordinates
+            natural_coords = self._cartesian_to_natural_coords(cartesian_coords)
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': natural_coords,
+                'parameters': y_values
+            }
+        
+        else:
+            raise ValueError(f"Unknown cylindrical profile type: {profile_type}")
+    
+    def _create_spherical_profile(self, profile_type, **params):
+        """Create profiles for spherical coordinate systems"""
+        import numpy as np
+        
+        num_points = params.get('num_points', 50)
+        
+        if profile_type == 'radial':
+            # Radial line at specified theta, phi
+            theta = params.get('theta', np.pi/2)  # Colatitude (0 to pi)
+            phi = params.get('phi', 0.0)  # Azimuth (-pi to pi)
+            r_range = params.get('r_range', (0.5, 1.0))
+            
+            r_values = np.linspace(r_range[0], r_range[1], num_points)
+            
+            # Convert to Cartesian coordinates
+            x_values = r_values * np.sin(theta) * np.cos(phi)
+            y_values = r_values * np.sin(theta) * np.sin(phi)
+            z_values = r_values * np.cos(theta)
+            cartesian_coords = np.column_stack([x_values, y_values, z_values])
+            
+            # Natural coordinates
+            natural_coords = np.column_stack([r_values, np.full(num_points, theta), np.full(num_points, phi)])
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': natural_coords,
+                'parameters': r_values
+            }
+        
+        elif profile_type == 'meridional':
+            # Meridional line (constant phi, varying theta) at specified radius
+            radius = params.get('radius', 0.75)
+            phi = params.get('phi', 0.0)
+            theta_range = params.get('theta_range', (0.0, np.pi))
+            
+            theta_values = np.linspace(theta_range[0], theta_range[1], num_points)
+            
+            # Convert to Cartesian coordinates
+            x_values = radius * np.sin(theta_values) * np.cos(phi)
+            y_values = radius * np.sin(theta_values) * np.sin(phi)
+            z_values = radius * np.cos(theta_values)
+            cartesian_coords = np.column_stack([x_values, y_values, z_values])
+            
+            # Natural coordinates
+            natural_coords = np.column_stack([np.full(num_points, radius), theta_values, np.full(num_points, phi)])
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': natural_coords,
+                'parameters': theta_values
+            }
+        
+        elif profile_type == 'azimuthal':
+            # Azimuthal line (constant theta, varying phi) at specified radius
+            radius = params.get('radius', 0.75)
+            theta = params.get('theta', np.pi/2)
+            phi_range = params.get('phi_range', (0.0, 2*np.pi))
+            
+            phi_values = np.linspace(phi_range[0], phi_range[1], num_points)
+            
+            # Convert to Cartesian coordinates
+            x_values = radius * np.sin(theta) * np.cos(phi_values)
+            y_values = radius * np.sin(theta) * np.sin(phi_values)
+            z_values = radius * np.full(num_points, np.cos(theta))
+            cartesian_coords = np.column_stack([x_values, y_values, z_values])
+            
+            # Natural coordinates
+            natural_coords = np.column_stack([np.full(num_points, radius), np.full(num_points, theta), phi_values])
+            
+            return {
+                'cartesian_coords': cartesian_coords,
+                'natural_coords': natural_coords,  
+                'parameters': phi_values
+            }
+        
+        else:
+            raise ValueError(f"Unknown spherical profile type: {profile_type}")
+
     def zero_matrix(self, shape):
         """Matrix of spatial coordinates equivalent to zeros (but still dependent on X) -
         Add this when you have a matrix with a mix of constants and functions - sympy / numpy
-        can become upset if the constants are not spatial functions too.
+        can become upset if the constants are not specific functions too.
         """
 
         Z = sympy.Matrix.ones(*shape) * self.independent_of_N

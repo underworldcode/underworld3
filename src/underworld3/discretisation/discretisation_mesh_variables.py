@@ -440,20 +440,31 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
             if not data_changed:
                 return
 
-            # Skip updates during mesh coordinate changes to prevent corruption
-            # Check if mesh is currently being updated
-            if hasattr(self.mesh, "_mesh_update_lock"):
-                # Try to acquire lock without blocking - if we can't, skip update
-                if not self.mesh._mesh_update_lock.acquire(blocking=False):
-                    return
-                try:
-                    # Persist changes to PETSc (like mesh callback updates coordinates)
+            # Prevent recursion by checking if we're already in a callback
+            if hasattr(self, "_in_callback") and self._in_callback:
+                return
+            
+            # Set recursion guard
+            self._in_callback = True
+            
+            try:
+                # Skip updates during mesh coordinate changes to prevent corruption
+                # Check if mesh is currently being updated
+                if hasattr(self.mesh, "_mesh_update_lock"):
+                    # Try to acquire lock without blocking - if we can't, skip update
+                    if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                        return
+                    try:
+                        # Persist changes to PETSc (like mesh callback updates coordinates)
+                        self.pack_uw_data_to_petsc(array, sync=True)
+                    finally:
+                        self.mesh._mesh_update_lock.release()
+                else:
+                    # Fallback if no lock exists
                     self.pack_uw_data_to_petsc(array, sync=True)
-                finally:
-                    self.mesh._mesh_update_lock.release()
-            else:
-                # Fallback if no lock exists
-                self.pack_uw_data_to_petsc(array, sync=True)
+            finally:
+                # Clear recursion guard
+                self._in_callback = False
 
         # Register the callback (following mesh.points pattern)
         array_obj.add_callback(variable_update_callback)
@@ -493,18 +504,29 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
             if not data_changed:
                 return
 
-            # Skip updates during mesh coordinate changes to prevent corruption
-            if hasattr(self.mesh, "_mesh_update_lock"):
-                if not self.mesh._mesh_update_lock.acquire(blocking=False):
-                    return
-                try:
-                    # Use pack_raw for flat data format
+            # Prevent recursion by checking if we're already in a callback
+            if hasattr(self, "_in_flat_callback") and self._in_flat_callback:
+                return
+            
+            # Set recursion guard
+            self._in_flat_callback = True
+            
+            try:
+                # Skip updates during mesh coordinate changes to prevent corruption
+                if hasattr(self.mesh, "_mesh_update_lock"):
+                    if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                        return
+                    try:
+                        # Use pack_raw for flat data format
+                        self.pack_raw_data_to_petsc(array, sync=True)
+                    finally:
+                        self.mesh._mesh_update_lock.release()
+                else:
+                    # Fallback if no lock exists
                     self.pack_raw_data_to_petsc(array, sync=True)
-                finally:
-                    self.mesh._mesh_update_lock.release()
-            else:
-                # Fallback if no lock exists
-                self.pack_raw_data_to_petsc(array, sync=True)
+            finally:
+                # Clear recursion guard
+                self._in_flat_callback = False
 
         # Register the callback
         array_obj.add_callback(flat_data_update_callback)
@@ -1552,27 +1574,40 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
     @uw.collective_operation
     def stats(self):
         """
-        The equivalent of mesh.stats but using the native coordinates for this variable
-        Not set up for vector variables so we just skip that for now.
+        Universal statistics method for all variable types.
 
-        Returns various norms on the mesh using the native mesh discretisation for this
-        variable. It is a wrapper on the various _gvec stats routines for the variable.
+        Returns various statistical measures appropriate for the variable type.
+        For scalars: standard statistical measures.
+        For vectors: magnitude-based statistics.
+        For tensors: Frobenius norm and invariant-based measures.
 
-          - size
-          - mean
-          - min
-          - max
-          - sum
-          - L2 norm
-          - rms
+        Returns
+        -------
+        dict
+            Dictionary containing statistical measures:
+            - 'type': Variable type ('scalar', 'vector', 'tensor')
+            - 'components': Number of components
+            - 'size': Number of elements
+            - 'mean': Mean value (scalar) or magnitude mean (vector/tensor)
+            - 'min': Minimum value (scalar) or magnitude min (vector/tensor)  
+            - 'max': Maximum value (scalar) or magnitude max (vector/tensor)
+            - 'sum': Sum of all values
+            - 'norm2': L2 norm
+            - 'rms': Root mean square
+            
+            Additional keys for vectors/tensors:
+            - 'magnitude_*': Statistics on vector magnitude
+            - 'frobenius_*': Statistics on tensor Frobenius norm (for tensors)
         
         Note: This is a COLLECTIVE operation - all MPI ranks must call it.
         """
 
-        if self.num_components > 1:
-            raise NotImplementedError(
-                "stats not available for multi-component variables"
-            )
+        if self.num_components == 1:
+            return self._scalar_stats()
+        elif self.num_components <= self.mesh.dim:
+            return self._vector_stats()
+        else:
+            return self._tensor_stats()
 
         #       This uses a private work MeshVariable and the various norms defined there but
         #       could either be simplified to just use petsc vectors, or extended to
@@ -1588,7 +1623,117 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         vnorm2 = self.norm(NormType.NORM_2)
         vrms = vnorm2 / numpy.sqrt(vsize)
 
-        return vsize, vmean, vmin, vmax, vsum, vnorm2, vrms
+        return {
+            'type': 'scalar',
+            'components': 1,
+            'size': vsize,
+            'mean': vmean,
+            'min': vmin,
+            'max': vmax,
+            'sum': vsum,
+            'norm2': vnorm2,
+            'rms': vrms
+        }
+
+    def _scalar_stats(self):
+        """Statistics for scalar variables (original implementation)."""
+        from petsc4py.PETSc import NormType
+
+        vsize = self._gvec.getSize()
+        vmean = self.mean()
+        vmax = self.max()[1]
+        vmin = self.min()[1]
+        vsum = self.sum()
+        vnorm2 = self.norm(NormType.NORM_2)
+        vrms = vnorm2 / numpy.sqrt(vsize)
+
+        return {
+            'type': 'scalar',
+            'components': 1,
+            'size': vsize,
+            'mean': vmean,
+            'min': vmin,
+            'max': vmax,
+            'sum': vsum,
+            'norm2': vnorm2,
+            'rms': vrms
+        }
+
+    def _vector_stats(self):
+        """Statistics for vector variables using magnitude."""
+        import numpy as np
+        
+        # Create temporary scalar variable for magnitude
+        magnitude_var = uw.discretisation.MeshVariable(
+            f"_temp_mag_{id(self)}", self.mesh, 1, degree=self.degree
+        )
+        
+        try:
+            # Compute magnitude: |v| = sqrt(v·v)
+            with uw.synchronised_array_update():
+                mag_squared = 0.0
+                for i in range(self.num_components):
+                    component = self.array[:, 0, i].flatten()
+                    mag_squared += component ** 2
+                magnitude_var.array[:, 0, 0] = np.sqrt(mag_squared)
+            
+            # Get scalar stats on magnitude
+            mag_stats = magnitude_var._scalar_stats()
+            
+            # Update with vector-specific info
+            mag_stats.update({
+                'type': 'vector',
+                'components': self.num_components,
+                'magnitude_mean': mag_stats['mean'],
+                'magnitude_max': mag_stats['max'],
+                'magnitude_min': mag_stats['min'],
+                'magnitude_rms': mag_stats['rms']
+            })
+            
+            return mag_stats
+            
+        finally:
+            # Cleanup temporary variable
+            if magnitude_var.name in self.mesh.vars:
+                del self.mesh.vars[magnitude_var.name]
+
+    def _tensor_stats(self):
+        """Statistics for tensor variables using Frobenius norm."""
+        import numpy as np
+        
+        # Create temporary scalar variable for Frobenius norm
+        frobenius_var = uw.discretisation.MeshVariable(
+            f"_temp_frob_{id(self)}", self.mesh, 1, degree=self.degree
+        )
+        
+        try:
+            # Compute Frobenius norm: ||A||_F = sqrt(sum(A_ij^2))
+            with uw.synchronised_array_update():
+                sum_squares = 0.0
+                for i in range(self.num_components):
+                    component = self.array[:, 0, i].flatten()
+                    sum_squares += component ** 2
+                frobenius_var.array[:, 0, 0] = np.sqrt(sum_squares)
+            
+            # Get scalar stats on Frobenius norm
+            frob_stats = frobenius_var._scalar_stats()
+            
+            # Update with tensor-specific info
+            frob_stats.update({
+                'type': 'tensor',
+                'components': self.num_components,
+                'frobenius_mean': frob_stats['mean'],
+                'frobenius_max': frob_stats['max'], 
+                'frobenius_min': frob_stats['min'],
+                'frobenius_rms': frob_stats['rms']
+            })
+            
+            return frob_stats
+            
+        finally:
+            # Cleanup temporary variable
+            if frobenius_var.name in self.mesh.vars:
+                del self.mesh.vars[frobenius_var.name]
 
     @property
     def coords(self) -> numpy.ndarray:

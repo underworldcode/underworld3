@@ -25,11 +25,13 @@ book:
         - beginner/tutorials/2-Variables.ipynb
         - beginner/tutorials/3-Symbolic_Forms.ipynb
         - beginner/tutorials/4-Solvers-i-Poisson.ipynb
-        - beginner/tutorials/5-Solvers-ii-Stokes.ipynb
-        - beginner/tutorials/6a-Timestepping-simple.ipynb
-        - beginner/tutorials/6b-Timestepping-coupled.ipynb
-        - beginner/tutorials/7-Unsteady_Flow.ipynb
-        - beginner/tutorials/8-Particle_Swarms.ipynb
+        - beginner/tutorials/5-Solvers-i-Poisson-Validation.ipynb
+        - beginner/tutorials/6-Solvers-ii-Stokes.ipynb
+        - beginner/tutorials/7-Timestepping-simple.ipynb
+        - beginner/tutorials/8-Timestepping-coupled.ipynb
+        - beginner/tutorials/9-Unsteady_Flow.ipynb
+        - beginner/tutorials/10-Particle_Swarms.ipynb
+        - beginner/tutorials/11-Multi-Material_SolCx.ipynb
         - beginner/quickstart.qmd
         
     - part: "Advanced Usage"

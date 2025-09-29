@@ -132,6 +132,7 @@ import underworld3.utilities
 import underworld3.model
 import underworld3.parameters
 import underworld3.materials
+
 from .model import Model, create_model, get_default_model, reset_default_model
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
@@ -145,14 +146,49 @@ import underworld3.scaling
 import underworld3.visualisation
 import numpy as _np
 
+# Units support
+from .utilities import (
+    UnitAwareMixin,
+    UnitAwareMathematicalMixin,
+    UnitsBackend,
+    PintBackend,
+    SymPyBackend,
+    make_units_aware,
+)
+
+# High-level units utilities
+from . import units
+from .units import (
+    check_units_consistency,
+    get_dimensionality,
+    units_of,
+    non_dimensionalise,
+    dimensionalise,
+    create_quantity,
+    convert_units,
+    is_dimensionless,
+    has_units,
+    same_units,
+    validate_expression_units,
+    enforce_units_consistency,
+)
+
+# Enhanced variables with units and mathematical operations
+from .enhanced_variables import (
+    EnhancedMeshVariable,
+    EnhancedSwarmVariable,
+    create_enhanced_mesh_variable,
+    create_enhanced_swarm_variable,
+)
+
 
 def synchronised_array_update(context_info="user operations"):
     """
     Context manager for synchronised array updates across multiple variables.
-    
+
     Batches multiple array assignments together and defers PETSc synchronization
     until the end of the context, ensuring atomic updates and better performance.
-    
+
     Example
     -------
     with uw.synchronised_array_update():
@@ -160,12 +196,12 @@ def synchronised_array_update(context_info="user operations"):
         pressure.array[...] = new_pressure_values
         temperature.array[...] = new_temperature_values
     # All arrays are synchronized here
-    
+
     Parameters
     ----------
     context_info : str
         Optional description of the update context for debugging
-        
+
     Returns
     -------
     Context manager for delayed callback execution
@@ -227,6 +263,7 @@ if underworld3.mpi.rank == 0:
         _sendData()
     except:  # continue quietly if something above failed
         pass
+
 ####### END User telemetry metrics ########
 
 # Info for JIT modules.
