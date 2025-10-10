@@ -108,89 +108,15 @@ class PintBackend(UnitsBackend):
         """Get dimensionality as dict."""
         return quantity.dimensionality
 
+    def convert_units(self, quantity: 'pint.Quantity', target_units: str) -> 'pint.Quantity':
+        """Convert quantity to target units."""
+        if isinstance(target_units, str):
+            target_units = self.ureg(target_units)
+        return quantity.to(target_units)
 
-class SymPyBackend(UnitsBackend):
-    """SymPy-based units backend implementation."""
-    
-    def __init__(self):
-        try:
-            import sympy
-            import sympy.physics.units as units
-            self.sympy = sympy
-            self.units = units
-            # Set up basic unit system based on Ben Knight's approach
-            self._setup_unit_system()
-        except ImportError:
-            raise ImportError("SymPy is required for SymPyBackend.")
-    
-    def _setup_unit_system(self):
-        """Set up SymPy units system."""
-        # Following the pattern from pint_sympy_backwards_check.ipynb
-        self.base_units = {
-            'length': self.units.meter,
-            'mass': self.units.kilogram, 
-            'time': self.units.second,
-            'temperature': self.units.kelvin,
-            'amount': self.units.mole
-        }
-        
-        # Scaling coefficients (can be modified by user)
-        self.scaling_coefficients = {
-            'length': 1.0 * self.units.meter,
-            'mass': 1.0 * self.units.kilogram,
-            'time': 1.0 * self.units.year,  # Default to geological time
-            'temperature': 1.0 * self.units.kelvin,
-            'amount': 1.0 * self.units.mole
-        }
-    
-    def create_quantity(self, value: Any, units: Any) -> 'sympy.Expr':
-        """Create a SymPy quantity."""
-        if isinstance(units, str):
-            # Parse string to SymPy unit
-            units = getattr(self.units, units, self.sympy.Symbol(units))
-        return value * units
-    
-    def get_magnitude(self, quantity: 'sympy.Expr') -> Any:
-        """Extract magnitude from SymPy quantity."""
-        # For SymPy expressions, this requires more complex analysis
-        if quantity.is_number:
-            return float(quantity)
-        # For unit expressions, we need to separate the coefficient
-        return quantity.as_coeff_Mul()[0]
-    
-    def get_units(self, quantity: 'sympy.Expr') -> 'sympy.Expr':
-        """Extract units from SymPy quantity."""
-        if quantity.is_number:
-            return self.sympy.S.One  # Dimensionless
-        # Get the unit part
-        coeff, unit_part = quantity.as_coeff_Mul()
-        return unit_part
-    
-    def non_dimensionalise(self, quantity: 'sympy.Expr') -> float:
-        """Non-dimensionalise using SymPy dimensional analysis."""
-        # This would implement the dimensional analysis using SymPy
-        # Similar to the approach in Ben Knight's notebook
-        # For now, return a placeholder
-        warnings.warn("SymPy non_dimensionalise not fully implemented")
-        return float(self.get_magnitude(quantity))
-    
-    def dimensionalise(self, value: float, units: Any) -> 'sympy.Expr':
-        """Dimensionalise value with SymPy units."""
-        return self.create_quantity(value, units)
-    
-    def check_dimensionality(self, quantity1: 'sympy.Expr', quantity2: 'sympy.Expr') -> bool:
-        """Check dimensional compatibility using SymPy."""
-        try:
-            # Use SymPy's dimensional analysis
-            dim1 = self.units.Dimension(self.get_units(quantity1))
-            dim2 = self.units.Dimension(self.get_units(quantity2))
-            return dim1 == dim2
-        except:
-            return False
-    
-    def get_dimensionality(self, quantity: 'sympy.Expr') -> 'sympy.Expr':
-        """Get dimensionality as SymPy expression."""
-        return self.units.Dimension(self.get_units(quantity))
+
+# SymPy backend removed - use Pint-native approach instead
+# SymPy is still used for symbolic mathematics, just not for units
 
 
 class UnitAwareMixin:
@@ -220,11 +146,11 @@ class UnitAwareMixin:
         v_scaled = velocity.non_dimensional_value  # For solvers
     """
     
-    def __init__(self, *args, units: Optional[Union[str, Any]] = None, 
+    def __init__(self, *args, units: Optional[Union[str, Any]] = None,
                  units_backend: Optional[Union[str, UnitsBackend]] = None, **kwargs):
         """
         Initialize with optional units support.
-        
+
         Args:
             *args: Passed to parent class
             units: Units for this variable (string or units object)
@@ -233,12 +159,13 @@ class UnitAwareMixin:
         """
         # Call parent constructor
         super().__init__(*args, **kwargs)
-        
+
         # Set up units if provided
         self._units = None
         self._units_backend = None
         self._dimensional_quantity = None
-        
+        self._scale_factor = None
+
         if units is not None:
             self.set_units(units, units_backend)
     
@@ -258,10 +185,8 @@ class UnitAwareMixin:
         if isinstance(backend, str):
             if backend.lower() == 'pint':
                 self._units_backend = PintBackend()
-            elif backend.lower() == 'sympy':
-                self._units_backend = SymPyBackend()
             else:
-                raise ValueError(f"Unknown backend: {backend}")
+                raise ValueError(f"Unknown backend: {backend}. Only 'pint' is supported.")
         else:
             self._units_backend = backend
         
@@ -269,6 +194,9 @@ class UnitAwareMixin:
         self._units = units
         # For now, create with magnitude 1 to represent the units
         self._dimensional_quantity = self._units_backend.create_quantity(1.0, units)
+
+        # Calculate SymPy-friendly scale factor for compilation
+        self._calculate_scale_factor()
     
     @property
     def units(self) -> Optional[Any]:
@@ -284,10 +212,24 @@ class UnitAwareMixin:
             return self._units_backend.get_dimensionality(self._dimensional_quantity)
         return None
     
-    @property 
+    @property
     def has_units(self) -> bool:
         """Check if this variable has units."""
         return self._dimensional_quantity is not None
+
+    @property
+    def scale_factor(self) -> Optional[Any]:
+        """
+        Get the SymPy-friendly scale factor for this variable.
+
+        The scale factor is used during unwrap/compilation to automatically scale
+        variables to appropriate numerical ranges. It's designed to be powers-of-ten
+        and SymPy-compatible for symbolic cancellation.
+
+        Returns:
+            SymPy expression representing the scale factor, or None if no units
+        """
+        return self._scale_factor
     
     def create_quantity(self, value: Any) -> Any:
         """
@@ -396,6 +338,112 @@ class UnitAwareMixin:
             return f"{type(self).__name__}(no units)"
         
         return f"{type(self).__name__}(units: {self.units})"
+
+    def _calculate_scale_factor(self):
+        """
+        Calculate SymPy-friendly scale factor based on units.
+
+        This creates powers-of-ten scale factors that can be used during
+        compilation to automatically scale variables. The approach:
+
+        1. Extract the SI magnitude of the units
+        2. Calculate appropriate power-of-ten scaling
+        3. Create SymPy expression using sympify for symbolic compatibility
+
+        Examples:
+            - Units of meters → scale_factor might be sympify(1) * 10**0 = 1
+            - Units of kilometers → scale_factor might be sympify(1) * 10**3
+            - Units of GPa → scale_factor might be sympify(1) * 10**9
+        """
+        if not self.has_units:
+            self._scale_factor = None
+            return
+
+        try:
+            # Import SymPy for creating scale factors
+            import sympy as sp
+
+            # Get the magnitude of 1 unit in SI base units
+            unit_quantity = self._dimensional_quantity
+            magnitude = self._units_backend.get_magnitude(unit_quantity)
+
+            if isinstance(self._units_backend, PintBackend):
+                # For Pint backend, convert to base units to get SI magnitude
+                try:
+                    si_magnitude = float(unit_quantity.to_base_units().magnitude)
+                except:
+                    si_magnitude = 1.0
+            else:
+                si_magnitude = 1.0
+
+            # Calculate power-of-ten scale factor
+            # Find the appropriate power of 10 to make values O(1)
+            if si_magnitude == 0:
+                power_of_ten = 0
+            else:
+                import math
+                log_magnitude = math.log10(abs(si_magnitude))
+                # Round to nearest integer for clean powers of 10
+                power_of_ten = round(log_magnitude)
+
+            # Create SymPy-friendly scale factor
+            # Use sympify(1) * 10**power instead of just 10**power for symbolic friendliness
+            if power_of_ten == 0:
+                self._scale_factor = sp.sympify(1)
+            else:
+                self._scale_factor = sp.sympify(1) * (10 ** power_of_ten)
+
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Could not calculate scale factor for units {self.units}: {e}")
+            # Default to no scaling
+            try:
+                import sympy as sp
+                self._scale_factor = sp.sympify(1)
+            except:
+                self._scale_factor = 1
+
+    def _set_reference_scaling(self, reference_value: float):
+        """
+        Set reference scaling based on a typical value for this variable.
+
+        INTERNAL METHOD: Users should use model.set_reference_quantities() instead.
+
+        This allows the system to specify that, for example, "velocities in this problem
+        are typically 5 cm/year" to get appropriate scaling.
+
+        Args:
+            reference_value: Typical magnitude for this variable in its current units
+
+        Note:
+            This is an internal method. The public API is model.set_reference_quantities()
+        """
+        if not self.has_units:
+            raise ValueError("Cannot set reference scaling for variable without units")
+
+        try:
+            import sympy as sp
+            import math
+
+            # Calculate scale factor to make reference_value ≈ O(1)
+            if reference_value == 0:
+                power_of_ten = 0
+            else:
+                log_magnitude = math.log10(abs(reference_value))
+                # Choose power to make reference_value close to 1
+                power_of_ten = -round(log_magnitude)
+
+            # Create SymPy-friendly scale factor
+            if power_of_ten == 0:
+                self._scale_factor = sp.sympify(1)
+            else:
+                self._scale_factor = sp.sympify(1) * (10 ** power_of_ten)
+
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Could not set reference scaling: {e}")
+            # Fall back to default calculation
+            self._calculate_scale_factor()
     
     # Mathematical operations that preserve units
     def __mul__(self, other):
@@ -423,14 +471,17 @@ class UnitAwareMixin:
     def __add__(self, other):
         """
         Addition with units compatibility checking.
-        
+
         Only allows addition of compatible units.
         """
+        # Check for mixing constants with dimensional quantities
+        self._check_dimensional_compatibility_for_addition(other)
+
         # Check units compatibility for addition
         if hasattr(other, 'has_units') and self.has_units and other.has_units:
             if not self.check_units_compatibility(other):
                 raise ValueError(f"Cannot add incompatible units: {self.units} + {other.units}")
-        
+
         # Check if we also have MathematicalMixin
         if hasattr(super(), '__add__'):
             return super().__add__(other)
@@ -440,19 +491,58 @@ class UnitAwareMixin:
     def __sub__(self, other):
         """
         Subtraction with units compatibility checking.
-        
+
         Only allows subtraction of compatible units.
         """
+        # Check for mixing constants with dimensional quantities
+        self._check_dimensional_compatibility_for_addition(other)
+
         # Check units compatibility for subtraction
         if hasattr(other, 'has_units') and self.has_units and other.has_units:
             if not self.check_units_compatibility(other):
                 raise ValueError(f"Cannot subtract incompatible units: {self.units} - {other.units}")
-        
+
         # Check if we also have MathematicalMixin
         if hasattr(super(), '__sub__'):
             return super().__sub__(other)
         else:
             return self.data - other
+
+    def _check_dimensional_compatibility_for_addition(self, other):
+        """
+        Check for mixing constants with dimensional quantities in addition/subtraction.
+
+        Following Pint's approach, this raises an error when trying to add/subtract
+        a dimensional quantity and a dimensionless constant, which is usually a user error.
+
+        Args:
+            other: The other operand in the addition/subtraction
+
+        Raises:
+            ValueError: If mixing dimensional and dimensionless quantities inappropriately
+        """
+        # Check if we're mixing dimensional and dimensionless quantities
+        if self.has_units and isinstance(other, (int, float, complex)):
+            raise ValueError(
+                f"Cannot add/subtract dimensionless number {other} to dimensional quantity with units {self.units}. "
+                f"If you meant to add a quantity with the same units, use: "
+                f"variable + {other} * uw.scaling.units.{self.units}"
+            )
+
+        if not self.has_units and hasattr(other, 'has_units') and other.has_units:
+            # Allow UWQuantity objects in symbolic math contexts (they have _sympify_)
+            from ..function.quantities import UWQuantity
+            if isinstance(other, UWQuantity) and hasattr(super(), '__sub__'):
+                # This is a symbolic math context - UWQuantity will be converted to scalar
+                pass
+            else:
+                raise ValueError(
+                    f"Cannot add/subtract dimensional quantity with units {other.units} to dimensionless quantity. "
+                    f"If you meant to add dimensionless values, convert the dimensional quantity first."
+                )
+
+        # Allow addition/subtraction of two dimensionless quantities
+        # Allow addition/subtraction of compatible dimensional quantities (checked elsewhere)
 
 
 class UnitAwareMathematicalMixin(UnitAwareMixin):

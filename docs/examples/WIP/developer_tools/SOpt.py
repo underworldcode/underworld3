@@ -746,7 +746,7 @@ misfit
 stokes_adjoint.view()
 
 # %%
-J.unwrap()
+uw.unwrap(J)
 
 # %%
 tstep = 0

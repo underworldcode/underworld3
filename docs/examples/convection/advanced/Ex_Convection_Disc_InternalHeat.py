@@ -330,7 +330,7 @@ for step in range(0, max_steps ): #
     Tgrad_stats = kappa.stats()
     dt_estimate =  adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
 
-    uw.pprint(0, "Timestep {}, dt {} ({})".format(ts, delta_t, dt_estimate), flush=True)
+    uw.pprint("Timestep {}, dt {} ({})".format(ts, delta_t, dt_estimate), flush=True)
         # print(tstats)
         # print("-----")
         # print(Tgrad_stats)

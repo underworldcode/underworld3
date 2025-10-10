@@ -304,7 +304,7 @@ for step in range(0, 10):
         idx = np.where(remeshed.data == 1)[0]
         v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx])
 
-    uw.pprint(0, "Timestep {}, dt {}, deltaV {}".format(ts, delta_t, deltaV))
+    uw.pprint("Timestep {}, dt {}, deltaV {}".format(ts, delta_t, deltaV))
 
     if ts % 1 == 0:
         # nodal_vorticity_from_v.solve()

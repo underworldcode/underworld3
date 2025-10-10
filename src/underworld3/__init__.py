@@ -124,6 +124,7 @@ import underworld3.coordinates
 import underworld3.discretisation
 import underworld3.meshing
 import underworld3.constitutive_models
+import underworld3.function
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
@@ -132,11 +133,13 @@ import underworld3.utilities
 import underworld3.model
 import underworld3.parameters
 import underworld3.materials
+import underworld3.discretisation.persistence
 
-from .model import Model, create_model, get_default_model, reset_default_model
+from .model import Model, create_model, get_default_model, reset_default_model, ThermalConvectionConfig, create_thermal_convection_model
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
+from .function import quantity
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
 # import underworld3.kdtree
@@ -152,12 +155,11 @@ from .utilities import (
     UnitAwareMathematicalMixin,
     UnitsBackend,
     PintBackend,
-    SymPyBackend,
     make_units_aware,
 )
 
 # High-level units utilities
-from . import units
+from . import units as _units_module  # Keep module for internal use
 from .units import (
     check_units_consistency,
     get_dimensionality,
@@ -173,13 +175,137 @@ from .units import (
     enforce_units_consistency,
 )
 
-# Enhanced variables with units and mathematical operations
-from .enhanced_variables import (
-    EnhancedMeshVariable,
-    EnhancedSwarmVariable,
+# Make units registry easily accessible (remove scaling terminology)
+# Users can now do uw.units.K, uw.units.Pa, etc. instead of uw.scaling.units.K
+from .scaling import units
+
+# Add view() method to units registry following established pattern
+def _units_view():
+    """Display units registry information following the established view() pattern."""
+    try:
+        from IPython.display import Markdown, display
+
+        content = f"""## Units Registry
+
+The Underworld3 units registry provides access to physical units for dimensional analysis.
+
+### Common Units Examples:
+- **Temperature**: `uw.units.K`, `uw.units.celsius`, `uw.units.degC`
+- **Pressure**: `uw.units.Pa`, `uw.units.bar`, `uw.units.atm`
+- **Length**: `uw.units.m`, `uw.units.cm`, `uw.units.km`
+- **Time**: `uw.units.s`, `uw.units.year`, `uw.units.Ma` (million years)
+- **Viscosity**: `uw.units.Pa * uw.units.s`
+- **Velocity**: `uw.units.cm / uw.units.year`
+
+### Usage:
+```python
+# Create quantities
+temperature = 1500 * uw.units.K
+viscosity = 1e21 * uw.units.Pa * uw.units.s
+velocity = 5 * uw.units.cm / uw.units.year
+
+# Set model reference quantities
+model.set_reference_quantities(
+    mantle_temperature=temperature,
+    mantle_viscosity=viscosity
+)
+```
+
+**Total units available**: {len([attr for attr in dir(units) if not attr.startswith('_')])}
+"""
+        display(Markdown(content))
+    except ImportError:
+        # Fallback for non-Jupyter environments
+        print("Underworld3 Units Registry")
+        print("=" * 30)
+        print(f"Total units available: {len([attr for attr in dir(units) if not attr.startswith('_')])}")
+        print("\nCommon units:")
+        print("  Temperature: uw.units.K, uw.units.celsius")
+        print("  Pressure: uw.units.Pa, uw.units.bar")
+        print("  Length: uw.units.m, uw.units.cm, uw.units.km")
+        print("  Time: uw.units.s, uw.units.year")
+        print("\nUsage:")
+        print("  temperature = 1500 * uw.units.K")
+        print("  viscosity = 1e21 * uw.units.Pa * uw.units.s")
+
+# Attach view method to units registry
+units.view = _units_view
+
+# Scale factor context manager
+from contextlib import contextmanager
+
+# Global flag for scaled symbols
+_scaled_symbols_active = False
+
+@contextmanager
+def _apply_scaling():
+    """
+    Internal context manager that enables automatic scaling during unwrap operations.
+
+    This is an implementation detail. Users should use uw.unwrap(expr, apply_scaling=True) instead.
+    """
+    global _scaled_symbols_active
+    old_value = _scaled_symbols_active
+    _scaled_symbols_active = True
+    try:
+        yield
+    finally:
+        _scaled_symbols_active = old_value
+
+def _is_scaling_active():
+    """Check if scaled symbols context is active."""
+    return _scaled_symbols_active
+
+# Backward compatibility aliases (deprecated)
+scaled_symbols = _apply_scaling  # For backward compatibility - deprecated, use uw.unwrap(expr, apply_scaling=True)
+
+def unwrap(fn, keep_constants=True, return_self=True, apply_scaling=False):
+    """
+    Unwrap expressions with optional automatic scaling.
+
+    Parameters:
+    -----------
+    fn : expression
+        The expression to unwrap
+    keep_constants : bool, default=True
+        Whether to keep constants in the unwrapped expression
+    return_self : bool, default=True
+        Whether to return self if no unwrapping is needed
+    apply_scaling : bool, default=False
+        Whether to automatically apply scale factors to variables with units
+
+    Example:
+        model = uw.Model()
+        model.set_reference_quantities(mantle_temperature=1500*uw.scaling.units.K)
+
+        temperature = uw.discretisation.MeshVariable("T", mesh, 1, units="K")
+        expr = uw.function.expression("heat", 2 * temperature.sym, "heat equation")
+
+        # Normal unwrap
+        result = uw.unwrap(expr)
+
+        # Unwrap with automatic scaling
+        scaled_result = uw.unwrap(expr, apply_scaling=True)
+    """
+    from .function.expressions import unwrap as _unwrap
+
+    if apply_scaling:
+        with _apply_scaling():
+            return _unwrap(fn, keep_constants, return_self)
+    else:
+        return _unwrap(fn, keep_constants, return_self)
+
+
+# Enhanced variables with units and mathematical operations (internal use only)
+from .discretisation.enhanced_variables import (
+    # EnhancedMeshVariable,  # Hidden - use uw.discretisation.MeshVariable
+    # EnhancedSwarmVariable,  # Hidden - use uw.swarm.SwarmVariable
     create_enhanced_mesh_variable,
     create_enhanced_swarm_variable,
 )
+
+# Make MeshVariable available at top level (this is the enhanced version)
+from .discretisation import MeshVariable
 
 
 def synchronised_array_update(context_info="user operations"):
@@ -299,3 +425,7 @@ __pdoc__["cython"] = False
 # child class modifications
 
 __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
+
+# Note: SymPy converter registration approach doesn't work reliably in strict mode
+# The better approach is to ensure UWexpression arithmetic operations return SymPy objects
+# This is handled by the __rmul__, __radd__ etc. methods in the mathematical mixin

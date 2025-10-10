@@ -317,7 +317,7 @@ for step in range(0, 51):
     stats = t_soln.stats()
     stats_star = adv_diff.DuDt.psi_star[0].stats()
     
-    uw.pprint(0, "Timestep {}, dt {}".format(ts, delta_t))
+    uw.pprint("Timestep {}, dt {}".format(ts, delta_t))
         print(stats)
         print(stats_star)
 

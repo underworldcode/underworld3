@@ -70,7 +70,7 @@ rho = uw.options.getReal("rho", default=1000)
 
 outdir="output"
 
-uw.pprint(0, f"restart: {restart_step}")
+uw.pprint(f"restart: {restart_step}")
     print(f"resolution: {resolution}")
 # -
 
@@ -212,7 +212,7 @@ navier_stokes.solve(timestep=0.1, verbose=False, evalf=True, order=1)
 navier_stokes.estimate_dt()
 
 if restart_step > 0:
-    uw.pprint(0, f"Reading step {restart_step}")
+    uw.pprint(f"Reading step {restart_step}")
 
     passive_swarm = uw.swarm.Swarm(mesh=meshball)
     passive_swarm.read_timestep(
@@ -384,7 +384,7 @@ for step in range(0, maxsteps+1):  # 250
 
     nodal_vorticity_from_v.solve()
 
-    uw.pprint(0, "Timestep {}, dt {}".format(ts, delta_t), flush=True)
+    uw.pprint("Timestep {}, dt {}".format(ts, delta_t), flush=True)
 
     if ts % 5 == 0:
         plot_V_mesh(filename=f"{outdir}/{expt_name}_step_{ts}")

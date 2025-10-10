@@ -14,7 +14,8 @@ import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
-from underworld3.utilities.mathematical_mixin import MathematicalMixin
+# Mathematical operations moved to PersistentMeshVariable wrapper
+# from underworld3.utilities.mathematical_mixin import MathematicalMixin
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 
@@ -42,15 +43,7 @@ def extend_enum(inherited):
     return wrapper
 
 
-def MeshVariable(
-    varname: Union[str, list],
-    mesh: "Mesh",
-    num_components: Union[int, tuple] = None,
-    vtype: Optional["uw.VarType"] = None,
-    degree: int = 1,
-    continuous: bool = True,
-    varsymbol: Union[str, list] = None,
-):
+class _BaseMeshVariable(Stateful, uw_object):
     """
     The MeshVariable class generates a variable supported by a finite element mesh and the
     underlying sympy representation that makes it possible to construct expressions that
@@ -79,146 +72,105 @@ def MeshVariable(
 
     """
 
-    if isinstance(varname, list):
-        name = varname[0] + R"+ \dots"
-    else:
-        name = varname
-
-    ## Smash if already defined (we need to check this BEFORE the old meshVariable object is destroyed)
-
-    import re
-
-    clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
-
-    if clean_name in mesh.vars.keys():
-        print(f"Variable with name {name} already exists on the mesh - Skipping.")
-        return mesh.vars[clean_name]
-
-    if mesh._dm_initialized:
-        ## Before adding a new variable, we first snapshot the data from the mesh.dm
-        ## (if not accessed, then this will not be necessary and may break)
-
-        mesh.update_lvec()
-
-        old_gvec = mesh.dm.getGlobalVec()
-        mesh.dm.localToGlobal(mesh._lvec, old_gvec, addv=False)
-
-    new_meshVariable = _MeshVariable(
-        name, mesh, num_components, vtype, degree, continuous, varsymbol
-    )
-
-    if mesh._dm_initialized:
-        ## Recreate the mesh variable dm and restore the data
-
-        dm0 = mesh.dm
-        dm1 = mesh.dm.clone()
-        dm0.copyFields(dm1)
-        dm1.createDS()
-
-        mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
-
-        if mesh._lvec is not None:
-            mesh._lvec.destroy()
-        mesh._lvec = dm1.createLocalVec()
-        new_gvec = dm1.getGlobalVec()
-        new_gvec_sub = new_gvec.getSubVector(mdm_is)
-
-        # Copy the array data and push to gvec
-        new_gvec_sub.array[...] = old_gvec.array[...]
-        new_gvec.restoreSubVector(mdm_is, new_gvec_sub)
-
-        # Copy the data to mesh._lvec and delete gvec
-        dm1.globalToLocal(new_gvec, mesh._lvec)
-
-        dm1.restoreGlobalVec(new_gvec)
-        dm0.restoreGlobalVec(old_gvec)
-
-        # destroy old dm
-        dm0.destroy()
-
-        # Set new dm on mesh
-        mesh.dm = dm1
-        mesh.dm_hierarchy[-1] = dm1
-
-    return new_meshVariable
-
-
-class _MeshVariable(MathematicalMixin, Stateful, uw_object):
-    """
-    The MeshVariable class generates a variable supported by a finite element mesh and the
-    underlying sympy representation that makes it possible to construct expressions that
-    depend on the values of the MeshVariable.
-
-    To set / read nodal values, use the numpy interface via the 'data' property.
-
-    Parameters
-    ----------
-    varname :
-        A text name for this variable. Use an R-string if a latex-expression is used
-    mesh :
-        The supporting underworld mesh.
-    num_components :
-        The number of components this variable has.
-        For example, scalars will have `num_components=1`,
-        while a 2d vector would have `num_components=2`.
-    vtype :
-        Optional. The underworld variable type for this variable.
-        If not defined it will be inferred from `num_components`
-        if possible.
-    degree :
-        The polynomial degree for this variable.
-    varsymbol:
-        Over-ride the varname with a symbolic form for printing etc (latex). Should be an R-string.
-
-    """
-
-    @timing.routine_timer_decorator
-    def __init__(
-        self,
+    def __new__(
+        cls,
         varname: Union[str, list],
-        mesh: "underworld.mesh.Mesh",
-        size: Union[int, tuple],
-        vtype: Optional["underworld.VarType"] = None,
+        mesh: "Mesh",
+        num_components: Union[int, tuple] = None,
+        vtype: Optional["uw.VarType"] = None,
         degree: int = 1,
         continuous: bool = True,
         varsymbol: Union[str, list] = None,
+        _register: bool = True,
+        units: Optional[str] = None,
+        units_backend: Optional[str] = None,
     ):
         """
-        The MeshVariable class generates a variable supported by a finite element mesh and the
-        underlying sympy representation that makes it possible to construct expressions that
-        depend on the values of the MeshVariable.
+        Create or return existing MeshVariable instance.
 
-        To set / read nodal values, use the numpy interface via the 'data' property.
-
-        Parameters
-        ----------
-        varname :
-            A text name for this variable. Use an R-string if a latex-expression is used
-        mesh :
-            The supporting underworld mesh.
-        num_components :
-            The number of components this variable has.
-            For example, scalars will have `num_components=1`,
-            while a 2d vector would have `num_components=2`.
-        vtype :
-            Optional. The underworld variable type for this variable.
-            If not defined it will be inferred from `num_components`
-            if possible.
-        degree :
-            The polynomial degree for this variable.
-        continuous:
-            True for continuous element discretisation across element boundaries.
-            False for discontinuous values across element boundaries.
-        varsymbol :
-            Over-ride the varname with a symbolic form for printing etc (latex). Should be an R-string.
+        Handles object uniqueness and mesh DM state management.
         """
+        if isinstance(varname, list):
+            name = varname[0] + R"+ \dots"
+        else:
+            name = varname
 
+        ## Check if already defined (return existing object)
+        import re
+        clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
+
+        if clean_name in mesh.vars.keys():
+            print(f"Variable with name {name} already exists on the mesh - Skipping.")
+            return mesh.vars[clean_name]
+
+        # Handle mesh DM state snapshot if needed
+        old_gvec = None
+        if mesh._dm_initialized:
+            ## Before adding a new variable, we first snapshot the data from the mesh.dm
+            ## (if not accessed, then this will not be necessary and may break)
+
+            mesh.update_lvec()
+
+            old_gvec = mesh.dm.getGlobalVec()
+            mesh.dm.localToGlobal(mesh._lvec, old_gvec, addv=False)
+
+        # Create new instance
+        obj = super().__new__(cls)
+
+        # Store parameters for __init__
+        obj._init_params = {
+            'varname': name,
+            'mesh': mesh,
+            'num_components': num_components,
+            'vtype': vtype,
+            'degree': degree,
+            'continuous': continuous,
+            'varsymbol': varsymbol,
+            'old_gvec': old_gvec,
+            '_register': _register,
+            'units': units,
+            'units_backend': units_backend
+        }
+
+        return obj
+
+    @timing.routine_timer_decorator
+    def __init__(self, varname=None, mesh=None, num_components=None, vtype=None,
+                 degree=1, continuous=True, varsymbol=None, _register=True,
+                 units=None, units_backend=None):
+        """
+        Initialize MeshVariable (only called for NEW objects).
+
+        Retrieves initialization parameters from __new__ and handles DM reconstruction.
+        """
+        # Only initialize if this is a new object (not returned existing)
+        if hasattr(self, '_initialized'):
+            return  # Already initialized
+
+        # Get parameters - either from __new__ (via _init_params) or direct arguments
+        if hasattr(self, '_init_params'):
+            # Parameters from __new__ method
+            params = self._init_params
+            varname = params['varname']
+            mesh = params['mesh']
+            num_components = params['num_components']
+            vtype = params['vtype']
+            degree = params['degree']
+            continuous = params['continuous']
+            varsymbol = params['varsymbol']
+            old_gvec = params['old_gvec']
+            _register = params['_register']
+            units = params['units']
+            units_backend = params['units_backend']
+        else:
+            # Direct initialization (should not happen with __new__ pattern, but for safety)
+            old_gvec = None
+
+        # Variable initialization logic
         import re
         import math
 
-        # if varsymbol is None and not isinstance(varname, list):
-        #     varsymbol = "{" + repr(varname)[1:-1] + "}"
-
+        # Variable naming and symbol handling
         if isinstance(varname, list):
             name = varname[0] + " ... "
             symbol = "{" + varname[0] + R"\cdots" + "}"
@@ -251,16 +203,14 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
-        # ToDo: Suggest we deprecate this and require it to be set explicitly
-        # The tensor types are hard to infer correctly
-
+        # Variable type inference
         if vtype == None:
-            if isinstance(size, int) and size == 1:
+            if isinstance(num_components, int) and num_components == 1:
                 vtype = uw.VarType.SCALAR
-            elif isinstance(size, int) and size == mesh.dim:
+            elif isinstance(num_components, int) and num_components == mesh.dim:
                 vtype = uw.VarType.VECTOR
-            elif isinstance(size, tuple):
-                if size[0] == mesh.dim and size[1] == mesh.dim:
+            elif isinstance(num_components, tuple):
+                if num_components[0] == mesh.dim and num_components[1] == mesh.dim:
                     vtype = uw.VarType.TENSOR
                 else:
                     vtype = uw.VarType.MATRIX
@@ -276,17 +226,15 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
 
         self.vtype = vtype
         self._mesh_ref = weakref.ref(mesh)
-        self.shape = size
+        self.shape = num_components
         self.degree = degree
         self.continuous = continuous
 
-        # First create the petsc FE object of the
-        # correct size / dimension to represent the
-        # unknowns when used in computations (for tensors)
-        # we will need to pack them correctly as well
-        # (e.g. T.sym.reshape(1,len(T.sym))))
-        # Symmetric tensors ... a bit more work again
+        # Store unit metadata for variable
+        self._units = units
+        self._units_backend = units_backend
 
+        # Component and shape handling
         if vtype == uw.VarType.SCALAR:
             self.shape = (1, 1)
             self.num_components = 1
@@ -377,12 +325,8 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
                         self._data_layout(i, j),
                     )(*self.mesh.r)
 
-        # This allows us to define a __getitem__ method
-        # to return a view for a given component when
-        # the access manager is active
-
+        # Set up data container
         from collections import namedtuple
-
         MeshVariable_ij = namedtuple("MeshVariable_ij", ["data", "sym"])
 
         for i in range(0, self.shape[0]):
@@ -397,15 +341,61 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
 
-        # Setup public view of data - using NDArray_With_Callback (following mesh.points pattern)
-        # Use lazy initialization to avoid calling unpack during constructor
+        # Setup public view of data - using NDArray_With_Callback
         self._array_cache = None  # Will be created lazily when first accessed
         self._data_cache = None  # Will be created lazily when first accessed
-        
-        # Register with default model for orchestration
-        uw.get_default_model()._register_variable(self.name, self)
+
+        # Register with default model for orchestration (only if _register=True)
+        if _register:
+            uw.get_default_model()._register_variable(self.name, self)
+
+        # Handle DM reconstruction if needed
+        if old_gvec is not None:
+            ## Recreate the mesh variable dm and restore the data
+            dm0 = mesh.dm
+            dm1 = mesh.dm.clone()
+            dm0.copyFields(dm1)
+            dm1.createDS()
+
+            mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
+
+            if mesh._lvec is not None:
+                mesh._lvec.destroy()
+            mesh._lvec = dm1.createLocalVec()
+            new_gvec = dm1.getGlobalVec()
+            new_gvec_sub = new_gvec.getSubVector(mdm_is)
+
+            # Copy the array data and push to gvec
+            new_gvec_sub.array[...] = old_gvec.array[...]
+            new_gvec.restoreSubVector(mdm_is, new_gvec_sub)
+
+            # Copy the data to mesh._lvec and delete gvec
+            dm1.globalToLocal(new_gvec, mesh._lvec)
+
+            dm1.restoreGlobalVec(new_gvec)
+            dm0.restoreGlobalVec(old_gvec)
+
+            # destroy old dm
+            dm0.destroy()
+
+            # Set new dm on mesh
+            mesh.dm = dm1
+            mesh.dm_hierarchy[-1] = dm1
+
+        # Mark as initialized
+        self._initialized = True
 
         return
+
+    @property
+    def units(self):
+        """Return the units associated with this variable."""
+        return self._units
+
+    @units.setter
+    def units(self, value):
+        """Set the units for this variable."""
+        self._units = value
 
     def _create_variable_array(self, initial_data=None):
         """
@@ -860,6 +850,34 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         viewer(self._gvec)
         if name:
             self._gvec.setName(oldname)
+        viewer.destroy()
+
+        ## Add variable unit metadata to the file
+        import h5py, json
+
+        # Use preferred selective_ranks pattern for unit metadata
+        with uw.selective_ranks(0) as should_execute:
+            if should_execute:
+                f = h5py.File(filename, "a")
+
+                # Create or get metadata group
+                if "metadata" not in f:
+                    g = f.create_group("metadata")
+                else:
+                    g = f["metadata"]
+
+                # Add variable unit metadata
+                var_metadata = {
+                    "units": str(self.units) if hasattr(self, 'units') and self.units else None,
+                    "dimensionality": str(self.dimensionality) if hasattr(self, 'dimensionality') else None,
+                    "units_backend": type(self._units_backend).__name__ if hasattr(self, '_units_backend') else None,
+                    "num_components": self.num_components,
+                    "variable_type": str(self.vtype),
+                    "variable_name": self.name
+                }
+
+                g.attrs[f"variable_{self.clean_name}_units"] = json.dumps(var_metadata)
+                f.close()
 
         lvec = self.mesh.dm.getCoordinates()
 
@@ -926,6 +944,30 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         uw.mpi.barrier()
         viewer.destroy()
         dmfe.destroy()
+
+        ## Add variable unit metadata to standalone file
+        import h5py, json
+
+        # Use preferred selective_ranks pattern for unit metadata
+        with uw.selective_ranks(0) as should_execute:
+            if should_execute:
+                f = h5py.File(filename, "a")
+
+                # Add variable metadata to standalone file
+                var_metadata = {
+                    "units": str(self.units) if hasattr(self, 'units') and self.units else None,
+                    "dimensionality": str(self.dimensionality) if hasattr(self, 'dimensionality') else None,
+                    "units_backend": type(self._units_backend).__name__ if hasattr(self, '_units_backend') else None,
+                    "coordinate_units": str(self.mesh.coordinate_units) if hasattr(self.mesh, 'coordinate_units') else None,
+                    "mesh_type": type(self.mesh).__name__,
+                    "variable_name": self.name,
+                    "num_components": self.num_components,
+                    "variable_type": str(self.vtype)
+                }
+
+                # Store as root-level attribute for standalone files
+                f.attrs["variable_metadata"] = json.dumps(var_metadata)
+                f.close()
 
         return
 
@@ -1070,6 +1112,7 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         """
         The handle to the sympy.Matrix view of this variable
         """
+        # Note: Scaling is applied during unwrap(), not here
         return self._sym
 
     @property
@@ -1664,7 +1707,7 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
         import numpy as np
         
         # Create temporary scalar variable for magnitude
-        magnitude_var = uw.discretisation.MeshVariable(
+        magnitude_var = _BaseMeshVariable(
             f"_temp_mag_{id(self)}", self.mesh, 1, degree=self.degree
         )
         
@@ -1766,3 +1809,6 @@ class _MeshVariable(MathematicalMixin, Stateful, uw_object):
     def jacobian(self):
         ## validate if this is a vector ?
         return self.mesh.vector.jacobian(self.sym)
+
+
+# Note: EnhancedMeshVariable is imported as MeshVariable in __init__.py to avoid circular imports

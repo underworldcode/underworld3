@@ -33,6 +33,9 @@ meshStructuredQuadBox = uw.meshing.StructuredQuadBox(
     ],
 )
 def test_IndexSwarmVariable(mesh):
+    # Reset model state to avoid conflicts with other tests
+    uw.reset_default_model()
+
     Pmesh = uw.discretisation.MeshVariable(
         "P", mesh, 1, degree=ppdegree, continuous=ppcont
     )

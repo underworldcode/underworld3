@@ -597,27 +597,16 @@ class Mesh(Stateful, uw_object):
 
         ## Coordinate System
 
-        if (
-            self.CoordinateSystem.coordinate_type
-            == CoordinateSystemType.CYLINDRICAL2D_NATIVE
-            or self.CoordinateSystem.coordinate_type
-            == CoordinateSystemType.CYLINDRICAL3D_NATIVE
-        ):
+        if False:  # NATIVE coordinate systems deprecated
             self.vector = uw.maths.vector_calculus_cylindrical(
                 mesh=self,
             )
-        elif (
-            self.CoordinateSystem.coordinate_type
-            == CoordinateSystemType.SPHERICAL_NATIVE
-        ):
+        elif False:  # SPHERICAL_NATIVE deprecated
             self.vector = uw.maths.vector_calculus_spherical(
                 mesh=self,
             )  ## Not yet complete or tested
 
-        elif (
-            self.CoordinateSystem.coordinate_type
-            == CoordinateSystemType.SPHERE_SURFACE_NATIVE
-        ):
+        elif False:  # SPHERE_SURFACE_NATIVE deprecated
             self.vector = uw.maths.vector_calculus_spherical_surface2D_lonlat(
                 mesh=self,
             )
@@ -627,8 +616,9 @@ class Mesh(Stateful, uw_object):
 
         super().__init__()
         
-        # Register with default model for orchestration
-        uw.get_default_model()._register_mesh(self)
+        # Register with default model for orchestration and store reference
+        self._model = uw.get_default_model()
+        self._model._register_mesh(self)
 
     @property
     def dim(self) -> int:
@@ -667,8 +657,8 @@ class Mesh(Stateful, uw_object):
         import numpy as np
 
         if level == 0:
-            uw.pprint(0, f"\n")
-            uw.pprint(0, f"Mesh # {self.instance}: {self.name}\n")
+            uw.pprint(f"\n")
+            uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
 
             # Only if notebook and serial
             if uw.is_notebook and uw.mpi.size == 1:
@@ -678,27 +668,27 @@ class Mesh(Stateful, uw_object):
             nstart, nend = self.dm.getHeightStratum(0)
             num_cells = nend - nstart
 
-            uw.pprint(0, f"Number of cells: {num_cells}\n")
+            uw.pprint(f"Number of cells: {num_cells}\n")
 
             if len(self.vars) > 0:
-                uw.pprint(0, f"| Variable Name       | component | degree |     type        |")
-                uw.pprint(0, f"| ---------------------------------------------------------- |")
+                uw.pprint(f"| Variable Name       | component | degree |     type        |")
+                uw.pprint(f"| ---------------------------------------------------------- |")
                 for vname in self.vars.keys():
                     v = self.vars[vname]
-                    uw.pprint(0, f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
+                    uw.pprint(f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
 
-                uw.pprint(0, f"| ---------------------------------------------------------- |")
-                uw.pprint(0, "\n")
+                uw.pprint(f"| ---------------------------------------------------------- |")
+                uw.pprint("\n")
             else:
-                uw.pprint(0, f"No variables are defined on the mesh\n")
+                uw.pprint(f"No variables are defined on the mesh\n")
 
             ## Boundary information
 
             if len(self.boundaries) > 0:
-                uw.pprint(0, f"| Boundary Name            | ID    |")
-                uw.pprint(0, f"| -------------------------------- |")
+                uw.pprint(f"| Boundary Name            | ID    |")
+                uw.pprint(f"| -------------------------------- |")
             else:
-                uw.pprint(0, f"No boundary labels are defined on the mesh\n")
+                uw.pprint(f"No boundary labels are defined on the mesh\n")
 
             for bd in self.boundaries:
                 l = self.dm.getLabel(bd.name)
@@ -709,11 +699,11 @@ class Mesh(Stateful, uw_object):
 
                 ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-                uw.pprint(0, f"| {bd.name:<20}     | {bd.value:<5} |")
+                uw.pprint(f"| {bd.name:<20}     | {bd.value:<5} |")
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            uw.pprint(0, f"| {'All_Boundaries':<20}     | 1001  |")
+            uw.pprint(f"| {'All_Boundaries':<20}     | 1001  |")
 
             ## UW_Boundaries:
             l = self.dm.getLabel("UW_Boundaries")
@@ -724,10 +714,10 @@ class Mesh(Stateful, uw_object):
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            uw.pprint(0, f"| {'UW_Boundaries':<20}     | --    |")
+            uw.pprint(f"| {'UW_Boundaries':<20}     | --    |")
 
-            uw.pprint(0, f"| -------------------------------- |")
-            uw.pprint(0, "\n")
+            uw.pprint(f"| -------------------------------- |")
+            uw.pprint("\n")
 
             ## Information on the mesh DM
             # self.dm.view()
@@ -767,10 +757,10 @@ class Mesh(Stateful, uw_object):
             ## Boundary information
 
             if len(self.boundaries) > 0:
-                uw.pprint(0, f"| Boundary Name            | ID    | Min Size | Max Size |")
-                uw.pprint(0, f"| ------------------------------------------------------ |")
+                uw.pprint(f"| Boundary Name            | ID    | Min Size | Max Size |")
+                uw.pprint(f"| ------------------------------------------------------ |")
             else:
-                uw.pprint(0, f"No boundary labels are defined on the mesh\n")
+                uw.pprint(f"No boundary labels are defined on the mesh\n")
 
             for bd in self.boundaries:
                 l = self.dm.getLabel(bd.name)
@@ -781,7 +771,7 @@ class Mesh(Stateful, uw_object):
 
                 ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-                uw.pprint(0, f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |")
+                uw.pprint(f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |")
 
             # ## PETSc marked boundaries:
             # l = self.dm.getLabel("All_Boundaries")
@@ -792,7 +782,7 @@ class Mesh(Stateful, uw_object):
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            uw.pprint(0, f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |")
+            uw.pprint(f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |")
 
             ## UW_Boundaries:
             l = self.dm.getLabel("UW_Boundaries")
@@ -803,10 +793,10 @@ class Mesh(Stateful, uw_object):
 
             ii = uw.utilities.gather_data(np.array([i]), dtype="int")
 
-            uw.pprint(0, f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |")
+            uw.pprint(f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |")
 
-            uw.pprint(0, f"| ------------------------------------------------------ |")
-            uw.pprint(0, "\n")
+            uw.pprint(f"| ------------------------------------------------------ |")
+            uw.pprint("\n")
 
             ## Information on the mesh DM
             self.dm.view()
@@ -823,28 +813,28 @@ class Mesh(Stateful, uw_object):
 
         import numpy as np
 
-        uw.pprint(0, f"\n")
-        uw.pprint(0, f"Mesh # {self.instance}: {self.name}\n")
+        uw.pprint(f"\n")
+        uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
 
         if len(self.vars) > 0:
-            uw.pprint(0, f"| Variable Name       | component | degree |     type        |")
-            uw.pprint(0, f"| ---------------------------------------------------------- |")
+            uw.pprint(f"| Variable Name       | component | degree |     type        |")
+            uw.pprint(f"| ---------------------------------------------------------- |")
             for vname in self.vars.keys():
                 v = self.vars[vname]
-                uw.pprint(0, f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
+                uw.pprint(f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
 
-            uw.pprint(0, f"| ---------------------------------------------------------- |")
-            uw.pprint(0, "\n")
+            uw.pprint(f"| ---------------------------------------------------------- |")
+            uw.pprint("\n")
         else:
-            uw.pprint(0, f"No variables are defined on the mesh\n")
+            uw.pprint(f"No variables are defined on the mesh\n")
 
         ## Boundary information on each proc
 
         if len(self.boundaries) > 0:
-            uw.pprint(0, f"| Boundary Name            | ID    | Size | Proc ID      |")
-            uw.pprint(0, f"| ------------------------------------------------------ |")
+            uw.pprint(f"| Boundary Name            | ID    | Size | Proc ID      |")
+            uw.pprint(f"| ------------------------------------------------------ |")
         else:
-            uw.pprint(0, f"No boundary labels are defined on the mesh\n")
+            uw.pprint(f"No boundary labels are defined on the mesh\n")
 
         ### goes through each processor and gets the label size
         with uw.mpi.call_pattern(pattern="sequential"):
@@ -895,7 +885,7 @@ class Mesh(Stateful, uw_object):
         self.dm.createDS()
 
         if verbose:
-            uw.pprint(0, f"PETScDS - (re) initialised")
+            uw.pprint(f"PETScDS - (re) initialised")
 
         self._coord_array = {}
 
@@ -1278,11 +1268,126 @@ class Mesh(Stateful, uw_object):
 
     @property
     def points(self):
-        return self._points
+        """
+        Mesh node coordinates in physical units.
+
+        When the mesh has coordinate scaling applied (via model units),
+        this property automatically converts from internal model coordinates
+        to physical coordinates for user access.
+
+        Returns:
+            numpy.ndarray: Node coordinates in physical units
+        """
+        model_coords = self._points
+
+        # Apply scaling to convert model coordinates to physical coordinates
+        if hasattr(self.CoordinateSystem, '_scaled') and self.CoordinateSystem._scaled:
+            scale_factor = self.CoordinateSystem._length_scale
+            return model_coords * scale_factor
+        else:
+            return model_coords
 
     @points.setter
     def points(self, value):
-        self._points = value
+        """
+        Set mesh node coordinates from physical units.
+
+        When the mesh has coordinate scaling applied (via model units),
+        this property automatically converts from physical coordinates
+        to internal model coordinates for PETSc storage.
+
+        Args:
+            value (numpy.ndarray): Node coordinates in physical units
+        """
+        # Apply inverse scaling to convert physical coordinates to model coordinates
+        if hasattr(self.CoordinateSystem, '_scaled') and self.CoordinateSystem._scaled:
+            scale_factor = self.CoordinateSystem._length_scale
+            model_coords = value / scale_factor
+            self._points = model_coords
+        else:
+            self._points = value
+
+    @property
+    def physical_coordinates(self):
+        """
+        Mesh coordinates in physical units.
+
+        Returns the mesh coordinate array scaled to physical units using
+        the model's length scale. Requires the mesh to be associated with
+        a model that has reference quantities set.
+
+        Returns
+        -------
+        UWQuantity or None
+            Coordinates in physical units, or None if no model scaling available
+
+        Examples
+        --------
+        >>> model.set_reference_quantities(domain_length=1000*uw.units.km, ...)
+        >>> mesh = uw.meshing.StructuredQuadBox(...)
+        >>> physical_coords = mesh.physical_coordinates  # In kilometers
+        """
+        if not hasattr(self, '_model') or self._model is None:
+            return None
+
+        return self._model.scale_to_physical(self.points, dimension='length')
+
+    @property
+    def physical_bounds(self):
+        """
+        Mesh bounds in physical units.
+
+        Returns the mesh bounding box scaled to physical units using
+        the model's length scale.
+
+        Returns
+        -------
+        tuple of UWQuantity or None
+            (min_coords, max_coords) in physical units, or None if no model scaling
+
+        Examples
+        --------
+        >>> physical_min, physical_max = mesh.physical_bounds
+        >>> print(f"Domain: {physical_min} to {physical_max}")
+        """
+        if not hasattr(self, '_model') or self._model is None:
+            return None
+
+        import numpy as np
+        min_coords = np.min(self.points, axis=0)
+        max_coords = np.max(self.points, axis=0)
+
+        return (
+            self._model.scale_to_physical(min_coords, dimension='length'),
+            self._model.scale_to_physical(max_coords, dimension='length')
+        )
+
+    @property
+    def physical_extent(self):
+        """
+        Mesh spatial extent in physical units.
+
+        Returns the mesh size (max - min) in each dimension scaled to physical units.
+
+        Returns
+        -------
+        UWQuantity or None
+            Extent in physical units, or None if no model scaling
+
+        Examples
+        --------
+        >>> extent = mesh.physical_extent
+        >>> print(f"Domain size: {extent}")
+        """
+        if not hasattr(self, '_model') or self._model is None:
+            return None
+
+        import numpy as np
+        min_coords = np.min(self.points, axis=0)
+        max_coords = np.max(self.points, axis=0)
+        extent = max_coords - min_coords
+
+        return self._model.scale_to_physical(extent, dimension='length')
 
     @timing.routine_timer_decorator
     def write_timestep(
@@ -1495,36 +1600,37 @@ class Mesh(Stateful, uw_object):
         viewer(self.dm)
         viewer.destroy()
 
-        uw.mpi.barrier()
-
         ## Add boundary metadata to the file
 
         import h5py, json
-        import time
 
-        # time.sleep(1)
+        # Use preferred selective_ranks pattern for metadata operations
+        with uw.selective_ranks(0) as should_execute:
+            if should_execute:
+                f = h5py.File(filename, "a")
+                g = f.create_group("metadata")
 
-        # Sequential (no distributed information needs to be saved)
+                boundaries_dict = {i.name: i.value for i in self.boundaries}
+                g.attrs["boundaries"] = json.dumps(boundaries_dict)
 
-        if uw.mpi.rank == 0:
+                coordinates_type_dict = {
+                    "name": self.CoordinateSystemType.name,
+                    "value": self.CoordinateSystemType.value,
+                }
+                g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
 
-            f = h5py.File(filename, "a")
-            g = f.create_group("metadata")
+                # Add coordinate units metadata
+                if hasattr(self, 'coordinate_units'):
+                    coord_units_dict = {
+                        "coordinate_units": str(self.coordinate_units),
+                        "coordinate_dimensionality": str(self.coordinate_dimensionality) if hasattr(self, 'coordinate_dimensionality') else None,
+                        "length_scale": str(self.length_scale) if hasattr(self, 'length_scale') else None,
+                        "mesh_type": type(self).__name__,
+                        "dimension": self.dim
+                    }
+                    g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
 
-            boundaries_dict = {i.name: i.value for i in self.boundaries}
-            string_repr = json.dumps(boundaries_dict)
-            g.attrs["boundaries"] = string_repr
-
-            coordinates_type_dict = {
-                "name": self.CoordinateSystemType.name,
-                "value": self.CoordinateSystemType.value,
-            }
-            string_repr = json.dumps(coordinates_type_dict)
-            g.attrs["coordinate_system_type"] = string_repr
-
-            f.close()
-
-        uw.mpi.barrier()
+                f.close()
 
     def vtk(self, filename: str):
         """
@@ -1874,15 +1980,22 @@ class Mesh(Stateful, uw_object):
 
         return
 
-    def test_if_points_in_cells(self, points, cells):
+    def _test_if_points_in_cells_internal(self, points, cells):
         """
         Determine if the given points lie in the suggested cells.
         Uses a mesh skeletonization array to determine whether the point is
         with the convex polygon / polyhedron defined by a cell.
 
         Exact if applied to a linear mesh, approximate otherwise.
-        """
 
+        Parameters
+        ----------
+        points : array-like
+            Coordinate array in any physical unit system (will be auto-converted)
+        cells : array-like
+            Cell indices to test
+        """
+        # Internal version - points assumed to already be in model units
         self._mark_faces_inside_and_out()
 
         cells = cells.reshape(-1)
@@ -2002,17 +2115,34 @@ class Mesh(Stateful, uw_object):
         inside the boundary or outside. If close to the boundary, it checks if points
         are in a cell.
 
+        Parameters
+        ----------
+        points : array-like
+            Coordinate array in any physical unit system (will be auto-converted)
+        strict_validation : bool
+            Whether to perform strict validation near boundaries
+
         """
+        # Convert points to model units using the elegant protocol
+        import underworld3 as uw
+        model = uw.get_default_model()
+        model_quantity = model.to_model_units(points)
+
+        # Extract numerical values for internal mesh operations
+        if hasattr(model_quantity, '_pint_qty'):
+            model_points = model_quantity._pint_qty.magnitude
+        else:
+            model_points = model_quantity
 
         self._mark_local_boundary_faces_inside_and_out()
 
         max_radius = self.get_max_radius()
 
-        if points.shape[0] == 0:
+        if model_points.shape[0] == 0:
             return numpy.array([], dtype=bool)
 
         dist2, closest_control_points_ext = (
-            self.boundary_face_control_points_kdtree.query(points, k=1, sqr_dists=True)
+            self.boundary_face_control_points_kdtree.query(model_points, k=1, sqr_dists=True)
         )
         in_or_not = (
             self.boundary_face_control_points_sign[closest_control_points_ext] > 0
@@ -2021,16 +2151,16 @@ class Mesh(Stateful, uw_object):
         ## This choice of distance needs some more thought
 
         near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
-        near_boundary_points = points[near_boundary]
+        near_boundary_points = model_points[near_boundary]
 
         in_or_not[near_boundary] = (
-            self.get_closest_local_cells(near_boundary_points) != -1
+            self._get_closest_local_cells_internal(near_boundary_points) != -1
         )
 
         if strict_validation:
             chosen_ones = numpy.where(in_or_not == True)[0]
-            chosen_points = points[chosen_ones]
-            in_or_not[chosen_ones] = self.get_closest_local_cells(chosen_points) != -1
+            chosen_points = model_points[chosen_ones]
+            in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
 
         return in_or_not
 
@@ -2049,7 +2179,7 @@ class Mesh(Stateful, uw_object):
         coords:
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
-            shape (n_coords,dim).
+            shape (n_coords,dim) in any physical unit system (will be auto-converted).
 
         Returns:
         --------
@@ -2060,10 +2190,21 @@ class Mesh(Stateful, uw_object):
         """
         import numpy as np
 
+        # Convert coords to model units using the elegant protocol
+        import underworld3 as uw
+        model = uw.get_default_model()
+        model_quantity = model.to_model_units(coords)
+
+        # Extract numerical values for internal mesh operations
+        if hasattr(model_quantity, '_pint_qty'):
+            model_coords = model_quantity._pint_qty.magnitude
+        else:
+            model_coords = model_quantity
+
         self._build_kd_tree_index()
 
-        if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
+        if len(model_coords) > 0:
+            dist, closest_points = self._index.query(model_coords, k=1, sqr_dists=False)
             if np.any(closest_points > self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
@@ -2074,7 +2215,7 @@ class Mesh(Stateful, uw_object):
 
         return self._indexMap[closest_points]
 
-    def get_closest_local_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def _get_closest_local_cells_internal(self, coords: numpy.ndarray) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
@@ -2087,7 +2228,7 @@ class Mesh(Stateful, uw_object):
         coords:
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
-            shape (n_coords,dim).
+            shape (n_coords,dim) in any physical unit system (will be auto-converted).
 
         Returns:
         --------
@@ -2100,6 +2241,7 @@ class Mesh(Stateful, uw_object):
         """
         import numpy as np
 
+        # Internal version - coords assumed to already be in model units
         # Create index if required
         self._build_kd_tree_index()
 
@@ -2118,7 +2260,7 @@ class Mesh(Stateful, uw_object):
         cells = self._indexMap[closest_points]
         cStart, cEnd = self.dm.getHeightStratum(0)
 
-        inside = self.test_if_points_in_cells(coords, cells)
+        inside = self._test_if_points_in_cells_internal(coords, cells)
         cells[~inside] = -1
         lost_points = np.where(inside == False)[0]
 
@@ -2136,7 +2278,7 @@ class Mesh(Stateful, uw_object):
 
         for i in range(0, num_testable_neighbours):
 
-            inside = self.test_if_points_in_cells(
+            inside = self._test_if_points_in_cells_internal(
                 coords[lost_points], closest_centroids[:, i]
             )
             cells[lost_points[inside]] = closest_centroids[inside, i]
@@ -2145,6 +2287,76 @@ class Mesh(Stateful, uw_object):
                 break
 
         return cells
+
+    def test_if_points_in_cells(self, points, cells):
+        """
+        Determine if the given points lie in the suggested cells.
+        Uses a mesh skeletonization array to determine whether the point is
+        with the convex polygon / polyhedron defined by a cell.
+
+        Exact if applied to a linear mesh, approximate otherwise.
+
+        Parameters
+        ----------
+        points : array-like
+            Coordinate array in any physical unit system (will be auto-converted)
+        cells : array-like
+            Cell indices to test
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean array indicating if points are in cells
+        """
+        # Convert points to model units using the elegant protocol
+        import underworld3 as uw
+        model = uw.get_default_model()
+        model_quantity = model.to_model_units(points)
+
+        # Extract numerical values for internal mesh operations
+        if hasattr(model_quantity, '_pint_qty'):
+            model_points = model_quantity._pint_qty.magnitude
+        else:
+            model_points = model_quantity
+
+        # Call internal implementation
+        return self._test_if_points_in_cells_internal(model_points, cells)
+
+    def get_closest_local_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+        """
+        This method uses a kd-tree algorithm to find the closest
+        cells to the provided coords. For a regular mesh, this should
+        be exactly the owning cell, but if the mesh is deformed, this
+        is not guaranteed. Also compares the distance from the cell to the
+        point - if this is larger than the "cell size" then returns -1
+
+        Parameters:
+        -----------
+        coords:
+            An array of the coordinates for which we wish to determine the
+            closest cells. This should be a 2-dimensional array of
+            shape (n_coords,dim) in any physical unit system (will be auto-converted).
+
+        Returns:
+        --------
+        closest_cells:
+            An array of indices representing the cells closest to the provided
+            coordinates. This will be a 1-dimensional array of
+            shape (n_coords).
+        """
+        # Convert coords to model units using the elegant protocol
+        import underworld3 as uw
+        model = uw.get_default_model()
+        model_quantity = model.to_model_units(coords)
+
+        # Extract numerical values for internal mesh operations
+        if hasattr(model_quantity, '_pint_qty'):
+            model_coords = model_quantity._pint_qty.magnitude
+        else:
+            model_coords = model_quantity
+
+        # Call internal implementation
+        return self._get_closest_local_cells_internal(model_coords)
 
     def _get_mesh_sizes(self, verbose=False):
         """

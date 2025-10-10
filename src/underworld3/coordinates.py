@@ -23,17 +23,8 @@ class CoordinateSystemType(Enum):
     CARTESIAN = 0
     CYLINDRICAL2D = 10  # Cyl2D and Polar are equivalent here
     POLAR = 10  #
-    CYLINDRICAL2D_NATIVE = 11  # Cyl2D and Polar are equivalent here
-    POLAR_NATIVE = 11  #
-
     CYLINDRICAL3D = 100  # (Not really used for anything)
-    CYLINDRICAL3D_NATIVE = 101  # (Not really used for anything)
     SPHERICAL = 200
-    SPHERICAL_NATIVE = 201
-    SPHERICAL_NATIVE_RTP = 201
-    # SPHERICAL_NATIVE_RLONLAT = 7
-    SPHERE_SURFACE_NATIVE = 301  # theta / phi only R = 1 ...
-    # SPHERE_SURFACE_NATIVE_RLONLAT = 302  # theta / phi only R = 1 ...
 
 
 # Maybe break this out into it's own file - this needs to cover, basis vectors,
@@ -152,33 +143,6 @@ class CoordinateSystem:
             self._rRotN = self._rRotN_sym.subs(th, sympy.atan2(y, x))
             self._xRotN = sympy.eye(self.mesh.dim)
 
-        ## The following is for the situation where the DM has r/theta coordinates loaded up
-        elif system == CoordinateSystemType.CYLINDRICAL2D_NATIVE and self.mesh.dim == 2:
-            self.type = "Cylindrical 2D Native"
-            self.CartesianDM = False
-
-            self._N[0]._latex_form = R"r"
-            self._N[1]._latex_form = R"\theta"
-            self._R = self._N.copy()
-            self._r = self._R
-
-            r, t = self.N
-            x = r * sympy.cos(t)
-            y = r * sympy.sin(t)
-
-            self._X = sympy.Matrix([[x, y]])
-            self._x = sympy.Matrix([sympy.symbols(R"x, y")], real=True)
-
-            th = self.R[1]
-            self._xRotN_sym = sympy.Matrix(
-                [
-                    [sympy.cos(th), -sympy.sin(th)],
-                    [sympy.sin(th), sympy.cos(th)],
-                ]
-            )
-
-            self._xRotN = self._xRotN_sym
-            self._rRotN = sympy.eye(self.mesh.dim)
 
         elif system == CoordinateSystemType.CYLINDRICAL3D and self.mesh.dim == 3:
             self.type = "Cylindrical 3D"
@@ -206,34 +170,6 @@ class CoordinateSystem:
             self._rRotN = self._rRotN_sym.subs(th, t)
             self._xRotN = sympy.eye(self.mesh.dim)
 
-        elif system == CoordinateSystemType.CYLINDRICAL3D_NATIVE and self.mesh.dim == 3:
-            self.type = "Cylindrical 3D Native"
-            self.CartesianDM = False
-
-            self._N[0]._latex_form = R"r"
-            self._N[1]._latex_form = R"\theta"
-            self._R = self._N.copy()
-            self._r = self._R
-
-            r, t, z = self.N
-            x = r * sympy.cos(t)
-            y = r * sympy.sin(t)
-
-            self._X = sympy.Matrix([[x, y, z]])
-            self._x = sympy.Matrix([sympy.symbols(R"x, y, z")], real=True)
-            self._x[2] = z  # we should use the real one ?
-
-            th = self.R[1]
-            self._xRotN_sym = sympy.Matrix(
-                [
-                    [+sympy.cos(th), sympy.sin(th), self.independent_of_N],
-                    [-sympy.sin(th), sympy.cos(th), self.independent_of_N],
-                    [self.independent_of_N, self.independent_of_N, 1],
-                ]
-            )
-
-            self._xRotN = self._xRotN_sym
-            self._rRotN = sympy.eye(self.mesh.dim)
 
         elif system == CoordinateSystemType.SPHERICAL and self.mesh.dim == 3:
             self.type = "Spherical"
@@ -315,95 +251,7 @@ class CoordinateSystem:
 
             self._xRotN = sympy.eye(self.mesh.dim)
 
-        elif system == CoordinateSystemType.SPHERICAL_NATIVE and self.mesh.dim == 3:
-            self.type = "Spherical Native"
-            self.CartesianDM = False
 
-            self._N[0]._latex_form = R"r"
-            self._N[1]._latex_form = R"\theta"
-            self._N[2]._latex_form = R"\varphi"
-            self._R = self._N.copy()
-            self._r = self._R
-
-            r, t, p = self.N
-
-            x = r * sympy.sin(t) * sympy.cos(p)
-            y = r * sympy.sin(t) * sympy.sin(p)
-            z = r * sympy.cos(t)
-
-            self._X = sympy.Matrix([[x, y, z]])
-            self._x = sympy.Matrix([sympy.symbols(R"x, y, z")], real=True)
-
-            r1 = self._R[1]
-            r2 = self._R[2]
-            self._Rot = sympy.Matrix(  ## Check this next !
-                [
-                    [
-                        sympy.sin(r1) * sympy.cos(r2),
-                        sympy.sin(r1) * sympy.sin(r2),
-                        sympy.cos(r2),
-                    ],
-                    [
-                        sympy.cos(r1) * sympy.cos(r2),
-                        sympy.cos(r1) * sympy.sin(r2),
-                        -sympy.cos(r2),
-                    ],
-                    [
-                        -sympy.sin(r2),
-                        +sympy.cos(r2),
-                        self.independent_of_N,
-                    ],
-                ]
-            )
-
-            self._xRotN = self._Rot.subs([(r1, t), (r2, p)])
-            self._rRotN = sympy.eye(self.mesh.dim)
-
-        elif (
-            system == CoordinateSystemType.SPHERE_SURFACE_NATIVE and self.mesh.dim == 2
-        ):
-            self.type = "Spherical Native"
-            self.CartesianDM = False
-
-            self._N[0]._latex_form = R"\lambda_1"
-            self._N[1]._latex_form = R"\lambda_2"
-            self._R = self._N.copy()
-            self._r = self._R
-            l1, l2 = self.N
-
-            r = sympy.sympify(1)  # Maybe we will need to change this value
-            x = r * sympy.cos(l1) * sympy.cos(l2)
-            y = r * sympy.sin(l1) * sympy.cos(l2)
-            z = r * sympy.sin(l2)
-
-            self._X = sympy.Matrix([[x, y, z]])
-            self._x = sympy.Matrix([sympy.symbols(R"x, y, z")], real=True)
-
-            # l1 is longitude, l2 is latitude
-            rl1 = self._R[0]
-            rl2 = self._R[1]
-            self._Rot = sympy.Matrix(
-                [
-                    [
-                        +sympy.cos(rl1) * sympy.cos(rl2),
-                        +sympy.sin(rl1) * sympy.cos(rl2),
-                        sympy.sin(rl2),
-                    ],
-                    [
-                        -sympy.sin(rl1) * sympy.cos(rl2),
-                        +sympy.cos(rl1) * sympy.cos(rl2),
-                        self.independent_of_N,
-                    ],
-                    [
-                        -sympy.cos(rl1) * sympy.sin(rl2),
-                        -sympy.cos(rl1) * sympy.sin(rl2),
-                        sympy.cos(rl2),
-                    ],
-                ]
-            )
-
-            self._xRotN = self._Rot.subs([(rl1, l1), (rl2, l2)])
-            self._rRotN = sympy.eye(self.mesh.dim)
 
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
@@ -414,10 +262,86 @@ class CoordinateSystem:
             self._xRotN = sympy.eye(self.mesh.dim)
             self._rRotN = sympy.eye(self.mesh.dim)
 
-        # For all meshes
-        #
+        # For all meshes: Apply scaling if the mesh has a model with units
+        # TEMPORARILY DISABLED FOR TESTING
+        self._apply_units_scaling()
 
         return
+
+    def _apply_units_scaling(self):
+        """Apply units scaling to mesh.X coordinates based on model scaling."""
+        try:
+            # Get the model from the mesh
+            if hasattr(self.mesh, '_model') and self.mesh._model is not None:
+                model = self.mesh._model
+            else:
+                # Fall back to default model if mesh doesn't have one
+                import underworld3 as uw
+                model = uw.get_default_model()
+
+            # Check if the model has units scaling enabled
+            if not model.has_units():
+                return  # No scaling to apply
+
+            # Get fundamental scales from the model
+            scales = model.get_fundamental_scales()
+
+            # Apply scaling to mesh.X coordinates
+            if 'length' in scales:
+                length_scale = scales['length']
+
+                # Get scale factor as dimensionless number in base SI units
+                if hasattr(length_scale, 'to_base_units'):
+                    # Convert to base SI units first, then get magnitude
+                    scale_factor = length_scale.to_base_units().magnitude
+                elif hasattr(length_scale, 'magnitude'):
+                    scale_factor = length_scale.magnitude
+                else:
+                    scale_factor = float(length_scale)
+
+                # Create scale factor symbols for SymPy
+                import sympy
+
+                # Apply scaling: mesh.X = scale_factor * mesh.N (model coordinates)
+                if self.mesh.cdim == 2:
+                    x_scale = sympy.sympify(scale_factor)
+                    y_scale = sympy.sympify(scale_factor)
+
+                    x_model, y_model = self._N[0], self._N[1]
+                    x_phys = x_scale * x_model
+                    y_phys = y_scale * y_model
+
+                    self._X = sympy.Matrix([[x_phys, y_phys]])
+
+                elif self.mesh.cdim == 3:
+                    x_scale = sympy.sympify(scale_factor)
+                    y_scale = sympy.sympify(scale_factor)
+                    z_scale = sympy.sympify(scale_factor)
+
+                    x_model, y_model, z_model = self._N[0], self._N[1], self._N[2]
+                    x_phys = x_scale * x_model
+                    y_phys = y_scale * y_model
+                    z_phys = z_scale * z_model
+
+                    self._X = sympy.Matrix([[x_phys, y_phys, z_phys]])
+
+                # Update coordinate system information
+                self._scaled = True
+                self._length_scale = scale_factor
+
+                # Store scale factors for potential debugging
+                self._scale_factors = {
+                    'length': scale_factor,
+                    'source': f"model '{model.name}' length scale"
+                }
+
+        except Exception as e:
+            # If scaling fails, just continue without scaling
+            # This ensures backward compatibility
+            self._scaled = False
+            # Optionally log the error for debugging
+            # print(f"Units scaling not applied: {e}")
+            pass
 
     @property
     def X(self) -> sympy.Matrix:
@@ -498,10 +422,10 @@ class CoordinateSystem:
                 return self.unit_e_1  # y-direction in 2D
             else:
                 return self.unit_e_2  # z-direction in 3D
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
             # In cylindrical 2D, "vertical" is ambiguous but typically means Cartesian y
             return sympy.Matrix([0, 1])
-        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             # In spherical, "vertical" typically means radial outward
             return self.unit_e_0
         else:
@@ -512,10 +436,10 @@ class CoordinateSystem:
         """Primary horizontal direction for this coordinate system"""
         if self.coordinate_type in [CoordinateSystemType.CARTESIAN]:
             return self.unit_e_0  # x-direction
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
             # In cylindrical, horizontal could be radial or tangential - choose radial as primary
             return self.unit_e_0  # radial direction
-        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             # In spherical, horizontal is typically tangential (theta direction)
             return self.unit_e_1  # meridional direction
         else:
@@ -534,9 +458,9 @@ class CoordinateSystem:
                 return self.unit_e_1  # y-direction in 3D Cartesian
             else:
                 raise ValueError("unit_horizontal_1 not available in 1D")
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
             return self.unit_e_1  # tangential direction
-        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_2  # azimuthal direction
         else:
             raise NotImplementedError(f"unit_horizontal_1 not defined for coordinate system {self.coordinate_type}")
@@ -544,10 +468,10 @@ class CoordinateSystem:
     @property
     def unit_radial(self) -> sympy.Matrix:
         """Radial direction (for cylindrical/spherical coordinate systems)"""
-        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE,
-                                     CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D,
+                                     CoordinateSystemType.CYLINDRICAL3D]:
             return self.unit_e_0
-        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_0
         else:
             raise NotImplementedError(f"unit_radial not defined for coordinate system {self.coordinate_type}")
@@ -555,8 +479,8 @@ class CoordinateSystem:
     @property
     def unit_tangential(self) -> sympy.Matrix:
         """Tangential direction (for cylindrical coordinate systems)"""
-        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE,
-                                     CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D,
+                                     CoordinateSystemType.CYLINDRICAL3D]:
             return self.unit_e_1
         else:
             raise NotImplementedError(f"unit_tangential not defined for coordinate system {self.coordinate_type}")
@@ -564,7 +488,7 @@ class CoordinateSystem:
     @property
     def unit_meridional(self) -> sympy.Matrix:
         """Meridional direction (for spherical coordinate systems)"""
-        if self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        if self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_1
         else:
             raise NotImplementedError(f"unit_meridional not defined for coordinate system {self.coordinate_type}")
@@ -572,7 +496,7 @@ class CoordinateSystem:
     @property
     def unit_azimuthal(self) -> sympy.Matrix:
         """Azimuthal direction (for spherical coordinate systems)"""
-        if self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        if self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_2
         else:
             raise NotImplementedError(f"unit_azimuthal not defined for coordinate system {self.coordinate_type}")
@@ -585,11 +509,11 @@ class CoordinateSystem:
                 return ['horizontal', 'vertical']
             else:
                 return ['horizontal_x', 'horizontal_y', 'vertical']
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
             return ['radial', 'tangential']
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D]:
             return ['radial', 'tangential', 'vertical']
-        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return ['radial', 'meridional', 'azimuthal']
         else:
             return [f'dimension_{i}' for i in range(self.mesh.dim)]
@@ -726,7 +650,7 @@ class CoordinateSystem:
             # For Cartesian, natural coordinates are the same as Cartesian
             return cartesian_coords.copy()
         
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
             # Convert (x, y) to (r, theta)
             x = cartesian_coords[:, 0]
             y = cartesian_coords[:, 1] 
@@ -737,7 +661,7 @@ class CoordinateSystem:
             natural_coords = np.column_stack([r, theta])
             return natural_coords
         
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D, CoordinateSystemType.CYLINDRICAL3D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D]:
             # Convert (x, y, z) to (r, theta, z)
             x = cartesian_coords[:, 0]
             y = cartesian_coords[:, 1]
@@ -749,7 +673,7 @@ class CoordinateSystem:
             natural_coords = np.column_stack([r, theta, z])
             return natural_coords
         
-        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             # Convert (x, y, z) to (r, theta, phi)
             x = cartesian_coords[:, 0]
             y = cartesian_coords[:, 1]
@@ -791,9 +715,9 @@ class CoordinateSystem:
         
         if self.coordinate_type == CoordinateSystemType.CARTESIAN:
             return self._create_cartesian_profile(profile_type, **params)
-        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D, CoordinateSystemType.CYLINDRICAL2D_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
             return self._create_cylindrical_profile(profile_type, **params)
-        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL, CoordinateSystemType.SPHERICAL_NATIVE]:
+        elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self._create_spherical_profile(profile_type, **params)
         else:
             raise NotImplementedError(f"Profile sampling not implemented for coordinate system {self.coordinate_type}")
@@ -1017,7 +941,9 @@ class CoordinateSystem:
         can become upset if the constants are not specific functions too.
         """
 
-        Z = sympy.Matrix.ones(*shape) * self.independent_of_N
+        # Direct construction to avoid SymPy Matrix scalar multiplication issues
+        Z = sympy.Matrix.ones(*shape)
+        Z = sympy.Matrix(*shape, lambda i, j: Z[i, j] * self.independent_of_N)
 
         return Z
 

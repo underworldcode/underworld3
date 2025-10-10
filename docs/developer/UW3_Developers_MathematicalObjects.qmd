@@ -347,7 +347,7 @@ d2f_dx2 = f.diff(x, evaluate=False).diff(x, evaluate=False)
 mixed = f.diff(x, evaluate=False).diff(y, evaluate=False)
 
 # Evaluate only when needed
-result = mixed.doit()  # or mixed.unwrap()
+result = mixed.doit()  # or uw.unwrap(mixed)
 ```
 
 # Usage Patterns and Examples {#sec-usage}

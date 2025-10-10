@@ -336,8 +336,8 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
 
         print("---------", flush=True)
 
-        uw.pprint(0, f"Swarm0: {size0}; Swarm1: {size1}")
-        uw.pprint(0, "---------")
+        uw.pprint(f"Swarm0: {size0}; Swarm1: {size1}")
+        uw.pprint("---------")
 
         uw.mpi.barrier()
 

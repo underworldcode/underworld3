@@ -322,7 +322,7 @@ for step in range(0, maxsteps):
     elapsed_time += delta_t
     timeVal[step] = elapsed_time
 
-    uw.pprint(0, "Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
+    uw.pprint("Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
 
     ts += 1
 

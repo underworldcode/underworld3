@@ -42,20 +42,16 @@ def _get_default_backend():
         from .utilities.units_mixin import PintBackend
         return PintBackend()
     except ImportError:
-        try:
-            from .utilities.units_mixin import SymPyBackend
-            return SymPyBackend()
-        except ImportError:
-            raise ImportError("No units backend available. Install pint or ensure sympy is available.")
+        raise ImportError("Pint is required for units support. Install with: pip install pint")
 
 
 def _extract_units_info(obj):
     """
     Extract units information from various object types.
-    
+
     Args:
         obj: Object that might have units (variable, quantity, expression, etc.)
-        
+
     Returns:
         tuple: (has_units, units, backend) or (False, None, None)
     """
@@ -65,7 +61,7 @@ def _extract_units_info(obj):
             return True, obj.units, obj._units_backend
         else:
             return False, None, None
-    
+
     # Check if it's a Pint quantity
     try:
         import pint
@@ -74,25 +70,157 @@ def _extract_units_info(obj):
             return True, backend.get_units(obj), backend
     except ImportError:
         pass
-    
-    # Check if it's a SymPy quantity with units
+
+    # Check if it's a SymPy expression containing unit-aware variables
     try:
         import sympy
         if isinstance(obj, sympy.Basic):
-            # Try to extract units using SymPy dimensional analysis
-            backend = _get_default_backend()
-            if hasattr(backend, 'get_units'):
-                try:
-                    units = backend.get_units(obj)
-                    if units != sympy.S.One:  # Not dimensionless
-                        return True, units, backend
-                except:
-                    pass
+            # SymPy units backend removed - use Pint-native approach instead
+            # Still extract units from variables within SymPy expressions
+
+            # Second try: extract unit-aware variables from the expression
+            units_from_variables = _extract_units_from_sympy_expression(obj)
+            if units_from_variables is not None:
+                return units_from_variables
+
+            # Third try: for Matrix expressions, try the first element
+            if isinstance(obj, sympy.Matrix) and obj.shape[0] > 0:
+                first_element_units = _extract_units_info(obj[0])
+                if first_element_units[0]:  # has_units
+                    return first_element_units
+
+            # Fourth try: check if the object contains physics units atoms
+            try:
+                import sympy.physics.units as units_module
+                if hasattr(units_module, 'dimensions'):
+                    # Check if object contains any units
+                    units_atoms = obj.atoms(sympy.physics.units.Quantity)
+                    if units_atoms:
+                        return True, obj, None  # Return the object itself as "units"
+            except Exception:
+                pass
     except ImportError:
         pass
-    
+
     # No units found
     return False, None, None
+
+
+def _extract_units_from_sympy_expression(expr):
+    """
+    Extract units from SymPy expressions containing unit-aware variables.
+
+    This function analyzes mathematical expressions like 2*velocity to determine
+    their units based on the unit-aware variables they contain.
+
+    Args:
+        expr: SymPy expression
+
+    Returns:
+        tuple: (has_units, units, backend) or None if no units found
+    """
+    try:
+        # Import the function extraction utilities
+        import underworld3.function.expressions as expr_utils
+
+        # Extract all UW objects (function symbols) from the expression
+        uw_objects = expr_utils.extract_expressions_and_functions(expr)
+
+        # Get the default model to access registered variables
+        import underworld3 as uw
+        model = uw.get_default_model()
+
+        # Map function symbols back to their variables
+        unit_info_list = []
+        for symbol in uw_objects:
+            # Skip coordinate symbols
+            if hasattr(symbol, 'name') and symbol.name in ['N.x', 'N.y', 'N.z']:
+                continue
+
+            # Find which variable this symbol belongs to
+            for var_name, variable in model._variables.items():
+                if hasattr(variable, 'sym') and hasattr(variable, 'has_units'):
+                    # Check if this symbol matches any component of the variable
+                    if hasattr(variable, 'num_components'):
+                        var_symbols = [variable.sym[i] for i in range(variable.num_components)]
+                        if symbol in var_symbols and variable.has_units:
+                            unit_info_list.append((variable.units, variable._units_backend))
+                            break  # Found the variable, no need to continue
+
+        if not unit_info_list:
+            return None
+
+        # Use the first unit-aware variable's units
+        first_units, first_backend = unit_info_list[0]
+
+        # Analyze the expression to determine result units
+        result_units = _analyze_expression_units(expr, unit_info_list)
+
+        return True, result_units, first_backend
+
+    except Exception as e:
+        # Debug: print the exception
+        import warnings
+        warnings.warn(f"Error in _extract_units_from_sympy_expression: {e}")
+        return None
+
+
+def _analyze_expression_units(expr, unit_info_list):
+    """
+    Analyze a SymPy expression to determine its resultant units.
+
+    This implements basic dimensional analysis for mathematical operations:
+    - Addition/subtraction: units must be the same, result has same units
+    - Multiplication: units multiply
+    - Division: units divide
+    - Powers: units are raised to the power
+
+    Args:
+        expr: SymPy expression
+        unit_info_list: List of (units, backend) tuples from variables in expression
+
+    Returns:
+        Units for the resulting expression
+    """
+    try:
+        import sympy
+
+        # For now, implement simple heuristics
+        # TODO: Full dimensional analysis implementation
+
+        # If expression is just multiplication by a constant, preserve units
+        if isinstance(expr, sympy.Mul):
+            # Check if it's a constant times a variable
+            constants = []
+            variables = []
+            for arg in expr.args:
+                if arg.is_number:
+                    constants.append(arg)
+                else:
+                    variables.append(arg)
+
+            if len(variables) == 1 and len(unit_info_list) == 1:
+                # Simple case: constant * variable
+                return unit_info_list[0][0]  # Return the variable's units
+
+        # If expression is addition/subtraction, all terms must have same units
+        if isinstance(expr, sympy.Add):
+            if len(unit_info_list) >= 1:
+                # All terms should have the same units for valid addition
+                return unit_info_list[0][0]
+
+        # Default: return the first variable's units
+        if unit_info_list:
+            return unit_info_list[0][0]
+
+        # No units determined
+        return None
+
+    except Exception:
+        # Fallback: return first variable's units if available
+        if unit_info_list:
+            return unit_info_list[0][0]
+        return None
 
 
 def check_units_consistency(*expressions) -> bool:
@@ -317,11 +445,8 @@ def create_quantity(value, units: Union[str, Any],
         if backend.lower() == 'pint':
             from .utilities.units_mixin import PintBackend
             units_backend = PintBackend()
-        elif backend.lower() == 'sympy':
-            from .utilities.units_mixin import SymPyBackend
-            units_backend = SymPyBackend()
         else:
-            raise ValueError(f"Unknown backend: {backend}")
+            raise ValueError(f"Unknown backend: {backend}. Only 'pint' is supported.")
     
     return units_backend.create_quantity(value, units)
 

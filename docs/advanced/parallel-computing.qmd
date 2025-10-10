@@ -39,7 +39,7 @@ Use `uw.pprint()` for rank-specific output:
 
 ```python
 # Safe - all ranks execute stats(), only rank 0 prints
-uw.pprint(0, f"Stats: {var.stats()}")
+uw.pprint(f"Stats: {var.stats()}")
 
 # Debug - print from multiple ranks
 uw.pprint(slice(0, 4), f"Local max: {var.data.max()}")
@@ -53,7 +53,7 @@ uw.pprint(slice(0, 4), f"Local max: {var.data.max()}")
 
 ```python
 # Single rank
-uw.pprint(0, "Only rank 0")
+uw.pprint("Only rank 0")
 
 # All ranks
 uw.pprint(None, "Everyone prints this")
@@ -137,7 +137,7 @@ with uw.selective_ranks(0):
     stats = var.stats()  # Collective operation - deadlock!
 
 # RIGHT - Use pprint instead
-uw.pprint(0, f"Stats: {var.stats()}")  # All ranks execute stats(), only rank 0 prints
+uw.pprint(f"Stats: {var.stats()}")  # All ranks execute stats(), only rank 0 prints
 ```
 :::
 
@@ -180,7 +180,7 @@ for step in range(nsteps):
     
     # All ranks execute solver, only rank 0 prints progress
     stokes.solve()
-    uw.pprint(0, f"Step {step}: dt={dt:.3e}, time={time:.3e}")
+    uw.pprint(f"Step {step}: dt={dt:.3e}, time={time:.3e}")
     
     # Update fields...
     time += dt
@@ -196,8 +196,8 @@ solver.solve()
 velocity_stats = velocity.stats()
 pressure_stats = pressure.stats()
 
-uw.pprint(0, f"Velocity max: {velocity_stats['max']:.6e}")
-uw.pprint(0, f"Pressure range: [{pressure_stats['min']:.6e}, {pressure_stats['max']:.6e}]")
+uw.pprint(f"Velocity max: {velocity_stats['max']:.6e}")
+uw.pprint(f"Pressure range: [{pressure_stats['min']:.6e}, {pressure_stats['max']:.6e}]")
 ```
 
 ### Pattern 3: Debugging Parallel Decomposition
@@ -232,18 +232,18 @@ with uw.selective_ranks(0) as should_execute:
 
 ```python
 # Display mesh statistics (from mesh.view())
-uw.pprint(0, f"\nMesh # {mesh.instance}: {mesh.name}\n")
-uw.pprint(0, f"Number of cells: {num_cells}\n")
+uw.pprint(f"\nMesh # {mesh.instance}: {mesh.name}\n")
+uw.pprint(f"Number of cells: {num_cells}\n")
 
 if len(mesh.vars) > 0:
-    uw.pprint(0, f"| Variable Name       | component | degree |     type        |")
-    uw.pprint(0, f"| ---------------------------------------------------------- |")
+    uw.pprint(f"| Variable Name       | component | degree |     type        |")
+    uw.pprint(f"| ---------------------------------------------------------- |")
     for vname in mesh.vars.keys():
         v = mesh.vars[vname]
-        uw.pprint(0, f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
-    uw.pprint(0, f"| ---------------------------------------------------------- |")
+        uw.pprint(f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
+    uw.pprint(f"| ---------------------------------------------------------- |")
 else:
-    uw.pprint(0, f"No variables are defined on the mesh\n")
+    uw.pprint(f"No variables are defined on the mesh\n")
 ```
 
 ### Pattern 6: Conditional Execution by Rank Group
@@ -293,7 +293,7 @@ if uw.mpi.rank == 0:
     result = var.stats()  # Other ranks wait forever
 
 # RIGHT - all execute, selective output
-uw.pprint(0, f"Result: {var.stats()}")
+uw.pprint(f"Result: {var.stats()}")
 ```
 
 ### Pitfall 2: Assuming Global Data
@@ -331,7 +331,7 @@ if uw.mpi.rank == 0:
     print(f"Iteration {step}, Time: {time}")
 
 # NEW: Use pprint
-uw.pprint(0, f"Iteration {step}, Time: {time}")
+uw.pprint(f"Iteration {step}, Time: {time}")
 ```
 
 ```python
@@ -341,7 +341,7 @@ if uw.mpi.rank == 0:
     print(f"Max: {max_value}")
 
 # NEW: All ranks execute, selected ranks print
-uw.pprint(0, f"Max: {var.stats()['max']}")
+uw.pprint(f"Max: {var.stats()['max']}")
 ```
 
 ```python
@@ -376,9 +376,9 @@ The new patterns are safer because:
 
 | Task | Use | Example |
 |------|-----|---------|
-| Print from specific ranks | `uw.pprint(ranks, ...)` | `uw.pprint(0, "Done")` |
+| Print from specific ranks | `uw.pprint(ranks, ...)` | `uw.pprint("Done")` |
 | Serial code (viz, I/O) | `with uw.selective_ranks(ranks):` | Matplotlib, file writes |
-| Collective with output | `uw.pprint()` with collective args | `uw.pprint(0, var.stats())` |
+| Collective with output | `uw.pprint()` with collective args | `uw.pprint(var.stats())` |
 | Debug multiple ranks | `uw.pprint('all', ...)` | Check local data |
 
 ## Best Practices
@@ -433,7 +433,7 @@ with uw.selective_ranks(groups.compute_ranks):
 
 | Syntax | Selects | Example |
 |--------|---------|---------|
-| `0` | Single rank | `uw.pprint(0, "message")` |
+| `0` | Single rank | `uw.pprint("message")` |
 | `slice(0, 4)` | Range of ranks | `uw.pprint(slice(0, 4), ...)` |
 | `[0, 3, 7]` | Specific ranks | `uw.pprint([0, 3, 7], ...)` |
 | `'all'` or `None` | All ranks | `uw.pprint('all', ...)` |
@@ -458,7 +458,7 @@ These operations require **ALL ranks** to participate:
 
 ### Migration Checklist
 
-- [ ] Replace `if uw.mpi.rank == 0: print(...)` with `uw.pprint(0, ...)`
+- [ ] Replace `if uw.mpi.rank == 0: print(...)` with `uw.pprint(...)`
 - [ ] Replace `if uw.mpi.rank == 0:` for visualization with `with uw.selective_ranks(0):`
 - [ ] Ensure collective operations are called on ALL ranks
 - [ ] Test with `mpirun -np 2` and `mpirun -np 4`

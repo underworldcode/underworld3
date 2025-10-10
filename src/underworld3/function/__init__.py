@@ -1,8 +1,8 @@
 from . import analytic
 from ._function import (
     UnderworldFunction,
-    global_evaluate,
-    evaluate,
+    global_evaluate as _global_evaluate_original,
+    evaluate as _evaluate_original,
     dm_swarm_get_migrate_type,
     dm_swarm_set_migrate_type,
     _dmswarm_get_migrate_type,
@@ -11,8 +11,28 @@ from ._function import (
     # _interpolate_all_vars_on_mesh,
 )
 
+# Import unit conversion utilities
+from .unit_conversion import (
+    make_evaluate_unit_aware,
+    # Expose utility functions for user convenience
+    convert_quantity_units,
+    detect_quantity_units,
+    make_dimensionless,
+    convert_array_units,
+    auto_convert_to_mesh_units,
+    convert_evaluation_result,
+    add_units,
+    has_units,
+    get_units,
+)
+
+# Create unit-aware versions of evaluate functions (replaces originals)
+evaluate = make_evaluate_unit_aware(_evaluate_original)
+global_evaluate = make_evaluate_unit_aware(_global_evaluate_original)
+
 from .expressions import UWexpression as expression
 from .expressions import UWDerivativeExpression as _derivative_expression
+from .quantities import quantity, UWQuantity
 from .expressions import substitute as fn_substitute_expressions
 from .expressions import unwrap as fn_unwrap
 from .expressions import substitute_expr as fn_substitute_one_expression

@@ -79,6 +79,8 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         _nn_proxy=False,
         varsymbol=None,
         rebuild_on_cycle=True,
+        units=None,
+        units_backend=None,
     ):
         if name in swarm.vars.keys():
             raise ValueError(
@@ -117,6 +119,10 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
                 )
 
         self.vtype = vtype
+
+        # Store unit metadata for variable
+        self._units = units
+        self._units_backend = units_backend
 
         if not isinstance(vtype, uw.VarType):
             raise ValueError(
@@ -159,6 +165,19 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
             )
 
         if _register:
+            # Check if swarm is already populated - PETSc doesn't allow registering
+            # new fields after DMSwarmFinalizeFieldRegister() has been called
+            if self.swarm.local_size > 0:
+                raise RuntimeError(
+                    f"Cannot add variable '{name}' to swarm: swarm is already populated "
+                    f"with {self.swarm.local_size} particles. Variables must be created "
+                    f"before calling swarm.populate() or any other operation that adds particles.\n"
+                    f"\nCorrect usage:\n"
+                    f"  swarm = uw.swarm.Swarm(mesh)\n"
+                    f"  variable = swarm.add_variable('{name}', {size})  # Create variables first\n"
+                    f"  swarm.populate(fill_param=3)  # Then populate with particles"
+                )
+
             self.swarm.dm.registerField(
                 self.clean_name, self.num_components, dtype=petsc_type
             )
@@ -208,6 +227,16 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         uw.get_default_model()._register_variable(self.name, self)
 
         return
+
+    @property
+    def units(self):
+        """Return the units associated with this variable."""
+        return self._units
+
+    @units.setter
+    def units(self, value):
+        """Set the units for this variable."""
+        self._units = value
 
     def _create_variable_array(self, initial_data=None):
         """
@@ -546,12 +575,13 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
 
     def _create_proxy_variable(self):
         # release if defined
+        old_meshVar = getattr(self, '_meshVar', None)
         self._meshVar = None
 
         if self._proxy:
             self._meshVar = uw.discretisation.MeshVariable(
                 "proxy_" + self.clean_name,
-                self.swarm._mesh,
+                self.swarm.mesh,
                 self.shape,
                 self._vtype,
                 degree=self._proxy_degree,
@@ -613,7 +643,13 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
             nnn = self.swarm.mesh.dim + 1
 
         if meshVar.mesh != self.swarm.mesh:
-            raise RuntimeError("Cannot map a swarm to a different mesh")
+            # If this is our own proxy variable and mesh has changed, recreate it
+            if hasattr(self, '_meshVar') and meshVar is self._meshVar:
+                self._create_proxy_variable()
+                # Use the newly created proxy variable
+                meshVar = self._meshVar
+            else:
+                raise RuntimeError("Cannot map a swarm to a different mesh")
 
         new_coords = meshVar.coords
 
@@ -1123,13 +1159,35 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
                     comm.barrier()
                 comm.barrier()
 
+        ## Add swarm variable unit metadata to the file
+        import json
+
+        # Use preferred selective_ranks pattern for unit metadata
+        with uw.selective_ranks(0) as should_execute:
+            if should_execute:
+                with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
+                    # Add swarm variable unit metadata
+                    swarm_metadata = {
+                        "coordinate_units": str(self.swarm.coordinate_units) if hasattr(self.swarm, 'coordinate_units') else None,
+                        "variable_units": str(self.units) if hasattr(self, 'units') and self.units else None,
+                        "variable_dimensionality": str(self.dimensionality) if hasattr(self, 'dimensionality') else None,
+                        "units_backend": type(self._units_backend).__name__ if hasattr(self, '_units_backend') else None,
+                        "proxy_degree": self._proxy_degree,
+                        "num_components": self.num_components,
+                        "variable_name": self.name
+                    }
+
+                    # Store in dataset attributes
+                    if "data" in h5f:
+                        h5f["data"].attrs["units_metadata"] = json.dumps(swarm_metadata)
+
         return
 
     @timing.routine_timer_decorator
     def write_proxy(self, filename: str):
         # if not proxied, nothing to do. return.
         if not self._meshVar:
-            uw.pprint(0, "No proxy mesh variable that can be saved")
+            uw.pprint("No proxy mesh variable that can be saved")
             return
 
         self._meshVar.write(filename)
@@ -1360,8 +1418,8 @@ class IndexSwarmVariable(SwarmVariable):
         """
         Show information on IndexSwarmVariable
         """
-        uw.pprint(0, f"IndexSwarmVariable {self}")
-        uw.pprint(0, f"Numer of indices {self.indices}")
+        uw.pprint(f"IndexSwarmVariable {self}")
+        uw.pprint(f"Numer of indices {self.indices}")
 
     def _update_proxy_variables(self):
         """
@@ -1585,7 +1643,19 @@ class Swarm(Stateful, uw_object):
 
         self.verbose = verbose
         self._clip_to_mesh = clip_to_mesh
-        self._mesh = mesh
+
+        # Store reference to model instead of direct mesh reference
+        # This enables dynamic mesh handover while maintaining access to mesh services
+        import underworld3 as uw
+        model = uw.get_default_model()
+
+        # Register mesh with model if not already present
+        model._register_mesh(mesh)
+
+        # Store reference to this swarm's specific mesh for proxy operations
+        self._mesh_id = id(mesh)
+
+        self._model_ref = weakref.ref(model)
         self.dim = mesh.dim
         self.cdim = mesh.cdim
 
@@ -1679,13 +1749,87 @@ class Swarm(Stateful, uw_object):
         try:
             if hasattr(self, "mesh") and self.mesh is not None:
                 self.mesh.unregister_swarm(self)
-        except (AttributeError, ReferenceError):
-            # Mesh may have already been garbage collected, which is fine
+        except (AttributeError, ReferenceError, RuntimeError):
+            # Mesh/Model may have already been garbage collected, which is fine
             pass
 
     @property
     def mesh(self):
-        return self._mesh
+        """The mesh this swarm operates on"""
+        model = self._model_ref()
+        if model is None:
+            raise RuntimeError("Model has been garbage collected")
+        return model.get_mesh(self._mesh_id)
+
+    @mesh.setter
+    def mesh(self, new_mesh):
+        """
+        Assign swarm to a new mesh with dimensional validation and proxy updates.
+
+        Parameters
+        ----------
+        new_mesh : uw.discretisation.Mesh
+            New mesh to assign this swarm to
+
+        Raises
+        ------
+        ValueError
+            If new mesh has incompatible dimensions
+        """
+        model = self._model_ref()
+        if model is None:
+            raise RuntimeError("Model has been garbage collected")
+
+        # Register new mesh with model
+        model._register_mesh(new_mesh)
+
+        if id(new_mesh) == self._mesh_id:
+            # Check if swarm is already compatible with target mesh
+            if self.dim == new_mesh.dim and self.cdim == new_mesh.cdim:
+                # Dimensions match, check if proxy variables need updating
+                proxy_vars_updated = True
+                for var in self._vars.values():
+                    if hasattr(var, '_proxy') and var._proxy and hasattr(var, '_meshVar') and var._meshVar:
+                        if var._meshVar.mesh is not new_mesh:
+                            proxy_vars_updated = False
+                            break
+                if proxy_vars_updated:
+                    return  # No change needed
+
+        # Use swarm's current dimensions for validation (not model.mesh which may have been auto-updated)
+        current_dim = self.dim
+        current_cdim = self.cdim
+
+        # Critical dimensional validation
+        if new_mesh.dim != current_dim:
+            raise ValueError(
+                f"Cannot assign swarm to mesh with different coordinate dimension. "
+                f"Current swarm dim={current_dim}, new mesh dim={new_mesh.dim}. "
+                f"Swarm particles and variables are sized for {current_dim}D space."
+            )
+
+        if new_mesh.cdim != current_cdim:
+            raise ValueError(
+                f"Cannot assign swarm to mesh with different embedding dimension. "
+                f"Current swarm cdim={current_cdim}, new mesh cdim={new_mesh.cdim}."
+            )
+
+        # Update model's mesh and handle all swarm transitions
+        model._update_mesh_for_swarm(self, new_mesh)
+
+        # Update swarm's mesh reference
+        self._mesh_id = id(new_mesh)
+
+        # Update swarm's cached dimensions
+        self.dim = new_mesh.dim
+        self.cdim = new_mesh.cdim
+
+        # Recreate all proxy variables for new mesh
+        for var in self._vars.values():
+            var._create_proxy_variable()  # Safe for all variables (proxied or not)
+
+        # Update mesh version tracking
+        self._mesh_version = new_mesh._mesh_version
 
     @property
     def local_size(self):
@@ -1699,6 +1843,16 @@ class Swarm(Stateful, uw_object):
 
     @property
     def points(self):
+        """
+        Swarm particle coordinates in physical units.
+
+        When the mesh has coordinate scaling applied (via model units),
+        this property automatically converts from internal model coordinates
+        to physical coordinates for user access.
+
+        Returns:
+            numpy.ndarray: Particle coordinates in physical units
+        """
         # Check for mesh coordinate changes and trigger migration if needed
         if (
             hasattr(self, "_mesh_version")
@@ -1709,12 +1863,16 @@ class Swarm(Stateful, uw_object):
             # Update our mesh version to match
             self._mesh_version = self.mesh._mesh_version
 
-        # Get current coordinate data from PETSc
-        coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
+        # Get current coordinate data from PETSc (these are in model coordinates)
+        model_coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
 
-        # with self.access():
-        #     coords = self._coord_var.data[...].copy()
+        # Apply scaling to convert model coordinates to physical coordinates
+        if hasattr(self.mesh.CoordinateSystem, '_scaled') and self.mesh.CoordinateSystem._scaled:
+            scale_factor = self.mesh.CoordinateSystem._length_scale
+            coords = model_coords * scale_factor
+        else:
+            coords = model_coords
 
         # Cache and reuse NDArray_With_Callback object for consistent object identity
         if not hasattr(self, "_points") or self._points is None:
@@ -1783,7 +1941,16 @@ class Swarm(Stateful, uw_object):
 
     @points.setter
     def points(self, value):
+        """
+        Set swarm particle coordinates from physical units.
 
+        When the mesh has coordinate scaling applied (via model units),
+        this property automatically converts from physical coordinates
+        to internal model coordinates for PETSc storage.
+
+        Args:
+            value (numpy.ndarray): Particle coordinates in physical units
+        """
         if value.shape[0] != self.local_size:
             raise TypeError(
                 f"Points must be a numpy array with the same size as the swarm",
@@ -1791,12 +1958,19 @@ class Swarm(Stateful, uw_object):
                 f"  - either change all the swarm points at once or use the `with migration_control()` manager",
             )
 
-        # Update the cached NDArray (triggers callback)
+        # Apply inverse scaling to convert physical coordinates to model coordinates
+        if hasattr(self.mesh.CoordinateSystem, '_scaled') and self.mesh.CoordinateSystem._scaled:
+            scale_factor = self.mesh.CoordinateSystem._length_scale
+            model_coords = value / scale_factor
+        else:
+            model_coords = value
+
+        # Update the cached NDArray (triggers callback) - use physical coordinates for cache
         self._points[...] = value[...]
-        
-        # Also update PETSc DM field directly for immediate consistency
+
+        # Update PETSc DM field directly with model coordinates for immediate consistency
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
-        coords[...] = value[...]
+        coords[...] = model_coords[...]
         self.dm.restoreField("DMSwarmPIC_coor")
 
     # @points.setter
@@ -2419,6 +2593,26 @@ class Swarm(Stateful, uw_object):
 
             del points_data_copy
 
+        ## Add swarm coordinate unit metadata to the file
+        import json
+
+        # Use preferred selective_ranks pattern for coordinate metadata
+        with uw.selective_ranks(0) as should_execute:
+            if should_execute:
+                with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
+                    # Add swarm coordinate unit metadata
+                    swarm_coord_metadata = {
+                        "coordinate_units": str(self.coordinate_units) if hasattr(self, 'coordinate_units') else None,
+                        "coordinate_dimensionality": str(self.coordinate_dimensionality) if hasattr(self, 'coordinate_dimensionality') else None,
+                        "swarm_type": type(self).__name__,
+                        "mesh_type": type(self.mesh).__name__ if hasattr(self, 'mesh') else None,
+                        "dimension": self.dim
+                    }
+
+                    # Store in coordinates dataset attributes
+                    if "coordinates" in h5f:
+                        h5f["coordinates"].attrs["swarm_metadata"] = json.dumps(swarm_coord_metadata)
+
         return
 
     @timing.routine_timer_decorator
@@ -2453,7 +2647,65 @@ class Swarm(Stateful, uw_object):
         dtype=float,
         proxy_degree=2,
         _nn_proxy=False,
+        units=None,
     ):
+        """
+        Add a variable to the swarm.
+
+        Variables must be created before the swarm is populated with particles.
+        Once swarm.populate() or similar methods are called, PETSc finalizes
+        field registration and no new variables can be added.
+
+        Parameters
+        ----------
+        name : str
+            Variable name
+        size : int, default 1
+            Number of components (1 for scalar, 2-3 for vector, etc.)
+        dtype : type, default float
+            Data type (float or int)
+        proxy_degree : int, default 2
+            Degree for mesh proxy variable interpolation
+        _nn_proxy : bool, default False
+            Internal parameter for nearest-neighbor proxy
+        units : str, optional
+            Physical units for this variable (e.g., "kg/m^3", "m/s")
+
+        Returns
+        -------
+        SwarmVariable
+            The created swarm variable
+
+        Raises
+        ------
+        RuntimeError
+            If swarm is already populated with particles
+
+        Examples
+        --------
+        Correct usage:
+        >>> swarm = uw.swarm.Swarm(mesh)
+        >>> material = swarm.add_variable("material", 1, dtype=int)
+        >>> temperature = swarm.add_variable("temperature", 1)
+        >>> swarm.populate(fill_param=3)  # Populate after creating variables
+
+        Incorrect usage (will raise error):
+        >>> swarm = uw.swarm.Swarm(mesh)
+        >>> swarm.populate(fill_param=3)
+        >>> material = swarm.add_variable("material", 1)  # ERROR!
+        """
+        # Check early to provide a clear error message
+        if self.local_size > 0:
+            raise RuntimeError(
+                f"Cannot add variable '{name}' to swarm: swarm is already populated "
+                f"with {self.local_size} particles. Variables must be created "
+                f"before calling swarm.populate() or any other operation that adds particles.\n"
+                f"\nCorrect usage:\n"
+                f"  swarm = uw.swarm.Swarm(mesh)\n"
+                f"  variable = swarm.add_variable('{name}', {size})  # Create variables first\n"
+                f"  swarm.populate(fill_param=3)  # Then populate with particles"
+            )
+
         return SwarmVariable(
             name,
             self,
@@ -2461,6 +2713,7 @@ class Swarm(Stateful, uw_object):
             dtype=dtype,
             proxy_degree=proxy_degree,
             _nn_proxy=_nn_proxy,
+            units=units,
         )
 
     @timing.routine_timer_decorator

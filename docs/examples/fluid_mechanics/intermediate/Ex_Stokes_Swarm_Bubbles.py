@@ -380,7 +380,7 @@ for step in range(0, 2): # 250
 
     # update swarm / swarm variables
 
-    uw.pprint(0, "Timestep {}, dt {}".format(t_step, delta_t))
+    uw.pprint("Timestep {}, dt {}".format(t_step, delta_t))
 
     # advect swarm
     print("Swarm Advection")

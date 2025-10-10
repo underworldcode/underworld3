@@ -475,7 +475,7 @@ for step in range(0, maxsteps): #1500
                 -1 : -(npoints + 1) : -1, :
             ] = np.array([0.0, 0.195] + 0.01 * np.random.random((npoints, 2)))
 
-    uw.pprint(0, "Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
+    uw.pprint("Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
 
     if ts % 10 == 0:
         nodal_vorticity_from_v.solve()

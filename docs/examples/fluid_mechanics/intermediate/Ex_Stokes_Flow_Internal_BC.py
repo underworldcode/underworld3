@@ -294,12 +294,12 @@ timing.print_table(display_fraction=0.999)
 I = uw.maths.Integral(pipemesh, v_soln.sym.dot(v_soln.sym))
 Vmag = np.sqrt(I.evaluate())
 
-uw.pprint(0, f"Velocity magnitude: {Vmag}")
+uw.pprint(f"Velocity magnitude: {Vmag}")
 
 I.fn = p_soln.sym[0]**2
 Pmag = np.sqrt(I.evaluate())
 
-uw.pprint(0, f"Pressure magnitude: {Pmag}")
+uw.pprint(f"Pressure magnitude: {Pmag}")
 
 
 # +

@@ -73,8 +73,21 @@ def test_getext_simple():
             cache=False,
         )
 
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0")
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_0/cy_ext.h")
+    # Extract the actual compiled module location from verbose output
+    module_location = None
+    prefix = "Location of compiled module: "
+    for output_line in captured_setup_solver:
+        if prefix in output_line:
+            start_idx = output_line.find(prefix)
+            if start_idx != -1:
+                module_location = output_line[start_idx + len(prefix):]
+                break
+
+    assert module_location is not None, "Could not find module location in verbose output"
+    # Convert to string explicitly to avoid namespace pollution issues
+    module_path = str(module_location).strip()
+    assert os.path.exists(module_path), f"Module directory does not exist: {module_path}"
+    assert os.path.exists(os.path.join(module_path, "cy_ext.h")), f"Header file not found in {module_path}"
     assert r"Processing JIT    5 / Matrix([[1], [2]])" in captured_setup_solver
 
 
@@ -103,8 +116,21 @@ def test_getext_sympy_fns():
             cache=False,
         )
 
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_1")
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_1/cy_ext.h")
+    # Extract the actual compiled module location from verbose output
+    module_location = None
+    prefix = "Location of compiled module: "
+    for output_line in captured_setup_solver:
+        if prefix in output_line:
+            start_idx = output_line.find(prefix)
+            if start_idx != -1:
+                module_location = output_line[start_idx + len(prefix):]
+                break
+
+    assert module_location is not None, "Could not find module location in verbose output"
+    # Convert to string explicitly to avoid namespace pollution issues
+    module_path = str(module_location).strip()
+    assert os.path.exists(module_path), f"Module directory does not exist: {module_path}"
+    assert os.path.exists(os.path.join(module_path, "cy_ext.h")), f"Header file not found in {module_path}"
     assert (
         r"Processing JIT    5 / Matrix([[1/N.x], [N.x*exp(N.x*N.y)]])"
         in captured_setup_solver
@@ -143,8 +169,21 @@ def test_getext_meshVar():
     # Notes on this test - would be better to find appropriate substrings among outputs in the list
     # because the various disambiguations strings (\\hspace{}) may change if other tests are added
 
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2")
-    assert os.path.exists(f"/tmp/fn_ptr_ext_TEST_2/cy_ext.h")
+    # Extract the actual compiled module location from verbose output
+    module_location = None
+    prefix = "Location of compiled module: "
+    for output_line in captured_setup_solver:
+        if prefix in output_line:
+            start_idx = output_line.find(prefix)
+            if start_idx != -1:
+                module_location = output_line[start_idx + len(prefix):]
+                break
+
+    assert module_location is not None, "Could not find module location in verbose output"
+    # Convert to string explicitly to avoid namespace pollution issues
+    module_path = str(module_location).strip()
+    assert os.path.exists(module_path), f"Module directory does not exist: {module_path}"
+    assert os.path.exists(os.path.join(module_path, "cy_ext.h")), f"Header file not found in {module_path}"
     
     # Check that JIT processing happened for function 5
     # We verify the essential mathematical content while ignoring LaTeX spacing which varies

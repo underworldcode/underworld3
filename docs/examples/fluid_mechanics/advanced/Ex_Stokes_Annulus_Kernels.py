@@ -154,7 +154,7 @@ t_init = sympy.sin(5*th) * sympy.exp(-1000.0 * ((r - r_int) ** 2))
 
 t_init
 
-uw.function.expressions.unwrap(t_init)
+uw.unwrap(t_init)
 
 # +
 ## First solve with known normals
@@ -206,7 +206,7 @@ pressure_solver.smoothing = 1.0e-6
 pstats0 = p_soln.stats()
 
 
-uw.pprint(0, f"AN: Pressure (C0): {pstats0}")
+uw.pprint(f"AN: Pressure (C0): {pstats0}")
     # print(f"Velocity: {vnorm}")
 
 # +

@@ -26,10 +26,16 @@ from .geometry_tools import *
 from .nd_array_callback import NDArray_With_Callback
 from .mathematical_mixin import MathematicalMixin
 from .units_mixin import (
-    UnitAwareMixin, 
-    UnitAwareMathematicalMixin, 
-    UnitsBackend, 
-    PintBackend, 
-    SymPyBackend,
+    UnitAwareMixin,
+    UnitAwareMathematicalMixin,
+    UnitsBackend,
+    PintBackend,
     make_units_aware
+)
+from .unit_aware_array import (
+    UnitAwareArray,
+    create_unit_aware_array,
+    zeros_with_units,
+    ones_with_units,
+    full_with_units
 )

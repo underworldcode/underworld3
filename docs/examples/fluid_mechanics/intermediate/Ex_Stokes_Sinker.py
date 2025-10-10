@@ -295,7 +295,7 @@ while step < nstep:
 
     ### estimate dt
     dt = stokes.estimate_dt()
-    uw.pprint(0, f"dt = {dt}")
+    uw.pprint(f"dt = {dt}")
 
     ## This way should be a bit safer in parallel where particles can move
     ## processors in the middle of the calculation if you are not careful
@@ -318,7 +318,7 @@ while step < nstep:
 
 
 # %%
-uw.pprint(0, "Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker[0]))
+uw.pprint("Initial position: t = {0:.3f}, y = {1:.3f}".format(tSinker[0], ySinker[0]))
     print(
         "Final position:   t = {0:.3f}, y = {1:.3f}".format(
             tSinker[nsteps - 1], ySinker[nsteps - 1]

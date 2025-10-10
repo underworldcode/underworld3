@@ -7,15 +7,16 @@ This module provides visualization tools for Underworld3 including:
 """
 
 # Import main visualization functions from visualisation.py
-from ..visualisation import (
+from .visualisation import (
     mesh_to_pv_mesh,
     scalar_fn_to_pv_points,
     vector_fn_to_pv_points,
-    tensor_fn_to_pv_points,
-    pv_save_to_disk,
-    scalar_colour_points,
-    scatter_plot,
-    quiver_plot,
+    plot_mesh,
+    plot_scalar,
+    plot_vector,
+    meshVariable_to_pv_cloud,
+    meshVariable_to_pv_mesh_object,
+    swarm_to_pv_cloud,
 )
 
 # Import parallel visualization utilities

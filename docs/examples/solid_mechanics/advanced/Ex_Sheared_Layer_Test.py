@@ -590,7 +590,7 @@ for step in range(0, 10):
     swarm.advection(v_soln.sym, delta_t=delta_t, 
                  restore_points_to_domain_func=None) 
     
-    uw.pprint(0, "Timestep {}, dt {}".format(step, delta_t))
+    uw.pprint("Timestep {}, dt {}".format(step, delta_t))
         
     ts += 1
 

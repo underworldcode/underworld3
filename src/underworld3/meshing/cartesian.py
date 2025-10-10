@@ -25,6 +25,8 @@ import underworld3.cython.petsc_discretisation
 
 import sympy
 
+from ._utils import extract_coordinates, extract_scalar
+
 
 @timing.routine_timer_decorator
 def UnstructuredSimplexBox(
@@ -82,6 +84,11 @@ def UnstructuredSimplexBox(
         Left = sympy.Matrix([1, 0, 0])
         Front = sympy.Matrix([0, 1, 0])
         Back = sympy.Matrix([0, 1, 0])
+
+    # Extract numerical values from coordinates (handles UWQuantity objects)
+    minCoords = extract_coordinates(minCoords)
+    maxCoords = extract_coordinates(maxCoords)
+    cellSize = extract_scalar(cellSize)
 
     dim = len(minCoords)
     if dim == 2:
@@ -772,6 +779,12 @@ def StructuredQuadBox(
         Left = sympy.Matrix([1, 0, 0])
         Front = sympy.Matrix([0, 1, 0])
         Back = sympy.Matrix([0, 1, 0])
+
+    # Extract numerical values from coordinates (handles UWQuantity objects)
+    if minCoords is not None:
+        minCoords = extract_coordinates(minCoords)
+    if maxCoords is not None:
+        maxCoords = extract_coordinates(maxCoords)
 
     dim = len(minCoords)
     if dim == 2:

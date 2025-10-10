@@ -176,9 +176,9 @@ if uw.mpi.size == 1 and visualize:
     vis.plot_mesh(mesh, save_png=True, dir_fname=output_dir+'mesh.png', title='', clip_angle=0., cpos='xy')
 
 # print mesh size in each cpu
-uw.pprint(0, '-------------------------------------------------------------------------------')
+uw.pprint('-------------------------------------------------------------------------------')
 mesh.dm.view()
-uw.pprint(0, '-------------------------------------------------------------------------------')
+uw.pprint('-------------------------------------------------------------------------------')
 
 # +
 # mesh variables
@@ -462,15 +462,15 @@ if analytical:
         v_err_I = uw.maths.Integral(mesh, v_err.sym.dot(v_err.sym))
         v_ana_I = uw.maths.Integral(mesh, v_ana.sym.dot(v_ana.sym))
         v_err_l2 = np.sqrt(v_err_I.evaluate())/np.sqrt(v_ana_I.evaluate())
-        uw.pprint(0, 'Relative error in velocity in the L2 norm: ', v_err_l2)
+        uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
         
         if k==0:
-            uw.pprint(0, 'Integration of analytical solution over the domain is zero. For k=0, it is not possible to compute L2 norm for pressure.')
+            uw.pprint('Integration of analytical solution over the domain is zero. For k=0, it is not possible to compute L2 norm for pressure.')
         else:
             p_err_I = uw.maths.Integral(mesh, p_err.sym.dot(p_err.sym))
             p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
             p_err_l2 = np.sqrt(p_err_I.evaluate())/np.sqrt(p_ana_I.evaluate())
-            uw.pprint(0, 'Relative error in pressure in the L2 norm: ', p_err_l2)
+            uw.pprint('Relative error in pressure in the L2 norm: ', p_err_l2)
 
 # +
 # writing l2 norms to h5 file
@@ -478,7 +478,7 @@ if uw.mpi.size == 1 and os.path.isfile(output_dir+'error_norm.h5'):
     os.remove(output_dir+'error_norm.h5')
     print('Old file removed')
 
-uw.pprint(0, 'Creating new h5 file')
+uw.pprint('Creating new h5 file')
     with h5py.File(output_dir+'error_norm.h5', 'w') as f_h5:
         f_h5.create_dataset("k", data=k)
         f_h5.create_dataset("cellsize", data=cellsize)

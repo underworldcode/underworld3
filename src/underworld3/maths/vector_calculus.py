@@ -134,10 +134,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
 
         # validation
 
-        if not (
-            coordinate_type == CoordinateSystemType.CYLINDRICAL2D_NATIVE
-            or coordinate_type == CoordinateSystemType.CYLINDRICAL3D_NATIVE
-        ):
+        if True:  # NATIVE coordinate systems deprecated, always warn
             print(
                 f"Warning mesh type {mesh.CoordinateSystem.type} uses Cartesian coordinates not cylindrical"
             )

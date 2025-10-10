@@ -187,9 +187,9 @@ if uw.mpi.size == 1 and visualize:
 
 
 # print mesh size in each cpu
-uw.pprint(0, '-------------------------------------------------------------------------------')
+uw.pprint('-------------------------------------------------------------------------------')
 mesh.dm.view()
-uw.pprint(0, '-------------------------------------------------------------------------------')
+uw.pprint('-------------------------------------------------------------------------------')
 
 # +
 # mesh variables
@@ -527,7 +527,7 @@ if analytical:
         p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
         p_err_l2 = np.sqrt(p_err_I.evaluate())/np.sqrt(p_ana_I.evaluate())
         
-        uw.pprint(0, 'Relative error in velocity in the L2 norm: ', v_err_l2)
+        uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
             print('Relative error in pressure in the L2 norm: ', p_err_l2)
 
 # +
@@ -536,7 +536,7 @@ if uw.mpi.size == 1 and os.path.isfile(output_dir+'error_norm.h5'):
     os.remove(output_dir+'error_norm.h5')
     print('Old file removed')
 
-uw.pprint(0, 'Creating new h5 file')
+uw.pprint('Creating new h5 file')
     with h5py.File(output_dir+'error_norm.h5', 'w') as f:
         f.create_dataset("k", data=k)
         f.create_dataset("cellsize", data=cellsize)

@@ -654,11 +654,19 @@ cpdef PtrContainer getptrobj():
     # Write out files
     import os
 
-    tmpdir = os.path.join("/tmp", MODNAME)
+    import time
+    import random
+
+    # Make directory name unique to avoid race conditions between parallel processes
+    unique_suffix = f"{os.getpid()}_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    tmpdir = os.path.join("/tmp", f"{MODNAME}_{unique_suffix}")
+
     try:
-        os.mkdir(tmpdir)
-    except OSError:
-        pass
+        os.makedirs(tmpdir, exist_ok=True)
+    except OSError as e:
+        if verbose:
+            print(f"Warning: Failed to create tmpdir {tmpdir}: {e}")
+        raise RuntimeError(f"Cannot create temporary directory {tmpdir}") from e
     for thing in codeguys:
         filename = thing[0]
         strguy = thing[1]
@@ -674,7 +682,14 @@ cpdef PtrContainer getptrobj():
         stderr=subprocess.PIPE,
         cwd=tmpdir,
     )
-    process.communicate()
+    stdout, stderr = process.communicate()
+
+    # Check if build process failed
+    if process.returncode != 0:
+        if verbose:
+            print(f"Warning: Build process failed with return code {process.returncode}")
+            print(f"stdout: {stdout.decode() if stdout else 'None'}")
+            print(f"stderr: {stderr.decode() if stderr else 'None'}")
 
     # Load and add to dictionary
     from importlib._bootstrap import _load
@@ -694,9 +709,15 @@ cpdef PtrContainer getptrobj():
         spec = importlib.machinery.ModuleSpec(name=name, loader=loader, origin=path)
         return _load(spec)
 
-    for _file in os.listdir(tmpdir):
-        if _file.endswith(".so"):
-            _ext_dict[name] = load_dynamic(MODNAME, os.path.join(tmpdir, _file))
+    # Check if tmpdir exists before trying to list it
+    if os.path.exists(tmpdir):
+        for _file in os.listdir(tmpdir):
+            if _file.endswith(".so"):
+                _ext_dict[name] = load_dynamic(MODNAME, os.path.join(tmpdir, _file))
+    else:
+        # tmpdir doesn't exist, likely build process failed
+        if verbose:
+            print(f"Warning: tmpdir {tmpdir} does not exist - build process may have failed")
 
     if name not in _ext_dict.keys():
         raise RuntimeError(

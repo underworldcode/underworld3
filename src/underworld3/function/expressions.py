@@ -2,10 +2,17 @@ import sympy
 from sympy import Symbol, simplify, Number
 import underworld3 as uw
 from underworld3.utilities._api_tools import uw_object
-from underworld3.discretisation import _MeshVariable
+from underworld3.utilities.mathematical_mixin import MathematicalMixin
+from underworld3.discretisation import MeshVariable
+from .quantities import UWQuantity
 
 
 def _substitute_all_once(fn, keep_constants=True, return_self=True):
+    import underworld3
+
+    # Handle UWQuantity objects directly
+    if isinstance(fn, underworld3.function.UWQuantity):
+        return fn._sympify_()
 
     if keep_constants and return_self and is_constant_expr(fn):
         if isinstance(fn, UWexpression):
@@ -64,15 +71,107 @@ def _unwrap_expressions(fn, keep_constants=True, return_self=True):
 
 
 def unwrap(fn, keep_constants=True, return_self=True):
-    if isinstance(fn, sympy.Matrix):
+    """
+    Unwrap UW expressions to pure SymPy expressions for compilation.
+
+    Args:
+        fn: Expression to unwrap
+        keep_constants: Whether to preserve constants
+        return_self: Whether to return self for constant expressions
+
+    Returns:
+        Pure SymPy expression with scale factors applied if scaling context is active
+    """
+    # Handle UWDerivativeExpression specially - evaluate it first
+    if isinstance(fn, UWDerivativeExpression):
+        result = fn.doit()
+    elif isinstance(fn, sympy.Matrix):
         f = lambda x: _unwrap_expressions(
             x, keep_constants=keep_constants, return_self=return_self
         )
-        return fn.applyfunc(f)
+        result = fn.applyfunc(f)
     else:
-        return _unwrap_expressions(
+        result = _unwrap_expressions(
             fn, keep_constants=keep_constants, return_self=return_self
         )
+
+    # Apply scaling if context is active
+    import underworld3 as uw
+    if uw._is_scaling_active():
+        result = _apply_scaling_to_unwrapped(result)
+
+    return result
+
+
+def _apply_scaling_to_unwrapped(expr):
+    """
+    Apply scale factors to an unwrapped SymPy expression.
+
+    This function finds all variable symbols in the expression and replaces them
+    with scaled versions by looking up their variables in the model registry.
+
+    Args:
+        expr: SymPy expression (potentially with UW variable symbols)
+
+    Returns:
+        SymPy expression with scale factors applied to variables with units
+    """
+    import underworld3 as uw
+    import sympy
+
+    try:
+        # Get the model registry to find variables
+        model = uw.get_default_model()
+        substitutions = {}
+
+        # Find all function symbols in the expression
+        # These represent UW variables like T(x,y), v_0(x,y), etc.
+        if hasattr(expr, 'atoms'):
+            function_symbols = expr.atoms(sympy.Function)
+        else:
+            function_symbols = set()
+
+
+        # For each variable in the model, check if its symbols appear in the expression
+        for var_name, variable in model._variables.items():
+            if (hasattr(variable, 'has_units') and hasattr(variable, 'scale_factor') and
+                variable.has_units and variable.scale_factor is not None):
+
+
+                # Get the variable's symbol and find matching function symbols
+                if hasattr(variable, '_base_var'):
+                    # For enhanced variables, get the base variable's symbol
+                    var_sym = variable._base_var.sym
+                else:
+                    var_sym = getattr(variable, 'sym', None)
+
+                if var_sym is not None:
+                    # Get all function symbols from the variable's symbol
+                    if hasattr(var_sym, 'atoms'):
+                        var_function_symbols = var_sym.atoms(sympy.Function)
+                    else:
+                        var_function_symbols = set()
+
+
+                    # Find matching symbols and create substitutions
+                    for func_symbol in function_symbols:
+                        for var_func_symbol in var_function_symbols:
+                            if str(func_symbol) == str(var_func_symbol):
+                                substitutions[func_symbol] = func_symbol * variable.scale_factor
+
+
+        # Apply all substitutions
+        if substitutions:
+            return expr.subs(substitutions)
+        else:
+            return expr
+
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Could not apply scaling to unwrapped expression: {e}")
+        return expr
+
+
 
 
 def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):
@@ -123,6 +222,10 @@ def extract_expressions_and_functions(fn):
     if isinstance(fn, underworld3.function.expression):
         fn = fn.sym
 
+    # Handle UWQuantity objects - they don't have atoms() method
+    if isinstance(fn, underworld3.function.UWQuantity):
+        return set()
+
     atoms = fn.atoms(sympy.Symbol, sympy.Function, sympy.vector.scalar.BaseScalar)
 
     # exhaustion criterion
@@ -137,7 +240,7 @@ def extract_expressions_and_functions(fn):
     return atoms
 
 
-class UWexpression(uw_object, Symbol):
+class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
     """
     underworld `expressions` are sympy symbols with attached
                 numeric/expression values that are substituted into an underworld function
@@ -200,11 +303,12 @@ class UWexpression(uw_object, Symbol):
         sym=None,
         description="No description provided",
         value=None,
+        units=None,
         **kwargs,
     ):
+        # Handle legacy 'value' parameter
         if value is not None and sym is None:
             import warnings
-
             warnings.warn(
                 message=f"DEPRECATION warning, don't use 'value' attribute for expression: {value}, please use 'sym' attribute"
             )
@@ -215,8 +319,39 @@ class UWexpression(uw_object, Symbol):
                 "Both 'sym' and 'value' attributes are provided, please use one"
             )
 
+        # Initialize UnitAwareMixin attributes directly to avoid MRO conflicts
+        from underworld3.utilities.units_mixin import UnitAwareMixin
+        UnitAwareMixin.__init__(self)
+
+        # Handle UWQuantity as sym parameter (the beautiful symmetry!)
+        if isinstance(sym, UWQuantity):
+            if units is not None:
+                # Convert quantity to match expression's target units
+                if sym.has_units:
+                    converted_qty = sym.to(units)
+                    quantity_value = converted_qty.value
+                    self.set_units(units)  # Set units directly on UnitAwareMixin
+                else:
+                    # Dimensionless quantity, just use the value
+                    quantity_value = sym.value
+            else:
+                # Use quantity's units directly
+                if sym.has_units:
+                    quantity_value = sym.value
+                    self.set_units(sym.units)  # Set units directly on UnitAwareMixin
+                else:
+                    quantity_value = sym.value
+            # Use the converted value for the expression's symbolic representation
+            sym_value = quantity_value
+        else:
+            # Traditional initialization - set units if provided
+            if units is not None:
+                self.set_units(units)
+            sym_value = sym
+
+        # UWexpression-specific attributes
         self.symbol = self._given_name
-        self.sym = sym  # Accept anything, sympify is opinionated
+        self.sym = sym_value  # Accept anything, sympify is opinionated
         self.description = description
 
         # this is not being honoured by sympy Symbol so do it by hand
@@ -224,6 +359,45 @@ class UWexpression(uw_object, Symbol):
         uw_object._obj_count += 1
 
         return
+
+    def __repr__(self):
+        """
+        Override MathematicalMixin.__repr__ to return Symbol representation.
+
+        This is critical for SymPy's internal sympify operations to work correctly.
+        When SymPy performs operations like z/r, it internally calls sympify in strict mode,
+        which needs to be able to parse the repr() output. Since UWexpression inherits
+        from Symbol, we return the symbol name instead of the symbolic expression.
+        """
+        return str(self.name)
+
+    def _sympify_(self):
+        """
+        Override the _sympify_ method to return the pure SymPy representation.
+
+        This prevents infinite recursion in UWQuantity.atoms() method by returning
+        self._sym (pure SymPy object without UWQuantity.atoms method) instead of
+        self (UWexpression with inherited UWQuantity.atoms method).
+
+        The recursion occurs when:
+        1. UWQuantity.atoms() calls self._sympify_()
+        2. UWexpression._sympify_() returns self
+        3. UWQuantity.atoms() calls atoms() on the result
+        4. Since result is still UWexpression, infinite recursion ensues
+
+        Fix: Return self._sym (pure SymPy) to break the recursion chain.
+        """
+        return self._sym
+
+    def __bool__(self):
+        """
+        Override boolean evaluation to prevent __len__ calls.
+
+        UWexpression objects should always evaluate to True for boolean
+        contexts, just like regular SymPy Symbol objects. This prevents
+        SymPy from calling __len__ during boolean evaluation.
+        """
+        return True
 
     def copy(self, other):
         if not isinstance(other, UWexpression):
@@ -265,30 +439,13 @@ class UWexpression(uw_object, Symbol):
             self._sym = sympy.sympify(new_value)
         return
 
-    # TODO: DEPRECATION
-    # The value attribute is no longer needed in the offical release of Underworld3
-    @property
-    def value(self):
-        import warnings
-
-        warnings.warn(
-            message=f"DEPRECATION warning, don't use 'value' attribute for expression: {self}, please use 'sym' attribute"
-        )
-        return self._sym
-
-    @value.setter
-    def value(self, new_value):
-        import warnings
-
-        warnings.warn(
-            message=f"DEPRECATION warning, don't use 'value' attribute for expression: {new_value}, please use 'sym' attribute"
-        )
-        self._sym = sympy.sympify(new_value)
-        return
+    # TODO: DEPRECATION REMOVED
+    # The value attribute is inherited from UWQuantity base class
+    # Old deprecated value property removed to avoid MRO conflicts
 
     @property
     def expression(self):
-        return self.unwrap()
+        return unwrap(self)
 
     @property
     def description(self):
@@ -322,8 +479,6 @@ class UWexpression(uw_object, Symbol):
         # This preserves uniqueness while allowing display customization
         return
 
-    def unwrap(self, keep_constants=True, return_self=True):
-        return unwrap(self, keep_constants=keep_constants)
 
     def sub_all(self, keep_constants=True):
         return substitute(self, keep_constants=keep_constants)
@@ -397,9 +552,6 @@ class UWexpression(uw_object, Symbol):
 
         display(Markdown("$" + self.symbol + "$"))
 
-    def __repr__(self):
-        # print("Customised !")
-        return str(self.symbol)
 
     def _repr_latex_(self):
         # print("Customised !")
@@ -447,6 +599,7 @@ class UWexpression(uw_object, Symbol):
         return
 
 
+
 class UWDerivativeExpression(UWexpression):
     """
     underworld `expressions` are sympy symbols with attached
@@ -464,7 +617,7 @@ class UWDerivativeExpression(UWexpression):
                         r'\\alpha',
                         expr=uw_expression,
                         diff_expr=diff_expression,
-                        description=fr"\partial{expr.description}/\partial{diff_expr.description}"
+                        description=rf"\\partial{expr.description}/\\partial{diff_expr.description}"
                             )
         print(alpha.sym)
         print(alpha.description)
@@ -554,24 +707,10 @@ class UWDerivativeExpression(UWexpression):
             evaluated = self.doit()
             return sympy.diff(evaluated, *symbols, **kwargs)
     
-    def unwrap(self, keep_constants=True, return_self=True):
-        """
-        Unwrap and evaluate the deferred derivative.
-        
-        This is called by the JIT system to get the actual derivative expression.
-        """
-        return self.doit()
 
-    # TODO: DEPRECATION
-    # The value attribute is no longer needed in the offical release of Underworld3
-    @property
-    def value(self):
-        import warnings
-
-        warnings.warn(
-            message=f"DEPRECATION warning, don't use 'value' attribute for expression: {self}, please use 'sym' attribute"
-        )
-        return self.sym
+    # TODO: DEPRECATION REMOVED
+    # The value attribute is inherited from UWQuantity base class (via UWexpression)
+    # Old deprecated value property removed to avoid MRO conflicts
 
 
 def mesh_vars_in_expression(

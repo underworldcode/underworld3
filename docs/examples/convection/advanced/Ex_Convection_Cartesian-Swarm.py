@@ -263,7 +263,7 @@ for step in range(0, 2): #250
     tstats = t_soln.stats()
     tstarstats = T1._meshVar.stats()
 
-    uw.pprint(0, "Timestep {}, dt {}".format(step, delta_t))
+    uw.pprint("Timestep {}, dt {}".format(step, delta_t))
         print(tstats[2], tstats[3])
         print(tstarstats[2], tstarstats[3])
 

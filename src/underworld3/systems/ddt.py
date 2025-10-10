@@ -225,7 +225,7 @@ class Eulerian(uw_object):
         # psi_star is reaching back through each evaluation and has to be a
         # meshVariable (storage)
 
-        if isinstance(psi_fn, uw.discretisation._MeshVariable):
+        if isinstance(psi_fn, uw.discretisation.MeshVariable):
             self._psi_fn = psi_fn.sym  ### get symbolic form of the meshvariable
             self._psi_meshVar = psi_fn
         else:

@@ -575,7 +575,19 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         if isinstance(value, uw.function.expressions.UWexpression):
             self._bodyforce.sym = value.sym
         else:
-            self._bodyforce.sym = sympy.Matrix(value)
+            # Convert UWQuantity objects to SymPy expressions before Matrix creation
+            converted_value = []
+            for item in value:
+                if isinstance(item, uw.function.quantities.UWQuantity):
+                    sympified = item._sympify_()
+                    # If UWQuantity contains a Matrix, extract the scalar element
+                    if hasattr(sympified, 'shape') and sympified.shape == (1, 1):
+                        converted_value.append(sympified[0, 0])
+                    else:
+                        converted_value.append(sympified)
+                else:
+                    converted_value.append(item)
+            self._bodyforce.sym = sympy.Matrix(converted_value)
 
     @property
     def saddle_preconditioner(self):
@@ -1244,7 +1256,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             DFDt=DFDt,
         )
 
-        if isinstance(V_fn, uw.discretisation._MeshVariable):
+        if isinstance(V_fn, uw.discretisation.MeshVariable):
             self._V_fn = V_fn.sym
         else:
             self._V_fn = V_fn
@@ -1364,6 +1376,22 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @property
     def V_fn(self):
         return self._V_fn
+
+    @V_fn.setter
+    def V_fn(self, value):
+        """
+        Set the velocity function for advection.
+
+        Parameters:
+        -----------
+        value : uw.discretisation.MeshVariable or sympy.Basic
+            Velocity field as either a MeshVariable or sympy expression
+        """
+        self.is_setup = False  # Mark as needing setup when velocity changes
+        if isinstance(value, uw.discretisation.MeshVariable):
+            self._V_fn = value.sym
+        else:
+            self._V_fn = value
 
     @property
     def delta_t(self):

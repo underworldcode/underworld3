@@ -144,7 +144,7 @@ else:
 
 kin_visc_dim  = dyn_visc_dim / fluid_rho_dim
 Re_num        = fluid_rho_dim * vel_dim * height_dim / dyn_visc_dim
-uw.pprint(0, f"Reynold's number: {Re_num}")
+uw.pprint(f"Reynold's number: {Re_num}")
 
 # %%
 if use_dim:
@@ -163,7 +163,7 @@ else:
 minX, maxX = -0.5 * width, 0.5 * width
 minY, maxY = -0.5 * height, 0.5 * height
 
-uw.pprint(0, "min X, max X:", minX, maxX)
+uw.pprint("min X, max X:", minX, maxX)
     print("min Y, max Y:", minY, maxY)
     print("kinematic viscosity: ", kin_visc)
     print("fluid density: ", fluid_rho)

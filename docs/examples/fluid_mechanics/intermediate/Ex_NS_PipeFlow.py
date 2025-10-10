@@ -151,7 +151,7 @@ else:
 
 kin_visc_dim  = dyn_visc_dim / fluid_rho_dim
 Re_num        = fluid_rho_dim * vel_dim * height_dim / dyn_visc_dim
-uw.pprint(0, f"Reynold's number: {Re_num}")
+uw.pprint(f"Reynold's number: {Re_num}")
     print(f"Dimensionalized velocity: {vel_dim}")
     print(f"Dimensionalized height: {height_dim}")
     print(f"Dimensionalized width: {width_dim}")
@@ -173,7 +173,7 @@ else:
 minX, maxX = -0.5 * width, 0.5 * width
 minY, maxY = -0.5 * height, 0.5 * height
 
-uw.pprint(0, "min X, max X:", minX, maxX)
+uw.pprint("min X, max X:", minX, maxX)
     print("min Y, max Y:", minY, maxY)
     print("kinematic viscosity: ", kin_visc)
     print("fluid density: ", fluid_rho)
@@ -223,7 +223,7 @@ p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree = Pdeg, continuo
 if infile is None:
     pass
 else:
-    uw.pprint(0, f"Reading: {infile}")
+    uw.pprint(f"Reading: {infile}")
 
     v_soln.read_timestep(data_filename = infile, data_name = "U", index = maxsteps, outputPath = outdir)
     p_soln.read_timestep(data_filename = infile, data_name = "P", index = maxsteps, outputPath = outdir)
@@ -304,7 +304,7 @@ max_vel = vel
 
 delta_t = Cmax*delta_x/max_vel
 
-uw.pprint(0, f"Min radius: {delta_x}")
+uw.pprint(f"Min radius: {delta_x}")
     print("Timestep used:", delta_t)
 
 
@@ -316,14 +316,14 @@ elapsed_time = 0.0
 # %%
 for step in range(0, maxsteps):
 
-    uw.pprint(0, f"Timestep: {step}")
+    uw.pprint(f"Timestep: {step}")
 
     navier_stokes.solve(timestep = delta_t, zero_init_guess=True)
 
     elapsed_time += delta_t
     timeVal[step] = elapsed_time
 
-    uw.pprint(0, "Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
+    uw.pprint("Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
 
     if ts % save_every == 0 and ts > 0:
         meshbox.write_timestep(

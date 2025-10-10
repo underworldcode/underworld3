@@ -163,6 +163,196 @@ class SolverBaseClass(uw_object):
 
         return
 
+    def get_snes_diagnostics(self):
+        """
+        Extract comprehensive SNES convergence diagnostics with string representations.
+
+        Returns:
+        --------
+        dict
+            Comprehensive convergence diagnostics including:
+            - converged: bool - Whether solver converged
+            - diverged: bool - Whether solver diverged
+            - convergence_reason: int - Numerical convergence reason
+            - convergence_reason_string: str - Human-readable convergence reason
+            - snes_iterations: int - Number of SNES iterations
+            - linear_iterations: int - Total number of linear iterations
+            - zero_iterations: bool - Whether SNES took zero iterations
+            - tolerances: dict - SNES tolerance settings
+        """
+
+        if not hasattr(self, 'snes') or self.snes is None:
+            return {
+                'error': 'SNES not initialized - call solve() first',
+                'snes_available': False
+            }
+
+        # Get basic convergence info
+        converged_reason = self.snes.getConvergedReason()
+        snes_iterations = self.snes.getIterationNumber()
+        linear_iterations = self.snes.getLinearSolveIterations()
+        rtol, atol, stol, maxit = self.snes.getTolerances()
+
+        # Determine convergence status
+        converged = converged_reason > 0
+        diverged = converged_reason < 0
+
+        # Map convergence reasons to descriptive strings (PETSc documentation)
+        convergence_reason_map = {
+            # Positive reasons = converged
+            1: "CONVERGED_FNORM_ABS - ||F|| < atol",
+            2: "CONVERGED_FNORM_RELATIVE - ||F|| < rtol*||F_initial||",
+            3: "CONVERGED_SNORM_RELATIVE - ||x|| < stol",
+            4: "CONVERGED_ITS - Maximum iterations reached",
+
+            # Zero = still iterating (shouldn't see after solve)
+            0: "ITERATING - Still iterating (unexpected after solve)",
+
+            # Negative reasons = diverged
+            -1: "DIVERGED_FUNCTION_DOMAIN - Function domain error",
+            -2: "DIVERGED_FUNCTION_COUNT - Too many function evaluations",
+            -3: "DIVERGED_LINEAR_SOLVE - Linear solver failed",
+            -4: "DIVERGED_FNORM_NAN - ||F|| is Not-a-Number",
+            -5: "DIVERGED_MAX_IT - Maximum iterations exceeded",
+            -6: "DIVERGED_LINE_SEARCH - Line search failed",
+            -7: "DIVERGED_INNER - Inner solve failed",
+            -8: "DIVERGED_LOCAL_MIN - Local minimum reached",
+            -9: "DIVERGED_DTOL - ||F|| increased by divtol",
+            -10: "DIVERGED_JACOBIAN_DOMAIN - Jacobian calculation failed",
+            -11: "DIVERGED_TR_DELTA - Trust region delta too small",
+        }
+
+        convergence_reason_string = convergence_reason_map.get(
+            converged_reason,
+            f"UNKNOWN_CONVERGENCE_REASON_{converged_reason}"
+        )
+
+        return {
+            'snes_available': True,
+            'converged': converged,
+            'diverged': diverged,
+            'convergence_reason': converged_reason,
+            'convergence_reason_string': convergence_reason_string,
+            'snes_iterations': snes_iterations,
+            'linear_iterations': linear_iterations,
+            'zero_iterations': snes_iterations == 0,
+            'linear_solver_failed': converged_reason == -3,
+            'nan_residual': converged_reason == -4,
+            'tolerances': {
+                'relative_tolerance': rtol,
+                'absolute_tolerance': atol,
+                'step_tolerance': stol,
+                'max_iterations': maxit
+            }
+        }
+
+    def check_snes_convergence(self, raise_on_divergence=True, print_diagnostics=False):
+        """
+        Check SNES convergence and optionally raise exceptions or print diagnostics.
+
+        Parameters:
+        -----------
+        raise_on_divergence : bool
+            Whether to raise an exception if solver diverged
+        print_diagnostics : bool
+            Whether to print diagnostic information
+
+        Returns:
+        --------
+        dict
+            SNES diagnostics
+
+        Raises:
+        -------
+        RuntimeError
+            If solver diverged and raise_on_divergence=True
+        """
+
+        diagnostics = self.get_snes_diagnostics()
+
+        if not diagnostics.get('snes_available', False):
+            if raise_on_divergence:
+                raise RuntimeError(diagnostics.get('error', 'SNES diagnostics not available'))
+            return diagnostics
+
+        if print_diagnostics:
+            print(f"\n=== SNES DIAGNOSTICS ===")
+            print(f"Status: {'✓ CONVERGED' if diagnostics['converged'] else '✗ DIVERGED'}")
+            print(f"Reason: {diagnostics['convergence_reason_string']}")
+            print(f"Iterations: {diagnostics['snes_iterations']} SNES, {diagnostics['linear_iterations']} linear")
+
+            tol = diagnostics['tolerances']
+            print(f"Tolerances: rtol={tol['relative_tolerance']:.1e}, "
+                  f"atol={tol['absolute_tolerance']:.1e}")
+
+            # Issue-specific warnings
+            if diagnostics['zero_iterations']:
+                print(f"⚠️  WARNING: Zero SNES iterations!")
+                print(f"   Possible scaling issues - consider geological scaling")
+
+            if diagnostics['linear_solver_failed']:
+                print(f"⚠️  LINEAR SOLVER FAILURE!")
+                print(f"   Often caused by poor matrix conditioning")
+
+        # Raise exception if requested and solver diverged
+        if diagnostics['diverged'] and raise_on_divergence:
+            error_msg = f"SNES solver diverged: {diagnostics['convergence_reason_string']}\n"
+            error_msg += f"Iterations: {diagnostics['snes_iterations']} SNES, {diagnostics['linear_iterations']} linear"
+
+            if diagnostics['zero_iterations']:
+                error_msg += "\nZERO ITERATIONS: Scaling or tolerance issues likely"
+                error_msg += "\nSUGGESTION: Try geological scaling"
+
+            if diagnostics['linear_solver_failed']:
+                error_msg += "\nLINEAR SOLVER FAILURE: Matrix conditioning problems"
+                error_msg += "\nSUGGESTION: Check scaling or solver options"
+
+            raise RuntimeError(error_msg)
+
+        return diagnostics
+
+    def solve_with_diagnostics(self,
+                              check_convergence=True,
+                              raise_on_divergence=False,
+                              print_diagnostics=False,
+                              **solve_kwargs):
+        """
+        Solve with automatic SNES convergence checking and diagnostics.
+
+        Parameters:
+        -----------
+        check_convergence : bool
+            Whether to check convergence after solving
+        raise_on_divergence : bool
+            Whether to raise exception on divergence
+        print_diagnostics : bool
+            Whether to print diagnostic information
+        **solve_kwargs
+            Additional arguments passed to solve()
+
+        Returns:
+        --------
+        dict or None
+            SNES diagnostics if check_convergence=True, None otherwise
+
+        Raises:
+        -------
+        RuntimeError
+            If solver diverged and raise_on_divergence=True
+        """
+
+        # Call the original solve method
+        self.solve(**solve_kwargs)
+
+        # Check convergence if requested
+        if check_convergence:
+            return self.check_snes_convergence(
+                raise_on_divergence=raise_on_divergence,
+                print_diagnostics=print_diagnostics
+            )
+
+        return None
+
     @timing.routine_timer_decorator
     def _build(self,
                     verbose: bool = False,
@@ -798,8 +988,8 @@ class SNES_Scalar(SolverBaseClass):
         # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(1).as_immutable()
-        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
+        f0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(1).as_immutable()
+        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -1400,8 +1590,8 @@ class SNES_Vector(SolverBaseClass):
         # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
-        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim,dim).as_immutable()
+        f0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
+        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim,dim).as_immutable()
 
 
         self._u_f0 = f0
@@ -2273,9 +2463,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## and do these one by one as required by PETSc. However, at the moment, this
         ## is working .. so be careful !!
 
-        F0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False))
-        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False))
-        PF0  = sympy.Array(uw.function.expression.unwrap(self.PF0.sym, keep_constants=False, return_self=False))
+        F0  = sympy.Array(uw.function.expressions.unwrap(self.F0.sym, keep_constants=False, return_self=False))
+        F1  = sympy.Array(uw.function.expressions.unwrap(self.F1.sym, keep_constants=False, return_self=False))
+        PF0  = sympy.Array(uw.function.expressions.unwrap(self.PF0.sym, keep_constants=False, return_self=False))
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)

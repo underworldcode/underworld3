@@ -18,6 +18,7 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
+from underworld3.function.quantities import UWQuantity
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
 from underworld3.function import expression as public_expression
@@ -30,7 +31,12 @@ def validate_parameters(
     symbol, input, default=None, allow_number=True, allow_expression=True
 ):
 
-    if allow_number and isinstance(input, (float)):
+    if isinstance(input, UWQuantity):
+        # Convert UWQuantity to UWexpression - this is the beautiful symmetry!
+        # The UWexpression constructor will handle unit conversion automatically
+        input = expression(symbol, input, f"(converted from UWQuantity with units {input.units if input.has_units else 'dimensionless'})")
+
+    elif allow_number and isinstance(input, (float)):
         # print(f"{symbol}: Converting number to uw expression {input}")
         input = expression(symbol, input, "(converted from float)")
 
@@ -48,7 +54,7 @@ def validate_parameters(
     else:
         # That's about all we can fix automagically
         print(f"Unable to set parameter: {symbol} from {input}")
-        print(f"An underworld `expression` or `function` is required", flush=True)
+        print(f"An underworld `expression`, `UWQuantity`, or `function` is required", flush=True)
         return None
 
     return input
@@ -418,7 +424,7 @@ class ViscousFlowModel(Constitutive_Model):
             return inner_self._shear_viscosity_0
 
         @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
+        def shear_viscosity_0(inner_self, value: Union[float, sympy.Function, UWQuantity]):
 
             visc_expr = validate_parameters(
                 R"\eta", value, default=None, allow_number=True
@@ -492,7 +498,20 @@ class ViscousFlowModel(Constitutive_Model):
         viscosity = self.viscosity
 
         try:
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
+            # CRITICAL: Use .sym property to avoid UWexpression array corruption issues
+            #
+            # When SymPy's array operations encounter UWexpression objects directly,
+            # they can corrupt the internal array storage (e.g., reducing 16 elements
+            # to 12 in rank-4 tensors), causing IndexError on as_immutable().
+            #
+            # This affects ANY tensor operations with UWexpression objects:
+            # - User custom constitutive models: tensor * uwexpression
+            # - Advanced mathematical operations with arrays/tensors
+            #
+            # Solution: Always use .sym property for tensor/array operations
+            # Example: tensor * uwexpression.sym (works) vs tensor * uwexpression (fails)
+            viscosity_sym = viscosity.sym if hasattr(viscosity, 'sym') else viscosity
+            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity_sym
         except:
             d = self.dim
             dv = uw.maths.tensor.idxmap[d][0]
@@ -1243,7 +1262,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         viscosity = self.viscosity
 
         try:
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
+            # CRITICAL: Use .sym property to avoid UWexpression array corruption issues
+            # See ViscousFlowModel._build_c_tensor() for detailed explanation
+            viscosity_sym = viscosity.sym if hasattr(viscosity, 'sym') else viscosity
+            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity_sym
         except:
             d = self.dim
             dv = uw.maths.tensor.idxmap[d][0]
@@ -1503,7 +1525,9 @@ class DiffusionModel(Constitutive_Model):
 
         d = self.dim
         kappa = self.Parameters.diffusivity
-        self._c = sympy.Matrix.eye(d) * kappa
+        # Direct construction to avoid SymPy Matrix scalar multiplication issues
+        eye_matrix = sympy.Matrix.eye(d)
+        self._c = sympy.Matrix(d, d, lambda i, j: eye_matrix[i, j] * kappa)
 
         return
 
@@ -1743,7 +1767,9 @@ class DarcyFlowModel(Constitutive_Model):
 
         d = self.dim
         kappa = self.Parameters.permeability
-        self._c = sympy.Matrix.eye(d) * kappa
+        # Direct construction to avoid SymPy Matrix scalar multiplication issues
+        eye_matrix = sympy.Matrix.eye(d)
+        self._c = sympy.Matrix(d, d, lambda i, j: eye_matrix[i, j] * kappa)
 
         return
 
@@ -2003,7 +2029,7 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         Parameters:
         -----------
         unknowns : UnknownSet
-            The solver's authoritative unknowns ($\mathbf{u}$, $D\mathbf{F}/Dt$, $D\mathbf{u}/Dt$)
+            The solver's authoritative unknowns ($\\mathbf{u}$, $D\\mathbf{F}/Dt$, $D\\mathbf{u}/Dt$)
         material_swarmVariable : IndexSwarmVariable
             Index variable tracking material distribution on particles
         constitutive_models : List[Constitutive_Model]  
@@ -2048,7 +2074,7 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             # For elastic models, verify DFDt access
             if hasattr(model, '_stress_star'):
                 assert hasattr(unknowns, 'DFDt'), \
-                    f"Model {i} needs stress history but $D\mathbf{{F}}/Dt$ not available"
+                    f"Model {i} needs stress history but $D\\mathbf{{F}}/Dt$ not available"
 
     def _validate_model_compatibility(self, models: list) -> bool:
         """
@@ -2089,7 +2115,7 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         
         CRITICAL: This composite flux becomes the stress history that
         all constituent models (including elastic ones) will read via
-        $D\mathbf{F}/Dt.\psi^*[0]$ in the next time step.
+        $D\\mathbf{F}/Dt.\\psi^*[0]$ in the next time step.
         """
         # Get reference flux shape from first model
         reference_flux = self._constitutive_models[0].flux

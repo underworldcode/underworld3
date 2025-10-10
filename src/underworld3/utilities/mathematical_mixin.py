@@ -23,11 +23,24 @@ class MathematicalMixin:
     
     def _validate_sym(self):
         """Validate that sym property is available and valid."""
-        if not hasattr(self, 'sym'):
+        try:
+            # Try to access sym property - this should not trigger __getattr__ recursion
+            # since __getattr__ now guards against accessing private methods
+            sym = self.sym
+        except AttributeError:
+            # Genuinely missing sym property
             raise AttributeError(f"{type(self).__name__} object has no 'sym' property")
-        if self.sym is None:
+        except RecursionError:
+            # Recursion loop in sym property access
+            raise AttributeError(f"{type(self).__name__} object has recursive 'sym' property access")
+        except Exception as e:
+            # For other exceptions (like RuntimeError), preserve the original exception type
+            # This allows tests to check for specific exception types
+            raise e
+
+        if sym is None:
             raise ValueError(f"{type(self).__name__}.sym is None - variable not properly initialized")
-        return self.sym
+        return sym
     
     def _sympify_(self):
         """SymPy protocol: Tell SymPy to use the symbolic form."""
@@ -128,6 +141,11 @@ class MathematicalMixin:
     def __add__(self, other):
         """Addition with scalar broadcasting and error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form FIRST
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             # Try normal SymPy addition first
             return sym + other
@@ -152,6 +170,11 @@ class MathematicalMixin:
     def __sub__(self, other):
         """Subtraction with scalar broadcasting and error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return sym - other
         except (TypeError, ValueError):
@@ -168,6 +191,11 @@ class MathematicalMixin:
     def __rsub__(self, other):
         """Right subtraction with scalar broadcasting."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return other - sym
         except (TypeError, ValueError):
@@ -184,6 +212,11 @@ class MathematicalMixin:
     def __mul__(self, other):
         """Multiplication with error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return sym * other
         except (TypeError, ValueError) as e:
@@ -192,6 +225,11 @@ class MathematicalMixin:
     def __rmul__(self, other):
         """Right multiplication with error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return other * sym
         except (TypeError, ValueError) as e:
@@ -200,6 +238,11 @@ class MathematicalMixin:
     def __truediv__(self, other):
         """Division with error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return sym / other
         except (TypeError, ValueError) as e:
@@ -208,6 +251,11 @@ class MathematicalMixin:
     def __rtruediv__(self, other):
         """Right division with error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return other / sym
         except TypeError:
@@ -218,6 +266,11 @@ class MathematicalMixin:
     def __pow__(self, other):
         """Power with error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return sym ** other
         except (TypeError, ValueError) as e:
@@ -226,6 +279,11 @@ class MathematicalMixin:
     def __rpow__(self, other):
         """Right power with error handling."""
         sym = self._validate_sym()
+
+        # Convert MathematicalMixin arguments to their symbolic form
+        if hasattr(other, '_sympify_'):
+            other = other.sym
+
         try:
             return other ** sym
         except TypeError:
@@ -269,12 +327,16 @@ class MathematicalMixin:
     
     def __getattr__(self, name):
         """Enhanced method delegation with signature handling."""
+        # Prevent recursion if _validate_sym is being accessed
+        if name == '_validate_sym' or name.startswith('_'):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
         try:
             sym = self._validate_sym()
-        except (AttributeError, ValueError):
+        except (AttributeError, ValueError, RecursionError):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' "
                                f"(sym property is invalid)")
-        
+
         if hasattr(sym, name):
             attr = getattr(sym, name)
             
@@ -301,7 +363,12 @@ class MathematicalMixin:
                         converted_args = [2]  # Default to 2-norm (Euclidean)
                     
                     try:
-                        return attr(*converted_args, **converted_kwargs)
+                        result = attr(*converted_args, **converted_kwargs)
+                        # Handle in-place methods that return None
+                        if result is None:
+                            # Method likely modified the object in-place, return the modified sym
+                            return sym
+                        return result
                     except TypeError as e:
                         # Provide helpful error message with signature info
                         try:

@@ -244,11 +244,10 @@ def collective_operation(func):
                     f"This will cause a DEADLOCK because not all ranks participate.\n\n"
                     f"SOLUTION:\n"
                     f"  Execute on all ranks, print on selected ranks:\n"
-                    f"    uw.pprint({executing_ranks[0] if executing_ranks else 0}, "
-                    f"f\"Result: {{obj.{func_name}()}}\")\n\n"
+                    f"    uw.pprint(f\"Result: {{obj.{func_name}()}}\", proc={executing_ranks[0] if executing_ranks else 0})\n\n"
                     f"Or use the return value pattern:\n"
                     f"    result = obj.{func_name}()  # All ranks execute\n"
-                    f"    uw.pprint({executing_ranks[0] if executing_ranks else 0}, f\"Result: {{result}}\")\n"
+                    f"    uw.pprint(f\"Result: {{result}}\", proc={executing_ranks[0] if executing_ranks else 0})\n"
                     f"{'='*70}\n"
                 )
                 raise CollectiveOperationError(error_msg)
@@ -261,43 +260,90 @@ def collective_operation(func):
     return wrapper
 
 
-def pprint(ranks, *args, prefix=True, **kwargs):
+def pprint(*args, proc=0, prefix=False, clean_display=True, flush=False, **kwargs):
     """
-    Parallel-safe print that executes on selected ranks.
-    
+    Parallel-safe print that works as a drop-in replacement for print().
+
     This function ensures all ranks execute any collective operations in the arguments,
     but only selected ranks actually print output. This prevents deadlocks from
     collective operations inside rank conditionals.
-    
+
     Args:
-        ranks: Which ranks should print. Can be:
-            - int: Single rank (e.g., 0)
+        *args: Arguments to print (same as standard print())
+        proc: Which ranks should print. Can be:
+            - int: Single rank (e.g., 0) [default: 0]
             - slice: Range of ranks (e.g., slice(0, 4))
             - list/tuple: Specific ranks (e.g., [0, 3, 7])
             - str: Named patterns ('all', 'first', 'last', 'even', 'odd', '10%')
             - callable: Function taking rank and returning bool
             - numpy array: Boolean mask or integer indices
-        *args: Arguments to print (evaluated on all ranks)
-        prefix: If True, prefix output with rank number (default: True)
-        **kwargs: Additional keyword arguments passed to print()
-    
+        prefix: If True, prefix output with rank number (default: False)
+        clean_display: If True, filter out SymPy uniqueness strings for cleaner display (default: True)
+        flush: If True, forcibly flush the stream (default: False, same as print())
+        **kwargs: Additional keyword arguments passed to print() (sep, end, file)
+
     Example:
-        >>> uw.pprint(0, f"Global max: {var.stats()['max']}")
-        [0] Global max: 42.5
-        
-        >>> uw.pprint(slice(0, 4), f"Local max: {var.data.max()}")
+        >>> uw.pprint(f"Global max: {var.stats()['max']}")  # Only rank 0 prints
+        Global max: 42.5
+
+        >>> uw.pprint(f"Local max: {var.data.max()}", proc=slice(0, 4), prefix=True)
         [0] Local max: 12.3
         [1] Local max: 15.7
         [2] Local max: 9.8
         [3] Local max: 11.2
+
+        >>> uw.pprint(f"Expression: {expr}")  # Automatically cleans symbols
+        Expression: T(x,y)
     """
-    if _should_rank_execute(rank, ranks, size):
+    if _should_rank_execute(rank, proc, size):
+        if clean_display:
+            # Clean up display strings by filtering out SymPy uniqueness patterns
+            import re
+            cleaned_args = []
+            for arg in args:
+                if hasattr(arg, '__str__'):
+                    # Filter out \hspace{XXpt} patterns used for SymPy symbol uniqueness
+                    cleaned_str = re.sub(r'\\hspace\{\s*[\d\.]+pt\s*\}\s*', '', str(arg))
+                    # Clean up nested braces like { {T} } → T (apply multiple times for nested cases)
+                    for _ in range(3):  # Apply up to 3 times for deep nesting
+                        cleaned_str = re.sub(r'\{\s*([^{}]*)\s*\}', r'\1', cleaned_str)
+                    # Clean up latex commands like {\mathbf{v}} → v and \mathbfv → v
+                    cleaned_str = re.sub(r'\\mathbf\{([^}]+)\}', r'\1', cleaned_str)
+                    cleaned_str = re.sub(r'\\mathbf([a-zA-Z])', r'\1', cleaned_str)
+                    # Clean up extra spaces and underscores
+                    cleaned_str = re.sub(r'_\s*(\d+)', r'_\1', cleaned_str)  # Fix spacing around subscripts
+                    cleaned_str = re.sub(r'\s+', ' ', cleaned_str).strip()
+                    cleaned_args.append(cleaned_str)
+                else:
+                    cleaned_args.append(arg)
+            args = tuple(cleaned_args)
+
         if prefix:
-            print(f"[{rank}]", *args, **kwargs)
+            print(f"[{rank}]", *args, flush=flush, **kwargs)
         else:
-            print(*args, **kwargs)
-    
-    _sys.stdout.flush()
+            print(*args, flush=flush, **kwargs)
+    elif flush:
+        # Even if this rank doesn't print, handle flush if requested
+        _sys.stdout.flush()
+
+
+def pprint_old(ranks, *args, prefix=True, clean_display=True, **kwargs):
+    """
+    Legacy pprint interface (deprecated). Use pprint() with proc= parameter instead.
+
+    This function maintains backward compatibility for existing code.
+    """
+    import warnings
+    warnings.warn(
+        "pprint_old() is deprecated. Use pprint() with proc= parameter instead:\n"
+        "  Old: uw.pprint('message')\n"
+        "  New: uw.pprint('message', proc=0)",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
+    # Convert to new interface
+    return pprint(*args, proc=ranks, prefix=prefix, clean_display=clean_display, **kwargs)
 
 
 class call_pattern:

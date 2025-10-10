@@ -454,7 +454,7 @@ while step < max_steps:
 
     # viz for parallel case - write the hdf5s/xdmfs
     if step % 10 == 0:
-        uw.pprint(0, f"\nSave data: ")
+        uw.pprint(f"\nSave data: ")
 
         ### updates projection of fields to the mesh
         updateFields()
@@ -462,7 +462,7 @@ while step < max_steps:
         ### saves the mesh and swarm
         saveData(step, expt_name)
 
-    uw.pprint(0, f"\nStokes solve: ")
+    uw.pprint(f"\nStokes solve: ")
 
     stokes.solve(zero_init_guess=False)
 

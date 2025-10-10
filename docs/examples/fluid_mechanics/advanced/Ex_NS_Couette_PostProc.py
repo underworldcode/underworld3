@@ -73,7 +73,7 @@ dyn_visc    = fluid_rho * kin_visc
 minX, maxX = -0.5 * width, 0.5 * width
 minY, maxY = -0.5 * height, 0.5 * height
 
-uw.pprint(0, "min X, max X:", minX, maxX)
+uw.pprint("min X, max X:", minX, maxX)
     print("min Y, max Y:", minY, maxY)
     print("kinematic viscosity: ", kin_visc)
     print("fluid density: ", fluid_rho)
@@ -172,7 +172,7 @@ max_vel = vel
 
 delta_t = Cmax*delta_x/max_vel
 
-uw.pprint(0, f"Min radius: {delta_x}")
+uw.pprint(f"Min radius: {delta_x}")
     print("Timestep used:", delta_t)
 
 # %%
@@ -227,7 +227,7 @@ v_diff_mag_integ = math.sqrt(uw.maths.Integral(meshbox, vel_mask_fn * v_diff_mag
 v_ana_mag_integ = math.sqrt(uw.maths.Integral(meshbox, vel_mask_fn * v_ana_mag).evaluate())
 v_norm = v_diff_mag_integ / v_ana_mag_integ
 
-uw.pprint(0, f"Normalized velocity L2 error: {v_norm}")
+uw.pprint(f"Normalized velocity L2 error: {v_norm}")
 
 # %%
 # calculate the shear force per unit area acting on the wall
@@ -242,7 +242,7 @@ shear_force_calc.petsc_options.delValue("ksp_monitor")
 shear_force_calc.solve()
 
 num_val = uw.function.evaluate(shear_force.sym, np.array([[1, 0.5]]))
-uw.pprint(0, f"Theoretical value: {dyn_visc * vel / height}")
+uw.pprint(f"Theoretical value: {dyn_visc * vel / height}")
     print(f"Numerical value: {num_val}")
 
 

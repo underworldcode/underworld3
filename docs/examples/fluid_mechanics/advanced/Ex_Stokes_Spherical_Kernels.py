@@ -229,7 +229,7 @@ pressure_solver.solve()
 pstats1 = p_cont.stats()
 pstats0 = p_soln.stats()
 
-uw.pprint(0, f"Pressure (C1): {pstats1}")
+uw.pprint(f"Pressure (C1): {pstats1}")
     print(f"Pressure (C0): {pstats0}")
     print(f"Velocity: {vnorm}")
 # -

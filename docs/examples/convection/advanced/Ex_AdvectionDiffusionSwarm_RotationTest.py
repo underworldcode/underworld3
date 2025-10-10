@@ -228,7 +228,7 @@ for step in range(0, 10):
     tstats = t_soln.stats()
     print("psi*", adv_diff.DuDt.psi_star[0]._meshVar.stats())
 
-    uw.pprint(0, "Timestep {}, dt {}".format(step, delta_t))
+    uw.pprint("Timestep {}, dt {}".format(step, delta_t))
         print(tstats)
 
     plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
