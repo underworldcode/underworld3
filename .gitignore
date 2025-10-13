@@ -209,7 +209,9 @@ CLAUDE.md
 # Temporary test files (can be deleted)
 temp_tests_deletable/
 debug_*.py
-test_*.py
+/test_*.py
+# Allow legitimate test files in tests/ directory
+!tests/**/test_*.py
 
 # IDE and editor artifacts
 .ropeproject/
