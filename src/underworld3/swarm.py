@@ -2344,13 +2344,20 @@ class Swarm(Stateful, uw_object):
 
             coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
 
-            coords[...] = (
-                all_local_coords[...]
-                + (0.33 / (1 + fill_param))
-                * (np.random.random(size=all_local_coords.shape) - 0.5)
+            # Compute perturbation - extract magnitude if coordinates have units
+            # numpy.array(..., dtype=float64) forces conversion to plain array
+            coord_data = np.array(all_local_coords, dtype=np.float64)
+            search_lengths = np.array(self.mesh._search_lengths[all_local_cells], dtype=np.float64)
+
+            perturbation = (
+                (0.33 / (1 + fill_param))
+                * (np.random.random(size=coord_data.shape) - 0.5)
                 * 0.00001
-                * self.mesh._search_lengths[all_local_cells]  # typical cell size
+                * search_lengths  # typical cell size
             )
+
+            # Add perturbation (coords array stores dimensionless values)
+            coords[...] = coord_data + perturbation
 
             self.dm.restoreField("DMSwarmPIC_coor")
 
@@ -3506,13 +3513,19 @@ class Swarm(Stateful, uw_object):
             # print(f"particle coords -> {coords.shape}")
             # print(f"remeshed points  -> {num_remeshed_points}")
 
+            # Compute perturbation - extract magnitude if coordinates have units
+            # numpy.array(..., dtype=float64) forces conversion to plain array
+            coord_data = np.array(self.mesh.particle_X_orig[:, :], dtype=np.float64)
+            radii_data = np.array(self.mesh._radii[cellid[swarm_size::]], dtype=np.float64)
+
             perturbation = 0.00001 * (
                 (0.33 / (1 + self.fill_param))
                 * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
-                * self.mesh._radii[cellid[swarm_size::]].reshape(-1, 1)
+                * radii_data.reshape(-1, 1)
             )
 
-            coords[swarm_size::] = self.mesh.particle_X_orig[:, :] + perturbation
+            # Add perturbation (coords array stores dimensionless values)
+            coords[swarm_size::] = coord_data + perturbation
             ## cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
             rmsh[swarm_size::] = 0
 

@@ -1991,23 +1991,31 @@ class Mesh(Stateful, uw_object):
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
 
+                # Extract raw numerical values (magnitudes) without units
+                # Use + 0.0 to force conversion to plain numpy array
+                face_cent_data = numpy.array(face_centroid, dtype=numpy.float64)
+                cell_cent_data = numpy.array(cell_centroid, dtype=numpy.float64)
+                point_data = numpy.array(point_coords, dtype=numpy.float64)
+
                 # 2D case
                 if self.dim == 2:
-                    vector = point_coords[1] - point_coords[0]
+                    vector = point_data[1] - point_data[0]
                     normal = numpy.array((-vector[1], vector[0]))
 
                 # 3D simplex case (probably also OK for hexes)
                 else:
                     normal = numpy.cross(
-                        (point_coords[1] - point_coords[0]),
-                        (point_coords[2] - point_coords[0]),
+                        (point_data[1] - point_data[0]),
+                        (point_data[2] - point_data[0]),
                     )
 
-                inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
+                inward_outward = numpy.sign(normal.dot(face_cent_data - cell_cent_data))
                 normal *= inward_outward / numpy.sqrt(normal.dot(normal))
 
-                outside_control_point = 1e-3 * normal + face_centroid
-                inside_control_point = -1e-3 * normal + face_centroid
+                # Compute offset in dimensionless coordinates
+                # The arrays store numerical values only (no units)
+                outside_control_point = 1e-3 * normal + face_cent_data
+                inside_control_point = -1e-3 * normal + face_cent_data
 
                 mesh_cell_outer_control_points[face, cell, :] = outside_control_point
                 mesh_cell_inner_control_points[face, cell, :] = inside_control_point
