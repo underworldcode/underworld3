@@ -249,12 +249,82 @@ mesh = uw.meshing.StructuredQuadBox(..., units="m")
 - Integration with finite element calculations?
 - Support for time-dependent coordinate transformations?
 
+## Implementation Status
+
+### ✅ COMPLETED (2025-10-11)
+
+**Phase 1: Basic Units Support - COMPLETE**
+- ✅ Added `units` parameter to mesh constructors
+- ✅ Added `units` property to Mesh class
+- ✅ Store units metadata in mesh objects
+- ✅ Updated mesh.points to return unit-aware arrays (UnitAwareArray)
+
+**KDTree Unit-Aware Implementation - COMPLETE**
+- ✅ Both ckdtree (Cython) and kdtree (Python) implementations support units
+- ✅ KDTree stores coordinate units from construction
+- ✅ Automatic unit conversion for queries
+- ✅ Unit-aware distance results
+- ✅ Unit mismatch detection with clear errors
+- ✅ RBF interpolation handles units correctly
+
+**Files Modified**:
+1. `src/underworld3/discretisation/discretisation_mesh.py`
+   - Line 1810: KD-tree construction uses `self._points` (raw array)
+   - Line 2404: Cell size calculation uses `self._points` (raw array)
+   - Pattern: Internal operations use `_points`, external API uses `points`
+
+2. `src/underworld3/ckdtree.pyx`
+   - Added `coord_units` attribute
+   - Unit detection and storage on construction
+   - `_convert_coords_to_tree_units()` method
+   - Unit-aware `query()` and `rbf_interpolator_local_from_kdtree()`
+
+3. `src/underworld3/kdtree.py`
+   - Identical changes to ckdtree (both implementations consistent)
+
+**Test Coverage**: test_0620_mesh_units_interface.py validates all functionality
+
+### Key Implementation Patterns
+
+**Internal vs External Access**:
+```python
+# Internal mesh operations: Use raw arrays
+self._points  # No unit wrapping, fast
+
+# External API: Unit-aware arrays
+self.points   # Unit-aware when units set
+```
+
+**KDTree Usage**:
+```python
+# Create from mesh
+mesh = uw.meshing.StructuredQuadBox(..., units="kilometer")
+kd = uw.kdtree.KDTree(mesh.points)  # Stores 'kilometer' units
+
+# Query with automatic conversion
+query_m = UnitAwareArray([[100000.0, 50000.0]], units="meter")
+dist, idx = kd.query(query_m)  # Auto-converts m→km, returns km distances
+```
+
+## Remaining Work
+
+### Phase 2: Unit-Aware Operations (Future)
+1. **Implement `to_units()` and `convert_units()` methods** (not yet started)
+2. **Integrate with mesh variable gradient calculations** (partial - needs review)
+3. **Add units to mesh save/load operations** (not yet started)
+
+### Phase 3: Advanced Features (Future)
+1. **Unit-aware coordinate symbols (mesh.X)** (not yet started)
+2. **Automatic unit derivation for derived quantities** (not yet started)
+3. **Visualization with unit-aware axes and labels** (not yet started)
+4. **GIS and scientific data format integration** (not yet started)
+
 ## Next Steps
 
-1. **Create test suite** for proposed interface (✅ Done in test_0620_mesh_units_interface.py)
-2. **Implement Phase 1** basic units support
-3. **Validate with realistic use cases** (mantle convection, geology)
-4. **Gather user feedback** on interface design
-5. **Extend to advanced features** based on user needs
+1. ✅ **Create test suite** for proposed interface (Done in test_0620_mesh_units_interface.py)
+2. ✅ **Implement Phase 1** basic units support (COMPLETE)
+3. 🔄 **Validate with realistic use cases** (mantle convection, geology) - Ongoing
+4. ⏳ **Gather user feedback** on interface design
+5. ⏳ **Extend to advanced features** based on user needs
 
 This design provides a comprehensive solution to the mesh coordinate units gap while maintaining backward compatibility and enabling future enhancements.
