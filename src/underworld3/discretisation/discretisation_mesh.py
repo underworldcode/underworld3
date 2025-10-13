@@ -465,7 +465,7 @@ class Mesh(Stateful, uw_object):
         # Expose mesh points through special numpy array class with a callback
         # on all setter operations
 
-        self._points = uw.utilities.NDArray_With_Callback(
+        self._coords = uw.utilities.NDArray_With_Callback(
             numpy.ndarray.view(
                 self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
             ),
@@ -487,7 +487,7 @@ class Mesh(Stateful, uw_object):
 
             return
 
-        self._points.add_callback(mesh_update_callback)
+        self._coords.add_callback(mesh_update_callback)
 
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
@@ -1290,15 +1290,15 @@ class Mesh(Stateful, uw_object):
         The array of mesh element vertex coordinates.
 
         .. deprecated:: 0.99.0
-            Use :attr:`points` or :attr:`X.coords` instead.
+            Use :attr:`X.coords` instead.
             ``mesh.data`` is deprecated in favor of ``mesh.X.coords``
-            (coordinate-system-aware interface) or ``mesh.points``.
+            (coordinate-system-aware interface).
 
-        This is an alias for mesh.points (preferred access pattern).
+        This is an alias for mesh.points (which is also deprecated).
         """
         import warnings
         warnings.warn(
-            "mesh.data is deprecated, use mesh.X.coords or mesh.points instead",
+            "mesh.data is deprecated, use mesh.X.coords instead",
             DeprecationWarning,
             stacklevel=2
         )
@@ -1309,6 +1309,11 @@ class Mesh(Stateful, uw_object):
         """
         Mesh node coordinates in physical units.
 
+        .. deprecated:: 0.99.0
+            Use :attr:`X.coords` instead.
+            ``mesh.points`` is deprecated in favor of ``mesh.X.coords``
+            (coordinate-system-aware interface).
+
         When the mesh has coordinate scaling applied (via model units),
         this property automatically converts from internal model coordinates
         to physical coordinates for user access.
@@ -1318,7 +1323,14 @@ class Mesh(Stateful, uw_object):
         Returns:
             numpy.ndarray or UnitAwareArray: Node coordinates (with units if specified)
         """
-        model_coords = self._points
+        import warnings
+        warnings.warn(
+            "mesh.points is deprecated, use mesh.X.coords instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
+        model_coords = self._coords
 
         # Apply scaling to convert model coordinates to physical coordinates
         if hasattr(self.CoordinateSystem, '_scaled') and self.CoordinateSystem._scaled:
@@ -1339,6 +1351,9 @@ class Mesh(Stateful, uw_object):
         """
         Set mesh node coordinates from physical units.
 
+        .. deprecated:: 0.99.0
+            Use :attr:`X.coords` instead.
+
         When the mesh has coordinate scaling applied (via model units),
         this property automatically converts from physical coordinates
         to internal model coordinates for PETSc storage.
@@ -1346,13 +1361,20 @@ class Mesh(Stateful, uw_object):
         Args:
             value (numpy.ndarray): Node coordinates in physical units
         """
+        import warnings
+        warnings.warn(
+            "mesh.points is deprecated, use mesh.X.coords instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         # Apply inverse scaling to convert physical coordinates to model coordinates
         if hasattr(self.CoordinateSystem, '_scaled') and self.CoordinateSystem._scaled:
             scale_factor = self.CoordinateSystem._length_scale
             model_coords = value / scale_factor
-            self._points = model_coords
+            self._coords = model_coords
         else:
-            self._points = value
+            self._coords = value
 
     @property
     def physical_coordinates(self):
@@ -1833,7 +1855,7 @@ class Mesh(Stateful, uw_object):
             cell_faces = self.dm.getCone(cell_id)
             points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = self._points[points - pStart]
+            cell_point_coords = self._coords[points - pStart]
             cell_centroid = cell_point_coords.mean(axis=0)
 
             # for face in range(cell_num_faces):
@@ -1960,11 +1982,11 @@ class Mesh(Stateful, uw_object):
 
         Internal Coordinate System Access Pattern
         ------------------------------------------
-        This method uses `self._points` (raw PETSc array) instead of `self.data`
+        This method uses `self._coords` (raw PETSc array) instead of `self.data`
         or `self.X.coords` (unit-wrapped properties) for performance and correctness:
 
         1. **Guard at boundaries**: External interfaces use unit-aware properties
-        2. **Raw access internally**: Internal geometric calculations use `self._points`
+        2. **Raw access internally**: Internal geometric calculations use `self._coords`
         3. **Performance**: Avoids UnitAwareArray overhead in tight loops
         4. **Correctness**: Prevents unit conversion issues in geometric operations
 
@@ -2004,7 +2026,7 @@ class Mesh(Stateful, uw_object):
             cell_faces = self.dm.getCone(cell_id)
             points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_point_coords = self._points[points - pStart]
+            cell_point_coords = self._coords[points - pStart]
 
             for face in range(cell_num_faces):
 
@@ -2012,7 +2034,7 @@ class Mesh(Stateful, uw_object):
                     -face_num_points:
                 ]
                 # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-                point_coords = self._points[points - pStart]
+                point_coords = self._coords[points - pStart]
 
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
@@ -2122,7 +2144,7 @@ class Mesh(Stateful, uw_object):
         for face in boundary_faces:
             cell = self.dm.getJoin(face)[0]
             points = self.dm.getTransitiveClosure(face)[0][-face_num_points:]
-            point_coords = self._points[points - pStart]  # Use raw array for internal calculations
+            point_coords = self._coords[points - pStart]  # Use raw array for internal calculations
             face_centroid = point_coords.mean(axis=0)
             cell_centroid = self._centroids[cell - cStart]
 
@@ -2446,7 +2468,7 @@ class Mesh(Stateful, uw_object):
             cell_num_points = self.dm.getConeSize(cell)
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
             # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_coords = self._points[cell_points - pStart]
+            cell_coords = self._coords[cell_points - pStart]
 
             distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
 

@@ -1851,7 +1851,7 @@ class Swarm(Stateful, uw_object):
         # an array with a callback that resets the relevant parts of the
         # swarm variable stack when the data structure is modified.
 
-        self._points = None
+        self._coords = None
 
         ####
 
@@ -2023,6 +2023,10 @@ class Swarm(Stateful, uw_object):
         """
         Swarm particle coordinates in physical units.
 
+        .. deprecated:: 0.99.0
+            Use swarm variables or direct DM access instead.
+            ``swarm.points`` is being deprecated.
+
         When the mesh has coordinate scaling applied (via model units),
         this property automatically converts from internal model coordinates
         to physical coordinates for user access.
@@ -2032,6 +2036,13 @@ class Swarm(Stateful, uw_object):
         Returns:
             numpy.ndarray or UnitAwareArray: Particle coordinates (with units if mesh.units is set)
         """
+        import warnings
+        warnings.warn(
+            "swarm.points is deprecated",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         # Check for mesh coordinate changes and trigger migration if needed
         if (
             hasattr(self, "_mesh_version")
@@ -2054,9 +2065,9 @@ class Swarm(Stateful, uw_object):
             coords = model_coords
 
         # Cache and reuse NDArray_With_Callback object for consistent object identity
-        if not hasattr(self, "_points") or self._points is None:
+        if not hasattr(self, "_coords") or self._coords is None:
             # First access: create new NDArray_With_Callback object
-            self._points = uw.utilities.NDArray_With_Callback(
+            self._coords = uw.utilities.NDArray_With_Callback(
                 coords,
                 owner=self,
                 disable_inplace_operators=True,
@@ -2108,25 +2119,28 @@ class Swarm(Stateful, uw_object):
                 return
 
             # Add callback to the cached object
-            self._points.add_callback(swarm_update_callback)
+            self._coords.add_callback(swarm_update_callback)
         else:
             # Subsequent accesses: efficiently sync new coordinate data
             # This preserves callbacks and delay contexts, updating object reference if size
             # changed as a result of migration operations
 
-            self._points = self._points.sync_data(coords)
+            self._coords = self._coords.sync_data(coords)
 
         # Wrap with unit-aware array if mesh has units
         if hasattr(self.mesh, 'units') and self.mesh.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray
-            return UnitAwareArray(self._points, units=self.mesh.units)
+            return UnitAwareArray(self._coords, units=self.mesh.units)
 
-        return self._points
+        return self._coords
 
     @points.setter
     def points(self, value):
         """
         Set swarm particle coordinates from physical units.
+
+        .. deprecated:: 0.99.0
+            Use swarm variables or direct DM access instead.
 
         When the mesh has coordinate scaling applied (via model units),
         this property automatically converts from physical coordinates
@@ -2135,6 +2149,13 @@ class Swarm(Stateful, uw_object):
         Args:
             value (numpy.ndarray): Particle coordinates in physical units
         """
+        import warnings
+        warnings.warn(
+            "swarm.points is deprecated",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         if value.shape[0] != self.local_size:
             raise TypeError(
                 f"Points must be a numpy array with the same size as the swarm",
@@ -2150,7 +2171,7 @@ class Swarm(Stateful, uw_object):
             model_coords = value
 
         # Update the cached NDArray (triggers callback) - use physical coordinates for cache
-        self._points[...] = value[...]
+        self._coords[...] = value[...]
 
         # Update PETSc DM field directly with model coordinates for immediate consistency
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
@@ -2169,7 +2190,7 @@ class Swarm(Stateful, uw_object):
     #             )
     #             raise TypeError(message)
 
-    #     self._points[...] = value[...]
+    #     self._coords[...] = value[...]
 
     @property
     def _particle_coordinates(self):
