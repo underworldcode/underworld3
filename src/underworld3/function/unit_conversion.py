@@ -292,8 +292,15 @@ def determine_expression_units(expression, mesh_info):
                         try:
                             # meshvar is a weak reference, get the actual variable
                             variable = element.meshvar()
-                            if variable and hasattr(variable, 'units') and variable.units:
-                                return str(variable.units)
+                            if variable and hasattr(variable, 'units'):
+                                # Found a variable with units attribute
+                                # Return its units, even if None (explicitly unitless)
+                                # This prevents falling through to coordinate detection
+                                if variable.units:
+                                    return str(variable.units)
+                                else:
+                                    # Variable explicitly has no units - return None
+                                    return None
                         except ReferenceError:
                             # Weak reference is dead
                             continue
@@ -328,8 +335,14 @@ def determine_expression_units(expression, mesh_info):
                 try:
                     # meshvar is a weak reference, get the actual variable
                     variable = atom.meshvar()
-                    if variable and hasattr(variable, 'units') and variable.units:
-                        return str(variable.units)
+                    if variable and hasattr(variable, 'units'):
+                        # Found a variable with units attribute
+                        # Return its units, even if None (explicitly unitless)
+                        if variable.units:
+                            return str(variable.units)
+                        else:
+                            # Variable explicitly has no units - return None
+                            return None
                 except ReferenceError:
                     # Weak reference is dead
                     continue

@@ -103,16 +103,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             print(f"Variable with name {name} already exists on the mesh - Skipping.")
             return mesh.vars[clean_name]
 
-        # Handle mesh DM state snapshot if needed
-        old_gvec = None
-        if mesh._dm_initialized:
-            ## Before adding a new variable, we first snapshot the data from the mesh.dm
-            ## (if not accessed, then this will not be necessary and may break)
-
-            mesh.update_lvec()
-
-            old_gvec = mesh.dm.getGlobalVec()
-            mesh.dm.localToGlobal(mesh._lvec, old_gvec, addv=False)
+        # NOTE: DM reconstruction is now handled in _setup_ds() - no snapshotting needed here
 
         # Create new instance
         obj = super().__new__(cls)
@@ -126,7 +117,6 @@ class _BaseMeshVariable(Stateful, uw_object):
             'degree': degree,
             'continuous': continuous,
             'varsymbol': varsymbol,
-            'old_gvec': old_gvec,
             '_register': _register,
             'units': units,
             'units_backend': units_backend
@@ -158,13 +148,12 @@ class _BaseMeshVariable(Stateful, uw_object):
             degree = params['degree']
             continuous = params['continuous']
             varsymbol = params['varsymbol']
-            old_gvec = params['old_gvec']
             _register = params['_register']
             units = params['units']
             units_backend = params['units_backend']
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
-            old_gvec = None
+            pass
 
         # Variable initialization logic
         import re
@@ -230,9 +219,17 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.degree = degree
         self.continuous = continuous
 
-        # Store unit metadata for variable
+        # Store unit metadata for variable and initialize backend
         self._units = units
-        self._units_backend = units_backend
+        if units is not None:
+            # Initialize units backend properly
+            from underworld3.utilities.units_mixin import PintBackend
+            if units_backend is None or units_backend == 'pint':
+                self._units_backend = PintBackend()
+            else:
+                raise ValueError(f"Unknown units backend: {units_backend}. Only 'pint' is supported.")
+        else:
+            self._units_backend = None
 
         # Component and shape handling
         if vtype == uw.VarType.SCALAR:
@@ -349,38 +346,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         if _register:
             uw.get_default_model()._register_variable(self.name, self)
 
-        # Handle DM reconstruction if needed
-        if old_gvec is not None:
-            ## Recreate the mesh variable dm and restore the data
-            dm0 = mesh.dm
-            dm1 = mesh.dm.clone()
-            dm0.copyFields(dm1)
-            dm1.createDS()
-
-            mdm_is, subdm = dm1.createSubDM(range(0, dm1.getNumFields() - 1))
-
-            if mesh._lvec is not None:
-                mesh._lvec.destroy()
-            mesh._lvec = dm1.createLocalVec()
-            new_gvec = dm1.getGlobalVec()
-            new_gvec_sub = new_gvec.getSubVector(mdm_is)
-
-            # Copy the array data and push to gvec
-            new_gvec_sub.array[...] = old_gvec.array[...]
-            new_gvec.restoreSubVector(mdm_is, new_gvec_sub)
-
-            # Copy the data to mesh._lvec and delete gvec
-            dm1.globalToLocal(new_gvec, mesh._lvec)
-
-            dm1.restoreGlobalVec(new_gvec)
-            dm0.restoreGlobalVec(old_gvec)
-
-            # destroy old dm
-            dm0.destroy()
-
-            # Set new dm on mesh
-            mesh.dm = dm1
-            mesh.dm_hierarchy[-1] = dm1
+        # NOTE: DM reconstruction is now handled in _setup_ds() when fields already exist
+        # The old DM rebuild code here has been removed to avoid double rebuilds
+        # _setup_ds() rebuilds the DM when num_existing_fields > 0
 
         # Mark as initialized
         self._initialized = True
@@ -396,6 +364,21 @@ class _BaseMeshVariable(Stateful, uw_object):
     def units(self, value):
         """Set the units for this variable."""
         self._units = value
+
+    @property
+    def has_units(self):
+        """Check if this variable has units."""
+        return self._units is not None
+
+    @property
+    def dimensionality(self):
+        """Get the dimensionality of this variable."""
+        if not self.has_units:
+            return None
+        if self._units_backend is None:
+            return None
+        quantity = self._units_backend.create_quantity(1.0, self._units)
+        return self._units_backend.get_dimensionality(quantity)
 
     def _create_variable_array(self, initial_data=None):
         """
@@ -1212,11 +1195,41 @@ class _BaseMeshVariable(Stateful, uw_object):
             PETSc.COMM_SELF,
         )
 
-        self.field_id = self.mesh.dm.getNumFields()
-        self.mesh.dm.addField(petsc_fe)
-        field, _ = self.mesh.dm.getField(self.field_id)
-        field.setName(self.clean_name)
-        self.mesh.dm.createDS()
+        # Check if this is the first field or if we need to rebuild the DM
+        # (needed to ensure Section is properly synchronized with field list)
+        num_existing_fields = self.mesh.dm.getNumFields()
+
+        if num_existing_fields > 0:
+            # DM already has fields - need to rebuild to sync Section
+            # This follows the pattern from __init__ (lines 353-383)
+            dm_old = self.mesh.dm
+            dm_new = dm_old.clone()
+
+            # Copy existing fields to new DM
+            dm_old.copyFields(dm_new)
+
+            # Add our new field to the new DM
+            field_id = dm_new.getNumFields()
+            dm_new.addField(petsc_fe)
+            field, _ = dm_new.getField(field_id)
+            field.setName(self.clean_name)
+
+            # Create DS on new DM (this builds a fresh Section with all fields)
+            dm_new.createDS()
+
+            # Replace old DM with new one
+            dm_old.destroy()
+            self.mesh.dm = dm_new
+            self.mesh.dm_hierarchy[-1] = dm_new
+
+            self.field_id = field_id
+        else:
+            # First field - normal fast path
+            self.field_id = self.mesh.dm.getNumFields()
+            self.mesh.dm.addField(petsc_fe)
+            field, _ = self.mesh.dm.getField(self.field_id)
+            field.setName(self.clean_name)
+            self.mesh.dm.createDS()
 
         return
 

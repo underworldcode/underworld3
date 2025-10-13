@@ -39,6 +39,7 @@ def UnstructuredSimplexBox(
     filename=None,
     refinement=None,
     gmsh_verbosity=0,
+    units=None,
     verbose=False,
 ):
     """
@@ -50,6 +51,9 @@ def UnstructuredSimplexBox(
         Tuple specifying minimum mesh location.
     maxCoord:
         Tuple specifying maximum mesh location.
+    units:
+        Optional. Coordinate units (e.g., "km", "m", "cm"). If provided,
+        mesh.points and mesh.data will return unit-aware arrays.
 
     regular option works in 2D but not (currently) in 3D
 
@@ -256,6 +260,7 @@ def UnstructuredSimplexBox(
         refinement=refinement,
         refinement_callback=None,
         return_coords_to_bounds=box_return_coords_to_bounds,
+        units=units,
         verbose=verbose,
     )
 
@@ -276,6 +281,7 @@ def BoxInternalBoundary(
     filename=None,
     refinement=None,
     gmsh_verbosity=0,
+    units=None,
     verbose=False,
 ):
     """
@@ -297,6 +303,9 @@ def BoxInternalBoundary(
         float specifying internal boundary location.
     simplex: bool, optional
         If True, build structuredQuadBox; if not, build unstructuredSimplexBox. Default is False.
+    units:
+        Optional. Coordinate units (e.g., "km", "m", "cm"). If provided,
+        mesh.points and mesh.data will return unit-aware arrays.
     """
 
     class boundaries_2D(Enum):
@@ -711,6 +720,7 @@ def BoxInternalBoundary(
         refinement=0.0,
         refinement_callback=None,
         return_coords_to_bounds=box_return_coords_to_bounds,
+        units=units,
         verbose=verbose,
     )
     uw.adaptivity._dm_unstack_bcs(new_mesh.dm, new_mesh.boundaries, "Face Sets")
@@ -727,6 +737,7 @@ def StructuredQuadBox(
     filename=None,
     refinement=None,
     gmsh_verbosity=0,
+    units=None,
     verbose=False,
 ):
     """
@@ -740,6 +751,9 @@ def StructuredQuadBox(
         Optional. Tuple specifying minimum mesh location.
     maxCoord:
         Optional. Tuple specifying maximum mesh location.
+    units:
+        Optional. Coordinate units (e.g., "km", "m", "cm"). If provided,
+        mesh.points and mesh.data will return unit-aware arrays.
     """
     if minCoords == None:
         minCoords = len(elementRes) * (0.0,)
@@ -1033,6 +1047,7 @@ def StructuredQuadBox(
         refinement=refinement,
         refinement_callback=None,
         return_coords_to_bounds=box_return_coords_to_bounds,
+        units=units,
         verbose=verbose,
     )
 

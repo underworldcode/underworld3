@@ -1001,6 +1001,166 @@ class Model(PintNativeModelMixin, BaseModel):
 
         return f"_{formatted}{unit_short}"
 
+    def _convert_to_user_time_unit(self, time_base_units, velocity_quantity):
+        """
+        Infer appropriate time unit from velocity reference quantity.
+
+        This implements Stage 2 of the two-stage simplification:
+        After rationalizing to SI base units, convert to user-friendly time units
+        by inferring the appropriate scale from the velocity's unit system.
+
+        Parameters
+        ----------
+        time_base_units : pint.Quantity
+            Time in SI base units (seconds)
+        velocity_quantity : pint.Quantity
+            The velocity quantity used to derive time (contains unit hints)
+
+        Returns
+        -------
+        pint.Quantity
+            Time in user-appropriate units (year, megayear, day, etc.)
+
+        Examples
+        --------
+        >>> # If velocity is in cm/year, time should be in years or megayears
+        >>> time_sec = 1.26e14 * ureg.second
+        >>> velocity = 5 * ureg.cm / ureg.year
+        >>> result = model._convert_to_user_time_unit(time_sec, velocity)
+        >>> # result: 40.0 megayear (not 1.26e14 second)
+        """
+        from .scaling import units as u
+
+        velocity_units_str = str(velocity_quantity.units)
+
+        # Infer time unit from velocity's time component
+        if 'year' in velocity_units_str.lower():
+            # Geological time scale
+            time_years = time_base_units.to('year').magnitude
+            if abs(time_years) > 1e6:
+                return time_base_units.to('megayear')
+            elif abs(time_years) > 1e3:
+                return time_base_units.to('kiloyear')
+            else:
+                return time_base_units.to('year')
+        elif 'day' in velocity_units_str.lower():
+            # Daily time scale
+            time_days = time_base_units.to('day').magnitude
+            if abs(time_days) > 365:
+                return time_base_units.to('year')
+            else:
+                return time_base_units.to('day')
+        elif 'hour' in velocity_units_str.lower() or 'hr' in velocity_units_str.lower():
+            # Hourly time scale
+            return time_base_units.to('hour')
+        elif 'minute' in velocity_units_str.lower() or 'min' in velocity_units_str.lower():
+            # Minute time scale
+            return time_base_units.to('minute')
+        else:
+            # Default: keep as seconds or convert to most appropriate
+            time_seconds = time_base_units.magnitude
+            if abs(time_seconds) > 31557600e6:  # > 1 Myr
+                return time_base_units.to('megayear')
+            elif abs(time_seconds) > 31557600:  # > 1 year
+                return time_base_units.to('year')
+            elif abs(time_seconds) > 86400:  # > 1 day
+                return time_base_units.to('day')
+            elif abs(time_seconds) > 3600:  # > 1 hour
+                return time_base_units.to('hour')
+            else:
+                return time_base_units  # Keep as seconds
+
+    def _choose_display_units(self, quantity, dimension_name='[unknown]'):
+        """
+        Choose magnitude-appropriate units for display.
+
+        This implements the display-time unit selection strategy: choose units
+        that give values between 0.1 and 1000 for better readability.
+
+        Parameters
+        ----------
+        quantity : pint.Quantity
+            Quantity to display in appropriate units
+        dimension_name : str, optional
+            Dimension name for context (e.g., '[length]', '[time]', '[mass]')
+
+        Returns
+        -------
+        pint.Quantity
+            Same quantity in magnitude-appropriate units
+
+        Examples
+        --------
+        >>> # Length: 2e6 m → 2000 km
+        >>> length = 2e6 * ureg.meter
+        >>> display_length = model._choose_display_units(length, '[length]')
+        >>> # display_length: 2000 kilometer
+
+        >>> # Time: 1.26e14 s → 40 Myr
+        >>> time = 1.26e14 * ureg.second
+        >>> display_time = model._choose_display_units(time, '[time]')
+        >>> # display_time: 40.0 megayear
+        """
+        from .scaling import units as u
+
+        # Get base magnitude for comparison
+        base_qty = quantity.to_base_units()
+        base_magnitude = abs(base_qty.magnitude)
+
+        # Define unit options for each dimension (ordered from small to large)
+        unit_options = {
+            '[length]': ['nanometer', 'micrometer', 'millimeter', 'centimeter', 'meter', 'kilometer', 'megameter'],
+            '[time]': ['microsecond', 'millisecond', 'second', 'minute', 'hour', 'day', 'year', 'kiloyear', 'megayear'],
+            '[mass]': ['microgram', 'milligram', 'gram', 'kilogram', 'tonne', 'kilotonne', 'megatonne'],
+            '[temperature]': ['kelvin'],  # Temperature doesn't need magnitude scaling
+            '[current]': ['microampere', 'milliampere', 'ampere', 'kiloampere'],
+            '[substance]': ['micromole', 'millimole', 'mole', 'kilomole'],
+            '[luminosity]': ['millicandela', 'candela', 'kilocandela']
+        }
+
+        # Get unit options for this dimension
+        options = unit_options.get(dimension_name, [])
+
+        if not options:
+            # If no options defined, return as-is
+            return quantity
+
+        # Try each unit option and find the one that gives good magnitude
+        best_unit = None
+        best_magnitude = None
+        best_score = float('inf')
+
+        for unit_name in options:
+            try:
+                converted = quantity.to(unit_name)
+                magnitude = abs(converted.magnitude)
+
+                # Score based on how far from ideal range [1, 1000]
+                if 1 <= magnitude <= 1000:
+                    # In ideal range - score by distance from geometric mean (31.6)
+                    import math
+                    score = abs(math.log10(magnitude) - 1.5)  # log10(31.6) ≈ 1.5
+                elif magnitude < 1:
+                    # Too small - penalize more for being further below 1
+                    score = 10 * (1 - magnitude)
+                else:
+                    # Too large - penalize for being above 1000
+                    score = 10 + math.log10(magnitude / 1000)
+
+                if score < best_score:
+                    best_score = score
+                    best_unit = unit_name
+                    best_magnitude = magnitude
+            except:
+                # Unit conversion failed, skip this option
+                continue
+
+        # Return in best unit if found, otherwise return original
+        if best_unit is not None:
+            return quantity.to(best_unit)
+        else:
+            return quantity
+
     def derive_fundamental_scalings(self):
         """
         Derive fundamental scaling units (length, time, mass, temperature) from reference quantities.
@@ -1116,7 +1276,13 @@ class Model(PintNativeModelMixin, BaseModel):
                 if dimensionality == (u.meter / u.second).dimensionality:
                     if '[time]' not in scalings and '[length]' in scalings:
                         # Derive time from length / velocity
-                        scalings['[time]'] = scalings['[length]'] / qty
+                        time_raw = scalings['[length]'] / qty
+                        # TWO-STAGE SIMPLIFICATION:
+                        # Stage 1: Rationalize to SI base units to eliminate compound nonsense
+                        time_base = time_raw.to_base_units()
+                        # Stage 2: Convert to user-appropriate time unit (infer from velocity)
+                        time_user = self._convert_to_user_time_unit(time_base, qty)
+                        scalings['[time]'] = time_user
                         derived_info['[time]'] = f"from length_scale ÷ {name}"
                         break  # Only need one time derivation
 
@@ -1133,7 +1299,12 @@ class Model(PintNativeModelMixin, BaseModel):
                 if dimensionality == (u.pascal * u.second).dimensionality:
                     if '[length]' in scalings and '[time]' in scalings and '[mass]' not in scalings:
                         # Derive mass from viscosity * length * time
-                        scalings['[mass]'] = qty * scalings['[length]'] * scalings['[time]']
+                        mass_raw = qty * scalings['[length]'] * scalings['[time]']
+                        # TWO-STAGE SIMPLIFICATION:
+                        # Stage 1: Rationalize to SI base units
+                        mass_base = mass_raw.to_base_units()
+                        # Stage 2: Keep in kilogram (standard mass unit)
+                        scalings['[mass]'] = mass_base
                         derived_info['[mass]'] = f"from {name} × length_scale × time_scale"
                         break  # Only need one mass derivation
 
@@ -1142,7 +1313,10 @@ class Model(PintNativeModelMixin, BaseModel):
                 elif dimensionality == (u.kilogram / u.meter**3).dimensionality:
                     if '[length]' in scalings and '[mass]' not in scalings:
                         # Derive mass from density * length^3
-                        scalings['[mass]'] = qty * scalings['[length]']**3
+                        mass_raw = qty * scalings['[length]']**3
+                        # Simplify to base units (kilogram)
+                        mass_base = mass_raw.to_base_units()
+                        scalings['[mass]'] = mass_base
                         derived_info['[mass]'] = f"from {name} × length_scale³"
                         break  # Only need one mass derivation
 
@@ -1160,7 +1334,10 @@ class Model(PintNativeModelMixin, BaseModel):
                 if dimensionality == (u.volt / u.meter).dimensionality:
                     if '[mass]' in scalings and '[time]' in scalings and '[current]' not in scalings:
                         # Derive current from mass / (time^3 * electric_field)
-                        scalings['[current]'] = scalings['[mass]'] / (scalings['[time]']**3 * qty)
+                        current_raw = scalings['[mass]'] / (scalings['[time]']**3 * qty)
+                        # Simplify to base units (ampere)
+                        current_base = current_raw.to_base_units()
+                        scalings['[current]'] = current_base
                         derived_info['[current]'] = f"from mass_scale ÷ (time_scale³ × {name})"
                         break  # Only need one current derivation
 
@@ -1169,7 +1346,10 @@ class Model(PintNativeModelMixin, BaseModel):
                 elif dimensionality == (u.mole / u.meter**3).dimensionality:
                     if '[length]' in scalings and '[substance]' not in scalings:
                         # Derive substance from concentration * length^3
-                        scalings['[substance]'] = qty * scalings['[length]']**3
+                        substance_raw = qty * scalings['[length]']**3
+                        # Simplify to base units (mole)
+                        substance_base = substance_raw.to_base_units()
+                        scalings['[substance]'] = substance_base
                         derived_info['[substance]'] = f"from {name} × length_scale³"
                         break  # Only need one substance derivation
 
@@ -1178,7 +1358,10 @@ class Model(PintNativeModelMixin, BaseModel):
                 elif dimensionality == (u.candela / u.meter**2).dimensionality:
                     if '[length]' in scalings and '[luminosity]' not in scalings:
                         # Derive luminosity from flux_density * length^2
-                        scalings['[luminosity]'] = qty * scalings['[length]']**2
+                        luminosity_raw = qty * scalings['[length]']**2
+                        # Simplify to base units (candela)
+                        luminosity_base = luminosity_raw.to_base_units()
+                        scalings['[luminosity]'] = luminosity_base
                         derived_info['[luminosity]'] = f"from {name} × length_scale²"
                         break  # Only need one luminosity derivation
 
@@ -1261,11 +1444,15 @@ class Model(PintNativeModelMixin, BaseModel):
         for internal_name, scale_qty in scalings.items():
             if internal_name in dimension_map:
                 friendly_name = dimension_map[internal_name]
-                result[friendly_name] = scale_qty
+                # Apply magnitude-based unit selection for display
+                display_qty = self._choose_display_units(scale_qty, internal_name)
+                result[friendly_name] = display_qty
             else:
                 # Handle any unexpected dimensions gracefully
                 clean_name = internal_name.strip('[]')
-                result[clean_name] = scale_qty
+                # Try to apply display unit selection even for unexpected dimensions
+                display_qty = self._choose_display_units(scale_qty, internal_name)
+                result[clean_name] = display_qty
 
         return result
 

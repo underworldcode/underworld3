@@ -175,6 +175,9 @@ from .units import (
     enforce_units_consistency,
 )
 
+# Universal unit query function (from function.unit_conversion)
+from .function.unit_conversion import get_units
+
 # Make units registry easily accessible (remove scaling terminology)
 # Users can now do uw.units.K, uw.units.Pa, etc. instead of uw.scaling.units.K
 from .scaling import units

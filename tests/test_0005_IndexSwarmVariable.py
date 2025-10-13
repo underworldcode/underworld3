@@ -52,7 +52,7 @@ def test_IndexSwarmVariable(mesh):
         k = 2.0 * np.pi / wavelength
         interfaceSwarm = uw.swarm.Swarm(mesh)
         npoints = 101
-        x = np.linspace(mesh.data[:, 0].min(), mesh.data[:, 0].max(), npoints)
+        x = np.linspace(mesh.X.coords[:, 0].min(), mesh.X.coords[:, 0].max(), npoints)
         y = offset + amplitude * np.cos(k * x)
         interface_coords = np.ascontiguousarray(np.array([x, y]).T)
         interfaceSwarm.add_particles_with_coordinates(interface_coords)

@@ -399,6 +399,67 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
         """
         return True
 
+    # ===================================================================
+    # Delegate SymPy assumption properties to wrapped expression
+    # This is CRITICAL for lazy evaluation with Min, Max, Piecewise, etc.
+    # ===================================================================
+
+    @property
+    def is_comparable(self):
+        """Delegate comparability check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_comparable'):
+            return self._sym.is_comparable
+        return True  # Default to comparable
+
+    @property
+    def is_number(self):
+        """Delegate number check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_number'):
+            return self._sym.is_number
+        return False  # Symbol default
+
+    @property
+    def is_extended_real(self):
+        """Delegate extended_real check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_extended_real'):
+            return self._sym.is_extended_real
+        return None  # Unknown
+
+    @property
+    def is_positive(self):
+        """Delegate positivity check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_positive'):
+            return self._sym.is_positive
+        return None  # Unknown
+
+    @property
+    def is_negative(self):
+        """Delegate negativity check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_negative'):
+            return self._sym.is_negative
+        return None  # Unknown
+
+    @property
+    def is_zero(self):
+        """Delegate zero check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_zero'):
+            return self._sym.is_zero
+        return None  # Unknown
+
+    @property
+    def is_finite(self):
+        """Delegate finite check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_finite'):
+            return self._sym.is_finite
+        return None  # Unknown
+
+    @property
+    def is_infinite(self):
+        """Delegate infinite check to wrapped expression."""
+        if self._sym is not None and hasattr(self._sym, 'is_infinite'):
+            return self._sym.is_infinite
+        return None  # Unknown
+
     def copy(self, other):
         if not isinstance(other, UWexpression):
             raise ValueError

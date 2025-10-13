@@ -575,22 +575,44 @@ class UWQuantity(UnitAwareMixin):
         """
         Format the UWQuantity using the format specification.
 
-        This applies the format specification to the numerical value,
-        making UWQuantity objects work naturally in f-strings.
+        This applies the format specification to the numerical value.
+        For model units with no format spec, includes human-readable interpretation.
 
         Examples
         --------
-        >>> qty = UWQuantity(3.14159)
-        >>> f"{qty:.2f}"  # "3.14"
-        >>> f"{qty:e}"    # "3.141590e+00"
+        >>> qty = UWQuantity(3.14159, "m")
+        >>> f"{qty:.2f}"  # "3.14 m" (with units)
+        >>> f"{qty:e}"    # "3.141590e+00 m"
+
+        >>> qty_model = model.to_model_units(uw.quantity(5, "cm/year"))
+        >>> f"{qty_model}"  # "3.16e9 (≈ 5.000 cm/year)"
         """
         try:
-            # Format the numerical value using the format specification
-            formatted_value = format(self.value, format_spec)
+            # Format the numerical value
+            if format_spec:
+                formatted_value = format(self.value, format_spec)
+            else:
+                formatted_value = str(self.value)
+
+            # Add units or interpretation
+            if self.has_units:
+                # Check if model units can be interpreted
+                interpretation = self._interpret_model_units()
+                if interpretation:
+                    # Model units: show interpretation
+                    return f"{formatted_value} ({interpretation})"
+                else:
+                    # Regular units: show units
+                    units_str = self.units
+                    if units_str:
+                        display_units = self._get_display_units(units_str)
+                        return f"{formatted_value} {display_units}"
+
             return formatted_value
+
         except (ValueError, TypeError):
             # If formatting fails, fall back to string representation
-            return str(self.value)
+            return str(self)
 
     def __rmul__(self, other: Union[float, int]) -> 'UWQuantity':
         """Right multiplication."""
@@ -688,13 +710,24 @@ class UWQuantity(UnitAwareMixin):
         return UWQuantity(-self.value, self.units if self.has_units else None)
 
     def __str__(self) -> str:
-        """String representation with elegant unit aliases."""
+        """
+        String representation with human-readable units.
+
+        For regular units: "5.0 cm/year"
+        For model units: "1.0 (≈ 0.05 cm/year)" - shows interpretation prominently
+        """
         if self.has_units:
             units_str = self.units
             if units_str:
-                # Use elegant aliases if available
-                display_units = self._get_display_units(units_str)
-                return f"{self.value} {display_units}"
+                # Check if we have model units that can be interpreted
+                interpretation = self._interpret_model_units()
+                if interpretation:
+                    # For model units, show the human-readable interpretation prominently
+                    return f"{self.value} ({interpretation})"
+                else:
+                    # For regular units, use elegant aliases if available
+                    display_units = self._get_display_units(units_str)
+                    return f"{self.value} {display_units}"
             else:
                 return str(self.value)
         else:
@@ -719,12 +752,168 @@ class UWQuantity(UnitAwareMixin):
         # Fallback: return original units
         return units_str
 
+    def _interpret_model_units(self) -> str:
+        """
+        Interpret model units in human-readable form.
+
+        For model units like '_2900000m / _1p83E15s', this:
+        1. Combines the Pint constants (e.g., 2.9e6 m / 1.83e15 s = 1.58e-9 m/s)
+        2. Converts to user-friendly units (e.g., ≈ 0.05 cm/year)
+
+        Returns
+        -------
+        str
+            Human-readable interpretation like "≈ 0.05 cm/year", or None if not interpretable
+        """
+        # Only interpret if we have model units
+        if not (hasattr(self, '_has_custom_units') and self._has_custom_units):
+            return None
+
+        # Need Pint quantity to work with
+        if not hasattr(self, '_pint_qty'):
+            return None
+
+        try:
+            # STEP 1: Combine all Pint constants by converting to base units
+            # This handles cases like _2900000m / _1p83E15s → numerical m/s
+
+            # Create a unit quantity (magnitude 1.0 in model units)
+            # This represents "what is 1.0 model unit in SI?"
+            unit_qty = 1.0 * self._pint_qty.units
+
+            # Convert to SI base units - this combines all the _constants
+            # e.g., _2900000m / _1p83E15s → (2.9e6 / 1.83e15) m/s = 1.58e-9 m/s
+            base_qty = unit_qty.to_base_units()
+
+            # STEP 2: Try to express in user-friendly units
+            from ..scaling import units as u
+
+            # Common user-friendly unit combinations
+            # Ordered by priority within each category
+            friendly_conversions = [
+                # Velocity (geological first)
+                ('cm/year', u.cm / u.year),
+                ('km/Myr', u.km / (1e6 * u.year)),
+                ('mm/year', u.mm / u.year),
+                ('m/Myr', u.m / (1e6 * u.year)),
+                ('m/s', u.m / u.s),
+                ('km/s', u.km / u.s),
+                # Length
+                ('km', u.km),
+                ('m', u.m),
+                ('cm', u.cm),
+                ('mm', u.mm),
+                # Time (geological first)
+                ('Myr', 1e6 * u.year),
+                ('kyr', 1e3 * u.year),
+                ('year', u.year),
+                ('day', u.day),
+                ('hour', u.hour),
+                ('s', u.s),
+                # Pressure/stress (geological scales first)
+                ('GPa', 1e9 * u.Pa),
+                ('MPa', 1e6 * u.Pa),
+                ('kPa', 1e3 * u.Pa),
+                ('Pa', u.Pa),
+                # Temperature
+                ('K', u.K),
+                ('degC', u.degC),
+                # Viscosity
+                ('Pa*s', u.Pa * u.s),
+                # Density
+                ('kg/m**3', u.kg / u.m**3),
+                ('g/cm**3', u.g / u.cm**3),
+            ]
+
+            # Try each friendly unit to find the best representation
+            best_conversion = None
+            best_magnitude = None
+            best_score = float('inf')
+
+            for name, friendly_unit in friendly_conversions:
+                try:
+                    # Check if dimensionally compatible
+                    converted = base_qty.to(friendly_unit)
+                    magnitude = abs(converted.magnitude)
+
+                    # Skip zero or invalid magnitudes
+                    if magnitude == 0 or not (0 < magnitude < 1e100):
+                        continue
+
+                    import math
+                    log_mag = math.log10(magnitude)
+
+                    # SCORING: Prefer magnitudes in range [0.001, 1000]
+                    # with sweet spot around 0.01-100
+                    if -3 <= log_mag <= 3:
+                        # In good range - score by distance from ideal ~1
+                        score = abs(log_mag)
+                    elif log_mag < -3:
+                        # Too small - penalize heavily
+                        score = 100 + abs(log_mag + 3)
+                    else:
+                        # Too large - penalize heavily
+                        score = 100 + (log_mag - 3)
+
+                    if score < best_score:
+                        best_score = score
+                        best_magnitude = magnitude
+                        best_conversion = name
+
+                except:
+                    # Dimensionally incompatible or conversion error, skip
+                    continue
+
+            if best_conversion and best_magnitude is not None:
+                # Format the magnitude nicely based on size
+                if abs(best_magnitude) >= 1000:
+                    mag_str = f"{best_magnitude:.2e}"
+                elif abs(best_magnitude) >= 100:
+                    mag_str = f"{best_magnitude:.1f}"
+                elif abs(best_magnitude) >= 10:
+                    mag_str = f"{best_magnitude:.2f}"
+                elif abs(best_magnitude) >= 1:
+                    mag_str = f"{best_magnitude:.3f}"
+                elif abs(best_magnitude) >= 0.01:
+                    mag_str = f"{best_magnitude:.4f}"
+                else:
+                    mag_str = f"{best_magnitude:.3g}"
+
+                return f"≈ {mag_str} {best_conversion}"
+
+            # If no good conversion found, at least show the base units with magnitude
+            base_mag = base_qty.magnitude
+            base_units = str(base_qty.units)
+            if abs(base_mag - 1.0) > 1e-10:  # Not unity
+                if abs(base_mag) >= 1000 or abs(base_mag) < 0.001:
+                    return f"≈ {base_mag:.2e} {base_units}"
+                else:
+                    return f"≈ {base_mag:.4g} {base_units}"
+            else:
+                return f"model units"
+
+        except Exception as e:
+            # If interpretation fails, return None silently
+            return None
+
     def __repr__(self) -> str:
-        """Detailed representation."""
+        """
+        Detailed representation with human-readable interpretation for model units.
+
+        For regular units: UWQuantity(5.0, 'cm/year')
+        For model units: UWQuantity(0.9999..., '_2900000m / _1p83E15s')  [≈ 0.05 cm/year]
+        """
         if self.has_units:
             units_str = self.units
             if units_str:
-                return f"UWQuantity({self.value}, '{units_str}')"
+                # Check if we have model units and can interpret them
+                interpretation = self._interpret_model_units()
+                if interpretation:
+                    # Show both technical units and human-readable interpretation
+                    return f"UWQuantity({self.value}, '{units_str}')  [{interpretation}]"
+                else:
+                    # Regular units or cannot interpret
+                    return f"UWQuantity({self.value}, '{units_str}')"
             else:
                 return f"UWQuantity({self.value})"
         else:

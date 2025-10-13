@@ -13,6 +13,7 @@ dependencies:
   - pyvista
   - pykdtree
   - pytest
+  - pytest-mpi
   - numpy
   - scipy
   - sympy

@@ -64,6 +64,14 @@ class CoordinateSystem:
         mesh,
         system: Optional[CoordinateSystemType] = CoordinateSystemType.CARTESIAN,
     ):
+        # Guard against SymPy trying to construct a CoordinateSystem from sympified elements
+        # SymPy may iterate over the object and try to recreate it from elements
+        if isinstance(mesh, (list, tuple)) or not hasattr(mesh, 'r'):
+            raise TypeError(
+                f"CoordinateSystem requires a mesh object, got {type(mesh).__name__}. "
+                "This object is not meant to be reconstructed by SymPy."
+            )
+
         self.mesh = mesh
         self.coordinate_type = system
 
@@ -342,6 +350,157 @@ class CoordinateSystem:
             # Optionally log the error for debugging
             # print(f"Units scaling not applied: {e}")
             pass
+
+    # === Coordinate Data Access (mesh.X interface) ===
+
+    def __getitem__(self, idx):
+        """Support mesh.X[0] for x-coordinate access."""
+        return self._X[idx]
+
+    def __iter__(self):
+        """Support x, y = mesh.X unpacking."""
+        return iter(self._X)
+
+    def __len__(self):
+        """Support len(mesh.X)."""
+        return len(self._X)
+
+    @property
+    def coords(self):
+        """
+        Coordinate data array in physical units.
+
+        Returns the mesh node coordinates, applying scaling if the mesh has
+        reference quantities set. When mesh.units is specified, returns a
+        UnitAwareArray.
+
+        Returns:
+            numpy.ndarray or UnitAwareArray: Node coordinates
+        """
+        return self.mesh.points
+
+    @property
+    def units(self):
+        """
+        Coordinate units.
+
+        Returns the units for the coordinate system. This is the same as mesh.units
+        and indicates what physical units the coordinates are expressed in.
+
+        Returns:
+            str or None: Coordinate units (e.g., 'km', 'm', 'degrees')
+        """
+        return self.mesh.units
+
+    @property
+    def shape(self):
+        """Shape of the symbolic coordinate matrix."""
+        return self._X.shape
+
+    # === SymPy Integration (for mathematical operations) ===
+
+    def _sympify_(self):
+        """
+        Tell SymPy how to convert this object to a SymPy expression.
+
+        This enables CoordinateSystem to work seamlessly with SymPy operations
+        like diff, jacobian, and arithmetic operations.
+        """
+        return self._X
+
+    def __sympy__(self):
+        """Alternative SymPy conversion protocol."""
+        return self._X
+
+    # === SymPy Type Checking Properties ===
+    # These allow SymPy to treat CoordinateSystem correctly in expressions
+
+    @property
+    def is_symbol(self):
+        """SymPy type check - CoordinateSystem contains symbols but is not itself a symbol."""
+        return False
+
+    @property
+    def is_Matrix(self):
+        """SymPy type check - CoordinateSystem behaves like a Matrix."""
+        return True
+
+    @property
+    def is_scalar(self):
+        """SymPy type check - CoordinateSystem is a Matrix, not a scalar."""
+        return False
+
+    @property
+    def is_number(self):
+        """SymPy type check - CoordinateSystem is not a number."""
+        return False
+
+    @property
+    def is_commutative(self):
+        """SymPy type check - delegate to underlying matrix."""
+        return self._X.is_commutative if hasattr(self._X, 'is_commutative') else True
+
+    def __getattr__(self, name):
+        """
+        Delegate SymPy-specific attributes to the underlying symbolic matrix.
+
+        This allows CoordinateSystem to be used transparently in SymPy operations
+        by forwarding attribute access to _X when the attribute doesn't exist
+        on CoordinateSystem itself.
+        """
+        # Prevent infinite recursion for _X access
+        if name == '_X':
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '_X'")
+
+        # Try to get the attribute from the underlying symbolic matrix
+        try:
+            return getattr(self._X, name)
+        except AttributeError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    # === Arithmetic Operations (delegate to symbolic matrix) ===
+
+    def __add__(self, other):
+        """Support mesh.X + other."""
+        return self._X + other
+
+    def __radd__(self, other):
+        """Support other + mesh.X."""
+        return other + self._X
+
+    def __sub__(self, other):
+        """Support mesh.X - other."""
+        return self._X - other
+
+    def __rsub__(self, other):
+        """Support other - mesh.X."""
+        return other - self._X
+
+    def __mul__(self, other):
+        """Support mesh.X * other."""
+        return self._X * other
+
+    def __rmul__(self, other):
+        """Support other * mesh.X."""
+        return other * self._X
+
+    def __truediv__(self, other):
+        """Support mesh.X / other."""
+        return self._X / other
+
+    def __rtruediv__(self, other):
+        """Support other / mesh.X."""
+        return other / self._X
+
+    def __pow__(self, other):
+        """Support mesh.X ** other."""
+        return self._X ** other
+
+    def __neg__(self):
+        """Support -mesh.X."""
+        return -self._X
+
+    # === Original Properties (for internal use) ===
 
     @property
     def X(self) -> sympy.Matrix:

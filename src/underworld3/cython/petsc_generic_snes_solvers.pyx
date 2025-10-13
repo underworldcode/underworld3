@@ -1864,16 +1864,21 @@ class SNES_Vector(SolverBaseClass):
         # Set quadrature to consistent value given by mesh quadrature.
         # self.mesh._align_quadratures()
 
-        # Call `createDS()` on aux dm. This is necessary after the
-        # quadratures are set above, as it generates the tablatures
-        # from the quadratures (among other things no doubt).
-        # TODO: What are the implications of calling this every solve.
-
-        self.mesh.dm.clearDS()
-        self.mesh.dm.createDS()
-
-        for cdm in self.mesh.dm_hierarchy:
-            self.mesh.dm.copyDisc(cdm)
+        # COMMENTED OUT: These calls are NOT in SNES_Scalar (Poisson) or Stokes
+        # They appear to destroy field registrations, causing "Invalid field number" errors
+        # when variables are created after other solvers have run.
+        # Removing to match working Poisson pattern.
+        #
+        # # Call `createDS()` on aux dm. This is necessary after the
+        # # quadratures are set above, as it generates the tablatures
+        # # from the quadratures (among other things no doubt).
+        # # TODO: What are the implications of calling this every solve.
+        #
+        # self.mesh.dm.clearDS()
+        # self.mesh.dm.createDS()
+        #
+        # for cdm in self.mesh.dm_hierarchy:
+        #     self.mesh.dm.copyDisc(cdm)
 
         self.mesh.update_lvec()
         cdef DM dm = self.dm

@@ -177,12 +177,16 @@ class Mesh(Stateful, uw_object):
         boundaries=None,
         boundary_normals=None,
         name=None,
+        units=None,
         verbose=False,
         *args,
         **kwargs,
     ):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
+
+        # Coordinate units for spatial positions
+        self.units = units
 
         # Mesh coordinate version tracking for swarm coordination
         self._mesh_version = 0
@@ -659,6 +663,12 @@ class Mesh(Stateful, uw_object):
         if level == 0:
             uw.pprint(f"\n")
             uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
+
+            # Display coordinate units if set
+            if hasattr(self, 'units') and self.units is not None:
+                uw.pprint(f"Coordinate units: {self.units}\n")
+                uw.pprint(f"  Access unit-aware coordinates via: mesh.points\n")
+                uw.pprint(f"  Query units with: uw.get_units(mesh.points)\n")
 
             # Only if notebook and serial
             if uw.is_notebook and uw.mpi.size == 1:
@@ -1229,8 +1239,23 @@ class Mesh(Stateful, uw_object):
         return sympy.Matrix(self._Gamma.base_scalars()[0 : self.cdim]).T
 
     @property
-    def X(self) -> sympy.Matrix:
-        return self._CoordinateSystem.X
+    def X(self):
+        """
+        Coordinate system object with symbolic coordinates and data access.
+
+        Returns the CoordinateSystem object which provides:
+        - mesh.X[0] - Symbolic x-coordinate function
+        - mesh.X.coords - Coordinate data array (same as mesh.points)
+        - mesh.X.units - Coordinate units (same as mesh.units)
+        - x, y = mesh.X - Unpacking symbolic coordinates
+
+        For backward compatibility, the CoordinateSystem behaves like
+        a symbolic matrix for indexing and iteration.
+
+        Returns:
+            CoordinateSystem: Coordinate system with symbolic and data access
+        """
+        return self._CoordinateSystem
 
     @property
     def CoordinateSystem(self) -> CoordinateSystem:
@@ -1263,8 +1288,10 @@ class Mesh(Stateful, uw_object):
     def data(self) -> numpy.ndarray:
         """
         The array of mesh element vertex coordinates.
+
+        This is an alias for mesh.points (preferred access pattern).
         """
-        return self._points
+        return self.points
 
     @property
     def points(self):
@@ -1275,17 +1302,26 @@ class Mesh(Stateful, uw_object):
         this property automatically converts from internal model coordinates
         to physical coordinates for user access.
 
+        When the mesh has coordinate units specified, returns a unit-aware array.
+
         Returns:
-            numpy.ndarray: Node coordinates in physical units
+            numpy.ndarray or UnitAwareArray: Node coordinates (with units if specified)
         """
         model_coords = self._points
 
         # Apply scaling to convert model coordinates to physical coordinates
         if hasattr(self.CoordinateSystem, '_scaled') and self.CoordinateSystem._scaled:
             scale_factor = self.CoordinateSystem._length_scale
-            return model_coords * scale_factor
+            coords = model_coords * scale_factor
         else:
-            return model_coords
+            coords = model_coords
+
+        # Wrap with unit-aware array if units are specified
+        if self.units is not None:
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
+            return UnitAwareArray(coords, units=self.units)
+
+        return coords
 
     @points.setter
     def points(self, value):
@@ -1785,7 +1821,8 @@ class Mesh(Stateful, uw_object):
 
             cell_faces = self.dm.getCone(cell_id)
             points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
-            cell_point_coords = self.data[points - pStart]
+            # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
+            cell_point_coords = self._points[points - pStart]
             cell_centroid = cell_point_coords.mean(axis=0)
 
             # for face in range(cell_num_faces):
@@ -2055,7 +2092,7 @@ class Mesh(Stateful, uw_object):
         for face in boundary_faces:
             cell = self.dm.getJoin(face)[0]
             points = self.dm.getTransitiveClosure(face)[0][-face_num_points:]
-            point_coords = self.data[points - pStart]
+            point_coords = self._points[points - pStart]  # Use raw array for internal calculations
             face_centroid = point_coords.mean(axis=0)
             cell_centroid = self._centroids[cell - cStart]
 
@@ -2378,7 +2415,8 @@ class Mesh(Stateful, uw_object):
         for cell in range(cEnd - cStart):
             cell_num_points = self.dm.getConeSize(cell)
             cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
-            cell_coords = self.data[cell_points - pStart]
+            # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
+            cell_coords = self._points[cell_points - pStart]
 
             distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
 
