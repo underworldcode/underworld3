@@ -2,27 +2,72 @@
 
 ## Tiered Testing Script for Underworld3
 #
-# Usage: ./test_levels.sh [LEVELS]
-#   LEVELS can be:
-#     1      = Quick tests only (core functionality, ~2-5 minutes)
-#     2      = Intermediate tests only (~5-10 minutes)
-#     3      = Physics/solver tests only (~10-15 minutes)
-#     1,2    = Quick + intermediate tests
-#     1,3    = Quick + physics tests
-#     2,3    = Intermediate + physics tests
-#     1,2,3  = All tests (complete suite, ~20-30 minutes)
-#     (empty)= All tests (default)
+# Usage: ./test_levels.sh [OPTIONS] [LEVELS]
+#
+# LEVELS:
+#   1      = Quick tests only (core functionality, ~2-5 minutes)
+#   2      = Intermediate tests only (~5-10 minutes)
+#   3      = Physics/solver tests only (~10-15 minutes)
+#   1,2    = Quick + intermediate tests
+#   1,3    = Quick + physics tests
+#   2,3    = Intermediate + physics tests
+#   1,2,3  = All tests (complete suite, ~20-30 minutes)
+#   (empty)= All tests (default)
+#
+# OPTIONS:
+#   --parallel-ranks N     Number of MPI ranks for parallel tests (default: 2)
+#   --full-parallel        Run parallel tests with both 2 and 4 ranks
+#   --no-parallel          Skip parallel tests entirely
+#   --help                 Show this help message
 #
 # Examples:
-#   ./test_levels.sh 1     # Run only quick tests
-#   ./test_levels.sh 3     # Run only physics tests
-#   ./test_levels.sh 1,3   # Run quick + physics tests
-#   ./test_levels.sh       # Run all tests
+#   ./test_levels.sh 1                      # Run only quick tests
+#   ./test_levels.sh 3                      # Run only physics tests
+#   ./test_levels.sh --parallel-ranks 4 2   # Run Level 2 with 4 ranks
+#   ./test_levels.sh --full-parallel 1,2,3  # All tests, parallel with 2 and 4 ranks
+#   ./test_levels.sh --no-parallel 2        # Level 2 without parallel tests
 
 set -e  # Exit on any error
 
-# Parse test levels from argument (default to all levels)
-TEST_LEVELS_ARG=${1:-"1,2,3"}
+# Default values for parallel testing
+PARALLEL_RANKS=2
+FULL_PARALLEL=0
+SKIP_PARALLEL=0
+
+# Parse options
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --parallel-ranks)
+            PARALLEL_RANKS="$2"
+            shift 2
+            ;;
+        --full-parallel)
+            FULL_PARALLEL=1
+            shift
+            ;;
+        --no-parallel)
+            SKIP_PARALLEL=1
+            shift
+            ;;
+        --help)
+            grep "^#" "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+        *)
+            # This is the test levels argument
+            TEST_LEVELS_ARG="$1"
+            shift
+            ;;
+    esac
+done
+
+# Default to all levels if not specified
+TEST_LEVELS_ARG=${TEST_LEVELS_ARG:-"1,2,3"}
 
 # Convert comma-separated string to array
 IFS=',' read -ra TEST_LEVELS <<< "$TEST_LEVELS_ARG"
@@ -56,21 +101,10 @@ run_level_1() {
     echo "Expected runtime: ~2-5 minutes"
     echo ""
 
-    # Core imports and basic functionality (0000-0199)
-    run_tests "Core imports and basic functionality" \
-        tests/test_0000*py tests/test_0001*py tests/test_0002*py tests/test_0003*py tests/test_0004*py tests/test_0005*py
-
-    # Essential basic tests
-    run_tests "Essential data access tests" \
-        tests/test_01*py
-
-    # Critical mathematical objects regression tests
-    run_tests "Mathematical objects regression (critical)" \
-        tests/test_0725*py tests/test_0521*py
-
-    # Essential units functionality
-    run_tests "Core units system" \
-        tests/test_0803_simple_workflow_demo.py
+    # Core imports and basic functionality (0000-0499)
+    # This includes: imports, meshes, models, save/load, swarms, data access, etc.
+    run_tests "Core functionality tests (0000-0499)" \
+        tests/test_0[0-4]*py
 }
 
 run_level_2() {
@@ -86,9 +120,44 @@ run_level_2() {
     run_tests "Critical regression tests" \
         tests/test_06*py
 
-    # Units system (0700-0799)
-    run_tests "Mathematical objects and units integration" \
+    # Units system (0700-0799) - serial tests only
+    run_tests "Mathematical objects and units integration (serial)" \
         tests/test_07*py
+
+    # Parallel tests for global statistics (requires MPI)
+    if [ $SKIP_PARALLEL -eq 0 ] && command -v mpirun &> /dev/null && command -v pytest &> /dev/null; then
+        echo "=========================================="
+        echo "Running parallel tests (MPI required)"
+        echo "=========================================="
+
+        # Parallel tests with specified number of ranks
+        echo "Testing with $PARALLEL_RANKS MPI ranks..."
+        if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py; then
+            echo "✅ PASSED: Parallel tests ($PARALLEL_RANKS ranks)"
+        else
+            echo "❌ FAILED: Parallel tests ($PARALLEL_RANKS ranks)"
+            status=1
+        fi
+
+        # Optional: Test with 4 ranks if --full-parallel specified
+        if [ $FULL_PARALLEL -eq 1 ]; then
+            echo ""
+            echo "Running extended parallel tests (4 ranks)..."
+            if mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_075*py; then
+                echo "✅ PASSED: Parallel tests (4 ranks)"
+            else
+                echo "❌ FAILED: Parallel tests (4 ranks)"
+                status=1
+            fi
+        fi
+        echo ""
+    elif [ $SKIP_PARALLEL -eq 1 ]; then
+        echo "⚠️  Skipping parallel tests (--no-parallel specified)"
+        echo ""
+    else
+        echo "⚠️  Skipping parallel tests (mpirun or pytest not available)"
+        echo ""
+    fi
 
     # Unit-aware functionality (0800-0899)
     run_tests "Unit-aware functions and workflows" \

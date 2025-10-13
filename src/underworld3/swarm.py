@@ -1086,6 +1086,183 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
         self._update_proxy_if_stale()
         return self._meshVar.sym_1d
 
+    # Global statistics methods (MPI-aware) for particle data
+    # Note: Only methods that make sense for non-uniformly distributed particles
+    # are provided. Mean/RMS/variance are NOT provided because particles cluster
+    # unevenly in the domain, making these statistics misleading.
+
+    @uw.collective_operation
+    def global_max(self, axis=None, out=None, keepdims=False):
+        """
+        Maximum value across all MPI ranks.
+
+        Finds the maximum value of the particle property across all processors.
+        Useful for finding extreme values in particle swarm data.
+
+        Parameters
+        ----------
+        axis : None, int, or tuple of ints, optional
+            Axis or axes along which to operate. By default, flattened input is used.
+        out : None, optional
+            Alternative output array (not supported, kept for API compatibility).
+        keepdims : bool, optional
+            If True, reduced axes are left as dimensions with size one.
+
+        Returns
+        -------
+        UWQuantity or scalar
+            Maximum value with units preserved (if variable has units).
+
+        Examples
+        --------
+        >>> max_temp = temperature_swarm.global_max()
+        >>> print(f"Maximum temperature: {max_temp}")
+
+        Notes
+        -----
+        This is a collective operation - all ranks must call it.
+        The result is identical on all ranks.
+        """
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        # Wrap data in UnitAwareArray to use its global_max implementation
+        temp_array = UnitAwareArray(self.data, units=self._units)
+        return temp_array.global_max(axis=axis, out=out, keepdims=keepdims)
+
+    @uw.collective_operation
+    def global_min(self, axis=None, out=None, keepdims=False):
+        """
+        Minimum value across all MPI ranks.
+
+        Finds the minimum value of the particle property across all processors.
+        Useful for finding extreme values in particle swarm data.
+
+        Parameters
+        ----------
+        axis : None, int, or tuple of ints, optional
+            Axis or axes along which to operate. By default, flattened input is used.
+        out : None, optional
+            Alternative output array (not supported, kept for API compatibility).
+        keepdims : bool, optional
+            If True, reduced axes are left as dimensions with size one.
+
+        Returns
+        -------
+        UWQuantity or scalar
+            Minimum value with units preserved (if variable has units).
+
+        Examples
+        --------
+        >>> min_pressure = pressure_swarm.global_min()
+        >>> print(f"Minimum pressure: {min_pressure}")
+
+        Notes
+        -----
+        This is a collective operation - all ranks must call it.
+        The result is identical on all ranks.
+        """
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        temp_array = UnitAwareArray(self.data, units=self._units)
+        return temp_array.global_min(axis=axis, out=out, keepdims=keepdims)
+
+    @uw.collective_operation
+    def global_sum(self, axis=None, out=None, keepdims=False):
+        """
+        Sum of values across all MPI ranks.
+
+        Computes the sum of particle property values across all processors.
+
+        Parameters
+        ----------
+        axis : None, int, or tuple of ints, optional
+            Axis or axes along which to operate. By default, flattened input is used.
+        out : None, optional
+            Alternative output array (not supported, kept for API compatibility).
+        keepdims : bool, optional
+            If True, reduced axes are left as dimensions with size one.
+
+        Returns
+        -------
+        UWQuantity or scalar
+            Sum with units preserved (if variable has units).
+
+        Notes
+        -----
+        This is a collective operation - all ranks must call it.
+        The result is identical on all ranks.
+
+        Warning: This sum is NOT a physical domain-integrated quantity because
+        particles are non-uniformly distributed. For domain integration, use
+        the proxy mesh variable with uw.maths.Integral().
+        """
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        temp_array = UnitAwareArray(self.data, units=self._units)
+        return temp_array.global_sum(axis=axis, out=out, keepdims=keepdims)
+
+    @uw.collective_operation
+    def global_norm(self, ord=None):
+        """
+        L2 norm (Frobenius norm) across all MPI ranks.
+
+        Computes the L2 norm of particle property values: sqrt(sum(x**2))
+        across all processors.
+
+        Parameters
+        ----------
+        ord : {non-zero int, inf, -inf, 'fro', 'nuc'}, optional
+            Order of the norm (default: None = 2-norm)
+
+        Returns
+        -------
+        UWQuantity or scalar
+            L2 norm with units preserved (if variable has units).
+
+        Notes
+        -----
+        This is a collective operation - all ranks must call it.
+        The result is identical on all ranks.
+
+        For vectors, computes the Frobenius norm treating the array as flattened.
+
+        Warning: This norm is NOT a physical domain-integrated quantity because
+        particles are non-uniformly distributed.
+        """
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        temp_array = UnitAwareArray(self.data, units=self._units)
+        return temp_array.global_norm(ord=ord)
+
+    @uw.collective_operation
+    def global_size(self):
+        """
+        Total particle count across all MPI ranks.
+
+        Returns the total number of particles across all processors.
+        Useful for population monitoring and load balancing diagnostics.
+
+        Returns
+        -------
+        int
+            Total number of particles across all ranks.
+
+        Examples
+        --------
+        >>> total_particles = swarm_var.global_size()
+        >>> local_particles = swarm_var.data.shape[0]
+        >>> print(f"Rank has {local_particles} of {total_particles} particles")
+
+        Notes
+        -----
+        This is a collective operation - all ranks must call it.
+        The result is identical on all ranks.
+        """
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        temp_array = UnitAwareArray(self.data, units=self._units)
+        return temp_array.global_size()
+
     @timing.routine_timer_decorator
     def save(
         self,
@@ -1850,8 +2027,10 @@ class Swarm(Stateful, uw_object):
         this property automatically converts from internal model coordinates
         to physical coordinates for user access.
 
+        When the mesh has coordinate units specified, returns a unit-aware array.
+
         Returns:
-            numpy.ndarray: Particle coordinates in physical units
+            numpy.ndarray or UnitAwareArray: Particle coordinates (with units if mesh.units is set)
         """
         # Check for mesh coordinate changes and trigger migration if needed
         if (
@@ -1936,6 +2115,11 @@ class Swarm(Stateful, uw_object):
             # changed as a result of migration operations
 
             self._points = self._points.sync_data(coords)
+
+        # Wrap with unit-aware array if mesh has units
+        if hasattr(self.mesh, 'units') and self.mesh.units is not None:
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
+            return UnitAwareArray(self._points, units=self.mesh.units)
 
         return self._points
 
@@ -2096,6 +2280,7 @@ class Swarm(Stateful, uw_object):
         return _MigrationControlContext(self, disable)
 
     @timing.routine_timer_decorator
+    @uw.collective_operation
     def populate(
         self,
         fill_param: Optional[int] = 1,

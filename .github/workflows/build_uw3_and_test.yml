@@ -37,7 +37,7 @@ jobs:
           ## TODO. Use scripts/compile.sh once it is in development
           pip install -e . --no-build-isolation
 
-      - name: Run tests 
+      - name: Run tests
         shell: bash -l {0}
         run: |
-          ./scripts/test.sh
+          ./scripts/test.sh --p 2
