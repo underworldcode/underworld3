@@ -139,7 +139,7 @@ from .model import Model, create_model, get_default_model, reset_default_model, 
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
-from .function import quantity
+from .function import quantity, expression
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
 # import underworld3.kdtree
