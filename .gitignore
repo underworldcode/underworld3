@@ -220,3 +220,6 @@ test_*.py
 
 # Additional cache directories
 .pytest_cache/
+
+# Visualization output files (generated during notebook execution)
+docs/beginner/tutorials/html5/*.html
