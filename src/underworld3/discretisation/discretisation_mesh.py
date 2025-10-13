@@ -1979,23 +1979,22 @@ class Mesh(Stateful, uw_object):
         for cell, cell_id in enumerate(range(cStart, cEnd)):
             cell_faces = self.dm.getCone(cell_id)
             points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
-            cell_point_coords = self.data[points - pStart]
+            # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
+            cell_point_coords = self._points[points - pStart]
 
             for face in range(cell_num_faces):
 
                 points = self.dm.getTransitiveClosure(cell_faces[face])[0][
                     -face_num_points:
                 ]
-                point_coords = self.data[points - pStart]
+                # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
+                point_coords = self._points[points - pStart]
 
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
 
-                # Extract raw numerical values (magnitudes) without units
-                # Use + 0.0 to force conversion to plain numpy array
-                face_cent_data = numpy.array(face_centroid, dtype=numpy.float64)
-                cell_cent_data = numpy.array(cell_centroid, dtype=numpy.float64)
-                point_data = numpy.array(point_coords, dtype=numpy.float64)
+                # Compute face normal from point coordinates (already plain numpy arrays)
+                point_data = point_coords
 
                 # 2D case
                 if self.dim == 2:
@@ -2009,13 +2008,12 @@ class Mesh(Stateful, uw_object):
                         (point_data[2] - point_data[0]),
                     )
 
-                inward_outward = numpy.sign(normal.dot(face_cent_data - cell_cent_data))
+                inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
                 normal *= inward_outward / numpy.sqrt(normal.dot(normal))
 
-                # Compute offset in dimensionless coordinates
-                # The arrays store numerical values only (no units)
-                outside_control_point = 1e-3 * normal + face_cent_data
-                inside_control_point = -1e-3 * normal + face_cent_data
+                # Compute control points (all arrays are already plain numpy, no units)
+                outside_control_point = 1e-3 * normal + face_centroid
+                inside_control_point = -1e-3 * normal + face_centroid
 
                 mesh_cell_outer_control_points[face, cell, :] = outside_control_point
                 mesh_cell_inner_control_points[face, cell, :] = inside_control_point
