@@ -1289,8 +1289,19 @@ class Mesh(Stateful, uw_object):
         """
         The array of mesh element vertex coordinates.
 
+        .. deprecated:: 0.99.0
+            Use :attr:`points` or :attr:`X.coords` instead.
+            ``mesh.data`` is deprecated in favor of ``mesh.X.coords``
+            (coordinate-system-aware interface) or ``mesh.points``.
+
         This is an alias for mesh.points (preferred access pattern).
         """
+        import warnings
+        warnings.warn(
+            "mesh.data is deprecated, use mesh.X.coords or mesh.points instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
         return self.points
 
     @property
@@ -1945,7 +1956,20 @@ class Mesh(Stateful, uw_object):
         and slightly outside each mesh face (mirrors to each other). This
         allows a fast lookup of whether we on the inside or outside of the plane
         defined by a face (i.e. same side or other side as the cell centroid). If we are inside
-        for all faces in a convex polyhedron, then we are inside the cell
+        for all faces in a convex polyhedron, then we are inside the cell.
+
+        Internal Coordinate System Access Pattern
+        ------------------------------------------
+        This method uses `self._points` (raw PETSc array) instead of `self.data`
+        or `self.X.coords` (unit-wrapped properties) for performance and correctness:
+
+        1. **Guard at boundaries**: External interfaces use unit-aware properties
+        2. **Raw access internally**: Internal geometric calculations use `self._points`
+        3. **Performance**: Avoids UnitAwareArray overhead in tight loops
+        4. **Correctness**: Prevents unit conversion issues in geometric operations
+
+        This is the recommended pattern for internal mesh operations that manipulate
+        coordinates directly.
         """
 
         if (
