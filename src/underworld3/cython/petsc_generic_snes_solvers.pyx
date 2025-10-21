@@ -427,18 +427,63 @@ class SolverBaseClass(uw_object):
 
         self.is_setup = False
         import numpy as np
+        import underworld3 as uw
 
         # process conds and error check
         if isinstance(conds, (tuple, list)):
-            # remove all None for sympy.oo
-            conds = [sympy.oo if x is None else x for x in conds]
+            # remove all None for sympy.oo, and handle UWQuantity/Pint Quantity objects
+            processed_conds = []
+            for x in conds:
+                if x is None:
+                    processed_conds.append(sympy.oo)
+                elif isinstance(x, uw.function.quantities.UWQuantity):
+                    # Convert UWQuantity to SI base units (dimensionless number)
+                    if hasattr(x, '_pint_qty'):
+                        # Use Pint to convert to base units (m, s, kg, etc.)
+                        base_qty = x._pint_qty.to_base_units()
+                        processed_conds.append(base_qty.magnitude)
+                    else:
+                        # Fallback: use the value as-is
+                        processed_conds.append(x.value)
+                elif hasattr(x, 'magnitude') and hasattr(x, 'units'):
+                    # Direct Pint Quantity (from 300 * uw.units("K"))
+                    import pint
+                    if isinstance(x, pint.Quantity):
+                        base_qty = x.to_base_units()
+                        processed_conds.append(base_qty.magnitude)
+                    else:
+                        processed_conds.append(x)
+                else:
+                    processed_conds.append(x)
+            conds = processed_conds
         elif isinstance(conds, float):
             conds = (conds,)
+        elif isinstance(conds, int):
+            conds = (conds,)
+        elif isinstance(conds, uw.function.quantities.UWQuantity):
+            # Single UWQuantity value
+            if hasattr(conds, '_pint_qty'):
+                # Use Pint to convert to base units
+                base_qty = conds._pint_qty.to_base_units()
+                conds = (base_qty.magnitude,)
+            else:
+                # Fallback: use the value as-is
+                conds = (conds.value,)
+        elif hasattr(conds, 'magnitude') and hasattr(conds, 'units'):
+            # Single Pint Quantity (from 300 * uw.units("K"))
+            import pint
+            if isinstance(conds, pint.Quantity):
+                base_qty = conds.to_base_units()
+                conds = (base_qty.magnitude,)
+            else:
+                raise ValueError(f"Unknown quantity type: {type(conds)}")
         elif isinstance(conds, sympy.Matrix):
             conds = conds.T
         else:
             raise ValueError("Unsupported BC conds: \n" +
                   "array_like,   i.e. conds = [None, 5, 1.2]\n" +
+                  "UWQuantity,   i.e. conds = uw.quantity(10, 'metre')\n" +
+                  "Pint Quantity, i.e. conds = 10*uw.units('metre')\n" +
                   "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])\n")
 
         if isinstance(components, (tuple, list, int)):
@@ -460,6 +505,35 @@ class SolverBaseClass(uw_object):
         else:
             raise("Unsupported BC 'components' argument")
 
+        # ======================================================================
+        # Apply non-dimensional scaling to BC values if ND is enabled
+        # ======================================================================
+        if uw.is_nondimensional_scaling_active():
+            # Get the field variable for this f_id
+            field_var = None
+            if f_id == 0:
+                field_var = self.Unknowns.u
+            elif f_id == 1 and hasattr(self.Unknowns, 'p'):
+                field_var = self.Unknowns.p
+            else:
+                # For other field IDs, try to get from Unknowns (future-proofing)
+                pass
+
+            # If we have a field variable with a scaling coefficient, scale the BCs
+            if field_var is not None and hasattr(field_var, 'scaling_coefficient'):
+                scale = field_var.scaling_coefficient
+                if scale != 1.0 and scale != 0.0:
+                    # Scale BC values: dimensional → ND by dividing by scale
+                    # This converts e.g. T=1000K to T*=1000/1000=1.0 (ND)
+                    scaled_conds = []
+                    for val in conds:
+                        if val == sympy.oo or val == -sympy.oo:
+                            # Don't scale infinity (unconstrained components)
+                            scaled_conds.append(val)
+                        else:
+                            # Scale the value
+                            scaled_conds.append(val / scale)
+                    conds = scaled_conds
 
         sympy_fn = sympy.Matrix(conds).as_immutable()
 
@@ -544,12 +618,16 @@ class SolverBaseClass(uw_object):
             self._constitutive_model.Unknowns = self.Unknowns
             self._constitutive_model._solver_is_setup = False
             self._constitutive_model.order = self._order
+            # Establish bidirectional reference so parameter changes can propagate to solver
+            self._constitutive_model.Parameters._solver = self
 
 
         ### checking if it's a class
         elif type(model_or_class) == type(uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model_or_class(self.Unknowns)
             self._constitutive_model.order = self._order
+            # Establish bidirectional reference so parameter changes can propagate to solver
+            self._constitutive_model.Parameters._solver = self
 
 
 
@@ -819,7 +897,7 @@ class SNES_Scalar(SolverBaseClass):
         import numpy as np
 
         xxh = xxhash.xxh64()
-        xxh.update(np.ascontiguousarray(mesh.data))
+        xxh.update(np.ascontiguousarray(mesh.X.coords))
         mesh_dm_coord_hash = xxh.intdigest()
 
         # if we already set up the dm and the coordinates in the mesh dm have not
@@ -1420,7 +1498,7 @@ class SNES_Vector(SolverBaseClass):
         import numpy as np
 
         xxh = xxhash.xxh64()
-        xxh.update(np.ascontiguousarray(mesh.data))
+        xxh.update(np.ascontiguousarray(mesh.X.coords))
         mesh_dm_coord_hash = xxh.intdigest()
 
         # if we already set up the dm and the coordinates in the mesh dm have not
@@ -2661,7 +2739,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         import numpy as np
 
         xxh = xxhash.xxh64()
-        xxh.update(np.ascontiguousarray(mesh.data))
+        xxh.update(np.ascontiguousarray(mesh.X.coords))
         mesh_dm_coord_hash = xxh.intdigest()
 
         # if we already set up the dm and the coordinates in the mesh dm have not

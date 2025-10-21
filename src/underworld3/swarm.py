@@ -34,8 +34,9 @@ class SwarmType(Enum):
 # Note - much of the setup is necessarily the same as the MeshVariable
 # and the duplication should be removed.
 
+from underworld3.utilities.dimensionality_mixin import DimensionalityMixin
 
-class SwarmVariable(MathematicalMixin, Stateful, uw_object):
+class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object):
     """
     The SwarmVariable class generates a variable supported by a point cloud or 'swarm' and the
     underlying meshVariable representation that makes it possible to construct expressions that
@@ -216,6 +217,9 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
                         data=f"SwarmVariable[...].data is only available within mesh.access() context",
                         sym=self.sym[i, j],
                     )
+
+        # Initialize DimensionalityMixin
+        DimensionalityMixin.__init__(self)
 
         super().__init__()
 
@@ -986,11 +990,11 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
             D = raw_data[not_remeshed].copy()
 
             kdt = uw.kdtree.KDTree(
-                self.swarm.points[not_remeshed, :]
+                self.swarm._particle_coordinates.data[not_remeshed, :]
             )
         else:
             D = raw_data.copy()
-            kdt = uw.kdtree.KDTree(self.swarm.points[:, :])
+            kdt = uw.kdtree.KDTree(self.swarm._particle_coordinates.data[:, :])
 
             # kdt.build_index()
 
@@ -1431,7 +1435,7 @@ class SwarmVariable(MathematicalMixin, Stateful, uw_object):
             kdt = uw.kdtree.KDTree(local_coords)
 
             self.array[:, 0, :] = kdt.rbf_interpolator_local(
-                self.swarm.points, local_data, nnn=1
+                self.swarm._particle_coordinates.data, local_data, nnn=1
             )
 
         return
@@ -2197,6 +2201,114 @@ class Swarm(Stateful, uw_object):
         return self._coord_var
 
     @property
+    def coords(self):
+        """
+        Swarm particle coordinates in physical units.
+
+        This is the primary public interface for accessing particle coordinates.
+        Coordinates are automatically converted from internal model units to
+        physical units based on the model's reference quantities.
+
+        Returns
+        -------
+        UWQuantity or numpy.ndarray
+            Particle coordinates in physical units with shape (n_particles, dim).
+            If model has reference quantities, returns UWQuantity with appropriate
+            length units. Otherwise returns plain array.
+
+        Notes
+        -----
+        - Coordinates are converted from model units to physical units automatically
+        - For internal use with model units, access `swarm._particle_coordinates.data`
+        - Setting coordinates accepts either physical units or plain numbers
+
+        Examples
+        --------
+        >>> coords_physical = swarm.coords  # Get physical coordinates
+        >>> swarm.coords = new_coords_with_units  # Set from physical units
+
+        See Also
+        --------
+        swarm.units : Get the unit specification for coordinates
+        """
+        # Get internal model-unit coordinates
+        model_coords = self._particle_coordinates.data
+
+        # Convert to physical units
+        import underworld3 as uw
+        model = uw.get_default_model()
+
+        # Use from_model_magnitude to convert back to physical
+        return model.from_model_magnitude(model_coords, '[length]')
+
+    @coords.setter
+    def coords(self, value):
+        """
+        Set swarm particle coordinates from physical units.
+
+        Accepts coordinates with units or plain numbers. If units are provided,
+        they are converted to model units automatically. If plain numbers are
+        provided, they are assumed to be in the correct unit system.
+
+        Parameters
+        ----------
+        value : array-like or UWQuantity
+            New coordinates. Can be:
+            - Array with units (e.g., values * uw.units.km)
+            - Plain array (assumed to be in model units or physical units depending on context)
+        """
+        import underworld3 as uw
+        model = uw.get_default_model()
+
+        # Convert physical → model units
+        model_coords = model.to_model_magnitude(value)
+
+        # Set internal coordinates
+        self._particle_coordinates.data[...] = model_coords
+
+    @property
+    def units(self):
+        """
+        Unit specification for swarm coordinates.
+
+        Returns the physical unit string for coordinates based on the model's
+        reference quantities. This indicates what units the coordinates are in
+        when accessed via the `coords` property.
+
+        Returns
+        -------
+        str or None
+            Unit string for coordinates (e.g., 'kilometer', 'meter'), or None
+            if no reference quantities are set
+
+        Examples
+        --------
+        >>> print(swarm.units)  # 'kilometer' if length_scale was set in km
+        >>> coords = swarm.coords  # Coordinates in kilometers
+        """
+        # Coordinates have length dimensions
+        import underworld3 as uw
+        model = uw.get_default_model()
+
+        # Check if model has reference quantities
+        if not hasattr(model, '_pint_registry'):
+            return None
+
+        # Get length scale from model
+        try:
+            scales = model.get_fundamental_scales()
+            if 'length' in scales:
+                length_scale = scales['length']
+                if hasattr(length_scale, '_pint_qty'):
+                    return str(length_scale._pint_qty.units)
+                elif hasattr(length_scale, 'units'):
+                    return str(length_scale.units)
+        except:
+            pass
+
+        return None
+
+    @property
     def clip_to_mesh(self):
         return self._clip_to_mesh
 
@@ -2524,12 +2636,20 @@ class Swarm(Stateful, uw_object):
 
         # Missing points for deletion if required
         if delete_lost_points:
-
             uw.mpi.barrier()
-            if len(not_my_points > 0):
+            if len(not_my_points) > 0:
                 indices = np.sort(not_my_points)[::-1]
                 for index in indices:
                     self.dm.removePointAtIndex(index)
+
+                # CRITICAL FIX: Invalidate cached data after removing particles
+                # The _particle_coordinates variable caches data - must refresh after DM changes
+                self._particle_coordinates._canonical_data = None
+
+                # Also invalidate caches for all swarm variables
+                for var in self._vars.values():
+                    if hasattr(var, '_canonical_data'):
+                        var._canonical_data = None
 
         return
 
@@ -2749,7 +2869,7 @@ class Swarm(Stateful, uw_object):
             # when there are many active cores. This is probably why the parallel
             # h5py write hangs
 
-            points_data_copy = self.points[:].copy()
+            points_data_copy = self._particle_coordinates.data[:].copy()
 
             with h5py.File(f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm) as h5f:
                 if compression == True:
@@ -3370,11 +3490,16 @@ class Swarm(Stateful, uw_object):
         evalf=False,
         step_limit=False,
     ):
+        # Convert delta_t to model units if it has units
+        # This ensures consistent arithmetic: velocity is in model units, so time must be too
+        import underworld3 as uw
+        model = uw.get_default_model()
+        delta_t_model = model.to_model_magnitude(delta_t)
 
         dt_limit = self.estimate_dt(V_fn)
 
         if step_limit and dt_limit is not None:
-            substeps = int(max(1, round(abs(delta_t) / dt_limit)))
+            substeps = int(max(1, round(abs(delta_t_model) / dt_limit)))
         else:
             substeps = 1
 
@@ -3432,15 +3557,15 @@ class Swarm(Stateful, uw_object):
         # Wrap this whole thing in sub-stepping loop
         for step in range(0, substeps):
 
-            X0.array[:, 0, :] = self.points[...]
+            X0.array[:, 0, :] = self._particle_coordinates.data[...]
 
             # Mid point algorithm (2nd order)
 
             if order == 2:
                 print(f"Advection (2nd): {self.local_size} - swarm points", flush=True)
 
-                # with self.access(self._particle_coordinates):
-                v_at_Vpts = np.zeros_like(self.points[...])
+                # Use internal model-unit coordinates directly (no conversion needed)
+                v_at_Vpts = np.zeros_like(self._particle_coordinates.data[...])
 
                 # First evaluate the velocity at the particle locations
                 # (this is a local operation)
@@ -3449,7 +3574,7 @@ class Swarm(Stateful, uw_object):
                     V_fn_matrix, self._particle_coordinates.data
                 )[:, 0, :]
 
-                mid_pt_coords = self.points[...] + 0.5 * delta_t * v_at_Vpts / substeps
+                mid_pt_coords = self._particle_coordinates.data[...] + 0.5 * delta_t_model * v_at_Vpts / substeps
 
                 # This will re-position particles in periodic domains (etc)
                 if self.mesh.return_coords_to_bounds is not None:
@@ -3463,45 +3588,46 @@ class Swarm(Stateful, uw_object):
                     V_fn_matrix, mid_pt_coords
                 )[:, 0, :]
 
-                new_coords = X0.array[:, 0, :] + delta_t * v_at_Vpts / substeps
+                new_coords = X0.array[:, 0, :] + delta_t_model * v_at_Vpts / substeps
 
                 if self.mesh.return_coords_to_bounds is not None:
                     new_coords = self.mesh.return_coords_to_bounds(new_coords)
 
                 # Set the new particle positions (and automatically migrate)
-                self.points[...] = new_coords[...]
+                self._particle_coordinates.data[...] = new_coords[...]
 
                 del new_coords
                 del v_at_Vpts
 
             # forward Euler (1st order)
             else:
+                coords = self._particle_coordinates.data
                 print(
-                    f"1. Advection (1st): {self.points.shape} v {self.local_size} - swarm point shape",
+                    f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
                     flush=True,
                 )
 
-                v_at_Vpts = np.zeros_like(self.points)
+                v_at_Vpts = np.zeros_like(coords)
                 v_at_Vpts[...] = uw.function.global_evaluate(
-                    V_fn_matrix, self.points[...]
+                    V_fn_matrix, coords[...]
                 )[:, 0, :]
 
                 print(
-                    f"2. Advection (1st): {self.points.shape} v {self.local_size} - swarm point shape",
+                    f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
                     flush=True,
                 )
 
-                new_coords = self.points[...] + delta_t * v_at_Vpts / substeps
+                new_coords = coords[...] + delta_t_model * v_at_Vpts / substeps
 
                 print(
-                    f"3. Advection (1st): {self.points.shape} v {self.local_size} - swarm point shape",
+                    f"3. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
                     flush=True,
                 )
 
                 if self.mesh.return_coords_to_bounds is not None:
                     new_coords = self.mesh.return_coords_to_bounds(new_coords)
 
-                self.points[...] = new_coords[...]
+                self._particle_coordinates.data[...] = new_coords[...]
 
         ## End of substepping loop
 

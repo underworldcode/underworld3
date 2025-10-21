@@ -8,7 +8,7 @@ import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 from underworld3 import VarType
 import underworld3.timing as timing
-from underworld3.utilities._api_tools import uw_object
+from underworld3.utilities._api_tools import uw_object, SymbolicProperty, Parameter, Template, ExpressionProperty
 
 from underworld3.function import expression as public_expression
 
@@ -75,33 +75,18 @@ class SNES_Poisson(SNES_Scalar):
 
         self._constitutive_model = None
 
-    @property
-    def F0(self):
+    # Use Template for persistent read-only template expressions
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: -self.f,
+        "Poisson pointwise force term: f_0(u)"
+    )
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            -self.f,
-            "Poisson pointwise force term: f_0(u)",
-        )
-
-        # backward compatibility
-        self._f0 = f0_val
-
-        return f0_val
-
-    @property
-    def F1(self):
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            sympy.simplify(self.constitutive_model.flux.T),
-            "Poisson pointwise flux term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val
-
-        return F1_val
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: sympy.simplify(self.constitutive_model.flux.T),
+        "Poisson pointwise flux term: F_1(u)"
+    )
 
     @timing.routine_timer_decorator
     def poisson_problem_description(self):
@@ -216,34 +201,18 @@ class SNES_Darcy(SNES_Scalar):
     ## This function is the one we will typically over-ride to build specific solvers.
     ## This example is a poisson-like problem with isotropic coefficients
 
-    @property
-    def F0(self):
+    # Use Template for persistent read-only template expressions
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: -self.f,
+        "Darcy pointwise force term: f_0(u)"
+    )
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            -self.f,
-            "Darcy pointwise force term: f_0(u)",
-        )
-
-        # backward compatibility
-        self._f0 = f0_val.sym
-
-        return f0_val
-
-    @property
-    def F1(self):
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            sympy.simplify(self.darcy_flux),
-            "Darcy pointwise flux term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val.sym
-        self._v_projector.uw_function = -F1_val.sym
-
-        return F1_val
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: self.darcy_flux,
+        "Darcy pointwise flux term: F_1(u)"
+    )
 
     @timing.routine_timer_decorator
     def darcy_problem_description(self):
@@ -451,53 +420,24 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     ##  F1 - velocity equation flux terms
     ##  PF0 - pressure / constraint equation forcing terms
 
-    @property
-    def F0(self):
+    # Use Template for persistent read-only template expressions
+    F0 = Template(
+        r"\mathbf{f}_0\left( \mathbf{u} \right)",
+        lambda self: -self.bodyforce.sym,
+        "Stokes pointwise force term: f_0(u)"
+    )
 
-        f0 = expression(
-            r"\mathbf{f}_0\left( \mathbf{u} \right)",
-            -self.bodyforce.sym,
-            "Stokes pointwise force term: f_0(u)",
-        )
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: sympy.simplify(self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)),
+        "Stokes pointwise flux term: F_1(u)"
+    )
 
-        # backward compatibility
-        self._u_f0 = f0
-
-        return f0
-
-    @property
-    def F1(self):
-
-        dim = self.mesh.dim
-
-        ## Should not define a new function on each call (madness !)
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            sympy.simplify(self.stress + self.penalty * self.div_u * sympy.eye(dim)),
-            "Stokes pointwise flux term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._u_f1 = F1_val
-
-        return F1_val
-
-    @property
-    def PF0(self):
-
-        ## Should not define a new function on each call (madness !)
-
-        f0 = expression(
-            r"\mathbf{h}_0\left( \mathbf{p} \right)",
-            sympy.simplify(sympy.Matrix((self.constraints))),
-            "Pointwise force term: h_0(p)",
-        )
-
-        # backward compatibility
-        self._p_f0 = f0
-
-        return f0
+    PF0 = Template(
+        r"\mathbf{h}_0\left( \mathbf{p} \right)",
+        lambda self: sympy.simplify(sympy.Matrix((self.constraints))),
+        "Pointwise force term: h_0(p)"
+    )
 
     # deprecated
     @timing.routine_timer_decorator
@@ -847,48 +787,28 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = sympy.sympify(0)
         self._uw_weighting_function = sympy.sympify(1)
+        self._uw_function = sympy.Matrix([0])  # Default: project zero
         self._constitutive_model = uw.constitutive_models.Constitutive_Model(
             self.Unknowns
         )
 
         return
 
-    @property
-    def F0(self):
+    # Use Template for persistent read-only template expressions
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        "Scalar Projection pointwise misfit term: f_0(u)"
+    )
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            (self.u.sym - self.uw_function) * self.uw_weighting_function,
-            "Scalar Projection pointwise misfit term: f_0(u)",
-        )
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: self.smoothing * self.mesh.vector.gradient(self.u.sym),
+        "Scalar projection pointwise smoothing term: F_1(u)"
+    )
 
-        # backward compatibility
-        self._f0 = f0_val
-
-        return f0_val
-
-    @property
-    def F1(self):
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            self.smoothing * self.mesh.vector.gradient(self.u.sym),
-            "Scalar projection pointwise smoothing term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val
-
-        return F1_val
-
-    @property
-    def uw_function(self):
-        return self._uw_function
-
-    @uw_function.setter
-    def uw_function(self, user_uw_function):
-        self.is_setup = False
-        self._uw_function = sympy.Matrix([user_uw_function])
+    # Use SymbolicProperty for automatic unwrapping
+    uw_function = SymbolicProperty(matrix_wrap=True, doc="Function to project onto mesh")
 
     @property
     def smoothing(self):
@@ -960,42 +880,28 @@ class SNES_Vector_Projection(SNES_Vector):
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
+        self._uw_function = sympy.Matrix([[0] * self.mesh.dim])  # Default: project zero vector
         self._constitutive_model = uw.constitutive_models.Constitutive_Model(
             self.Unknowns
         )
 
         return
 
-    @property
-    def F0(self):
+    # Use Template for persistent read-only template expressions
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        "Vector projection pointwise misfit term: f_0(u)"
+    )
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            (self.u.sym - self.uw_function) * self.uw_weighting_function,
-            "Vector projection pointwise misfit term: f_0(u)",
-        )
-
-        # backward compatibility
-        self._f0 = f0_val
-
-        return f0_val
-
-    @property
-    def F1(self):
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            self.smoothing * self.Unknowns.E
-            + self.penalty
-            * self.mesh.vector.divergence(self.u.sym)
-            * sympy.eye(self.mesh.dim),
-            "Vector projection pointwise smoothing term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val
-
-        return F1_val
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: (self.smoothing * self.Unknowns.E
+                      + self.penalty
+                      * self.mesh.vector.divergence(self.u.sym)
+                      * sympy.eye(self.mesh.dim)),
+        "Vector projection pointwise smoothing term: F_1(u)"
+    )
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
@@ -1019,14 +925,8 @@ class SNES_Vector_Projection(SNES_Vector):
 
         return
 
-    @property
-    def uw_function(self):
-        return self._uw_function
-
-    @uw_function.setter
-    def uw_function(self, user_uw_function):
-        self.is_setup = False
-        self._uw_function = sympy.Matrix(user_uw_function)
+    # Use SymbolicProperty for automatic unwrapping
+    uw_function = SymbolicProperty(matrix_wrap=True, doc="Vector function to project onto mesh")
 
     @property
     def smoothing(self):
@@ -1447,8 +1347,11 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         vel = uw.function.evaluate(
             self.V_fn,
             self.mesh._centroids,
-            self.mesh.N,
         )
+
+        # Extract magnitude if vel is a UWQuantity (unit-aware)
+        if hasattr(vel, 'magnitude'):
+            vel = vel.magnitude
 
         ### get global velocity from velocity field
         max_magvel = np.linalg.norm(vel, axis=1).max()

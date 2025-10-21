@@ -104,7 +104,7 @@ def test_SLVec_boxmesh(mesh):
     # ### Create points to sample the UW results
     ### y coords to sample
     sample_y = np.arange(
-        mesh.data[:, 1].min(), mesh.data[:, 1].max(), 0.1 * mesh.get_min_radius()
+        mesh.X.coords[:, 1].min(), mesh.X.coords[:, 1].max(), 0.1 * mesh.get_min_radius()
     )  ### Vertical profile
 
     ### x coords to sample

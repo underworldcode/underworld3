@@ -65,7 +65,8 @@ def test_mesh_variable_unit_serialization():
                         metadata_str = f["metadata"].attrs[f"variable_{velocity.clean_name}_units"]
                         metadata = json.loads(metadata_str)
                         print(f"✓ Variable unit metadata found: {metadata}")
-                        assert metadata["units"] == "m/s"
+                        # Compare units using pint - canonical form may differ from input
+                        assert uw.units(metadata["units"]) == uw.units("m/s")
                         assert metadata["variable_name"] == "velocity"
                         assert metadata["num_components"] == 2
                         print("✓ MeshVariable save() unit metadata test PASSED")
@@ -92,7 +93,8 @@ def test_mesh_variable_unit_serialization():
                         metadata_str = f.attrs["variable_metadata"]
                         metadata = json.loads(metadata_str)
                         print(f"✓ Standalone variable metadata found: {metadata}")
-                        assert metadata["units"] == "m/s"
+                        # Compare units using pint - canonical form may differ from input
+                        assert uw.units(metadata["units"]) == uw.units("m/s")
                         assert metadata["variable_name"] == "velocity"
                         print("✓ MeshVariable write() unit metadata test PASSED")
                     else:

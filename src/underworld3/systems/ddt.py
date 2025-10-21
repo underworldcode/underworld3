@@ -704,6 +704,12 @@ class SemiLagrangian(uw_object):
         # so we don't over-write the history terms
         #
 
+        # Convert dt to model units for numerical arithmetic
+        # (after symbolic logic that may use dt with units)
+        import underworld3 as uw
+        model = uw.get_default_model()
+        dt = model.to_model_magnitude(dt)
+
         for i in range(self.order - 1, -1, -1):
             # 2nd order update along characteristics
 

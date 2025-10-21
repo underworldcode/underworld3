@@ -26,9 +26,133 @@ from .unit_conversion import (
     get_units,
 )
 
-# Create unit-aware versions of evaluate functions (replaces originals)
-evaluate = make_evaluate_unit_aware(_evaluate_original)
-global_evaluate = make_evaluate_unit_aware(_global_evaluate_original)
+# Wrap evaluate to return unit-aware objects
+def evaluate(expr, coords, **kwargs):
+    """
+    Evaluate expression at coordinates, returning unit-aware results.
+
+    This function wraps the Cython evaluate implementation to automatically
+    return UWQuantity or UnitAwareArray objects when the expression has units.
+
+    Parameters
+    ----------
+    expr : sympy expression or UWexpression
+        Expression to evaluate
+    coords : array-like
+        Coordinates at which to evaluate
+    **kwargs : dict
+        Additional arguments passed to underlying evaluate function
+
+    Returns
+    -------
+    UWQuantity, UnitAwareArray, or ndarray
+        - If expression has units and result is scalar: UWQuantity
+        - If expression has units and result is array: UnitAwareArray
+        - If expression has no units: plain ndarray (as before)
+
+    Examples
+    --------
+    >>> result = uw.function.evaluate(T.sym, coords)
+    >>> result.to('K')  # Convert to Kelvin
+    >>> print(f"Temperature: {result}")
+    """
+    import numpy as np
+
+    # Call the original Cython implementation
+    raw_result = _evaluate_original(expr, coords, **kwargs)
+
+    # Try to get units from the expression
+    result_units = get_units(expr)
+
+    if result_units is None:
+        # No units - return as-is (backward compatible)
+        return raw_result
+
+    # Expression has units - wrap result
+    if np.isscalar(raw_result):
+        # Scalar result - wrap as UWQuantity
+        return quantity(float(raw_result), result_units)
+    else:
+        # Array result - wrap as UnitAwareArray
+        from ..utilities.unit_aware_array import UnitAwareArray
+        return UnitAwareArray(raw_result, units=result_units)
+
+# Wrap global_evaluate similarly
+def global_evaluate(expr,
+                   coords=None,
+                   coord_sys=None,
+                   other_arguments=None,
+                   simplify=True,
+                   verbose=False,
+                   evalf=False,
+                   rbf=False,
+                   data_layout=None,
+                   check_extrapolated=False):
+    """
+    Global evaluate with unit-aware results.
+
+    Similar to evaluate() but performs global evaluation across all processes.
+    Returns unit-aware objects when expression has units.
+
+    Parameters
+    ----------
+    expr : sympy expression or UWexpression
+        Expression to evaluate
+    coords : array-like, optional
+        Coordinates at which to evaluate (default: None)
+    coord_sys : CoordinateSystem, optional
+        Coordinate system to use (default: None)
+    other_arguments : dict, optional
+        Additional arguments for evaluation (default: None)
+    simplify : bool, optional
+        Whether to simplify expression (default: True)
+    verbose : bool, optional
+        Verbose output (default: False)
+    evalf : bool, optional
+        Force numerical evaluation (default: False)
+    rbf : bool, optional
+        Use RBF interpolation (default: False)
+    data_layout : str, optional
+        Data layout specification (default: None)
+    check_extrapolated : bool, optional
+        Check for extrapolated values (default: False)
+
+    Returns
+    -------
+    UWQuantity, UnitAwareArray, or ndarray
+        Result with appropriate unit tracking
+    """
+    import numpy as np
+
+    # Call the original Cython implementation with all parameters
+    raw_result = _global_evaluate_original(
+        expr,
+        coords=coords,
+        coord_sys=coord_sys,
+        other_arguments=other_arguments,
+        simplify=simplify,
+        verbose=verbose,
+        evalf=evalf,
+        rbf=rbf,
+        data_layout=data_layout,
+        check_extrapolated=check_extrapolated
+    )
+
+    # Try to get units from the expression
+    result_units = get_units(expr)
+
+    if result_units is None:
+        # No units - return as-is
+        return raw_result
+
+    # Expression has units - wrap result
+    if np.isscalar(raw_result):
+        # Scalar result - wrap as UWQuantity
+        return quantity(float(raw_result), result_units)
+    else:
+        # Array result - wrap as UnitAwareArray
+        from ..utilities.unit_aware_array import UnitAwareArray
+        return UnitAwareArray(raw_result, units=result_units)
 
 from .expressions import UWexpression as expression
 from .expressions import UWDerivativeExpression as _derivative_expression
@@ -40,6 +164,58 @@ from .expressions import is_constant_expr as fn_is_constant_expr
 from .expressions import extract_expressions as fn_extract_expressions
 from .expressions import extract_expressions as fn_extract_expressions_and_functions
 from .expressions import mesh_vars_in_expression as fn_mesh_vars_in_expression
+
+
+def with_units(sympy_expr, name=None):
+    """
+    Wrap a SymPy expression in a unit-aware object with .units and .to() methods.
+
+    This is particularly useful for derivatives and other SymPy operations that
+    return plain SymPy expressions instead of unit-aware objects.
+
+    Parameters
+    ----------
+    sympy_expr : sympy expression
+        The SymPy expression to wrap (e.g., from temperature.diff(y))
+    name : str, optional
+        Optional name for the expression (auto-generated if not provided)
+
+    Returns
+    -------
+    UWexpression
+        Unit-aware expression with .units and .to() methods
+
+    Examples
+    --------
+    >>> # Derivative returns plain SymPy
+    >>> dTdy_sympy = temperature.diff(y)[0]
+    >>>
+    >>> # Wrap it to get unit-aware object
+    >>> dTdy = uw.with_units(dTdy_sympy)
+    >>> dTdy.units  # kelvin / kilometer
+    >>> dTdy.to("K/mm")  # Unit conversion works!
+
+    >>> # Also works with other SymPy operations
+    >>> combined = uw.with_units(2 * temperature.sym + pressure.sym)
+    """
+    import sympy
+
+    # Auto-generate name if not provided
+    if name is None:
+        # Try to create a reasonable name from the expression
+        name = str(sympy_expr)[:50]  # Truncate if too long
+
+    # Extract units from the expression
+    units_str = get_units(sympy_expr)
+
+    # Create description from units if available
+    if units_str:
+        description = f"Expression with units: {units_str}"
+    else:
+        description = "Dimensionless expression"
+
+    # Wrap in UWexpression
+    return expression(name, sympy_expr, description, units=units_str)
 
 # from .expressions import UWconstant_expression as constant
 

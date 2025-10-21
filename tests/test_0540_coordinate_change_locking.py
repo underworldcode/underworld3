@@ -120,9 +120,10 @@ def test_swarm_variable_locking():
     
     # Simulate coordinate change that triggers migration
     try:
-        original_points = test_swarm.points.copy()
+        original_points = test_swarm._particle_coordinates.data.copy()
         # Small coordinate change to avoid major migration
-        test_swarm.points += np.random.rand(*test_swarm.points.shape) * 0.001
+        coords = test_swarm._particle_coordinates.data
+        coords[:] = coords + np.random.rand(*coords.shape) * 0.001
         print("✅ Swarm coordinate change completed")
     except Exception as e:
         print(f"❌ Swarm coordinate change failed: {e}")

@@ -587,12 +587,18 @@ def validate_expression_units(expression, expected_units: Union[str, Any]) -> bo
 def enforce_units_consistency(*expressions) -> None:
     """
     Enforce units consistency, raising an error if inconsistent.
-    
+
     Args:
         *expressions: Expressions that must have consistent units
-        
+
     Raises:
         DimensionalityError: If units are inconsistent
         NoUnitsError: If some have units and others don't
     """
     check_units_consistency(*expressions)  # This already raises appropriate errors
+
+
+# Note: derivative_units() function has been removed (2025-10-16)
+# Natural Pint arithmetic now works directly:
+#   gradT_units = temperature.units / mesh.units
+# This returns a pint.Unit object that can be used directly

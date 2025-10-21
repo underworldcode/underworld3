@@ -71,11 +71,11 @@ def test_IndexSwarmVariable(mesh):
         P0, P1 = 1, 10
         P_fn = material.createMask([P0, P1])
 
-        ## compare the value on the Symmetrical Point on the left and riht wall
+        ## compare the value on the Symmetrical Point on the left and right wall
         Pmesh.array[:, 0, 0] = uw.function.evaluate(P_fn, Pmesh.coords).squeeze()
-        assert np.allclose(Pmesh.data[0], Pmesh.data[1], atol=0.01)
-        assert np.allclose(Pmesh.data[2], Pmesh.data[3], atol=0.01)
-        assert np.allclose(Pmesh.data[6], Pmesh.data[7], atol=0.01)
+        assert np.allclose(Pmesh.array[0, 0, 0], Pmesh.array[1, 0, 0], atol=0.01)
+        assert np.allclose(Pmesh.array[2, 0, 0], Pmesh.array[3, 0, 0], atol=0.01)
+        assert np.allclose(Pmesh.array[6, 0, 0], Pmesh.array[7, 0, 0], atol=0.01)
         del swarm
         del material
 

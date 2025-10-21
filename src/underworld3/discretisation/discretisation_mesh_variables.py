@@ -187,7 +187,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.symbol = symbol
 
         if mesh.instance_number > 1:
-            invisible = rf"\hspace{{ {mesh.instance_number/100}pt }}"
+            invisible = rf"\hspace{{ {mesh.instance_number/10000}pt }}"
             self.symbol = f"{{ {invisible} {symbol} }}"
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
@@ -220,8 +220,20 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.continuous = continuous
 
         # Store unit metadata for variable and initialize backend
-        self._units = units
+        # Convert string units to pint.Unit using the global uw.units registry
+        # This ensures all units use the same registry and can be combined
         if units is not None:
+            if isinstance(units, str):
+                # Convert string to pint.Unit using uw.units registry
+                # uw.units('K') returns a Quantity (1 kelvin), so we extract .units to get the Unit
+                self._units = uw.units(units).units
+            elif hasattr(units, 'dimensionality'):
+                # Already a pint.Unit object
+                self._units = units
+            else:
+                # Fallback: store as-is (shouldn't happen)
+                self._units = units
+
             # Initialize units backend properly
             from underworld3.utilities.units_mixin import PintBackend
             if units_backend is None or units_backend == 'pint':
@@ -229,6 +241,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             else:
                 raise ValueError(f"Unknown units backend: {units_backend}. Only 'pint' is supported.")
         else:
+            self._units = None
             self._units_backend = None
 
         # Component and shape handling
@@ -1217,10 +1230,41 @@ class _BaseMeshVariable(Stateful, uw_object):
             # Create DS on new DM (this builds a fresh Section with all fields)
             dm_new.createDS()
 
+            # CRITICAL FIX: Transfer data from old vectors to new DM
+            # When we rebuild the DM, existing variables' vectors must be recreated
+            # from the new DM, but we need to preserve their data
+
+            # Save old variable data before destroying vectors
+            var_data_backup = {}
+            for var in self.mesh.vars.values():
+                if var._lvec is not None:
+                    # Save the data
+                    var_data_backup[var.clean_name] = var._lvec.array.copy()
+                    # Destroy old vectors
+                    var._lvec.destroy()
+                    var._lvec = None
+                if var._gvec is not None:
+                    var._gvec.destroy()
+                    var._gvec = None
+
+            # Also invalidate mesh's local vector if it exists
+            if self.mesh._lvec is not None:
+                self.mesh._lvec.destroy()
+                self.mesh._lvec = None
+                self.mesh._stale_lvec = True
+
             # Replace old DM with new one
             dm_old.destroy()
             self.mesh.dm = dm_new
             self.mesh.dm_hierarchy[-1] = dm_new
+
+            # Restore data to variables (this will create new vectors from new DM)
+            for var in self.mesh.vars.values():
+                if var.clean_name in var_data_backup:
+                    # _set_vec will create new vectors from the new DM
+                    var._set_vec(available=True)
+                    # Restore the data
+                    var._lvec.array[...] = var_data_backup[var.clean_name]
 
             self.field_id = field_id
         else:
@@ -1337,44 +1381,124 @@ class _BaseMeshVariable(Stateful, uw_object):
     def _create_simple_array_view(self):
         """Array view for scalars/vectors using simple reshape operations"""
         import numpy as np
-        
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
         class SimpleMeshArrayView:
             def __init__(self, parent_var):
                 self.parent = parent_var
-                
+
             def _get_array_data(self):
                 # Simple reshape: (-1, num_components) -> (N, a, b)
                 data = self.parent.data
                 # For simple variables, reshape to (N, a, b) format
-                return data.reshape(data.shape[0], *self.parent.shape)
-            
+                reshaped = data.reshape(data.shape[0], *self.parent.shape)
+
+                # Apply ND scaling if active: convert ND → dimensional
+                import underworld3 as uw
+                print(f"DEBUG _get_array_data: is_nd_active={uw.is_nondimensional_scaling_active()}, has_scale={hasattr(self.parent, 'scaling_coefficient')}, scale={getattr(self.parent, 'scaling_coefficient', None)}")
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(self.parent, 'scaling_coefficient'):
+                        scale = self.parent.scaling_coefficient
+                        print(f"DEBUG: Applying scaling * {scale}")
+                        if scale != 1.0 and scale != 0.0:
+                            # Convert ND values to dimensional: T_dim = T_ND * T_scale
+                            reshaped = reshaped * scale
+                            print(f"DEBUG: After scaling: min={reshaped.min()}, max={reshaped.max()}")
+
+                # Wrap in UnitAwareArray if variable has units
+                if hasattr(self.parent, 'units') and self.parent.units is not None:
+                    return UnitAwareArray(reshaped, units=str(self.parent.units))
+                else:
+                    return reshaped
+
             def __getitem__(self, key):
                 return self._get_array_data()[key]
-                
+
             def __setitem__(self, key, value):
                 # Get current array view
                 array_data = self._get_array_data()
                 # Create a copy to modify (avoid modifying view directly)
-                modified_data = array_data.copy()
+                modified_data = array_data.copy() if hasattr(array_data, 'copy') else np.array(array_data).copy()
+
+                # Extract magnitude if value is a UWQuantity or UnitAwareArray
+                if hasattr(value, 'magnitude'):
+                    # Convert to variable's units if needed
+                    if hasattr(value, 'units') and hasattr(self.parent, 'units') and self.parent.units:
+                        # TODO: Add unit conversion here if units mismatch
+                        value = value.magnitude
+                    else:
+                        value = value.magnitude
+
                 modified_data[key] = value
                 # Reshape back to flat format and assign to canonical data
-                self.parent.data[...] = modified_data.reshape(-1, self.parent.num_components)
-                
+                # Extract magnitude from UnitAwareArray if needed
+                if hasattr(modified_data, 'magnitude'):
+                    flat_data = modified_data.magnitude.reshape(-1, self.parent.num_components)
+                else:
+                    flat_data = modified_data.reshape(-1, self.parent.num_components)
+
+                # Apply inverse ND scaling if active: convert dimensional → ND before storing
+                import underworld3 as uw
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(self.parent, 'scaling_coefficient'):
+                        scale = self.parent.scaling_coefficient
+                        if scale != 1.0 and scale != 0.0:
+                            # Convert dimensional values to ND: T_ND = T_dim / T_scale
+                            flat_data = flat_data / scale
+
+                self.parent.data[...] = flat_data
+
             @property
             def shape(self):
                 return self._get_array_data().shape
-                
+
             @property
             def dtype(self):
                 return self._get_array_data().dtype
-                
+
+            @property
+            def units(self):
+                """Get units from parent variable for consistency with evaluate() results"""
+                if hasattr(self.parent, 'units') and self.parent.units is not None:
+                    # Return string representation to match evaluate() results (UnitAwareArray)
+                    return str(self.parent.units)
+                return None
+
+            @property
+            def _units(self):
+                """Alias for uw.get_units() compatibility"""
+                return self.units
+
+            def to(self, target_units):
+                """
+                Convert to target units (unified interface).
+
+                Delegates to UnitAwareArray.to() for the actual conversion.
+
+                Parameters
+                ----------
+                target_units : str
+                    Target units to convert to
+
+                Returns
+                -------
+                UnitAwareArray
+                    Converted array with target units
+                """
+                data = self._get_array_data()
+                if hasattr(data, 'to'):
+                    return data.to(target_units)
+                else:
+                    raise ValueError(f"Variable '{self.parent.name}' has no units - cannot convert")
+
             def __repr__(self):
-                return f"SimpleMeshArrayView(shape={self.shape}, dtype={self.dtype})"
-            
+                units_str = f", units='{self.units}'" if self.units else ""
+                return f"SimpleMeshArrayView(shape={self.shape}, dtype={self.dtype}{units_str})"
+
             def __array__(self):
                 """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
                 return self._get_array_data()
-            
+
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
                 # Convert all MeshArrayView inputs to arrays
@@ -1384,53 +1508,129 @@ class _BaseMeshVariable(Stateful, uw_object):
                         converted_inputs.append(input._get_array_data())
                     else:
                         converted_inputs.append(input)
-                
+
                 # Apply the ufunc to the converted inputs
                 return ufunc(*converted_inputs, **kwargs)
-        
+
         return SimpleMeshArrayView(self)
     
     def _create_tensor_array_view(self):
         """Array view for complex tensors using pack/unpack operations"""
         import numpy as np
-        
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
         class TensorMeshArrayView:
             def __init__(self, parent_var):
                 self.parent = parent_var
-                
+
             def _get_array_data(self):
                 # Use complex pack/unpack for tensor layouts
-                return self.parent.unpack_uw_data_from_petsc(squeeze=False)
-            
+                unpacked = self.parent.unpack_uw_data_from_petsc(squeeze=False)
+
+                # Apply ND scaling if active: convert ND → dimensional
+                import underworld3 as uw
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(self.parent, 'scaling_coefficient'):
+                        scale = self.parent.scaling_coefficient
+                        if scale != 1.0 and scale != 0.0:
+                            # Convert ND values to dimensional: T_dim = T_ND * T_scale
+                            unpacked = unpacked * scale
+
+                # Wrap in UnitAwareArray if variable has units
+                if hasattr(self.parent, 'units') and self.parent.units is not None:
+                    return UnitAwareArray(unpacked, units=str(self.parent.units))
+                else:
+                    return unpacked
+
             def __getitem__(self, key):
                 return self._get_array_data()[key]
-                
+
             def __setitem__(self, key, value):
                 # Get current array view
                 array_data = self._get_array_data()
                 # Create a copy to modify (avoid modifying view directly)
-                modified_data = array_data.copy()
+                modified_data = array_data.copy() if hasattr(array_data, 'copy') else np.array(array_data).copy()
+
+                # Extract magnitude if value is a UWQuantity or UnitAwareArray
+                if hasattr(value, 'magnitude'):
+                    # Convert to variable's units if needed
+                    if hasattr(value, 'units') and hasattr(self.parent, 'units') and self.parent.units:
+                        # TODO: Add unit conversion here if units mismatch
+                        value = value.magnitude
+                    else:
+                        value = value.magnitude
+
                 modified_data[key] = value
+
+                # Extract magnitude from UnitAwareArray if needed
+                if hasattr(modified_data, 'magnitude'):
+                    data_to_pack = modified_data.magnitude
+                else:
+                    data_to_pack = modified_data
+
+                # Apply inverse ND scaling if active: convert dimensional → ND before storing
+                import underworld3 as uw
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(self.parent, 'scaling_coefficient'):
+                        scale = self.parent.scaling_coefficient
+                        if scale != 1.0 and scale != 0.0:
+                            # Convert dimensional values to ND: T_ND = T_dim / T_scale
+                            data_to_pack = data_to_pack / scale
+
                 # Pack back to canonical data format
-                # Note: pack_uw_data_to_petsc() modifies PETSc directly and returns None
-                self.parent.pack_uw_data_to_petsc(modified_data)
-                # No need to assign anything - pack method handles PETSc update
-                
+                self.parent.pack_uw_data_to_petsc(data_to_pack)
+
             @property
             def shape(self):
                 return self._get_array_data().shape
-                
+
             @property
             def dtype(self):
                 return self._get_array_data().dtype
-                
+
+            @property
+            def units(self):
+                """Get units from parent variable for consistency with evaluate() results"""
+                if hasattr(self.parent, 'units') and self.parent.units is not None:
+                    # Return string representation to match evaluate() results (UnitAwareArray)
+                    return str(self.parent.units)
+                return None
+
+            @property
+            def _units(self):
+                """Alias for uw.get_units() compatibility"""
+                return self.units
+
+            def to(self, target_units):
+                """
+                Convert to target units (unified interface).
+
+                Delegates to UnitAwareArray.to() for the actual conversion.
+
+                Parameters
+                ----------
+                target_units : str
+                    Target units to convert to
+
+                Returns
+                -------
+                UnitAwareArray
+                    Converted array with target units
+                """
+                data = self._get_array_data()
+                if hasattr(data, 'to'):
+                    return data.to(target_units)
+                else:
+                    raise ValueError(f"Variable '{self.parent.name}' has no units - cannot convert")
+
             def __repr__(self):
-                return f"TensorMeshArrayView(shape={self.shape}, dtype={self.dtype})"
-            
+                units_str = f", units='{self.units}'" if self.units else ""
+                return f"TensorMeshArrayView(shape={self.shape}, dtype={self.dtype}{units_str})"
+
             def __array__(self):
                 """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
                 return self._get_array_data()
-            
+
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
                 # Convert all MeshArrayView inputs to arrays
@@ -1440,10 +1640,10 @@ class _BaseMeshVariable(Stateful, uw_object):
                         converted_inputs.append(input._get_array_data())
                     else:
                         converted_inputs.append(input)
-                
+
                 # Apply the ufunc to the converted inputs
                 return ufunc(*converted_inputs, **kwargs)
-        
+
         return TensorMeshArrayView(self)
 
     @property
@@ -1545,12 +1745,22 @@ class _BaseMeshVariable(Stateful, uw_object):
     def min(self) -> Union[float, tuple]:
         """
         The global variable minimum value.
+        Returns the value only (not the rank). For multi-component variables,
+        returns a tuple of minimum values for each component.
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
 
+        # Sync local→global to ensure global vector has latest data
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        subdm.localToGlobal(self._lvec, self._gvec, addv=False)
+        indexset.destroy()
+        subdm.destroy()
+
         if self.num_components == 1:
-            return self._gvec.min()
+            # PETSc Vec.min() returns (rank, value) - extract just the value
+            rank, value = self._gvec.min()
+            return value
         else:
             return tuple(
                 [self._gvec.strideMin(i)[1] for i in range(self.num_components)]
@@ -1559,12 +1769,22 @@ class _BaseMeshVariable(Stateful, uw_object):
     def max(self) -> Union[float, tuple]:
         """
         The global variable maximum value.
+        Returns the value only (not the rank). For multi-component variables,
+        returns a tuple of maximum values for each component.
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
 
+        # Sync local→global to ensure global vector has latest data
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        subdm.localToGlobal(self._lvec, self._gvec, addv=False)
+        indexset.destroy()
+        subdm.destroy()
+
         if self.num_components == 1:
-            return self._gvec.max()
+            # PETSc Vec.max() returns (rank, value) - extract just the value
+            rank, value = self._gvec.max()
+            return value
         else:
             return tuple(
                 [self._gvec.strideMax(i)[1] for i in range(self.num_components)]
@@ -1576,6 +1796,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
+
+        # Sync local→global to ensure global vector has latest data
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        subdm.localToGlobal(self._lvec, self._gvec, addv=False)
+        indexset.destroy()
+        subdm.destroy()
 
         if self.num_components == 1:
             return self._gvec.sum()
@@ -1601,6 +1827,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self.num_components > 1 and norm_type == 2:
             raise RuntimeError("Norm 2 is only available for vectors.")
 
+        # Sync local→global to ensure global vector has latest data
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        subdm.localToGlobal(self._lvec, self._gvec, addv=False)
+        indexset.destroy()
+        subdm.destroy()
+
         if self.num_components == 1:
             return self._gvec.norm(norm_type)
         else:
@@ -1617,6 +1849,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
+
+        # Sync local→global to ensure global vector has latest data
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        subdm.localToGlobal(self._lvec, self._gvec, addv=False)
+        indexset.destroy()
+        subdm.destroy()
 
         if self.num_components == 1:
             vecsize = self._gvec.getSize()
@@ -1697,8 +1935,8 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         vsize = self._gvec.getSize()
         vmean = self.mean()
-        vmax = self.max()[1]
-        vmin = self.min()[1]
+        vmax = self.max()  # Now returns value directly, not tuple
+        vmin = self.min()  # Now returns value directly, not tuple
         vsum = self.sum()
         vnorm2 = self.norm(NormType.NORM_2)
         vrms = vnorm2 / numpy.sqrt(vsize)

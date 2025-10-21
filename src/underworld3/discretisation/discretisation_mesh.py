@@ -185,8 +185,60 @@ class Mesh(Stateful, uw_object):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
-        # Coordinate units for spatial positions
-        self.units = units
+        # Get coordinate units from model (not user parameter)
+        # The model owns the unit system - all meshes use the same units
+        import underworld3 as uw
+        model = uw.get_default_model()
+
+        # Ignore user-provided units parameter, get from model instead
+        if units is not None and units != model.get_coordinate_unit():
+            import warnings
+            warnings.warn(
+                f"Ignoring units parameter '{units}'. Mesh coordinates will use "
+                f"model units '{model.get_coordinate_unit()}'. The model owns the "
+                "unit system to ensure consistency across all meshes and variables.",
+                UserWarning,
+                stacklevel=3
+            )
+
+        # Set units from model
+        self.units = model.get_coordinate_unit()
+
+        # Lock model units now that a mesh has been created
+        # This prevents changing reference quantities after mesh exists
+        model._lock_units()
+
+        # === LENGTH SCALE FOR NON-DIMENSIONALIZATION ===
+        # The length scale is IMMUTABLE after mesh creation to ensure
+        # synchronization with all spatial operators (grad, div, curl)
+        self._length_scale = 1.0  # Default: no scaling
+        self._length_units = self.units if self.units else "dimensionless"  # Same as coordinate units
+
+        # Derive length scale from model reference quantities if available
+        if hasattr(model, '_reference_quantities') and model._reference_quantities:
+            # Priority order: domain_depth > length
+            if 'domain_depth' in model._reference_quantities:
+                ref_qty = model._reference_quantities['domain_depth']
+                # Convert to base units (SI: meters) for consistent scaling
+                try:
+                    base_qty = ref_qty.to_base_units()
+                    self._length_scale = float(base_qty.magnitude)
+                    self._length_units = str(base_qty.units)
+                except:
+                    # Fallback if to_base_units() fails
+                    self._length_scale = float(ref_qty.magnitude)
+                    self._length_units = str(ref_qty.units) if hasattr(ref_qty, 'units') else "dimensionless"
+            elif 'length' in model._reference_quantities:
+                ref_qty = model._reference_quantities['length']
+                # Convert to base units (SI: meters) for consistent scaling
+                try:
+                    base_qty = ref_qty.to_base_units()
+                    self._length_scale = float(base_qty.magnitude)
+                    self._length_units = str(base_qty.units)
+                except:
+                    # Fallback if to_base_units() fails
+                    self._length_scale = float(ref_qty.magnitude)
+                    self._length_units = str(ref_qty.units) if hasattr(ref_qty, 'units') else "dimensionless"
 
         # Mesh coordinate version tracking for swarm coordination
         self._mesh_version = 0
@@ -532,6 +584,10 @@ class Mesh(Stateful, uw_object):
         self._Gamma.y._ccodestr = "petsc_n[1]"
         self._Gamma.z._ccodestr = "petsc_n[2]"
 
+        # Add unit awareness to coordinate symbols if mesh has units or model has scales
+        from ..utilities.unit_aware_coordinates import patch_coordinate_units
+        patch_coordinate_units(self)
+
         try:
             self.isSimplex = self.dm.isSimplex()
         except:
@@ -647,6 +703,54 @@ class Mesh(Stateful, uw_object):
 
         return self._element
 
+    @property
+    def length_scale(self) -> float:
+        """
+        Length scale for non-dimensionalization.
+
+        This property is IMMUTABLE after mesh creation to ensure synchronization
+        with all spatial operators (gradient, divergence, curl, etc.).
+
+        The length scale is derived from model reference quantities at mesh creation:
+        - Priority 1: `domain_depth` from `model.set_reference_quantities()`
+        - Priority 2: `length` from `model.set_reference_quantities()`
+        - Default: 1.0 (no scaling)
+
+        Returns
+        -------
+        float
+            Length scale value for non-dimensionalization
+
+        Examples
+        --------
+        >>> model.set_reference_quantities(domain_depth=uw.quantity(100, "km"))
+        >>> mesh = uw.meshing.UnstructuredSimplexBox(...)
+        >>> mesh.length_scale
+        100000.0  # meters
+
+        See Also
+        --------
+        length_units : Units string for length scale
+        """
+        return self._length_scale
+
+    @property
+    def length_units(self) -> str:
+        """
+        Unit string for the length scale.
+
+        Returns
+        -------
+        str
+            Units for the length scale (e.g., "meter", "kilometer")
+
+        Examples
+        --------
+        >>> mesh.length_units
+        'kilometer'
+        """
+        return self._length_units
+
     def view(self, level=0):
         """
         Displays mesh information at different levels.
@@ -667,8 +771,15 @@ class Mesh(Stateful, uw_object):
             # Display coordinate units if set
             if hasattr(self, 'units') and self.units is not None:
                 uw.pprint(f"Coordinate units: {self.units}\n")
-                uw.pprint(f"  Access unit-aware coordinates via: mesh.points\n")
-                uw.pprint(f"  Query units with: uw.get_units(mesh.points)\n")
+                uw.pprint(f"  Access unit-aware coordinates via: mesh.X.coords\n")
+                uw.pprint(f"  Query units with: uw.get_units(mesh.X.coords)\n")
+
+            # Display length scale for non-dimensionalization
+            if hasattr(self, '_length_scale'):
+                if self._length_scale != 1.0:
+                    uw.pprint(f"Length scale (non-dimensionalization): {self._length_scale} {self._length_units}\n")
+                else:
+                    uw.pprint(f"Length scale: 1.0 (no scaling)\n")
 
             # Only if notebook and serial
             if uw.is_notebook and uw.mpi.size == 1:
@@ -1302,7 +1413,7 @@ class Mesh(Stateful, uw_object):
             DeprecationWarning,
             stacklevel=2
         )
-        return self.points
+        return self.X.coords
 
     @property
     def points(self):

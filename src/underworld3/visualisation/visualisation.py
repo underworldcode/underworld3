@@ -83,7 +83,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
                 meshio_cell_type = "hexahedron"
 
         mmesh = meshio.Mesh(
-            points=mesh.data, cells=[(meshio_cell_type, np.array(cell_points_list))]
+            points=mesh.X.coords, cells=[(meshio_cell_type, np.array(cell_points_list))]
         )
 
         pv_mesh = pv.from_meshio(mmesh)
@@ -108,7 +108,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         cells_array = np.hstack((cells_size, cells_array), dtype=int)
 
         pv_mesh = pv.UnstructuredGrid(
-            cells_array, cells_type, coords_to_pv_coords(mesh.data)
+            cells_array, cells_type, coords_to_pv_coords(mesh.X.coords)
         )
 
         return pv_mesh
@@ -146,7 +146,7 @@ def swarm_to_pv_cloud(swarm):
     if swarm.mesh.dim == 2:
         points[:, 2] = 0.0
     else:
-        points[:, 2] = swarm.points[:, 2]
+        points[:, 2] = swarm.data[:, 2]
 
     point_cloud = pv.PolyData(points)
 

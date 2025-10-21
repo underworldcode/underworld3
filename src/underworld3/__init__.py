@@ -139,7 +139,10 @@ from .model import Model, create_model, get_default_model, reset_default_model, 
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
-from .function import quantity, expression
+from .function import quantity, expression, with_units
+
+# Unit utilities (top-level convenience for user code)
+from .function.unit_conversion import get_units, _extract_value
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
 # import underworld3.kdtree
@@ -173,6 +176,7 @@ from .units import (
     same_units,
     validate_expression_units,
     enforce_units_consistency,
+    # derivative_units removed - use natural pint arithmetic: var.units / mesh.units
 )
 
 # Universal unit query function (from function.unit_conversion)
@@ -234,33 +238,117 @@ model.set_reference_quantities(
 # Attach view method to units registry
 units.view = _units_view
 
-# Scale factor context manager
+# ============================================================================
+# NON-DIMENSIONAL SCALING - SINGLE GLOBAL FLAG
+# ============================================================================
+# This is the ONLY place where non-dimensional scaling is enabled/disabled.
+# All code checks this flag via is_nondimensional_scaling_active().
+# ============================================================================
+
 from contextlib import contextmanager
 
-# Global flag for scaled symbols
-_scaled_symbols_active = False
+# SINGLE GLOBAL FLAG for non-dimensional scaling
+_USE_NONDIMENSIONAL_SCALING = False
+
+
+def use_nondimensional_scaling(enabled=True):
+    """
+    Enable or disable non-dimensional scaling globally.
+
+    When enabled, equations are scaled during unwrap() for better numerical
+    conditioning. Variables with units and reference scales are automatically
+    scaled (divided by their scaling_coefficient).
+
+    This is the ONLY way to control non-dimensional scaling - there are no
+    other flags, solver settings, or context managers that affect this.
+
+    Parameters
+    ----------
+    enabled : bool, default=True
+        True to enable non-dimensional scaling, False to disable
+
+    Notes
+    -----
+    - Scaling coefficients are ALWAYS computed from model.set_reference_quantities()
+    - This flag only controls whether those coefficients are APPLIED during unwrap()
+    - Changing this flag requires recompiling solvers (set solver.is_setup=False)
+
+    Examples
+    --------
+    Setup problem with reference quantities:
+
+    >>> model = uw.Model()
+    >>> model.set_reference_quantities(
+    ...     domain_depth=uw.quantity(100, "km"),
+    ...     temperature_diff=uw.quantity(1000, "kelvin")
+    ... )
+    >>> T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+
+    Solve with dimensional form (default):
+
+    >>> uw.use_nondimensional_scaling(False)  # Default
+    >>> poisson.solve()
+    >>> u_dimensional = T.array.copy()
+
+    Solve with non-dimensional form (for comparison):
+
+    >>> uw.use_nondimensional_scaling(True)
+    >>> poisson.is_setup = False  # Force recompilation with new scaling
+    >>> poisson.solve()
+    >>> u_nondimensional = T.array.copy()
+    >>>
+    >>> # Solutions should be identical
+    >>> import numpy as np
+    >>> assert np.allclose(u_dimensional, u_nondimensional)
+
+    See Also
+    --------
+    is_nondimensional_scaling_active : Check current scaling state
+    model.set_reference_quantities : Set reference scales
+    """
+    global _USE_NONDIMENSIONAL_SCALING
+    _USE_NONDIMENSIONAL_SCALING = bool(enabled)
+
+
+def is_nondimensional_scaling_active():
+    """
+    Check if non-dimensional scaling is currently enabled.
+
+    Returns
+    -------
+    bool
+        True if non-dimensional scaling is active, False otherwise
+
+    See Also
+    --------
+    use_nondimensional_scaling : Enable/disable scaling
+    """
+    return _USE_NONDIMENSIONAL_SCALING
+
+
+# ============================================================================
+# INTERNAL COMPATIBILITY - Do not use directly
+# ============================================================================
+# These exist for backward compatibility with old scaling experiments.
+# New code should use use_nondimensional_scaling() instead.
 
 @contextmanager
 def _apply_scaling():
-    """
-    Internal context manager that enables automatic scaling during unwrap operations.
-
-    This is an implementation detail. Users should use uw.unwrap(expr, apply_scaling=True) instead.
-    """
-    global _scaled_symbols_active
-    old_value = _scaled_symbols_active
-    _scaled_symbols_active = True
+    """Internal context manager - DEPRECATED, use use_nondimensional_scaling() instead."""
+    global _USE_NONDIMENSIONAL_SCALING
+    old_value = _USE_NONDIMENSIONAL_SCALING
+    _USE_NONDIMENSIONAL_SCALING = True
     try:
         yield
     finally:
-        _scaled_symbols_active = old_value
+        _USE_NONDIMENSIONAL_SCALING = old_value
 
 def _is_scaling_active():
-    """Check if scaled symbols context is active."""
-    return _scaled_symbols_active
+    """Internal check - DEPRECATED, use is_nondimensional_scaling_active() instead."""
+    return _USE_NONDIMENSIONAL_SCALING
 
 # Backward compatibility aliases (deprecated)
-scaled_symbols = _apply_scaling  # For backward compatibility - deprecated, use uw.unwrap(expr, apply_scaling=True)
+scaled_symbols = _apply_scaling  # For backward compatibility - use use_nondimensional_scaling() instead
 
 def unwrap(fn, keep_constants=True, return_self=True, apply_scaling=False):
     """

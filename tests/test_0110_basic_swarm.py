@@ -107,15 +107,15 @@ def test_particle_position_setter(setup_data):
     swarm.clip_to_mesh = False
 
     # Get original positions
-    original_positions = swarm.points[...].copy()
-    npts = swarm.points[...].shape[0]
+    original_positions = swarm._particle_coordinates.data[...].copy()
+    npts = swarm._particle_coordinates.data[...].shape[0]
 
     # Create new positions (shift all particles by 0.1 in x and y)
     new_positions = original_positions + 10.0
 
     # Test the data setter (be careful that we don't delete the moved points)
-    swarm.points = new_positions
-    updated_positions = swarm.points[...]
+    swarm._particle_coordinates.data[:] = new_positions
+    updated_positions = swarm._particle_coordinates.data[...]
 
     # Verify the positions were updated correctly
     np.testing.assert_allclose(updated_positions, new_positions, rtol=1e-15)
@@ -132,18 +132,17 @@ def test_particle_clip_context_manager(setup_data):
     swarm.populate(fill_param=2)
 
     # Get original positions
-    original_positions = swarm.points.copy()
-    npts0 = swarm.points.shape[0]
+    original_positions = swarm._particle_coordinates.data.copy()
+    npts0 = swarm._particle_coordinates.data.shape[0]
 
     # Create new positions (shift all particles by 0.1 in x and y)
     new_positions = original_positions + 10.0
 
     # Test the data setter (be careful that we don't delete the moved points)
     with swarm.dont_clip_to_mesh():
-        # swarm.points[...] = new_positions[...]
-        swarm.points = new_positions
-        npts1 = swarm.points.shape[0]
+        swarm._particle_coordinates.data[:] = new_positions
+        npts1 = swarm._particle_coordinates.data.shape[0]
         assert npts1 == npts0
 
-    npts1 = swarm.points.shape[0]
+    npts1 = swarm._particle_coordinates.data.shape[0]
     assert npts1 == 0

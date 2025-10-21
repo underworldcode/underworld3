@@ -331,3 +331,371 @@ def RegionalSphericalBox(
     new_mesh.boundary_normals = boundary_normals
 
     return new_mesh
+
+
+@timing.routine_timer_decorator
+def RegionalGeographicBox(
+    lon_range: Tuple[float, float] = (135.0, 140.0),
+    lat_range: Tuple[float, float] = (-35.0, -30.0),
+    depth_range: Tuple[float, float] = (0.0, 400.0),
+    ellipsoid = 'WGS84',
+    numElements: Tuple[int, int, int] = (10, 10, 10),
+    degree: int = 1,
+    qdegree: int = 2,
+    simplex: bool = True,
+    filename: Optional[str] = None,
+    refinement: Optional[int] = None,
+    coarsening: Optional[int] = None,
+    gmsh_verbosity: int = 0,
+    verbose: bool = False,
+):
+    """
+    Create a regional geographic mesh with ellipsoidal geometry.
+
+    This function creates a structured 3D mesh in geographic coordinates
+    (longitude, latitude, depth) on an ellipsoidal planet. The mesh uses
+    geodetic latitude (perpendicular to ellipsoid surface) and measures
+    depth below the reference ellipsoid surface.
+
+    Parameters
+    ----------
+    lon_range : tuple of float, optional
+        Longitude range in degrees East (lon_min, lon_max).
+        Default: (135.0, 140.0) for southeastern Australia.
+    lat_range : tuple of float, optional
+        Latitude range in degrees North (lat_min, lat_max).
+        Geodetic latitude (perpendicular to ellipsoid).
+        Default: (-35.0, -30.0) for southeastern Australia.
+    depth_range : tuple of float, optional
+        Depth range in km below ellipsoid surface (depth_min, depth_max).
+        Positive downward. depth_min=0 means surface.
+        Default: (0.0, 400.0) for 0-400 km depth.
+    ellipsoid : str, tuple, or bool, optional
+        Ellipsoid specification:
+        - str: Name from ELLIPSOIDS dict ('WGS84', 'Mars', 'Moon', 'Venus', 'sphere')
+        - tuple: (semi_major_axis_km, semi_minor_axis_km) for custom ellipsoid
+        - True: Use WGS84 (default)
+        - False or 'sphere': Use perfect sphere with Earth mean radius
+        Default: 'WGS84'
+    numElements : tuple of int, optional
+        Number of elements in (lon, lat, depth) directions.
+        Default: (10, 10, 10)
+    degree : int, optional
+        Polynomial degree for finite elements (1=linear, 2=quadratic).
+        Default: 1
+    qdegree : int, optional
+        Quadrature degree for numerical integration.
+        Default: 2
+    simplex : bool, optional
+        If True, use tetrahedral elements. If False, use hexahedral elements.
+        Default: True
+    filename : str, optional
+        Path to save generated mesh file. If None, uses automatic naming.
+        Default: None
+    refinement : int, optional
+        Number of uniform refinement steps to apply.
+        Default: None
+    coarsening : int, optional
+        Number of coarsening steps to apply.
+        Default: None
+    gmsh_verbosity : int, optional
+        Gmsh output verbosity level (0=quiet, 5=very verbose).
+        Default: 0
+    verbose : bool, optional
+        If True, print mesh generation details.
+        Default: False
+
+    Returns
+    -------
+    Mesh
+        Underworld3 mesh object with GEOGRAPHIC coordinate system.
+        Access geographic coordinates via mesh.geo:
+        - mesh.geo.lon, mesh.geo.lat, mesh.geo.depth (data arrays)
+        - mesh.geo[:] for symbolic coordinates (λ_lon, λ_lat, λ_d)
+        - mesh.geo.unit_east, mesh.geo.unit_north, mesh.geo.unit_down (basis vectors)
+
+    Examples
+    --------
+    # Create mesh for southeastern Australia, 0-400 km depth
+    mesh = uw.meshing.RegionalGeographicBox(
+        lon_range=(135, 140),
+        lat_range=(-35, -30),
+        depth_range=(0, 400),
+        ellipsoid='WGS84',
+        numElements=(20, 20, 10),
+    )
+
+    # Access geographic coordinates
+    lon = mesh.geo.lon         # Longitude array (degrees East)
+    lat = mesh.geo.lat         # Latitude array (degrees North)
+    depth = mesh.geo.depth     # Depth array (km below surface)
+
+    # Use in equations
+    λ_lon, λ_lat, λ_d = mesh.geo[:]
+    T = 1600 - 0.5 * λ_d       # Temperature decreasing with depth
+
+    # Basis vectors for boundary conditions
+    v_surface = 0 * mesh.geo.unit_up     # No vertical flow at surface
+    v_bottom = 10 * mesh.geo.unit_down   # Downward flow at bottom
+
+    # Mars example
+    mesh_mars = uw.meshing.RegionalGeographicBox(
+        lon_range=(0, 45),
+        lat_range=(-22.5, 22.5),
+        depth_range=(0, 200),
+        ellipsoid='Mars',
+        numElements=(15, 15, 8),
+    )
+
+    Notes
+    -----
+    - Uses geodetic latitude (GPS/map standard), not geocentric latitude
+    - Depth is measured from reference ellipsoid surface, not from center
+    - mesh.R provides spherical coordinates (r, θ, φ) for backward compatibility
+    - mesh.geo provides geographic coordinates (lon, lat, depth) with ellipsoid geometry
+    - Right-handed coordinate system: WE × SN = down
+    """
+    from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
+
+    # Parse ellipsoid parameter
+    if ellipsoid is True or ellipsoid == 'WGS84':
+        ellipsoid_dict = ELLIPSOIDS['WGS84'].copy()
+    elif ellipsoid is False or ellipsoid == 'sphere':
+        ellipsoid_dict = ELLIPSOIDS['sphere'].copy()
+    elif isinstance(ellipsoid, str):
+        if ellipsoid not in ELLIPSOIDS:
+            raise ValueError(
+                f"Unknown ellipsoid '{ellipsoid}'. "
+                f"Available: {list(ELLIPSOIDS.keys())}"
+            )
+        ellipsoid_dict = ELLIPSOIDS[ellipsoid].copy()
+    elif isinstance(ellipsoid, (tuple, list)) and len(ellipsoid) == 2:
+        # Custom ellipsoid (a, b)
+        a, b = ellipsoid
+        f = (a - b) / a if a != b else 0.0
+        ellipsoid_dict = {
+            'a': float(a),
+            'b': float(b),
+            'f': f,
+            'planet': 'Custom',
+            'description': f'Custom ellipsoid (a={a} km, b={b} km)',
+        }
+    else:
+        raise ValueError(
+            f"Invalid ellipsoid parameter: {ellipsoid}. "
+            "Use str name, (a, b) tuple, True for WGS84, or False for sphere."
+        )
+
+    a = ellipsoid_dict['a']
+    b = ellipsoid_dict['b']
+
+    # Unpack ranges and element counts
+    lon_min, lon_max = lon_range
+    lat_min, lat_max = lat_range
+    depth_min, depth_max = depth_range
+    numLon, numLat, numDepth = numElements
+
+    # Validate inputs
+    if not (-180 <= lon_min < lon_max <= 360):
+        raise ValueError(f"Invalid longitude range: {lon_range}. Must be in [-180, 360].")
+    if not (-90 <= lat_min < lat_max <= 90):
+        raise ValueError(f"Invalid latitude range: {lat_range}. Must be in [-90, 90].")
+    if not (0 <= depth_min < depth_max):
+        raise ValueError(f"Invalid depth range: {depth_range}. Must be positive with depth_min < depth_max.")
+
+    # Define boundary enum
+    class boundaries(Enum):
+        Surface = 1  # depth = depth_min (top)
+        Bottom = 2   # depth = depth_max (bottom)
+        North = 3    # lat = lat_max
+        South = 4    # lat = lat_min
+        East = 5     # lon = lon_max
+        West = 6     # lon = lon_min
+
+    # Generate mesh filename if not provided
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+        uw_filename = (
+            f".meshes/uw_geographic_{ellipsoid_dict['planet']}_"
+            f"lon{lon_min:.1f}_{lon_max:.1f}_"
+            f"lat{lat_min:.1f}_{lat_max:.1f}_"
+            f"d{depth_min:.0f}_{depth_max:.0f}_"
+            f"n{numLon}x{numLat}x{numDepth}_"
+            f"deg{degree}_{'simplex' if simplex else 'hex'}.msh"
+        )
+    else:
+        uw_filename = filename
+
+    # Generate mesh using gmsh (only on rank 0)
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("Geographic Box")
+
+        # Create grid of points in geographic coordinates
+        # We create points at corners and let gmsh interpolate
+
+        # Corner points in geographic coordinates
+        geo_corners = [
+            (lon_min, lat_min, depth_min),  # SW surface
+            (lon_max, lat_min, depth_min),  # SE surface
+            (lon_max, lat_max, depth_min),  # NE surface
+            (lon_min, lat_max, depth_min),  # NW surface
+            (lon_min, lat_min, depth_max),  # SW bottom
+            (lon_max, lat_min, depth_max),  # SE bottom
+            (lon_max, lat_max, depth_max),  # NE bottom
+            (lon_min, lat_max, depth_max),  # NW bottom
+        ]
+
+        # Convert to Cartesian coordinates
+        cart_corners = []
+        for lon, lat, depth in geo_corners:
+            x, y, z = geographic_to_cartesian(lon, lat, depth, a, b)
+            cart_corners.append((x, y, z))
+
+        # Add points to gmsh
+        for i, (x, y, z) in enumerate(cart_corners, start=1):
+            gmsh.model.geo.addPoint(x, y, z, tag=i)
+
+        # Create box topology using lines and surfaces
+        # Bottom face (depth=depth_min, surface)
+        gmsh.model.geo.addLine(1, 2, tag=1)  # South edge
+        gmsh.model.geo.addLine(2, 3, tag=2)  # East edge
+        gmsh.model.geo.addLine(3, 4, tag=3)  # North edge
+        gmsh.model.geo.addLine(4, 1, tag=4)  # West edge
+
+        # Top face (depth=depth_max, bottom)
+        gmsh.model.geo.addLine(5, 6, tag=5)
+        gmsh.model.geo.addLine(6, 7, tag=6)
+        gmsh.model.geo.addLine(7, 8, tag=7)
+        gmsh.model.geo.addLine(8, 5, tag=8)
+
+        # Vertical edges
+        gmsh.model.geo.addLine(1, 5, tag=9)   # SW vertical
+        gmsh.model.geo.addLine(2, 6, tag=10)  # SE vertical
+        gmsh.model.geo.addLine(3, 7, tag=11)  # NE vertical
+        gmsh.model.geo.addLine(4, 8, tag=12)  # NW vertical
+
+        # Create surfaces (use Ruled Surface for compatibility with PETSc)
+        # Surface (depth=depth_min)
+        gmsh.model.geo.addCurveLoop([1, 2, 3, 4], tag=1)
+        gmsh.model.geo.addSurfaceFilling([1], tag=1)
+
+        # Bottom (depth=depth_max)
+        gmsh.model.geo.addCurveLoop([5, 6, 7, 8], tag=2)
+        gmsh.model.geo.addSurfaceFilling([2], tag=2)
+
+        # South face (lat=lat_min)
+        gmsh.model.geo.addCurveLoop([1, 10, -5, -9], tag=3)
+        gmsh.model.geo.addSurfaceFilling([3], tag=3)
+
+        # East face (lon=lon_max)
+        gmsh.model.geo.addCurveLoop([2, 11, -6, -10], tag=4)
+        gmsh.model.geo.addSurfaceFilling([4], tag=4)
+
+        # North face (lat=lat_max)
+        gmsh.model.geo.addCurveLoop([3, 12, -7, -11], tag=5)
+        gmsh.model.geo.addSurfaceFilling([5], tag=5)
+
+        # West face (lon=lon_min)
+        gmsh.model.geo.addCurveLoop([4, 9, -8, -12], tag=6)
+        gmsh.model.geo.addSurfaceFilling([6], tag=6)
+
+        # Create volume
+        gmsh.model.geo.addSurfaceLoop([1, 2, 3, 4, 5, 6], tag=1)
+        gmsh.model.geo.addVolume([1], tag=1)
+
+        gmsh.model.geo.synchronize()
+
+        # Set physical groups for boundaries
+        gmsh.model.addPhysicalGroup(2, [1], boundaries.Surface.value)
+        gmsh.model.setPhysicalName(2, boundaries.Surface.value, "Surface")
+
+        gmsh.model.addPhysicalGroup(2, [2], boundaries.Bottom.value)
+        gmsh.model.setPhysicalName(2, boundaries.Bottom.value, "Bottom")
+
+        gmsh.model.addPhysicalGroup(2, [4], boundaries.South.value)
+        gmsh.model.setPhysicalName(2, boundaries.South.value, "South")
+
+        gmsh.model.addPhysicalGroup(2, [5], boundaries.East.value)
+        gmsh.model.setPhysicalName(2, boundaries.East.value, "East")
+
+        gmsh.model.addPhysicalGroup(2, [3], boundaries.North.value)
+        gmsh.model.setPhysicalName(2, boundaries.North.value, "North")
+
+        gmsh.model.addPhysicalGroup(2, [6], boundaries.West.value)
+        gmsh.model.setPhysicalName(2, boundaries.West.value, "West")
+
+        gmsh.model.addPhysicalGroup(3, [1], 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
+
+        # Set transfinite meshing for structured grid
+        # Edges in longitude direction
+        for edge in [1, 3, 5, 7]:
+            gmsh.model.mesh.setTransfiniteCurve(edge, numNodes=numLon + 1)
+
+        # Edges in latitude direction
+        for edge in [2, 4, 6, 8]:
+            gmsh.model.mesh.setTransfiniteCurve(edge, numNodes=numLat + 1)
+
+        # Edges in depth direction
+        for edge in [9, 10, 11, 12]:
+            gmsh.model.mesh.setTransfiniteCurve(edge, numNodes=numDepth + 1)
+
+        # Set transfinite surfaces
+        for surface in range(1, 7):
+            gmsh.model.mesh.setTransfiniteSurface(surface)
+            if not simplex:
+                gmsh.model.mesh.set_recombine(2, surface)
+
+        # Set transfinite volume
+        if not simplex:
+            gmsh.model.mesh.set_transfinite_volume(1)
+            gmsh.model.mesh.set_recombine(3, 1)
+        else:
+            # For simplex, don't use transfinite volume, just generate
+            pass
+
+        # Generate mesh
+        gmsh.model.mesh.generate(3)
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    # Load mesh on all ranks
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=boundaries,
+        boundary_normals=None,
+        refinement=refinement,
+        coarsening=coarsening,
+        coordinate_system_type=CoordinateSystemType.GEOGRAPHIC,
+        verbose=verbose,
+    )
+
+    # Store ellipsoid parameters in coordinate system
+    new_mesh.CoordinateSystem.ellipsoid = ellipsoid_dict
+
+    # Recreate geographic accessor with updated ellipsoid (in case default was used)
+    from underworld3.coordinates import GeographicCoordinateAccessor
+    new_mesh.CoordinateSystem._geo_accessor = GeographicCoordinateAccessor(new_mesh.CoordinateSystem)
+
+    # Define boundary normals using geographic basis vectors
+    class boundary_normals(Enum):
+        Surface = new_mesh.CoordinateSystem.geo.unit_up      # Outward at surface
+        Bottom = new_mesh.CoordinateSystem.geo.unit_down     # Downward at bottom
+        North = new_mesh.CoordinateSystem.geo.unit_north     # Northward at north boundary
+        South = new_mesh.CoordinateSystem.geo.unit_south     # Southward at south boundary
+        East = new_mesh.CoordinateSystem.geo.unit_east       # Eastward at east boundary
+        West = new_mesh.CoordinateSystem.geo.unit_west       # Westward at west boundary
+
+    new_mesh.boundary_normals = boundary_normals
+
+    return new_mesh

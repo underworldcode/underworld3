@@ -67,7 +67,7 @@ def test_swarmvariable_save_and_load(tmp_path):
 
     swarm.populate(fill_param=2)
 
-    var.array[:, 0, 0] = swarm.points[:, 0]
+    var.array[:, 0, 0] = swarm._particle_coordinates.data[:, 0]
 
     swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath=tmp_path, index=0)
 

@@ -14,6 +14,83 @@ import underworld3
 
 include "../cython/petsc_extras.pxi"
 
+def _convert_coords_to_si(coords):
+    """
+    Convert coordinate input to numpy array in SI base units.
+
+    Accepts:
+    - numpy arrays (returned as-is if dtype is double, converted otherwise)
+    - lists/tuples of coordinates (each coordinate can be UWQuantity, Pint Quantity, or float/int)
+    - lists/tuples of tuples (for multiple points)
+
+    Returns numpy array of shape (n_points, n_dims) with dtype=np.double in SI base units.
+    """
+    import pint
+
+    # If already numpy array with correct dtype, return as-is
+    if isinstance(coords, np.ndarray):
+        if coords.dtype == np.double:
+            return coords
+        else:
+            return np.array(coords, dtype=np.double)
+
+    # Convert list/tuple input
+    if isinstance(coords, (list, tuple)):
+        # Check if it's a list of coordinates or a single point
+        if len(coords) > 0:
+            first_elem = coords[0]
+
+            # Single point: [(x, y)] or [(x, y, z)]
+            if isinstance(first_elem, (list, tuple)):
+                si_coords = []
+                for point in coords:
+                    si_point = []
+                    for coord in point:
+                        if isinstance(coord, uw.function.quantities.UWQuantity) and hasattr(coord, '_pint_qty'):
+                            # UWQuantity - convert to SI base units
+                            si_value = coord._pint_qty.to_base_units().magnitude
+                        elif isinstance(coord, pint.Quantity):
+                            # Direct Pint Quantity - convert to SI base units
+                            si_value = coord.to_base_units().magnitude
+                        elif isinstance(coord, (float, int, np.number)):
+                            # Already dimensionless
+                            si_value = float(coord)
+                        else:
+                            raise TypeError(f"Unsupported coordinate type: {type(coord)}. "
+                                          f"Expected UWQuantity, pint.Quantity, or numeric value.")
+                        si_point.append(si_value)
+                    si_coords.append(si_point)
+                return np.array(si_coords, dtype=np.double)
+            else:
+                # Flat list of coordinates - could be single point [x, y] or [x, y, z]
+                # Check if all elements are coordinate values (not lists/tuples)
+                all_coords = all(
+                    isinstance(elem, (uw.function.quantities.UWQuantity, pint.Quantity, float, int, np.number))
+                    for elem in coords
+                )
+
+                if all_coords and len(coords) in [2, 3]:
+                    # This is a single point like [x, y] or [x, y, z]
+                    si_point = []
+                    for coord in coords:
+                        if isinstance(coord, uw.function.quantities.UWQuantity) and hasattr(coord, '_pint_qty'):
+                            si_value = coord._pint_qty.to_base_units().magnitude
+                        elif isinstance(coord, pint.Quantity):
+                            si_value = coord.to_base_units().magnitude
+                        elif isinstance(coord, (float, int, np.number)):
+                            si_value = float(coord)
+                        else:
+                            raise TypeError(f"Unsupported coordinate type: {type(coord)}. "
+                                          f"Expected UWQuantity, pint.Quantity, or numeric value.")
+                        si_point.append(si_value)
+                    # Return as 2D array with single point
+                    return np.array([si_point], dtype=np.double)
+                else:
+                    raise TypeError(f"Unable to parse coordinate format. Expected list of tuples like "
+                                  f"[(x1,y1), (x2,y2)] or single point like [x, y].")
+
+    raise TypeError(f"coords must be numpy array, list, or tuple. Got {type(coords)}")
+
 # Make Cython aware of this type.
 cdef extern from "petsc.h" nogil:
     ctypedef struct DMInterpolationInfo:
@@ -165,7 +242,7 @@ class UnderworldFunction(sympy.Function):
         return ourcls
 
 def global_evaluate(   expr,
-                np.ndarray coords=None,
+                coords=None,
                 coord_sys=None,
                 other_arguments=None,
                 simplify=True,
@@ -187,8 +264,13 @@ def global_evaluate(   expr,
     ----------
     expr: sympy.Basic
         Sympy expression requiring evaluation.
-    coords: numpy.ndarray
-        Numpy array of coordinates to evaluate expression at.
+    coords: numpy.ndarray, list, or tuple
+        Coordinates to evaluate expression at. Can be:
+        - numpy array of doubles (shape: n_points x n_dims)
+        - list/tuple of tuples with unit-aware coordinates: [(x1, y1), (x2, y2), ...]
+        - list/tuple for single point: [x, y] or [x, y, z]
+        Coordinate values can be UWQuantity, pint.Quantity, or numeric (float/int).
+        Unit-aware coordinates are automatically converted to SI base units.
     coord_sys: mesh.N vector coordinate system
 
     other_arguments: dict
@@ -197,12 +279,15 @@ def global_evaluate(   expr,
 
     """
 
+    # Convert coordinates to SI base units if needed
+    cdef np.ndarray coords_array = _convert_coords_to_si(coords)
+
     mesh, varfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
     if mesh is None: #  or uw.mpi.size==1:
         return evaluate(
             expr,
-            coords,
+            coords_array,
             coord_sys,
             other_arguments,
             simplify,
@@ -220,7 +305,7 @@ def global_evaluate(   expr,
     # so that we can recover the information. We should add a local-index variable so we know how to reorder the
     # values when the particles come back.
 
-    index = np.array(range(0, coords.shape[0])).reshape(-1,1,1)
+    index = np.array(range(0, coords_array.shape[0])).reshape(-1,1,1)
 
     evaluation_swarm = uw.swarm.Swarm(mesh)
 
@@ -271,7 +356,7 @@ def global_evaluate(   expr,
 
     # Populate with particles
 
-    points = evaluation_swarm.add_particles_with_global_coordinates(coords, migrate=False)
+    points = evaluation_swarm.add_particles_with_global_coordinates(coords_array, migrate=False)
 
     original_rank.array[...] = uw.mpi.rank
     original_index.array[...] = index[...]
@@ -311,7 +396,7 @@ def global_evaluate(   expr,
         return return_value, return_mask
 
 def evaluate(   expr,
-                np.ndarray coords=None,
+                coords=None,
                 coord_sys=None,
                 other_arguments=None,
                 simplify=True,
@@ -331,8 +416,13 @@ def evaluate(   expr,
     ----------
     expr: sympy.Basic
         Sympy expression requiring evaluation.
-    coords: numpy.ndarray
-        Numpy array of coordinates to evaluate expression at.
+    coords: numpy.ndarray, list, or tuple
+        Coordinates to evaluate expression at. Can be:
+        - numpy array of doubles (shape: n_points x n_dims)
+        - list/tuple of tuples with unit-aware coordinates: [(x1, y1), (x2, y2), ...]
+        - list/tuple for single point: [x, y] or [x, y, z]
+        Coordinate values can be UWQuantity, pint.Quantity, or numeric (float/int).
+        Unit-aware coordinates are automatically converted to SI base units.
     coord_sys: mesh.N vector coordinate system
 
     other_arguments: dict
@@ -340,7 +430,10 @@ def evaluate(   expr,
         Not yet implemented.
     """
 
-    dim = coords.shape[1]
+    # Convert coordinates to SI base units if needed
+    cdef np.ndarray coords_array = _convert_coords_to_si(coords)
+
+    dim = coords_array.shape[1]
     mesh, varfns = uw.function.fn_mesh_vars_in_expression(expr)
 
     # coercion - make everything at least a 1x1 matrix for consistent evaluation results
@@ -354,9 +447,9 @@ def evaluate(   expr,
     # does not need mesh information either.
 
     if evalf==True or rbf==True or mesh is None:
-        in_or_not = np.full((coords.shape[0]), False, dtype=bool )
+        in_or_not = np.full((coords_array.shape[0]), False, dtype=bool )
         evaluation = rbf_evaluate( expr,
-                            coords,
+                            coords_array,
                             coord_sys,
                             mesh,
                             simplify=simplify,
@@ -364,9 +457,9 @@ def evaluate(   expr,
                             )
 
     else:
-        in_or_not = mesh.points_in_domain(coords, strict_validation=False)
+        in_or_not = mesh.points_in_domain(coords_array, strict_validation=False)
         evaluation_interior = petsc_interpolate( expr,
-                                    coords[in_or_not],
+                                    coords_array[in_or_not],
                                     coord_sys,
                                     mesh,
                                     simplify=simplify,
@@ -376,7 +469,7 @@ def evaluate(   expr,
 
         if np.count_nonzero(in_or_not == False) > 0:
             evaluation_exterior = rbf_evaluate( expr,
-                                coords[~in_or_not],
+                                coords_array[~in_or_not],
                                 coord_sys,
                                 mesh,
                                 simplify=simplify,

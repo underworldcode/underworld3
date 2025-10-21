@@ -25,6 +25,335 @@ class CoordinateSystemType(Enum):
     POLAR = 10  #
     CYLINDRICAL3D = 100  # (Not really used for anything)
     SPHERICAL = 200
+    GEOGRAPHIC = 300  # Ellipsoidal coordinates (lon, lat, depth) for Earth and planets
+
+
+# Ellipsoid parameters for geographic coordinate systems
+# Semi-major axis (a), semi-minor axis (b), flattening (f), planet name
+ELLIPSOIDS = {
+    'WGS84': {
+        'a': 6378.137,           # km
+        'b': 6356.752,           # km
+        'f': 1/298.257223563,
+        'planet': 'Earth',
+        'description': 'World Geodetic System 1984',
+    },
+    'GRS80': {
+        'a': 6378.137,
+        'b': 6356.752,
+        'f': 1/298.257222101,
+        'planet': 'Earth',
+        'description': 'Geodetic Reference System 1980',
+    },
+    'sphere': {
+        'a': 6371.0,             # Mean Earth radius
+        'b': 6371.0,
+        'f': 0.0,
+        'planet': 'Earth',
+        'description': 'Perfect sphere (mean Earth radius)',
+    },
+    'Mars': {
+        'a': 3396.2,
+        'b': 3376.2,
+        'f': 1/169.8,
+        'planet': 'Mars',
+        'description': 'Mars ellipsoid',
+    },
+    'Moon': {
+        'a': 1738.1,
+        'b': 1736.0,
+        'f': 1/824.7,
+        'planet': 'Moon',
+        'description': 'Moon ellipsoid',
+    },
+    'Venus': {
+        'a': 6051.8,
+        'b': 6051.8,
+        'f': 0.0,                # Nearly perfect sphere
+        'planet': 'Venus',
+        'description': 'Venus ellipsoid',
+    },
+}
+
+
+def geographic_to_cartesian(lon_deg, lat_deg, depth_km, a, b):
+    """
+    Convert geographic coordinates to Cartesian coordinates.
+
+    Uses geodetic latitude (perpendicular to ellipsoid surface).
+
+    Parameters
+    ----------
+    lon_deg : float or array
+        Longitude in degrees East (-180 to 180 or 0 to 360)
+    lat_deg : float or array
+        Latitude in degrees North (-90 to 90), geodetic
+    depth_km : float or array
+        Depth below ellipsoid surface in km (positive downward)
+    a : float
+        Semi-major axis (equatorial radius) in km
+    b : float
+        Semi-minor axis (polar radius) in km
+
+    Returns
+    -------
+    x, y, z : float or array
+        Cartesian coordinates in km
+    """
+    # Convert to radians
+    lon = np.radians(lon_deg)
+    lat = np.radians(lat_deg)
+
+    # Eccentricity squared
+    e2 = 1 - (b/a)**2
+
+    # Prime vertical radius of curvature at this latitude
+    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+
+    # Height above ellipsoid (negative of depth)
+    h = -depth_km
+
+    # Cartesian coordinates
+    x = (N + h) * np.cos(lat) * np.cos(lon)
+    y = (N + h) * np.cos(lat) * np.sin(lon)
+    z = (N * (1 - e2) + h) * np.sin(lat)
+
+    return x, y, z
+
+
+def cartesian_to_geographic(x, y, z, a, b, max_iterations=10, tolerance=1e-12):
+    """
+    Convert Cartesian coordinates to geographic coordinates.
+
+    Uses iterative algorithm (Bowring's method) for geodetic latitude.
+
+    Parameters
+    ----------
+    x, y, z : float or array
+        Cartesian coordinates in km
+    a : float
+        Semi-major axis (equatorial radius) in km
+    b : float
+        Semi-minor axis (polar radius) in km
+    max_iterations : int, optional
+        Maximum iterations for latitude convergence (default: 10)
+    tolerance : float, optional
+        Convergence tolerance in radians (default: 1e-12)
+
+    Returns
+    -------
+    lon_deg, lat_deg, depth_km : float or array
+        Geographic coordinates:
+        - lon_deg: Longitude in degrees East
+        - lat_deg: Latitude in degrees North (geodetic)
+        - depth_km: Depth below ellipsoid surface in km
+    """
+    # Longitude is straightforward
+    lon = np.arctan2(y, x)
+
+    # Latitude requires iteration (Bowring's method for geodetic latitude)
+    e2 = 1 - (b/a)**2
+    p = np.sqrt(x**2 + y**2)
+
+    # Initial guess for latitude (geocentric)
+    lat = np.arctan2(z, p * (1 - e2))
+
+    # Iterate to converge on geodetic latitude
+    for i in range(max_iterations):
+        N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+        lat_new = np.arctan2(z + e2 * N * np.sin(lat), p)
+
+        # Check convergence
+        if np.abs(lat_new - lat).max() < tolerance:
+            break
+        lat = lat_new
+
+    # Height above ellipsoid
+    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+    h = p / np.cos(lat) - N
+
+    # Depth is negative height
+    depth = -h
+
+    # Convert to degrees
+    lon_deg = np.degrees(lon)
+    lat_deg = np.degrees(lat)
+
+    return lon_deg, lat_deg, depth
+
+
+class GeographicCoordinateAccessor:
+    """
+    Accessor for geographic coordinates on ellipsoidal meshes.
+
+    Provides intuitive access to longitude, latitude, and depth coordinates,
+    plus basis vectors with multiple naming conventions.
+
+    Accessed via: mesh.geo
+
+    Examples:
+        # Data arrays (numpy)
+        lon = mesh.geo.lon         # Longitude (degrees East)
+        lat = mesh.geo.lat         # Latitude (degrees North)
+        depth = mesh.geo.depth     # Depth below surface (km)
+
+        # Symbolic (for equations)
+        λ_lon, λ_lat, λ_d = mesh.geo[:]
+
+        # Basis vectors (multiple naming options)
+        mesh.geo.unit_WE           # Primary: West to East
+        mesh.geo.unit_east         # Directional alias
+        mesh.geo.unit_lon          # Coordinate alias
+        mesh.geo.unit_down         # Primary: into planet
+        mesh.geo.unit_depth        # Coordinate alias
+    """
+
+    def __init__(self, coordinate_system):
+        """
+        Initialize geographic coordinate accessor.
+
+        Parameters
+        ----------
+        coordinate_system : CoordinateSystem
+            The coordinate system object with GEOGRAPHIC type
+        """
+        self.cs = coordinate_system
+        self.mesh = coordinate_system.mesh
+
+        # Cache for coordinate arrays
+        self._lon_cache = None
+        self._lat_cache = None
+        self._depth_cache = None
+        self._cache_valid = False
+
+    def _invalidate_cache(self):
+        """Mark coordinate cache as invalid (call when mesh coordinates change)."""
+        self._cache_valid = False
+
+    def _compute_coordinates(self):
+        """Compute geographic coordinates from Cartesian mesh coordinates."""
+        if self._cache_valid:
+            return
+
+        # Get Cartesian coordinates
+        coords = self.mesh.CoordinateSystem.coords  # Shape: (N, 3)
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+
+        # Get ellipsoid parameters
+        a = self.cs.ellipsoid['a']
+        b = self.cs.ellipsoid['b']
+
+        # Convert to geographic using our utility function
+        self._lon_cache, self._lat_cache, self._depth_cache = \
+            cartesian_to_geographic(x, y, z, a, b)
+
+        self._cache_valid = True
+
+    @property
+    def lon(self):
+        """Longitude in degrees East (-180 to 180)."""
+        self._compute_coordinates()
+        return self._lon_cache
+
+    @property
+    def lat(self):
+        """Geodetic latitude in degrees North (-90 to 90)."""
+        self._compute_coordinates()
+        return self._lat_cache
+
+    @property
+    def depth(self):
+        """Depth below ellipsoid surface in km (positive downward)."""
+        self._compute_coordinates()
+        return self._depth_cache
+
+    def __getitem__(self, idx):
+        """
+        Access symbolic geographic coordinates.
+
+        Returns:
+            λ_lon, λ_lat, λ_d: Symbolic coordinates for use in equations
+        """
+        if idx == slice(None, None, None):  # mesh.geo[:]
+            return self.cs._geo_coords[0, 0], self.cs._geo_coords[0, 1], self.cs._geo_coords[0, 2]
+        else:
+            return self.cs._geo_coords[0, idx]
+
+    # === Basis Vectors - Primary Names ===
+
+    @property
+    def unit_WE(self):
+        """West to East unit vector (primary name, positive East)."""
+        return self.cs._unit_WE
+
+    @property
+    def unit_SN(self):
+        """South to North unit vector (primary name, positive North)."""
+        return self.cs._unit_SN
+
+    @property
+    def unit_down(self):
+        """Downward unit vector (primary name, positive into planet)."""
+        return self.cs._unit_down
+
+    # === Directional Aliases ===
+
+    @property
+    def unit_east(self):
+        """Eastward unit vector (directional alias for unit_WE)."""
+        return self.cs._unit_WE
+
+    @property
+    def unit_west(self):
+        """Westward unit vector (opposite of unit_WE)."""
+        return -self.cs._unit_WE
+
+    @property
+    def unit_north(self):
+        """Northward unit vector (directional alias for unit_SN)."""
+        return self.cs._unit_SN
+
+    @property
+    def unit_south(self):
+        """Southward unit vector (opposite of unit_SN)."""
+        return -self.cs._unit_SN
+
+    @property
+    def unit_up(self):
+        """Upward unit vector (opposite of unit_down)."""
+        return -self.cs._unit_down
+
+    # === Coordinate Aliases ===
+
+    @property
+    def unit_lon(self):
+        """Longitude direction unit vector (coordinate alias for unit_WE)."""
+        return self.cs._unit_WE
+
+    @property
+    def unit_lat(self):
+        """Latitude direction unit vector (coordinate alias for unit_SN)."""
+        return self.cs._unit_SN
+
+    @property
+    def unit_depth(self):
+        """Depth direction unit vector (coordinate alias for unit_down)."""
+        return self.cs._unit_down
+
+    def __repr__(self):
+        """String representation showing available coordinates and basis vectors."""
+        return (
+            f"GeographicCoordinateAccessor(\n"
+            f"  ellipsoid='{self.cs.ellipsoid.get('description', 'Unknown')}',\n"
+            f"  a={self.cs.ellipsoid['a']} km, b={self.cs.ellipsoid['b']} km,\n"
+            f"  Coordinates: lon, lat, depth (data arrays)\n"
+            f"              λ_lon, λ_lat, λ_d (symbolic)\n"
+            f"  Basis vectors: unit_WE, unit_SN, unit_down (primary)\n"
+            f"                unit_east, unit_north, unit_depth (directional)\n"
+            f"                unit_lon, unit_lat (coordinate)\n"
+            f"                unit_west, unit_south, unit_up (opposites)\n"
+            f")"
+        )
 
 
 # Maybe break this out into it's own file - this needs to cover, basis vectors,
@@ -260,6 +589,124 @@ class CoordinateSystem:
             self._xRotN = sympy.eye(self.mesh.dim)
 
 
+        elif system == CoordinateSystemType.GEOGRAPHIC and self.mesh.dim == 3:
+            """
+            Geographic coordinate system for ellipsoidal meshes.
+
+            Coordinates: (lon, lat, depth)
+            - lon: Longitude in degrees East
+            - lat: Geodetic latitude in degrees North (perpendicular to ellipsoid)
+            - depth: Depth below ellipsoid surface in km (positive downward)
+
+            Ellipsoid parameters stored in self.ellipsoid dict.
+            mesh.R remains as spherical coordinates (r, θ, φ) for backward compatibility.
+            """
+
+            self.type = "Geographic"
+
+            # Store ellipsoid parameters (will be set by mesh creation function)
+            # Default to WGS84 if not specified
+            if not hasattr(self, 'ellipsoid'):
+                self.ellipsoid = ELLIPSOIDS['WGS84'].copy()
+
+            # Cartesian coordinates remain primary
+            self._X = self._N.copy()
+            self._x = self._X
+
+            # Define symbolic geographic coordinates (λ notation as per user request)
+            self._geo = sympy.Matrix([sympy.symbols(R"\lambda_{lon}, \lambda_{lat}, \lambda_d")])
+
+            # Get Cartesian symbols
+            x, y, z = self.X
+
+            # Spherical coordinates (r, θ, φ) - kept for backward compatibility
+            r = expression(
+                R"r",
+                sympy.sqrt(x**2 + y**2 + z**2),
+                "Radial coordinate (from center)",
+            )
+
+            th = expression(
+                R"\theta",
+                sympy.acos(z / r),
+                "co-latitude (spherical)",
+            )
+
+            ph = expression(
+                R"\phi",
+                sympy.atan2(y, x),
+                "longitude (radians)",
+            )
+
+            # Spherical coordinate matrix (mesh.R - backward compatible)
+            self._R = sympy.Matrix([[r, th, ph]])
+            self._r = sympy.Matrix([sympy.symbols(R"r, \theta, \phi")])
+
+            # Geographic coordinates in terms of Cartesian (symbolic)
+            # Longitude (degrees East)
+            lon_rad = sympy.atan2(y, x)
+            lon_deg = lon_rad * 180 / sympy.pi
+
+            # For latitude, we use a simplified symbolic form
+            # (actual geodetic latitude requires iterative solution, handled in accessor)
+            rxy = sympy.sqrt(x**2 + y**2)
+            lat_approx = sympy.atan2(z, rxy) * 180 / sympy.pi
+
+            # Depth (simplified - proper depth calculated in accessor)
+            depth_approx = self.ellipsoid['a'] - r
+
+            # Geographic coordinate expressions (approximations for symbolic work)
+            lambda_lon = expression(R"\lambda_{lon}", lon_deg, "Longitude (degrees East)")
+            lambda_lat = expression(R"\lambda_{lat}", lat_approx, "Latitude (degrees North)")
+            lambda_d = expression(R"\lambda_d", depth_approx, "Depth (km below surface)")
+
+            self._geo_coords = sympy.Matrix([[lambda_lon, lambda_lat, lambda_d]])
+
+            # Basis vectors for geographic system
+            # Following user's naming: unit_WE (West to East), unit_SN (South to North), unit_down
+
+            # Spherical basis vectors (for reference)
+            r1 = self._r[1]  # theta
+            r2 = self._r[2]  # phi
+
+            rz = sympy.sqrt(x**2 + y**2)
+            r_x_rz = sympy.sqrt((x**2 + y**2 + z**2) * (x**2 + y**2))
+
+            # Spherical rotation matrix (same as SPHERICAL case)
+            rRotN = sympy.Matrix(
+                [
+                    [
+                        x / r,
+                        y / r,
+                        z / r,
+                    ],
+                    [
+                        (x * z) / r_x_rz,
+                        (y * z) / r_x_rz,
+                        -(x**2 + y**2) / r_x_rz,
+                    ],
+                    [
+                        -y / rz,
+                        +x / rz,
+                        self.independent_of_N,
+                    ],
+                ]
+            )
+
+            # Geographic basis vectors (stored separately)
+            # unit_down: radial direction (into planet, positive downward)
+            self._unit_down = -rRotN[0, :]  # Negative of radial outward
+
+            # unit_SN: South to North (meridional direction, positive northward)
+            self._unit_SN = -rRotN[1, :]  # Negative of colatitude direction
+
+            # unit_WE: West to East (azimuthal direction, positive eastward)
+            self._unit_WE = rRotN[2, :]  # Azimuthal direction
+
+            # Use spherical rotation matrix for mesh.R coordinate system
+            self._rRotN = rRotN
+            self._xRotN = sympy.eye(self.mesh.dim)
+
 
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
@@ -270,14 +717,21 @@ class CoordinateSystem:
             self._xRotN = sympy.eye(self.mesh.dim)
             self._rRotN = sympy.eye(self.mesh.dim)
 
-        # For all meshes: Apply scaling if the mesh has a model with units
-        # TEMPORARILY DISABLED FOR TESTING
+        # For all meshes: Mark as scaled if the mesh has a model with units
+        # Note: Coordinates are already in model units, but we set _scaled flag
+        # to indicate the mesh is unit-aware
         self._apply_units_scaling()
+
+        # Create geographic accessor if this is a GEOGRAPHIC coordinate system
+        if system == CoordinateSystemType.GEOGRAPHIC:
+            self._geo_accessor = GeographicCoordinateAccessor(self)
+        else:
+            self._geo_accessor = None
 
         return
 
     def _apply_units_scaling(self):
-        """Apply units scaling to mesh.X coordinates based on model scaling."""
+        """Mark coordinate system as scaled if model has units."""
         try:
             # Get the model from the mesh
             if hasattr(self.mesh, '_model') and self.mesh._model is not None:
@@ -289,12 +743,13 @@ class CoordinateSystem:
 
             # Check if the model has units scaling enabled
             if not model.has_units():
+                self._scaled = False
                 return  # No scaling to apply
 
             # Get fundamental scales from the model
             scales = model.get_fundamental_scales()
 
-            # Apply scaling to mesh.X coordinates
+            # Set scaling information (but don't transform coordinates)
             if 'length' in scales:
                 length_scale = scales['length']
 
@@ -307,33 +762,8 @@ class CoordinateSystem:
                 else:
                     scale_factor = float(length_scale)
 
-                # Create scale factor symbols for SymPy
-                import sympy
-
-                # Apply scaling: mesh.X = scale_factor * mesh.N (model coordinates)
-                if self.mesh.cdim == 2:
-                    x_scale = sympy.sympify(scale_factor)
-                    y_scale = sympy.sympify(scale_factor)
-
-                    x_model, y_model = self._N[0], self._N[1]
-                    x_phys = x_scale * x_model
-                    y_phys = y_scale * y_model
-
-                    self._X = sympy.Matrix([[x_phys, y_phys]])
-
-                elif self.mesh.cdim == 3:
-                    x_scale = sympy.sympify(scale_factor)
-                    y_scale = sympy.sympify(scale_factor)
-                    z_scale = sympy.sympify(scale_factor)
-
-                    x_model, y_model, z_model = self._N[0], self._N[1], self._N[2]
-                    x_phys = x_scale * x_model
-                    y_phys = y_scale * y_model
-                    z_phys = z_scale * z_model
-
-                    self._X = sympy.Matrix([[x_phys, y_phys, z_phys]])
-
-                # Update coordinate system information
+                # Mark coordinate system as scaled
+                # Note: We don't transform mesh.X because coordinates are already in model units
                 self._scaled = True
                 self._length_scale = scale_factor
 
@@ -342,6 +772,8 @@ class CoordinateSystem:
                     'length': scale_factor,
                     'source': f"model '{model.name}' length scale"
                 }
+            else:
+                self._scaled = False
 
         except Exception as e:
             # If scaling fails, just continue without scaling
@@ -377,7 +809,25 @@ class CoordinateSystem:
         Returns:
             numpy.ndarray or UnitAwareArray: Node coordinates
         """
-        return self.mesh.points
+        model_coords = self.mesh._coords
+
+        # Apply scaling to convert model coordinates to physical coordinates
+        if hasattr(self, '_scaled') and self._scaled:
+            scale_factor = self._length_scale
+            coords = model_coords * scale_factor
+        else:
+            coords = model_coords
+
+        # Wrap with unit-aware array if units are specified
+        if self.mesh.units is not None:
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
+            # Extract just the unit part if it's a Quantity (has .units attribute)
+            units = self.mesh.units.units if hasattr(self.mesh.units, 'units') else self.mesh.units
+            # Convert Unit to string for UnitAwareArray
+            units = str(units) if units is not None else None
+            return UnitAwareArray(coords, units=units)
+
+        return coords
 
     @property
     def units(self):
@@ -525,6 +975,30 @@ class CoordinateSystem:
     @property  # alias for backward compat
     def xR(self) -> sympy.Matrix:
         return self._R
+
+    @property
+    def geo(self):
+        """
+        Geographic coordinate accessor for GEOGRAPHIC coordinate systems.
+
+        Returns GeographicCoordinateAccessor for longitude, latitude, depth coordinates
+        and geographic basis vectors.
+
+        Raises AttributeError if coordinate system is not GEOGRAPHIC.
+
+        Examples:
+            lon = mesh.geo.lon         # Longitude data array
+            lat = mesh.geo.lat         # Latitude data array
+            depth = mesh.geo.depth     # Depth data array
+            λ_lon, λ_lat, λ_d = mesh.geo[:]  # Symbolic coordinates
+            unit_east = mesh.geo.unit_east    # East basis vector
+        """
+        if self._geo_accessor is None:
+            raise AttributeError(
+                f"Geographic coordinate accessor is only available for GEOGRAPHIC coordinate systems. "
+                f"Current coordinate system type: {self.coordinate_type}"
+            )
+        return self._geo_accessor
 
     @property
     def rRotN(self) -> sympy.Matrix:

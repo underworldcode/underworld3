@@ -112,7 +112,8 @@ def test_has_units_and_get_units():
     length_qty = uw.function.quantity(100, 'km')
 
     assert fn.has_units(length_qty) == True
-    assert fn.get_units(length_qty) == 'kilometer'
+    # get_units() returns pint.Unit objects, not strings
+    assert str(fn.get_units(length_qty)) == 'kilometer'
 
     # Test with plain array
     plain_array = np.array([1, 2, 3])
@@ -124,7 +125,8 @@ def test_has_units_and_get_units():
     dimensionless_qty = uw.function.quantity(5, 'dimensionless')
 
     assert fn.has_units(dimensionless_qty) == True
-    assert fn.get_units(dimensionless_qty) == 'dimensionless'
+    # get_units() returns pint.Unit objects, not strings
+    assert str(fn.get_units(dimensionless_qty)) == 'dimensionless'
 
 
 def test_add_units():

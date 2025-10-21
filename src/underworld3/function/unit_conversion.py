@@ -9,6 +9,147 @@ import numpy as np
 import underworld3 as uw
 
 
+class UnitAwareArray(np.ndarray):
+    """
+    Numpy array subclass that carries unit metadata without breaking numpy operations.
+
+    This is a lightweight wrapper that:
+    - Behaves exactly like numpy arrays for all operations
+    - Works with all numpy functions (linalg.norm, max, min, etc.)
+    - Carries unit information accessible via .units or ._units attribute
+    - Can be used in assignments without special handling
+    - Loses unit metadata through numpy operations (returns plain arrays)
+
+    The key insight is that unit metadata is informational, not operational.
+    When you compute magnitudes or do numpy operations, you get plain arrays
+    back (since the operation may change the units). But for assignment and
+    inspection, you can check what units the original array had.
+
+    Example
+    -------
+    >>> vel = uw.function.evaluate(velocity, coords)  # Returns UnitAwareArray
+    >>> print(uw.get_units(vel))  # "m/s"
+    >>> magnitudes = np.linalg.norm(vel, axis=-1)  # Returns plain numpy array
+    >>> temperature.array[:] = magnitudes  # Works fine
+    """
+
+    def __new__(cls, input_array, units=None):
+        """Create a new UnitAwareArray instance."""
+        # Input array is an already formed ndarray instance
+        # We first cast to be our class type
+        obj = np.asarray(input_array).view(cls)
+        # Add the unit metadata attribute
+        obj._units = units
+        return obj
+
+    def __array_finalize__(self, obj):
+        """
+        Called whenever the array is created.
+
+        Note: We intentionally DON'T preserve units through operations because
+        most numpy operations change the dimensionality (e.g., norm, max, sum).
+        Unit metadata is for inspection, not propagation.
+        """
+        # For slicing/viewing, we preserve units
+        # For operations, numpy returns plain arrays (correct behavior)
+        if obj is None:
+            return
+        # Only preserve units for view/slice operations, not ufuncs
+        self._units = getattr(obj, '_units', None)
+
+    @property
+    def units(self):
+        """
+        Get units (matches MeshVariable interface).
+
+        Returns
+        -------
+        str or None
+            Unit string if available
+        """
+        return self._units
+
+
+def _extract_value(value, target_units=None):
+    """
+    Universal helper to extract numeric value from quantities or pass through numbers.
+
+    This is a lightweight, zero-side-effect function that makes APIs accept both
+    plain numbers and unit-aware quantities transparently.
+
+    Parameters
+    ----------
+    value : float, int, Quantity, UWQuantity, tuple, list, or None
+        Value to extract. Can be:
+        - Plain number → returned as-is
+        - Pint Quantity → magnitude extracted
+        - UWQuantity → value extracted
+        - tuple/list → recursively processed
+        - None → returned as-is
+    target_units : str, optional
+        If provided, converts quantity to these units before extracting value.
+        Ignored if value has no units.
+
+    Returns
+    -------
+    float, int, tuple, list, or None
+        Plain numeric value(s), ready to use in numeric APIs
+
+    Examples
+    --------
+    >>> # Plain numbers pass through unchanged
+    >>> _extract_value(5.0)
+    5.0
+
+    >>> # Quantities have magnitude extracted
+    >>> _extract_value(5.0 * uw.units.km)
+    5000.0  # in meters
+
+    >>> # With target units
+    >>> _extract_value(5.0 * uw.units.km, 'cm')
+    500000.0
+
+    >>> # Tuples/lists processed recursively
+    >>> _extract_value((0.0, 5.0 * uw.units.km))
+    (0.0, 5000.0)
+
+    >>> # UWQuantity support
+    >>> _extract_value(uw.quantity(5.0, "km"))
+    5000.0
+    """
+    # Handle None
+    if value is None:
+        return None
+
+    # Handle tuples/lists recursively
+    if isinstance(value, (list, tuple)):
+        extracted = [_extract_value(v, target_units) for v in value]
+        return type(value)(extracted)
+
+    # Check if it's a Pint Quantity (has both units and magnitude)
+    if hasattr(value, 'magnitude') and hasattr(value, 'units'):
+        if target_units is not None:
+            try:
+                return value.to(target_units).magnitude
+            except:
+                # Conversion failed, just return magnitude
+                return value.magnitude
+        return value.magnitude
+
+    # Check if it's a UWQuantity
+    if hasattr(value, 'value') and hasattr(value, '_has_pint_qty'):
+        if target_units is not None and hasattr(value, '_pint_qty'):
+            try:
+                return value._pint_qty.to(target_units).magnitude
+            except:
+                # Conversion failed, return value as-is
+                return value.value
+        return value.value
+
+    # Already numeric (int, float, numpy scalar, etc.)
+    return value
+
+
 def has_units(obj):
     """
     Check if an object has unit information.
@@ -44,33 +185,347 @@ def has_units(obj):
 
 def get_units(obj):
     """
-    Extract unit information from any object.
+    Extract unit information from any object, including symbolic expressions.
 
     Parameters
     ----------
     obj : any
-        Object to extract units from
+        Object to extract units from. Can be a UWQuantity, Pint Quantity,
+        array with unit metadata, SymPy Matrix, UnderworldFunction (variable),
+        or SymPy expression containing unit-aware coordinates.
 
     Returns
     -------
-    str or None
-        Unit string if detectable, None otherwise
+    pint.Unit or None
+        Pint Unit object if detectable, None otherwise
+
+    Notes
+    -----
+    Priority order (highest to lowest):
+    1. Direct attributes (units, _units, _pint_qty)
+    2. UnderworldFunction with meshvar (mesh/swarm variables)
+    3. SymPy Matrix elements (check first element)
+    4. BaseScalar coordinates in expressions (lowest priority)
+
+    This ensures variables are prioritized over coordinates in compound expressions.
     """
+    import underworld3 as uw
+
+    # Priority 1: Direct unit attribute checks
     if hasattr(obj, '_has_pint_qty') and obj._has_pint_qty:
         if hasattr(obj, '_pint_qty'):
-            return str(obj._pint_qty.units)
+            return obj._pint_qty.units
 
     if hasattr(obj, 'units'):
         units = obj.units
-        return str(units) if units is not None else None
+        if units is not None:
+            # If it's already a pint.Unit, return it
+            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+                return units
+            # If it's a string, convert to pint.Unit (extract .units from Quantity)
+            return uw.units(str(units)).units
+        return None
 
     if hasattr(obj, '_units'):
-        return str(obj._units)
+        units = obj._units
+        if units is not None:
+            # If it's already a pint.Unit, return it
+            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+                return units
+            # If it's a string, convert to pint.Unit (extract .units from Quantity)
+            return uw.units(str(units)).units
+        return None
+
+    # Check for get_units method (for unit-aware coordinates)
+    if hasattr(obj, 'get_units'):
+        units = obj.get_units()
+        if units is not None:
+            # If it's already a pint.Unit, return it
+            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+                return units
+            # If it's a string, convert to pint.Unit (extract .units from Quantity)
+            return uw.units(str(units)).units
+        return None
 
     if hasattr(obj, '_unit_metadata'):
-        return obj._unit_metadata.get('units')
+        units = obj._unit_metadata.get('units')
+        if units is not None:
+            # If it's already a pint.Unit, return it
+            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+                return units
+            # If it's a string, convert to pint.Unit (extract .units from Quantity)
+            return uw.units(str(units)).units
+        return None
+
+    # Priority 2a: Check for DERIVATIVES first (before general UnderworldFunction)
+    # Derivatives have diffindex attribute and need special handling: var_units / coord_units
+    if hasattr(obj, 'diffindex'):
+        # Delegate to compute_expression_units which has derivative handling
+        computed_units = compute_expression_units(obj)
+        if computed_units:
+            return computed_units
+
+    # Priority 2b: UnderworldFunction with meshvar (variables have priority over coordinates)
+    if hasattr(obj, 'meshvar'):
+        try:
+            # meshvar is a weak reference, get the actual variable
+            variable = obj.meshvar()
+            if variable and hasattr(variable, 'units'):
+                var_units = variable.units
+                if var_units is not None:
+                    # If it's already a pint.Unit, return it
+                    if hasattr(var_units, 'dimensionality'):  # pint.Unit check
+                        return var_units
+                    # If it's a string, convert to pint.Unit
+                    return uw.units(str(var_units))
+        except (ReferenceError, AttributeError):
+            # Weak reference is dead or no units attribute
+            pass
+
+    # Priority 3: SymPy Matrix (check first element)
+    try:
+        import sympy
+        if isinstance(obj, sympy.MatrixBase):
+            if obj.shape[0] > 0 and obj.shape[1] > 0:
+                # Recursively check the first element
+                element_units = get_units(obj[0, 0])
+                if element_units is not None:
+                    return element_units
+    except (ImportError, AttributeError, IndexError):
+        pass
+
+    # Priority 4: SymPy expressions - check if compound FIRST
+    try:
+        import sympy
+        from sympy.vector.scalar import BaseScalar
+
+        if isinstance(obj, sympy.Basic):
+            # FIRST: Check if this is a compound expression (has operations)
+            # This must come before checking atoms to handle dimensional arithmetic
+            if isinstance(obj, (sympy.Mul, sympy.Pow, sympy.Add)):
+                computed_units = compute_expression_units(obj)
+                if computed_units:
+                    return computed_units
+
+            # SECOND: Check if this expression contains UnderworldFunctions
+            atoms = obj.atoms()
+            for atom in atoms:
+                if hasattr(atom, 'meshvar'):
+                    try:
+                        variable = atom.meshvar()
+                        if variable and hasattr(variable, 'units'):
+                            var_units = variable.units
+                            if var_units is not None:
+                                # If it's already a pint.Unit, return it
+                                if hasattr(var_units, 'dimensionality'):  # pint.Unit check
+                                    return var_units
+                                # If it's a string, convert to pint.Unit
+                                return uw.units(str(var_units))
+                    except (ReferenceError, AttributeError):
+                        pass
+
+            # THIRD: Check for coordinate units (simple expressions like just "x")
+            base_scalar_atoms = obj.atoms(BaseScalar)
+            for atom in base_scalar_atoms:
+                # Check if this BaseScalar has units
+                if hasattr(atom, '_units') and atom._units is not None:
+                    units = atom._units
+                    # If it's already a pint.Unit, return it
+                    if hasattr(units, 'dimensionality'):  # pint.Unit check
+                        return units
+                    # If it's a string, convert to pint.Unit
+                    return uw.units(str(units))
+                elif hasattr(atom, 'get_units'):
+                    units = atom.get_units()
+                    if units is not None:
+                        # If it's already a pint.Unit, return it
+                        if hasattr(units, 'dimensionality'):  # pint.Unit check
+                            return units
+                        # If it's a string, convert to pint.Unit
+                        return uw.units(str(units))
+    except (ImportError, AttributeError):
+        # SymPy not available or not a SymPy expression
+        pass
 
     return None
+
+
+def compute_expression_units(expr):
+    """
+    Compute units for compound SymPy expressions using dimensional analysis.
+
+    This function traverses the expression tree and uses Pint to perform
+    dimensional arithmetic on the units of sub-expressions.
+
+    Parameters
+    ----------
+    expr : sympy expression
+        Expression to analyze (e.g., temperature / y)
+
+    Returns
+    -------
+    pint.Unit or None
+        Computed unit object, or None if cannot determine
+
+    Examples
+    --------
+    >>> # T.sym has units 'kelvin', y has units 'kilometer'
+    >>> compute_expression_units(T.sym / y)
+    <Unit('kelvin / kilometer')>
+
+    >>> # velocity has units 'm/s', time has units 's'
+    >>> compute_expression_units(velocity * time)
+    <Unit('meter')>
+
+    >>> # Derivative: dT/dx
+    >>> compute_expression_units(T.sym.diff(mesh.N.x))
+    <Unit('kelvin / kilometer')>
+
+    Changed in 2025-10-16: Now returns pint.Unit objects instead of strings.
+    """
+    try:
+        import sympy
+        import underworld3 as uw
+
+        # Helper to check if a pint.Unit is dimensionless
+        def is_dimensionless_unit(unit):
+            if unit is None:
+                return True
+            if hasattr(unit, 'dimensionality'):
+                return len(unit.dimensionality) == 0
+            return str(unit) == 'dimensionless'
+
+        # Priority -1: Check for DERIVATIVES first (before general UnderworldFunction)
+        # Derivatives are UnderworldFunctions with a diffindex attribute
+        # Units of derivative = units(variable) / units(coordinate)
+        if hasattr(expr, 'diffindex'):
+            try:
+                # Get variable units from meshvar
+                variable = expr.meshvar()
+                if variable and hasattr(variable, 'units'):
+                    var_units = variable.units
+                    if var_units is not None:
+                        # Get the coordinate it's derived with respect to
+                        deriv_index = expr.diffindex
+                        if deriv_index < len(expr.args):
+                            coord = expr.args[deriv_index]
+                            coord_units = get_units(coord)
+                            if coord_units is not None:
+                                # Convert to pint.Unit if needed
+                                if not hasattr(var_units, 'dimensionality'):
+                                    var_units = uw.units(str(var_units))
+                                if not hasattr(coord_units, 'dimensionality'):
+                                    coord_units = uw.units(str(coord_units))
+                                # Compute derivative units: var_units / coord_units
+                                result_qty = (1 * var_units) / (1 * coord_units)
+                                return result_qty.units
+            except Exception:
+                pass
+
+        # Priority 0: Check for UnderworldFunction (has meshvar) FIRST
+        # This must come before is_Atom check because UnderworldFunctions
+        # have args (coordinates) so is_Atom returns False
+        if hasattr(expr, 'meshvar'):
+            try:
+                variable = expr.meshvar()
+                if variable and hasattr(variable, 'units'):
+                    var_units = variable.units
+                    if var_units is not None:
+                        # Convert to pint.Unit if it's a string
+                        if not hasattr(var_units, 'dimensionality'):
+                            return uw.units(str(var_units))
+                        return var_units
+            except (ReferenceError, AttributeError):
+                pass
+
+        # Handle Matrix expressions - check first element
+        if isinstance(expr, sympy.MatrixBase):
+            if expr.shape[0] > 0 and expr.shape[1] > 0:
+                return compute_expression_units(expr[0, 0])
+            return None
+
+        # Base case: atomic expression (coordinate or constant)
+        if expr.is_Atom or (not expr.args):
+            # Try to get units directly (for coordinates)
+            units_obj = get_units(expr)
+            if units_obj:
+                return units_obj
+            # Numbers are dimensionless
+            if expr.is_Number:
+                return uw.units('dimensionless')
+            return None
+
+        # Recursive case: compound expression
+        # Handle different operation types
+
+        if isinstance(expr, sympy.Mul):
+            # Multiplication: multiply units
+            result_unit = None
+            for arg in expr.args:
+                arg_units = compute_expression_units(arg)
+                if arg_units is None:
+                    continue
+
+                if is_dimensionless_unit(arg_units):
+                    continue
+
+                # Multiply units using pint arithmetic
+                try:
+                    if result_unit is None:
+                        result_unit = arg_units
+                    else:
+                        # Multiply by creating quantities
+                        result_qty = (1 * result_unit) * (1 * arg_units)
+                        result_unit = result_qty.units
+                except Exception:
+                    continue
+
+            return result_unit
+
+        elif isinstance(expr, sympy.Pow):
+            # Power: raise units to power
+            base, exponent = expr.args
+            base_units = compute_expression_units(base)
+
+            if base_units is None or is_dimensionless_unit(base_units):
+                return None
+
+            # Exponent must be a number
+            if not exponent.is_Number:
+                return None
+
+            try:
+                # Raise units to power
+                result_qty = (1 * base_units) ** float(exponent)
+                return result_qty.units
+            except Exception:
+                return None
+
+        elif isinstance(expr, sympy.Add):
+            # Addition: all terms must have same units
+            # Return units of first non-dimensionless term
+            for arg in expr.args:
+                arg_units = compute_expression_units(arg)
+                if arg_units and not is_dimensionless_unit(arg_units):
+                    return arg_units
+            return None
+
+        elif hasattr(expr, 'func'):
+            # Function application (sin, cos, etc.) - usually dimensionless result
+            # But argument should be dimensionless too
+            return uw.units('dimensionless')
+
+        # For other expression types, try to get units from args recursively
+        for arg in expr.args:
+            arg_units = compute_expression_units(arg)
+            if arg_units:
+                return arg_units
+
+        return None
+
+    except Exception:
+        # If anything fails, fall back to None
+        return None
 
 
 def get_mesh_coordinate_units(mesh_or_expr):
@@ -262,130 +717,30 @@ def determine_expression_units(expression, mesh_info):
     Determine the physical units of a SymPy expression.
 
     Analyzes the expression to infer what units the result should have
-    based on the constituent variables and operations.
+    based on the constituent variables and operations. This now uses
+    dimensional arithmetic for compound expressions.
 
     Parameters
     ----------
     expression : sympy expression
         Expression to analyze
     mesh_info : dict
-        Mesh coordinate unit information
+        Mesh coordinate unit information (optional, can be None)
 
     Returns
     -------
     str or None
         Unit string if determinable, None if dimensionless or unknown
+
+    Notes
+    -----
+    This function now delegates to compute_expression_units() which performs
+    dimensional arithmetic using Pint. This ensures consistent behavior between
+    get_units() and determine_expression_units().
     """
     try:
-        import sympy
-        import underworld3 as uw
-
-        # Check if expression contains UW variables with known units
-
-        # First check if the expression itself is a matrix containing UnderworldFunctions
-        if hasattr(expression, 'shape') and len(expression.shape) == 2:
-            for i in range(expression.shape[0]):
-                for j in range(expression.shape[1]):
-                    element = expression[i, j]
-                    # Check if this element is an UnderworldFunction with meshvar reference
-                    if hasattr(element, 'meshvar'):
-                        try:
-                            # meshvar is a weak reference, get the actual variable
-                            variable = element.meshvar()
-                            if variable and hasattr(variable, 'units'):
-                                # Found a variable with units attribute
-                                # Return its units, even if None (explicitly unitless)
-                                # This prevents falling through to coordinate detection
-                                if variable.units:
-                                    return str(variable.units)
-                                else:
-                                    # Variable explicitly has no units - return None
-                                    return None
-                        except ReferenceError:
-                            # Weak reference is dead
-                            continue
-
-        # Check if the expression itself is a coordinate (e.g., N.x, N.y)
-        if hasattr(expression, 'name'):
-            expr_name = str(expression.name)
-            is_coordinate = (
-                expr_name in ['x', 'y', 'z'] or  # Simple coordinate names
-                expr_name.endswith('.x') or expr_name.endswith('.y') or expr_name.endswith('.z')  # BaseScalar coordinates
-            )
-
-            if is_coordinate and mesh_info and mesh_info.get('scaled'):
-                # Coordinate variable - has length units
-                try:
-                    model = uw.get_default_model()
-                    # Get the length scale from the model's fundamental scales
-                    fundamental_scales = model.get_fundamental_scales()
-                    if 'length' in fundamental_scales:
-                        length_scale = fundamental_scales['length']
-                        if hasattr(length_scale, 'units'):
-                            return str(length_scale.units)
-                except:
-                    pass
-
-        # Also check atoms for other function types
-        atoms = expression.atoms()
-
-        for atom in atoms:
-            # Check if this is an UnderworldFunction with meshvar reference
-            if hasattr(atom, 'meshvar'):
-                try:
-                    # meshvar is a weak reference, get the actual variable
-                    variable = atom.meshvar()
-                    if variable and hasattr(variable, 'units'):
-                        # Found a variable with units attribute
-                        # Return its units, even if None (explicitly unitless)
-                        if variable.units:
-                            return str(variable.units)
-                        else:
-                            # Variable explicitly has no units - return None
-                            return None
-                except ReferenceError:
-                    # Weak reference is dead
-                    continue
-
-            # Check if this is an UnderworldFunction (mesh/swarm variable)
-            if hasattr(atom, '_parent') and hasattr(atom._parent, 'units'):
-                # Found a variable with units metadata
-                var_units = atom._parent.units
-                if var_units:
-                    return str(var_units)
-
-            # Legacy check for _units attribute (backward compatibility)
-            if hasattr(atom, '_parent') and hasattr(atom._parent, '_units'):
-                var_units = atom._parent._units
-                if var_units:
-                    return str(var_units)
-
-            # Check for UW mesh coordinates (which have length units)
-            if hasattr(atom, 'name'):
-                # Check for coordinate symbols like 'x', 'y', 'z' or 'N.x', 'N.y', 'N.z'
-                atom_name = str(atom.name)
-                is_coordinate = (
-                    atom_name in ['x', 'y', 'z'] or  # Simple coordinate names
-                    atom_name.endswith('.x') or atom_name.endswith('.y') or atom_name.endswith('.z')  # BaseScalar coordinates
-                )
-                if is_coordinate and mesh_info and mesh_info.get('scaled'):
-                    # Coordinate variable - has length units
-                    try:
-                        model = uw.get_default_model()
-                        # Get the length scale from the model's fundamental scales
-                        fundamental_scales = model.get_fundamental_scales()
-                        if 'length' in fundamental_scales:
-                            length_scale = fundamental_scales['length']
-                            if hasattr(length_scale, 'units'):
-                                return str(length_scale.units)
-                    except:
-                        pass
-
-        # Advanced: Check if expression is a simple operation on known quantities
-        # This would require more sophisticated analysis for compound expressions
-        # For now, if no direct variable units found, assume dimensionless
-        return None
-
+        # Use the unified dimensional analysis function
+        return compute_expression_units(expression)
     except Exception:
         # If analysis fails, assume dimensionless
         return None
@@ -718,8 +1073,8 @@ def make_evaluate_unit_aware(original_evaluate_func):
 
         Parameters
         ----------
-        expr : sympy expression
-            Expression to evaluate
+        expr : sympy expression or MeshVariable
+            Expression to evaluate. If MeshVariable, will use .sym automatically.
         coords : array-like, optional
             Coordinate array for evaluation
         coord_sys : CoordinateSystem, optional
@@ -731,14 +1086,20 @@ def make_evaluate_unit_aware(original_evaluate_func):
 
         Returns
         -------
-        array or UWQuantity
-            Evaluation result, potentially with units if expression has physical dimensions
+        numpy.ndarray
+            Evaluation result as plain numpy array (unit metadata NOT attached as wrapper)
 
         Raises
         ------
         ValueError
             If coordinate units are specified but mesh has no scaling context
         """
+        # Auto-extract .sym from MeshVariable for user convenience
+        import underworld3 as uw
+        if hasattr(expr, 'sym') and hasattr(expr, 'mesh'):
+            # This is likely a MeshVariable - extract the symbolic representation
+            expr = expr.sym
+
         # Handle the case where no coordinates are provided
         if coords is None:
             return original_evaluate_func(expr, coords, coord_sys, **kwargs)
@@ -775,9 +1136,19 @@ def make_evaluate_unit_aware(original_evaluate_func):
         filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'coord_units'}
         result = original_evaluate_func(expr, internal_coords, coord_sys, **filtered_kwargs)
 
-        # Convert result back to appropriate physical units
-        result_with_units = add_expression_units_to_result(result, expr, mesh_info)
+        # Determine what units the result should have based on expression analysis
+        try:
+            expr_units = determine_expression_units(expr, mesh_info)
+            if expr_units is not None:
+                # Return UnitAwareArray with unit metadata attached
+                # This allows uw.get_units(result) to work while maintaining
+                # full compatibility with numpy operations
+                return UnitAwareArray(result, units=expr_units)
+        except Exception:
+            # If unit detection fails, return plain array
+            pass
 
-        return result_with_units
+        # Return plain numpy array if no units detected
+        return result
 
     return unit_aware_evaluate

@@ -228,7 +228,12 @@ mesh → swarm → variables (variables must be locked through their container)
 - Eliminated access context manager requirement in update_lvec() by using direct `_lvec` access
 - Fixed symmetric tensor data property shape issue
 - Implemented Mathematical Objects with complete SymPy integration
-- **LATEST**: Implemented elegant `to_model_units()` using Pint dimensional analysis (2025-10-08)
+- Implemented elegant `to_model_units()` using Pint dimensional analysis (2025-10-08)
+- **LATEST**: Coordinate units system completed (2025-10-15):
+  - Fixed model synchronization via auto-registration
+  - Enhanced `get_units()` to extract units from SymPy expressions
+  - Coordinates now carry unit information: `uw.get_units(mesh.X[0])` works ✅
+  - See `docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md` for details
 
 ## Current Status (Phase 1 Complete)
 ✅ Core data property implementation complete
@@ -250,6 +255,14 @@ mesh → swarm → variables (variables must be locked through their container)
 ✅ **Private variables system implemented** (2025-09-30) - `_register=False` parameter for non-persistent variables
 ✅ **Units capability tests fixed** (2025-09-30) - 79/81 tests passing, core units functionality working
 ✅ **Elegant to_model_units() implementation** (2025-10-08) - Uses Pint dimensional analysis for composite dimensions, returns dimensionless UWQuantity objects
+✅ **Coordinate units system complete** (2025-10-15):
+   - **FIXED**: Model synchronization via auto-registration in `Model.__init__()` and `set_reference_quantities()`
+   - **FIXED**: Coordinate unit detection via enhanced `get_units()` that searches inside SymPy expressions
+   - Implemented `patch_coordinate_units()` to add unit awareness to mesh coordinates (x, y, z)
+   - Created `UnitAwareBaseScalar` subclass for future native unit support
+   - Added `Model.set_as_default()` for explicit control in advanced workflows
+   - **Result**: `uw.get_units(mesh.X[0])` now correctly returns coordinate units ✅
+   - **Documentation**: See `docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md` for complete technical details
 
 ## Pending Cleanup (Future Phase)
 🔄 **Remove legacy array interface methods** - When migration is complete:

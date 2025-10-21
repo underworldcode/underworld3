@@ -30,6 +30,7 @@ from .annulus import (
 
 from .geographic import (
     RegionalSphericalBox,
+    RegionalGeographicBox,
 )
 
 from .segmented import (
@@ -58,6 +59,7 @@ __all__ = [
     "DiscInternalBoundaries",
     # Geographic meshes
     "RegionalSphericalBox",
+    "RegionalGeographicBox",
     # Segmented meshes
     "SegmentedSphericalSurface2D",
     "SegmentedSphericalShell",

@@ -105,16 +105,18 @@ def unwrap(fn, keep_constants=True, return_self=True):
 
 def _apply_scaling_to_unwrapped(expr):
     """
-    Apply scale factors to an unwrapped SymPy expression.
+    Apply non-dimensional scaling to an unwrapped SymPy expression.
 
-    This function finds all variable symbols in the expression and replaces them
-    with scaled versions by looking up their variables in the model registry.
+    This function finds all variable symbols in the expression and scales them
+    by dividing by their scaling_coefficient (reference scale).
+
+    Non-dimensionalization: T(x,y) → T(x,y) / T_ref
 
     Args:
         expr: SymPy expression (potentially with UW variable symbols)
 
     Returns:
-        SymPy expression with scale factors applied to variables with units
+        SymPy expression with non-dimensional scaling applied
     """
     import underworld3 as uw
     import sympy
@@ -131,34 +133,41 @@ def _apply_scaling_to_unwrapped(expr):
         else:
             function_symbols = set()
 
-
-        # For each variable in the model, check if its symbols appear in the expression
+        # For each variable in the model, check if it has scaling
         for var_name, variable in model._variables.items():
-            if (hasattr(variable, 'has_units') and hasattr(variable, 'scale_factor') and
-                variable.has_units and variable.scale_factor is not None):
+            # Check for scaling_coefficient (from dimensionality_mixin)
+            if not hasattr(variable, 'scaling_coefficient'):
+                continue
 
+            coeff = variable.scaling_coefficient
 
-                # Get the variable's symbol and find matching function symbols
-                if hasattr(variable, '_base_var'):
-                    # For enhanced variables, get the base variable's symbol
-                    var_sym = variable._base_var.sym
-                else:
-                    var_sym = getattr(variable, 'sym', None)
+            # Only scale if coefficient != 1.0 (actually has scaling)
+            if coeff == 1.0:
+                continue
 
-                if var_sym is not None:
-                    # Get all function symbols from the variable's symbol
-                    if hasattr(var_sym, 'atoms'):
-                        var_function_symbols = var_sym.atoms(sympy.Function)
-                    else:
-                        var_function_symbols = set()
+            # Get the variable's symbol
+            if hasattr(variable, '_base_var'):
+                # For enhanced variables, get the base variable's symbol
+                var_sym = variable._base_var.sym
+            else:
+                var_sym = getattr(variable, 'sym', None)
 
+            if var_sym is None:
+                continue
 
-                    # Find matching symbols and create substitutions
-                    for func_symbol in function_symbols:
-                        for var_func_symbol in var_function_symbols:
-                            if str(func_symbol) == str(var_func_symbol):
-                                substitutions[func_symbol] = func_symbol * variable.scale_factor
+            # Get all function symbols from the variable's symbol
+            if hasattr(var_sym, 'atoms'):
+                var_function_symbols = var_sym.atoms(sympy.Function)
+            else:
+                continue
 
+            # Find matching symbols and create substitutions
+            # Substitution: T(x,y) → T(x,y) / T_ref (non-dimensionalize)
+            for func_symbol in function_symbols:
+                for var_func_symbol in var_function_symbols:
+                    if str(func_symbol) == str(var_func_symbol):
+                        # DIVIDE by scaling coefficient for non-dimensionalization
+                        substitutions[func_symbol] = func_symbol / coeff
 
         # Apply all substitutions
         if substitutions:
@@ -168,7 +177,7 @@ def _apply_scaling_to_unwrapped(expr):
 
     except Exception as e:
         import warnings
-        warnings.warn(f"Could not apply scaling to unwrapped expression: {e}")
+        warnings.warn(f"Could not apply non-dimensional scaling to expression: {e}")
         return expr
 
 
@@ -260,6 +269,7 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
 
     _expr_count = 0
     _expr_names = {}
+    _ephemeral_expr_names = {}  # Weak references to ephemeral expressions
 
     def __new__(
         cls,
@@ -270,19 +280,28 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
     ):
 
         import warnings
+        import weakref
 
         instance_no = UWexpression._expr_count
 
-        ## if the expression already exists, do not replace it (but return the existing object instead)
+        ## if the expression already exists, update it and return (natural Python behavior)
 
         if name in UWexpression._expr_names.keys() and _unique_name_generation == False:
-            warnings.warn(
-                message=f"EXPRESSIONS {name}: Each expression should have a unique name - new expression was not generated",
-            )
-            return UWexpression._expr_names[name]
+            # Preserve object identity, update internal state (lazy evaluation pattern)
+            # This is Pythonic: like updating an attribute rather than creating a new object
+            existing = UWexpression._expr_names[name]
 
-        if name in UWexpression._expr_names and _unique_name_generation == True:
-            invisible = rf"\hspace{{ {instance_no/100}pt }}"
+            # Update sym value if provided in kwargs (will be set in __init__)
+            # The __init__ will handle updating the sym value, we just return existing object
+            return existing
+
+        # Check both persistent and ephemeral dicts for existing expressions
+        name_exists_persistent = name in UWexpression._expr_names
+        name_exists_ephemeral = name in UWexpression._ephemeral_expr_names
+
+        if (name_exists_persistent or name_exists_ephemeral) and _unique_name_generation == True:
+            # Make hspace 100x smaller (nearly invisible for ephemeral expressions)
+            invisible = rf"\hspace{{ {instance_no/10000}pt }}"
             unique_name = f"{{ {name} {invisible} }}"
         else:
             unique_name = name
@@ -291,8 +310,26 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
         obj._instance_no = instance_no
         obj._unique_name = unique_name
         obj._given_name = name
+        obj._is_ephemeral = _unique_name_generation
 
-        UWexpression._expr_names[unique_name] = obj
+        # Store ephemeral expressions with weak references for garbage collection
+        if _unique_name_generation:
+            # Use weakref.ref with callback to clean up the dict entry
+            def cleanup_callback(ref):
+                # Remove from ephemeral dict when garbage collected
+                if unique_name in UWexpression._ephemeral_expr_names:
+                    del UWexpression._ephemeral_expr_names[unique_name]
+
+            try:
+                UWexpression._ephemeral_expr_names[unique_name] = weakref.ref(obj, cleanup_callback)
+            except TypeError:
+                # If weak references aren't supported (shouldn't happen for Symbols),
+                # fall back to strong reference
+                UWexpression._expr_names[unique_name] = obj
+        else:
+            # Persistent expressions use strong references
+            UWexpression._expr_names[unique_name] = obj
+
         UWexpression._expr_count += 1
 
         return obj
@@ -685,6 +722,16 @@ class UWDerivativeExpression(UWexpression):
     ```
 
     """
+
+    def __new__(cls, name, *args, **kwargs):
+        """
+        Create ephemeral derivative expressions with automatic unique naming.
+
+        Derivative expressions are typically created on-the-fly (e.g., temperature.diff(y))
+        and used immediately in assignments. They should not trigger uniqueness warnings.
+        """
+        # Force unique name generation for derivative expressions (ephemeral/anonymous)
+        return UWexpression.__new__(cls, name, *args, _unique_name_generation=True, **kwargs)
 
     def __init__(
         self,

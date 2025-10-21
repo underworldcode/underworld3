@@ -20,9 +20,10 @@ UWQuantity objects are intended for:
 import sympy
 from typing import Union, Optional, Any
 from ..utilities.units_mixin import UnitAwareMixin
+from ..utilities.dimensionality_mixin import DimensionalityMixin
 
 
-class UWQuantity(UnitAwareMixin):
+class UWQuantity(DimensionalityMixin, UnitAwareMixin):
     """
     Lightweight unit-aware quantity.
 
@@ -64,6 +65,9 @@ class UWQuantity(UnitAwareMixin):
         _custom_units : str, optional
             Custom unit name that bypasses Pint validation (for model units)
         """
+        # Initialize DimensionalityMixin
+        DimensionalityMixin.__init__(self)
+
         # Initialize the symbolic value
         self._sym = sympy.sympify(value)
 
@@ -91,8 +95,8 @@ class UWQuantity(UnitAwareMixin):
         elif units is not None:
             # Regular units: create standard Pint quantity
             try:
-                import pint
-                ureg = pint.UnitRegistry()
+                # Use the scaling module's registry which includes planetary units
+                from ..scaling import units as ureg
                 self._pint_qty = value * ureg.parse_expression(units)
                 self._has_pint_qty = True
                 self._has_custom_units = False
@@ -316,6 +320,72 @@ class UWQuantity(UnitAwareMixin):
             New quantity with converted value and target units
         """
         return self.to(target_units)
+
+    def to_compact(self) -> 'UWQuantity':
+        """
+        Convert to compact representation with best automatic units.
+
+        This uses Pint's to_compact() method to automatically select the most
+        readable unit representation. For example, 1e-9 GPa becomes 1.0 Pa,
+        and 1000000 mm becomes 1.0 km.
+
+        Returns
+        -------
+        UWQuantity
+            New quantity with automatically selected compact units
+
+        Raises
+        ------
+        ValueError
+            If this quantity has no units or doesn't have Pint quantity
+
+        Examples
+        --------
+        >>> import underworld3 as uw
+        >>> awkward = uw.quantity(1e-9, "GPa")
+        >>> nice = awkward.to_compact()
+        >>> print(nice)  # 1.0 pascal
+
+        >>> distance = uw.quantity(1000000, "mm")
+        >>> compact = distance.to_compact()
+        >>> print(compact)  # 1.0 kilometer
+        """
+        if not self.has_units:
+            raise ValueError("Cannot compact quantity without units")
+
+        if not (hasattr(self, '_has_pint_qty') and self._has_pint_qty):
+            raise ValueError("to_compact() requires Pint quantity (not available for model units)")
+
+        try:
+            # Use Pint's compact functionality
+            compact_pint = self._pint_qty.to_compact()
+            return UWQuantity._from_pint(compact_pint)
+        except AttributeError:
+            # Pint version doesn't have to_compact() (requires Pint >= 0.17)
+            raise AttributeError(
+                "to_compact() requires Pint >= 0.17. "
+                "Upgrade with: pip install --upgrade pint"
+            )
+
+    def to_nice_units(self) -> 'UWQuantity':
+        """
+        Convert to 'nice' representation using automatic compact units.
+
+        Alias for to_compact() - finds the most readable unit representation.
+
+        Returns
+        -------
+        UWQuantity
+            New quantity with nice, readable units
+
+        Examples
+        --------
+        >>> import underworld3 as uw
+        >>> pressure = uw.quantity(0.001, "GPa")
+        >>> nice = pressure.to_nice_units()
+        >>> print(nice)  # 1.0 megapascal
+        """
+        return self.to_compact()
 
     def _to_model_units_(self, model) -> 'UWQuantity':
         """
@@ -774,16 +844,12 @@ class UWQuantity(UnitAwareMixin):
             return None
 
         try:
-            # STEP 1: Combine all Pint constants by converting to base units
-            # This handles cases like _2900000m / _1p83E15s → numerical m/s
+            # STEP 1: Convert the actual value (not just 1.0) to base units
+            # This combines the numerical value with all the Pint constants
+            # e.g., 1.584e-24 * (_2900000m / _1p83E15s) → 2.5e-33 m/s → 5 cm/year
 
-            # Create a unit quantity (magnitude 1.0 in model units)
-            # This represents "what is 1.0 model unit in SI?"
-            unit_qty = 1.0 * self._pint_qty.units
-
-            # Convert to SI base units - this combines all the _constants
-            # e.g., _2900000m / _1p83E15s → (2.9e6 / 1.83e15) m/s = 1.58e-9 m/s
-            base_qty = unit_qty.to_base_units()
+            # Convert to SI base units using the actual quantity value
+            base_qty = self._pint_qty.to_base_units()
 
             # STEP 2: Try to express in user-friendly units
             from ..scaling import units as u
@@ -833,8 +899,17 @@ class UWQuantity(UnitAwareMixin):
             for name, friendly_unit in friendly_conversions:
                 try:
                     # Check if dimensionally compatible
-                    converted = base_qty.to(friendly_unit)
-                    magnitude = abs(converted.magnitude)
+                    # If friendly_unit is a Quantity (e.g., 1e6 * year), we need to:
+                    # 1. Convert to its base units (e.g., year)
+                    # 2. Divide by its magnitude (e.g., 1e6) to get the scaled value
+                    if hasattr(friendly_unit, 'magnitude') and hasattr(friendly_unit, 'units'):
+                        # It's a Quantity with a scale factor
+                        converted = base_qty.to(friendly_unit.units)
+                        magnitude = abs(converted.magnitude / friendly_unit.magnitude)
+                    else:
+                        # It's a pure Unit (no scale factor)
+                        converted = base_qty.to(friendly_unit)
+                        magnitude = abs(converted.magnitude)
 
                     # Skip zero or invalid magnitudes
                     if magnitude == 0 or not (0 < magnitude < 1e100):
@@ -921,7 +996,7 @@ class UWQuantity(UnitAwareMixin):
 
 
 
-def quantity(value: Union[float, int, sympy.Basic], units: Optional[str] = None, _custom_units: Optional[str] = None, _model_registry=None, _model_instance=None, _is_model_units: bool = False) -> UWQuantity:
+def quantity(value: Union[float, int, sympy.Basic], units: Optional[Union[str, Any]] = None, _custom_units: Optional[str] = None, _model_registry=None, _model_instance=None, _is_model_units: bool = False) -> UWQuantity:
     """
     Create a lightweight unit-aware quantity.
 
@@ -929,8 +1004,8 @@ def quantity(value: Union[float, int, sympy.Basic], units: Optional[str] = None,
     ----------
     value : float, int, sympy.Basic
         The numerical or symbolic value
-    units : str, optional
-        Units specification (e.g., "Pa*s", "cm/year", "K")
+    units : str or Pint Unit, optional
+        Units specification (e.g., "Pa*s", "cm/year", "K", uw.units.earth_mass)
     _custom_units : str, optional
         Custom unit name that bypasses Pint validation (for model units)
 
@@ -944,8 +1019,15 @@ def quantity(value: Union[float, int, sympy.Basic], units: Optional[str] = None,
     >>> import underworld3 as uw
     >>> viscosity = uw.quantity(1e21, "Pa*s")
     >>> velocity = uw.quantity(5, "cm/year")
+    >>> mass = uw.quantity(1, "earth_mass")  # Planetary units
+    >>> mass2 = uw.quantity(1, uw.units.earth_mass)  # Or use Unit object
     >>> time_scale = distance / velocity  # Units calculated automatically
     """
+    # Handle Pint Unit objects
+    if units is not None and hasattr(units, 'dimensionality'):
+        # This is a Pint Unit object - convert to string
+        units = str(units)
+
     qty = UWQuantity(value, units, _custom_units=_custom_units, _model_registry=_model_registry, _model_instance=_model_instance)
 
     # Set model units flag if specified

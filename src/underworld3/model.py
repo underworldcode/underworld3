@@ -89,6 +89,12 @@ class Model(PintNativeModelMixin, BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     version: int = Field(default=0, description="Model version for change tracking")
 
+    # Unit system configuration
+    unit_rounding_mode: str = Field(
+        default="powers_of_10",
+        description="Mode for rounding unit magnitudes: 'powers_of_10' (1,10,100,...) or 'engineering' (1,1000,1e6,...)"
+    )
+
     # NEW: Optional PETSc state for complete reproducibility
     petsc_state: Optional[Dict[str, str]] = None
 
@@ -130,6 +136,12 @@ class Model(PintNativeModelMixin, BaseModel):
             # Transition through initializing to configured
             self.state = ModelState.INITIALIZING
             self.state = ModelState.CONFIGURED
+
+        # Auto-register as default model if no default exists
+        # This ensures the first user-created model becomes default automatically
+        global _default_model
+        if _default_model is None:
+            _default_model = self
     
     @property
     def mesh(self):
@@ -551,7 +563,7 @@ class Model(PintNativeModelMixin, BaseModel):
         """Get material properties by name"""
         return self.materials.get(name, {})
 
-    def set_reference_quantities(self, **quantities):
+    def set_reference_quantities(self, verbose=False, **quantities):
         """
         Set reference quantities for automatic units scaling.
 
@@ -561,11 +573,16 @@ class Model(PintNativeModelMixin, BaseModel):
 
         Parameters:
         -----------
+        verbose : bool, optional
+            If True, print diagnostic information about dimensional analysis
+            and scale derivation. Default: False.
         **quantities : dict
-            Named reference quantities using Pint units, e.g.:
+            Named reference quantities using Pint units or UWQuantity objects, e.g.:
             - mantle_viscosity=1e21*uw.units.Pa*uw.units.s
             - plate_velocity=5*uw.units.cm/uw.units.year
             - domain_depth=3000*uw.units.km
+            OR using uw.quantity():
+            - domain_depth=uw.quantity(2900, "km")
 
         Example:
         --------
@@ -575,17 +592,73 @@ class Model(PintNativeModelMixin, BaseModel):
         ...     domain_depth=3000*uw.units.km
         ... )
 
+        >>> # Also accepts UWQuantity objects
+        >>> model.set_reference_quantities(
+        ...     domain_depth=uw.quantity(2900, "km"),
+        ...     mantle_viscosity=uw.quantity(1e21, "Pa*s")
+        ... )
+
+        >>> # With diagnostic output
+        >>> model.set_reference_quantities(
+        ...     verbose=True,
+        ...     domain_depth=uw.quantity(500, "m"),
+        ...     mantle_temperature=uw.quantity(1300, "K")
+        ... )
+
         Notes:
         ------
         This method creates a Pint-native registry with model-specific constants
         using the _constants pattern for optimal numerical conditioning.
-        """
-        # Store reference quantities
-        self._reference_quantities = quantities.copy()
 
-        print(f"Model '{self.name}': Set {len(quantities)} reference quantities")
+        Raises:
+        -------
+        RuntimeError
+            If called after a mesh has been created (units are locked)
+        """
+        # Check if units are locked
+        self._check_units_locked()
+
+        # Store verbose flag for use in helper methods
+        self._verbose_units = verbose
+
+        # Convert UWQuantity to Pint Quantity for consistency
+        # IMPORTANT: Use the global uw.units registry to ensure all units are compatible
+        from .scaling import units as ureg
+
+        processed_quantities = {}
         for name, qty in quantities.items():
-            print(f"  {name}: {qty}")
+            # Check if this is a UWQuantity
+            if hasattr(qty, '_sym') and hasattr(qty, 'units') and hasattr(qty, '_has_pint_qty'):
+                # UWQuantity - extract pure numeric value from sympy representation
+                # This ensures the magnitude is a pure float, not wrapped in UWQuantity
+                sym_val = qty._sym
+                units_str = qty.units
+
+                # Force conversion to pure float
+                if hasattr(sym_val, 'evalf'):
+                    try:
+                        numeric_value = float(sym_val.evalf())
+                    except (TypeError, ValueError):
+                        # Fall back to direct float conversion
+                        numeric_value = float(sym_val)
+                else:
+                    numeric_value = float(sym_val)
+
+                # Create fresh Pint Quantity with clean numeric magnitude
+                # Use the global registry to ensure compatibility with all other units
+                processed_quantities[name] = numeric_value * ureg.parse_expression(units_str)
+            else:
+                # Already a Pint Quantity or compatible
+                processed_quantities[name] = qty
+
+        # Store reference quantities (now all Pint Quantities with numeric magnitudes)
+        self._reference_quantities = processed_quantities
+
+        if verbose:
+            import underworld3 as uw
+            uw.pprint(f"Model '{self.name}': Set {len(quantities)} reference quantities", proc=0)
+            for name, qty in quantities.items():
+                uw.pprint(f"  {name}: {qty}", proc=0)
 
         # Perform dimensional analysis to derive fundamental scales
         self._fundamental_scales = self._derive_fundamental_scales()
@@ -593,11 +666,11 @@ class Model(PintNativeModelMixin, BaseModel):
         # Create Pint registry with model-specific _constants
         self._create_pint_registry()
 
-        # Store metadata for serialization
+        # Store metadata for serialization (use processed_quantities with clean numeric magnitudes)
         if 'reference_quantities' not in self.metadata:
             self.metadata['reference_quantities'] = {}
 
-        for name, qty in quantities.items():
+        for name, qty in processed_quantities.items():
             self.metadata['reference_quantities'][name] = {
                 'value': str(qty),
                 'magnitude': float(qty.magnitude) if hasattr(qty, 'magnitude') else qty,
@@ -612,6 +685,20 @@ class Model(PintNativeModelMixin, BaseModel):
         if not hasattr(self, '_scaling_mode'):
             self._scaling_mode = 'exact'
 
+        # Auto-register as default model when reference quantities are set
+        # This ensures the model with units becomes the active default
+        global _default_model
+        _default_model = self
+
+        # Derive scaling coefficients for all variables based on reference quantities
+        try:
+            from .utilities.nondimensional import derive_scaling_coefficients
+            derive_scaling_coefficients(self)
+            if verbose:
+                print("Derived scaling coefficients for variables from reference quantities")
+        except ImportError:
+            pass  # Module not available yet
+
     def get_reference_quantities(self):
         """Get the reference quantities for this model."""
         return self.metadata.get('reference_quantities', {})
@@ -620,33 +707,186 @@ class Model(PintNativeModelMixin, BaseModel):
         """Check if this model has units scaling enabled."""
         return self.metadata.get('units_enabled', False)
 
+    def get_coordinate_unit(self):
+        """
+        Get the coordinate unit for this model.
+
+        Returns the length unit from reference quantities if set,
+        otherwise returns None (dimensionless).
+
+        Returns:
+        --------
+        pint.Unit or None
+            Coordinate unit object (e.g., <Unit('kilometer')>) or None if no units set
+
+        Example:
+        --------
+        >>> model.set_reference_quantities(domain_depth=uw.quantity(500, "km"))
+        >>> model.get_coordinate_unit()
+        <Unit('kilometer')>  # Or <Unit('megameter')> if using engineering rounding
+
+        Changed in 2025-10-16: Now returns pint.Unit objects instead of strings
+        for consistency and to enable natural unit arithmetic (e.g., var.units / mesh.units).
+        """
+        # Check if we have reference quantities with length scale
+        if hasattr(self, '_reference_quantities'):
+            # Look for any length-dimensioned quantity
+            for name, qty in self._reference_quantities.items():
+                # Check if this is a Pint quantity (has _pint_qty attribute)
+                if hasattr(qty, '_pint_qty') and qty._pint_qty is not None:
+                    # Get the Pint unit object directly (not the string property)
+                    pint_unit = qty._pint_qty.units
+                    # Check if this has length dimension
+                    if hasattr(pint_unit, 'dimensionality'):
+                        dim = pint_unit.dimensionality
+                        # Pure length dimension: [length]^1, others zero
+                        if (dim.get('[length]', 0) == 1 and
+                            all(d == 0 for k, d in dim.items() if k != '[length]')):
+                            # Return the pint.Unit object directly (not the string)
+                            return pint_unit
+                # Fallback: check dimensionality directly on qty (for backward compatibility)
+                elif hasattr(qty, 'dimensionality'):
+                    dim = qty.dimensionality
+                    # Pure length dimension: [length]^1, others zero
+                    if (dim.get('[length]', 0) == 1 and
+                        all(d == 0 for k, d in dim.items() if k != '[length]')):
+                        # This case shouldn't happen with current UWQuantity, but keep for safety
+                        return qty.units if hasattr(qty, 'units') else None
+
+        # No length scale defined - return None (dimensionless)
+        return None
+
+    def _lock_units(self):
+        """
+        Lock the model units to prevent changes after mesh creation.
+
+        This is called automatically when the first mesh is registered.
+        Once locked, calling set_reference_quantities() will raise an error.
+        """
+        self.metadata['units_locked'] = True
+
+    def _check_units_locked(self):
+        """
+        Check if model units are locked.
+
+        Raises:
+        -------
+        RuntimeError
+            If units are locked and user tries to change reference quantities
+        """
+        if self.metadata.get('units_locked', False):
+            raise RuntimeError(
+                "Cannot change model reference quantities after mesh has been created. "
+                "The model units are locked to ensure consistency across all meshes and variables. "
+                "Create a new model if you need different units."
+            )
+
+    def set_as_default(self):
+        """
+        Explicitly set this model as the default model.
+
+        This is useful when working with multiple models (e.g., loading from disk)
+        and you want to explicitly control which model is active.
+
+        Returns:
+        --------
+        Model
+            Returns self for method chaining
+
+        Example:
+        --------
+        >>> model1 = uw.Model()
+        >>> model2 = uw.Model()
+        >>> model2.set_as_default()  # Make model2 the active default
+        >>> assert uw.get_default_model() is model2
+        """
+        global _default_model
+        _default_model = self
+        return self
+
     def _derive_fundamental_scales(self) -> dict:
         """
         Derive fundamental scales from reference quantities using dimensional analysis.
 
-        Same logic as existing implementation, returns scales that become Pint _constants.
+        This is called during set_reference_quantities() BEFORE metadata is populated,
+        so we work directly with _reference_quantities instead of calling the public method.
         """
-        if not hasattr(self, '_reference_quantities'):
+        if not hasattr(self, '_reference_quantities') or not self._reference_quantities:
             return {}
 
-        # Use existing dimensional analysis from enhanced model
+        # Use same logic as public derive_fundamental_scalings() but work directly
+        # with _reference_quantities to avoid metadata timing issues
+        ref_qty = self._reference_quantities
+
+        # Import units backend
         try:
-            from .utilities.units_mixin import DimensionalAnalysis
-            analyzer = DimensionalAnalysis()
-
-            # Convert reference quantities to format expected by analyzer
-            ref_for_analysis = {}
-            for name, qty in self._reference_quantities.items():
-                ref_for_analysis[name] = analyzer._units_backend.create_quantity(
-                    qty.magnitude, str(qty.units)
-                )
-
-            # Use existing derivation logic
-            return analyzer.derive_fundamental_scales(ref_for_analysis)
-
+            from .scaling import units as u
         except ImportError:
-            # Fallback: simplified dimensional analysis for basic cases
-            return self._simple_dimensional_analysis()
+            from .utilities.units_mixin import PintBackend
+            backend = PintBackend()
+            u = backend.registry
+
+        scalings = {}
+
+        # Direct mappings for pure dimensions (length, time, mass, temperature)
+        for name, qty in ref_qty.items():
+            try:
+                dimensionality = qty.dimensionality
+
+                if dimensionality == u.kelvin.dimensionality:
+                    scalings['[temperature]'] = qty
+                elif dimensionality == u.meter.dimensionality:
+                    scalings['[length]'] = qty
+                elif dimensionality == u.second.dimensionality:
+                    scalings['[time]'] = qty
+                elif dimensionality == u.kilogram.dimensionality:
+                    scalings['[mass]'] = qty
+            except Exception:
+                continue
+
+        # Derive time from velocity if we have length
+        for name, qty in ref_qty.items():
+            try:
+                dimensionality = qty.dimensionality
+
+                # Velocity: length/time -> derive time from length/velocity
+                if dimensionality == (u.meter / u.second).dimensionality:
+                    if '[time]' not in scalings and '[length]' in scalings:
+                        time_raw = scalings['[length]'] / qty
+                        time_base = time_raw.to_base_units()
+                        scalings['[time]'] = time_base
+                        break
+            except Exception:
+                continue
+
+        # Derive mass from viscosity if we have length and time
+        for name, qty in ref_qty.items():
+            try:
+                dimensionality = qty.dimensionality
+
+                # Viscosity: Pa*s -> derive mass from η*L*T
+                if dimensionality == (u.pascal * u.second).dimensionality:
+                    if '[length]' in scalings and '[time]' in scalings and '[mass]' not in scalings:
+                        mass_raw = qty * scalings['[length]'] * scalings['[time]']
+                        mass_base = mass_raw.to_base_units()
+                        scalings['[mass]'] = mass_base
+                        break
+            except Exception:
+                continue
+
+        # Convert from '[dimension]' keys to plain 'dimension' keys
+        # IMPORTANT: Convert all scales to base SI units for consistent derivation
+        fundamental_scales = {}
+        for dim_key, qty in scalings.items():
+            plain_key = dim_key.strip('[]')
+            # Convert to base units (e.g., 100 km → 100000 m)
+            try:
+                base_qty = qty.to_base_units()
+                fundamental_scales[plain_key] = base_qty
+            except:
+                fundamental_scales[plain_key] = qty
+
+        return fundamental_scales
 
     def _simple_dimensional_analysis(self) -> dict:
         """
@@ -690,9 +930,11 @@ class Model(PintNativeModelMixin, BaseModel):
         n_dims = len(fundamental_dims)
         n_quantities = len(names)
 
-        print(f"\n=== Dimensional Analysis ===")
-        print(f"Matrix rank: {rank}/{n_dims} (need {n_dims} for complete system)")
-        print(f"Quantities: {n_quantities}")
+        if getattr(self, '_verbose_units', False):
+            import underworld3 as uw
+            uw.pprint(f"\n=== Dimensional Analysis ===", proc=0)
+            uw.pprint(f"Matrix rank: {rank}/{n_dims} (need {n_dims} for complete system)", proc=0)
+            uw.pprint(f"Quantities: {n_quantities}", proc=0)
 
         # Handle different system types
         if rank < n_dims:
@@ -700,7 +942,9 @@ class Model(PintNativeModelMixin, BaseModel):
         elif rank == n_dims:
             return self._solve_complete_system(matrix, magnitudes, names, fundamental_dims, ureg)
         else:
-            print("⚠️  Unexpected matrix rank - proceeding with best approximation")
+            # Always show warnings (parallel-safe)
+            import underworld3 as uw
+            uw.pprint("⚠️  Unexpected matrix rank - proceeding with best approximation", proc=0)
             return self._solve_complete_system(matrix, magnitudes, names, fundamental_dims, ureg)
 
     def _handle_under_determined_system(self, matrix, names, fundamental_dims, ureg):
@@ -715,11 +959,13 @@ class Model(PintNativeModelMixin, BaseModel):
 
         missing_dims = [dim.strip('[]') for dim in fundamental_dims if dim not in ['[' + d + ']' for d in covered_dims]]
 
-        print(f"❌ Incomplete dimensional coverage")
-        print(f"Covered: {covered_dims}")
-        print(f"Missing: {missing_dims}")
+        # Always show errors (parallel-safe)
+        import underworld3 as uw
+        uw.pprint(f"❌ Incomplete dimensional coverage", proc=0)
+        uw.pprint(f"Covered: {covered_dims}", proc=0)
+        uw.pprint(f"Missing: {missing_dims}", proc=0)
+        uw.pprint("\n💡 Suggestions to complete the system:", proc=0)
 
-        print("\n💡 Suggestions to complete the system:")
         suggestions = {
             'mass': ["Add density: material_density=3000*uw.units.kg/uw.units.m**3",
                     "Add viscosity: fluid_viscosity=1e-3*uw.units.Pa*uw.units.s",
@@ -735,9 +981,9 @@ class Model(PintNativeModelMixin, BaseModel):
 
         for dim in missing_dims:
             if dim in suggestions:
-                print(f"\nFor {dim} dimension:")
+                uw.pprint(f"\nFor {dim} dimension:", proc=0)
                 for suggestion in suggestions[dim][:2]:
-                    print(f"  • {suggestion}")
+                    uw.pprint(f"  • {suggestion}", proc=0)
 
         # Return partial scales where possible
         partial_scales = {}
@@ -771,39 +1017,69 @@ class Model(PintNativeModelMixin, BaseModel):
             fundamental_scales = {}
             scale_sources = {}
 
+            # Initialize rounding info storage
+            if not hasattr(self, '_scale_rounding_info'):
+                self._scale_rounding_info = {}
+
             base_units = [ureg.meter, ureg.second, ureg.kilogram, ureg.kelvin]
             dim_names = ['length', 'time', 'mass', 'temperature']
 
             for i, (dim_name, base_unit, scale_value) in enumerate(zip(dim_names, base_units, fundamental_scales_values)):
-                fundamental_scales[dim_name] = scale_value * base_unit
-
                 # Find which original quantity contributed most to this dimension
+                # Prefer positive contributions and simple (single-dimension) quantities
                 contributors = []
+                reference_mag = None
                 for j, name in enumerate(names):
                     if matrix[j, i] != 0:
-                        contribution = abs(matrix[j, i])
-                        contributors.append((contribution, name))
+                        # Prioritize:
+                        # 1. Positive contributions (direct relationship)
+                        # 2. Single-dimension quantities (matrix[j, :] has only one non-zero entry)
+                        # 3. Larger contribution magnitude
+                        is_positive = matrix[j, i] > 0
+                        is_simple = np.sum(matrix[j, :] != 0) == 1
+                        contribution_mag = abs(matrix[j, i])
+
+                        # Score: positive=100, simple=10, magnitude
+                        score = (100 if is_positive else 0) + (10 if is_simple else 0) + contribution_mag
+                        contributors.append((score, name, j))
 
                 if contributors:
-                    # Sort by contribution magnitude
+                    # Sort by score (highest first)
                     contributors.sort(reverse=True)
                     main_contributor = contributors[0][1]
-                    if len(contributors) == 1 and matrix[j, i] == 1:
+                    main_contributor_idx = contributors[0][2]
+                    reference_mag = magnitudes[main_contributor_idx]
+
+                    if len(contributors) == 1 and matrix[main_contributor_idx, i] == 1:
                         scale_sources[dim_name] = main_contributor
                     else:
                         scale_sources[dim_name] = f"derived from dimensional analysis"
                 else:
                     scale_sources[dim_name] = "derived"
 
-            # Verification
-            print("\n✅ Complete dimensional system solved")
-            print("Verification (should be ≈ 1.0):")
-            for j, name in enumerate(names):
-                predicted_mag = np.prod([fundamental_scales_values[i]**matrix[j,i]
-                                       for i in range(len(fundamental_scales_values))])
-                actual_mag = magnitudes[j]
-                ratio = actual_mag / predicted_mag
-                print(f"  {name}: ratio = {ratio:.3f}")
+                # Round scale for optimal conditioning
+                # Goal: reference_magnitude / scale should be in target range
+                rounded_scale = self._round_scale_for_conditioning(scale_value, reference_mag)
+                fundamental_scales[dim_name] = rounded_scale * base_unit
+
+                # Track rounding info
+                self._scale_rounding_info[dim_name] = {
+                    'original': scale_value,
+                    'rounded': rounded_scale,
+                    'ratio': scale_value / rounded_scale if rounded_scale != 0 else 1.0
+                }
+
+            # Verification (only shown if verbose=True)
+            if getattr(self, '_verbose_units', False):
+                import underworld3 as uw
+                uw.pprint("\n✅ Complete dimensional system solved", proc=0)
+                uw.pprint("Verification (should be ≈ 1.0):", proc=0)
+                for j, name in enumerate(names):
+                    predicted_mag = np.prod([fundamental_scales_values[i]**matrix[j,i]
+                                           for i in range(len(fundamental_scales_values))])
+                    actual_mag = magnitudes[j]
+                    ratio = actual_mag / predicted_mag
+                    uw.pprint(f"  {name}: ratio = {ratio:.3f}", proc=0)
 
             self._scale_sources = scale_sources
             return fundamental_scales
@@ -869,13 +1145,14 @@ class Model(PintNativeModelMixin, BaseModel):
         }
 
         # Define _constants for each fundamental scale
+        # Note: scales are already rounded in _solve_complete_system for optimal conditioning
         for dimension, scale_qty in self._fundamental_scales.items():
             # Convert to base SI units for clean definitions
             si_qty = scale_qty.to_base_units()
             magnitude = si_qty.magnitude
             si_units = str(si_qty.units)
 
-            # Create _constant name following Pint pattern
+            # Create _constant name following Pint pattern (uses already-rounded magnitude)
             const_name = self._generate_constant_name(magnitude, si_units, dimension)
 
             # Get aliases for this dimension
@@ -886,6 +1163,7 @@ class Model(PintNativeModelMixin, BaseModel):
             })
 
             # Define the base technical constant
+            # Scales are already rounded for optimal numerical conditioning
             definition = f"{const_name} = {magnitude} * {si_units}"
             self._pint_registry.define(definition)
 
@@ -909,7 +1187,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 'display_alias': aliases_info.get('display', ascii_aliases[0] if ascii_aliases else const_name),
                 'definition': definition,
                 'original_scale': scale_qty,
-                'magnitude': magnitude,
+                'magnitude': magnitude,  # Already rounded in _solve_complete_system
                 'si_units': si_units
             }
 
@@ -966,8 +1244,114 @@ class Model(PintNativeModelMixin, BaseModel):
             }
         return aliases
 
+    def _round_scale_for_conditioning(self, scale: float, reference_mag: float = None) -> float:
+        """
+        Round scale to achieve optimal numerical conditioning based on unit_rounding_mode.
+
+        The goal is to choose a scale such that reference_mag / scale falls in a target range:
+        - 'powers_of_10': Target [1, 10] (default) - optimal precision
+        - 'engineering': Target [1, 1000] - SI prefix friendly, avoids fractions
+
+        Args:
+            scale: The derived scale from dimensional analysis
+            reference_mag: The reference quantity magnitude to condition (optional)
+
+        Returns:
+            Rounded scale value
+
+        Examples:
+            powers_of_10 mode (target result in [1, 10]):
+                scale=500, ref=500 → 100 (gives 500/100 = 5.0)
+                scale=6.37e6, ref=6.37e6 → 1e6 (gives 6.37e6/1e6 = 6.37)
+
+            engineering mode (target result in [1, 1000]):
+                scale=500, ref=500 → 1 (gives 500/1 = 500)
+                scale=6.37e6, ref=6.37e6 → 1e6 (gives 6.37e6/1e6 = 6.37)
+        """
+        import math
+
+        if scale == 0:
+            return 0.0
+
+        # If no reference magnitude, use old simple rounding
+        if reference_mag is None:
+            return self._round_to_nice_value(scale)
+
+        sign = 1 if scale > 0 else -1
+        abs_scale = abs(scale)
+        abs_ref = abs(reference_mag)
+
+        # Define target range based on mode
+        if self.unit_rounding_mode == "engineering":
+            # Engineering: target [1, 1000], use powers of 1000
+            target_min, target_max = 1.0, 1000.0
+            step_log = 3  # log10(1000)
+        else:  # powers_of_10 (default)
+            # Powers of 10: target [1, 10], use powers of 10
+            target_min, target_max = 1.0, 10.0
+            step_log = 1  # log10(10)
+
+        # We want abs_ref / result_scale ∈ [target_min, target_max]
+        # So result_scale ∈ [abs_ref/target_max, abs_ref/target_min]
+        scale_min = abs_ref / target_max
+        scale_max = abs_ref / target_min
+
+        # Find powers of step (10 or 1000) in this range
+        # Start with the range boundaries in log space
+        if scale_min > 0:
+            order_min = math.floor(math.log10(scale_min) / step_log)
+            order_max = math.floor(math.log10(scale_max) / step_log)
+        else:
+            # Fallback to simple rounding
+            return sign * self._round_to_nice_value(abs_scale)
+
+        # Try each power in range, from largest to smallest
+        # (largest scale gives smallest result, closer to target_min)
+        for order in range(order_max, order_min - 1, -1):
+            candidate = 10 ** (order * step_log)
+            if scale_min <= candidate <= scale_max:
+                result = sign * candidate
+                # Clean up floating point errors for large values
+                if abs(result) >= 1 and abs(result - round(result)) < 1e-10:
+                    result = round(result)
+                return result
+
+        # Fallback: use the original scale rounded simply
+        return sign * self._round_to_nice_value(abs_scale)
+
+    def _round_to_nice_value(self, magnitude: float) -> float:
+        """
+        Simple rounding to nearest power of 10 or 1000 (fallback method).
+
+        This is used when we don't have a reference magnitude to condition against.
+        """
+        import math
+
+        if magnitude == 0:
+            return 0.0
+
+        abs_mag = abs(magnitude)
+
+        if self.unit_rounding_mode == "engineering":
+            # Round to nearest power of 1000
+            order_1000 = round(math.log10(abs_mag) / 3)
+            result = 10 ** (order_1000 * 3)
+        else:  # powers_of_10
+            # Round to nearest power of 10
+            order = round(math.log10(abs_mag))
+            result = 10 ** order
+
+        # Clean up floating point errors for values >= 1
+        if abs(result) >= 1 and abs(result - round(result)) < 1e-10:
+            result = round(result)
+
+        return result if magnitude > 0 else -result
+
     def _generate_constant_name(self, magnitude: float, si_units: str, dimension: str) -> str:
         """Generate Pint _constant names following _100km pattern."""
+        # Round to nice value first to avoid floating point precision issues
+        magnitude = self._round_to_nice_value(magnitude)
+
         # Simplify common SI units
         unit_shortcuts = {
             'meter': 'm',
@@ -981,6 +1365,9 @@ class Model(PintNativeModelMixin, BaseModel):
         unit_short = unit_shortcuts.get(si_units, si_units.replace(' ', '').replace('*', ''))
 
         # Format magnitude for readability - ensure valid Python identifiers
+        # IMPORTANT: Avoid using recognizable unit names (like "km", "m", "kg") in constant names!
+        # Pint tries to parse them and fails. Use separators to prevent parsing.
+        # Example: "_1000_m" not "_1000m", "_1000_km" not "_1000km"
         if abs(magnitude) >= 1e15 or abs(magnitude) <= 1e-6:
             # Very large or very small: use scientific notation with safe formatting
             exp_str = f"{magnitude:.2e}"
@@ -989,17 +1376,19 @@ class Model(PintNativeModelMixin, BaseModel):
                               .replace('e+', 'E')
                               .replace('e-', 'Eneg')
                               .replace('e', 'E'))
-        elif magnitude >= 1000 and si_units == 'meter' and magnitude % 1000 == 0:
-            # Convert meters to km for readability
-            return f"_{int(magnitude//1000)}km"
         elif magnitude >= 1000:
-            # Large round numbers
+            # Large round numbers - use plain magnitude (no special km conversion!)
             formatted = f"{int(magnitude)}" if magnitude == int(magnitude) else f"{magnitude:.0f}"
         else:
             # Small numbers or decimals - ensure valid identifier
-            formatted = f"{magnitude}".replace('.', 'p').replace('-', 'neg')
+            # Now magnitude is already rounded, so this should be clean
+            if magnitude == int(magnitude):
+                formatted = f"{int(magnitude)}"
+            else:
+                formatted = f"{magnitude}".replace('.', 'p').replace('-', 'neg')
 
-        return f"_{formatted}{unit_short}"
+        # Add underscore separator to prevent Pint from parsing unit symbols
+        return f"_{formatted}_{unit_short}"
 
     def _convert_to_user_time_unit(self, time_base_units, velocity_quantity):
         """
@@ -1109,9 +1498,9 @@ class Model(PintNativeModelMixin, BaseModel):
 
         # Define unit options for each dimension (ordered from small to large)
         unit_options = {
-            '[length]': ['nanometer', 'micrometer', 'millimeter', 'centimeter', 'meter', 'kilometer', 'megameter'],
+            '[length]': ['nanometer', 'micrometer', 'millimeter', 'centimeter', 'meter', 'kilometer', 'megameter', 'earth_radius', 'jupiter_radius', 'solar_radius', 'au', 'light_year', 'parsec'],
             '[time]': ['microsecond', 'millisecond', 'second', 'minute', 'hour', 'day', 'year', 'kiloyear', 'megayear'],
-            '[mass]': ['microgram', 'milligram', 'gram', 'kilogram', 'tonne', 'kilotonne', 'megatonne'],
+            '[mass]': ['microgram', 'milligram', 'gram', 'kilogram', 'tonne', 'kilotonne', 'megatonne', 'earth_mass', 'jupiter_mass', 'solar_mass'],
             '[temperature]': ['kelvin'],  # Temperature doesn't need magnitude scaling
             '[current]': ['microampere', 'milliampere', 'ampere', 'kiloampere'],
             '[substance]': ['micromole', 'millimole', 'mole', 'kilomole'],
@@ -1151,8 +1540,9 @@ class Model(PintNativeModelMixin, BaseModel):
                     best_score = score
                     best_unit = unit_name
                     best_magnitude = magnitude
-            except:
-                # Unit conversion failed, skip this option
+            except Exception as e:
+                # Unit conversion failed - either undefined unit or incompatible dimensions
+                # Skip this option silently (don't pollute output with warnings about custom units)
                 continue
 
         # Return in best unit if found, otherwise return original
@@ -1296,6 +1686,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 dimensionality = qty.dimensionality
 
                 # Viscosity: pressure*time = mass/(length*time)
+                # Can derive mass (if time and length known) OR time (if mass and length known)
                 if dimensionality == (u.pascal * u.second).dimensionality:
                     if '[length]' in scalings and '[time]' in scalings and '[mass]' not in scalings:
                         # Derive mass from viscosity * length * time
@@ -1307,6 +1698,17 @@ class Model(PintNativeModelMixin, BaseModel):
                         scalings['[mass]'] = mass_base
                         derived_info['[mass]'] = f"from {name} × length_scale × time_scale"
                         break  # Only need one mass derivation
+                    elif '[length]' in scalings and '[mass]' in scalings and '[time]' not in scalings:
+                        # Derive time from mass / (length * viscosity)
+                        # viscosity = Pa*s = kg/(m*s), so s = kg/(m * Pa*s)
+                        time_raw = scalings['[mass]'] / (scalings['[length]'] * qty)
+                        # Simplify to base units (seconds)
+                        time_base = time_raw.to_base_units()
+                        # Convert to user-friendly time unit
+                        time_user = self._convert_to_user_time_unit(time_base, qty)
+                        scalings['[time]'] = time_user
+                        derived_info['[time]'] = f"from mass_scale ÷ (length_scale × {name})"
+                        break  # Only need one time derivation
 
                 # Density: mass/volume = mass/length^3
                 # So mass = density * length^3
@@ -1405,68 +1807,57 @@ class Model(PintNativeModelMixin, BaseModel):
         that the model uses for dimensional analysis. These are the base scales from which
         all other quantities are converted to model units.
 
+        IMPORTANT: Returns the ROUNDED scales stored in _fundamental_scales, not re-derived.
+        The scales may have been rounded to nice values for O(1) numerical conditioning.
+
         Returns
         -------
         dict
             Dictionary mapping dimension names to their scaling quantities:
-            - 'length': Length scale quantity (e.g., 2900 km)
-            - 'time': Time scale quantity (e.g., 580 km*year/cm)
-            - 'mass': Mass scale quantity (e.g., 1.68e27 kg equivalent)
-            - 'temperature': Temperature scale quantity (e.g., 1500 K)
+            - 'length': Length scale quantity (e.g., 1000 m, rounded from 500 m)
+            - 'time': Time scale quantity (e.g., 1 Myr, rounded)
+            - 'mass': Mass scale quantity (e.g., 1e11 kg, rounded)
+            - 'temperature': Temperature scale quantity (e.g., 1000 K, rounded)
             - Plus any additional dimensions detected (current, substance, etc.)
 
         Examples
         --------
         >>> model.set_reference_quantities(
-        ...     mantle_depth=2900*uw.units.km,
+        ...     domain_depth=500*uw.units.m,  # Will round to 1000 m
         ...     plate_velocity=5*uw.units.cm/uw.units.year,
         ...     mantle_viscosity=1e21*uw.units.Pa*uw.units.s,
         ...     mantle_temperature=1500*uw.units.K
         ... )
         >>> scales = model.get_fundamental_scales()
-        >>> scales['length']  # 2900 kilometer
-        >>> scales['time']    # 580 kilometer * year / centimeter
+        >>> scales['length']  # 1000 meter (rounded, not 500)
         """
-        scalings = self.derive_fundamental_scalings()
+        # Return the ROUNDED scales, not re-derived ones!
+        # The _fundamental_scales dict contains rounded values for O(1) conditioning
+        if not hasattr(self, '_fundamental_scales'):
+            return {}
 
-        # Convert internal scaling format to user-friendly names
+        # _fundamental_scales already has user-friendly keys ('length', 'time', etc.)
+        # Just apply display unit formatting
         result = {}
-        dimension_map = {
-            '[length]': 'length',
-            '[time]': 'time',
-            '[mass]': 'mass',
-            '[temperature]': 'temperature',
-            '[current]': 'current',
-            '[substance]': 'substance',
-            '[luminosity]': 'luminosity'
-        }
-
-        for internal_name, scale_qty in scalings.items():
-            if internal_name in dimension_map:
-                friendly_name = dimension_map[internal_name]
-                # Apply magnitude-based unit selection for display
-                display_qty = self._choose_display_units(scale_qty, internal_name)
-                result[friendly_name] = display_qty
-            else:
-                # Handle any unexpected dimensions gracefully
-                clean_name = internal_name.strip('[]')
-                # Try to apply display unit selection even for unexpected dimensions
-                display_qty = self._choose_display_units(scale_qty, internal_name)
-                result[clean_name] = display_qty
+        for dim_name, scale_qty in self._fundamental_scales.items():
+            # Apply magnitude-based unit selection for display
+            display_qty = self._choose_display_units(scale_qty, dim_name)
+            result[dim_name] = display_qty
 
         return result
 
     def get_model_base_units(self) -> dict:
         """
-        Get model base units showing what "1.0" represents in each dimension.
+        Get model base units in compact, parseable SI prefix form.
 
-        Returns a dictionary mapping dimension names to their model base unit definitions,
-        showing both the derived units and SI base units for clarity.
+        Returns a dictionary mapping dimension names to their compact SI unit representations.
+        Uses Pint's to_compact() to automatically select readable SI prefixes (e.g., 'Mm' for
+        megameters, 'Ps' for petaseconds).
 
         Returns
         -------
         dict
-            Dictionary with dimension names as keys and formatted unit strings as values
+            Dictionary with dimension names as keys and compact SI unit strings as values
 
         Examples
         --------
@@ -1477,40 +1868,30 @@ class Model(PintNativeModelMixin, BaseModel):
         ...     mantle_temperature=1500*uw.units.K
         ... )
         >>> base_units = model.get_model_base_units()
-        >>> base_units['mass']  # "1.0 model mass = 1.68e+27 kg"
+        >>> base_units['length']  # "2.9 megameter" (parseable)
+        >>> base_units['time']    # "1.83 petasecond" (parseable)
         """
         scales = self.get_fundamental_scales()
         base_units = {}
 
         for dim_name, scale_qty in scales.items():
             if hasattr(scale_qty, 'magnitude') and hasattr(scale_qty, 'units'):
-                magnitude = scale_qty.magnitude
-                units_str = str(scale_qty.units)
-
-                # Format the model base unit definition
-                if magnitude >= 1e6 or magnitude <= 1e-6:
-                    model_def = f"1.0 model {dim_name} = {magnitude:.2e} {units_str}"
-                else:
-                    model_def = f"1.0 model {dim_name} = {magnitude:.3g} {units_str}"
-
-                # Add SI base units if different
+                # Convert to compact SI prefix form (e.g., Mm, Ps, etc.)
                 try:
-                    base_units_qty = scale_qty.to_base_units()
-                    base_magnitude = base_units_qty.magnitude
-                    base_units_str = str(base_units_qty.units)
-
-                    if str(scale_qty.units) != base_units_str:
-                        if base_magnitude >= 1e6 or base_magnitude <= 1e-6:
-                            model_def += f" (≡ {base_magnitude:.2e} {base_units_str})"
-                        else:
-                            model_def += f" (≡ {base_magnitude:.3g} {base_units_str})"
-
+                    compact_qty = scale_qty.to_compact()
+                    # Return as parseable string like "2.9 megameter"
+                    base_units[dim_name] = str(compact_qty)
                 except:
-                    pass  # Keep original if conversion fails
-
-                base_units[dim_name] = model_def
+                    # Fallback to base units if compact fails
+                    try:
+                        base_qty = scale_qty.to_base_units()
+                        base_units[dim_name] = str(base_qty)
+                    except:
+                        # Last fallback: original units
+                        base_units[dim_name] = str(scale_qty)
             else:
-                base_units[dim_name] = f"1.0 model {dim_name} = {scale_qty}"
+                # Not a Pint quantity - return as-is
+                base_units[dim_name] = str(scale_qty)
 
         return base_units
 
@@ -2665,7 +3046,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 if result is not None:
                     return result
                 # If None returned, fall through to general approach
-            except Exception:
+            except Exception as e:
                 # If hidden method fails, fall through to general approach
                 pass
 
@@ -2680,11 +3061,37 @@ class Model(PintNativeModelMixin, BaseModel):
 
     def _convert_to_model_units_general(self, quantity):
         """
-        Convert any quantity to model units using dimensional analysis.
+        Convert any quantity to model units using Pint's native conversion.
 
         Returns None for dimensionless quantities gracefully.
         """
         from .function import quantity as create_quantity
+
+
+        # NEW APPROACH: Use Pint's native .to() method instead of manual dimensional analysis
+        # This avoids double-scaling issues and leverages Pint's unit conversion engine
+
+        # IMPORTANT: The source quantity might be in a different Pint registry!
+        # We need to reconstruct it in the MODEL's registry before converting.
+
+        # First get magnitude and units from the input
+        if hasattr(quantity, '_pint_qty') and hasattr(quantity, '_has_pint_qty') and quantity._has_pint_qty:
+            source_magnitude = quantity._pint_qty.magnitude
+            source_units = str(quantity._pint_qty.units)
+        elif hasattr(quantity, 'to_base_units') and hasattr(quantity, 'magnitude'):
+            # It's a bare Pint quantity
+            source_magnitude = quantity.magnitude
+            source_units = str(quantity.units)
+        else:
+            # Not a Pint quantity, can't convert
+            return None
+
+        # Reconstruct quantity in MODEL's registry
+        try:
+            source_unit_in_model_registry = self._pint_registry.parse_expression(source_units)
+            pint_qty = source_magnitude * source_unit_in_model_registry
+        except Exception as e:
+            return None
 
         # Convert input to base SI units for dimension analysis if possible
         if hasattr(quantity, 'to_base_units'):
@@ -2716,13 +3123,14 @@ class Model(PintNativeModelMixin, BaseModel):
             if not dim_dict:  # Empty dimensionality dict = dimensionless
                 return None
 
-        except Exception:
+        except Exception as e:
             # If we can't get dimensionality, assume dimensionless
             return None
 
-        # GENERALIZED DIMENSIONAL APPROACH: Use dimensional analysis to compute scaling
+
+        # NEW APPROACH: Use Pint's native conversion
         try:
-            model_magnitude = magnitude  # Use the magnitude we extracted above
+            # Build model unit expression from dimensional analysis
             model_units_parts = []
 
             for base_dim, power in dim_dict.items():
@@ -2731,12 +3139,8 @@ class Model(PintNativeModelMixin, BaseModel):
                 if dim_name in self._model_constants:
                     const_info = self._model_constants[dim_name]
                     const_name = const_info['constant_name']
-                    const_magnitude = const_info['magnitude']
 
-                    # Apply dimensional scaling: value / (scale^power)
-                    model_magnitude /= (const_magnitude ** power)
-
-                    # Build unit expression
+                    # Build unit expression for Pint
                     if power == 1:
                         model_units_parts.append(const_name)
                     elif power == -1:
@@ -2747,17 +3151,321 @@ class Model(PintNativeModelMixin, BaseModel):
                     # Missing fundamental dimension - cannot convert
                     raise ValueError(f"Missing fundamental dimension: {dim_name}")
 
-            # Construct unit string
+            # Construct model unit string
             if model_units_parts:
                 model_units = "*".join(model_units_parts)
-                return create_quantity(model_magnitude, _custom_units=model_units, _model_registry=self._pint_registry, _model_instance=self, _is_model_units=True)
+
+                # Use Pint's native .to() method - this handles the scaling correctly!
+                # Use getattr to get the UNIT, not parse_expression which returns a QUANTITY
+                target_unit = getattr(self._pint_registry, model_units)
+
+                converted_pint = pint_qty.to(target_unit)
+
+                # Create UWQuantity from the Pint result using _from_pint()
+                # This preserves the Pint quantity without reconstructing it
+                from .function.quantities import UWQuantity
+
+                # Convert model units to UNCANCELLED compact SI prefix units
+                # E.g., density: kg/m³ → Yg/Mm³ (not cancelled to kg/m³)
+                try:
+                    # Build compact unit expression from dimensional analysis
+                    # This keeps the structure (length**-3 * mass) but uses compact SI
+                    compact_parts = []
+
+                    for base_dim, power in dim_dict.items():
+                        dim_name = str(base_dim).strip('[]')
+
+                        if dim_name in self._model_constants:
+                            const_info = self._model_constants[dim_name]
+                            const_name = const_info['constant_name']
+
+                            # Get the constant as a Pint quantity (1.0 * constant)
+                            const_qty = 1.0 * getattr(self._pint_registry, const_name)
+
+                            # Convert to BASE SI units first, then to compact form
+                            # This converts custom constants like _1p00E21_kg to standard SI like Yg
+                            base_const = const_qty.to_base_units()
+                            compact_const = base_const.to_compact()
+                            compact_unit_str = str(compact_const.units)
+
+                            # Build unit expression part with power
+                            if power == 1:
+                                compact_parts.append(compact_unit_str)
+                            elif power == -1:
+                                compact_parts.append(f"({compact_unit_str})**-1")
+                            else:
+                                compact_parts.append(f"({compact_unit_str})**{power}")
+
+                    # Build compound unit string (e.g., "Yg * Mm**-3")
+                    if compact_parts:
+                        compact_units_str = " * ".join(compact_parts)
+
+                        # Parse compact unit in STANDARD Pint registry (not model registry)
+                        # This ensures the result has no custom constants
+                        from underworld3.scaling import units as standard_ureg
+                        compact_target = standard_ureg.parse_expression(compact_units_str)
+
+                        # Create new quantity with magnitude from model units and compact units
+                        # No conversion needed - the scaling is already in the magnitude
+                        magnitude = converted_pint.magnitude
+                        result_pint = magnitude * compact_target
+
+                        # Create UWQuantity with compact units (no model registry)
+                        result = UWQuantity._from_pint(result_pint, model_registry=None)
+                    else:
+                        # Fallback: no dimensional parts (shouldn't happen)
+                        result = UWQuantity._from_pint(converted_pint, model_registry=self._pint_registry)
+
+                except Exception as e:
+                    # If compact conversion fails, fall back to model units
+                    result = UWQuantity._from_pint(converted_pint, model_registry=self._pint_registry)
+
+                # Mark as model units and attach model instance
+                result._is_model_units = True
+                result._model_instance = self
+
+                return result
             else:
                 # Dimensionless quantity (shouldn't reach here due to early check, but handle gracefully)
                 return None
 
-        except Exception:
+        except Exception as e:
             # Any conversion failure - return None gracefully
+            import traceback
+            traceback.print_exc()
             return None
+
+    def to_model_magnitude(self, quantity):
+        """
+        Convert quantity to model units and extract numerical magnitude.
+
+        This is a convenience method that combines to_model_units() with magnitude
+        extraction for internal use. It handles the common pattern of converting
+        user inputs (which may have units) to raw numerical values in model units
+        for internal computations.
+
+        Parameters
+        ----------
+        quantity : Any
+            Quantity to convert (UWQuantity, Pint quantity, numeric, tuple, etc.)
+
+        Returns
+        -------
+        float, int, or array-like
+            Raw numerical magnitude in model units (dimensionless)
+
+        Examples
+        --------
+        >>> model.set_reference_quantities(length_scale=1000*uw.units.km)
+        >>> coords_physical = [100*uw.units.km, 200*uw.units.km]
+        >>> coords_model = model.to_model_magnitude(coords_physical)
+        >>> coords_model
+        [0.1, 0.2]  # In model units (dimensionless)
+
+        >>> # Also works with plain numbers (pass-through)
+        >>> model.to_model_magnitude([0.1, 0.2])
+        [0.1, 0.2]
+
+        >>> # Works with time
+        >>> dt_physical = 1000 * uw.units.year
+        >>> dt_model = model.to_model_magnitude(dt_physical)
+
+        Notes
+        -----
+        This method is intended for internal use at API boundaries where user
+        inputs need to be converted to model units for computations. The conversion
+        respects dimensional analysis and reference quantities.
+        """
+        import numpy as np
+
+        # Handle tuples/lists recursively (for coordinate inputs)
+        if isinstance(quantity, (list, tuple)):
+            converted = [self.to_model_magnitude(q) for q in quantity]
+            return type(quantity)(converted)
+
+        # Convert to model units first
+        model_quantity = self.to_model_units(quantity)
+
+        # Extract magnitude
+        if hasattr(model_quantity, '_pint_qty'):
+            # UWQuantity with Pint backend
+            return model_quantity._pint_qty.magnitude
+        elif hasattr(model_quantity, 'magnitude'):
+            # Direct Pint quantity
+            return model_quantity.magnitude
+        else:
+            # Already a plain number or couldn't convert (pass through)
+            return model_quantity
+
+    def from_model_magnitude(self, magnitude, dimensions):
+        """
+        Convert numerical magnitude in model units back to physical quantity.
+
+        This is the inverse of to_model_magnitude() - it takes a raw numerical value
+        in model units and wraps it with appropriate physical units based on the
+        dimensional specification.
+
+        Parameters
+        ----------
+        magnitude : float, int, or array-like
+            Numerical value(s) in model units (dimensionless)
+        dimensions : str or Pint dimensionality
+            Dimensional specification like '[length]', '[time]', '[length]/[time]', etc.
+            Can also be a Pint dimensionality object from quantity.dimensionality
+
+        Returns
+        -------
+        UWQuantity
+            Physical quantity with appropriate units based on model reference scales
+
+        Examples
+        --------
+        >>> model.set_reference_quantities(length_scale=1000*uw.units.km)
+        >>> coords_model = np.array([0.1, 0.2])  # Model coordinates
+        >>> coords_physical = model.from_model_magnitude(coords_model, '[length]')
+        >>> coords_physical
+        [100, 200] km  # Back to physical units
+
+        >>> # Works with composite dimensions
+        >>> velocity_model = 1.0  # Model velocity magnitude
+        >>> velocity_physical = model.from_model_magnitude(velocity_model, '[length]/[time]')
+
+        >>> # If no reference quantities, returns SI base units
+        >>> model_no_refs = uw.Model()
+        >>> result = model_no_refs.from_model_magnitude(100, '[length]')
+        >>> result
+        100 m  # SI base units when no scaling defined
+
+        Notes
+        -----
+        This method is intended for converting internal model-unit values back to
+        physical quantities when returning results to users. It ensures consistent
+        unit handling across API boundaries.
+        """
+        from .function import quantity as create_quantity
+        import numpy as np
+
+        # If no reference quantities set, return with SI base units
+        if not hasattr(self, '_pint_registry'):
+            # Parse dimension string to SI unit string
+            dimension_to_si = {
+                '[length]': 'm',
+                '[time]': 's',
+                '[mass]': 'kg',
+                '[temperature]': 'K',
+                '[current]': 'A',
+                '[substance]': 'mol',
+                '[luminosity]': 'cd'
+            }
+
+            # Handle string dimensions
+            if isinstance(dimensions, str):
+                # Simple case: single dimension
+                if dimensions in dimension_to_si:
+                    return create_quantity(magnitude, units=dimension_to_si[dimensions])
+
+                # Complex case: parse composite dimensions
+                # Replace dimension placeholders with SI units
+                si_str = (dimensions
+                    .replace('[length]', 'meter')
+                    .replace('[time]', 'second')
+                    .replace('[mass]', 'kilogram')
+                    .replace('[temperature]', 'kelvin')
+                    .replace('[current]', 'ampere')
+                    .replace('[substance]', 'mole')
+                    .replace('[luminosity]', 'candela'))
+
+                try:
+                    # Use Pint to parse the dimension string properly
+                    u = __import__('underworld3').units
+                    dummy = u(f'1 {si_str}')
+                    si_units = str(dummy.to_base_units().units)
+                    return create_quantity(magnitude, units=si_units)
+                except:
+                    # Fallback: return dimensionless
+                    return create_quantity(magnitude)
+
+            # For dimensionality objects without reference quantities
+            return create_quantity(magnitude)
+
+        # Have reference quantities - perform reverse scaling
+        try:
+            # Parse dimensions to get dimensionality dict
+            if isinstance(dimensions, str):
+                # Map dimension names to Pint base units for parsing
+                u = self._pint_registry
+                dimension_str = (dimensions
+                    .replace('[length]', 'meter')
+                    .replace('[time]', 'second')
+                    .replace('[mass]', 'kilogram')
+                    .replace('[temperature]', 'kelvin')
+                    .replace('[current]', 'ampere')
+                    .replace('[substance]', 'mole')
+                    .replace('[luminosity]', 'candela'))
+
+                # Create quantity and extract dimensionality
+                dummy_qty = u(dimension_str)
+                dimensionality = dummy_qty.dimensionality
+            elif hasattr(dimensions, 'items'):
+                # Already a dimensionality dict
+                dimensionality = dimensions
+            else:
+                # Try to extract dimensionality from object
+                if hasattr(dimensions, 'dimensionality'):
+                    dimensionality = dimensions.dimensionality
+                else:
+                    raise ValueError(f"Cannot parse dimensions: {dimensions}")
+
+            # Convert dimensionality to dict
+            dim_dict = dict(dimensionality)
+
+            # Check if dimensionless
+            if not dim_dict:
+                return create_quantity(magnitude)
+
+            # Apply reverse scaling: magnitude * (scale^power) for each dimension
+            physical_magnitude = np.asarray(magnitude, dtype=float).copy()
+            si_units_parts = []
+
+            for base_dim, power in dim_dict.items():
+                dim_name = str(base_dim).strip('[]')
+
+                if dim_name in self._model_constants:
+                    const_info = self._model_constants[dim_name]
+                    const_magnitude = const_info['magnitude']
+                    si_units = const_info['si_units']
+
+                    # Reverse scaling: multiply by scale factor
+                    physical_magnitude *= (const_magnitude ** power)
+
+                    # Build SI unit expression
+                    if power == 1:
+                        si_units_parts.append(si_units)
+                    elif power == -1:
+                        si_units_parts.append(f"{si_units}**-1")
+                    else:
+                        si_units_parts.append(f"{si_units}**{power}")
+                else:
+                    raise ValueError(f"Missing fundamental dimension: {dim_name}")
+
+            # Construct unit string and create quantity
+            if si_units_parts:
+                physical_units = "*".join(si_units_parts)
+                return create_quantity(physical_magnitude, units=physical_units)
+            else:
+                # Dimensionless
+                return create_quantity(physical_magnitude)
+
+        except Exception as e:
+            # If conversion fails, return dimensionless with warning
+            import warnings
+            warnings.warn(
+                f"Could not convert from model magnitude with dimensions {dimensions}: {e}\n"
+                f"Returning dimensionless quantity.",
+                UserWarning,
+                stacklevel=2
+            )
+            return create_quantity(magnitude)
 
     def to_dict(self) -> Dict[str, Any]:
         """

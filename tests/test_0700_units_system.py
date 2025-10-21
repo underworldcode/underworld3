@@ -161,21 +161,27 @@ class TestEnhancedMeshVariable:
         """Test mathematical operations preserve units information."""
         velocity = uw.create_enhanced_mesh_variable("velocity", mesh, 2, units="m/s")
 
-        # Component access
+        # Initialize with some data (required for PETSc vector operations)
+        with uw.synchronised_array_update():
+            velocity.array[...] = 1.0
+
+        # Component access (symbolic operations - work without data)
         v_x = velocity[0]
         assert v_x is not None
 
-        # Scalar multiplication
+        # Scalar multiplication (symbolic)
         momentum_expr = 1000 * velocity
         assert momentum_expr is not None
 
-        # Vector operations
+        # Vector operations (symbolic)
         speed_squared = velocity.dot(velocity)
         assert speed_squared is not None
 
-        # Norm
-        speed = velocity.norm()  # Default L2 norm
-        assert speed is not None
+        # Norm - requires actual data and explicit norm_type (PETSc norm, not SymPy norm)
+        from petsc4py.PETSc import NormType
+        speed_norm = velocity.norm(NormType.NORM_2)  # L2 norm
+        assert speed_norm is not None
+        assert isinstance(speed_norm, tuple)  # Returns tuple for multi-component
     
     def test_units_arithmetic_validation(self, mesh):
         """Test that arithmetic operations validate units compatibility."""

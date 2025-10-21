@@ -35,6 +35,357 @@ class class_or_instance_method(object):
         return newfunc
 
 
+class SymbolicProperty:
+    """
+    Property descriptor that automatically unwraps symbolic objects.
+
+    This descriptor provides a centralized way to handle symbolic objects in setters
+    throughout Underworld3. It automatically unwraps objects that implement the
+    _sympify_() protocol, eliminating the need for users to access `.sym` properties.
+
+    Parameters
+    ----------
+    attr_name : str, optional
+        The attribute name to store the value. If not provided, will be set
+        automatically using __set_name__.
+    matrix_wrap : bool, default False
+        If True, automatically wraps scalar values in sympy.Matrix([value])
+    allow_none : bool, default True
+        If False, raises ValueError when attempting to set to None
+    doc : str, optional
+        Docstring for the property
+
+    Examples
+    --------
+    class MySolver:
+        # Simple usage - auto-unwraps symbolic objects
+        uw_function = SymbolicProperty()
+
+        # With Matrix wrapping for solver compatibility
+        source_term = SymbolicProperty(matrix_wrap=True)
+
+        # Disallow None values
+        required_field = SymbolicProperty(allow_none=False)
+
+    Notes
+    -----
+    Objects implementing _sympify_() include:
+    - UWexpression
+    - UnitAwareDerivativeMatrix (from temperature.diff(y))
+    - MeshVariable and SwarmVariable
+    - Any custom object with _sympify_() method
+    """
+
+    def __init__(self, attr_name=None, matrix_wrap=False, allow_none=True, doc=None):
+        self.attr_name = attr_name
+        self.matrix_wrap = matrix_wrap
+        self.allow_none = allow_none
+        self.__doc__ = doc
+
+    def __set_name__(self, owner, name):
+        """Called when descriptor is assigned to a class attribute."""
+        if self.attr_name is None:
+            self.attr_name = f"_{name}"
+
+    def __get__(self, obj, objtype=None):
+        """Get the stored value."""
+        if obj is None:
+            return self
+        return getattr(obj, self.attr_name, None)
+
+    def __set__(self, obj, value):
+        """Set the value, with automatic unwrapping."""
+        # Mark solver as needing setup when property changes
+        if hasattr(obj, 'is_setup'):
+            obj.is_setup = False
+
+        # Check None constraint
+        if value is None and not self.allow_none:
+            raise ValueError(f"Cannot set {self.attr_name[1:]} to None")
+
+        # Auto-unwrap objects with _sympify_() protocol
+        if value is not None and hasattr(value, '_sympify_'):
+            value = value._sympify_()
+
+        # Auto-wrap in Matrix if requested
+        if self.matrix_wrap and value is not None:
+            import sympy
+            # Only wrap if not already a Matrix
+            if not isinstance(value, sympy.matrices.MatrixBase):
+                value = sympy.Matrix([value])
+
+        # Store the value
+        setattr(obj, self.attr_name, value)
+
+    def __delete__(self, obj):
+        """Delete the stored value."""
+        try:
+            delattr(obj, self.attr_name)
+        except AttributeError:
+            pass
+
+
+class ExpressionDescriptor:
+    """
+    Unified descriptor for persistent UWexpression containers.
+
+    Creates UWexpression objects ONCE and preserves their identity. The expression's
+    .sym content references other expressions for lazy evaluation.
+
+    Used for:
+    - Solver templates (F0, F1, PF0) - read-only computed expressions
+    - Solver parameters (bodyforce, penalty) - user-settable expressions
+    - Constitutive model parameters (viscosity, diffusivity) - user-settable
+    - Computed properties (stress, flux) - read-only
+
+    Parameters
+    ----------
+    name : str or callable
+        LaTeX name for the expression. If callable, called with (obj) to get name.
+    value_fn : callable
+        Function that returns the initial symbolic value. Called ONCE when created.
+        Should return references to other expressions for lazy evaluation.
+    description : str
+        Description of the expression for documentation
+    read_only : bool, default False
+        If True, prevents user from setting .sym (for templates/computed properties)
+    units : str, optional
+        Expected units for validation (e.g., "Pa*s", "m/s")
+    validator : callable, optional
+        Custom validation function called when value is set
+    category : str, optional
+        Category for introspection: "parameter", "template", "computed"
+    attr_name : str, optional
+        Attribute name to store the expression. Auto-generated if not provided.
+
+    Examples
+    --------
+    class MySolver:
+        # Parameter (user can change)
+        bodyforce = ExpressionDescriptor(
+            r"\\mathbf{f}",
+            lambda self: sympy.Matrix([[0] * self.mesh.dim]),
+            "Body force",
+            read_only=False,
+            category="parameter"
+        )
+
+        # Template (read-only, references parameter)
+        F0 = ExpressionDescriptor(
+            r"f_0",
+            lambda self: -self.bodyforce,  # References bodyforce expression!
+            "Force term",
+            read_only=True,
+            category="template"
+        )
+
+    Notes
+    -----
+    - Expression container created ONCE on first access
+    - Object identity preserved (same Python id)
+    - value_fn evaluated ONCE to set .sym with expression references
+    - Lazy evaluation happens automatically through expression references
+    - For parameters: user can update .sym content
+    - For templates: .sym is immutable, contains expression references
+    """
+
+    def __init__(self, name, value_fn, description,
+                 read_only=False, units=None, validator=None,
+                 category=None, attr_name=None):
+        self.name = name
+        self.value_fn = value_fn
+        self.description = description
+        self.read_only = read_only
+        self.units = units
+        self.validator = validator
+        self.category = category
+        self.attr_name = attr_name
+
+    def __set_name__(self, owner, name):
+        """Called when descriptor is assigned to a class attribute."""
+        if self.attr_name is None:
+            self.attr_name = f"_expr_{name}"
+        # Store the public name for introspection
+        self.public_name = name
+
+    def __get__(self, obj, objtype=None):
+        """Get the persistent expression, creating it if needed."""
+        if obj is None:
+            return self
+
+        # Check if expression already exists
+        expr = getattr(obj, self.attr_name, None)
+
+        if expr is None:
+            # Create the expression ONCE
+            # Import here to avoid circular imports
+            from underworld3.function import expression
+
+            # Get the name (may be dynamic based on object state)
+            if callable(self.name):
+                name = self.name(obj)
+            else:
+                name = self.name
+
+            # Evaluate value_fn ONCE to get initial .sym
+            # This should return references to other expressions
+            try:
+                initial_value = self.value_fn(obj)
+            except AttributeError:
+                # During __init__, some attributes may not exist yet
+                # Use a placeholder and will be updated on next access
+                initial_value = 0
+
+            # Create persistent expression with unique name generation
+            expr = expression(
+                name,
+                initial_value,
+                self.description,
+                units=self.units,
+                _unique_name_generation=True
+            )
+
+            # Store the expression container
+            setattr(obj, self.attr_name, expr)
+
+        return expr
+
+    def __set__(self, obj, value):
+        """
+        Set the expression's symbolic content.
+
+        For parameters (read_only=False): Updates .sym
+        For templates (read_only=True): Raises error
+        """
+        if self.read_only:
+            raise AttributeError(
+                f"Cannot set '{self.public_name}' - it is a read-only template expression. "
+                f"Modify the parameters it depends on instead."
+            )
+
+        # Get or create the expression
+        expr = self.__get__(obj, type(obj))
+
+        # Run validator if provided
+        if self.validator is not None:
+            value = self.validator(value)
+
+        # Auto-unwrap if value has _sympify_
+        if hasattr(value, '_sympify_'):
+            value = value._sympify_()
+
+        # Update the expression's .sym
+        expr.sym = value
+
+        # Mark solver as needing setup
+        if hasattr(obj, 'is_setup'):
+            obj.is_setup = False
+
+
+class Parameter(ExpressionDescriptor):
+    """
+    Expression descriptor for user-settable parameters.
+
+    Thin wrapper around ExpressionDescriptor with read_only=False and category="parameter".
+
+    Examples
+    --------
+    class MySolver:
+        bodyforce = Parameter(
+            r"\\mathbf{f}",
+            lambda self: sympy.Matrix([[0] * self.mesh.dim]),
+            "Body force vector"
+        )
+
+    # User can change it
+    solver.bodyforce.sym = new_value
+    """
+
+    def __init__(self, name, value_fn, description, units=None, validator=None, **kwargs):
+        super().__init__(
+            name, value_fn, description,
+            read_only=False,
+            units=units,
+            validator=validator,
+            category="parameter",
+            **kwargs
+        )
+
+
+class Template(ExpressionDescriptor):
+    """
+    Expression descriptor for read-only template expressions.
+
+    Thin wrapper around ExpressionDescriptor with read_only=True and category="template".
+
+    Templates contain references to other expressions for lazy evaluation. When the owning
+    object's `is_setup` flag is False (indicating parameters have changed), the template
+    automatically re-evaluates its lambda and updates the expression's symbolic content.
+
+    Examples
+    --------
+    class MySolver:
+        bodyforce = Parameter(r"\\mathbf{f}", ..., "Body force")
+
+        F0 = Template(
+            r"f_0",
+            lambda self: -self.bodyforce,  # References bodyforce expression
+            "Force term"
+        )
+
+    # Cannot set directly
+    solver.F0.sym = value  # Raises AttributeError
+
+    # But when parameters change:
+    solver.bodyforce.sym = new_value  # Sets is_setup = False
+    f0 = solver.F0  # Automatically re-evaluates and updates .sym in-place
+    """
+
+    def __init__(self, name, value_fn, description, **kwargs):
+        super().__init__(
+            name, value_fn, description,
+            read_only=True,
+            category="template",
+            **kwargs
+        )
+
+    def __get__(self, obj, objtype=None):
+        """
+        Get the persistent expression, re-evaluating if parameters have changed.
+
+        When obj.is_setup is False, re-evaluates the lambda and updates the existing
+        expression's .sym in-place, preserving object identity while updating content.
+        """
+        if obj is None:
+            return self
+
+        # Get existing expression (or create if first access)
+        expr = super().__get__(obj, objtype)
+
+        # Check if we need to refresh the symbolic content
+        # This happens when parameters have changed (is_setup = False)
+        if hasattr(obj, 'is_setup') and not obj.is_setup:
+            try:
+                # Re-evaluate the lambda to get updated symbolic content
+                updated_value = self.value_fn(obj)
+
+                # Update the expression's .sym IN PLACE (preserves object identity)
+                expr._sym = updated_value
+
+            except AttributeError:
+                # During setup, some dependencies might not be ready yet
+                # This is OK - will be evaluated again on next access
+                pass
+
+        return expr
+
+
+# Backward compatibility aliases
+ExpressionProperty = ExpressionDescriptor
+TemplateExpression = Template
+SymbolicInput = SymbolicProperty
+
+
 class uw_object:
     """
     The UW (mixin) class adds common functionality that we wish to provide on all uw_objects

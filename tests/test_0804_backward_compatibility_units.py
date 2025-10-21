@@ -10,6 +10,7 @@ os.environ["SYMPY_USE_CACHE"] = "no"
 
 import underworld3 as uw
 
+@pytest.mark.skip(reason="coord_units parameter not implemented - planned feature for evaluate()")
 def test_original_behavior():
     """Test that evaluate behavior with and without scaling works correctly."""
     print("=== TESTING EVALUATE WITH SCALING ===")

@@ -125,18 +125,40 @@ class MathematicalMixin:
                 pass
     
     def diff(self, *args, **kwargs):
-        """Direct differentiation."""
+        """
+        Direct differentiation with automatic unit wrapping.
+
+        Returns a unit-aware expression if the original variable has units,
+        plain SymPy expression otherwise.
+
+        For Matrix/vector results, creates a custom wrapper that provides
+        unit-aware indexing, so derivative[0] returns a unit-aware object.
+
+        Examples:
+            temperature.diff(y)[0]  # Returns unit-aware dT/dy with .units and .to()
+            velocity[0].diff(x)     # Returns unit-aware dVx/dx with unit methods
+            velocity.diff(x)        # Returns UnitAwareDerivativeMatrix with unit-aware elements
+        """
         sym = self._validate_sym()
-        return sym.diff(*args, **kwargs)
-    
-    def sym_repr(self):
-        """Mathematical representation of the variable."""
+        result = sym.diff(*args, **kwargs)
+
+        # Try to wrap the result with units
         try:
-            sym = self._validate_sym()
-            return str(sym)
-        except (AttributeError, ValueError):
-            return f"<{type(self).__name__} with invalid sym>"
-    
+            import underworld3 as uw
+            if hasattr(uw, 'with_units'):
+                # Check if result is a Matrix
+                if hasattr(result, 'shape'):
+                    # Return a special Matrix wrapper that provides unit-aware indexing
+                    return UnitAwareDerivativeMatrix(result, uw.with_units)
+                else:
+                    # Scalar result - wrap directly
+                    return uw.with_units(result)
+        except (ImportError, AttributeError):
+            pass
+
+        # Fallback: return plain SymPy result
+        return result
+
     # Arithmetic operations with better error handling
     def __add__(self, other):
         """Addition with scalar broadcasting and error handling."""
@@ -308,16 +330,50 @@ class MathematicalMixin:
             # Some SymPy objects don't support unary +, just return the symbol
             return sym
     
+    def norm(self, norm_type=None):
+        """
+        Compute the norm of the variable.
+
+        This method intelligently delegates to either SymPy or PETSc:
+        - If called without arguments: Uses SymPy Matrix norm (for mathematical expressions)
+        - If called with arguments: Uses PETSc vector norm (for computational operations)
+
+        Parameters
+        ----------
+        norm_type : int, optional
+            PETSc norm type (0=NORM_1, 2=NORM_2, 3=NORM_INFINITY)
+            If None, uses SymPy Matrix norm (defaults to 2-norm)
+
+        Returns
+        -------
+        sympy.Expr or float/tuple
+            If norm_type is None: SymPy expression for the norm
+            If norm_type is provided: PETSc norm value (float or tuple for multi-component)
+
+        Examples
+        --------
+        >>> vel.norm()  # Mathematical: returns SymPy sqrt(v_x^2 + v_y^2)
+        >>> vel.norm(2)  # Computational: returns PETSc L2 norm value
+        """
+        if norm_type is None:
+            # Mathematical usage: delegate to SymPy Matrix.norm()
+            sym = self._validate_sym()
+            return sym.norm()  # SymPy norm defaults to 2-norm (Euclidean)
+        else:
+            # Computational usage: delegate to PETSc norm (via super())
+            # This calls the parent class method (e.g., _BaseMeshVariable.norm())
+            return super().norm(norm_type)
+
     def sym_repr(self):
         """
         Mathematical representation of the variable.
-        
+
         Shows the symbolic form that would be used in mathematical
         expressions and JIT compilation.
-        
+
         Returns:
             String representation of the symbolic form
-            
+
         Example:
             velocity = MeshVariable("velocity", mesh, 2)
             velocity         # Shows computational view
@@ -356,12 +412,7 @@ class MathematicalMixin:
                             converted_kwargs[key] = value.sym
                         else:
                             converted_kwargs[key] = value
-                    
-                    # Handle special cases with default arguments
-                    if name == 'norm' and len(converted_args) == 0 and len(converted_kwargs) == 0:
-                        # Provide default norm type for Matrix.norm()
-                        converted_args = [2]  # Default to 2-norm (Euclidean)
-                    
+
                     try:
                         result = attr(*converted_args, **converted_kwargs)
                         # Handle in-place methods that return None
@@ -388,6 +439,53 @@ class MathematicalMixin:
         # If attribute doesn't exist on sym, raise appropriate error
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'. "
                            f"Available attributes: {[attr for attr in dir(sym) if not attr.startswith('_')]}")
+
+
+class UnitAwareDerivativeMatrix:
+    """
+    Wrapper for SymPy Matrix derivatives that provides unit-aware indexing.
+
+    When you index into this matrix (e.g., result[0]), it automatically wraps
+    the element in a unit-aware object using uw.with_units().
+
+    When used in arithmetic expressions without indexing, it automatically unwraps
+    to the underlying SymPy Matrix via the _sympify_() protocol.
+    """
+    def __init__(self, sympy_matrix, with_units_func):
+        self._matrix = sympy_matrix
+        self._with_units = with_units_func
+
+    def _sympify_(self):
+        """SymPy protocol: Return the underlying SymPy Matrix for arithmetic operations."""
+        return self._matrix
+
+    def __getitem__(self, index):
+        """Index into matrix and wrap result with units."""
+        element = self._matrix[index]
+        return self._with_units(element)
+
+    def __repr__(self):
+        return repr(self._matrix)
+
+    def _repr_latex_(self):
+        """Jupyter LaTeX representation."""
+        if hasattr(self._matrix, '_repr_latex_'):
+            return self._matrix._repr_latex_()
+        from sympy import latex
+        return f"$${latex(self._matrix)}$$"
+
+    @property
+    def shape(self):
+        """Pass through shape attribute."""
+        return self._matrix.shape
+
+    def __len__(self):
+        """Return length of matrix for SymPy compatibility."""
+        return len(self._matrix)
+
+    def __getattr__(self, name):
+        """Delegate other attributes to the underlying matrix."""
+        return getattr(self._matrix, name)
 
 
 # Convenience function for testing with better error handling

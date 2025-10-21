@@ -260,7 +260,7 @@ def collective_operation(func):
     return wrapper
 
 
-def pprint(*args, proc=0, prefix=False, clean_display=True, flush=False, **kwargs):
+def pprint(*args, proc=0, prefix=None, clean_display=True, flush=False, **kwargs):
     """
     Parallel-safe print that works as a drop-in replacement for print().
 
@@ -277,7 +277,8 @@ def pprint(*args, proc=0, prefix=False, clean_display=True, flush=False, **kwarg
             - str: Named patterns ('all', 'first', 'last', 'even', 'odd', '10%')
             - callable: Function taking rank and returning bool
             - numpy array: Boolean mask or integer indices
-        prefix: If True, prefix output with rank number (default: False)
+        prefix: If True, prefix output with rank number. If None (default),
+            automatically enables in parallel (size > 1) and disables in serial.
         clean_display: If True, filter out SymPy uniqueness strings for cleaner display (default: True)
         flush: If True, forcibly flush the stream (default: False, same as print())
         **kwargs: Additional keyword arguments passed to print() (sep, end, file)
@@ -286,7 +287,8 @@ def pprint(*args, proc=0, prefix=False, clean_display=True, flush=False, **kwarg
         >>> uw.pprint(f"Global max: {var.stats()['max']}")  # Only rank 0 prints
         Global max: 42.5
 
-        >>> uw.pprint(f"Local max: {var.data.max()}", proc=slice(0, 4), prefix=True)
+        >>> # In parallel, automatic prefix
+        >>> uw.pprint(f"Local max: {var.data.max()}", proc=slice(0, 4))
         [0] Local max: 12.3
         [1] Local max: 15.7
         [2] Local max: 9.8
@@ -295,6 +297,10 @@ def pprint(*args, proc=0, prefix=False, clean_display=True, flush=False, **kwarg
         >>> uw.pprint(f"Expression: {expr}")  # Automatically cleans symbols
         Expression: T(x,y)
     """
+    # Auto-detect prefix: True in parallel, False in serial
+    if prefix is None:
+        prefix = size > 1
+
     if _should_rank_execute(rank, proc, size):
         if clean_display:
             # Clean up display strings by filtering out SymPy uniqueness patterns

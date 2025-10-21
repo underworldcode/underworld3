@@ -340,7 +340,9 @@ def test_swarm_migration_preserves_global_values():
     with swarm.migration_disabled():
         # Small perturbation that shouldn't move particles between domains
         # Note: Use explicit assignment instead of += for parallel safety
-        swarm.points[:, 0] = swarm.points[:, 0] + 0.001
+        coords = swarm._particle_coordinates.data
+        coords[:, 0] = coords[:, 0] + 0.001
+        swarm._particle_coordinates.data[:] = coords
 
     # Explicit migration
     swarm.migrate()
@@ -383,7 +385,7 @@ def test_swarm_empty_on_some_ranks():
     # This ensures we can control which ranks have particles
 
     # Get local mesh bounds for this rank
-    local_coords = mesh.data  # Local vertex coordinates
+    local_coords = mesh.X.coords  # Local vertex coordinates
     if local_coords.size > 0:
         x_min, x_max = local_coords[:, 0].min(), local_coords[:, 0].max()
         y_min, y_max = local_coords[:, 1].min(), local_coords[:, 1].max()

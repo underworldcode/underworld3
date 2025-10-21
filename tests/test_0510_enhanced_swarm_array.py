@@ -163,8 +163,8 @@ class TestEnhancedSwarmArray:
             # Other errors might be due to test environment - log but don't fail
             print(f"⚠️  Legacy interface error (may be environment-related): {e}")
 
-    def test_separation_from_swarm_points(self, setup_enhanced_array_test):
-        """Test that SwarmVariable.array is separate from swarm.points operations"""
+    def test_separation_from_swarm_coordinates(self, setup_enhanced_array_test):
+        """Test that SwarmVariable.array is separate from swarm coordinate operations"""
         data = setup_enhanced_array_test
         scalar_var = data["scalar_var"]
         swarm = data["swarm"]
@@ -172,19 +172,19 @@ class TestEnhancedSwarmArray:
         # Ensure we're using enhanced interface
         scalar_var.use_enhanced_array()
 
-        # Test that swarm.points is separate and still exists
-        assert hasattr(swarm, "points"), "swarm.points should still exist"
+        # Test that swarm._particle_coordinates exists
+        assert hasattr(swarm, "_particle_coordinates"), "swarm._particle_coordinates should exist"
 
-        # Test that swarmVariable.array is different from swarm.points
+        # Test that swarmVariable.array is different from swarm coordinates
         try:
             var_array = scalar_var.array
-            swarm_points = swarm.points
+            swarm_coords = swarm._particle_coordinates.data
 
             # They should be different objects
             assert (
-                var_array is not swarm_points
-            ), "SwarmVariable.array should be separate from swarm.points"
-            print("✅ SwarmVariable.array is separate from swarm.points")
+                var_array is not swarm_coords
+            ), "SwarmVariable.array should be separate from swarm coordinates"
+            print("✅ SwarmVariable.array is separate from swarm coordinates")
 
         except Exception as e:
             # Points access may fail in test environment, but that's OK

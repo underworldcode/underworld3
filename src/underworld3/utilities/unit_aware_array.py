@@ -249,6 +249,33 @@ class UnitAwareArray(NDArray_With_Callback):
         except Exception as e:
             raise ValueError(f"Unit conversion failed: {e}")
 
+    def to(self, target_units):
+        """
+        Convert this array to different units (unified interface).
+
+        This is an alias for `to_units()` to provide a unified interface
+        matching Pint's `.to()` pattern. Both `.to()` and `.to_units()`
+        work identically.
+
+        Parameters
+        ----------
+        target_units : str
+            Target units to convert to
+
+        Returns
+        -------
+        UnitAwareArray
+            New array with converted values and target units
+
+        Examples
+        --------
+        >>> coords = UnitAwareArray([1, 2, 3], units='km')
+        >>> coords_m = coords.to('m')  # Convert to meters
+        >>> print(coords_m)
+        [1000. 2000. 3000.] [meter]
+        """
+        return self.to_units(target_units)
+
     def _check_unit_compatibility(self, other, operation="operation"):
         """
         Check unit compatibility with another array or value.

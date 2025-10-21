@@ -332,6 +332,11 @@ class Constitutive_Model(uw_object):
         self._solver_is_setup = False
         self._is_setup = False
 
+        # Propagate is_setup flag to solver if we have a reference
+        if hasattr(self, 'Parameters') and hasattr(self.Parameters, '_solver'):
+            if self.Parameters._solver is not None:
+                self.Parameters._solver.is_setup = False
+
         return
 
     def _build_c_tensor(self):
@@ -1720,7 +1725,7 @@ class DarcyFlowModel(Constitutive_Model):
 
             inner_self._s = expression(
                 R"{s}",
-                sympy.Matrix.zeros(rows=1, cols=_owning_model.dim),
+                sympy.Matrix.zeros(rows=1, cols=_owning_model.dim),  # Row matrix (1, dim) to match grad_u from jacobian
                 "Gravitational forcing",
             )
 
@@ -1738,7 +1743,10 @@ class DarcyFlowModel(Constitutive_Model):
 
         @s.setter
         def s(inner_self, value: sympy.Matrix):
-            inner_self._s.sym = value
+            # Wrap matrix in expression then copy, like permeability setter
+            # Cannot use validate_parameters() as it doesn't handle matrices
+            s_expr = expression(R"{s}", value, "Gravitational forcing")
+            inner_self._s.copy(s_expr)
             inner_self._reset()
 
         @property

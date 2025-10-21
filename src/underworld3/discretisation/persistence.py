@@ -13,9 +13,10 @@ import numpy as np
 
 from .discretisation_mesh_variables import _BaseMeshVariable
 from ..utilities import MathematicalMixin, UnitAwareMixin
+from ..utilities.dimensionality_mixin import DimensionalityMixin
 
 
-class EnhancedMeshVariable(UnitAwareMixin, MathematicalMixin):
+class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixin):
     """
     Enhanced MeshVariable with mathematical operations, units support, and persistence.
 
@@ -126,6 +127,7 @@ class EnhancedMeshVariable(UnitAwareMixin, MathematicalMixin):
         self._clean_name = self._base_var.clean_name
 
         # Initialize mixins
+        DimensionalityMixin.__init__(self)  # Initialize dimensionality tracking
         UnitAwareMixin.__init__(self, units=units, units_backend=units_backend)
         # MathematicalMixin is initialized automatically via inheritance
 
@@ -150,6 +152,25 @@ class EnhancedMeshVariable(UnitAwareMixin, MathematicalMixin):
         # Use either the early name (from __new__) or the processed name (from base variable)
         name = getattr(self, '_early_name', self._name)
         model._register_variable(name, self)  # This will overwrite any existing registration
+
+        # Auto-derive scaling coefficient if model has reference quantities
+        if hasattr(model, '_reference_quantities') and model._reference_quantities:
+            self._auto_derive_scaling_coefficient(model)
+
+    def _auto_derive_scaling_coefficient(self, model):
+        """Automatically derive scaling coefficient from model's reference quantities."""
+        try:
+            from ..utilities.nondimensional import _derive_scale_for_variable
+            if hasattr(self, 'dimensionality') and self.dimensionality:
+                scale = _derive_scale_for_variable(
+                    self,
+                    model._fundamental_scales if hasattr(model, '_fundamental_scales') else {},
+                    model._reference_quantities
+                )
+                if scale is not None and scale != 1.0:
+                    self.set_reference_scale(scale)
+        except (ImportError, AttributeError):
+            pass  # Silently skip if module not available or model incomplete
 
     def _setup_persistence_features(self):
         """Setup additional persistence capabilities for persistent variables."""
@@ -320,6 +341,33 @@ class EnhancedMeshVariable(UnitAwareMixin, MathematicalMixin):
     def min(self):
         """Minimum value of the variable."""
         return self._base_var.min()
+
+    def norm(self, norm_type=None):
+        """
+        Compute the norm of the variable.
+
+        This method intelligently delegates to either SymPy or PETSc:
+        - If called without arguments: Uses SymPy Matrix norm (for mathematical expressions)
+        - If called with arguments: Uses PETSc vector norm (for computational operations)
+
+        Parameters
+        ----------
+        norm_type : int, optional
+            PETSc norm type (0=NORM_1, 2=NORM_2, 3=NORM_INFINITY)
+            If None, uses SymPy Matrix norm (defaults to 2-norm)
+
+        Returns
+        -------
+        sympy.Expr or float/tuple
+            If norm_type is None: SymPy expression for the norm
+            If norm_type is provided: PETSc norm value (float or tuple for multi-component)
+        """
+        if norm_type is None:
+            # Mathematical usage: use SymPy Matrix norm from MathematicalMixin
+            return MathematicalMixin.norm(self, norm_type=None)
+        else:
+            # Computational usage: delegate to PETSc norm
+            return self._base_var.norm(norm_type)
 
     def load_from_h5_plex_vector(self, *args, **kwargs):
         """Load from HDF5 plex vector."""
