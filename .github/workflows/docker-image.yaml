@@ -3,7 +3,7 @@ name: Image Build and Push
 on:
   push: 
     branches:
-      - development
+      - ghcr-workflow
 
 jobs:
   push-to-dockerhub:
@@ -16,18 +16,37 @@ jobs:
       - name: Exact branch name
         run: echo "BRANCH=${GITHUB_REF##*/}" >> $GITHUB_ENV
 
-      - name: Login to DockerHub
+      # - name: Login to DockerHub
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.XXX_USERNAME }}
+      #     password: ${{ secrets.XXX_PWORD }}
+
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.XXX_USERNAME }}
-          password: ${{ secrets.XXX_PWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}        
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      # - name: Build and push Docker image
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: .
+      #     push: true
+      #     file: ./Dockerfile
+      #     platforms: linux/amd64
+      #     # see https://github.com/docker/build-push-action/issues/276 for syntax help
+      #     tags: underworldcode/underworld3:${{ env.BRANCH }} #-$(date +%s)
+
+      - name: Build and push Container to GHCR
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          file: ./Dockerfile
+          file: ./docs/developer/container/Containerfile
           platforms: linux/amd64
           # see https://github.com/docker/build-push-action/issues/276 for syntax help
-          tags: underworldcode/underworld3:${{ env.BRANCH }} #-$(date +%s)
+          #tags: ghcr.io/underworldcode/underworld3:${{ env.BRANCH }} #-$(date +%s)
+          # NOTE: change this one to underworldcode
+          tags: ghcr.io/${{ github.actor }}/underworld3:${{ env.BRANCH }} #-$(date +%s)
