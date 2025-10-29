@@ -88,9 +88,7 @@ class Symbolic(uw_object):
         display(Latex(rf"$\quad {self._psi_fn_symbol} = {sympy.latex(self._psi_fn)}$"))
         # Display the history variable using the different symbol.
         history_latex = ", ".join([sympy.latex(elem) for elem in self.psi_star])
-        display(
-            Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$")
-        )
+        display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
 
     def update_history_fn(self):
         # Update the first history element with a copy of the current ψ.
@@ -288,10 +286,8 @@ class Eulerian(uw_object):
                 self.mesh, self.psi_star[0], verbose=False
             )
         elif self.vtype == uw.VarType.VECTOR:
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Vector_Projection(
-                    self.mesh, self.psi_star[0], verbose=False
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
+                self.mesh, self.psi_star[0], verbose=False
             )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
             self._WorkVar = uw.discretisation.MeshVariable(
@@ -302,10 +298,8 @@ class Eulerian(uw_object):
                 continuous=self.continuous,
                 varsymbol=r"W^{*}",
             )
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Tensor_Projection(
-                    self.mesh, self.psi_star[0], self._WorkVar, verbose=False
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
+                self.mesh, self.psi_star[0], self._WorkVar, verbose=False
             )
 
         self._psi_star_projection_solver.uw_function = self.psi_fn
@@ -416,11 +410,7 @@ class Eulerian(uw_object):
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -444,9 +434,7 @@ class Eulerian(uw_object):
                 # am = self.theta*self.psi_fn + ((1.-self.theta)*self.psi_star[0].sym)
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (
@@ -562,12 +550,10 @@ class SemiLagrangian(uw_object):
                 self.mesh, self.psi_star[0], verbose=False
             )
         elif vtype == uw.VarType.VECTOR:
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Vector_Projection(
-                    self.mesh,
-                    self.psi_star[0],
-                    verbose=False,
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
+                self.mesh,
+                self.psi_star[0],
+                verbose=False,
             )
 
         elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
@@ -579,10 +565,8 @@ class SemiLagrangian(uw_object):
                 continuous=continuous,
                 varsymbol=r"W^{*}",
             )
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Tensor_Projection(
-                    self.mesh, self.psi_star[0], self._WorkVarTP, verbose=False
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
+                self.mesh, self.psi_star[0], self._WorkVarTP, verbose=False
             )
 
         # We should find a way to add natural bcs here
@@ -666,8 +650,7 @@ class SemiLagrangian(uw_object):
 
         for i in range(self.order - 1, 0, -1):
             self.psi_star[i].array[...] = (
-                phi * self.psi_star[i - 1].array[...]
-                + (1 - phi) * self.psi_star[i].array[...]
+                phi * self.psi_star[i - 1].array[...] + (1 - phi) * self.psi_star[i].array[...]
             )
 
         # 2. Compute the current value of psi_fn which we store in psi_star[0]
@@ -675,17 +658,26 @@ class SemiLagrangian(uw_object):
         #    (e.g. of derivatives)
         #
 
+        # Handle unit-aware coordinates: extract magnitude for mesh operations
+        psi_star_0_coords = self.psi_star[0].coords
+        if hasattr(psi_star_0_coords, "magnitude"):
+            psi_star_0_coords_magnitude = psi_star_0_coords.magnitude
+        elif hasattr(psi_star_0_coords, "_magnitude"):
+            psi_star_0_coords_magnitude = psi_star_0_coords._magnitude
+        else:
+            psi_star_0_coords_magnitude = psi_star_0_coords
+
         cellid = self.mesh.get_closest_cells(
-            self.psi_star[0].coords,
+            psi_star_0_coords_magnitude,
         )
 
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
 
         shift = 0.001
-        node_coords = (1.0 - shift) * self.psi_star[0].coords[
+        node_coords = (1.0 - shift) * psi_star_0_coords_magnitude[:, :] + shift * centroid_coords[
             :, :
-        ] + shift * centroid_coords[:, :]
+        ]
 
         try:
             self.psi_star[0].array[...] = uw.function.evaluate(
@@ -707,8 +699,25 @@ class SemiLagrangian(uw_object):
         # Convert dt to model units for numerical arithmetic
         # (after symbolic logic that may use dt with units)
         import underworld3 as uw
+
         model = uw.get_default_model()
-        dt = model.to_model_magnitude(dt)
+
+        # Check if we're working in a units-aware context by examining coordinate system
+        coords_template = self.psi_star[0].coords
+        has_units = hasattr(coords_template, "magnitude") or hasattr(coords_template, "_magnitude")
+
+        # Maintain unit system consistency: either keep everything with units or convert to non-dimensional
+        if has_units:
+            # Physical coordinate system with units
+            # dt must be converted to base SI seconds so that dt * velocity(m/s) = distance(m)
+            if hasattr(dt, 'to'):  # It's a Pint quantity
+                dt_for_calc = dt.to('second')  # Convert to seconds (still a quantity)
+            else:
+                # If dt is already a dimensionless number, treat it as seconds
+                dt_for_calc = dt
+        else:
+            # Non-dimensional coordinate system - convert dt to non-dimensional
+            dt_for_calc = model.to_model_magnitude(dt)
 
         for i in range(self.order - 1, -1, -1):
             # 2nd order update along characteristics
@@ -718,14 +727,18 @@ class SemiLagrangian(uw_object):
                 node_coords,
             )[:, 0, :]
 
-            mid_pt_coords = self.psi_star[i].coords - 0.5 * dt * v_at_node_pts
+            # Maintain consistency: use coordinates as-is without extracting magnitudes
+            # to preserve unit information through the calculation
+            coords = self.psi_star[i].coords
+
+            mid_pt_coords = coords - 0.5 * dt_for_calc * v_at_node_pts
 
             v_at_mid_pts = uw.function.global_evaluate(
                 self.V_fn,
                 mid_pt_coords,
             )[:, 0, :]
 
-            end_pt_coords = self.psi_star[i].coords - dt * v_at_mid_pts
+            end_pt_coords = coords - dt_for_calc * v_at_mid_pts
 
             value_at_end_points = uw.function.global_evaluate(
                 self.psi_star[i].sym,
@@ -790,11 +803,7 @@ class SemiLagrangian(uw_object):
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -821,9 +830,7 @@ class SemiLagrangian(uw_object):
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (
@@ -854,7 +861,9 @@ class Lagrangian(uw_object):
     $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
     """
 
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+    instances = (
+        0  # count how many of these there are in order to create unique private mesh variable ids
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -994,11 +1003,7 @@ class Lagrangian(uw_object):
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -1022,9 +1027,7 @@ class Lagrangian(uw_object):
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (
@@ -1048,7 +1051,9 @@ class Lagrangian_Swarm(uw_object):
     $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
     """
 
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+    instances = (
+        0  # count how many of these there are in order to create unique private mesh variable ids
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1197,11 +1202,7 @@ class Lagrangian_Swarm(uw_object):
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -1227,9 +1228,7 @@ class Lagrangian_Swarm(uw_object):
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (
