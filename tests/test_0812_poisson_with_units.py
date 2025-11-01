@@ -30,10 +30,7 @@ def test_poisson_linear_gradient_with_pint_quantities():
 
     # Create mesh - USING STRUCTURED MESH (Unstructured has gradient projection bugs)
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(10, 10),
-        minCoords=(0.0, 0.0),
-        maxCoords=(L_x, L_y),
-        units="metre"
+        elementRes=(10, 10), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y), units="metre"
     )
 
     # Create temperature variable
@@ -78,8 +75,9 @@ def test_poisson_linear_gradient_with_pint_quantities():
 
     # Check results
     assert abs(dT_dx) < 0.1, f"∂T/∂x should be ~0, got {dT_dx}"
-    assert abs(dT_dy - expected_gradient) < 0.1, \
-        f"∂T/∂y should be {expected_gradient:.3f}, got {dT_dy:.3f}"
+    assert (
+        abs(dT_dy - expected_gradient) < 0.1
+    ), f"∂T/∂y should be {expected_gradient:.3f}, got {dT_dy:.3f}"
 
 
 def test_poisson_linear_gradient_with_uwquantity():
@@ -99,10 +97,7 @@ def test_poisson_linear_gradient_with_uwquantity():
 
     # Create mesh - USING STRUCTURED MESH (Unstructured has gradient projection bugs)
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(10, 10),
-        minCoords=(0.0, 0.0),
-        maxCoords=(L_x, L_y),
-        units="metre"
+        elementRes=(10, 10), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y), units="metre"
     )
 
     # Create temperature variable
@@ -146,8 +141,9 @@ def test_poisson_linear_gradient_with_uwquantity():
 
     # Check results
     assert abs(dT_dx) < 0.1, f"∂T/∂x should be ~0, got {dT_dx}"
-    assert abs(dT_dy - expected_gradient) < 0.1, \
-        f"∂T/∂y should be {expected_gradient:.3f}, got {dT_dy:.3f}"
+    assert (
+        abs(dT_dy - expected_gradient) < 0.1
+    ), f"∂T/∂y should be {expected_gradient:.3f}, got {dT_dy:.3f}"
 
 
 def test_poisson_check_bc_values():
@@ -162,10 +158,7 @@ def test_poisson_check_bc_values():
 
     # Create mesh - USING STRUCTURED MESH (Unstructured has gradient projection bugs)
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(10, 10),
-        minCoords=(0.0, 0.0),
-        maxCoords=(L_x, L_y),
-        units="metre"
+        elementRes=(10, 10), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y), units="metre"
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="kelvin")
@@ -194,16 +187,18 @@ def test_poisson_check_bc_values():
     print(f"  T at bottom: {T_at_bottom[0,0,0]:.1f} K (expected: 300)")
     print(f"  T at top: {T_at_top[0,0,0]:.1f} K (expected: 1600)")
 
-    assert abs(T_at_bottom[0,0,0] - 300) < 1.0, \
-        f"Bottom BC not applied correctly: {T_at_bottom[0,0,0]} != 300"
-    assert abs(T_at_top[0,0,0] - 1600) < 1.0, \
-        f"Top BC not applied correctly: {T_at_top[0,0,0]} != 1600"
+    assert (
+        abs(T_at_bottom[0, 0, 0] - 300) < 1.0
+    ), f"Bottom BC not applied correctly: {T_at_bottom[0,0,0]} != 300"
+    assert (
+        abs(T_at_top[0, 0, 0] - 1600) < 1.0
+    ), f"Top BC not applied correctly: {T_at_top[0,0,0]} != 1600"
 
 
 if __name__ == "__main__":
-    print("="*70)
+    print("=" * 70)
     print("Testing Poisson solver with unit-aware BCs (Notebook 13 replication)")
-    print("="*70)
+    print("=" * 70)
 
     print("\n1. Testing with Pint Quantities (uw.units())...")
     test_poisson_linear_gradient_with_pint_quantities()
@@ -217,6 +212,6 @@ if __name__ == "__main__":
     test_poisson_check_bc_values()
     print("   ✓ Passed")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("All Poisson unit tests passed! ✅")
-    print("="*70)
+    print("=" * 70)

@@ -135,9 +135,7 @@ def get_data(group_by="line_routine"):
     elif group_by == "line_routine":
         keyfunc = lambda key: "{}   {}".format(linefunc(key), key[0])
     else:
-        raise ValueError(
-            "'group_by' parameter should specify 'line', 'routine' 'line_routine'"
-        )
+        raise ValueError("'group_by' parameter should specify 'line', 'routine' 'line_routine'")
 
     # regroup data
     regrouped_dict = _dd(lambda: [0, 0.0])
@@ -196,9 +194,7 @@ def print_table(
 
     sort_col = {"total": 2, "average": 3}
     if sort_by not in sort_col.keys():
-        raise ValueError(
-            "'sort_by' parameter should specify one of {}".format(sort_col.keys())
-        )
+        raise ValueError("'sort_by' parameter should specify one of {}".format(sort_col.keys()))
     table_data = sorted(table_data, key=lambda x: x[sort_col[sort_by]], reverse=True)
 
     # max sure columns widths accommodate titles
@@ -432,9 +428,7 @@ def _class_timer_decorator(cls):
 
         setattr(cls, attr[0], timedroutine)
         print("   " + attr[0])
-        _timedroutines.add(
-            timedroutine
-        )  # add to set of timed routines to avoid doubling up
+        _timedroutines.add(timedroutine)  # add to set of timed routines to avoid doubling up
     return cls
 
 

@@ -38,10 +38,7 @@ def test_kill_batman():
     T_top = 1600 * uw.units("K")
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(10, 10),
-        minCoords=(0.0, 0.0),
-        maxCoords=(L_x, L_y),
-        units="metre"
+        elementRes=(10, 10), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y), units="metre"
     )
 
     # Create primary variable
@@ -73,16 +70,21 @@ def test_kill_batman():
 
     # This should work WITHOUT requiring Batman Pattern
     try:
-        assert abs(dT_dy[0,0,0] - expected_gradient) < 0.1, \
-            f"Expected {expected_gradient:.3f}, got {dT_dy[0,0,0]:.3f}"
-        print(f"✓ Batman is dead: Variables can be created after solve() [got {dT_dy[0,0,0]:.3f} K/m]")
+        assert (
+            abs(dT_dy[0, 0, 0] - expected_gradient) < 0.1
+        ), f"Expected {expected_gradient:.3f}, got {dT_dy[0,0,0]:.3f}"
+        print(
+            f"✓ Batman is dead: Variables can be created after solve() [got {dT_dy[0,0,0]:.3f} K/m]"
+        )
     except AssertionError as e:
-        pytest.fail(f"🦇 BATMAN ERRORS DETECTED 🦇\n"
-                   f"The DM state corruption bug has returned!\n"
-                   f"DO NOT work around this by declaring variables upfront.\n"
-                   f"FIX THE BUG in discretisation_mesh_variables.py _setup_ds() method.\n"
-                   f"Error: {e}\n"
-                   f"See: CLAUDE.md 'NO BATMAN' section and MESH-VARIABLE-ORDERING-BUG.md")
+        pytest.fail(
+            f"🦇 BATMAN ERRORS DETECTED 🦇\n"
+            f"The DM state corruption bug has returned!\n"
+            f"DO NOT work around this by declaring variables upfront.\n"
+            f"FIX THE BUG in discretisation_mesh_variables.py _setup_ds() method.\n"
+            f"Error: {e}\n"
+            f"See: CLAUDE.md 'NO BATMAN' section and MESH-VARIABLE-ORDERING-BUG.md"
+        )
 
 
 def test_gradient_projection_variable_created_after_solve():
@@ -102,10 +104,7 @@ def test_gradient_projection_variable_created_after_solve():
     T_top = 1600 * uw.units("K")
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(10, 10),
-        minCoords=(0.0, 0.0),
-        maxCoords=(L_x, L_y),
-        units="metre"
+        elementRes=(10, 10), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y), units="metre"
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="kelvin")
@@ -141,8 +140,9 @@ def test_gradient_projection_variable_created_after_solve():
     print(f"  Status:   FIXED - Previously failed with 6.09 K/m due to DM state corruption")
 
     # This assertion should now PASS after fix
-    assert abs(dT_dy[0,0,0] - expected_gradient) < 0.1, \
-        f"Gradient computation failed: expected {expected_gradient:.3f}, got {dT_dy[0,0,0]:.3f}"
+    assert (
+        abs(dT_dy[0, 0, 0] - expected_gradient) < 0.1
+    ), f"Gradient computation failed: expected {expected_gradient:.3f}, got {dT_dy[0,0,0]:.3f}"
 
 
 def test_gradient_projection_variable_created_before_solve():
@@ -160,10 +160,7 @@ def test_gradient_projection_variable_created_before_solve():
     T_top = 1600 * uw.units("K")
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(10, 10),
-        minCoords=(0.0, 0.0),
-        maxCoords=(L_x, L_y),
-        units="metre"
+        elementRes=(10, 10), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y), units="metre"
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="kelvin")
@@ -199,36 +196,37 @@ def test_gradient_projection_variable_created_before_solve():
     print(f"  SUCCESS:  Correct result when variable created before solve")
 
     # This assertion SHOULD PASS
-    assert abs(dT_dy[0,0,0] - expected_gradient) < 0.1, \
-        f"Gradient computation failed: expected {expected_gradient:.3f}, got {dT_dy[0,0,0]:.3f}"
+    assert (
+        abs(dT_dy[0, 0, 0] - expected_gradient) < 0.1
+    ), f"Gradient computation failed: expected {expected_gradient:.3f}, got {dT_dy[0,0,0]:.3f}"
 
 
 if __name__ == "__main__":
-    print("="*80)
+    print("=" * 80)
     print("REGRESSION TEST: Mesh Variable Ordering Bug")
-    print("="*80)
+    print("=" * 80)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Test 1: Variable created AFTER solve (SHOULD PASS)")
-    print("="*80)
+    print("=" * 80)
     try:
         test_gradient_projection_variable_created_after_solve()
         print("✓ Test passed (BUG IS FIXED!)")
     except AssertionError as e:
         print(f"✗ Test failed: {e}")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Test 2: Variable created BEFORE solve (SHOULD PASS)")
-    print("="*80)
+    print("=" * 80)
     try:
         test_gradient_projection_variable_created_before_solve()
         print("✓ Test passed")
     except AssertionError as e:
         print(f"✗ Test failed: {e}")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("SUMMARY:")
     print("  - Creating variables AFTER solve: FIXED ✓")
     print("  - Creating variables BEFORE solve: Works ✓")
     print("  - Fix: Properly invalidate and restore vectors when rebuilding DM")
-    print("="*80)
+    print("=" * 80)

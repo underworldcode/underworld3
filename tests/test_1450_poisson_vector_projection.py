@@ -68,10 +68,7 @@ def test_vector_projection_after_poisson_with_units():
     """
     # Create mesh with units (like in tutorial)
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(16, 16),
-        minCoords=(0.0, 0.0),
-        maxCoords=(1000.0, 500.0),
-        units="meter"
+        elementRes=(16, 16), minCoords=(0.0, 0.0), maxCoords=(1000.0, 500.0), units="meter"
     )
 
     # Create temperature variable with units

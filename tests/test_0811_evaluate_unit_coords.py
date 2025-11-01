@@ -14,10 +14,7 @@ import numpy as np
 def test_evaluate_with_numpy_array():
     """Test backward compatibility: evaluate accepts plain numpy arrays."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
@@ -34,14 +31,13 @@ def test_evaluate_with_numpy_array():
     assert abs(result[1, 0, 0] - 0.25) < 0.01  # T ≈ x at (0.25, 0.75)
 
 
-@pytest.mark.skip(reason="evaluate() with list of UWQuantity coords not implemented - planned feature")
+@pytest.mark.skip(
+    reason="evaluate() with list of UWQuantity coords not implemented - planned feature"
+)
 def test_evaluate_with_uwquantity_coords():
     """Test evaluate() with UWQuantity coordinate objects."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
@@ -61,14 +57,13 @@ def test_evaluate_with_uwquantity_coords():
     assert abs(result[0, 0, 0] - 0.5) < 0.01
 
 
-@pytest.mark.skip(reason="evaluate() with list of UWQuantity coords not implemented - planned feature")
+@pytest.mark.skip(
+    reason="evaluate() with list of UWQuantity coords not implemented - planned feature"
+)
 def test_evaluate_with_pint_quantity_coords():
     """Test evaluate() with direct Pint Quantity objects."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
@@ -91,14 +86,13 @@ def test_evaluate_with_pint_quantity_coords():
     assert abs(result[0, 0, 0] - 0.5) < 0.01
 
 
-@pytest.mark.skip(reason="evaluate() with list of UWQuantity coords not implemented - planned feature")
+@pytest.mark.skip(
+    reason="evaluate() with list of UWQuantity coords not implemented - planned feature"
+)
 def test_evaluate_with_mixed_units():
     """Test evaluate() with coordinates in different units."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
@@ -119,14 +113,13 @@ def test_evaluate_with_mixed_units():
     assert abs(result[1, 0, 0] - 0.25) < 0.01
 
 
-@pytest.mark.skip(reason="evaluate() with list of UWQuantity coords not implemented - planned feature")
+@pytest.mark.skip(
+    reason="evaluate() with list of UWQuantity coords not implemented - planned feature"
+)
 def test_evaluate_with_single_point_list():
     """Test evaluate() with single point as flat list [x, y]."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
@@ -145,14 +138,13 @@ def test_evaluate_with_single_point_list():
     assert abs(result[0, 0, 0] - 0.5) < 0.01
 
 
-@pytest.mark.skip(reason="evaluate() with list of UWQuantity coords not implemented - planned feature")
+@pytest.mark.skip(
+    reason="evaluate() with list of UWQuantity coords not implemented - planned feature"
+)
 def test_evaluate_unit_conversion_accuracy():
     """Test that unit conversion is accurate for geological units."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     # Create a field with known values
@@ -169,14 +161,13 @@ def test_evaluate_unit_conversion_accuracy():
     assert abs(result[0, 0, 0] - 500.0) < 10.0  # Allow some interpolation error
 
 
-@pytest.mark.skip(reason="evaluate() with list of UWQuantity coords not implemented - planned feature")
+@pytest.mark.skip(
+    reason="evaluate() with list of UWQuantity coords not implemented - planned feature"
+)
 def test_evaluate_mixed_numeric_and_units():
     """Test evaluate() with mixed dimensionless and unit-aware coords."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
@@ -229,6 +220,6 @@ if __name__ == "__main__":
     test_evaluate_mixed_numeric_and_units()
     print("   ✓ Passed")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("All evaluate() unit-aware coordinate tests passed! ✅")
-    print("="*60)
+    print("=" * 60)

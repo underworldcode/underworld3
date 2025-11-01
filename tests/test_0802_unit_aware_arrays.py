@@ -80,11 +80,13 @@ def test_unit_aware_array_callback_preservation():
     callback_calls = []
 
     def test_callback(array, change_info):
-        callback_calls.append({
-            'operation': change_info['operation'],
-            'units': array.units,
-            'new_value': change_info['new_value']
-        })
+        callback_calls.append(
+            {
+                "operation": change_info["operation"],
+                "units": array.units,
+                "new_value": change_info["new_value"],
+            }
+        )
 
     # Create array with callback
     velocity = UnitAwareArray([1, 2, 3], units="m/s")
@@ -94,9 +96,9 @@ def test_unit_aware_array_callback_preservation():
     velocity[0] = 10
 
     assert len(callback_calls) == 1
-    assert callback_calls[0]['operation'] == 'setitem'
-    assert callback_calls[0]['units'] == 'm/s'
-    assert callback_calls[0]['new_value'] == 10
+    assert callback_calls[0]["operation"] == "setitem"
+    assert callback_calls[0]["units"] == "m/s"
+    assert callback_calls[0]["new_value"] == 10
 
 
 def test_unit_aware_array_numpy_methods():
@@ -160,10 +162,10 @@ def test_unit_aware_array_edge_cases():
     velocity = UnitAwareArray([1, 2, 0], units="m/s")
     time = UnitAwareArray([1, 0, 1], units="s")
 
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         result = velocity / time
         # Should preserve the operation despite division by zero
-        assert hasattr(result, 'units')
+        assert hasattr(result, "units")
 
     # Test conversion to invalid units
     length = UnitAwareArray([1, 2, 3], units="m")
@@ -195,7 +197,7 @@ def test_unit_aware_array_with_scaling():
     model.set_reference_quantities(
         characteristic_length=1000 * uw.units.km,
         plate_velocity=5 * uw.units.cm / uw.units.year,
-        mantle_temperature=1500 * uw.units.kelvin
+        mantle_temperature=1500 * uw.units.kelvin,
     )
 
     # Create unit-aware arrays

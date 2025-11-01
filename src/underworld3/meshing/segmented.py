@@ -82,9 +82,7 @@ def SegmentedSphericalSurface2D(
             theta = i * 2 * np.pi / num_segments
             x1 = np.cos(theta)
             y1 = np.sin(theta)
-            equator_pts.append(
-                gmsh.model.geo.addPoint(x1, y1, 0.0, tag=-1, meshSize=meshRes)
-            )
+            equator_pts.append(gmsh.model.geo.addPoint(x1, y1, 0.0, tag=-1, meshSize=meshRes))
 
         for i in range(num_segments):
             pEq = equator_pts[i]
@@ -102,9 +100,7 @@ def SegmentedSphericalSurface2D(
                 longitudesS[np.mod(i + 1, num_segments)],
                 longitudesN[np.mod(i + 1, num_segments)],
             ]
-            segments_clps.append(
-                gmsh.model.geo.addCurveLoop(loops[::-1], tag=-1, reorient=True)
-            )
+            segments_clps.append(gmsh.model.geo.addCurveLoop(loops[::-1], tag=-1, reorient=True))
 
         gmsh.model.geo.synchronize()
 
@@ -112,9 +108,7 @@ def SegmentedSphericalSurface2D(
 
         for i in range(num_segments):
             segments_surfs.append(
-                gmsh.model.geo.addSurfaceFilling(
-                    [segments_clps[i]], tag=-1, sphereCenterTag=centre
-                )
+                gmsh.model.geo.addSurfaceFilling([segments_clps[i]], tag=-1, sphereCenterTag=centre)
             )
 
         gmsh.model.geo.synchronize()
@@ -164,9 +158,7 @@ def SegmentedSphericalSurface2D(
             plex_0[1], [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
         )
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0[1])
 
     # Now do this collectively
@@ -244,18 +236,10 @@ def SegmentedSphericalShell(
 
         centre = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=-1)
 
-        poleNo = gmsh.model.geo.addPoint(
-            0.0, 0.0, radiusOuter, tag=-1, meshSize=meshRes
-        )
-        poleSo = gmsh.model.geo.addPoint(
-            0.0, 0.0, -radiusOuter, tag=-1, meshSize=meshRes
-        )
-        poleNi = gmsh.model.geo.addPoint(
-            0.0, 0.0, radiusInner, tag=-1, meshSize=meshRes
-        )
-        poleSi = gmsh.model.geo.addPoint(
-            0.0, 0.0, -radiusInner, tag=-1, meshSize=meshRes
-        )
+        poleNo = gmsh.model.geo.addPoint(0.0, 0.0, radiusOuter, tag=-1, meshSize=meshRes)
+        poleSo = gmsh.model.geo.addPoint(0.0, 0.0, -radiusOuter, tag=-1, meshSize=meshRes)
+        poleNi = gmsh.model.geo.addPoint(0.0, 0.0, radiusInner, tag=-1, meshSize=meshRes)
+        poleSi = gmsh.model.geo.addPoint(0.0, 0.0, -radiusInner, tag=-1, meshSize=meshRes)
 
         dtheta = 2 * np.pi / num_segments
 
@@ -275,15 +259,11 @@ def SegmentedSphericalShell(
         # Make edges
 
         edgeWo = gmsh.model.geo.addCircleArc(poleNo, centre, equator_pts_0o, tag=-1)
-        edgeEqo = gmsh.model.geo.addCircleArc(
-            equator_pts_0o, centre, equator_pts_1o, tag=-1
-        )
+        edgeEqo = gmsh.model.geo.addCircleArc(equator_pts_0o, centre, equator_pts_1o, tag=-1)
         edgeEo = gmsh.model.geo.addCircleArc(equator_pts_1o, centre, poleNo, tag=-1)
 
         edgeWi = gmsh.model.geo.addCircleArc(poleNi, centre, equator_pts_0i, tag=-1)
-        edgeEqi = gmsh.model.geo.addCircleArc(
-            equator_pts_0i, centre, equator_pts_1i, tag=-1
-        )
+        edgeEqi = gmsh.model.geo.addCircleArc(equator_pts_0i, centre, equator_pts_1i, tag=-1)
         edgeEi = gmsh.model.geo.addCircleArc(equator_pts_1i, centre, poleNi, tag=-1)
 
         ## Struts
@@ -294,12 +274,8 @@ def SegmentedSphericalShell(
 
         # Make boundaries
 
-        faceLoopo = gmsh.model.geo.addCurveLoop(
-            [edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True
-        )
-        faceLoopi = gmsh.model.geo.addCurveLoop(
-            [edgeWi, edgeEqi, edgeEi], tag=-1, reorient=True
-        )
+        faceLoopo = gmsh.model.geo.addCurveLoop([edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True)
+        faceLoopi = gmsh.model.geo.addCurveLoop([edgeWi, edgeEqi, edgeEi], tag=-1, reorient=True)
         faceLoopW = gmsh.model.geo.addCurveLoop(
             [edgeWo, radialW, edgeWi, radialN], tag=-1, reorient=True
         )
@@ -351,9 +327,7 @@ def SegmentedSphericalShell(
 
         # Make volume
 
-        wedge_surf = gmsh.model.geo.addSurfaceLoop(
-            [face_o, face_i, face_W, face_E, face_S], tag=-1
-        )
+        wedge_surf = gmsh.model.geo.addSurfaceLoop([face_o, face_i, face_W, face_E, face_S], tag=-1)
 
         wedge_vol = gmsh.model.geo.addVolume([wedge_surf], tag=-1)
         wedges = [wedge_vol]
@@ -503,9 +477,7 @@ def SegmentedSphericalShell(
 
         ####
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
 
@@ -535,18 +507,14 @@ def SegmentedSphericalShell(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -574,19 +542,11 @@ def SegmentedSphericalShell(
     )
 
     class boundary_normals(Enum):
-        Lower = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True)
-            )
+        Lower = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True))
         )
-        Upper = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True)
-            )
+        Upper = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True))
         )
         Centre = None
 
@@ -664,9 +624,7 @@ def SegmentedSphericalBall(
         # Make edges
 
         edgeWo = gmsh.model.geo.addCircleArc(poleNo, centre, equator_pts_0o, tag=-1)
-        edgeEqo = gmsh.model.geo.addCircleArc(
-            equator_pts_0o, centre, equator_pts_1o, tag=-1
-        )
+        edgeEqo = gmsh.model.geo.addCircleArc(equator_pts_0o, centre, equator_pts_1o, tag=-1)
         edgeEo = gmsh.model.geo.addCircleArc(equator_pts_1o, centre, poleNo, tag=-1)
 
         ## Struts
@@ -677,21 +635,13 @@ def SegmentedSphericalBall(
 
         # Make boundaries
 
-        faceLoopo = gmsh.model.geo.addCurveLoop(
-            [edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True
-        )
+        faceLoopo = gmsh.model.geo.addCurveLoop([edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True)
         # faceLoopi = gmsh.model.geo.addCurveLoop(
         #     [edgeWi, edgeEqi, edgeEi], tag=-1, reorient=True
         # )
-        faceLoopW = gmsh.model.geo.addCurveLoop(
-            [edgeWo, radialW, radialN], tag=-1, reorient=True
-        )
-        faceLoopE = gmsh.model.geo.addCurveLoop(
-            [edgeEo, radialE, radialN], tag=-1, reorient=True
-        )
-        faceLoopS = gmsh.model.geo.addCurveLoop(
-            [edgeEqo, radialW, radialE], tag=-1, reorient=True
-        )
+        faceLoopW = gmsh.model.geo.addCurveLoop([edgeWo, radialW, radialN], tag=-1, reorient=True)
+        faceLoopE = gmsh.model.geo.addCurveLoop([edgeEo, radialE, radialN], tag=-1, reorient=True)
+        faceLoopS = gmsh.model.geo.addCurveLoop([edgeEqo, radialW, radialE], tag=-1, reorient=True)
 
         # Make surfaces
 
@@ -733,9 +683,7 @@ def SegmentedSphericalBall(
 
         # Make volume
 
-        wedge_surf = gmsh.model.geo.addSurfaceLoop(
-            [face_o, face_W, face_E, face_S], tag=-1
-        )
+        wedge_surf = gmsh.model.geo.addSurfaceLoop([face_o, face_W, face_E, face_S], tag=-1)
 
         wedge_vol = gmsh.model.geo.addVolume([wedge_surf], tag=-1)
         wedges = [wedge_vol]
@@ -873,9 +821,7 @@ def SegmentedSphericalBall(
 
         ####
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
 
@@ -905,10 +851,8 @@ def SegmentedSphericalBall(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
@@ -944,12 +888,8 @@ def SegmentedSphericalBall(
     )
 
     class boundary_normals(Enum):
-        Upper = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radius), (0.0, True)
-            )
+        Upper = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radius), (0.0, True))
         )
         Centre = None
 

@@ -29,12 +29,12 @@ class Test_CoordinateUnits_Gradients:
         """Set up test parameters."""
         # Physical domain size
         self.L_x = 1000.0  # meters
-        self.L_y = 500.0   # meters
+        self.L_y = 500.0  # meters
 
         # Temperature field parameters
-        self.T0 = 300.0    # Kelvin (reference temperature)
-        self.a = 0.001     # 1/meter (gradient in x)
-        self.b = 0.002     # 1/meter (gradient in y)
+        self.T0 = 300.0  # Kelvin (reference temperature)
+        self.a = 0.001  # 1/meter (gradient in x)
+        self.b = 0.002  # 1/meter (gradient in y)
 
         # Mesh resolution
         self.res = (16, 16)
@@ -98,9 +98,7 @@ class Test_CoordinateUnits_Gradients:
         # Check gradient values at center of domain
         x_center = self.L_x / 2
         y_center = self.L_y / 2
-        grad_at_center = uw.function.evaluate(
-            gradT.sym, np.array([[x_center, y_center]])
-        )
+        grad_at_center = uw.function.evaluate(gradT.sym, np.array([[x_center, y_center]]))
 
         # Extract scalar values from gradient
         print(f"  DEBUG: grad_at_center shape = {grad_at_center.shape}")
@@ -116,10 +114,12 @@ class Test_CoordinateUnits_Gradients:
         print(f"  Got:      ∂T/∂x = {dT_dx:.6f}, ∂T/∂y = {dT_dy:.6f}")
 
         # Verify gradient values (should be constant for linear field)
-        assert np.allclose(dT_dx, expected_dT_dx, rtol=0.05), \
-            f"X-gradient mismatch: expected {expected_dT_dx}, got {dT_dx}"
-        assert np.allclose(dT_dy, expected_dT_dy, rtol=0.05), \
-            f"Y-gradient mismatch: expected {expected_dT_dy}, got {dT_dy}"
+        assert np.allclose(
+            dT_dx, expected_dT_dx, rtol=0.05
+        ), f"X-gradient mismatch: expected {expected_dT_dx}, got {dT_dx}"
+        assert np.allclose(
+            dT_dy, expected_dT_dy, rtol=0.05
+        ), f"Y-gradient mismatch: expected {expected_dT_dy}, got {dT_dy}"
 
         # Gradient variable should not have units automatically assigned
         # (gradient units would be temperature_units / coordinate_units)
@@ -136,9 +136,7 @@ class Test_CoordinateUnits_Gradients:
         # Set up model with meter units
         uw.reset_default_model()
         model = uw.get_default_model()
-        model.set_reference_quantities(
-            characteristic_length=1.0 * uw.units.meter
-        )
+        model.set_reference_quantities(characteristic_length=1.0 * uw.units.meter)
 
         # Create mesh (will inherit meter units from model)
         mesh = uw.meshing.StructuredQuadBox(
@@ -172,9 +170,7 @@ class Test_CoordinateUnits_Gradients:
         # Check gradient values
         x_center = self.L_x / 2
         y_center = self.L_y / 2
-        grad_at_center = uw.function.evaluate(
-            gradT.sym, np.array([[x_center, y_center]])
-        )
+        grad_at_center = uw.function.evaluate(gradT.sym, np.array([[x_center, y_center]]))
 
         # Extract scalar values from gradient
         grad_flat = grad_at_center.flatten()
@@ -182,10 +178,12 @@ class Test_CoordinateUnits_Gradients:
         dT_dy = grad_flat[1]
 
         # Verify gradient values
-        assert np.allclose(dT_dx, expected_dT_dx, rtol=0.05), \
-            f"Expected dT/dx = {expected_dT_dx}, got {dT_dx}"
-        assert np.allclose(dT_dy, expected_dT_dy, rtol=0.05), \
-            f"Expected dT/dy = {expected_dT_dy}, got {dT_dy}"
+        assert np.allclose(
+            dT_dx, expected_dT_dx, rtol=0.05
+        ), f"Expected dT/dx = {expected_dT_dx}, got {dT_dx}"
+        assert np.allclose(
+            dT_dy, expected_dT_dy, rtol=0.05
+        ), f"Expected dT/dy = {expected_dT_dy}, got {dT_dy}"
 
         print(f"✓ Meter mesh: ∂T/∂x = {dT_dx:.6f} K/m")
         print(f"✓ Meter mesh: ∂T/∂y = {dT_dy:.6f} K/m")
@@ -201,9 +199,7 @@ class Test_CoordinateUnits_Gradients:
         # Set up model with kilometer units
         uw.reset_default_model()
         model = uw.get_default_model()
-        model.set_reference_quantities(
-            characteristic_length=1.0 * uw.units.kilometer
-        )
+        model.set_reference_quantities(characteristic_length=1.0 * uw.units.kilometer)
 
         # Create mesh with kilometer coordinates
         # Domain is still 1000m × 500m, but specified as 1km × 0.5km
@@ -255,9 +251,7 @@ class Test_CoordinateUnits_Gradients:
         # Check gradient values
         x_center_km = L_x_km / 2
         y_center_km = L_y_km / 2
-        grad_at_center = uw.function.evaluate(
-            gradT.sym, np.array([[x_center_km, y_center_km]])
-        )
+        grad_at_center = uw.function.evaluate(gradT.sym, np.array([[x_center_km, y_center_km]]))
 
         # Extract scalar values from gradient
         grad_flat = grad_at_center.flatten()
@@ -265,10 +259,12 @@ class Test_CoordinateUnits_Gradients:
         dT_dy_km = grad_flat[1]
 
         # Verify gradient values
-        assert np.allclose(dT_dx_km, expected_dT_dx_km, rtol=0.05), \
-            f"Expected dT/dx = {expected_dT_dx_km} K/km, got {dT_dx_km}"
-        assert np.allclose(dT_dy_km, expected_dT_dy_km, rtol=0.05), \
-            f"Expected dT/dy = {expected_dT_dy_km} K/km, got {dT_dy_km}"
+        assert np.allclose(
+            dT_dx_km, expected_dT_dx_km, rtol=0.05
+        ), f"Expected dT/dx = {expected_dT_dx_km} K/km, got {dT_dx_km}"
+        assert np.allclose(
+            dT_dy_km, expected_dT_dy_km, rtol=0.05
+        ), f"Expected dT/dy = {expected_dT_dy_km} K/km, got {dT_dy_km}"
 
         print(f"✓ Kilometer mesh: ∂T/∂x = {dT_dx_km:.6f} K/km")
         print(f"✓ Kilometer mesh: ∂T/∂y = {dT_dy_km:.6f} K/km")
@@ -285,9 +281,7 @@ class Test_CoordinateUnits_Gradients:
         # Set up model with kilometer units
         uw.reset_default_model()
         model = uw.get_default_model()
-        model.set_reference_quantities(
-            characteristic_length=1.0 * uw.units.kilometer
-        )
+        model.set_reference_quantities(characteristic_length=1.0 * uw.units.kilometer)
 
         # Create mesh (will inherit kilometer units from model)
         mesh = uw.meshing.StructuredQuadBox(
@@ -336,9 +330,7 @@ class Test_CoordinateUnits_Gradients:
         # Create model with meter units and mesh
         uw.reset_default_model()
         model_m = uw.get_default_model()
-        model_m.set_reference_quantities(
-            characteristic_length=1.0 * uw.units.meter
-        )
+        model_m.set_reference_quantities(characteristic_length=1.0 * uw.units.meter)
 
         mesh_m = uw.meshing.StructuredQuadBox(
             elementRes=self.res,
@@ -349,9 +341,7 @@ class Test_CoordinateUnits_Gradients:
         # Create NEW model with kilometer units and mesh
         uw.reset_default_model()
         model_km = uw.get_default_model()
-        model_km.set_reference_quantities(
-            characteristic_length=1.0 * uw.units.kilometer
-        )
+        model_km.set_reference_quantities(characteristic_length=1.0 * uw.units.kilometer)
 
         mesh_km = uw.meshing.StructuredQuadBox(
             elementRes=self.res,
@@ -393,12 +383,8 @@ class Test_CoordinateUnits_Gradients:
         grad_proj_km.solve()
 
         # Evaluate gradients at center
-        grad_m = uw.function.evaluate(
-            gradT_m.sym, np.array([[L_x_m/2, L_y_m/2]])
-        )
-        grad_km = uw.function.evaluate(
-            gradT_km.sym, np.array([[L_x_km/2, L_y_km/2]])
-        )
+        grad_m = uw.function.evaluate(gradT_m.sym, np.array([[L_x_m / 2, L_y_m / 2]]))
+        grad_km = uw.function.evaluate(gradT_km.sym, np.array([[L_x_km / 2, L_y_km / 2]]))
 
         # Extract scalar values from gradients
         grad_m_flat = grad_m.flatten()
@@ -411,10 +397,12 @@ class Test_CoordinateUnits_Gradients:
         # Gradients should differ by factor of 1000 (m to km conversion)
         scaling_factor = 1000.0
 
-        assert np.allclose(dT_dx_km, dT_dx_m * scaling_factor, rtol=0.05), \
-            f"X-gradient scaling incorrect: {dT_dx_km} vs {dT_dx_m * scaling_factor}"
-        assert np.allclose(dT_dy_km, dT_dy_m * scaling_factor, rtol=0.05), \
-            f"Y-gradient scaling incorrect: {dT_dy_km} vs {dT_dy_m * scaling_factor}"
+        assert np.allclose(
+            dT_dx_km, dT_dx_m * scaling_factor, rtol=0.05
+        ), f"X-gradient scaling incorrect: {dT_dx_km} vs {dT_dx_m * scaling_factor}"
+        assert np.allclose(
+            dT_dy_km, dT_dy_m * scaling_factor, rtol=0.05
+        ), f"Y-gradient scaling incorrect: {dT_dy_km} vs {dT_dy_m * scaling_factor}"
 
         print(f"✓ Gradient scaling validation:")
         print(f"  Meter mesh:     ∂T/∂x = {dT_dx_m:.6f} K/m")

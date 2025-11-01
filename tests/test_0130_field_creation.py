@@ -6,9 +6,7 @@ from underworld3.meshing import UnstructuredSimplexBox
 
 # Create a simple test case to debug the field ID issue
 print("Creating mesh...")
-mesh = UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2
-)
+mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2)
 
 print("Creating first variable...")
 try:
@@ -39,4 +37,5 @@ try:
 except Exception as e:
     print(f"✗ Failed to access s.array: {e}")
     import traceback
+
     traceback.print_exc()

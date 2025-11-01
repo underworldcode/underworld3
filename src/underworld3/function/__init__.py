@@ -26,6 +26,7 @@ from .unit_conversion import (
     get_units,
 )
 
+
 # Wrap evaluate to return unit-aware objects
 def evaluate(expr, coords, **kwargs):
     """
@@ -34,32 +35,62 @@ def evaluate(expr, coords, **kwargs):
     This function wraps the Cython evaluate implementation to automatically
     return UWQuantity or UnitAwareArray objects when the expression has units.
 
+    When non-dimensional scaling is active (via use_nondimensional_scaling(True)),
+    returns raw non-dimensional results without unit wrapping, as required by
+    solver operations like semi-Lagrangian advection.
+
+    **Smart Unit Handling**: This function intelligently handles coordinates with
+    or without units. If dimensional coordinates are passed (e.g., from T.coords
+    or mesh.X.coords), they are automatically converted to non-dimensional form
+    for evaluation. The symbolic expressions remain purely dimensionless.
+
     Parameters
     ----------
     expr : sympy expression or UWexpression
         Expression to evaluate
     coords : array-like
-        Coordinates at which to evaluate
+        Coordinates at which to evaluate. Can be dimensional (with units) or
+        non-dimensional (plain arrays). Both work transparently.
     **kwargs : dict
         Additional arguments passed to underlying evaluate function
 
     Returns
     -------
     UWQuantity, UnitAwareArray, or ndarray
+        - If non-dimensional scaling is active: plain ndarray (non-dimensional)
         - If expression has units and result is scalar: UWQuantity
         - If expression has units and result is array: UnitAwareArray
         - If expression has no units: plain ndarray (as before)
 
     Examples
     --------
-    >>> result = uw.function.evaluate(T.sym, coords)
+    >>> # Works with both dimensional and non-dimensional coords
+    >>> result = uw.function.evaluate(T.sym, T.coords)  # dimensional coords
+    >>> result = uw.function.evaluate(T.sym, mesh.data[:,  :2])  # non-dimensional
     >>> result.to('K')  # Convert to Kelvin
     >>> print(f"Temperature: {result}")
     """
     import numpy as np
+    import underworld3 as uw
 
-    # Call the original Cython implementation
-    raw_result = _evaluate_original(expr, coords, **kwargs)
+    # SMART COORDINATE HANDLING: Always non-dimensionalise coords before evaluation
+    # This is safe because non_dimensionalise() is idempotent:
+    #   - If coords are already dimensionless → returns them unchanged
+    #   - If coords have units → converts to dimensionless
+    # Symbolic expressions are purely dimensionless, so coords must match
+    coords_for_eval = uw.non_dimensionalise(coords)
+
+    # Ensure we have a plain array (non_dimensionalise might return UnitAwareArray)
+    if not isinstance(coords_for_eval, np.ndarray):
+        coords_for_eval = np.asarray(coords_for_eval)
+
+    # Call the original Cython implementation with non-dimensional coords
+    raw_result = _evaluate_original(expr, coords_for_eval, **kwargs)
+
+    # Check if non-dimensional scaling is active
+    # When active, return raw results without unit wrapping
+    if uw.is_nondimensional_scaling_active():
+        return raw_result
 
     # Try to get units from the expression
     result_units = get_units(expr)
@@ -75,24 +106,31 @@ def evaluate(expr, coords, **kwargs):
     else:
         # Array result - wrap as UnitAwareArray
         from ..utilities.unit_aware_array import UnitAwareArray
+
         return UnitAwareArray(raw_result, units=result_units)
 
+
 # Wrap global_evaluate similarly
-def global_evaluate(expr,
-                   coords=None,
-                   coord_sys=None,
-                   other_arguments=None,
-                   simplify=True,
-                   verbose=False,
-                   evalf=False,
-                   rbf=False,
-                   data_layout=None,
-                   check_extrapolated=False):
+def global_evaluate(
+    expr,
+    coords=None,
+    coord_sys=None,
+    other_arguments=None,
+    simplify=True,
+    verbose=False,
+    evalf=False,
+    rbf=False,
+    data_layout=None,
+    check_extrapolated=False,
+):
     """
     Global evaluate with unit-aware results.
 
     Similar to evaluate() but performs global evaluation across all processes.
     Returns unit-aware objects when expression has units.
+
+    When non-dimensional scaling is active (via use_nondimensional_scaling(True)),
+    returns raw non-dimensional results without unit wrapping.
 
     Parameters
     ----------
@@ -120,9 +158,11 @@ def global_evaluate(expr,
     Returns
     -------
     UWQuantity, UnitAwareArray, or ndarray
-        Result with appropriate unit tracking
+        - If non-dimensional scaling is active: plain ndarray (non-dimensional)
+        - Otherwise: result with appropriate unit tracking
     """
     import numpy as np
+    import underworld3 as uw
 
     # Call the original Cython implementation with all parameters
     raw_result = _global_evaluate_original(
@@ -135,8 +175,13 @@ def global_evaluate(expr,
         evalf=evalf,
         rbf=rbf,
         data_layout=data_layout,
-        check_extrapolated=check_extrapolated
+        check_extrapolated=check_extrapolated,
     )
+
+    # Check if non-dimensional scaling is active
+    # When active, return raw results without unit wrapping
+    if uw.is_nondimensional_scaling_active():
+        return raw_result
 
     # Try to get units from the expression
     result_units = get_units(expr)
@@ -152,7 +197,9 @@ def global_evaluate(expr,
     else:
         # Array result - wrap as UnitAwareArray
         from ..utilities.unit_aware_array import UnitAwareArray
+
         return UnitAwareArray(raw_result, units=result_units)
+
 
 from .expressions import UWexpression as expression
 from .expressions import UWDerivativeExpression as _derivative_expression
@@ -217,21 +264,22 @@ def with_units(sympy_expr, name=None):
     # Wrap in UWexpression
     return expression(name, sympy_expr, description, units=units_str)
 
+
 # from .expressions import UWconstant_expression as constant
 
 
 def derivative(expression, variable, evaluate=True):
     """
     Obtain symbolic derivatives of any underworld function, correctly handling sub-expressions / constants.
-    
-    Note: This function is maintained for backward compatibility. The recommended approach 
+
+    Note: This function is maintained for backward compatibility. The recommended approach
     is to use the natural syntax: expression.diff(variable, evaluate=evaluate)
-    
+
     Args:
         expression: The expression to differentiate
         variable: The variable to differentiate with respect to
         evaluate (bool): If True, evaluate immediately. If False, return deferred derivative.
-        
+
     Returns:
         The derivative (evaluated SymPy expression or UWDerivativeExpression)
     """
@@ -252,17 +300,16 @@ def derivative(expression, variable, evaluate=True):
 
     else:
         # Use the new natural syntax internally for deferred derivatives
-        if hasattr(expression, 'diff'):
+        if hasattr(expression, "diff"):
             derivative = expression.diff(variable, evaluate=False)
         else:
             # Fallback for non-UWexpression objects
             import sympy
+
             latex_expr = sympy.latex(expression)
             latex_diff_variable = sympy.latex(variable)
-            latex = (
-                r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
-            )
-            
+            latex = r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
+
             # Handle vector derivatives
             try:
                 rows, cols = sympy.Matrix(variable).shape

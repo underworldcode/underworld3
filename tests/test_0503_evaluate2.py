@@ -96,9 +96,7 @@ def test_vector_dot_product():
     with uw.synchronised_array_update():
         var_vector1.array[...] = (1.0, 2.0)
         var_vector2.array[...] = (3.0, 4.0)
-    result = uw.function.evaluate(
-        var_vector1.sym.dot(var_vector2.sym), coords, evalf=True
-    )
+    result = uw.function.evaluate(var_vector1.sym.dot(var_vector2.sym), coords, evalf=True)
     assert np.allclose(11.0, result, rtol=1e-05, atol=1e-08)
 
     del mesh
@@ -214,9 +212,7 @@ def test_polynomial_mesh_var_sympy():
     degree = 10
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
-        uw.function.evaluate(
-            tensor_product(degree, xvar.fn, yvar.fn), coords
-        ).squeeze(),
+        uw.function.evaluate(tensor_product(degree, xvar.fn, yvar.fn), coords).squeeze(),
         rtol=1e-05,
         atol=1e-08,
     )

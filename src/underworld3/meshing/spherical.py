@@ -49,7 +49,9 @@ def SphericalShell(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = f".meshes/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+        uw_filename = (
+            f".meshes/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+        )
     else:
         uw_filename = filename
 
@@ -76,9 +78,7 @@ def SphericalShell(
 
         if radiusInner > 0.0:
             for surface in surfaces:
-                if np.isclose(
-                    gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
-                ):
+                if np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner):
                     gmsh.model.addPhysicalGroup(
                         surface[0],
                         [surface[1]],
@@ -141,18 +141,14 @@ def SphericalShell(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -285,16 +281,12 @@ def SphericalShellInternalBoundary(
         ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusOuter)
         ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
         # Cut the inner sphere from the outer sphere to create a shell
-        gmsh.model.occ.cut(
-            [(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True
-        )
+        gmsh.model.occ.cut([(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True)
 
         ball3_tag = gmsh.model.occ.addSphere(0.0, 0.0, 0.0, radiusInternal)
         ball4_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
         # Create another inner sphere with radius r_i (for the internal sphere)
-        gmsh.model.occ.cut(
-            [(3, ball3_tag)], [(3, ball4_tag)], removeObject=True, removeTool=True
-        )
+        gmsh.model.occ.cut([(3, ball3_tag)], [(3, ball4_tag)], removeObject=True, removeTool=True)
 
         # Set the maximum characteristic length (mesh size) for the mesh elements
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
@@ -313,9 +305,7 @@ def SphericalShellInternalBoundary(
 
         # Loop through all surface entities to categorize them based on their bounding box
         for surface in surfaces:
-            if np.isclose(
-                gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
-            ):
+            if np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner):
                 gmsh.model.addPhysicalGroup(
                     surface[0],
                     [surface[1]],
@@ -323,9 +313,7 @@ def SphericalShellInternalBoundary(
                     name=boundaries.Lower.name,
                 )
                 print("Created inner boundary surface")
-            elif np.isclose(
-                gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter
-            ):
+            elif np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter):
                 gmsh.model.addPhysicalGroup(
                     surface[0],
                     [surface[1]],
@@ -372,18 +360,14 @@ def SphericalShellInternalBoundary(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -515,11 +499,7 @@ def SegmentofSphere(
     else:
         uw_filename = filename
 
-    if (
-        radiusInner <= 0
-        or not (0 < longitudeExtent < 180)
-        or not (0 < latitudeExtent < 180)
-    ):
+    if radiusInner <= 0 or not (0 < longitudeExtent < 180) or not (0 < latitudeExtent < 180):
         raise ValueError(
             "Invalid input parameters: "
             "radiusInner must be greater than 0, "
@@ -558,9 +538,7 @@ def SegmentofSphere(
         gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("SegmentOfSphere")
 
-        p0 = gmsh.model.geo.addPoint(
-            centroid[0], centroid[1], centroid[2], meshSize=cellSize
-        )
+        p0 = gmsh.model.geo.addPoint(centroid[0], centroid[1], centroid[2], meshSize=cellSize)
 
         # Create segment of sphere
         dim = 3
@@ -657,18 +635,14 @@ def SegmentofSphere(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -795,9 +769,7 @@ def CubedSphere(
         gmsh.model.geo.rotate(
             gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi / 2.0
         )
-        gmsh.model.geo.rotate(
-            gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi
-        )
+        gmsh.model.geo.rotate(gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi)
         gmsh.model.geo.rotate(
             gmsh.model.geo.copy([(3, 1)]),
             0.0,
@@ -817,9 +789,7 @@ def CubedSphere(
 
         gmsh.model.geo.synchronize()
 
-        gmsh.model.addPhysicalGroup(
-            2, [1, 34, 61, 88, 115, 137], boundaries.Upper.value
-        )
+        gmsh.model.addPhysicalGroup(2, [1, 34, 61, 88, 115, 137], boundaries.Upper.value)
         gmsh.model.setPhysicalName(2, boundaries.Upper.value, "Upper")
 
         gmsh.model.addPhysicalGroup(2, [2, 14, 41, 68, 95, 117], boundaries.Lower.value)
@@ -872,18 +842,14 @@ def CubedSphere(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))

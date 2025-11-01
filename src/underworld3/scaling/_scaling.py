@@ -1,12 +1,14 @@
 """
 Utilities to convert between dimensional and non-dimensional values.
 """
+
 from __future__ import print_function, absolute_import
 import underworld3 as uw
 from ._utils import TransformedDict
 from pint import UnitRegistry
 
 u = UnitRegistry()
+
 
 # Define planetary and geophysical units for Earth, planetary, and stellar sciences
 # These units are commonly needed for geodynamics, planetary science, and astrophysics
@@ -15,57 +17,59 @@ def _add_planetary_units(registry):
 
     # === PLANETARY MASSES ===
     # Inner Solar System
-    registry.define('earth_mass = 5.97217e24 * kg = M_earth = M_e = M_⊕')
-    registry.define('moon_mass = 7.342e22 * kg = M_moon = M_lunar')
-    registry.define('mars_mass = 6.4171e23 * kg = M_mars')
-    registry.define('venus_mass = 4.8675e24 * kg = M_venus')
-    registry.define('mercury_mass = 3.3011e23 * kg = M_mercury')
+    registry.define("earth_mass = 5.97217e24 * kg = M_earth = M_e = M_⊕")
+    registry.define("moon_mass = 7.342e22 * kg = M_moon = M_lunar")
+    registry.define("mars_mass = 6.4171e23 * kg = M_mars")
+    registry.define("venus_mass = 4.8675e24 * kg = M_venus")
+    registry.define("mercury_mass = 3.3011e23 * kg = M_mercury")
 
     # Outer Solar System
-    registry.define('jupiter_mass = 1.8982e27 * kg = M_jupiter = M_j = M_♃')
-    registry.define('saturn_mass = 5.6834e26 * kg = M_saturn')
-    registry.define('uranus_mass = 8.6810e25 * kg = M_uranus')
-    registry.define('neptune_mass = 1.02413e26 * kg = M_neptune')
+    registry.define("jupiter_mass = 1.8982e27 * kg = M_jupiter = M_j = M_♃")
+    registry.define("saturn_mass = 5.6834e26 * kg = M_saturn")
+    registry.define("uranus_mass = 8.6810e25 * kg = M_uranus")
+    registry.define("neptune_mass = 1.02413e26 * kg = M_neptune")
 
     # Stellar
-    registry.define('solar_mass = 1.98847e30 * kg = M_sun = M_sol = M_☉')
+    registry.define("solar_mass = 1.98847e30 * kg = M_sun = M_sol = M_☉")
 
     # === PLANETARY RADII ===
     # Inner Solar System
-    registry.define('earth_radius = 6.3781e6 * m = R_earth = R_e = R_⊕')
-    registry.define('moon_radius = 1.7374e6 * m = R_moon = R_lunar')
-    registry.define('mars_radius = 3.3895e6 * m = R_mars')
-    registry.define('venus_radius = 6.0518e6 * m = R_venus')
-    registry.define('mercury_radius = 2.4397e6 * m = R_mercury')
+    registry.define("earth_radius = 6.3781e6 * m = R_earth = R_e = R_⊕")
+    registry.define("moon_radius = 1.7374e6 * m = R_moon = R_lunar")
+    registry.define("mars_radius = 3.3895e6 * m = R_mars")
+    registry.define("venus_radius = 6.0518e6 * m = R_venus")
+    registry.define("mercury_radius = 2.4397e6 * m = R_mercury")
 
     # Outer Solar System
-    registry.define('jupiter_radius = 6.9911e7 * m = R_jupiter = R_j = R_♃')
-    registry.define('saturn_radius = 5.8232e7 * m = R_saturn')
-    registry.define('uranus_radius = 2.5362e7 * m = R_uranus')
-    registry.define('neptune_radius = 2.4622e7 * m = R_neptune')
+    registry.define("jupiter_radius = 6.9911e7 * m = R_jupiter = R_j = R_♃")
+    registry.define("saturn_radius = 5.8232e7 * m = R_saturn")
+    registry.define("uranus_radius = 2.5362e7 * m = R_uranus")
+    registry.define("neptune_radius = 2.4622e7 * m = R_neptune")
 
     # Stellar
-    registry.define('solar_radius = 6.957e8 * m = R_sun = R_sol = R_☉')
+    registry.define("solar_radius = 6.957e8 * m = R_sun = R_sol = R_☉")
 
     # === EARTH INTERNAL STRUCTURE ===
-    registry.define('earth_core_radius = 3.485e6 * m = R_core')
-    registry.define('earth_outer_core_radius = 3.485e6 * m = R_outer_core')
-    registry.define('earth_inner_core_radius = 1.22e6 * m = R_inner_core')
-    registry.define('mantle_depth = 2.89e6 * m = D_mantle')
+    registry.define("earth_core_radius = 3.485e6 * m = R_core")
+    registry.define("earth_outer_core_radius = 3.485e6 * m = R_outer_core")
+    registry.define("earth_inner_core_radius = 1.22e6 * m = R_inner_core")
+    registry.define("mantle_depth = 2.89e6 * m = D_mantle")
 
     # === SURFACE GRAVITY ===
-    registry.define('earth_gravity = 9.80665 * m/s**2 = g_earth = g_e = g_0')
-    registry.define('moon_gravity = 1.62 * m/s**2 = g_moon')
-    registry.define('mars_gravity = 3.71 * m/s**2 = g_mars')
-    registry.define('jupiter_gravity = 24.79 * m/s**2 = g_jupiter')
-    registry.define('solar_gravity = 274.0 * m/s**2 = g_sun = g_sol')
+    registry.define("earth_gravity = 9.80665 * m/s**2 = g_earth = g_e = g_0")
+    registry.define("moon_gravity = 1.62 * m/s**2 = g_moon")
+    registry.define("mars_gravity = 3.71 * m/s**2 = g_mars")
+    registry.define("jupiter_gravity = 24.79 * m/s**2 = g_jupiter")
+    registry.define("solar_gravity = 274.0 * m/s**2 = g_sun = g_sol")
+
 
 # Add planetary units to the registry
 _add_planetary_units(u)
 
 COEFFICIENTS = None
 
-pint_degc_labels = ['degC', 'degreeC', 'degree_Celsius', 'celsius']
+pint_degc_labels = ["degC", "degreeC", "degree_Celsius", "celsius"]
+
 
 def get_coefficients():
     """
@@ -81,6 +85,7 @@ def get_coefficients():
         COEFFICIENTS["[substance]"] = 1.0 * u.mole
     return COEFFICIENTS
 
+
 def non_dimensionalise(dimValue):
     """
     Non-dimensionalize (scale) provided quantity.
@@ -90,12 +95,12 @@ def non_dimensionalise(dimValue):
 
     Parameters
     ----------
-    dimValue : pint.Quantity 
+    dimValue : pint.Quantity
         A pint quantity.
 
     Returns
     -------
-    float 
+    float
         The scaled value.
 
     Example
@@ -151,30 +156,33 @@ def non_dimensionalise(dimValue):
     temperature = temperature.to_base_units()
     substance = substance.to_base_units()
 
-    @u.check('[length]', '[time]', '[mass]', '[temperature]', '[substance]')
+    @u.check("[length]", "[time]", "[mass]", "[temperature]", "[substance]")
     def check(length, time, mass, temperature, substance):
         return
 
     check(length, time, mass, temperature, substance)
 
     # Get dimensionality
-    dlength = dimValue.dimensionality['[length]']
-    dtime = dimValue.dimensionality['[time]']
-    dmass = dimValue.dimensionality['[mass]']
-    dtemp = dimValue.dimensionality['[temperature]']
-    dsubstance = dimValue.dimensionality['[substance]']
-    factor = (length**(-dlength) *
-              time**(-dtime) *
-              mass**(-dmass) *
-              temperature**(-dtemp) *
-              substance**(-dsubstance))
+    dlength = dimValue.dimensionality["[length]"]
+    dtime = dimValue.dimensionality["[time]"]
+    dmass = dimValue.dimensionality["[mass]"]
+    dtemp = dimValue.dimensionality["[temperature]"]
+    dsubstance = dimValue.dimensionality["[substance]"]
+    factor = (
+        length ** (-dlength)
+        * time ** (-dtime)
+        * mass ** (-dmass)
+        * temperature ** (-dtemp)
+        * substance ** (-dsubstance)
+    )
 
     dimValue *= factor
 
     if dimValue.unitless:
         return dimValue.magnitude
     else:
-        raise ValueError('Dimension Error')
+        raise ValueError("Dimension Error")
+
 
 def dimensionalise(value, units):
     """
@@ -213,7 +221,7 @@ def dimensionalise(value, units):
     temperature = temperature.to_base_units()
     substance = substance.to_base_units()
 
-    @u.check('[length]', '[time]', '[mass]', '[temperature]', '[substance]')
+    @u.check("[length]", "[time]", "[mass]", "[temperature]", "[substance]")
     def check(length, time, mass, temperature, substance):
         return
 
@@ -221,23 +229,26 @@ def dimensionalise(value, units):
     check(length, time, mass, temperature, substance)
 
     # Get dimensionality
-    dlength = unit.dimensionality['[length]']
-    dtime = unit.dimensionality['[time]']
-    dmass = unit.dimensionality['[mass]']
-    dtemp = unit.dimensionality['[temperature]']
-    dsubstance = unit.dimensionality['[substance]']
-    factor = (length**(dlength) *
-              time**(dtime) *
-              mass**(dmass) *
-              temperature**(dtemp) *
-              substance**(dsubstance))
+    dlength = unit.dimensionality["[length]"]
+    dtime = unit.dimensionality["[time]"]
+    dmass = unit.dimensionality["[mass]"]
+    dtemp = unit.dimensionality["[temperature]"]
+    dsubstance = unit.dimensionality["[substance]"]
+    factor = (
+        length ** (dlength)
+        * time ** (dtime)
+        * mass ** (dmass)
+        * temperature ** (dtemp)
+        * substance ** (dsubstance)
+    )
 
-    ''' This section needs to be modified for UW3 swarm/mesh vars '''
+    """ This section needs to be modified for UW3 swarm/mesh vars """
 
-    if (isinstance(value, uw.discretisation.MeshVariable) or
-       isinstance(value, uw.swarm.SwarmVariable)):
+    if isinstance(value, uw.discretisation.MeshVariable) or isinstance(
+        value, uw.swarm.SwarmVariable
+    ):
 
-        print('swarm/mesh objects not currently supported')
+        print("swarm/mesh objects not currently supported")
 
     #     tempVar = value.copy()
     #     tempVar.data[...] = (value.data[...] * factor).to(units).magnitude
@@ -247,7 +258,7 @@ def dimensionalise(value, units):
 
 
 def ndargs(f):
-    """ Decorator used to non-dimensionalise the arguments of a function"""
+    """Decorator used to non-dimensionalise the arguments of a function"""
 
     def convert(obj):
         if isinstance(obj, (list, tuple)):
@@ -257,8 +268,9 @@ def ndargs(f):
 
     def new_f(*args, **kwargs):
         nd_args = [convert(arg) for arg in args]
-        nd_kwargs = {name:convert(val) for name, val in kwargs.items()}
+        nd_kwargs = {name: convert(val) for name, val in kwargs.items()}
         return f(*nd_args, **nd_kwargs)
+
     new_f.__name__ = f.__name__
     return new_f
 
@@ -304,7 +316,7 @@ def _units_view(registry, verbose: int = 0, show_scaling: bool = True, show_syst
         lines.append("")
 
     # Available unit systems
-    if show_systems and hasattr(registry, 'systems'):
+    if show_systems and hasattr(registry, "systems"):
         lines.append("## Available Unit Systems")
         try:
             systems = list(registry.systems.keys())
@@ -323,7 +335,7 @@ def _units_view(registry, verbose: int = 0, show_scaling: bool = True, show_syst
         lines.append("")
 
     # Context information
-    if verbose >= 1 and hasattr(registry, 'contexts'):
+    if verbose >= 1 and hasattr(registry, "contexts"):
         try:
             contexts = list(registry.contexts.keys())
             if contexts:
@@ -343,7 +355,7 @@ def _units_view(registry, verbose: int = 0, show_scaling: bool = True, show_syst
         lines.append("## Base Dimensions")
         try:
             # Get base dimensions from registry
-            if hasattr(registry, '_dimensions'):
+            if hasattr(registry, "_dimensions"):
                 dimensions = list(registry._dimensions.keys())
                 if dimensions:
                     for dim in sorted(dimensions[:15]):  # Limit output
@@ -371,7 +383,7 @@ def _units_view(registry, verbose: int = 0, show_scaling: bool = True, show_syst
         "Temperature": ["kelvin", "K", "celsius", "degC", "fahrenheit", "degF"],
         "Force": ["newton", "N", "dyne", "pound_force", "lbf"],
         "Pressure": ["pascal", "Pa", "bar", "atmosphere", "atm", "psi"],
-        "Energy": ["joule", "J", "calorie", "cal", "kilowatt_hour", "kWh"]
+        "Energy": ["joule", "J", "calorie", "cal", "kilowatt_hour", "kWh"],
     }
 
     for category, units_list in common_units.items():
@@ -396,21 +408,72 @@ def _units_view(registry, verbose: int = 0, show_scaling: bool = True, show_syst
 
     planetary_units = {
         "**Planetary Masses**": [
-            ("Inner Solar System", ["earth_mass (M_earth, M_e, M_⊕)", "mars_mass", "venus_mass", "moon_mass", "mercury_mass"]),
-            ("Outer Solar System", ["jupiter_mass (M_jupiter, M_j, M_♃)", "saturn_mass", "uranus_mass", "neptune_mass"]),
-            ("Stellar", ["solar_mass (M_sun, M_sol, M_☉)"])
+            (
+                "Inner Solar System",
+                [
+                    "earth_mass (M_earth, M_e, M_⊕)",
+                    "mars_mass",
+                    "venus_mass",
+                    "moon_mass",
+                    "mercury_mass",
+                ],
+            ),
+            (
+                "Outer Solar System",
+                [
+                    "jupiter_mass (M_jupiter, M_j, M_♃)",
+                    "saturn_mass",
+                    "uranus_mass",
+                    "neptune_mass",
+                ],
+            ),
+            ("Stellar", ["solar_mass (M_sun, M_sol, M_☉)"]),
         ],
         "**Planetary Radii**": [
-            ("Inner Solar System", ["earth_radius (R_earth, R_e, R_⊕)", "mars_radius", "venus_radius", "moon_radius", "mercury_radius"]),
-            ("Outer Solar System", ["jupiter_radius (R_jupiter, R_j, R_♃)", "saturn_radius", "uranus_radius", "neptune_radius"]),
-            ("Stellar", ["solar_radius (R_sun, R_sol, R_☉)"])
+            (
+                "Inner Solar System",
+                [
+                    "earth_radius (R_earth, R_e, R_⊕)",
+                    "mars_radius",
+                    "venus_radius",
+                    "moon_radius",
+                    "mercury_radius",
+                ],
+            ),
+            (
+                "Outer Solar System",
+                [
+                    "jupiter_radius (R_jupiter, R_j, R_♃)",
+                    "saturn_radius",
+                    "uranus_radius",
+                    "neptune_radius",
+                ],
+            ),
+            ("Stellar", ["solar_radius (R_sun, R_sol, R_☉)"]),
         ],
         "**Earth Internal Structure**": [
-            ("Radii", ["earth_core_radius (R_core)", "earth_outer_core_radius", "earth_inner_core_radius (R_inner_core)", "mantle_depth (D_mantle)"])
+            (
+                "Radii",
+                [
+                    "earth_core_radius (R_core)",
+                    "earth_outer_core_radius",
+                    "earth_inner_core_radius (R_inner_core)",
+                    "mantle_depth (D_mantle)",
+                ],
+            )
         ],
         "**Surface Gravity**": [
-            ("Values", ["earth_gravity (g_earth, g_e, g_0)", "mars_gravity (g_mars)", "moon_gravity (g_moon)", "jupiter_gravity", "solar_gravity (g_sun)"])
-        ]
+            (
+                "Values",
+                [
+                    "earth_gravity (g_earth, g_e, g_0)",
+                    "mars_gravity (g_mars)",
+                    "moon_gravity (g_moon)",
+                    "jupiter_gravity",
+                    "solar_gravity (g_sun)",
+                ],
+            )
+        ],
     }
 
     for category, subsections in planetary_units.items():
@@ -478,18 +541,24 @@ def _units_view(registry, verbose: int = 0, show_scaling: bool = True, show_syst
     content = "\n".join(lines)
     try:
         from IPython.display import Markdown, display
+
         display(Markdown(content))
     except (ImportError, NameError):
         # Fallback to plain text if not in Jupyter
         print("=" * 80)
         # Convert markdown to plain text
-        plain_text = content.replace("# ", "").replace("## ", "").replace("**", "").replace("`", "'")
+        plain_text = (
+            content.replace("# ", "").replace("## ", "").replace("**", "").replace("`", "'")
+        )
         # Remove code blocks
         import re
-        plain_text = re.sub(r'```[\s\S]*?```', '[Code examples available in Jupyter]', plain_text)
+
+        plain_text = re.sub(r"```[\s\S]*?```", "[Code examples available in Jupyter]", plain_text)
         print(plain_text)
         print("=" * 80)
 
 
 # Add the view method to the UnitRegistry instance
-u.view = lambda verbose=0, show_scaling=True, show_systems=True: _units_view(u, verbose, show_scaling, show_systems)
+u.view = lambda verbose=0, show_scaling=True, show_systems=True: _units_view(
+    u, verbose, show_scaling, show_systems
+)

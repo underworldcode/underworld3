@@ -123,9 +123,7 @@ class Xdmf:
         fp.write('      <Grid Name="domain" GridType="Collection">\n')
         return
 
-    def writeSpaceGridHeader(
-        self, fp, numCells, numCorners, cellDim, spaceDim, cellsName="cells"
-    ):
+    def writeSpaceGridHeader(self, fp, numCells, numCorners, cellDim, spaceDim, cellsName="cells"):
         fp.write(
             """\
       <Grid Name="domain" GridType="Uniform">
@@ -436,9 +434,7 @@ class Xdmf:
                 for t in range(len(time)):
                     self.writeParticleGridHeader(fp, numParticles, spaceDim)
                     for pf in pfields:
-                        self.writeParticleField(
-                            fp, pf[0], numParticles, int(pf[1].attrs["Nc"])
-                        )
+                        self.writeParticleField(fp, pf[0], numParticles, int(pf[1].attrs["Nc"]))
                     self.writeSpaceGridFooter(fp)
                 if useTime:
                     self.writeTimeGridFooter(fp)

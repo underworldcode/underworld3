@@ -17,7 +17,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -35,11 +35,11 @@ class TestMeshUnitsInterfaceDesign:
                 elementRes=(4, 4),
                 minCoords=(0.0, 0.0),
                 maxCoords=(1000.0, 1000.0),
-                units="km"  # PROPOSED: units parameter
+                units="km",  # PROPOSED: units parameter
             )
 
             # Should be able to query mesh units
-            assert hasattr(mesh, 'units'), "Mesh should have units attribute"
+            assert hasattr(mesh, "units"), "Mesh should have units attribute"
 
         except TypeError:
             # Expected initially - interface not yet implemented
@@ -48,9 +48,7 @@ class TestMeshUnitsInterfaceDesign:
     def test_mesh_units_property_interface(self):
         """Test mesh units property interface."""
         mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(4, 4),
-            minCoords=(0.0, 0.0),
-            maxCoords=(1.0, 1.0)
+            elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
         )
 
         # PROPOSED INTERFACE: mesh.units property
@@ -68,9 +66,7 @@ class TestMeshUnitsInterfaceDesign:
     def test_mesh_coords_with_units(self):
         """Test that mesh.X.coords returns unit-aware coordinates."""
         mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(3, 3),
-            minCoords=(0.0, 0.0),
-            maxCoords=(100.0, 100.0)
+            elementRes=(3, 3), minCoords=(0.0, 0.0), maxCoords=(100.0, 100.0)
         )
 
         # PROPOSED: Set units on mesh
@@ -82,16 +78,16 @@ class TestMeshUnitsInterfaceDesign:
 
             # DESIGN OPTIONS:
             # Option A: Return UWQuantity array
-            if hasattr(data, 'units'):
+            if hasattr(data, "units"):
                 # Accept both "km" and "kilometer" (Pint returns abbreviated form)
                 assert str(data.units) in ["km", "kilometer"]
 
             # Option B: Separate units property
-            elif hasattr(mesh, 'coordinate_units'):
+            elif hasattr(mesh, "coordinate_units"):
                 assert str(mesh.coordinate_units) == "kilometer"
 
             # Option C: Units metadata in data
-            elif hasattr(data, 'units_metadata'):
+            elif hasattr(data, "units_metadata"):
                 assert data.units_metadata == "km"
 
         except AttributeError:
@@ -100,9 +96,7 @@ class TestMeshUnitsInterfaceDesign:
     def test_mesh_X_with_units(self):
         """Test that mesh.X coordinate symbols include unit information."""
         mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(4, 4),
-            minCoords=(0.0, 0.0),
-            maxCoords=(1.0, 1.0)
+            elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
         )
 
         try:
@@ -118,10 +112,10 @@ class TestMeshUnitsInterfaceDesign:
             # - Enhanced coordinate system with units
             # - Unit-aware expression wrappers
 
-            if hasattr(x, 'units') or hasattr(x, 'units_metadata'):
+            if hasattr(x, "units") or hasattr(x, "units_metadata"):
                 # Coordinate symbols have unit information
                 pass
-            elif hasattr(mesh, 'coordinate_system_units'):
+            elif hasattr(mesh, "coordinate_system_units"):
                 # Units stored at coordinate system level
                 assert mesh.coordinate_system_units == "m"
 
@@ -140,7 +134,7 @@ class TestMeshUnitsUseCases:
                 elementRes=(32, 32),
                 minCoords=(0.0, 0.0),
                 maxCoords=(2900.0, 2900.0),  # Mantle depth
-                units="km"
+                units="km",
             )
 
             # Users should be able to understand the physical scale
@@ -151,7 +145,7 @@ class TestMeshUnitsUseCases:
             max_extent = coords.max()
 
             # With units, users know this is 2900 km, not 2900 m or arbitrary units
-            if hasattr(coords, 'units'):
+            if hasattr(coords, "units"):
                 physical_extent = coords.max() * coords.units
                 assert "kilometer" in str(physical_extent.units)
 
@@ -163,10 +157,7 @@ class TestMeshUnitsUseCases:
         try:
             # Create mesh in kilometers
             mesh_km = uw.meshing.StructuredQuadBox(
-                elementRes=(4, 4),
-                minCoords=(0.0, 0.0),
-                maxCoords=(100.0, 100.0),
-                units="km"
+                elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(100.0, 100.0), units="km"
             )
 
             # Should be able to convert to meters
@@ -177,7 +168,7 @@ class TestMeshUnitsUseCases:
             coords_m = mesh_m.X.coords
 
             # Max extent should be 100 km = 100,000 m
-            if hasattr(coords_m, 'magnitude'):
+            if hasattr(coords_m, "magnitude"):
                 assert np.isclose(coords_m.max().magnitude, 100000.0)
 
         except (AttributeError, TypeError):
@@ -187,10 +178,7 @@ class TestMeshUnitsUseCases:
         """Test that mesh units work with mesh variables."""
         try:
             mesh = uw.meshing.StructuredQuadBox(
-                elementRes=(4, 4),
-                minCoords=(0.0, 0.0),
-                maxCoords=(1000.0, 1000.0),
-                units="m"
+                elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1000.0, 1000.0), units="m"
             )
 
             # Create variables on unit-aware mesh
@@ -203,10 +191,10 @@ class TestMeshUnitsUseCases:
             # - Spatial derivatives in physical equations
             # - Coordinate transformations
 
-            if hasattr(temperature, 'coordinate_units'):
+            if hasattr(temperature, "coordinate_units"):
                 # Accept both "m" and "meter" (Pint returns abbreviated form)
                 assert str(temperature.coordinate_units) in ["m", "meter"]
-            elif hasattr(mesh, 'units'):
+            elif hasattr(mesh, "units"):
                 # Accept both "m" and "meter" (Pint returns abbreviated form)
                 assert str(mesh.units) in ["m", "meter"]
 
@@ -220,9 +208,7 @@ class TestMeshUnitsDataImportExport:
     def test_mesh_units_for_data_files(self):
         """Test mesh units when importing/exporting data files."""
         mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(4, 4),
-            minCoords=(0.0, 0.0),
-            maxCoords=(1.0, 1.0)
+            elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
         )
 
         try:
@@ -241,7 +227,7 @@ class TestMeshUnitsDataImportExport:
             # - Visualization with correct scales
 
             coords = mesh.data
-            if hasattr(coords, 'units'):
+            if hasattr(coords, "units"):
                 assert "degree" in str(coords.units).lower()
 
         except AttributeError:
@@ -251,10 +237,7 @@ class TestMeshUnitsDataImportExport:
         """Test mesh units for visualization and output."""
         try:
             mesh = uw.meshing.StructuredQuadBox(
-                elementRes=(4, 4),
-                minCoords=(0.0, 0.0),
-                maxCoords=(2900.0, 2900.0),
-                units="km"
+                elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2900.0, 2900.0), units="km"
             )
 
             # IMPORTANT: Visualization should show correct scales
@@ -262,7 +245,7 @@ class TestMeshUnitsDataImportExport:
             # - Scale bars with physical dimensions
             # - Coordinate readouts in correct units
 
-            if hasattr(mesh, 'units'):
+            if hasattr(mesh, "units"):
                 # Visualization methods should use units
                 assert mesh.units == "km"
 
@@ -282,7 +265,7 @@ class TestMeshUnitsCompatibility:
         mesh = uw.meshing.StructuredQuadBox(
             elementRes=(4, 4),
             minCoords=(0.0, 0.0),
-            maxCoords=(1.0, 1.0)
+            maxCoords=(1.0, 1.0),
             # No units specified - should work as before
         )
 
@@ -291,7 +274,7 @@ class TestMeshUnitsCompatibility:
         assert mesh.X is not None
 
         # Units should be None or indicate dimensionless
-        if hasattr(mesh, 'units'):
+        if hasattr(mesh, "units"):
             assert mesh.units is None or str(mesh.units) == "dimensionless"
 
     def test_mesh_units_validation(self):
@@ -315,10 +298,7 @@ class TestMeshUnitsCompatibility:
             valid_units = ["m", "km", "cm", "mm", "inch", "ft", "mile", "degrees"]
             for unit in valid_units:
                 mesh = uw.meshing.StructuredQuadBox(
-                    elementRes=(2, 2),
-                    minCoords=(0.0, 0.0),
-                    maxCoords=(1.0, 1.0),
-                    units=unit
+                    elementRes=(2, 2), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), units=unit
                 )
                 assert mesh is not None
 
@@ -343,7 +323,7 @@ class TestMeshUnitsDocumentedInterface:
             "units_metadata": "Unit preservation in save/load operations",
             "visualization_units": "Unit-aware visualization and export",
             "variable_integration": "Mesh units integration with mesh variables",
-            "validation": "Unit validation and error handling"
+            "validation": "Unit validation and error handling",
         }
 
         # Skip this test - it's documentation only

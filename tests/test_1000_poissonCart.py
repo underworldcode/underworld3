@@ -12,12 +12,14 @@ import sympy
 import underworld3 as uw
 
 import os
+
 os.environ["SYMPY_USE_CACHE"] = "no"
 
 
 # Try to import plotting libraries - only show plots if available and in Jupyter
 try:
     import matplotlib.pyplot as plt
+
     PLOTTING_AVAILABLE = True
 except ImportError:
     PLOTTING_AVAILABLE = False
@@ -41,23 +43,24 @@ def plot_2d_solution(mesh, u, ax, title="2D Solution"):
     """Robust 2D solution plotting using meshVariable.coords for proper coordinate matching."""
     coords = u.coords
     values = u.data.flatten()
-    
-    im = ax.scatter(
-        coords[:, 0], coords[:, 1], c=values, s=15, cmap="viridis", alpha=0.8
-    )
+
+    im = ax.scatter(coords[:, 0], coords[:, 1], c=values, s=15, cmap="viridis", alpha=0.8)
     ax.set_title(title)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_aspect("equal")
     plt.colorbar(im, ax=ax)
-    
+
     ax.text(
-        0.02, 0.98, f"{len(coords)} DOF points",
+        0.02,
+        0.98,
+        f"{len(coords)} DOF points",
         transform=ax.transAxes,
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
-        verticalalignment="top", fontsize=8,
+        verticalalignment="top",
+        fontsize=8,
     )
-    
+
     return im
 
 
@@ -68,12 +71,8 @@ def plot_2d_solution(mesh, u, ax, title="2D Solution"):
 # %%
 structured_quad_box = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
 
-unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=0.1, regular=False
-)
-unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=0.1, regular=True
-)
+unstructured_quad_box_irregular = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, regular=False)
+unstructured_quad_box_regular = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, regular=True)
 unstructured_quad_box_regular_3D = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=0.1, regular=True
 )
@@ -82,6 +81,7 @@ unstructured_quad_box_regular_3D = uw.meshing.UnstructuredSimplexBox(
 # %% [markdown]
 # ## Basic Poisson Test on Different Mesh Types
 # Test that the Poisson solver converges on various mesh geometries
+
 
 # %%
 @pytest.mark.parametrize(
@@ -94,9 +94,7 @@ unstructured_quad_box_regular_3D = uw.meshing.UnstructuredSimplexBox(
     ],
 )
 def test_poisson_boxmesh(mesh):
-    u = uw.discretisation.MeshVariable(
-        r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2
-    )
+    u = uw.discretisation.MeshVariable(r"mathbf{u}", mesh, 1, vtype=uw.VarType.SCALAR, degree=2)
 
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -116,6 +114,7 @@ def test_poisson_boxmesh(mesh):
 # ## Linear Profile Test
 # Test Poisson equation ∇²u = 0 with BCs u(y=0)=1, u(y=1)=0
 # Expected analytical solution: u(y) = 1 - y
+
 
 # %%
 def test_poisson_linear_profile():
@@ -187,6 +186,7 @@ def test_poisson_linear_profile():
 # Test Poisson equation ∇²u = -2 with BCs u(y=0)=0, u(y=1)=0
 # Expected analytical solution: u(y) = y(1-y)
 
+
 # %%
 def test_poisson_constant_source():
     """Test Poisson solver with constant source term against 1D quadratic analytical solution."""
@@ -257,6 +257,7 @@ def test_poisson_constant_source():
 # Test Poisson equation ∇²u = -π²sin(πy) with BCs u(y=0)=0, u(y=1)=0
 # Expected analytical solution: u(y) = sin(πy)
 
+
 # %%
 def test_poisson_sinusoidal_source():
     """Test Poisson solver with sinusoidal source term - critical for time-dependent validation."""
@@ -295,15 +296,11 @@ def test_poisson_sinusoidal_source():
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
 
         # Plot 1: Full 2D solution
-        plot_2d_solution(
-            mesh, u, ax1, "2D Numerical Solution\n(Sinusoidal Source f=π²sin(πy))"
-        )
+        plot_2d_solution(mesh, u, ax1, "2D Numerical Solution\n(Sinusoidal Source f=π²sin(πy))")
 
         # Plot 2: 1D profile comparison
         ax2.plot(sample_y, u_numerical, "bo-", label="Numerical", markersize=4)
-        ax2.plot(
-            sample_y, u_analytical, "r-", label="Analytical u=sin(πy)", linewidth=2
-        )
+        ax2.plot(sample_y, u_analytical, "r-", label="Analytical u=sin(πy)", linewidth=2)
         ax2.set_xlabel("y")
         ax2.set_ylabel("u")
         ax2.set_title(f"Profile Comparison (x=0.5)\nL2 Error: {error:.3e}")

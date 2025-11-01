@@ -67,8 +67,16 @@ class UnitAwareArray(NDArray_With_Callback):
     ```
     """
 
-    def __new__(cls, input_array=None, units=None, owner=None, callback=None,
-                unit_checking=True, auto_convert=True, **kwargs):
+    def __new__(
+        cls,
+        input_array=None,
+        units=None,
+        owner=None,
+        callback=None,
+        unit_checking=True,
+        auto_convert=True,
+        **kwargs,
+    ):
         """
         Create new UnitAwareArray instance.
 
@@ -103,6 +111,7 @@ class UnitAwareArray(NDArray_With_Callback):
             obj._set_units(units)
             # Initialize units backend for get_dimensionality() support
             from underworld3.utilities.units_mixin import PintBackend
+
             obj._units_backend = PintBackend()
         else:
             obj._units_backend = None
@@ -118,11 +127,11 @@ class UnitAwareArray(NDArray_With_Callback):
             return
 
         # Copy unit information from parent array
-        self._units = getattr(obj, '_units', None)
-        self._unit_checking = getattr(obj, '_unit_checking', True)
-        self._auto_convert = getattr(obj, '_auto_convert', True)
-        self._original_units = getattr(obj, '_original_units', None)
-        self._units_backend = getattr(obj, '_units_backend', None)
+        self._units = getattr(obj, "_units", None)
+        self._unit_checking = getattr(obj, "_unit_checking", True)
+        self._auto_convert = getattr(obj, "_auto_convert", True)
+        self._original_units = getattr(obj, "_original_units", None)
+        self._units_backend = getattr(obj, "_units_backend", None)
 
     def _set_units(self, units):
         """
@@ -137,6 +146,7 @@ class UnitAwareArray(NDArray_With_Callback):
             # Create a UWQuantity to validate units
             try:
                 import underworld3 as uw
+
                 unit_qty = uw.function.quantity(1.0, units)
                 self._units = units
             except Exception as e:
@@ -243,7 +253,7 @@ class UnitAwareArray(NDArray_With_Callback):
                 target_quantity.magnitude,
                 units=str(target_quantity.units),
                 unit_checking=self._unit_checking,
-                auto_convert=self._auto_convert
+                auto_convert=self._auto_convert,
             )
 
         except Exception as e:
@@ -309,23 +319,27 @@ class UnitAwareArray(NDArray_With_Callback):
         other_units = None
 
         # Check if other has units
-        if hasattr(other, 'units'):
+        if hasattr(other, "units"):
             # Could be UnitAwareArray, Pint Quantity, or UWQuantity
             other_units_obj = other.units
             # Convert to string if it's a Pint Unit object
-            if hasattr(other_units_obj, '__str__') and not isinstance(other_units_obj, str):
+            if hasattr(other_units_obj, "__str__") and not isinstance(other_units_obj, str):
                 other_units = str(other_units_obj)
             else:
                 other_units = other_units_obj
 
             # If it's a Pint Quantity or UWQuantity, extract the magnitude for operations
-            if hasattr(other, 'magnitude'):
+            if hasattr(other, "magnitude"):
                 # For addition/subtraction, we need the actual value
                 # For multiplication/division, this will be handled later
                 if operation in ["add", "subtract"]:
                     # Extract scalar value for arithmetic
-                    other = float(other.magnitude) if np.isscalar(other.magnitude) else np.asarray(other.magnitude)
-        elif hasattr(other, '_units'):
+                    other = (
+                        float(other.magnitude)
+                        if np.isscalar(other.magnitude)
+                        else np.asarray(other.magnitude)
+                    )
+        elif hasattr(other, "_units"):
             other_units = other._units
         elif has_units(other):
             other_units = get_units(other)
@@ -359,12 +373,13 @@ class UnitAwareArray(NDArray_With_Callback):
         if self._auto_convert and operation in ["add", "subtract"]:
             try:
                 # Try to convert other to self's units
-                if hasattr(other, 'to_units'):
+                if hasattr(other, "to_units"):
                     converted_other = other.to_units(self._units)
                     return True, converted_other, self._units
                 else:
                     # Convert using Pint directly for more reliable conversion
                     import underworld3 as uw
+
                     ureg = uw.scaling.units
 
                     # Create Pint quantities and convert
@@ -381,13 +396,14 @@ class UnitAwareArray(NDArray_With_Callback):
         if operation in ["multiply", "divide"]:
             try:
                 import underworld3 as uw
+
                 ureg = uw.scaling.units
 
                 # Create Pint quantities to compute unit algebra
                 self_qty = ureg.Quantity(1.0, self._units)
 
                 # Handle if other is already a Pint Quantity
-                if hasattr(other, 'magnitude') and hasattr(other, 'units'):
+                if hasattr(other, "magnitude") and hasattr(other, "units"):
                     # Convert Pint Quantity to our units for value compatibility
                     try:
                         other_in_our_units = other.to(self._units)
@@ -412,8 +428,9 @@ class UnitAwareArray(NDArray_With_Callback):
 
                 # Check if dimensionless (both by string and by dimensionality)
                 is_dimensionless = (
-                    result_units_obj == ureg.dimensionless or
-                    result_qty.dimensionality == ureg.Quantity(1.0, 'dimensionless').dimensionality
+                    result_units_obj == ureg.dimensionless
+                    or result_qty.dimensionality
+                    == ureg.Quantity(1.0, "dimensionless").dimensionality
                 )
 
                 if is_dimensionless:
@@ -484,7 +501,7 @@ class UnitAwareArray(NDArray_With_Callback):
             result,
             units=final_units,
             unit_checking=self._unit_checking,
-            auto_convert=self._auto_convert
+            auto_convert=self._auto_convert,
         )
 
     # === REDUCTION OPERATIONS ===
@@ -494,6 +511,7 @@ class UnitAwareArray(NDArray_With_Callback):
         """Wrap scalar result with units as UWQuantity."""
         if self.has_units:
             import underworld3 as uw
+
             return uw.function.quantity(float(value), self._units)
         return value
 
@@ -532,7 +550,9 @@ class UnitAwareArray(NDArray_With_Callback):
 
     def sum(self, axis=None, dtype=None, out=None, keepdims=False, initial=None, where=True):
         """Return sum with units preserved."""
-        result = super().sum(axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where)
+        result = super().sum(
+            axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where
+        )
         if axis is None and not keepdims:
             # Scalar result - wrap with units
             return self._wrap_scalar_result(result)
@@ -545,23 +565,28 @@ class UnitAwareArray(NDArray_With_Callback):
         """Return standard deviation with units preserved."""
         if not self.has_units:
             # No units - use numpy's default
-            return super().std(axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+            return super().std(
+                axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where
+            )
 
         # Calculate std using unit-aware variance (avoid numpy's internal mean)
-        variance = self.var(axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+        variance = self.var(
+            axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where
+        )
 
         # Take square root of variance
         if axis is None and not keepdims:
             # Scalar result - extract magnitude, compute sqrt, re-wrap with units
             import underworld3 as uw
-            if hasattr(variance, 'magnitude'):
+
+            if hasattr(variance, "magnitude"):
                 std_value = np.sqrt(float(variance.magnitude))
             else:
                 std_value = np.sqrt(float(variance))
             return uw.function.quantity(std_value, self._units)
         else:
             # Array result
-            if hasattr(variance, 'magnitude'):
+            if hasattr(variance, "magnitude"):
                 std_array = np.sqrt(np.asarray(variance.magnitude))
             else:
                 std_array = np.sqrt(np.asarray(variance))
@@ -571,7 +596,9 @@ class UnitAwareArray(NDArray_With_Callback):
         """Return variance with units squared."""
         if not self.has_units:
             # No units - use numpy's default
-            return super().var(axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where)
+            return super().var(
+                axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where
+            )
 
         # Calculate variance manually using unit-aware mean to avoid numpy's internal mean
         # var = mean((x - mean(x))**2)
@@ -581,8 +608,12 @@ class UnitAwareArray(NDArray_With_Callback):
 
         # Compute deviations: (x - mean)
         # Extract magnitude from UWQuantity mean for subtraction
-        if hasattr(arr_mean, 'magnitude'):
-            mean_value = float(arr_mean.magnitude) if np.isscalar(arr_mean.magnitude) else np.asarray(arr_mean.magnitude)
+        if hasattr(arr_mean, "magnitude"):
+            mean_value = (
+                float(arr_mean.magnitude)
+                if np.isscalar(arr_mean.magnitude)
+                else np.asarray(arr_mean.magnitude)
+            )
         else:
             mean_value = arr_mean
 
@@ -593,7 +624,7 @@ class UnitAwareArray(NDArray_With_Callback):
         deviations = arr_values - mean_value
 
         # Square deviations (units become squared)
-        squared_devs = deviations ** 2
+        squared_devs = deviations**2
 
         # Take mean of squared deviations
         if where is not True:
@@ -615,6 +646,7 @@ class UnitAwareArray(NDArray_With_Callback):
         if axis is None and not keepdims:
             # Scalar result
             import underworld3 as uw
+
             return uw.function.quantity(float(variance_value), var_units)
         else:
             # Array result
@@ -671,7 +703,11 @@ class UnitAwareArray(NDArray_With_Callback):
                             result_shape[ax] = 1
                     result_shape = tuple(result_shape)
                 else:
-                    result_shape = tuple(s for i, s in enumerate(self.shape) if i not in (axis if isinstance(axis, tuple) else (axis,)))
+                    result_shape = tuple(
+                        s
+                        for i, s in enumerate(self.shape)
+                        if i not in (axis if isinstance(axis, tuple) else (axis,))
+                    )
                 local_max = np.full(result_shape, -np.inf)
         else:
             local_max = self.max(axis=axis, out=out, keepdims=keepdims)
@@ -688,19 +724,29 @@ class UnitAwareArray(NDArray_With_Callback):
         if axis is None and not keepdims:
             if self.has_units:
                 # Extract magnitude for MPI, then re-wrap with units
-                local_val = float(local_max.magnitude) if hasattr(local_max, 'magnitude') else float(local_max)
+                local_val = (
+                    float(local_max.magnitude)
+                    if hasattr(local_max, "magnitude")
+                    else float(local_max)
+                )
                 global_val = uw.mpi.comm.allreduce(local_val, op=MPI.MAX)
                 return uw.function.quantity(global_val, self._units)
             else:
                 return uw.mpi.comm.allreduce(float(local_max), op=MPI.MAX)
 
         # Array result - component-wise reduction
-        local_arr = np.asarray(local_max.magnitude if hasattr(local_max, 'magnitude') else local_max)
+        local_arr = np.asarray(
+            local_max.magnitude if hasattr(local_max, "magnitude") else local_max
+        )
 
         # For vectors, reduce component-wise
         if local_arr.ndim == 1:
-            global_arr = np.array([uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.MAX)
-                                   for i in range(len(local_arr))])
+            global_arr = np.array(
+                [
+                    uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.MAX)
+                    for i in range(len(local_arr))
+                ]
+            )
         else:
             # For higher dimensional arrays, use allreduce directly (requires same shape on all ranks)
             global_arr = np.empty_like(local_arr)
@@ -759,7 +805,11 @@ class UnitAwareArray(NDArray_With_Callback):
                             result_shape[ax] = 1
                     result_shape = tuple(result_shape)
                 else:
-                    result_shape = tuple(s for i, s in enumerate(self.shape) if i not in (axis if isinstance(axis, tuple) else (axis,)))
+                    result_shape = tuple(
+                        s
+                        for i, s in enumerate(self.shape)
+                        if i not in (axis if isinstance(axis, tuple) else (axis,))
+                    )
                 local_min = np.full(result_shape, np.inf)
         else:
             local_min = self.min(axis=axis, out=out, keepdims=keepdims)
@@ -776,19 +826,29 @@ class UnitAwareArray(NDArray_With_Callback):
         if axis is None and not keepdims:
             if self.has_units:
                 # Extract magnitude for MPI, then re-wrap with units
-                local_val = float(local_min.magnitude) if hasattr(local_min, 'magnitude') else float(local_min)
+                local_val = (
+                    float(local_min.magnitude)
+                    if hasattr(local_min, "magnitude")
+                    else float(local_min)
+                )
                 global_val = uw.mpi.comm.allreduce(local_val, op=MPI.MIN)
                 return uw.function.quantity(global_val, self._units)
             else:
                 return uw.mpi.comm.allreduce(float(local_min), op=MPI.MIN)
 
         # Array result - component-wise reduction
-        local_arr = np.asarray(local_min.magnitude if hasattr(local_min, 'magnitude') else local_min)
+        local_arr = np.asarray(
+            local_min.magnitude if hasattr(local_min, "magnitude") else local_min
+        )
 
         # For vectors, reduce component-wise
         if local_arr.ndim == 1:
-            global_arr = np.array([uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.MIN)
-                                   for i in range(len(local_arr))])
+            global_arr = np.array(
+                [
+                    uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.MIN)
+                    for i in range(len(local_arr))
+                ]
+            )
         else:
             # For higher dimensional arrays, use allreduce directly
             global_arr = np.empty_like(local_arr)
@@ -845,19 +905,29 @@ class UnitAwareArray(NDArray_With_Callback):
         if axis is None and not keepdims:
             if self.has_units:
                 # Extract magnitude for MPI, then re-wrap with units
-                local_val = float(local_sum.magnitude) if hasattr(local_sum, 'magnitude') else float(local_sum)
+                local_val = (
+                    float(local_sum.magnitude)
+                    if hasattr(local_sum, "magnitude")
+                    else float(local_sum)
+                )
                 global_val = uw.mpi.comm.allreduce(local_val, op=MPI.SUM)
                 return uw.function.quantity(global_val, self._units)
             else:
                 return uw.mpi.comm.allreduce(float(local_sum), op=MPI.SUM)
 
         # Array result - component-wise reduction
-        local_arr = np.asarray(local_sum.magnitude if hasattr(local_sum, 'magnitude') else local_sum)
+        local_arr = np.asarray(
+            local_sum.magnitude if hasattr(local_sum, "magnitude") else local_sum
+        )
 
         # For vectors, reduce component-wise
         if local_arr.ndim == 1:
-            global_arr = np.array([uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.SUM)
-                                   for i in range(len(local_arr))])
+            global_arr = np.array(
+                [
+                    uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.SUM)
+                    for i in range(len(local_arr))
+                ]
+            )
         else:
             # For higher dimensional arrays, use allreduce directly
             global_arr = np.empty_like(local_arr)
@@ -927,13 +997,19 @@ class UnitAwareArray(NDArray_With_Callback):
         if axis is None and not keepdims:
             # Scalar result
             if self.has_units:
-                mean_val = float(global_sum.magnitude) / global_count if hasattr(global_sum, 'magnitude') else float(global_sum) / global_count
+                mean_val = (
+                    float(global_sum.magnitude) / global_count
+                    if hasattr(global_sum, "magnitude")
+                    else float(global_sum) / global_count
+                )
                 return uw.function.quantity(mean_val, self._units)
             else:
                 return float(global_sum) / global_count
         else:
             # Array result
-            global_arr = np.asarray(global_sum.magnitude if hasattr(global_sum, 'magnitude') else global_sum)
+            global_arr = np.asarray(
+                global_sum.magnitude if hasattr(global_sum, "magnitude") else global_sum
+            )
             mean_arr = global_arr / global_count
 
             if self.has_units:
@@ -984,14 +1060,14 @@ class UnitAwareArray(NDArray_With_Callback):
         local_arr = np.asarray(self)
 
         # Extract magnitude for calculations
-        if hasattr(local_mean, 'magnitude'):
+        if hasattr(local_mean, "magnitude"):
             mean_val = np.asarray(local_mean.magnitude)
         else:
             mean_val = np.asarray(local_mean)
 
         # Compute local sum of squared deviations
         deviations = local_arr - mean_val
-        local_sq_dev = np.sum(deviations ** 2, axis=axis, keepdims=keepdims)
+        local_sq_dev = np.sum(deviations**2, axis=axis, keepdims=keepdims)
         local_sum = np.sum(local_arr, axis=axis, keepdims=keepdims)
 
         if axis is None:
@@ -1003,8 +1079,12 @@ class UnitAwareArray(NDArray_With_Callback):
                 local_count = np.prod([self.shape[ax] for ax in axis])
 
         # Global reduce
-        global_sq_dev = uw.mpi.comm.allreduce(float(local_sq_dev) if np.isscalar(local_sq_dev) else local_sq_dev, op=MPI.SUM)
-        global_sum = uw.mpi.comm.allreduce(float(local_sum) if np.isscalar(local_sum) else local_sum, op=MPI.SUM)
+        global_sq_dev = uw.mpi.comm.allreduce(
+            float(local_sq_dev) if np.isscalar(local_sq_dev) else local_sq_dev, op=MPI.SUM
+        )
+        global_sum = uw.mpi.comm.allreduce(
+            float(local_sum) if np.isscalar(local_sum) else local_sum, op=MPI.SUM
+        )
         global_count = uw.mpi.comm.allreduce(local_count, op=MPI.SUM)
 
         # Compute global variance using parallel algorithm
@@ -1022,7 +1102,9 @@ class UnitAwareArray(NDArray_With_Callback):
         local_mean_arr = np.asarray(self.mean(axis=axis, keepdims=True))
         correction = local_count * (local_mean_arr - global_mean) ** 2
 
-        global_correction = uw.mpi.comm.allreduce(float(correction) if np.isscalar(correction) else correction, op=MPI.SUM)
+        global_correction = uw.mpi.comm.allreduce(
+            float(correction) if np.isscalar(correction) else correction, op=MPI.SUM
+        )
 
         # Total variance
         total_sq_dev = global_sq_dev + global_correction
@@ -1035,9 +1117,17 @@ class UnitAwareArray(NDArray_With_Callback):
             # Scalar result
             if self.has_units:
                 # Use item() for numpy scalars to avoid deprecation warning
-                variance_scalar = global_variance.item() if hasattr(global_variance, 'item') else float(global_variance)
+                variance_scalar = (
+                    global_variance.item()
+                    if hasattr(global_variance, "item")
+                    else float(global_variance)
+                )
                 return uw.function.quantity(variance_scalar, var_units)
-            return global_variance.item() if hasattr(global_variance, 'item') else float(global_variance)
+            return (
+                global_variance.item()
+                if hasattr(global_variance, "item")
+                else float(global_variance)
+            )
         else:
             # Array result
             if self.has_units:
@@ -1081,12 +1171,20 @@ class UnitAwareArray(NDArray_With_Callback):
         if axis is None and not keepdims:
             # Scalar result
             if self.has_units:
-                std_val = np.sqrt(float(global_variance.magnitude) if hasattr(global_variance, 'magnitude') else float(global_variance))
+                std_val = np.sqrt(
+                    float(global_variance.magnitude)
+                    if hasattr(global_variance, "magnitude")
+                    else float(global_variance)
+                )
                 return uw.function.quantity(std_val, self._units)
             return np.sqrt(float(global_variance))
         else:
             # Array result
-            var_arr = np.asarray(global_variance.magnitude if hasattr(global_variance, 'magnitude') else global_variance)
+            var_arr = np.asarray(
+                global_variance.magnitude
+                if hasattr(global_variance, "magnitude")
+                else global_variance
+            )
             std_arr = np.sqrt(var_arr)
 
             if self.has_units:
@@ -1129,7 +1227,7 @@ class UnitAwareArray(NDArray_With_Callback):
         if ord is None or ord == 2:
             # Compute local sum of squares
             local_arr = np.asarray(self)
-            local_sq_sum = np.sum(local_arr ** 2)
+            local_sq_sum = np.sum(local_arr**2)
 
             # Global sum of squares
             global_sq_sum = uw.mpi.comm.allreduce(float(local_sq_sum), op=MPI.SUM)
@@ -1141,7 +1239,9 @@ class UnitAwareArray(NDArray_With_Callback):
                 return uw.function.quantity(norm_val, self._units)
             return norm_val
         else:
-            raise NotImplementedError(f"global_norm() only supports ord=None or ord=2 (2-norm), got ord={ord}")
+            raise NotImplementedError(
+                f"global_norm() only supports ord=None or ord=2 (2-norm), got ord={ord}"
+            )
 
     def global_size(self):
         """
@@ -1212,7 +1312,7 @@ class UnitAwareArray(NDArray_With_Callback):
         size = self.global_size()
 
         # Compute RMS
-        rms_val = float(norm.magnitude if hasattr(norm, 'magnitude') else norm) / np.sqrt(size)
+        rms_val = float(norm.magnitude if hasattr(norm, "magnitude") else norm) / np.sqrt(size)
 
         # Return with units preserved
         if self.has_units:
@@ -1222,9 +1322,7 @@ class UnitAwareArray(NDArray_With_Callback):
     # Override arithmetic operations for unit checking
     def __add__(self, other):
         """Addition with unit compatibility checking."""
-        compatible, converted_other, result_units = self._check_unit_compatibility(
-            other, "add"
-        )
+        compatible, converted_other, result_units = self._check_unit_compatibility(other, "add")
 
         if compatible:
             result = super().__add__(converted_other)
@@ -1234,9 +1332,7 @@ class UnitAwareArray(NDArray_With_Callback):
 
     def __radd__(self, other):
         """Right addition with unit compatibility checking."""
-        compatible, converted_other, result_units = self._check_unit_compatibility(
-            other, "add"
-        )
+        compatible, converted_other, result_units = self._check_unit_compatibility(other, "add")
 
         if compatible:
             result = super().__radd__(converted_other)
@@ -1337,14 +1433,18 @@ class UnitAwareArray(NDArray_With_Callback):
                     # Look for comma before dtype
                     comma_pos = base_repr.rfind(",", 0, dtype_pos)
                     if comma_pos > 0:
-                        return (base_repr[:comma_pos] +
-                               f", units='{self._units}', " +
-                               base_repr[comma_pos+2:])  # +2 to skip ", "
+                        return (
+                            base_repr[:comma_pos]
+                            + f", units='{self._units}', "
+                            + base_repr[comma_pos + 2 :]
+                        )  # +2 to skip ", "
                     else:
                         # No comma found, insert at start of dtype
-                        return (base_repr[:dtype_pos] +
-                               f"units='{self._units}', " +
-                               base_repr[dtype_pos:])
+                        return (
+                            base_repr[:dtype_pos]
+                            + f"units='{self._units}', "
+                            + base_repr[dtype_pos:]
+                        )
 
             # Fallback - append units at end
             return base_repr.rstrip(")") + f", units='{self._units}')"
@@ -1358,17 +1458,17 @@ class UnitAwareArray(NDArray_With_Callback):
             return f"{base_str} [{self._units}]"
         return base_str
 
-    def copy(self, order='C'):
+    def copy(self, order="C"):
         """Return a copy of the array with preserved units."""
         copied_array = super().copy(order=order)
         return UnitAwareArray(
             copied_array,
             units=self._units,
             unit_checking=self._unit_checking,
-            auto_convert=self._auto_convert
+            auto_convert=self._auto_convert,
         )
 
-    def astype(self, dtype, order='K', casting='unsafe', subok=True, copy=True):
+    def astype(self, dtype, order="K", casting="unsafe", subok=True, copy=True):
         """Convert array type while preserving units."""
         converted_array = super().astype(dtype, order, casting, subok, copy)
 
@@ -1377,7 +1477,7 @@ class UnitAwareArray(NDArray_With_Callback):
                 converted_array,
                 units=self._units,
                 unit_checking=self._unit_checking,
-                auto_convert=self._auto_convert
+                auto_convert=self._auto_convert,
             )
 
         return converted_array
@@ -1396,29 +1496,29 @@ class UnitAwareArray(NDArray_With_Callback):
                     view_array,
                     units=self._units,
                     unit_checking=self._unit_checking,
-                    auto_convert=self._auto_convert
+                    auto_convert=self._auto_convert,
                 )
 
         return view_array
 
-    def reshape(self, *shape, order='C'):
+    def reshape(self, *shape, order="C"):
         """Return a reshaped array with preserved units."""
         reshaped_array = super().reshape(*shape, order=order)
         return UnitAwareArray(
             reshaped_array,
             units=self._units,
             unit_checking=self._unit_checking,
-            auto_convert=self._auto_convert
+            auto_convert=self._auto_convert,
         )
 
-    def flatten(self, order='C'):
+    def flatten(self, order="C"):
         """Return a flattened array with preserved units."""
         flattened_array = super().flatten(order)
         return UnitAwareArray(
             flattened_array,
             units=self._units,
             unit_checking=self._unit_checking,
-            auto_convert=self._auto_convert
+            auto_convert=self._auto_convert,
         )
 
     def squeeze(self, axis=None):
@@ -1428,7 +1528,7 @@ class UnitAwareArray(NDArray_With_Callback):
             squeezed_array,
             units=self._units,
             unit_checking=self._unit_checking,
-            auto_convert=self._auto_convert
+            auto_convert=self._auto_convert,
         )
 
     def transpose(self, *axes):
@@ -1438,7 +1538,7 @@ class UnitAwareArray(NDArray_With_Callback):
             transposed_array,
             units=self._units,
             unit_checking=self._unit_checking,
-            auto_convert=self._auto_convert
+            auto_convert=self._auto_convert,
         )
 
     # === NUMPY FUNCTION INTEGRATION ===
@@ -1492,9 +1592,11 @@ class UnitAwareArray(NDArray_With_Callback):
 
         def implements(numpy_function):
             """Register an __array_function__ implementation for numpy functions."""
+
             def decorator(func_impl):
                 HANDLED_FUNCTIONS[numpy_function] = func_impl
                 return func_impl
+
             return decorator
 
         # Register handlers for common numpy functions
@@ -1502,7 +1604,7 @@ class UnitAwareArray(NDArray_With_Callback):
         def array_impl(arr, *args, **kwargs):
             """Preserve units when creating arrays from UnitAwareArray."""
             # Get units from the source array
-            if hasattr(arr, '_units'):
+            if hasattr(arr, "_units"):
                 result_units = arr._units
                 unit_checking = arr._unit_checking
                 auto_convert = arr._auto_convert
@@ -1520,7 +1622,7 @@ class UnitAwareArray(NDArray_With_Callback):
                     result,
                     units=result_units,
                     unit_checking=unit_checking,
-                    auto_convert=auto_convert
+                    auto_convert=auto_convert,
                 )
             return result
 
@@ -1528,15 +1630,11 @@ class UnitAwareArray(NDArray_With_Callback):
         def cross_impl(a, b, *args, **kwargs):
             """Handle cross product with unit multiplication."""
             # Extract units
-            a_units = getattr(a, '_units', None)
-            b_units = getattr(b, '_units', None)
+            a_units = getattr(a, "_units", None)
+            b_units = getattr(b, "_units", None)
 
             # Compute cross product using numpy's default behavior
-            result = np.core.numeric.cross(
-                np.asarray(a),
-                np.asarray(b),
-                *args, **kwargs
-            )
+            result = np.core.numeric.cross(np.asarray(a), np.asarray(b), *args, **kwargs)
 
             # Determine result units
             if a_units is not None and b_units is not None:
@@ -1554,8 +1652,8 @@ class UnitAwareArray(NDArray_With_Callback):
                 return UnitAwareArray(
                     result,
                     units=result_units,
-                    unit_checking=getattr(a, '_unit_checking', True),
-                    auto_convert=getattr(a, '_auto_convert', True)
+                    unit_checking=getattr(a, "_unit_checking", True),
+                    auto_convert=getattr(a, "_auto_convert", True),
                 )
             return result
 
@@ -1563,15 +1661,11 @@ class UnitAwareArray(NDArray_With_Callback):
         def dot_impl(a, b, *args, **kwargs):
             """Handle dot product with unit multiplication."""
             # Extract units
-            a_units = getattr(a, '_units', None)
-            b_units = getattr(b, '_units', None)
+            a_units = getattr(a, "_units", None)
+            b_units = getattr(b, "_units", None)
 
             # Compute dot product
-            result = np.core.multiarray.dot(
-                np.asarray(a),
-                np.asarray(b),
-                *args, **kwargs
-            )
+            result = np.core.multiarray.dot(np.asarray(a), np.asarray(b), *args, **kwargs)
 
             # Determine result units
             if a_units is not None and b_units is not None:
@@ -1589,8 +1683,8 @@ class UnitAwareArray(NDArray_With_Callback):
                 return UnitAwareArray(
                     result,
                     units=result_units,
-                    unit_checking=getattr(a, '_unit_checking', True),
-                    auto_convert=getattr(a, '_auto_convert', True)
+                    unit_checking=getattr(a, "_unit_checking", True),
+                    auto_convert=getattr(a, "_auto_convert", True),
                 )
             return result
 
@@ -1598,7 +1692,7 @@ class UnitAwareArray(NDArray_With_Callback):
         def concatenate_impl(arrays, *args, **kwargs):
             """Concatenate arrays with unit compatibility checking."""
             # Check that all arrays have compatible units
-            units_list = [getattr(arr, '_units', None) for arr in arrays]
+            units_list = [getattr(arr, "_units", None) for arr in arrays]
 
             # Get first non-None units as reference
             ref_units = None
@@ -1618,8 +1712,7 @@ class UnitAwareArray(NDArray_With_Callback):
 
             # Perform concatenation
             result = np.core.multiarray.concatenate(
-                [np.asarray(arr) for arr in arrays],
-                *args, **kwargs
+                [np.asarray(arr) for arr in arrays], *args, **kwargs
             )
 
             # Wrap with units if present
@@ -1627,8 +1720,8 @@ class UnitAwareArray(NDArray_With_Callback):
                 return UnitAwareArray(
                     result,
                     units=ref_units,
-                    unit_checking=getattr(arrays[0], '_unit_checking', True),
-                    auto_convert=getattr(arrays[0], '_auto_convert', True)
+                    unit_checking=getattr(arrays[0], "_unit_checking", True),
+                    auto_convert=getattr(arrays[0], "_auto_convert", True),
                 )
             return result
 
@@ -1652,21 +1745,13 @@ class UnitAwareArray(NDArray_With_Callback):
         def array_equal_impl(a1, a2, *args, **kwargs):
             """Compare arrays for equality, ignoring units."""
             # Convert to plain numpy arrays and compare
-            return np.core.numeric.array_equal(
-                np.asarray(a1),
-                np.asarray(a2),
-                *args, **kwargs
-            )
+            return np.core.numeric.array_equal(np.asarray(a1), np.asarray(a2), *args, **kwargs)
 
         @implements(np.allclose)
         def allclose_impl(a, b, *args, **kwargs):
             """Check if arrays are close, ignoring units."""
             # Convert to plain numpy arrays and compare
-            return np.core.numeric.allclose(
-                np.asarray(a),
-                np.asarray(b),
-                *args, **kwargs
-            )
+            return np.core.numeric.allclose(np.asarray(a), np.asarray(b), *args, **kwargs)
 
         # Look up the handler
         if func not in HANDLED_FUNCTIONS:
@@ -1821,6 +1906,7 @@ def test_unit_aware_array():
     except Exception as e:
         print(f"✗ Test failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 

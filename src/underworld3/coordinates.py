@@ -31,47 +31,47 @@ class CoordinateSystemType(Enum):
 # Ellipsoid parameters for geographic coordinate systems
 # Semi-major axis (a), semi-minor axis (b), flattening (f), planet name
 ELLIPSOIDS = {
-    'WGS84': {
-        'a': 6378.137,           # km
-        'b': 6356.752,           # km
-        'f': 1/298.257223563,
-        'planet': 'Earth',
-        'description': 'World Geodetic System 1984',
+    "WGS84": {
+        "a": 6378.137,  # km
+        "b": 6356.752,  # km
+        "f": 1 / 298.257223563,
+        "planet": "Earth",
+        "description": "World Geodetic System 1984",
     },
-    'GRS80': {
-        'a': 6378.137,
-        'b': 6356.752,
-        'f': 1/298.257222101,
-        'planet': 'Earth',
-        'description': 'Geodetic Reference System 1980',
+    "GRS80": {
+        "a": 6378.137,
+        "b": 6356.752,
+        "f": 1 / 298.257222101,
+        "planet": "Earth",
+        "description": "Geodetic Reference System 1980",
     },
-    'sphere': {
-        'a': 6371.0,             # Mean Earth radius
-        'b': 6371.0,
-        'f': 0.0,
-        'planet': 'Earth',
-        'description': 'Perfect sphere (mean Earth radius)',
+    "sphere": {
+        "a": 6371.0,  # Mean Earth radius
+        "b": 6371.0,
+        "f": 0.0,
+        "planet": "Earth",
+        "description": "Perfect sphere (mean Earth radius)",
     },
-    'Mars': {
-        'a': 3396.2,
-        'b': 3376.2,
-        'f': 1/169.8,
-        'planet': 'Mars',
-        'description': 'Mars ellipsoid',
+    "Mars": {
+        "a": 3396.2,
+        "b": 3376.2,
+        "f": 1 / 169.8,
+        "planet": "Mars",
+        "description": "Mars ellipsoid",
     },
-    'Moon': {
-        'a': 1738.1,
-        'b': 1736.0,
-        'f': 1/824.7,
-        'planet': 'Moon',
-        'description': 'Moon ellipsoid',
+    "Moon": {
+        "a": 1738.1,
+        "b": 1736.0,
+        "f": 1 / 824.7,
+        "planet": "Moon",
+        "description": "Moon ellipsoid",
     },
-    'Venus': {
-        'a': 6051.8,
-        'b': 6051.8,
-        'f': 0.0,                # Nearly perfect sphere
-        'planet': 'Venus',
-        'description': 'Venus ellipsoid',
+    "Venus": {
+        "a": 6051.8,
+        "b": 6051.8,
+        "f": 0.0,  # Nearly perfect sphere
+        "planet": "Venus",
+        "description": "Venus ellipsoid",
     },
 }
 
@@ -105,10 +105,10 @@ def geographic_to_cartesian(lon_deg, lat_deg, depth_km, a, b):
     lat = np.radians(lat_deg)
 
     # Eccentricity squared
-    e2 = 1 - (b/a)**2
+    e2 = 1 - (b / a) ** 2
 
     # Prime vertical radius of curvature at this latitude
-    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+    N = a / np.sqrt(1 - e2 * np.sin(lat) ** 2)
 
     # Height above ellipsoid (negative of depth)
     h = -depth_km
@@ -152,7 +152,7 @@ def cartesian_to_geographic(x, y, z, a, b, max_iterations=10, tolerance=1e-12):
     lon = np.arctan2(y, x)
 
     # Latitude requires iteration (Bowring's method for geodetic latitude)
-    e2 = 1 - (b/a)**2
+    e2 = 1 - (b / a) ** 2
     p = np.sqrt(x**2 + y**2)
 
     # Initial guess for latitude (geocentric)
@@ -160,7 +160,7 @@ def cartesian_to_geographic(x, y, z, a, b, max_iterations=10, tolerance=1e-12):
 
     # Iterate to converge on geodetic latitude
     for i in range(max_iterations):
-        N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+        N = a / np.sqrt(1 - e2 * np.sin(lat) ** 2)
         lat_new = np.arctan2(z + e2 * N * np.sin(lat), p)
 
         # Check convergence
@@ -169,7 +169,7 @@ def cartesian_to_geographic(x, y, z, a, b, max_iterations=10, tolerance=1e-12):
         lat = lat_new
 
     # Height above ellipsoid
-    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+    N = a / np.sqrt(1 - e2 * np.sin(lat) ** 2)
     h = p / np.cos(lat) - N
 
     # Depth is negative height
@@ -240,12 +240,11 @@ class GeographicCoordinateAccessor:
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
 
         # Get ellipsoid parameters
-        a = self.cs.ellipsoid['a']
-        b = self.cs.ellipsoid['b']
+        a = self.cs.ellipsoid["a"]
+        b = self.cs.ellipsoid["b"]
 
         # Convert to geographic using our utility function
-        self._lon_cache, self._lat_cache, self._depth_cache = \
-            cartesian_to_geographic(x, y, z, a, b)
+        self._lon_cache, self._lat_cache, self._depth_cache = cartesian_to_geographic(x, y, z, a, b)
 
         self._cache_valid = True
 
@@ -395,7 +394,7 @@ class CoordinateSystem:
     ):
         # Guard against SymPy trying to construct a CoordinateSystem from sympified elements
         # SymPy may iterate over the object and try to recreate it from elements
-        if isinstance(mesh, (list, tuple)) or not hasattr(mesh, 'r'):
+        if isinstance(mesh, (list, tuple)) or not hasattr(mesh, "r"):
             raise TypeError(
                 f"CoordinateSystem requires a mesh object, got {type(mesh).__name__}. "
                 "This object is not meant to be reconstructed by SymPy."
@@ -432,10 +431,7 @@ class CoordinateSystem:
         if self.mesh.cdim == 3:
             self.independent_of_N = expression(
                 r"\vec{0}",
-                underworld3.maths.functions.vanishing
-                * self._N[0]
-                * self._N[1]
-                * self._N[2],
+                underworld3.maths.functions.vanishing * self._N[0] * self._N[1] * self._N[2],
                 "independent of N0, N1, N2",
             )
         else:
@@ -480,7 +476,6 @@ class CoordinateSystem:
             self._rRotN = self._rRotN_sym.subs(th, sympy.atan2(y, x))
             self._xRotN = sympy.eye(self.mesh.dim)
 
-
         elif system == CoordinateSystemType.CYLINDRICAL3D and self.mesh.dim == 3:
             self.type = "Cylindrical 3D"
 
@@ -506,7 +501,6 @@ class CoordinateSystem:
 
             self._rRotN = self._rRotN_sym.subs(th, t)
             self._xRotN = sympy.eye(self.mesh.dim)
-
 
         elif system == CoordinateSystemType.SPHERICAL and self.mesh.dim == 3:
             self.type = "Spherical"
@@ -588,7 +582,6 @@ class CoordinateSystem:
 
             self._xRotN = sympy.eye(self.mesh.dim)
 
-
         elif system == CoordinateSystemType.GEOGRAPHIC and self.mesh.dim == 3:
             """
             Geographic coordinate system for ellipsoidal meshes.
@@ -606,8 +599,8 @@ class CoordinateSystem:
 
             # Store ellipsoid parameters (will be set by mesh creation function)
             # Default to WGS84 if not specified
-            if not hasattr(self, 'ellipsoid'):
-                self.ellipsoid = ELLIPSOIDS['WGS84'].copy()
+            if not hasattr(self, "ellipsoid"):
+                self.ellipsoid = ELLIPSOIDS["WGS84"].copy()
 
             # Cartesian coordinates remain primary
             self._X = self._N.copy()
@@ -653,7 +646,7 @@ class CoordinateSystem:
             lat_approx = sympy.atan2(z, rxy) * 180 / sympy.pi
 
             # Depth (simplified - proper depth calculated in accessor)
-            depth_approx = self.ellipsoid['a'] - r
+            depth_approx = self.ellipsoid["a"] - r
 
             # Geographic coordinate expressions (approximations for symbolic work)
             lambda_lon = expression(R"\lambda_{lon}", lon_deg, "Longitude (degrees East)")
@@ -707,7 +700,6 @@ class CoordinateSystem:
             self._rRotN = rRotN
             self._xRotN = sympy.eye(self.mesh.dim)
 
-
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
 
@@ -734,11 +726,12 @@ class CoordinateSystem:
         """Mark coordinate system as scaled if model has units."""
         try:
             # Get the model from the mesh
-            if hasattr(self.mesh, '_model') and self.mesh._model is not None:
+            if hasattr(self.mesh, "_model") and self.mesh._model is not None:
                 model = self.mesh._model
             else:
                 # Fall back to default model if mesh doesn't have one
                 import underworld3 as uw
+
                 model = uw.get_default_model()
 
             # Check if the model has units scaling enabled
@@ -750,14 +743,14 @@ class CoordinateSystem:
             scales = model.get_fundamental_scales()
 
             # Set scaling information (but don't transform coordinates)
-            if 'length' in scales:
-                length_scale = scales['length']
+            if "length" in scales:
+                length_scale = scales["length"]
 
                 # Get scale factor as dimensionless number in base SI units
-                if hasattr(length_scale, 'to_base_units'):
+                if hasattr(length_scale, "to_base_units"):
                     # Convert to base SI units first, then get magnitude
                     scale_factor = length_scale.to_base_units().magnitude
-                elif hasattr(length_scale, 'magnitude'):
+                elif hasattr(length_scale, "magnitude"):
                     scale_factor = length_scale.magnitude
                 else:
                     scale_factor = float(length_scale)
@@ -769,8 +762,8 @@ class CoordinateSystem:
 
                 # Store scale factors for potential debugging
                 self._scale_factors = {
-                    'length': scale_factor,
-                    'source': f"model '{model.name}' length scale"
+                    "length": scale_factor,
+                    "source": f"model '{model.name}' length scale",
                 }
             else:
                 self._scaled = False
@@ -812,7 +805,7 @@ class CoordinateSystem:
         model_coords = self.mesh._coords
 
         # Apply scaling to convert model coordinates to physical coordinates
-        if hasattr(self, '_scaled') and self._scaled:
+        if hasattr(self, "_scaled") and self._scaled:
             scale_factor = self._length_scale
             coords = model_coords * scale_factor
         else:
@@ -821,11 +814,11 @@ class CoordinateSystem:
         # Wrap with unit-aware array if units are specified
         if self.mesh.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray
-            # Extract just the unit part if it's a Quantity (has .units attribute)
-            units = self.mesh.units.units if hasattr(self.mesh.units, 'units') else self.mesh.units
-            # Convert Unit to string for UnitAwareArray
-            units = str(units) if units is not None else None
-            return UnitAwareArray(coords, units=units)
+
+            # Coordinates are scaled to SI base units (meters), not the reference unit
+            # The scale factor (self._length_scale) converts dimensionless (0-1) to meters
+            # So we label the result as "meter" regardless of the original reference unit
+            return UnitAwareArray(coords, units="meter")
 
         return coords
 
@@ -888,7 +881,7 @@ class CoordinateSystem:
     @property
     def is_commutative(self):
         """SymPy type check - delegate to underlying matrix."""
-        return self._X.is_commutative if hasattr(self._X, 'is_commutative') else True
+        return self._X.is_commutative if hasattr(self._X, "is_commutative") else True
 
     def __getattr__(self, name):
         """
@@ -899,7 +892,7 @@ class CoordinateSystem:
         on CoordinateSystem itself.
         """
         # Prevent infinite recursion for _X access
-        if name == '_X':
+        if name == "_X":
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '_X'")
 
         # Try to get the attribute from the underlying symbolic matrix
@@ -944,7 +937,7 @@ class CoordinateSystem:
 
     def __pow__(self, other):
         """Support mesh.X ** other."""
-        return self._X ** other
+        return self._X**other
 
     def __neg__(self):
         """Support -mesh.X."""
@@ -1062,9 +1055,11 @@ class CoordinateSystem:
             # In spherical, "vertical" typically means radial outward
             return self.unit_e_0
         else:
-            raise NotImplementedError(f"unit_vertical not defined for coordinate system {self.coordinate_type}")
+            raise NotImplementedError(
+                f"unit_vertical not defined for coordinate system {self.coordinate_type}"
+            )
 
-    @property 
+    @property
     def unit_horizontal(self) -> sympy.Matrix:
         """Primary horizontal direction for this coordinate system"""
         if self.coordinate_type in [CoordinateSystemType.CARTESIAN]:
@@ -1076,7 +1071,9 @@ class CoordinateSystem:
             # In spherical, horizontal is typically tangential (theta direction)
             return self.unit_e_1  # meridional direction
         else:
-            raise NotImplementedError(f"unit_horizontal not defined for coordinate system {self.coordinate_type}")
+            raise NotImplementedError(
+                f"unit_horizontal not defined for coordinate system {self.coordinate_type}"
+            )
 
     @property
     def unit_horizontal_0(self) -> sympy.Matrix:
@@ -1096,27 +1093,37 @@ class CoordinateSystem:
         elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_2  # azimuthal direction
         else:
-            raise NotImplementedError(f"unit_horizontal_1 not defined for coordinate system {self.coordinate_type}")
+            raise NotImplementedError(
+                f"unit_horizontal_1 not defined for coordinate system {self.coordinate_type}"
+            )
 
     @property
     def unit_radial(self) -> sympy.Matrix:
         """Radial direction (for cylindrical/spherical coordinate systems)"""
-        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D,
-                                     CoordinateSystemType.CYLINDRICAL3D]:
+        if self.coordinate_type in [
+            CoordinateSystemType.CYLINDRICAL2D,
+            CoordinateSystemType.CYLINDRICAL3D,
+        ]:
             return self.unit_e_0
         elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_0
         else:
-            raise NotImplementedError(f"unit_radial not defined for coordinate system {self.coordinate_type}")
+            raise NotImplementedError(
+                f"unit_radial not defined for coordinate system {self.coordinate_type}"
+            )
 
     @property
     def unit_tangential(self) -> sympy.Matrix:
         """Tangential direction (for cylindrical coordinate systems)"""
-        if self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D,
-                                     CoordinateSystemType.CYLINDRICAL3D]:
+        if self.coordinate_type in [
+            CoordinateSystemType.CYLINDRICAL2D,
+            CoordinateSystemType.CYLINDRICAL3D,
+        ]:
             return self.unit_e_1
         else:
-            raise NotImplementedError(f"unit_tangential not defined for coordinate system {self.coordinate_type}")
+            raise NotImplementedError(
+                f"unit_tangential not defined for coordinate system {self.coordinate_type}"
+            )
 
     @property
     def unit_meridional(self) -> sympy.Matrix:
@@ -1124,7 +1131,9 @@ class CoordinateSystem:
         if self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_1
         else:
-            raise NotImplementedError(f"unit_meridional not defined for coordinate system {self.coordinate_type}")
+            raise NotImplementedError(
+                f"unit_meridional not defined for coordinate system {self.coordinate_type}"
+            )
 
     @property
     def unit_azimuthal(self) -> sympy.Matrix:
@@ -1132,69 +1141,71 @@ class CoordinateSystem:
         if self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self.unit_e_2
         else:
-            raise NotImplementedError(f"unit_azimuthal not defined for coordinate system {self.coordinate_type}")
+            raise NotImplementedError(
+                f"unit_azimuthal not defined for coordinate system {self.coordinate_type}"
+            )
 
     @property
     def geometric_dimension_names(self) -> list:
         """Names of geometric dimensions for this coordinate system"""
         if self.coordinate_type in [CoordinateSystemType.CARTESIAN]:
             if self.mesh.dim == 2:
-                return ['horizontal', 'vertical']
+                return ["horizontal", "vertical"]
             else:
-                return ['horizontal_x', 'horizontal_y', 'vertical']
+                return ["horizontal_x", "horizontal_y", "vertical"]
         elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
-            return ['radial', 'tangential']
+            return ["radial", "tangential"]
         elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D]:
-            return ['radial', 'tangential', 'vertical']
+            return ["radial", "tangential", "vertical"]
         elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
-            return ['radial', 'meridional', 'azimuthal']
+            return ["radial", "meridional", "azimuthal"]
         else:
-            return [f'dimension_{i}' for i in range(self.mesh.dim)]
+            return [f"dimension_{i}" for i in range(self.mesh.dim)]
 
     @property
     def primary_directions(self) -> dict:
         """Dictionary of all available geometric directions for this mesh type"""
         directions = {
-            'unit_e_0': self.unit_e_0,
-            'unit_e_1': self.unit_e_1,
+            "unit_e_0": self.unit_e_0,
+            "unit_e_1": self.unit_e_1,
         }
         if self.mesh.dim >= 3:
-            directions['unit_e_2'] = self.unit_e_2
+            directions["unit_e_2"] = self.unit_e_2
 
         # Add coordinate-system-specific directions
         try:
-            directions['unit_horizontal'] = self.unit_horizontal
-            directions['unit_horizontal_0'] = self.unit_horizontal_0
+            directions["unit_horizontal"] = self.unit_horizontal
+            directions["unit_horizontal_0"] = self.unit_horizontal_0
         except NotImplementedError:
             pass
 
         try:
-            directions['unit_horizontal_1'] = self.unit_horizontal_1  
+            directions["unit_horizontal_1"] = self.unit_horizontal_1
         except (NotImplementedError, ValueError):
             pass
 
         try:
-            directions['unit_vertical'] = self.unit_vertical
+            directions["unit_vertical"] = self.unit_vertical
         except NotImplementedError:
             pass
 
         try:
-            directions['unit_radial'] = self.unit_radial
+            directions["unit_radial"] = self.unit_radial
         except NotImplementedError:
             pass
 
         try:
-            directions['unit_tangential'] = self.unit_tangential
+            directions["unit_tangential"] = self.unit_tangential
         except NotImplementedError:
             pass
 
         try:
-            directions['unit_meridional'] = self.unit_meridional
+            directions["unit_meridional"] = self.unit_meridional
         except NotImplementedError:
             pass
 
         try:
-            directions['unit_azimuthal'] = self.unit_azimuthal
+            directions["unit_azimuthal"] = self.unit_azimuthal
         except NotImplementedError:
             pass
 
@@ -1203,18 +1214,18 @@ class CoordinateSystem:
     def create_line_sample(self, start_point, direction_vector, length, num_points=50):
         """
         Create sample points along a line defined by sympy expressions.
-        
+
         Parameters
         ----------
         start_point : list or numpy.ndarray
             Starting point coordinates in Cartesian space
-        direction_vector : sympy.Matrix  
+        direction_vector : sympy.Matrix
             Direction vector (should be unit vector for accurate length)
         length : float
             Length of the line to sample
         num_points : int, optional
             Number of sample points to generate
-            
+
         Returns
         -------
         dict
@@ -1224,119 +1235,121 @@ class CoordinateSystem:
             - 'parameters': numpy array of parameter values along the line (0 to length)
         """
         import numpy as np
-        
+
         # Create parameter values along the line
         t_values = np.linspace(0, length, num_points)
-        
+
         # Convert start point to numpy array
         start_point = np.array(start_point)
         if len(start_point) != self.mesh.dim:
-            raise ValueError(f"Start point must have {self.mesh.dim} coordinates for {self.mesh.dim}D mesh")
-        
+            raise ValueError(
+                f"Start point must have {self.mesh.dim} coordinates for {self.mesh.dim}D mesh"
+            )
+
         # Generate Cartesian coordinates by evaluating the direction vector
         cartesian_coords = np.zeros((num_points, self.mesh.dim))
-        
+
         # Get coordinate symbols
         coord_symbols = list(self.mesh.X)
-        
+
         for i, t in enumerate(t_values):
             # Current point = start + t * direction
             current_cartesian = start_point.copy()
-            
+
             # Evaluate direction vector at start point to get Cartesian direction
             direction_at_start = direction_vector
             for j, symbol in enumerate(coord_symbols):
                 direction_at_start = direction_at_start.subs(symbol, start_point[j])
-            
+
             # Convert to numpy for arithmetic
             direction_vals = np.array([float(val) for val in direction_at_start])
             current_cartesian = current_cartesian + t * direction_vals
-            
+
             cartesian_coords[i] = current_cartesian
-        
+
         # Convert Cartesian coordinates to natural coordinates
         natural_coords = self._cartesian_to_natural_coords(cartesian_coords)
-        
+
         return {
-            'cartesian_coords': cartesian_coords,
-            'natural_coords': natural_coords,
-            'parameters': t_values
+            "cartesian_coords": cartesian_coords,
+            "natural_coords": natural_coords,
+            "parameters": t_values,
         }
-    
+
     def _cartesian_to_natural_coords(self, cartesian_coords):
         """
         Convert Cartesian coordinates to natural coordinate system.
-        
+
         Parameters
         ----------
         cartesian_coords : numpy.ndarray
             Array of Cartesian coordinates (N_points, dim)
-            
+
         Returns
         -------
         numpy.ndarray
             Array of natural coordinates (N_points, dim)
         """
         import numpy as np
-        
+
         if self.coordinate_type == CoordinateSystemType.CARTESIAN:
             # For Cartesian, natural coordinates are the same as Cartesian
             return cartesian_coords.copy()
-        
+
         elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
             # Convert (x, y) to (r, theta)
             x = cartesian_coords[:, 0]
-            y = cartesian_coords[:, 1] 
-            
+            y = cartesian_coords[:, 1]
+
             r = np.sqrt(x**2 + y**2)
             theta = np.arctan2(y, x)
-            
+
             natural_coords = np.column_stack([r, theta])
             return natural_coords
-        
+
         elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL3D]:
             # Convert (x, y, z) to (r, theta, z)
             x = cartesian_coords[:, 0]
             y = cartesian_coords[:, 1]
             z = cartesian_coords[:, 2]
-            
+
             r = np.sqrt(x**2 + y**2)
             theta = np.arctan2(y, x)
-            
+
             natural_coords = np.column_stack([r, theta, z])
             return natural_coords
-        
+
         elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             # Convert (x, y, z) to (r, theta, phi)
             x = cartesian_coords[:, 0]
             y = cartesian_coords[:, 1]
             z = cartesian_coords[:, 2]
-            
+
             r = np.sqrt(x**2 + y**2 + z**2)
             theta = np.arccos(z / (r + 1e-16))  # colatitude (0 to pi)
             phi = np.arctan2(y, x)  # azimuth (-pi to pi)
-            
+
             natural_coords = np.column_stack([r, theta, phi])
             return natural_coords
-        
+
         else:
             # For unknown coordinate systems, return Cartesian coordinates
             return cartesian_coords.copy()
-    
+
     def create_profile_sample(self, profile_type, **params):
         """
         Create sample points for common profile types in this coordinate system.
-        
+
         Parameters
         ----------
         profile_type : str
             Type of profile to create. Options depend on coordinate system:
             - Cartesian: 'horizontal', 'vertical', 'diagonal'
-            - Cylindrical: 'radial', 'tangential', 'vertical'  
+            - Cylindrical: 'radial', 'tangential', 'vertical'
             - Spherical: 'radial', 'meridional', 'azimuthal'
         **params
             Profile-specific parameters (see individual profile documentation)
-            
+
         Returns
         -------
         dict
@@ -1345,7 +1358,7 @@ class CoordinateSystem:
             - 'natural_coords': numpy array of natural coordinates for plotting
             - 'parameters': numpy array of parameter values along the profile
         """
-        
+
         if self.coordinate_type == CoordinateSystemType.CARTESIAN:
             return self._create_cartesian_profile(profile_type, **params)
         elif self.coordinate_type in [CoordinateSystemType.CYLINDRICAL2D]:
@@ -1353,218 +1366,232 @@ class CoordinateSystem:
         elif self.coordinate_type in [CoordinateSystemType.SPHERICAL]:
             return self._create_spherical_profile(profile_type, **params)
         else:
-            raise NotImplementedError(f"Profile sampling not implemented for coordinate system {self.coordinate_type}")
-    
+            raise NotImplementedError(
+                f"Profile sampling not implemented for coordinate system {self.coordinate_type}"
+            )
+
     def _create_cartesian_profile(self, profile_type, **params):
         """Create profiles for Cartesian coordinate systems"""
         import numpy as np
-        
-        num_points = params.get('num_points', 50)
-        
-        if profile_type == 'horizontal':
+
+        num_points = params.get("num_points", 50)
+
+        if profile_type == "horizontal":
             # Horizontal line at specified y-position
-            y_position = params.get('y_position', 0.5)
-            x_range = params.get('x_range', (0.0, 1.0))
-            
+            y_position = params.get("y_position", 0.5)
+            x_range = params.get("x_range", (0.0, 1.0))
+
             x_values = np.linspace(x_range[0], x_range[1], num_points)
             if self.mesh.dim == 2:
                 cartesian_coords = np.column_stack([x_values, np.full(num_points, y_position)])
             else:  # 3D
-                z_position = params.get('z_position', 0.5)
-                cartesian_coords = np.column_stack([x_values, np.full(num_points, y_position), np.full(num_points, z_position)])
-            
+                z_position = params.get("z_position", 0.5)
+                cartesian_coords = np.column_stack(
+                    [x_values, np.full(num_points, y_position), np.full(num_points, z_position)]
+                )
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': cartesian_coords.copy(),  # Same for Cartesian
-                'parameters': x_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": cartesian_coords.copy(),  # Same for Cartesian
+                "parameters": x_values,
             }
-        
-        elif profile_type == 'vertical':
+
+        elif profile_type == "vertical":
             # Vertical line at specified x-position
-            x_position = params.get('x_position', 0.5)
+            x_position = params.get("x_position", 0.5)
             if self.mesh.dim == 2:
-                y_range = params.get('y_range', (0.0, 1.0))
+                y_range = params.get("y_range", (0.0, 1.0))
                 y_values = np.linspace(y_range[0], y_range[1], num_points)
                 cartesian_coords = np.column_stack([np.full(num_points, x_position), y_values])
                 return {
-                    'cartesian_coords': cartesian_coords,
-                    'natural_coords': cartesian_coords.copy(),
-                    'parameters': y_values
+                    "cartesian_coords": cartesian_coords,
+                    "natural_coords": cartesian_coords.copy(),
+                    "parameters": y_values,
                 }
             else:  # 3D
-                y_position = params.get('y_position', 0.5)
-                z_range = params.get('z_range', (0.0, 1.0))
+                y_position = params.get("y_position", 0.5)
+                z_range = params.get("z_range", (0.0, 1.0))
                 z_values = np.linspace(z_range[0], z_range[1], num_points)
-                cartesian_coords = np.column_stack([np.full(num_points, x_position), np.full(num_points, y_position), z_values])
+                cartesian_coords = np.column_stack(
+                    [np.full(num_points, x_position), np.full(num_points, y_position), z_values]
+                )
                 return {
-                    'cartesian_coords': cartesian_coords,
-                    'natural_coords': cartesian_coords.copy(),
-                    'parameters': z_values
+                    "cartesian_coords": cartesian_coords,
+                    "natural_coords": cartesian_coords.copy(),
+                    "parameters": z_values,
                 }
-        
-        elif profile_type == 'diagonal':
+
+        elif profile_type == "diagonal":
             # Diagonal line from start to end point
-            start_point = params.get('start_point', [0.0] * self.mesh.dim)
-            end_point = params.get('end_point', [1.0] * self.mesh.dim)
-            
+            start_point = params.get("start_point", [0.0] * self.mesh.dim)
+            end_point = params.get("end_point", [1.0] * self.mesh.dim)
+
             start_point = np.array(start_point)
             end_point = np.array(end_point)
-            
+
             t_values = np.linspace(0, 1, num_points)
-            cartesian_coords = np.array([start_point + t * (end_point - start_point) for t in t_values])
-            
+            cartesian_coords = np.array(
+                [start_point + t * (end_point - start_point) for t in t_values]
+            )
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': cartesian_coords.copy(),
-                'parameters': t_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": cartesian_coords.copy(),
+                "parameters": t_values,
             }
-        
+
         else:
             raise ValueError(f"Unknown Cartesian profile type: {profile_type}")
-    
+
     def _create_cylindrical_profile(self, profile_type, **params):
         """Create profiles for cylindrical coordinate systems"""
         import numpy as np
-        
-        num_points = params.get('num_points', 50)
-        
-        if profile_type == 'radial':
+
+        num_points = params.get("num_points", 50)
+
+        if profile_type == "radial":
             # Radial line at specified angle
-            theta = params.get('theta', 0.0)  # Angle in radians
-            r_range = params.get('r_range', (0.5, 1.0))
-            
+            theta = params.get("theta", 0.0)  # Angle in radians
+            r_range = params.get("r_range", (0.5, 1.0))
+
             r_values = np.linspace(r_range[0], r_range[1], num_points)
-            
+
             # Convert to Cartesian coordinates
             x_values = r_values * np.cos(theta)
             y_values = r_values * np.sin(theta)
             cartesian_coords = np.column_stack([x_values, y_values])
-            
+
             # Natural coordinates
             natural_coords = np.column_stack([r_values, np.full(num_points, theta)])
-            
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': natural_coords,
-                'parameters': r_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": natural_coords,
+                "parameters": r_values,
             }
-        
-        elif profile_type == 'tangential':
+
+        elif profile_type == "tangential":
             # Tangential (circular arc) at specified radius
-            radius = params.get('radius', 0.75)
-            theta_range = params.get('theta_range', (0.0, 2*np.pi))
-            
+            radius = params.get("radius", 0.75)
+            theta_range = params.get("theta_range", (0.0, 2 * np.pi))
+
             theta_values = np.linspace(theta_range[0], theta_range[1], num_points)
-            
+
             # Convert to Cartesian coordinates
             x_values = radius * np.cos(theta_values)
             y_values = radius * np.sin(theta_values)
             cartesian_coords = np.column_stack([x_values, y_values])
-            
+
             # Natural coordinates
             natural_coords = np.column_stack([np.full(num_points, radius), theta_values])
-            
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': natural_coords,
-                'parameters': theta_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": natural_coords,
+                "parameters": theta_values,
             }
-        
-        elif profile_type == 'vertical':
+
+        elif profile_type == "vertical":
             # Vertical line in Cartesian y-direction
-            x_position = params.get('x_position', 0.0)
-            y_range = params.get('y_range', (0.0, 1.0))
-            
+            x_position = params.get("x_position", 0.0)
+            y_range = params.get("y_range", (0.0, 1.0))
+
             y_values = np.linspace(y_range[0], y_range[1], num_points)
             cartesian_coords = np.column_stack([np.full(num_points, x_position), y_values])
-            
+
             # Convert to natural coordinates
             natural_coords = self._cartesian_to_natural_coords(cartesian_coords)
-            
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': natural_coords,
-                'parameters': y_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": natural_coords,
+                "parameters": y_values,
             }
-        
+
         else:
             raise ValueError(f"Unknown cylindrical profile type: {profile_type}")
-    
+
     def _create_spherical_profile(self, profile_type, **params):
         """Create profiles for spherical coordinate systems"""
         import numpy as np
-        
-        num_points = params.get('num_points', 50)
-        
-        if profile_type == 'radial':
+
+        num_points = params.get("num_points", 50)
+
+        if profile_type == "radial":
             # Radial line at specified theta, phi
-            theta = params.get('theta', np.pi/2)  # Colatitude (0 to pi)
-            phi = params.get('phi', 0.0)  # Azimuth (-pi to pi)
-            r_range = params.get('r_range', (0.5, 1.0))
-            
+            theta = params.get("theta", np.pi / 2)  # Colatitude (0 to pi)
+            phi = params.get("phi", 0.0)  # Azimuth (-pi to pi)
+            r_range = params.get("r_range", (0.5, 1.0))
+
             r_values = np.linspace(r_range[0], r_range[1], num_points)
-            
+
             # Convert to Cartesian coordinates
             x_values = r_values * np.sin(theta) * np.cos(phi)
             y_values = r_values * np.sin(theta) * np.sin(phi)
             z_values = r_values * np.cos(theta)
             cartesian_coords = np.column_stack([x_values, y_values, z_values])
-            
+
             # Natural coordinates
-            natural_coords = np.column_stack([r_values, np.full(num_points, theta), np.full(num_points, phi)])
-            
+            natural_coords = np.column_stack(
+                [r_values, np.full(num_points, theta), np.full(num_points, phi)]
+            )
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': natural_coords,
-                'parameters': r_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": natural_coords,
+                "parameters": r_values,
             }
-        
-        elif profile_type == 'meridional':
+
+        elif profile_type == "meridional":
             # Meridional line (constant phi, varying theta) at specified radius
-            radius = params.get('radius', 0.75)
-            phi = params.get('phi', 0.0)
-            theta_range = params.get('theta_range', (0.0, np.pi))
-            
+            radius = params.get("radius", 0.75)
+            phi = params.get("phi", 0.0)
+            theta_range = params.get("theta_range", (0.0, np.pi))
+
             theta_values = np.linspace(theta_range[0], theta_range[1], num_points)
-            
+
             # Convert to Cartesian coordinates
             x_values = radius * np.sin(theta_values) * np.cos(phi)
             y_values = radius * np.sin(theta_values) * np.sin(phi)
             z_values = radius * np.cos(theta_values)
             cartesian_coords = np.column_stack([x_values, y_values, z_values])
-            
+
             # Natural coordinates
-            natural_coords = np.column_stack([np.full(num_points, radius), theta_values, np.full(num_points, phi)])
-            
+            natural_coords = np.column_stack(
+                [np.full(num_points, radius), theta_values, np.full(num_points, phi)]
+            )
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': natural_coords,
-                'parameters': theta_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": natural_coords,
+                "parameters": theta_values,
             }
-        
-        elif profile_type == 'azimuthal':
+
+        elif profile_type == "azimuthal":
             # Azimuthal line (constant theta, varying phi) at specified radius
-            radius = params.get('radius', 0.75)
-            theta = params.get('theta', np.pi/2)
-            phi_range = params.get('phi_range', (0.0, 2*np.pi))
-            
+            radius = params.get("radius", 0.75)
+            theta = params.get("theta", np.pi / 2)
+            phi_range = params.get("phi_range", (0.0, 2 * np.pi))
+
             phi_values = np.linspace(phi_range[0], phi_range[1], num_points)
-            
+
             # Convert to Cartesian coordinates
             x_values = radius * np.sin(theta) * np.cos(phi_values)
             y_values = radius * np.sin(theta) * np.sin(phi_values)
             z_values = radius * np.full(num_points, np.cos(theta))
             cartesian_coords = np.column_stack([x_values, y_values, z_values])
-            
+
             # Natural coordinates
-            natural_coords = np.column_stack([np.full(num_points, radius), np.full(num_points, theta), phi_values])
-            
+            natural_coords = np.column_stack(
+                [np.full(num_points, radius), np.full(num_points, theta), phi_values]
+            )
+
             return {
-                'cartesian_coords': cartesian_coords,
-                'natural_coords': natural_coords,  
-                'parameters': phi_values
+                "cartesian_coords": cartesian_coords,
+                "natural_coords": natural_coords,
+                "parameters": phi_values,
             }
-        
+
         else:
             raise ValueError(f"Unknown spherical profile type: {profile_type}")
 

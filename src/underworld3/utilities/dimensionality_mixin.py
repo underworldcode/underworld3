@@ -38,14 +38,15 @@ class DimensionalityMixin:
         if self._is_nondimensional:
             return None  # Non-dimensional has no dimensionality
 
-        if hasattr(self, 'units') and self.units:
+        if hasattr(self, "units") and self.units:
             # Try to get from Pint if using UWQuantity
-            if hasattr(self, '_pint_qty'):
+            if hasattr(self, "_pint_qty"):
                 return str(self._pint_qty.dimensionality)
             # Try from units backend
-            elif hasattr(self, '_units_backend') and self._units_backend:
+            elif hasattr(self, "_units_backend") and self._units_backend:
                 try:
                     from underworld3.scaling import units
+
                     qty = units.Quantity(1.0, self.units)
                     return str(qty.dimensionality)
                 except:
@@ -66,9 +67,9 @@ class DimensionalityMixin:
             raise ValueError("Scaling coefficient must be non-zero")
 
         # Handle UWQuantity or Pint quantities
-        if hasattr(value, 'magnitude'):
+        if hasattr(value, "magnitude"):
             # Convert to same units as self if possible
-            if hasattr(self, 'units') and self.units and hasattr(value, 'to'):
+            if hasattr(self, "units") and self.units and hasattr(value, "to"):
                 try:
                     value_in_my_units = value.to(self.units)
                     self._scaling_coefficient = float(value_in_my_units.magnitude)
@@ -90,10 +91,11 @@ class DimensionalityMixin:
         Get non-dimensional array values.
         Convenience property for accessing array data in non-dimensional form.
         """
-        if not hasattr(self, 'array'):
+        if not hasattr(self, "array"):
             raise AttributeError(f"{type(self).__name__} does not have array property")
 
         import numpy as np
+
         return np.array(self.array) / self._scaling_coefficient
 
     def to_nd(self):
@@ -111,19 +113,21 @@ class DimensionalityMixin:
 
         # For variables with symbolic representation (MeshVariable, SwarmVariable)
         # Return SymPy expression for JIT compatibility
-        if hasattr(self, 'sym'):
+        if hasattr(self, "sym"):
             import sympy
+
             # Return the symbolic form divided by the scaling coefficient
             # This preserves the original function symbol for JIT substitution
             nd_expr = self.sym / self._scaling_coefficient
 
             # Wrap in UWexpression to preserve metadata
             from underworld3.function import expression
-            var_name = getattr(self, 'name', 'variable')
+
+            var_name = getattr(self, "name", "variable")
             result = expression(
                 f"{var_name}_nd",  # Name string
-                nd_expr,           # The SymPy expression
-                f"Non-dimensional {var_name}"  # Description
+                nd_expr,  # The SymPy expression
+                f"Non-dimensional {var_name}",  # Description
             )
             result._scaling_coefficient = self._scaling_coefficient
             result._is_nondimensional = True
@@ -131,15 +135,16 @@ class DimensionalityMixin:
             return result
 
         # For UWQuantity and similar
-        if hasattr(self, 'value'):
+        if hasattr(self, "value"):
             from underworld3.function.quantities import UWQuantity
+
             nd_value = self.value / self._scaling_coefficient
 
             # Create non-dimensional quantity
             nd_qty = UWQuantity(nd_value, units=None)
             nd_qty._scaling_coefficient = self._scaling_coefficient
             nd_qty._is_nondimensional = True
-            nd_qty._original_units = self.units if hasattr(self, 'units') else None
+            nd_qty._original_units = self.units if hasattr(self, "units") else None
             nd_qty._original_dimensionality = self.dimensionality
             return nd_qty
 
@@ -169,7 +174,7 @@ class DimensionalityMixin:
 
     def _create_nondimensional_expression(self):
         """Create non-dimensional symbolic expression"""
-        if not hasattr(self, 'sym'):
+        if not hasattr(self, "sym"):
             return self
 
         # Create starred symbol for non-dimensional version
@@ -188,10 +193,9 @@ class DimensionalityMixin:
 
         # Create wrapper that knows it's non-dimensional
         from underworld3.function import expression
+
         nd_expr = expression(
-            nd_sym,
-            None,  # No units
-            f"Non-dimensional {getattr(self, 'name', 'expression')}"
+            nd_sym, None, f"Non-dimensional {getattr(self, 'name', 'expression')}"  # No units
         )
         nd_expr._scaling_coefficient = self._scaling_coefficient
         nd_expr._is_nondimensional = True
@@ -215,6 +219,7 @@ class NonDimensionalView:
     def array(self):
         """Return non-dimensionalized array values"""
         import numpy as np
+
         # Get the underlying numpy array and scale it
         original_array = np.array(self._original.array)
         return original_array / self._scaling_coefficient
@@ -228,6 +233,7 @@ class NonDimensionalView:
     def data(self):
         """Return non-dimensionalized data values"""
         import numpy as np
+
         # Get the underlying numpy array and scale it
         original_data = np.array(self._original.data)
         return original_data / self._scaling_coefficient
@@ -240,7 +246,7 @@ class NonDimensionalView:
     @property
     def sym(self):
         """Return non-dimensional symbolic representation"""
-        if hasattr(self._original, 'sym'):
+        if hasattr(self._original, "sym"):
             base_sym = self._original.sym
             if isinstance(base_sym, sympy.Function):
                 # Create starred version

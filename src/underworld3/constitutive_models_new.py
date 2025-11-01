@@ -321,12 +321,7 @@ class ViscousFlowModel(Constitutive_Model):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad\eta = $ "
-                + sympy.sympify(self.Parameters.viscosity)._repr_latex_()
-            )
-        )
+        display(Latex(r"$\quad\eta = $ " + sympy.sympify(self.Parameters.viscosity)._repr_latex_()))
 
 
 class ViscoPlasticFlowModel(ViscousFlowModel):
@@ -390,9 +385,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         def __init__(
             inner_self,
-            materialIndex: Union[
-                uw.swarm.SwarmVariable, uw.discretisation.MeshVariable
-            ] = None,
+            materialIndex: Union[uw.swarm.SwarmVariable, uw.discretisation.MeshVariable] = None,
             shear_viscosity_0: Union[list, sympy.Function] = [1],
             shear_viscosity_min: Union[list, sympy.Function] = [-sympy.oo],
             shear_viscosity_max: Union[list, sympy.Function] = [sympy.oo],
@@ -536,16 +529,12 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                 else:
                     yield_stress_fn = sympy.Max(yield_stress, yield_stress_min)
 
-                if (
-                    yield_stress_fn == sympy.oo
-                    or inner_self.strainrate_inv_II == sympy.oo
-                ):
+                if yield_stress_fn == sympy.oo or inner_self.strainrate_inv_II == sympy.oo:
                     pl_effective_viscosity = sympy.oo
 
                 else:
                     pl_effective_viscosity = yield_stress_fn / (
-                        (2 * inner_self.strainrate_inv_II)
-                        + inner_self.strainrate_inv_II_min
+                        (2 * inner_self.strainrate_inv_II) + inner_self.strainrate_inv_II_min
                     )
 
             else:
@@ -557,9 +546,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                             stacklevel=2,
                         )
                     inner_self.yield_stress = list(
-                        np.repeat(
-                            inner_self.yield_stress[0], inner_self.materialIndex.indices
-                        )
+                        np.repeat(inner_self.yield_stress[0], inner_self.materialIndex.indices)
                     )
 
                 if len(inner_self.yield_stress_min) != inner_self.materialIndex.indices:
@@ -584,24 +571,18 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                     yield_stress_list = []
 
                     for i in range(len(yield_stress)):
-                        yield_stress_list.append(
-                            sympy.Max(yield_stress[i], yield_stress_min[i])
-                        )
+                        yield_stress_list.append(sympy.Max(yield_stress[i], yield_stress_min[i]))
 
                     yield_stress_fn = sympy.Matrix(yield_stress_list)
 
-                if (
-                    yield_stress_fn[0] == sympy.oo
-                    or inner_self.strainrate_inv_II == sympy.oo
-                ):
+                if yield_stress_fn[0] == sympy.oo or inner_self.strainrate_inv_II == sympy.oo:
                     pl_effective_viscosity = list(
                         np.repeat(sympy.oo, inner_self.materialIndex.indices)
                     )
 
                 else:
                     pl_effective_viscosity = yield_stress_fn / (
-                        (2 * inner_self.strainrate_inv_II)
-                        + inner_self.strainrate_inv_II_min
+                        (2 * inner_self.strainrate_inv_II) + inner_self.strainrate_inv_II_min
                     )
 
             return pl_effective_viscosity
@@ -671,10 +652,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                         )
 
             else:
-                if (
-                    len(inner_self.shear_viscosity_0)
-                    != inner_self.materialIndex.indices
-                ):
+                if len(inner_self.shear_viscosity_0) != inner_self.materialIndex.indices:
                     if len(inner_self.shear_viscosity_0) > 1:
                         warnings.warn(
                             f"Number of values in shear_viscosity_0 ({len(inner_self.shear_viscosity_0)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.",
@@ -687,10 +665,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                         )
                     )
 
-                if (
-                    len(inner_self.shear_viscosity_min)
-                    != inner_self.materialIndex.indices
-                ):
+                if len(inner_self.shear_viscosity_min) != inner_self.materialIndex.indices:
                     if len(inner_self.shear_viscosity_min) > 1:
                         warnings.warn(
                             f"Number of values in shear_viscosity_min ({len(inner_self.shear_viscosity_min)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.",
@@ -703,10 +678,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                         )
                     )
 
-                if (
-                    len(inner_self.shear_viscosity_max)
-                    != inner_self.materialIndex.indices
-                ):
+                if len(inner_self.shear_viscosity_max) != inner_self.materialIndex.indices:
                     if len(inner_self.shear_viscosity_max) > 1:
                         warnings.warn(
                             f"Number of values in shear_viscosity_max ({len(inner_self.shear_viscosity_max)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.",
@@ -743,9 +715,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                             viscosity_list.append(
                                 sympy.Min(
                                     shear_viscosity_max[i],
-                                    sympy.Max(
-                                        shear_viscosity_min[i], shear_viscosity_0[i]
-                                    ),
+                                    sympy.Max(shear_viscosity_min[i], shear_viscosity_0[i]),
                                 )
                             )
                     else:
@@ -755,11 +725,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                                     shear_viscosity_max[i],
                                     sympy.Max(
                                         shear_viscosity_min[i],
-                                        1
-                                        / (
-                                            (1 / shear_viscosity_0[i])
-                                            + (1 / yield_visc[i])
-                                        ),
+                                        1 / ((1 / shear_viscosity_0[i]) + (1 / yield_visc[i])),
                                     ),
                                 )
                             )
@@ -767,9 +733,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
                             viscosity_list.append(
                                 sympy.Min(
                                     shear_viscosity_max[i],
-                                    sympy.Max(
-                                        shear_viscosity_min[i], shear_viscosity_0[i]
-                                    ),
+                                    sympy.Max(shear_viscosity_min[i], shear_viscosity_0[i]),
                                 )
                             )
 
@@ -839,9 +803,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
 
         def __init__(
             inner_self,
-            materialIndex: Union[
-                uw.swarm.SwarmVariable, uw.discretisation.MeshVariable
-            ] = None,
+            materialIndex: Union[uw.swarm.SwarmVariable, uw.discretisation.MeshVariable] = None,
             shear_viscosity_0: Union[list, sympy.Function] = [1],
             shear_modulus: Union[list, sympy.Function] = [sympy.oo],
             shear_viscosity_min: Union[list, sympy.Function] = [-sympy.oo],
@@ -1028,10 +990,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                 and type(inner_self.shear_modulus) != list
             ):
                 inner_self.shear_modulus = list([inner_self.shear_modulus])
-            if (
-                type(inner_self.dt_elastic) != np.ndarray
-                and type(inner_self.dt_elastic) != list
-            ):
+            if type(inner_self.dt_elastic) != np.ndarray and type(inner_self.dt_elastic) != list:
                 inner_self.dt_elastic = list([inner_self.dt_elastic])
             if (
                 type(inner_self.shear_viscosity_0) != np.ndarray
@@ -1082,15 +1041,10 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                             stacklevel=2,
                         )
                     inner_self.dt_elastic = list(
-                        np.repeat(
-                            inner_self.dt_elastic[0], inner_self.materialIndex.indices
-                        )
+                        np.repeat(inner_self.dt_elastic[0], inner_self.materialIndex.indices)
                     )
 
-                if (
-                    len(inner_self.shear_viscosity_0)
-                    != inner_self.materialIndex.indices
-                ):
+                if len(inner_self.shear_viscosity_0) != inner_self.materialIndex.indices:
                     if len(inner_self.shear_viscosity_0) > 1:
                         warnings.warn(
                             f"Number of values in shear_viscosity_0 ({len(inner_self.shear_viscosity_0)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.",
@@ -1147,10 +1101,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                 else:
                     yield_stress_fn = sympy.Max(yield_stress, yield_stress_min)
 
-                if (
-                    yield_stress_fn == sympy.oo
-                    or inner_self.strainrate_inv_II == sympy.oo
-                ):
+                if yield_stress_fn == sympy.oo or inner_self.strainrate_inv_II == sympy.oo:
                     pl_effective_viscosity = sympy.oo
 
                 else:
@@ -1168,9 +1119,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                             stacklevel=2,
                         )
                     inner_self.yield_stress = list(
-                        np.repeat(
-                            inner_self.yield_stress[0], inner_self.materialIndex.indices
-                        )
+                        np.repeat(inner_self.yield_stress[0], inner_self.materialIndex.indices)
                     )
 
                 if len(inner_self.yield_stress_min) != inner_self.materialIndex.indices:
@@ -1195,24 +1144,18 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                     yield_stress_list = []
 
                     for i in range(len(yield_stress)):
-                        yield_stress_list.append(
-                            sympy.Max(yield_stress[i], yield_stress_min[i])
-                        )
+                        yield_stress_list.append(sympy.Max(yield_stress[i], yield_stress_min[i]))
 
                     yield_stress_fn = sympy.Matrix(yield_stress_list)
 
-                if (
-                    yield_stress_fn[0] == sympy.oo
-                    or inner_self.strainrate_inv_II == sympy.oo
-                ):
+                if yield_stress_fn[0] == sympy.oo or inner_self.strainrate_inv_II == sympy.oo:
                     pl_effective_viscosity = list(
                         np.repeat(sympy.oo, inner_self.materialIndex.indices)
                     )
 
                 else:
                     pl_effective_viscosity = yield_stress_fn / (
-                        (2 * inner_self.strainrate_inv_II)
-                        + inner_self.strainrate_inv_II_min
+                        (2 * inner_self.strainrate_inv_II) + inner_self.strainrate_inv_II_min
                     )
 
             return pl_effective_viscosity
@@ -1235,9 +1178,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                     if yield_visc != 0:
                         effective_viscosity = sympy.Min(
                             shear_viscosity_max,
-                            sympy.Max(
-                                shear_viscosity_min, sympy.Min(yield_visc, ve_eff_visc)
-                            ),
+                            sympy.Max(shear_viscosity_min, sympy.Min(yield_visc, ve_eff_visc)),
                         )
                     else:
                         effective_viscosity = sympy.Min(
@@ -1260,10 +1201,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                         )
 
             else:
-                if (
-                    len(inner_self.shear_viscosity_min)
-                    != inner_self.materialIndex.indices
-                ):
+                if len(inner_self.shear_viscosity_min) != inner_self.materialIndex.indices:
                     if len(inner_self.shear_viscosity_min) > 1:
                         warnings.warn(
                             f"Number of values in shear_viscosity_min ({len(inner_self.shear_viscosity_min)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.",
@@ -1276,10 +1214,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                         )
                     )
 
-                if (
-                    len(inner_self.shear_viscosity_max)
-                    != inner_self.materialIndex.indices
-                ):
+                if len(inner_self.shear_viscosity_max) != inner_self.materialIndex.indices:
                     if len(inner_self.shear_viscosity_max) > 1:
                         warnings.warn(
                             f"Number of values in shear_viscosity_max ({len(inner_self.shear_viscosity_max)}) does not match the number of material indices ({inner_self.materialIndex.indices}). Using the first value for all materials.",
@@ -1322,8 +1257,7 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                                     shear_viscosity_max[i],
                                     sympy.Max(
                                         shear_viscosity_min[i],
-                                        1
-                                        / ((1 / ve_eff_visc[i]) + (1 / yield_visc[i])),
+                                        1 / ((1 / ve_eff_visc[i]) + (1 / yield_visc[i])),
                                     ),
                                 )
                             )
@@ -1421,12 +1355,8 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
                         - eta * s_star_star / (2 * dt * mu + 3 * eta)
                     )
             else:
-                eta = self.Parameters.materialIndex.createMask(
-                    self.Parameters.shear_viscosity_0
-                )
-                mu = self.Parameters.materialIndex.createMask(
-                    self.Parameters.shear_modulus
-                )
+                eta = self.Parameters.materialIndex.createMask(self.Parameters.shear_viscosity_0)
+                mu = self.Parameters.materialIndex.createMask(self.Parameters.shear_modulus)
                 dt = np.array(self.Parameters.dt_elastic)
                 s_star = self.Parameters.stress_star
                 s_star_star = self.Parameters.stress_star_star
@@ -1459,16 +1389,14 @@ class ViscoElasticPlasticFlowModel(Constitutive_Model):
         display(Markdown(r"#### Elastic deformation"))
         display(
             Latex(
-                r"$\quad\mu = $ "
-                + sympy.sympify(self.Parameters.shear_modulus[0])._repr_latex_(),
+                r"$\quad\mu = $ " + sympy.sympify(self.Parameters.shear_modulus[0])._repr_latex_(),
             ),
             Latex(
                 r"$\quad\Delta t_e = $ "
                 + sympy.sympify(self.Parameters.dt_elastic[0])._repr_latex_(),
             ),
             Latex(
-                r"$\quad \sigma^* = $ "
-                + sympy.sympify(self.Parameters.stress_star)._repr_latex_(),
+                r"$\quad \sigma^* = $ " + sympy.sympify(self.Parameters.stress_star)._repr_latex_(),
             ),
         )
         if self.Parameters.stress_star_star is not None:
@@ -1589,10 +1517,7 @@ class DiffusionModel(Constitutive_Model):
 
         ## feedback on this instance
         display(
-            Latex(
-                r"$\quad\kappa = $ "
-                + sympy.sympify(self.Parameters.diffusivity)._repr_latex_()
-            )
+            Latex(r"$\quad\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_())
         )
 
         return
@@ -1732,18 +1657,8 @@ class TransverseIsotropicFlowModel(Constitutive_Model):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad\eta_0 = $ "
-                + sympy.sympify(self.Parameters.eta_0)._repr_latex_()
-            )
-        )
-        display(
-            Latex(
-                r"$\quad\eta_1 = $ "
-                + sympy.sympify(self.Parameters.eta_1)._repr_latex_()
-            )
-        )
+        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.eta_0)._repr_latex_()))
+        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.eta_1)._repr_latex_()))
         display(
             Latex(
                 r"$\quad\hat{\mathbf{n}} = $ "

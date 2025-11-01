@@ -67,9 +67,7 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
     # #### Set up the Darcy solver
     darcy = uw.systems.SteadyStateDarcy(mesh, p_soln, v_soln)
     darcy.petsc_options.delValue("ksp_monitor")
-    darcy.petsc_options["snes_rtol"] = (
-        1.0e-6  # Needs to be smaller than the contrast in properties
-    )
+    darcy.petsc_options["snes_rtol"] = 1.0e-6  # Needs to be smaller than the contrast in properties
     darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
 
     # #### Set up the hydraulic conductivity layout
@@ -89,7 +87,9 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
     kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 
     darcy.constitutive_model.Parameters.permeability = kFunc
-    darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T  # Row vector to match grad_u shape
+    darcy.constitutive_model.Parameters.s = sympy.Matrix(
+        [0, 0]
+    ).T  # Row vector to match grad_u shape
     darcy.f = 0.0
 
     # set up boundary conditions
@@ -107,9 +107,7 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
     darcy.solve(verbose=True)
 
     # set up interpolation coordinates
-    ycoords = np.linspace(
-        minY + 0.001 * (maxY - minY), maxY - 0.001 * (maxY - minY), 100
-    )
+    ycoords = np.linspace(minY + 0.001 * (maxY - minY), maxY - 0.001 * (maxY - minY), 100)
     xcoords = np.full_like(ycoords, -0.5)
     xy_coords = np.column_stack([xcoords, ycoords])
 
@@ -152,12 +150,13 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
         ],
     )
 
-    darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T  # Row vector to match grad_u shape
+    darcy.constitutive_model.Parameters.s = sympy.Matrix(
+        [0, -1]
+    ).T  # Row vector to match grad_u shape
     darcy.solve()
     darcy.view()
 
     print(darcy.F1.sym)
-
 
     pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords).squeeze()
 
@@ -178,9 +177,16 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
             ax1 = axes[0, 0]
             coords = p_soln.coords
             pressure_vals = p_soln.array[...].flatten()
-            scatter1 = ax1.scatter(coords[:, 0], coords[:, 1], c=pressure_vals,
-                                  s=15, cmap="viridis", alpha=0.8)
-            ax1.axhline(y=interfaceY, color='r', linestyle='--', linewidth=2, label=f'Interface (y={interfaceY})')
+            scatter1 = ax1.scatter(
+                coords[:, 0], coords[:, 1], c=pressure_vals, s=15, cmap="viridis", alpha=0.8
+            )
+            ax1.axhline(
+                y=interfaceY,
+                color="r",
+                linestyle="--",
+                linewidth=2,
+                label=f"Interface (y={interfaceY})",
+            )
             ax1.set_xlabel("x")
             ax1.set_ylabel("y")
             ax1.set_title("Pressure Field (with gravity)")
@@ -192,10 +198,16 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
             ax2 = axes[0, 1]
             vel_coords = v_soln.coords
             vel_vals = v_soln.array
-            ax2.quiver(vel_coords[::3, 0], vel_coords[::3, 1],
-                      vel_vals[::3, 0, 0], vel_vals[::3,0, 1],
-                      alpha=0.6, scale=5, width=0.003)
-            ax2.axhline(y=interfaceY, color='r', linestyle='--', linewidth=2)
+            ax2.quiver(
+                vel_coords[::3, 0],
+                vel_coords[::3, 1],
+                vel_vals[::3, 0, 0],
+                vel_vals[::3, 0, 1],
+                alpha=0.6,
+                scale=5,
+                width=0.003,
+            )
+            ax2.axhline(y=interfaceY, color="r", linestyle="--", linewidth=2)
             ax2.set_xlabel("x")
             ax2.set_ylabel("y")
             ax2.set_title(f"Velocity Field (k1={k1}, k2={k2})")
@@ -203,15 +215,24 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
 
             # Plot 3: Pressure profile comparison (no gravity)
             ax3 = axes[1, 0]
-            ax3.plot(ycoords, pressure_analytic_noG, 'r-', linewidth=2, label='Analytical (no G)')
+            ax3.plot(ycoords, pressure_analytic_noG, "r-", linewidth=2, label="Analytical (no G)")
 
             # Re-solve without gravity for profile comparison
-            darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T  # Row vector to match grad_u shape
+            darcy.constitutive_model.Parameters.s = sympy.Matrix(
+                [0, 0]
+            ).T  # Row vector to match grad_u shape
             darcy.solve(verbose=False)
             pressure_interp_noG = uw.function.evaluate(p_soln.sym[0], xy_coords).squeeze()
-            ax3.plot(ycoords, pressure_interp_noG, 'bo', markersize=4, alpha=0.6, label='Numerical (no G)')
+            ax3.plot(
+                ycoords,
+                pressure_interp_noG,
+                "bo",
+                markersize=4,
+                alpha=0.6,
+                label="Numerical (no G)",
+            )
 
-            ax3.axvline(x=interfaceY, color='gray', linestyle='--', alpha=0.5)
+            ax3.axvline(x=interfaceY, color="gray", linestyle="--", alpha=0.5)
             ax3.set_xlabel("y coordinate")
             ax3.set_ylabel("Pressure")
             ax3.set_title("Vertical Pressure Profile (no gravity)")
@@ -220,9 +241,11 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
 
             # Plot 4: Pressure profile comparison (with gravity)
             ax4 = axes[1, 1]
-            ax4.plot(ycoords, pressure_analytic, 'r-', linewidth=2, label='Analytical (with G)')
-            ax4.plot(ycoords, pressure_interp, 'go', markersize=4, alpha=0.6, label='Numerical (with G)')
-            ax4.axvline(x=interfaceY, color='gray', linestyle='--', alpha=0.5)
+            ax4.plot(ycoords, pressure_analytic, "r-", linewidth=2, label="Analytical (with G)")
+            ax4.plot(
+                ycoords, pressure_interp, "go", markersize=4, alpha=0.6, label="Numerical (with G)"
+            )
+            ax4.axvline(x=interfaceY, color="gray", linestyle="--", alpha=0.5)
             ax4.set_xlabel("y coordinate")
             ax4.set_ylabel("Pressure")
             ax4.set_title("Vertical Pressure Profile (with gravity)")

@@ -18,7 +18,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -29,11 +29,7 @@ class TestEnhancedMeshVariableAPIConsistency:
     @pytest.fixture
     def basic_mesh(self):
         """Create a basic mesh for testing."""
-        return uw.meshing.StructuredQuadBox(
-            elementRes=(4, 4),
-            minCoords=(0, 0),
-            maxCoords=(1, 1)
-        )
+        return uw.meshing.StructuredQuadBox(elementRes=(4, 4), minCoords=(0, 0), maxCoords=(1, 1))
 
     def test_factory_function_is_preferred_api(self, basic_mesh):
         """Test that factory function is the correct API."""
@@ -44,7 +40,7 @@ class TestEnhancedMeshVariableAPIConsistency:
                 "test_var", basic_mesh, 1, vtype=uw.VarType.SCALAR
             )
             assert enhanced_var is not None
-            assert hasattr(enhanced_var, 'name')
+            assert hasattr(enhanced_var, "name")
             assert enhanced_var.name == "test_var"
 
         except Exception as e:
@@ -57,7 +53,7 @@ class TestEnhancedMeshVariableAPIConsistency:
         # This test verifies that EnhancedMeshVariable is not easily accessible
 
         # Check if EnhancedMeshVariable is exposed at top level
-        has_enhanced_class = hasattr(uw, 'EnhancedMeshVariable')
+        has_enhanced_class = hasattr(uw, "EnhancedMeshVariable")
 
         if has_enhanced_class:
             # If it's exposed, it should work but should be discouraged
@@ -92,7 +88,7 @@ class TestEnhancedMeshVariableAPIConsistency:
         enhanced_var = uw.create_enhanced_mesh_variable("enhanced", basic_mesh, 1)
 
         # Both should have similar basic interface
-        common_attributes = ['name', 'mesh', 'num_components', 'data']
+        common_attributes = ["name", "mesh", "num_components", "data"]
 
         for attr in common_attributes:
             assert hasattr(regular_var, attr), f"Regular variable missing {attr}"
@@ -114,8 +110,8 @@ class TestEnhancedMeshVariableAPIConsistency:
             )
 
             # Both should handle units consistently
-            if hasattr(regular_with_units, 'units'):
-                assert hasattr(enhanced_with_units, 'units')
+            if hasattr(regular_with_units, "units"):
+                assert hasattr(enhanced_with_units, "units")
 
                 # Units should be comparable
                 reg_units = str(regular_with_units.units)
@@ -137,8 +133,8 @@ class TestFactoryFunctionPatterns:
         """Test that create_* factory functions exist where expected."""
 
         factory_functions = [
-            'create_enhanced_mesh_variable',
-            'create_quantity',  # From units system
+            "create_enhanced_mesh_variable",
+            "create_quantity",  # From units system
         ]
 
         for func_name in factory_functions:
@@ -151,13 +147,13 @@ class TestFactoryFunctionPatterns:
         """Test that factory functions have proper documentation."""
 
         # Factory functions should have docstrings
-        create_enhanced = getattr(uw, 'create_enhanced_mesh_variable')
+        create_enhanced = getattr(uw, "create_enhanced_mesh_variable")
         assert create_enhanced.__doc__ is not None
         assert len(create_enhanced.__doc__.strip()) > 0
 
         # Should document parameters
         doc = create_enhanced.__doc__.lower()
-        expected_params = ['name', 'mesh', 'num_components']
+        expected_params = ["name", "mesh", "num_components"]
 
         for param in expected_params:
             assert param in doc, f"Factory function doc missing parameter: {param}"
@@ -165,17 +161,13 @@ class TestFactoryFunctionPatterns:
     def test_factory_vs_direct_class_equivalence(self):
         """Test that factory functions produce equivalent objects to direct classes."""
 
-        mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(3, 3),
-            minCoords=(0, 0),
-            maxCoords=(1, 1)
-        )
+        mesh = uw.meshing.StructuredQuadBox(elementRes=(3, 3), minCoords=(0, 0), maxCoords=(1, 1))
 
         # Create via factory function
         factory_var = uw.create_enhanced_mesh_variable("factory", mesh, 1)
 
         # If direct class is accessible, compare
-        if hasattr(uw, 'EnhancedMeshVariable'):
+        if hasattr(uw, "EnhancedMeshVariable"):
             try:
                 direct_var = uw.EnhancedMeshVariable("direct", mesh, 1)
 
@@ -197,16 +189,16 @@ class TestAPIBreakagePreventionPatterns:
 
         # These import patterns should remain stable
         stable_imports = [
-            'underworld3',
-            'underworld3.meshing',
-            'underworld3.discretisation',
-            'underworld3.function',
-            'underworld3.units',
+            "underworld3",
+            "underworld3.meshing",
+            "underworld3.discretisation",
+            "underworld3.function",
+            "underworld3.units",
         ]
 
         for import_path in stable_imports:
             try:
-                module = __import__(import_path, fromlist=[''])
+                module = __import__(import_path, fromlist=[""])
                 assert module is not None
             except ImportError:
                 pytest.fail(f"Stable import failed: {import_path}")
@@ -214,17 +206,13 @@ class TestAPIBreakagePreventionPatterns:
     def test_factory_function_parameter_stability(self):
         """Test that factory function parameters remain stable."""
 
-        mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(2, 2),
-            minCoords=(0, 0),
-            maxCoords=(1, 1)
-        )
+        mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2), minCoords=(0, 0), maxCoords=(1, 1))
 
         # Core parameters should remain stable
         stable_parameters = {
-            'varname': 'test_name',  # CORRECT: factory function uses 'varname' not 'name'
-            'mesh': mesh,
-            'num_components': 1,
+            "varname": "test_name",  # CORRECT: factory function uses 'varname' not 'name'
+            "mesh": mesh,
+            "num_components": 1,
         }
 
         try:
@@ -279,8 +267,8 @@ class TestUnitsSystemAPIConsistency:
 
         # Core units functionality should be accessible
         units_api = [
-            'units',           # Units registry
-            'create_quantity', # Factory function
+            "units",  # Units registry
+            "create_quantity",  # Factory function
         ]
 
         for api_item in units_api:
@@ -289,16 +277,12 @@ class TestUnitsSystemAPIConsistency:
     def test_units_integration_consistency(self):
         """Test that units integrate consistently across subsystems."""
 
-        mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(2, 2),
-            minCoords=(0, 0),
-            maxCoords=(1, 1)
-        )
+        mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2), minCoords=(0, 0), maxCoords=(1, 1))
 
         # Units should work with both variable types
         var_types = [
-            ('regular', uw.discretisation.MeshVariable),
-            ('enhanced', uw.create_enhanced_mesh_variable),
+            ("regular", uw.discretisation.MeshVariable),
+            ("enhanced", uw.create_enhanced_mesh_variable),
         ]
 
         for var_name, var_creator in var_types:
@@ -310,9 +294,7 @@ class TestUnitsSystemAPIConsistency:
 
                 # Should have units attribute or method
                 has_units = (
-                    hasattr(var, 'units') or
-                    hasattr(var, 'get_units') or
-                    hasattr(var, 'has_units')
+                    hasattr(var, "units") or hasattr(var, "get_units") or hasattr(var, "has_units")
                 )
 
                 assert has_units, f"{var_name} variable type doesn't support units"

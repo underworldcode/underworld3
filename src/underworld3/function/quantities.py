@@ -52,7 +52,7 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
     >>> time_scale = distance / velocity  # Automatic unit calculation
     """
 
-    def __init__(self, value: Union[float, int, sympy.Basic], units: Optional[str] = None, _custom_units: Optional[str] = None, _model_registry=None, _model_instance=None):
+    def __init__(self, value: Union[float, int, sympy.Basic], units: Optional[str] = None, dimensionality: Optional[dict] = None, _custom_units: Optional[str] = None, _model_registry=None, _model_instance=None):
         """
         Initialize a UWQuantity.
 
@@ -62,6 +62,9 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
             The value of the quantity
         units : str, optional
             Units specification
+        dimensionality : dict, optional
+            Pint dimensionality dictionary (e.g., {'[length]': 1, '[time]': -1} for velocity).
+            Used to preserve original dimensionality for dimensionless quantities.
         _custom_units : str, optional
             Custom unit name that bypasses Pint validation (for model units)
         """
@@ -110,6 +113,17 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
             self._has_custom_units = False
             self._has_pint_qty = False
 
+        # Dimensionality tracking for non-dimensionalization/re-dimensionalization
+        if dimensionality is not None:
+            # Explicitly provided dimensionality (for dimensionless with memory)
+            self._dimensionality = dimensionality
+        elif self._has_pint_qty and hasattr(self._pint_qty, 'dimensionality'):
+            # Extract from Pint quantity (normal case)
+            self._dimensionality = dict(self._pint_qty.dimensionality)
+        else:
+            # No dimensionality information
+            self._dimensionality = {}
+
     @property
     def value(self) -> Union[float, sympy.Basic]:
         """Get the value in the quantity's specified units."""
@@ -150,6 +164,32 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
     def sym(self) -> sympy.Basic:
         """Get the symbolic representation (in model base units if scaled)."""
         return self._sym
+
+    @property
+    def dimensionality(self) -> dict:
+        """
+        Get dimensionality information (Pint format).
+
+        Returns the dimensionality dictionary, e.g., {'[length]': 1, '[time]': -1} for velocity.
+        This allows re-dimensionalization of dimensionless quantities by preserving their
+        original dimensional nature.
+
+        Returns
+        -------
+        dict
+            Pint dimensionality dictionary, empty dict {} if dimensionless
+
+        Examples
+        --------
+        >>> velocity = uw.quantity(5, "cm/year")
+        >>> velocity.dimensionality
+        {'[length]': 1, '[time]': -1}
+
+        >>> nondim_velocity = uw.quantity(1.5, "dimensionless", dimensionality={'[length]': 1, '[time]': -1})
+        >>> nondim_velocity.dimensionality
+        {'[length]': 1, '[time]': -1}
+        """
+        return self._dimensionality
 
     @classmethod
     def _from_pint(cls, pint_qty, model_registry=None):

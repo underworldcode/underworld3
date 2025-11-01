@@ -15,7 +15,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -32,14 +32,11 @@ class TestVariableUnitsIntegration:
         self.model.set_reference_quantities(
             characteristic_length=1000 * uw.units.km,
             plate_velocity=5 * uw.units.cm / uw.units.year,
-            mantle_temperature=1500 * uw.units.kelvin
+            mantle_temperature=1500 * uw.units.kelvin,
         )
 
         self.mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(4, 4),
-            minCoords=(0.0, 0.0),
-            maxCoords=(1.0, 1.0),
-            qdegree=2
+            elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=2
         )
 
     def test_mesh_variable_units_storage_and_retrieval(self):
@@ -87,7 +84,9 @@ class TestVariableUnitsIntegration:
         assert velocity.units is not None
         assert material_id.units is None
 
-    @pytest.mark.skip(reason="coord_units parameter not implemented - planned feature for evaluate()")
+    @pytest.mark.skip(
+        reason="coord_units parameter not implemented - planned feature for evaluate()"
+    )
     def test_unit_aware_evaluation_returns_uwquantity(self):
         """Test that evaluating variables with units returns UnitAwareArray with unit metadata."""
         # Create temperature field with units
@@ -100,10 +99,10 @@ class TestVariableUnitsIntegration:
         coords_km = np.array([[500, 500]], dtype=np.float64)
 
         # Evaluate with coordinate units - should return UnitAwareArray
-        result = uw.function.evaluate(temperature.sym, coords_km, coord_units='km')
+        result = uw.function.evaluate(temperature.sym, coords_km, coord_units="km")
 
         # Check result type and units
-        assert hasattr(result, '_units'), f"Expected UnitAwareArray with units, got {type(result)}"
+        assert hasattr(result, "_units"), f"Expected UnitAwareArray with units, got {type(result)}"
         assert result._units is not None, "Result should have units metadata"
         assert "kelvin" in str(result._units), f"Expected kelvin units, got {result._units}"
 
@@ -111,7 +110,9 @@ class TestVariableUnitsIntegration:
         assert isinstance(result, np.ndarray), "Result should be numpy array compatible"
         assert result.shape == (1, 1, 1), f"Expected shape (1,1,1), got {result.shape}"
 
-    @pytest.mark.skip(reason="coord_units parameter not implemented - planned feature for evaluate()")
+    @pytest.mark.skip(
+        reason="coord_units parameter not implemented - planned feature for evaluate()"
+    )
     def test_dimensionless_evaluation_returns_plain_array(self):
         """Test that evaluating variables without explicit units returns plain array."""
         # Create variable without explicit units
@@ -124,11 +125,11 @@ class TestVariableUnitsIntegration:
         coords_km = np.array([[500, 500]], dtype=np.float64)
 
         # Evaluate - should return plain numpy array (no units)
-        result = uw.function.evaluate(dimensionless.sym, coords_km, coord_units='km')
+        result = uw.function.evaluate(dimensionless.sym, coords_km, coord_units="km")
 
         # Check result type - variable has no units, so result should be plain array
         assert isinstance(result, np.ndarray), f"Expected numpy array, got {type(result)}"
-        assert not hasattr(result, '_pint_qty'), "Result should not have units"
+        assert not hasattr(result, "_pint_qty"), "Result should not have units"
 
     def test_mixed_unit_variable_evaluation(self):
         """Test evaluation of expressions mixing variables with different units."""
@@ -148,10 +149,10 @@ class TestVariableUnitsIntegration:
         temp_result = uw.function.evaluate(temperature.sym, coords)
         vel_result = uw.function.evaluate(velocity.sym, coords)
 
-        if hasattr(temp_result, '_units'):
+        if hasattr(temp_result, "_units"):
             assert "K" in str(temp_result._units) or "kelvin" in str(temp_result._units)
 
-        if hasattr(vel_result, '_units'):
+        if hasattr(vel_result, "_units"):
             assert "m" in str(vel_result._units) or "meter" in str(vel_result._units)
 
     def test_units_persist_through_mathematical_operations(self):
@@ -159,7 +160,7 @@ class TestVariableUnitsIntegration:
         velocity = uw.discretisation.MeshVariable("v", self.mesh, 2, units="m/s")
 
         # Test mathematical operations create valid expressions
-        velocity_magnitude = (velocity[0]**2 + velocity[1]**2)**0.5
+        velocity_magnitude = (velocity[0] ** 2 + velocity[1] ** 2) ** 0.5
         # Use simple arithmetic operations to avoid scaling issues
         velocity_sum = velocity[0] + velocity[1]  # Simpler operation
 
@@ -198,8 +199,8 @@ class TestVariableUnitsIntegration:
         assert isinstance(p_result, np.ndarray), f"Expected numpy array, got {type(p_result)}"
 
         # Variables without explicit units should NOT have units
-        assert not hasattr(v_result, '_pint_qty')
-        assert not hasattr(p_result, '_pint_qty')
+        assert not hasattr(v_result, "_pint_qty")
+        assert not hasattr(p_result, "_pint_qty")
 
     def test_unit_metadata_survives_array_operations(self):
         """Test that unit metadata persists through array access and modification."""

@@ -13,7 +13,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -33,7 +33,7 @@ class TestMeshUnitsRealisticUseCases:
             elementRes=(64, 64),
             minCoords=(0.0, 0.0),
             maxCoords=(2900.0, 2900.0),  # Mantle depth/width
-            units="km"  # PROPOSED: Explicit units
+            units="km",  # PROPOSED: Explicit units
         )
 
         print(f"Mesh scale: {mantle_mesh.X.coords.max()} {mantle_mesh.units}")
@@ -44,7 +44,7 @@ class TestMeshUnitsRealisticUseCases:
         model.set_reference_quantities(
             mantle_depth=2900 * uw.units.km,  # Matches mesh
             mantle_viscosity=1e21 * uw.units.Pa * uw.units.s,
-            plate_velocity=5 * uw.units.cm / uw.units.year
+            plate_velocity=5 * uw.units.cm / uw.units.year,
         )
 
         # 3. Convert mesh to model units for numerics
@@ -68,8 +68,12 @@ class TestMeshUnitsRealisticUseCases:
 
         # 7. Dimensionless numbers with clear physical meaning
         rayleigh_number = (
-            thermal_expansion * gravity * model.to_model_units(mantle_mesh.units)**3
-            * (1600 - 300) * uw.units.K / (1e21 * uw.units.Pa * uw.units.s * 1e-6 * uw.units.m**2 / uw.units.s)
+            thermal_expansion
+            * gravity
+            * model.to_model_units(mantle_mesh.units) ** 3
+            * (1600 - 300)
+            * uw.units.K
+            / (1e21 * uw.units.Pa * uw.units.s * 1e-6 * uw.units.m**2 / uw.units.s)
         )
 
         print(f"Rayleigh number: {rayleigh_number:.2e}")
@@ -89,25 +93,31 @@ class TestMeshUnitsRealisticUseCases:
         # REALISTIC WORKFLOW: Processing field survey data
 
         # 1. Survey data comes with coordinates in various units
-        survey_points_utm = np.array([
-            [500000.0, 4000000.0],  # UTM coordinates in meters
-            [500100.0, 4000100.0],
-            [500200.0, 4000200.0],
-        ])
+        survey_points_utm = np.array(
+            [
+                [500000.0, 4000000.0],  # UTM coordinates in meters
+                [500100.0, 4000100.0],
+                [500200.0, 4000200.0],
+            ]
+        )
 
         # 2. Create mesh from survey area with explicit units
         survey_mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=(499900.0, 3999900.0),
             maxCoords=(500300.0, 4000300.0),
             cellSize=50.0,  # 50 meter cells
-            units="m"  # UTM coordinates in meters
+            units="m",  # UTM coordinates in meters
         )
 
-        print(f"Survey mesh extent: {survey_mesh.X.coords.min():.0f} to {survey_mesh.X.coords.max():.0f} {survey_mesh.units}")
+        print(
+            f"Survey mesh extent: {survey_mesh.X.coords.min():.0f} to {survey_mesh.X.coords.max():.0f} {survey_mesh.units}"
+        )
 
         # 3. Convert to different coordinate systems as needed
         survey_mesh_km = survey_mesh.to_units("km")
-        print(f"Same extent in km: {survey_mesh_km.X.coords.min():.3f} to {survey_mesh_km.X.coords.max():.3f} km")
+        print(
+            f"Same extent in km: {survey_mesh_km.X.coords.min():.3f} to {survey_mesh_km.X.coords.max():.3f} km"
+        )
 
         # 4. Create geological variables with appropriate units
         elevation = uw.discretisation.MeshVariable("elevation", survey_mesh, 1, units="m")
@@ -142,7 +152,7 @@ class TestMeshUnitsRealisticUseCases:
             elementRes=(32, 32),
             minCoords=(0.0, 0.0),
             maxCoords=(1000.0, 1000.0),  # 1000 km region
-            units="km"
+            units="km",
         )
 
         # 2. Local model: outcrop scale
@@ -150,18 +160,20 @@ class TestMeshUnitsRealisticUseCases:
             elementRes=(64, 64),
             minCoords=(450.0, 450.0),  # Subset of regional
             maxCoords=(550.0, 550.0),
-            units="km"
+            units="km",
         )
 
         print(f"Regional scale: {regional_mesh.X.coords.max():.0f} {regional_mesh.units}")
-        print(f"Local scale: {local_mesh.X.coords.max() - local_mesh.X.coords.min():.0f} {local_mesh.units}")
+        print(
+            f"Local scale: {local_mesh.X.coords.max() - local_mesh.X.coords.min():.0f} {local_mesh.units}"
+        )
 
         # 3. Detail model: laboratory scale
         detail_mesh = uw.meshing.StructuredQuadBox(
             elementRes=(32, 32),
             minCoords=(0.0, 0.0),
             maxCoords=(10.0, 10.0),  # 10 cm sample
-            units="cm"
+            units="cm",
         )
 
         # 4. Coordinate transformations between scales
@@ -172,7 +184,9 @@ class TestMeshUnitsRealisticUseCases:
         print(f"Detail model in meters: {detail_in_meters.X.coords.max():.2f} m")
 
         # 5. Variables with scale-appropriate units
-        regional_velocity = uw.discretisation.MeshVariable("v_regional", regional_mesh, 2, units="cm/year")
+        regional_velocity = uw.discretisation.MeshVariable(
+            "v_regional", regional_mesh, 2, units="cm/year"
+        )
         local_stress = uw.discretisation.MeshVariable("stress_local", local_mesh, 1, units="MPa")
         detail_strain = uw.discretisation.MeshVariable("strain_detail", detail_mesh, 1, units="1")
 
@@ -200,7 +214,7 @@ class TestMeshUnitsRealisticUseCases:
             elementRes=(16, 16),
             minCoords=(0.0, 0.0),
             maxCoords=(50.0, 50.0),  # 50 cm experimental setup
-            units="cm"
+            units="cm",
         )
 
         # 2. Create experimental data
@@ -210,12 +224,12 @@ class TestMeshUnitsRealisticUseCases:
         # 3. Export with unit metadata
         # This should preserve both coordinate units and variable units
         export_data = {
-            'coordinates': experiment_mesh.X.coords,  # UWQuantity with cm units
-            'coordinate_units': str(experiment_mesh.units),
-            'temperature': temperature.data,
-            'temperature_units': str(temperature.units),
-            'pressure': pressure.data,
-            'pressure_units': str(pressure.units),
+            "coordinates": experiment_mesh.X.coords,  # UWQuantity with cm units
+            "coordinate_units": str(experiment_mesh.units),
+            "temperature": temperature.data,
+            "temperature_units": str(temperature.units),
+            "pressure": pressure.data,
+            "pressure_units": str(pressure.units),
         }
 
         print(f"Export data coordinate units: {export_data['coordinate_units']}")
@@ -226,7 +240,7 @@ class TestMeshUnitsRealisticUseCases:
             elementRes=(32, 32),
             minCoords=(0.0, 0.0),
             maxCoords=(0.5, 0.5),  # Same physical size in meters
-            units="m"
+            units="m",
         )
 
         # Coordinates should be automatically converted: 50 cm = 0.5 m
@@ -247,7 +261,7 @@ class TestMeshUnitsRealisticUseCases:
         mesh = uw.meshing.StructuredQuadBox(
             elementRes=(4, 4),
             minCoords=(0.0, 0.0),
-            maxCoords=(2900.0, 2900.0)  # What units? Unknown!
+            maxCoords=(2900.0, 2900.0),  # What units? Unknown!
         )
 
         # Users must track units manually
@@ -267,7 +281,7 @@ class TestMeshUnitsRealisticUseCases:
             "No automatic unit conversion",
             "Gradients have unclear units",
             "Data export loses unit information",
-            "Visualization has ambiguous scales"
+            "Visualization has ambiguous scales",
         ]
 
         print("\nProblems with current approach:")
@@ -283,7 +297,7 @@ if __name__ == "__main__":
     test = TestMeshUnitsRealisticUseCases()
     test.test_current_state_documentation()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("NOTE: Workflow tests are skipped - they demonstrate")
     print("the proposed interface that is not yet implemented.")
     print("Run with pytest to see all test cases.")

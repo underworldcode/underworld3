@@ -16,10 +16,11 @@ def delta(
 
     return delta_fn
 
+
 def L2_norm(n_s, a_s, mesh):
     """
     Compute the L2 norm (Euclidean norm) of the difference between numerical and analytical solutions.
-    
+
     Parameters:
     n_s   : Numeric solution (scalar or vector field)
     a_s   : Analytic solution (scalar or vector field)
@@ -36,17 +37,15 @@ def L2_norm(n_s, a_s, mesh):
         # Compute squared difference for scalars
         squared_difference = (n_s - a_s) ** 2
 
-
     # Integral over the domain
     I = maths.Integral(mesh, squared_difference)
 
     # Compute the L2 norm
-    L2 = sympy.sqrt( I.evaluate() )
+    L2 = sympy.sqrt(I.evaluate())
 
     return L2
 
+
 # Definitions of expressions that are used in various places within underworld
 
-vanishing = function.expressions.UWexpression(
-    r"\varepsilon", 1e-18, "vanishingly small value"
-)
+vanishing = function.expressions.UWexpression(r"\varepsilon", 1e-18, "vanishingly small value")

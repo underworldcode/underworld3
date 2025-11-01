@@ -19,7 +19,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -92,9 +92,9 @@ class TestRecursionPreventionInMathematicalObjects:
             compound3 = expr1 / (expr2 + expr3)
 
             # Should be able to call atoms on compound expressions
-            atoms1 = compound1.atoms(sympy.Symbol) if hasattr(compound1, 'atoms') else set()
-            atoms2 = compound2.atoms(sympy.Symbol) if hasattr(compound2, 'atoms') else set()
-            atoms3 = compound3.atoms(sympy.Symbol) if hasattr(compound3, 'atoms') else set()
+            atoms1 = compound1.atoms(sympy.Symbol) if hasattr(compound1, "atoms") else set()
+            atoms2 = compound2.atoms(sympy.Symbol) if hasattr(compound2, "atoms") else set()
+            atoms3 = compound3.atoms(sympy.Symbol) if hasattr(compound3, "atoms") else set()
 
             # All should return sets
             assert isinstance(atoms1, set)
@@ -132,11 +132,13 @@ class TestRecursionPreventionInMathematicalObjects:
             # This function evaluation was causing recursion in estimate_dt()
             max_diffusivity = uw.function.evaluate(
                 adv_diff.constitutive_model.Parameters.diffusivity,
-                temperature.coords[:5]  # Small subset
+                temperature.coords[:5],  # Small subset
             )
 
             assert max_diffusivity is not None
-            assert isinstance(max_diffusivity, (float, int, complex)) or hasattr(max_diffusivity, 'shape')
+            assert isinstance(max_diffusivity, (float, int, complex)) or hasattr(
+                max_diffusivity, "shape"
+            )
 
         except RecursionError:
             pytest.fail("Advection-diffusion parameter evaluation caused recursion")
@@ -175,14 +177,14 @@ class TestSymPyIntegrationRecursionPrevention:
     def test_sympy_substitution_no_recursion(self):
         """Test that SymPy substitution doesn't cause recursion."""
 
-        expr = uw.function.expression(r"sub_test", sym=sympy.Symbol('x'))
+        expr = uw.function.expression(r"sub_test", sym=sympy.Symbol("x"))
 
         old_limit = sys.getrecursionlimit()
         sys.setrecursionlimit(100)
 
         try:
             # Substitution operations should not cause recursion
-            x = sympy.Symbol('x')
+            x = sympy.Symbol("x")
             substituted = expr.subs(x, 2.0)
 
             assert substituted is not None
@@ -195,8 +197,8 @@ class TestSymPyIntegrationRecursionPrevention:
     def test_sympy_differentiation_no_recursion(self):
         """Test that SymPy differentiation doesn't cause recursion."""
 
-        x = sympy.Symbol('x')
-        expr = uw.function.expression(r"diff_test", sym=x**2 + 2*x + 1)
+        x = sympy.Symbol("x")
+        expr = uw.function.expression(r"diff_test", sym=x**2 + 2 * x + 1)
 
         old_limit = sys.getrecursionlimit()
         sys.setrecursionlimit(100)
@@ -232,7 +234,9 @@ class TestRecursionPreventionInSolvers:
         # Create solver
         adv_diff = uw.systems.AdvDiffusion(mesh, u_Field=temperature, V_fn=velocity)
         adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
-        adv_diff.constitutive_model.Parameters.diffusivity = uw.function.expression(r"\kappa", sym=1e-6)
+        adv_diff.constitutive_model.Parameters.diffusivity = uw.function.expression(
+            r"\kappa", sym=1e-6
+        )
 
         old_limit = sys.getrecursionlimit()
         # Set limit high enough for SymPy tree traversal but low enough to catch infinite loops
@@ -246,7 +250,8 @@ class TestRecursionPreventionInSolvers:
             assert dt_estimate is not None
             # Can be float, int, or numpy scalar
             import numpy as np
-            if hasattr(dt_estimate, 'item'):
+
+            if hasattr(dt_estimate, "item"):
                 dt_val = dt_estimate.item()
             else:
                 dt_val = float(dt_estimate)
@@ -283,7 +288,7 @@ class TestRecursionPreventionInSolvers:
             visc_param = constitutive_model.Parameters.shear_viscosity_0
 
             # Should be able to evaluate it
-            if hasattr(visc_param, 'atoms'):
+            if hasattr(visc_param, "atoms"):
                 atoms = visc_param.atoms(sympy.Symbol)
                 assert isinstance(atoms, set)
 
@@ -330,12 +335,12 @@ class TestRecursionDetectionUtilities:
             def atoms(self, *types):
                 # SAFE: sympify first, then call atoms on result
                 sympified = self._sympify_()
-                if sympified is not self and hasattr(sympified, 'atoms'):
+                if sympified is not self and hasattr(sympified, "atoms"):
                     return sympified.atoms(*types)
                 return set()
 
         # Test safe pattern
-        safe_obj = SafeObject(sympy.Symbol('x'))
+        safe_obj = SafeObject(sympy.Symbol("x"))
 
         old_limit = sys.getrecursionlimit()
         sys.setrecursionlimit(50)
@@ -355,7 +360,7 @@ class TestRecursionDetectionUtilities:
         # Helper function to detect potential recursion
         def check_for_recursion_risk(obj):
             """Check if an object might cause recursion in atoms()."""
-            if not hasattr(obj, '_sympify_') or not hasattr(obj, 'atoms'):
+            if not hasattr(obj, "_sympify_") or not hasattr(obj, "atoms"):
                 return False
 
             # Check if _sympify_() returns self (recursion risk)

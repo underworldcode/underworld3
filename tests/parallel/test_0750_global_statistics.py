@@ -41,7 +41,7 @@ def test_global_max_consistency():
     global_max = y_coord.global_max()
 
     # Verify units preserved
-    assert hasattr(global_max, 'units'), "global_max should preserve units"
+    assert hasattr(global_max, "units"), "global_max should preserve units"
     assert str(global_max.units) == "kilometer", f"Expected 'kilometer', got {global_max.units}"
 
     # Verify consistency across ranks
@@ -70,7 +70,7 @@ def test_global_min_consistency():
     global_min = x_coord.global_min()
 
     # Verify units preserved
-    assert hasattr(global_min, 'units'), "global_min should preserve units"
+    assert hasattr(global_min, "units"), "global_min should preserve units"
     assert str(global_min.units) == "meter", f"Expected 'meter', got {global_min.units}"
 
     # Verify consistency across ranks
@@ -94,11 +94,12 @@ def test_global_mean_calculation():
     expected_mean = (uw.mpi.size + 1) / 2.0
 
     # Verify calculation
-    assert abs(float(global_mean) - expected_mean) < 1e-10, \
-        f"Expected mean {expected_mean}, got {float(global_mean)}"
+    assert (
+        abs(float(global_mean) - expected_mean) < 1e-10
+    ), f"Expected mean {expected_mean}, got {float(global_mean)}"
 
     # Verify units preserved
-    assert hasattr(global_mean, 'units'), "global_mean should preserve units"
+    assert hasattr(global_mean, "units"), "global_mean should preserve units"
     assert str(global_mean.units) == "kelvin", f"Expected 'kelvin', got {global_mean.units}"
 
     # Verify consistency
@@ -123,14 +124,16 @@ def test_global_size():
     all_sizes = uw.mpi.comm.gather(local_size, root=0)
     if uw.mpi.rank == 0:
         expected_size = sum(all_sizes)
-        assert global_size == expected_size, \
-            f"Expected total size {expected_size}, got {global_size}"
+        assert (
+            global_size == expected_size
+        ), f"Expected total size {expected_size}, got {global_size}"
 
     # Verify consistency across ranks
     all_global_sizes = uw.mpi.comm.gather(global_size, root=0)
     if uw.mpi.rank == 0:
-        assert len(set(all_global_sizes)) == 1, \
-            f"All ranks must have same global_size, got {all_global_sizes}"
+        assert (
+            len(set(all_global_sizes)) == 1
+        ), f"All ranks must have same global_size, got {all_global_sizes}"
 
 
 @pytest.mark.mpi(min_size=2)
@@ -148,11 +151,12 @@ def test_global_rms_calculation():
 
     # Verify formula: RMS = norm / sqrt(size)
     expected_rms = float(norm) / np.sqrt(size)
-    assert abs(float(rms) - expected_rms) < 1e-6, \
-        f"RMS formula mismatch: {float(rms)} vs {expected_rms}"
+    assert (
+        abs(float(rms) - expected_rms) < 1e-6
+    ), f"RMS formula mismatch: {float(rms)} vs {expected_rms}"
 
     # Verify units preserved
-    assert hasattr(rms, 'units'), "global_rms should preserve units"
+    assert hasattr(rms, "units"), "global_rms should preserve units"
     assert str(rms.units) == "meter", f"Expected 'meter', got {rms.units}"
 
     # Verify consistency
@@ -174,14 +178,14 @@ def test_global_variance_calculation():
     global_std = arr.global_std()
 
     # Verify std = sqrt(var)
-    assert abs(float(global_std) - np.sqrt(float(global_var))) < 1e-6, \
-        "std should equal sqrt(var)"
+    assert abs(float(global_std) - np.sqrt(float(global_var))) < 1e-6, "std should equal sqrt(var)"
 
     # Verify units (variance has squared units)
-    assert hasattr(global_var, 'units'), "global_var should have units"
+    assert hasattr(global_var, "units"), "global_var should have units"
     # Variance has squared units
-    assert "kelvin ** 2" in str(global_var.units) or "kelvin²" in str(global_var.units), \
-        f"Expected squared kelvin units, got {global_var.units}"
+    assert "kelvin ** 2" in str(global_var.units) or "kelvin²" in str(
+        global_var.units
+    ), f"Expected squared kelvin units, got {global_var.units}"
 
     # Verify consistency
     all_var = uw.mpi.comm.gather(float(global_var), root=0)
@@ -201,11 +205,12 @@ def test_global_sum_accumulation():
     global_sum = arr.global_sum()
     expected_sum = 10.0 * (uw.mpi.size - 1) * uw.mpi.size / 2
 
-    assert abs(float(global_sum) - expected_sum) < 1e-6, \
-        f"Expected sum {expected_sum}, got {float(global_sum)}"
+    assert (
+        abs(float(global_sum) - expected_sum) < 1e-6
+    ), f"Expected sum {expected_sum}, got {float(global_sum)}"
 
     # Verify units preserved
-    assert hasattr(global_sum, 'units'), "global_sum should preserve units"
+    assert hasattr(global_sum, "units"), "global_sum should preserve units"
     assert str(global_sum.units) == "pascal", f"Expected 'pascal', got {global_sum.units}"
 
     # Verify consistency
@@ -227,11 +232,12 @@ def test_global_norm_calculation():
     total_size = arr.global_size()
     expected_norm = np.sqrt(total_size)
 
-    assert abs(float(global_norm) - expected_norm) < 1e-6, \
-        f"Expected norm {expected_norm}, got {float(global_norm)}"
+    assert (
+        abs(float(global_norm) - expected_norm) < 1e-6
+    ), f"Expected norm {expected_norm}, got {float(global_norm)}"
 
     # Verify units preserved
-    assert hasattr(global_norm, 'units'), "global_norm should preserve units"
+    assert hasattr(global_norm, "units"), "global_norm should preserve units"
 
     # Verify consistency
     all_norm = uw.mpi.comm.gather(float(global_norm), root=0)
@@ -264,9 +270,10 @@ def test_global_operations_on_mesh_coords():
 
     # All should have units
     for stat in [g_max, g_min, g_mean, g_sum, g_norm, g_rms]:
-        assert hasattr(stat, 'units'), f"Statistic should have units"
-        assert "kilometer" in str(stat.units) or "km" in str(stat.units).lower(), \
-            f"Expected km units, got {stat.units}"
+        assert hasattr(stat, "units"), f"Statistic should have units"
+        assert (
+            "kilometer" in str(stat.units) or "km" in str(stat.units).lower()
+        ), f"Expected km units, got {stat.units}"
 
     # Size should be dimensionless
     assert isinstance(g_size, int), f"global_size should return int, got {type(g_size)}"
@@ -294,13 +301,14 @@ def test_vector_global_operations():
 
     # Global max should return scalar (max of ALL elements)
     global_max = coords.global_max()
-    assert not hasattr(global_max, 'shape') or np.isscalar(global_max) or \
-           (hasattr(global_max, 'shape') and global_max.shape == ()), \
-        f"Vector global_max should return scalar, got shape {getattr(global_max, 'shape', 'no shape')}"
+    assert (
+        not hasattr(global_max, "shape")
+        or np.isscalar(global_max)
+        or (hasattr(global_max, "shape") and global_max.shape == ())
+    ), f"Vector global_max should return scalar, got shape {getattr(global_max, 'shape', 'no shape')}"
 
     # Should be 1.0 (max coordinate value)
-    assert abs(float(global_max) - 1.0) < 1e-10, \
-        f"Expected 1.0, got {float(global_max)}"
+    assert abs(float(global_max) - 1.0) < 1e-10, f"Expected 1.0, got {float(global_max)}"
 
     # Verify consistency
     all_max = uw.mpi.comm.gather(float(global_max), root=0)
@@ -353,4 +361,5 @@ def test_empty_array_handling():
 if __name__ == "__main__":
     # Allow running standalone for debugging
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "--with-mpi"]))

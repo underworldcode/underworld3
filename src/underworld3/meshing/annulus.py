@@ -49,9 +49,7 @@ def QuarterAnnulus(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = (
-            f"uw_QuarterAnnulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
-        )
+        uw_filename = f"uw_QuarterAnnulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -139,13 +137,9 @@ def QuarterAnnulus(
             1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
         )
 
-        gmsh.model.addPhysicalGroup(
-            1, [l1], boundaries.Left.value, name=boundaries.Left.name
-        )
+        gmsh.model.addPhysicalGroup(1, [l1], boundaries.Left.value, name=boundaries.Left.name)
 
-        gmsh.model.addPhysicalGroup(
-            1, [l3], boundaries.Right.value, name=boundaries.Right.name
-        )
+        gmsh.model.addPhysicalGroup(1, [l3], boundaries.Right.value, name=boundaries.Right.name)
 
         print("add physical groups")
 
@@ -217,9 +211,7 @@ def Annulus(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = (
-            f".meshes/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
-        )
+        uw_filename = f".meshes/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -242,9 +234,7 @@ def Annulus(
 
         if radiusInner > 0.0:
             p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSizeInner)
-            p3 = gmsh.model.geo.add_point(
-                -radiusInner, 0.0, 0.0, meshSize=cellSizeInner
-            )
+            p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSizeInner)
 
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
@@ -282,9 +272,7 @@ def Annulus(
                     0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
                 )
 
-        gmsh.model.addPhysicalGroup(
-            1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name
-        )
+        gmsh.model.addPhysicalGroup(1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name)
         gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
 
         gmsh.model.geo.synchronize()
@@ -309,17 +297,13 @@ def Annulus(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -538,9 +522,7 @@ def SegmentofAnnulus(
         gmsh.model.addPhysicalGroup(
             1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
         )
-        gmsh.model.addPhysicalGroup(
-            1, [l_left], boundaries.Left.value, name=boundaries.Left.name
-        )
+        gmsh.model.addPhysicalGroup(1, [l_left], boundaries.Left.value, name=boundaries.Left.name)
         gmsh.model.addPhysicalGroup(
             1, [l_right], boundaries.Right.value, name=boundaries.Right.name
         )
@@ -568,17 +550,13 @@ def SegmentofAnnulus(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -802,9 +780,7 @@ def AnnulusWithSpokes(
 
         ####
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
 
@@ -824,17 +800,13 @@ def AnnulusWithSpokes(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -937,12 +909,8 @@ def AnnulusInternalBoundary(
         loops = []
 
         if radiusInner > 0.0:
-            p2 = gmsh.model.geo.add_point(
-                radiusInner, 0.0, 0.0, meshSize=cellSize_Inner
-            )
-            p3 = gmsh.model.geo.add_point(
-                -radiusInner, 0.0, 0.0, meshSize=cellSize_Inner
-            )
+            p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize_Inner)
+            p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize_Inner)
 
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
@@ -951,12 +919,8 @@ def AnnulusInternalBoundary(
 
             loops = [cl1] + loops
 
-        p4 = gmsh.model.geo.add_point(
-            radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
-        p5 = gmsh.model.geo.add_point(
-            -radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
+        p4 = gmsh.model.geo.add_point(radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
+        p5 = gmsh.model.geo.add_point(-radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
 
         c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
         c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
@@ -1045,25 +1009,19 @@ def AnnulusInternalBoundary(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
 
-        internalIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Internal"
-            )
+        internalIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Internal"
         )
 
         coords[internalIndices] *= r_int / (1.0e-16 + R[internalIndices].reshape(-1, 1))
@@ -1162,12 +1120,8 @@ def DiscInternalBoundaries(
 
         # loops = [cl1] + loops
 
-        p4 = gmsh.model.geo.add_point(
-            radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
-        p5 = gmsh.model.geo.add_point(
-            -radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
+        p4 = gmsh.model.geo.add_point(radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
+        p5 = gmsh.model.geo.add_point(-radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
 
         c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
         c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
@@ -1201,9 +1155,7 @@ def DiscInternalBoundaries(
 
         gmsh.model.geo.synchronize()
 
-        gmsh.model.addPhysicalGroup(
-            1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
-        )
+        gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name)
 
         gmsh.model.addPhysicalGroup(
             0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
@@ -1253,25 +1205,19 @@ def DiscInternalBoundaries(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
 
-        internalIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Internal"
-            )
+        internalIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Internal"
         )
 
         coords[internalIndices] *= r_int / (1.0e-16 + R[internalIndices].reshape(-1, 1))

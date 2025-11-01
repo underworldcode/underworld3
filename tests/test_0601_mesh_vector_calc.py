@@ -51,7 +51,9 @@ p31 = uw.discretisation.MeshVariable("P31", mesh3, 1, degree=1)
 velocity_2d = uw.discretisation.MeshVariable("velocity_2d", mesh1, mesh1.dim, degree=2, units="m/s")
 temperature_2d = uw.discretisation.MeshVariable("temperature_2d", mesh1, 1, degree=1, units="K")
 
-velocity_3d = uw.discretisation.MeshVariable("velocity_3d", mesh3, mesh3.dim, degree=2, units="cm/year")
+velocity_3d = uw.discretisation.MeshVariable(
+    "velocity_3d", mesh3, mesh3.dim, degree=2, units="cm/year"
+)
 pressure_3d = uw.discretisation.MeshVariable("pressure_3d", mesh3, 1, degree=1, units="Pa")
 
 # Validate the meshes / mesh variables
@@ -104,14 +106,14 @@ def test_mesh_variables_with_units():
 
     # Test that units persist through mathematical operations
     # The .sym property should contain the units information for evaluation
-    velocity_magnitude = (velocity_2d[0]**2 + velocity_2d[1]**2)**0.5
+    velocity_magnitude = (velocity_2d[0] ** 2 + velocity_2d[1] ** 2) ** 0.5
     assert velocity_magnitude is not None  # Should create valid expression
 
     # Test units are preserved in variable properties
     assert velocity_2d.shape == (1, mesh1.dim)  # SymPy Matrix shape is (1, dim)
-    assert temperature_2d.shape == (1, 1)       # Scalar has shape (1, 1)
+    assert temperature_2d.shape == (1, 1)  # Scalar has shape (1, 1)
     assert velocity_3d.shape == (1, mesh3.dim)  # SymPy Matrix shape is (1, dim)
-    assert pressure_3d.shape == (1, 1)          # Scalar has shape (1, 1)
+    assert pressure_3d.shape == (1, 1)  # Scalar has shape (1, 1)
 
     # Units should still be accessible after accessing other properties
     assert velocity_2d.units is not None
@@ -178,9 +180,7 @@ def test_mesh_vector_grad(mesh, v1, v2, p):
 
     ## This should also be equivalent, if the .fn interface is not broken !
 
-    assert mesh.vector.gradient(p.sym) == mesh.vector.to_matrix(
-        sympy.vector.gradient(p.fn)
-    )
+    assert mesh.vector.gradient(p.sym) == mesh.vector.to_matrix(sympy.vector.gradient(p.fn))
 
 
 # Note: The curl is slightly odd - sympy returns the vector in the third dimension,
@@ -254,9 +254,7 @@ display(v13.sym)
 # -
 
 
-V = (
-    mesh1.N.i + mesh1.N.j + mesh1.N.k
-)  # V is a valid 2D vector from `sympy.vector`'s point of view
+V = mesh1.N.i + mesh1.N.j + mesh1.N.k  # V is a valid 2D vector from `sympy.vector`'s point of view
 M = mesh1.vector.to_matrix(V)
 mesh1.vector.to_vector(M)
 

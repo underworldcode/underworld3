@@ -51,16 +51,12 @@ def test_swarm_global_max():
 
     # Verify units preserved
     assert hasattr(global_max, "units"), "global_max should preserve units"
-    assert (
-        str(global_max.units) == "kelvin"
-    ), f"Expected 'kelvin', got {global_max.units}"
+    assert str(global_max.units) == "kelvin", f"Expected 'kelvin', got {global_max.units}"
 
     # Verify consistency across ranks
     all_max = uw.mpi.comm.gather(float(global_max), root=0)
     if uw.mpi.rank == 0:
-        assert (
-            len(set(all_max)) == 1
-        ), f"All ranks must have same global_max, got {all_max}"
+        assert len(set(all_max)) == 1, f"All ranks must have same global_max, got {all_max}"
 
 
 @pytest.mark.mpi(min_size=2)
@@ -91,16 +87,12 @@ def test_swarm_global_min():
 
     # Verify units preserved
     assert hasattr(global_min, "units"), "global_min should preserve units"
-    assert (
-        str(global_min.units) == "pascal"
-    ), f"Expected 'pascal', got {global_min.units}"
+    assert str(global_min.units) == "pascal", f"Expected 'pascal', got {global_min.units}"
 
     # Verify consistency across ranks
     all_min = uw.mpi.comm.gather(float(global_min), root=0)
     if uw.mpi.rank == 0:
-        assert (
-            len(set(all_min)) == 1
-        ), f"All ranks must have same global_min, got {all_min}"
+        assert len(set(all_min)) == 1, f"All ranks must have same global_min, got {all_min}"
 
 
 @pytest.mark.mpi(min_size=2)
@@ -124,9 +116,7 @@ def test_swarm_global_size():
     all_local_sizes = uw.mpi.comm.gather(local_size, root=0)
     if uw.mpi.rank == 0:
         expected_total = sum(all_local_sizes)
-        assert (
-            global_size == expected_total
-        ), f"Expected total {expected_total}, got {global_size}"
+        assert global_size == expected_total, f"Expected total {expected_total}, got {global_size}"
 
     # Verify consistency across ranks
     all_global_sizes = uw.mpi.comm.gather(global_size, root=0)
@@ -163,16 +153,12 @@ def test_swarm_global_sum():
 
     # Verify units preserved
     assert hasattr(global_sum, "units"), "global_sum should preserve units"
-    assert (
-        str(global_sum.units) == "kilogram"
-    ), f"Expected 'kilogram', got {global_sum.units}"
+    assert str(global_sum.units) == "kilogram", f"Expected 'kilogram', got {global_sum.units}"
 
     # Verify consistency
     all_sum = uw.mpi.comm.gather(float(global_sum), root=0)
     if uw.mpi.rank == 0:
-        assert (
-            len(set(all_sum)) == 1
-        ), f"All ranks must have same global_sum, got {all_sum}"
+        assert len(set(all_sum)) == 1, f"All ranks must have same global_sum, got {all_sum}"
 
 
 @pytest.mark.mpi(min_size=2)
@@ -206,9 +192,7 @@ def test_swarm_global_norm():
     # Verify consistency
     all_norm = uw.mpi.comm.gather(float(global_norm), root=0)
     if uw.mpi.rank == 0:
-        assert (
-            len(set(all_norm)) == 1
-        ), f"All ranks must have same global_norm, got {all_norm}"
+        assert len(set(all_norm)) == 1, f"All ranks must have same global_norm, got {all_norm}"
 
 
 @pytest.mark.mpi(min_size=2)
@@ -327,9 +311,7 @@ def test_swarm_migration_preserves_global_values():
 
     # Set unique values
     with uw.synchronised_array_update():
-        value.data[:, 0] = (
-            np.arange(swarm.local_size, dtype=float) + uw.mpi.rank * 1000.0
-        )
+        value.data[:, 0] = np.arange(swarm.local_size, dtype=float) + uw.mpi.rank * 1000.0
 
     # Get global stats before migration
     max_before = value.global_max()
@@ -398,9 +380,7 @@ def test_swarm_empty_on_some_ranks():
     # Only rank 0 adds particles (all other ranks stay empty)
     if uw.mpi.rank == 0:
         # Add 5 particles near this rank's center
-        coords = np.array([
-            [x_center + 0.01 * i, y_center + 0.01 * i] for i in range(5)
-        ])
+        coords = np.array([[x_center + 0.01 * i, y_center + 0.01 * i] for i in range(5)])
     else:
         # Empty array for other ranks
         coords = np.empty((0, 2))
@@ -415,6 +395,7 @@ def test_swarm_empty_on_some_ranks():
 
     # Gather statistics
     from mpi4py import MPI
+
     local_count = swarm.local_size
     all_counts = uw.mpi.comm.gather(local_count, root=0)
     total_particles = uw.mpi.comm.allreduce(local_count, op=MPI.SUM)
@@ -456,18 +437,14 @@ def test_swarm_empty_on_some_ranks():
             ), f"Expected min 1.0, got {float(global_min)}"
 
             # Total size should match
-            assert global_size == total_particles, f"Expected total {total_particles}, got {global_size}"
+            assert (
+                global_size == total_particles
+            ), f"Expected total {total_particles}, got {global_size}"
 
         # All ranks should have same global values (MPI consistency check)
-        assert (
-            len(set(all_max)) == 1
-        ), f"All ranks must have same global_max, got {all_max}"
-        assert (
-            len(set(all_min)) == 1
-        ), f"All ranks must have same global_min, got {all_min}"
-        assert (
-            len(set(all_size)) == 1
-        ), f"All ranks must have same global_size, got {all_size}"
+        assert len(set(all_max)) == 1, f"All ranks must have same global_max, got {all_max}"
+        assert len(set(all_min)) == 1, f"All ranks must have same global_min, got {all_min}"
+        assert len(set(all_size)) == 1, f"All ranks must have same global_size, got {all_size}"
 
 
 @pytest.mark.mpi(min_size=2)

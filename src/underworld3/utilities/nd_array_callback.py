@@ -269,9 +269,7 @@ class NDArray_With_Callback(np.ndarray):
         try:
             self_as_ndarray = np.ndarray.view(self, np.ndarray)
             if result is self_as_ndarray or (
-                hasattr(result, "base")
-                and hasattr(self, "base")
-                and result.base is self.base
+                hasattr(result, "base") and hasattr(self, "base") and result.base is self.base
             ):
                 return self
         except:
@@ -368,9 +366,7 @@ class NDArray_With_Callback(np.ndarray):
                     try:
                         uw.mpi.barrier()
                     except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed on delay context enter: {e}"
-                        )
+                        logger.warning(f"MPI barrier failed on delay context enter: {e}")
 
                 _delayed_callback_manager.push_delay_context(self.context_info)
                 return self
@@ -385,9 +381,7 @@ class NDArray_With_Callback(np.ndarray):
                     try:
                         uw.mpi.barrier()
                     except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed before delayed callback execution: {e}"
-                        )
+                        logger.warning(f"MPI barrier failed before delayed callback execution: {e}")
 
                 # Execute all delayed callbacks
                 for callback_item in delayed_callbacks:
@@ -404,9 +398,7 @@ class NDArray_With_Callback(np.ndarray):
                     try:
                         uw.mpi.barrier()
                     except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed after delayed callback execution: {e}"
-                        )
+                        logger.warning(f"MPI barrier failed after delayed callback execution: {e}")
 
                 # Don't suppress exceptions from the context
                 return False
@@ -439,9 +431,7 @@ class NDArray_With_Callback(np.ndarray):
                     try:
                         uw.mpi.barrier()
                     except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed on global delay context enter: {e}"
-                        )
+                        logger.warning(f"MPI barrier failed on global delay context enter: {e}")
 
                 _delayed_callback_manager.push_delay_context(self.context_info)
                 return self
@@ -519,14 +509,10 @@ class NDArray_With_Callback(np.ndarray):
         if _delayed_callback_manager.is_delaying():
             # Add callbacks to the delayed execution queue
             for callback in self._callbacks:
-                _delayed_callback_manager.add_delayed_callback(
-                    self, callback, change_info
-                )
+                _delayed_callback_manager.add_delayed_callback(self, callback, change_info)
         else:
             # Execute callbacks immediately
-            for (
-                callback
-            ) in self._callbacks.copy():  # Copy in case callbacks modify the list
+            for callback in self._callbacks.copy():  # Copy in case callbacks modify the list
                 try:
                     callback(self, change_info)
                 except Exception as e:
@@ -536,9 +522,7 @@ class NDArray_With_Callback(np.ndarray):
         """Override setitem to trigger callbacks on assignment."""
         if self._callback_enabled and self._callbacks:
             try:
-                old_value = (
-                    self[key].copy() if hasattr(self[key], "copy") else self[key]
-                )
+                old_value = self[key].copy() if hasattr(self[key], "copy") else self[key]
             except (IndexError, ValueError):
                 old_value = None
         else:
@@ -548,9 +532,7 @@ class NDArray_With_Callback(np.ndarray):
         super().__setitem__(key, value)
 
         # Trigger callbacks
-        self._trigger_callback(
-            "setitem", indices=key, old_value=old_value, new_value=value
-        )
+        self._trigger_callback("setitem", indices=key, old_value=old_value, new_value=value)
 
     def __iadd__(self, other):
         """In-place addition with callback."""
@@ -559,7 +541,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place addition (+=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr + other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -576,7 +558,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place subtraction (-=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr - other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -593,7 +575,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place multiplication (*=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr * other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -610,7 +592,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place division (/=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr / other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -627,7 +609,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place floor division (//=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr // other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -644,7 +626,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place modulo (%=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr % other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -661,7 +643,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place power (**=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr ** other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -678,7 +660,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place bitwise and (&=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr & other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -695,7 +677,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place bitwise or (|=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr | other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -712,7 +694,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place bitwise xor (^=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr ^ other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -729,7 +711,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place left shift (<<=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr << other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -746,7 +728,7 @@ class NDArray_With_Callback(np.ndarray):
                 "In-place right shift (>>=) is disabled for parallel safety. "
                 "Use explicit assignment instead: arr = arr >> other"
             )
-        
+
         if self._callback_enabled and self._callbacks:
             old_value = self.copy()
         else:
@@ -831,29 +813,29 @@ class NDArray_With_Callback(np.ndarray):
     def sync_data(self, new_data):
         """
         Update array with new data, preserving callbacks and all metadata.
-        
+
         This method efficiently handles both same-size and different-size data updates.
         For same-size updates, it uses efficient in-place copying. For different sizes,
         it creates a new array object but preserves all metadata and callbacks.
-        
+
         Parameters
         ----------
         new_data : array-like
             New data to sync into this array. Can be different size/shape.
-            
+
         Returns
         -------
         result : NDArray_With_Callback
             For same-size: returns self (same object)
             For different-size: returns new object with same metadata
-            
+
         Notes
         -----
         - For same-size data: Uses efficient in-place copy (preserves object identity)
         - For different sizes: Creates new object but copies all callbacks/metadata
         - All callbacks, owner references, and settings are preserved
         - Triggers 'sync_data' callback after update
-        
+
         Examples
         --------
         >>> arr = NDArray_With_Callback([1, 2, 3])
@@ -864,50 +846,50 @@ class NDArray_With_Callback(np.ndarray):
         >>> assert len(result._callbacks) == len(arr._callbacks)  # Same callbacks
         """
         new_array = np.asarray(new_data)
-        
+
         # Store old info for callback
         if self._callback_enabled and self._callbacks:
             old_data = self.copy()
         else:
             old_data = None
-        
+
         if new_array.shape == self.shape and new_array.dtype == self.dtype:
             # Same size and dtype: ultra-efficient in-place copy
             np.copyto(self, new_array)
-            
+
             # Trigger callback for the sync operation
             self._trigger_callback(
-                "sync_data", 
-                old_value=old_data, 
+                "sync_data",
+                old_value=old_data,
                 new_value=new_array,
                 indices=None,  # Full array update
-                data_has_changed=False  # Sync operation doesn't represent user data change
+                data_has_changed=False,  # Sync operation doesn't represent user data change
             )
-            
+
             return self
         else:
             # Different size/dtype: create new object with same metadata
             # This is more reliable than trying to modify the existing array
-            
+
             new_obj = type(self)(
                 new_array,
                 owner=self._owner() if self._owner is not None else None,
-                disable_inplace_operators=self._disable_inplace_operators
+                disable_inplace_operators=self._disable_inplace_operators,
             )
-            
+
             # Copy all callbacks and settings
             new_obj._callbacks = self._callbacks.copy()
             new_obj._callback_enabled = self._callback_enabled
-            
+
             # Trigger callback on the new object
             new_obj._trigger_callback(
                 "sync_data",
                 old_value=old_data,
                 new_value=new_array,
                 indices=None,
-                data_has_changed=False  # Sync operation doesn't represent user data change
+                data_has_changed=False,  # Sync operation doesn't represent user data change
             )
-            
+
             return new_obj
 
     def __reduce__(self):
@@ -929,7 +911,9 @@ class NDArray_With_Callback(np.ndarray):
         """Support for unpickling."""
         # Split our custom attributes from the parent's state
         parent_state = state[:-4]
-        self._callbacks, self._owner, self._callback_enabled, self._disable_inplace_operators = state[-4:]
+        self._callbacks, self._owner, self._callback_enabled, self._disable_inplace_operators = (
+            state[-4:]
+        )
 
         # Call parent's setstate
         super().__setstate__(parent_state)

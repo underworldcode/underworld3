@@ -47,9 +47,9 @@ def test_petsc4py_initialization():
 def test_underworld_mpi_attributes():
     """Test that underworld3 MPI attributes are accessible."""
     # Verify uw.mpi module is accessible
-    assert hasattr(uw, 'mpi'), "uw.mpi module should exist"
-    assert hasattr(uw.mpi, 'rank'), "uw.mpi.rank should exist"
-    assert hasattr(uw.mpi, 'size'), "uw.mpi.size should exist"
+    assert hasattr(uw, "mpi"), "uw.mpi module should exist"
+    assert hasattr(uw.mpi, "rank"), "uw.mpi.rank should exist"
+    assert hasattr(uw.mpi, "size"), "uw.mpi.size should exist"
 
     # Verify values are consistent with MPI
     assert uw.mpi.size >= 2, "Test requires at least 2 MPI ranks"
@@ -78,7 +78,9 @@ def test_mesh_creation_and_distribution():
     assert mesh.dim == 2
 
     # Verify mesh has local data on all ranks
-    assert mesh.data.size > 0 or uw.mpi.size == 1  # Some ranks might have no elements in very uneven splits
+    assert (
+        mesh.data.size > 0 or uw.mpi.size == 1
+    )  # Some ranks might have no elements in very uneven splits
 
 
 @pytest.mark.mpi(min_size=2)
@@ -140,9 +142,7 @@ def test_swarm_creation_and_population():
     assert swarm is not None
 
     # Create swarm variable
-    sw_values = uw.swarm.SwarmVariable(
-        "Ss", swarm, 1, proxy_degree=1, proxy_continuous=True
-    )
+    sw_values = uw.swarm.SwarmVariable("Ss", swarm, 1, proxy_degree=1, proxy_continuous=True)
     assert sw_values is not None
 
     # Populate swarm
@@ -225,9 +225,7 @@ def test_swarm_to_mesh_projection():
 
     # Create swarm and swarm variable
     swarm = uw.swarm.Swarm(mesh=mesh)
-    sw_values = uw.swarm.SwarmVariable(
-        "Ss", swarm, 1, proxy_degree=1, proxy_continuous=True
-    )
+    sw_values = uw.swarm.SwarmVariable("Ss", swarm, 1, proxy_degree=1, proxy_continuous=True)
     swarm.populate(fill_param=3)
 
     # Initialize swarm variable with some data (just set to constant for smoke test)
@@ -324,4 +322,5 @@ def test_that_parallel_tests_end():
 if __name__ == "__main__":
     # Allow running standalone for debugging
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "--with-mpi"]))

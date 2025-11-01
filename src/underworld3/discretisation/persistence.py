@@ -53,6 +53,7 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
 
         # Perform early registration to override any base variable registration
         import underworld3 as uw
+
         model = uw.get_default_model()
 
         # Register the wrapper immediately (this will overwrite any base variable registration)
@@ -80,7 +81,7 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
         persistent: bool = False,
         units: Optional[str] = None,
         units_backend: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize persistent mesh variable wrapper.
@@ -100,7 +101,7 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
         """
 
         # Check if already initialized (to prevent duplicate initialization)
-        if hasattr(self, '_enhanced_initialized') and self._enhanced_initialized:
+        if hasattr(self, "_enhanced_initialized") and self._enhanced_initialized:
             return
 
         # Store configuration FIRST (before any method calls)
@@ -119,7 +120,7 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
             _register=False,  # Never let base variable register itself
             units=units,  # Pass through units for compatibility
             units_backend=units_backend,
-            **kwargs
+            **kwargs,
         )
 
         # Cache frequently accessed properties IMMEDIATELY
@@ -150,22 +151,23 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
         model = uw.get_default_model()
 
         # Use either the early name (from __new__) or the processed name (from base variable)
-        name = getattr(self, '_early_name', self._name)
+        name = getattr(self, "_early_name", self._name)
         model._register_variable(name, self)  # This will overwrite any existing registration
 
         # Auto-derive scaling coefficient if model has reference quantities
-        if hasattr(model, '_reference_quantities') and model._reference_quantities:
+        if hasattr(model, "_reference_quantities") and model._reference_quantities:
             self._auto_derive_scaling_coefficient(model)
 
     def _auto_derive_scaling_coefficient(self, model):
         """Automatically derive scaling coefficient from model's reference quantities."""
         try:
             from ..utilities.nondimensional import _derive_scale_for_variable
-            if hasattr(self, 'dimensionality') and self.dimensionality:
+
+            if hasattr(self, "dimensionality") and self.dimensionality:
                 scale = _derive_scale_for_variable(
                     self,
-                    model._fundamental_scales if hasattr(model, '_fundamental_scales') else {},
-                    model._reference_quantities
+                    model._fundamental_scales if hasattr(model, "_fundamental_scales") else {},
+                    model._reference_quantities,
                 )
                 if scale is not None and scale != 1.0:
                     self.set_reference_scale(scale)
@@ -193,8 +195,379 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
 
     @property
     def array(self):
-        """Direct access to array (supports += and other assignment ops)."""
-        return self._base_var.array
+        """
+        Direct access to array (supports += and other assignment ops).
+
+        IMPORTANT: We create the array view with self (EnhancedMeshVariable)
+        as parent so that scaling_coefficient is accessible for ND scaling.
+        """
+        # Create the array view with self (the wrapper) as parent
+        # This ensures scaling_coefficient is accessible
+        if self._base_var._is_simple_variable():
+            return self._create_simple_array_view_wrapper()
+        else:
+            return self._create_tensor_array_view_wrapper()
+
+    def _create_simple_array_view_wrapper(self):
+        """Create array view for simple variables with wrapper as parent."""
+        # Import the view class from the base variable module
+        import numpy as np
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        # Create view with self (wrapper) as parent
+        class SimpleMeshArrayView:
+            def __init__(view_self, parent_var):
+                view_self.parent = parent_var
+
+            def _get_array_data(view_self):
+                # Access data through the base variable
+                data = view_self.parent._base_var.data
+                reshaped = data.reshape(data.shape[0], *view_self.parent._base_var.shape)
+
+                # Apply ND scaling if active
+                import underworld3 as uw
+
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(view_self.parent, "scaling_coefficient"):
+                        scale = view_self.parent.scaling_coefficient
+                        if scale != 1.0 and scale != 0.0:
+                            reshaped = reshaped * scale
+
+                # Wrap in UnitAwareArray if variable has units
+                if hasattr(view_self.parent, "units") and view_self.parent.units is not None:
+                    return UnitAwareArray(reshaped, units=str(view_self.parent.units))
+                else:
+                    return reshaped
+
+            def __getitem__(view_self, key):
+                return view_self._get_array_data()[key]
+
+            def __setitem__(view_self, key, value):
+                array_data = view_self._get_array_data()
+                modified_data = (
+                    array_data.copy()
+                    if hasattr(array_data, "copy")
+                    else np.array(array_data).copy()
+                )
+
+                if hasattr(value, "magnitude"):
+                    value = value.magnitude
+
+                modified_data[key] = value
+
+                if hasattr(modified_data, "magnitude"):
+                    flat_data = modified_data.magnitude.reshape(
+                        -1, view_self.parent._base_var.num_components
+                    )
+                else:
+                    flat_data = modified_data.reshape(-1, view_self.parent._base_var.num_components)
+
+                # Apply inverse ND scaling
+                import underworld3 as uw
+
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(view_self.parent, "scaling_coefficient"):
+                        scale = view_self.parent.scaling_coefficient
+                        if scale != 1.0 and scale != 0.0:
+                            flat_data = flat_data / scale
+
+                view_self.parent._base_var.data[...] = flat_data
+
+            @property
+            def shape(view_self):
+                return view_self._get_array_data().shape
+
+            @property
+            def dtype(view_self):
+                return view_self._get_array_data().dtype
+
+            @property
+            def units(view_self):
+                if hasattr(view_self.parent, "units"):
+                    return view_self.parent.units
+                return None
+
+            def __repr__(view_self):
+                units_str = f", units={view_self.units}" if view_self.units else ""
+                return f"SimpleMeshArrayView(shape={view_self.shape}, dtype={view_self.dtype}{units_str})"
+
+            def __array__(view_self):
+                return view_self._get_array_data()
+
+            def max(view_self):
+                """
+                Global maximum value.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.max(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.max(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def min(view_self):
+                """
+                Global minimum value.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.min(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.min(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def mean(view_self):
+                """
+                Global mean value.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.mean(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.mean(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def sum(view_self):
+                """
+                Global sum.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.sum(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.sum(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def std(view_self):
+                """
+                Global standard deviation.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.std(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.std(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+        return SimpleMeshArrayView(self)
+
+    def _create_tensor_array_view_wrapper(self):
+        """Create array view for tensor variables with wrapper as parent."""
+        import numpy as np
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        class TensorMeshArrayView:
+            def __init__(view_self, parent_var):
+                view_self.parent = parent_var
+
+            def _get_array_data(view_self):
+                # Use complex pack/unpack for tensor layouts
+                unpacked = view_self.parent._base_var.unpack_uw_data_from_petsc(squeeze=False)
+
+                # Apply ND scaling if active
+                import underworld3 as uw
+
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(view_self.parent, "scaling_coefficient"):
+                        scale = view_self.parent.scaling_coefficient
+                        if scale != 1.0 and scale != 0.0:
+                            unpacked = unpacked * scale
+
+                # Wrap in UnitAwareArray if variable has units
+                if hasattr(view_self.parent, "units") and view_self.parent.units is not None:
+                    return UnitAwareArray(unpacked, units=str(view_self.parent.units))
+                else:
+                    return unpacked
+
+            def __getitem__(view_self, key):
+                return view_self._get_array_data()[key]
+
+            def __setitem__(view_self, key, value):
+                array_data = view_self._get_array_data()
+                modified_data = (
+                    array_data.copy()
+                    if hasattr(array_data, "copy")
+                    else np.array(array_data).copy()
+                )
+
+                if hasattr(value, "magnitude"):
+                    value = value.magnitude
+
+                modified_data[key] = value
+
+                if hasattr(modified_data, "magnitude"):
+                    data_to_pack = modified_data.magnitude
+                else:
+                    data_to_pack = modified_data
+
+                # Apply inverse ND scaling
+                import underworld3 as uw
+
+                if uw.is_nondimensional_scaling_active():
+                    if hasattr(view_self.parent, "scaling_coefficient"):
+                        scale = view_self.parent.scaling_coefficient
+                        if scale != 1.0 and scale != 0.0:
+                            data_to_pack = data_to_pack / scale
+
+                view_self.parent._base_var.pack_uw_data_to_petsc(data_to_pack)
+
+            @property
+            def shape(view_self):
+                return view_self._get_array_data().shape
+
+            @property
+            def dtype(view_self):
+                return view_self._get_array_data().dtype
+
+            @property
+            def units(view_self):
+                if hasattr(view_self.parent, "units"):
+                    return view_self.parent.units
+                return None
+
+            def __repr__(view_self):
+                units_str = f", units={view_self.units}" if view_self.units else ""
+                return f"TensorMeshArrayView(shape={view_self.shape}, dtype={view_self.dtype}{units_str})"
+
+            def __array__(view_self):
+                return view_self._get_array_data()
+
+            def max(view_self):
+                """
+                Global maximum value.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.max(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.max(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def min(view_self):
+                """
+                Global minimum value.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.min(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.min(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def mean(view_self):
+                """
+                Global mean value.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.mean(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.mean(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def sum(view_self):
+                """
+                Global sum.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.sum(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.sum(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+            def std(view_self):
+                """
+                Global standard deviation.
+                Returns scalar for single-component variables, tuple for multi-component.
+                """
+                data = view_self._get_array_data()
+                # Extract magnitude if UnitAwareArray
+                if hasattr(data, "magnitude"):
+                    data = data.magnitude
+                if view_self.parent._base_var.num_components == 1:
+                    return float(np.std(data))
+                else:
+                    return tuple(
+                        [
+                            float(np.std(data[..., i]))
+                            for i in range(view_self.parent._base_var.num_components)
+                        ]
+                    )
+
+        return TensorMeshArrayView(self)
 
     @array.setter
     def array(self, value):
@@ -442,7 +815,6 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
         """Object counter from API tools."""
         return self._base_var.uw_object_counter
 
-
     # === PERSISTENCE CAPABILITIES ===
 
     def transfer_data_from(self, source_var):
@@ -461,6 +833,7 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
             raise RuntimeError("Data transfer only available for persistent variables")
 
         import underworld3 as uw
+
         model = uw.get_default_model()
         return model.transfer_variable_data(source_var, self)
 
@@ -534,7 +907,7 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
             print(f"  Data sample: Unable to display")
 
         # Mathematical capabilities
-        if hasattr(self, 'sym'):
+        if hasattr(self, "sym"):
             print(f"  Symbolic form: {self.sym}")
 
         return self  # Allow chaining
@@ -542,13 +915,14 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
 
 # === FACTORY FUNCTION FOR BACKWARD COMPATIBILITY ===
 
+
 def create_enhanced_mesh_variable(
     varname: Union[str, list],
     mesh: "Mesh",
     num_components: Union[int, tuple] = None,
     persistent: bool = True,
     units: Optional[str] = None,
-    **kwargs
+    **kwargs,
 ) -> EnhancedMeshVariable:
     """
     Factory function to create an enhanced mesh variable.
@@ -573,5 +947,5 @@ def create_enhanced_mesh_variable(
         num_components=num_components,
         persistent=persistent,
         units=units,
-        **kwargs
+        **kwargs,
     )

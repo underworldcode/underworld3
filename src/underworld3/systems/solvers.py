@@ -8,11 +8,58 @@ import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 from underworld3 import VarType
 import underworld3.timing as timing
-from underworld3.utilities._api_tools import uw_object, SymbolicProperty, Parameter, Template, ExpressionProperty
+from underworld3.utilities._api_tools import (
+    uw_object,
+    SymbolicProperty,
+    Parameter,
+    Template,
+    ExpressionProperty,
+)
 
 from underworld3.function import expression as public_expression
 
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
+
+
+def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
+    """
+    Helper function to apply unit-aware scaling to timestep estimates.
+
+    If the field has units and model time scales available, returns a Pint Quantity
+    with physical time units. Otherwise, returns the nondimensional value unchanged.
+
+    Parameters
+    ----------
+    dt_nondimensional : float or np.ndarray
+        The nondimensional timestep estimate
+    field : MeshVariable or similar
+        The field (velocity, diffusivity, etc.) that may have units attached
+    mesh : Mesh
+        The mesh (may have reference to model with time scales)
+
+    Returns
+    -------
+    float or UWQuantity
+        Timestep with physical time units if possible, otherwise nondimensional
+    """
+    # Check if field has units
+    if not (hasattr(field, "units") and field.units is not None):
+        return dt_nondimensional
+
+    try:
+        # Get the default model to access time scales
+        model = uw.get_default_model()
+        if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
+            time_scale = model.fundamental_scales.get("time")
+            if time_scale is not None:
+                # Convert ND timestep to physical time using time scale
+                # dt_physical = dt_nondimensional * time_scale
+                dt_physical = dt_nondimensional * time_scale
+                return dt_physical
+    except Exception:
+        pass
+
+    return dt_nondimensional
 
 
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
@@ -79,13 +126,13 @@ class SNES_Poisson(SNES_Scalar):
     F0 = Template(
         r"f_0 \left( \mathbf{u} \right)",
         lambda self: -self.f,
-        "Poisson pointwise force term: f_0(u)"
+        "Poisson pointwise force term: f_0(u)",
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: sympy.simplify(self.constitutive_model.flux.T),
-        "Poisson pointwise flux term: F_1(u)"
+        "Poisson pointwise flux term: F_1(u)",
     )
 
     @timing.routine_timer_decorator
@@ -106,7 +153,63 @@ class SNES_Poisson(SNES_Scalar):
     @f.setter
     def f(self, value):
         self.is_setup = False
-        self._f = sympy.Matrix((value,))
+
+        # Handle UWQuantity with units - enforce "units everywhere" principle
+        if hasattr(value, "value") and hasattr(value, "units"):
+            # Extract the plain value
+            plain_value = float(value.value)
+
+            # If ND scaling is active, scale the constant
+            import underworld3 as uw
+
+            if uw.is_nondimensional_scaling_active():
+                # The source term should have same dimensionality as the unknown field
+                # Access via self.Unknowns.u (Poisson) or self.Unknowns.DuDt.u (Stokes)
+                u = None
+                if hasattr(self, "Unknowns") and hasattr(self.Unknowns, "u"):
+                    u = self.Unknowns.u
+
+                if u is not None and hasattr(u, "scaling_coefficient"):
+                    scale = u.scaling_coefficient
+                    if scale != 1.0 and scale != 0.0:
+                        plain_value = plain_value / scale
+
+            self._f = sympy.Matrix((plain_value,))
+
+        # Also accept plain SymPy expressions (for variables, etc.)
+        elif hasattr(value, "atoms"):  # It's a SymPy expression
+            self._f = sympy.Matrix((value,))
+
+        # Handle plain numbers - apply "units everywhere or nowhere" principle
+        # Exception: allow zero always (dimensionless/no source)
+        elif isinstance(value, (int, float)):
+            if value == 0.0 or value == 0:
+                # Zero is allowed - no source term
+                self._f = sympy.Matrix((0.0,))
+            else:
+                # Check if model has reference quantities defined
+                # If yes: enforce units everywhere
+                # If no: allow plain numbers (user is responsible for consistency)
+                import underworld3 as uw
+
+                model = uw.get_default_model()
+
+                if model.has_units():
+                    # Reference quantities defined - enforce units everywhere
+                    raise ValueError(
+                        f"Units requirement enforced: Model has reference quantities defined.\n"
+                        f"Source term 'f' requires units. Use:\n"
+                        f"  solver.f = uw.quantity({value}, 'appropriate_units')\n"
+                        f"Example: poisson.f = uw.quantity({value}, 'kelvin')"
+                    )
+                else:
+                    # No reference quantities - allow plain numbers
+                    # User is responsible for dimensional consistency
+                    self._f = sympy.Matrix((float(value),))
+
+        else:
+            # Accept other types (might be symbolic)
+            self._f = sympy.Matrix((value,))
 
     @property
     def CM_is_setup(self):
@@ -203,15 +306,13 @@ class SNES_Darcy(SNES_Scalar):
 
     # Use Template for persistent read-only template expressions
     F0 = Template(
-        r"f_0 \left( \mathbf{u} \right)",
-        lambda self: -self.f,
-        "Darcy pointwise force term: f_0(u)"
+        r"f_0 \left( \mathbf{u} \right)", lambda self: -self.f, "Darcy pointwise force term: f_0(u)"
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: self.darcy_flux,
-        "Darcy pointwise flux term: F_1(u)"
+        "Darcy pointwise flux term: F_1(u)",
     )
 
     @timing.routine_timer_decorator
@@ -398,9 +499,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._Estar = None
 
         self._penalty = expression(R"\uplambda", 0, "Numerical Penalty")
-        self._constraints = sympy.Matrix(
-            (self.div_u,)
-        )  # by default, incompressibility constraint
+        self._constraints = sympy.Matrix((self.div_u,))  # by default, incompressibility constraint
 
         self._bodyforce = expression(
             Rf"\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)",
@@ -424,19 +523,21 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     F0 = Template(
         r"\mathbf{f}_0\left( \mathbf{u} \right)",
         lambda self: -self.bodyforce.sym,
-        "Stokes pointwise force term: f_0(u)"
+        "Stokes pointwise force term: f_0(u)",
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: sympy.simplify(self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)),
-        "Stokes pointwise flux term: F_1(u)"
+        lambda self: sympy.simplify(
+            self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
+        ),
+        "Stokes pointwise flux term: F_1(u)",
     )
 
     PF0 = Template(
         r"\mathbf{h}_0\left( \mathbf{p} \right)",
         lambda self: sympy.simplify(sympy.Matrix((self.constraints))),
-        "Pointwise force term: h_0(p)"
+        "Pointwise force term: h_0(p)",
     )
 
     # deprecated
@@ -521,7 +622,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 if isinstance(item, uw.function.quantities.UWQuantity):
                     sympified = item._sympify_()
                     # If UWQuantity contains a Matrix, extract the scalar element
-                    if hasattr(sympified, 'shape') and sympified.shape == (1, 1):
+                    if hasattr(sympified, "shape") and sympified.shape == (1, 1):
                         converted_value.append(sympified[0, 0])
                     else:
                         converted_value.append(sympified)
@@ -788,9 +889,7 @@ class SNES_Projection(SNES_Scalar):
         self._smoothing = sympy.sympify(0)
         self._uw_weighting_function = sympy.sympify(1)
         self._uw_function = sympy.Matrix([0])  # Default: project zero
-        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
-            self.Unknowns
-        )
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(self.Unknowns)
 
         return
 
@@ -798,13 +897,13 @@ class SNES_Projection(SNES_Scalar):
     F0 = Template(
         r"f_0 \left( \mathbf{u} \right)",
         lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
-        "Scalar Projection pointwise misfit term: f_0(u)"
+        "Scalar Projection pointwise misfit term: f_0(u)",
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: self.smoothing * self.mesh.vector.gradient(self.u.sym),
-        "Scalar projection pointwise smoothing term: F_1(u)"
+        "Scalar projection pointwise smoothing term: F_1(u)",
     )
 
     # Use SymbolicProperty for automatic unwrapping
@@ -881,9 +980,7 @@ class SNES_Vector_Projection(SNES_Vector):
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
         self._uw_function = sympy.Matrix([[0] * self.mesh.dim])  # Default: project zero vector
-        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
-            self.Unknowns
-        )
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(self.Unknowns)
 
         return
 
@@ -891,16 +988,16 @@ class SNES_Vector_Projection(SNES_Vector):
     F0 = Template(
         r"f_0 \left( \mathbf{u} \right)",
         lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
-        "Vector projection pointwise misfit term: f_0(u)"
+        "Vector projection pointwise misfit term: f_0(u)",
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: (self.smoothing * self.Unknowns.E
-                      + self.penalty
-                      * self.mesh.vector.divergence(self.u.sym)
-                      * sympy.eye(self.mesh.dim)),
-        "Vector projection pointwise smoothing term: F_1(u)"
+        lambda self: (
+            self.smoothing * self.Unknowns.E
+            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
+        ),
+        "Vector projection pointwise smoothing term: F_1(u)",
     )
 
     @timing.routine_timer_decorator
@@ -918,9 +1015,7 @@ class SNES_Vector_Projection(SNES_Vector):
         self._f1 = (
             self.F1.sym
             + self.smoothing * self.Unknowns.E
-            + self.penalty
-            * self.mesh.vector.divergence(self.u.sym)
-            * sympy.eye(self.mesh.dim)
+            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
         )
 
         return
@@ -1137,9 +1232,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable,
-        V_fn: Union[
-            uw.discretisation.MeshVariable, sympy.Basic
-        ],  # Should be a sympy function
+        V_fn: Union[uw.discretisation.MeshVariable, sympy.Basic],  # Should be a sympy function
         order: int = 1,
         restore_points_func: Callable = None,
         verbose=False,
@@ -1207,9 +1300,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         self.Unknowns.DFDt = SemiLagrangian_DDt(
             self.mesh,
-            sympy.Matrix(
-                [[0] * self.mesh.dim]
-            ),  # Actual function is not defined at this point
+            sympy.Matrix([[0] * self.mesh.dim]),  # Actual function is not defined at this point
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree,
@@ -1300,6 +1391,28 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         self.is_setup = False
+
+        # Handle Pint Quantities with time dimensions
+        if hasattr(value, "dimensionality"):
+            # This is a Pint Quantity - check if it has time dimensions
+            try:
+                from ..scaling import units as ureg
+
+                time_dim = ureg.second.dimensionality
+                if value.dimensionality == time_dim:
+                    # Convert physical time to nondimensional using model time scale
+                    model = uw.get_default_model()
+                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
+                        time_scale = model.fundamental_scales.get("time")
+                        if time_scale is not None:
+                            # Physical time / time scale = nondimensional time
+                            value = value / time_scale
+                            # Extract magnitude from result
+                            if hasattr(value, "magnitude"):
+                                value = value.magnitude
+            except Exception:
+                pass  # If anything fails, try to use value as-is
+
         self._delta_t.sym = value
 
     @timing.routine_timer_decorator
@@ -1316,9 +1429,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         """
 
         if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            if uw.function.fn_is_constant_expr(
-                self.constitutive_model.Parameters.diffusivity
-            ):
+            if uw.function.fn_is_constant_expr(self.constitutive_model.Parameters.diffusivity):
                 max_diffusivity = uw.function.evaluate(
                     self.constitutive_model.Parameters.diffusivity,
                     np.zeros((1, self.mesh.dim)),
@@ -1350,7 +1461,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         )
 
         # Extract magnitude if vel is a UWQuantity (unit-aware)
-        if hasattr(vel, 'magnitude'):
+        if hasattr(vel, "magnitude"):
             vel = vel.magnitude
 
         ### get global velocity from velocity field
@@ -1381,7 +1492,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
             dt_estimate = min(dt_diff, dt_adv)
 
-        return np.squeeze(dt_estimate)
+        return _apply_unit_aware_scaling(np.squeeze(dt_estimate), self.V_fn, self.mesh)
 
     @timing.routine_timer_decorator
     def solve(
@@ -1611,6 +1722,28 @@ class SNES_Diffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         self.is_setup = False
+
+        # Handle Pint Quantities with time dimensions
+        if hasattr(value, "dimensionality"):
+            # This is a Pint Quantity - check if it has time dimensions
+            try:
+                from ..scaling import units as ureg
+
+                time_dim = ureg.second.dimensionality
+                if value.dimensionality == time_dim:
+                    # Convert physical time to nondimensional using model time scale
+                    model = uw.get_default_model()
+                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
+                        time_scale = model.fundamental_scales.get("time")
+                        if time_scale is not None:
+                            # Physical time / time scale = nondimensional time
+                            value = value / time_scale
+                            # Extract magnitude from result
+                            if hasattr(value, "magnitude"):
+                                value = value.magnitude
+            except Exception:
+                pass  # If anything fails, try to use value as-is
+
         self._delta_t.sym = value
 
     @timing.routine_timer_decorator
@@ -1663,7 +1796,7 @@ class SNES_Diffusion(SNES_Scalar):
 
         dt_estimate = dt_diff
 
-        return np.squeeze(dt_estimate)
+        return _apply_unit_aware_scaling(np.squeeze(dt_estimate), self.u_Field, self.mesh)
 
     @timing.routine_timer_decorator
     def solve(
@@ -1917,8 +2050,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         else:
             F1 = expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
-                self._constitutive_model.flux.T
-                - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
+                self._constitutive_model.flux.T - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
                 "NStokes pressure gradient term: F_1(u) - No Flux history provided",
             )
 
@@ -2181,4 +2313,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             dt_adv = min_dx / max_magvel_glob
             dt_estimate = min(dt_diff, dt_adv)
 
-        return np.squeeze(dt_diff), np.squeeze(dt_adv)
+        return (
+            _apply_unit_aware_scaling(np.squeeze(dt_diff), self.u, self.mesh),
+            _apply_unit_aware_scaling(np.squeeze(dt_adv), self.u, self.mesh),
+        )

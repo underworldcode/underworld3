@@ -12,9 +12,7 @@ import underworld3 as uw
 def test_swarm_variable_before_population():
     """Test that variables can be created before population (correct usage)"""
 
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5
-    )
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5)
     swarm = uw.swarm.Swarm(mesh)
 
     # Should work fine - variables before population
@@ -33,9 +31,7 @@ def test_swarm_variable_before_population():
 def test_swarm_variable_after_population_fails():
     """Test that variables cannot be added after population (incorrect usage)"""
 
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5
-    )
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5)
     swarm = uw.swarm.Swarm(mesh)
 
     # Populate first
@@ -57,9 +53,7 @@ def test_swarm_variable_after_population_fails():
 def test_swarm_variable_constructor_after_population_fails():
     """Test that SwarmVariable constructor also prevents post-population creation"""
 
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5
-    )
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5)
     swarm = uw.swarm.Swarm(mesh)
     swarm.populate(fill_param=2)
 
@@ -74,9 +68,7 @@ def test_swarm_variable_constructor_after_population_fails():
 def test_multiple_swarms_independent():
     """Test that swarm population state is independent between swarms"""
 
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5
-    )
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5)
 
     # First swarm - populate then try to add variable (should fail)
     swarm1 = uw.swarm.Swarm(mesh)
@@ -99,9 +91,7 @@ def test_multiple_swarms_independent():
 def test_error_message_contains_variable_name():
     """Test that error message includes the specific variable name being added"""
 
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5
-    )
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5)
     swarm = uw.swarm.Swarm(mesh)
     swarm.populate(fill_param=2)
 
@@ -117,9 +107,7 @@ def test_error_message_contains_variable_name():
 def test_error_message_shows_particle_count():
     """Test that error message shows the current particle count"""
 
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5
-    )
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.5)
     swarm = uw.swarm.Swarm(mesh)
     swarm.populate(fill_param=2)
 

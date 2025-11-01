@@ -65,9 +65,7 @@ def test_stokes_sphere(mesh):
 
     # Create a density structure / buoyancy force
 
-    radius_fn = sympy.sqrt(
-        mesh.rvec.dot(mesh.rvec)
-    )  # normalise by outer radius if not 1.0
+    radius_fn = sympy.sqrt(mesh.rvec.dot(mesh.rvec))  # normalise by outer radius if not 1.0
     unit_rvec = mesh.X / (radius_fn)
 
     ## Buoyancy (T) field
@@ -194,9 +192,7 @@ if uw.is_notebook:
         z_slice = np.abs(coords[:, 2]) < 0.15
         coords_slice = coords[z_slice]
         vel_slice = vel_data[z_slice]
-        vel_mag_slice = np.sqrt(
-            vel_slice[:, 0] ** 2 + vel_slice[:, 1] ** 2 + vel_slice[:, 2] ** 2
-        )
+        vel_mag_slice = np.sqrt(vel_slice[:, 0] ** 2 + vel_slice[:, 1] ** 2 + vel_slice[:, 2] ** 2)
 
         # Forcing
         forcing_vals = uw.function.evaluate(t_forcing_fn, coords_slice).flatten()

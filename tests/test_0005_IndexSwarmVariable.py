@@ -36,9 +36,7 @@ def test_IndexSwarmVariable(mesh):
     # Reset model state to avoid conflicts with other tests
     uw.reset_default_model()
 
-    Pmesh = uw.discretisation.MeshVariable(
-        "P", mesh, 1, degree=ppdegree, continuous=ppcont
-    )
+    Pmesh = uw.discretisation.MeshVariable("P", mesh, 1, degree=ppdegree, continuous=ppcont)
 
     for fill_param in fill_params:
         print(fill_param)
@@ -60,9 +58,7 @@ def test_IndexSwarmVariable(mesh):
         M0Index = 0
         M1Index = 1
         perturbation = (
-            offset
-            + amplitude * np.cos(k * swarm._particle_coordinates.data[:, 0])
-            + 0.01
+            offset + amplitude * np.cos(k * swarm._particle_coordinates.data[:, 0]) + 0.01
         )
         material.array[:, 0, 0] = np.where(
             swarm._particle_coordinates.data[:, 1] <= perturbation, M0Index, M1Index

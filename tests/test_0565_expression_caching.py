@@ -57,12 +57,10 @@ class TestExpressionUniqueness:
         deriv2 = T2.diff(y2)[0]
 
         # Derivatives should be DIFFERENT objects
-        assert deriv1 is not deriv2, \
-            "Derivatives from different meshes should be unique objects"
+        assert deriv1 is not deriv2, "Derivatives from different meshes should be unique objects"
 
         # Derivative names should be different strings
-        assert str(deriv1) != str(deriv2), \
-            "Derivative names should differ by hspace"
+        assert str(deriv1) != str(deriv2), "Derivative names should differ by hspace"
 
 
 class TestDerivativeCaching:
@@ -89,8 +87,7 @@ class TestDerivativeCaching:
         deriv2 = T.diff(y)[0]
 
         # Should be the SAME object (cached)
-        assert deriv1 is deriv2, \
-            "Identical derivatives should be cached and reused"
+        assert deriv1 is deriv2, "Identical derivatives should be cached and reused"
 
     def test_derivative_caching_no_warning(self, capfd):
         """
@@ -116,8 +113,9 @@ class TestDerivativeCaching:
         captured = capfd.readouterr()
 
         # Should NOT contain any expression warnings
-        assert "Each expression should have a unique name" not in captured.err, \
-            "Derivative caching should not produce warnings"
+        assert (
+            "Each expression should have a unique name" not in captured.err
+        ), "Derivative caching should not produce warnings"
 
 
 class TestExpressionSilentUpdate:
@@ -131,27 +129,25 @@ class TestExpressionSilentUpdate:
         updating internal state. No warnings should be produced.
         """
         # Create expression with initial value
-        alpha = UWexpression(r'\alpha', sym=1.0, description="First value")
+        alpha = UWexpression(r"\alpha", sym=1.0, description="First value")
 
         # Recreate with same name but different value
-        alpha2 = UWexpression(r'\alpha', sym=2.0, description="Second value")
+        alpha2 = UWexpression(r"\alpha", sym=2.0, description="Second value")
 
         # Should be the SAME object (identity preserved)
-        assert alpha is alpha2, \
-            "Recreating expression should preserve object identity"
+        assert alpha is alpha2, "Recreating expression should preserve object identity"
 
         # Should have updated sym value
-        assert alpha2.sym == 2.0, \
-            "Expression sym should be updated to new value"
+        assert alpha2.sym == 2.0, "Expression sym should be updated to new value"
 
         # Should have updated description
-        assert alpha2.description == "Second value", \
-            "Expression description should be updated"
+        assert alpha2.description == "Second value", "Expression description should be updated"
 
         # Should NOT produce warnings
         captured = capfd.readouterr()
-        assert "Each expression should have a unique name" not in captured.err, \
-            "Expression update should be silent (no warnings)"
+        assert (
+            "Each expression should have a unique name" not in captured.err
+        ), "Expression update should be silent (no warnings)"
 
     def test_expression_update_in_loop(self):
         """
@@ -163,18 +159,16 @@ class TestExpressionSilentUpdate:
         values = [1.0, 2.0, 3.0, 4.0, 5.0]
 
         for i, val in enumerate(values):
-            eta = UWexpression(r'\eta', sym=val)
+            eta = UWexpression(r"\eta", sym=val)
 
             # All iterations should return the same object
             if i == 0:
                 first_eta = eta
             else:
-                assert eta is first_eta, \
-                    "Loop should reuse same expression object"
+                assert eta is first_eta, "Loop should reuse same expression object"
 
             # Value should be updated each iteration
-            assert eta.sym == val, \
-                f"Iteration {i}: expected sym={val}, got {eta.sym}"
+            assert eta.sym == val, f"Iteration {i}: expected sym={val}, got {eta.sym}"
 
     def test_unique_flag_creates_new_objects(self):
         """
@@ -183,12 +177,11 @@ class TestExpressionSilentUpdate:
         This is the opt-in mechanism for when you genuinely need
         multiple distinct expressions with the same symbol.
         """
-        eta1 = UWexpression(r'\eta', sym=1.0, _unique_name_generation=True)
-        eta2 = UWexpression(r'\eta', sym=2.0, _unique_name_generation=True)
+        eta1 = UWexpression(r"\eta", sym=1.0, _unique_name_generation=True)
+        eta2 = UWexpression(r"\eta", sym=2.0, _unique_name_generation=True)
 
         # Should be DIFFERENT objects (unique flag respected)
-        assert eta1 is not eta2, \
-            "Unique flag should create distinct objects"
+        assert eta1 is not eta2, "Unique flag should create distinct objects"
 
         # Each should maintain its own value
         assert eta1.sym == 1.0, "First expression should keep its value"
@@ -207,20 +200,21 @@ class TestUniqueNameGeneration:
         to coexist with SymPy's global namespace.
         """
         # Create two expressions with same symbol but unique flag
-        eta1 = UWexpression(r'\eta', sym=1.0, _unique_name_generation=True)
-        eta2 = UWexpression(r'\eta', sym=2.0, _unique_name_generation=True)
+        eta1 = UWexpression(r"\eta", sym=1.0, _unique_name_generation=True)
+        eta2 = UWexpression(r"\eta", sym=2.0, _unique_name_generation=True)
 
         # Should be DIFFERENT objects
-        assert eta1 is not eta2, \
-            "Expressions with _unique_name_generation should be unique objects"
+        assert eta1 is not eta2, "Expressions with _unique_name_generation should be unique objects"
 
         # Should have different internal names (hspace differs)
-        assert str(eta1.name) != str(eta2.name), \
-            "Unique expressions should have different internal names"
+        assert str(eta1.name) != str(
+            eta2.name
+        ), "Unique expressions should have different internal names"
 
         # But should have the same given name (visible symbol)
-        assert eta1._given_name == eta2._given_name == r'\eta', \
-            "Unique expressions should share the same visible symbol"
+        assert (
+            eta1._given_name == eta2._given_name == r"\eta"
+        ), "Unique expressions should share the same visible symbol"
 
     def test_unique_expressions_have_different_values(self):
         """
@@ -229,17 +223,15 @@ class TestUniqueNameGeneration:
         This is critical for having multiple constitutive models with
         the same parameter names but different values.
         """
-        eta1 = UWexpression(r'\eta', sym=1.0e18, _unique_name_generation=True)
-        eta2 = UWexpression(r'\eta', sym=1.0e22, _unique_name_generation=True)
+        eta1 = UWexpression(r"\eta", sym=1.0e18, _unique_name_generation=True)
+        eta2 = UWexpression(r"\eta", sym=1.0e22, _unique_name_generation=True)
 
         # Should have different values
-        assert eta1.sym != eta2.sym, \
-            "Unique expressions should maintain independent values"
+        assert eta1.sym != eta2.sym, "Unique expressions should maintain independent values"
 
         # Verify they are truly independent (changing one doesn't affect other)
         eta1.sym = 5.0
-        assert eta2.sym != 5.0, \
-            "Unique expressions should be independent"
+        assert eta2.sym != 5.0, "Unique expressions should be independent"
 
 
 class TestHspaceSize:
@@ -265,7 +257,7 @@ class TestHspaceSize:
         T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
         # Extract hspace from symbol
-        match = re.search(r'\\hspace\{ ([\d.e-]+)pt \}', T.symbol)
+        match = re.search(r"\\hspace\{ ([\d.e-]+)pt \}", T.symbol)
 
         if match:
             hspace = float(match.group(1))
@@ -274,13 +266,15 @@ class TestHspaceSize:
             # Old formula: instance_number / 100 (minimum 0.01pt for instance 1)
             # New formula: instance_number / 10000 (100x smaller)
             old_hspace = mesh.instance_number / 100
-            assert hspace < old_hspace, \
-                f"New hspace ({hspace}pt) should be < old hspace ({old_hspace}pt)"
+            assert (
+                hspace < old_hspace
+            ), f"New hspace ({hspace}pt) should be < old hspace ({old_hspace}pt)"
 
             # Verify formula is correct (instance_number / 10000)
             expected_hspace = mesh.instance_number / 10000
-            assert abs(hspace - expected_hspace) < 1e-10, \
-                f"Hspace should be {expected_hspace}pt, got {hspace}pt"
+            assert (
+                abs(hspace - expected_hspace) < 1e-10
+            ), f"Hspace should be {expected_hspace}pt, got {hspace}pt"
 
     def test_derivative_hspace_is_tiny(self):
         """
@@ -304,7 +298,7 @@ class TestHspaceSize:
         deriv = T.diff(y)[0]
 
         # Extract hspace from derivative name
-        match = re.search(r'\\hspace\{ ([\d.e-]+)pt \}', str(deriv))
+        match = re.search(r"\\hspace\{ ([\d.e-]+)pt \}", str(deriv))
 
         if match:
             hspace = float(match.group(1))
@@ -312,13 +306,15 @@ class TestHspaceSize:
             # Should be 100x smaller than old formula
             # Derivatives inherit hspace from parent mesh variable
             old_hspace = mesh.instance_number / 100
-            assert hspace < old_hspace, \
-                f"Derivative hspace ({hspace}pt) should be < old hspace ({old_hspace}pt)"
+            assert (
+                hspace < old_hspace
+            ), f"Derivative hspace ({hspace}pt) should be < old hspace ({old_hspace}pt)"
 
             # Verify it matches the mesh variable's hspace
             expected_hspace = mesh.instance_number / 10000
-            assert abs(hspace - expected_hspace) < 1e-10, \
-                f"Derivative hspace should match variable hspace: {expected_hspace}pt, got {hspace}pt"
+            assert (
+                abs(hspace - expected_hspace) < 1e-10
+            ), f"Derivative hspace should match variable hspace: {expected_hspace}pt, got {hspace}pt"
 
 
 class TestExpressionRegistryConsistency:
@@ -340,8 +336,7 @@ class TestExpressionRegistryConsistency:
         y = mesh.N.y
 
         # Count derivatives before
-        initial_count = len([name for name in UWexpression._expr_names.keys()
-                           if "_{," in name])
+        initial_count = len([name for name in UWexpression._expr_names.keys() if "_{," in name])
 
         # Create same derivative multiple times
         deriv1 = T.diff(y)[0]
@@ -349,12 +344,12 @@ class TestExpressionRegistryConsistency:
         deriv3 = T.diff(y)[0]
 
         # Count derivatives after
-        final_count = len([name for name in UWexpression._expr_names.keys()
-                         if "_{," in name])
+        final_count = len([name for name in UWexpression._expr_names.keys() if "_{," in name])
 
         # Should have added exactly ONE derivative
-        assert final_count == initial_count + 1, \
-            f"Expected 1 new derivative, got {final_count - initial_count}"
+        assert (
+            final_count == initial_count + 1
+        ), f"Expected 1 new derivative, got {final_count - initial_count}"
 
 
 if __name__ == "__main__":

@@ -132,9 +132,7 @@ def UnstructuredSimplexBox(
             gmsh.model.setPhysicalName(2, 99999, "Elements")
 
             if regular:
-                gmsh.model.mesh.set_transfinite_surface(
-                    surface, cornerTags=[p1, p2, p3, p4]
-                )
+                gmsh.model.mesh.set_transfinite_surface(surface, cornerTags=[p1, p2, p3, p4])
 
         else:
             boundaries = boundaries_3D
@@ -183,9 +181,7 @@ def UnstructuredSimplexBox(
             cl = gmsh.model.geo.add_curve_loop((-l3, l12, l7, l11))
             back = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Back.value)
 
-            sloop = gmsh.model.geo.add_surface_loop(
-                [front, right, back, top, left, bottom]
-            )
+            sloop = gmsh.model.geo.add_surface_loop([front, right, back, top, left, bottom])
             volume = gmsh.model.geo.add_volume([sloop])
 
             gmsh.model.geo.synchronize()
@@ -323,9 +319,7 @@ def StructuredQuadBox(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = (
-            f".meshes/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
-        )
+        uw_filename = f".meshes/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
     else:
         uw_filename = filename
 
@@ -432,9 +426,7 @@ def StructuredQuadBox(
             cl = gmsh.model.geo.add_curve_loop((-l3, l12, l7, l11))
             back = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Back.value)
 
-            sloop = gmsh.model.geo.add_surface_loop(
-                [front, right, back, top, left, bottom]
-            )
+            sloop = gmsh.model.geo.add_surface_loop([front, right, back, top, left, bottom])
             volume = gmsh.model.geo.add_volume([sloop])
 
             gmsh.model.geo.synchronize()
@@ -587,7 +579,9 @@ def SphericalShell(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = f".meshes/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+        uw_filename = (
+            f".meshes/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+        )
     else:
         uw_filename = filename
 
@@ -614,9 +608,7 @@ def SphericalShell(
 
         if radiusInner > 0.0:
             for surface in surfaces:
-                if np.isclose(
-                    gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
-                ):
+                if np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner):
                     gmsh.model.addPhysicalGroup(
                         surface[0],
                         [surface[1]],
@@ -679,18 +671,14 @@ def SphericalShell(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -823,16 +811,12 @@ def SphericalShellInternalBoundary(
         ball1_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusOuter)
         ball2_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
         # Cut the inner sphere from the outer sphere to create a shell
-        gmsh.model.occ.cut(
-            [(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True
-        )
+        gmsh.model.occ.cut([(3, ball1_tag)], [(3, ball2_tag)], removeObject=True, removeTool=True)
 
         ball3_tag = gmsh.model.occ.addSphere(0.0, 0.0, 0.0, radiusInternal)
         ball4_tag = gmsh.model.occ.addSphere(0, 0, 0, radiusInner)
         # Create another inner sphere with radius r_i (for the internal sphere)
-        gmsh.model.occ.cut(
-            [(3, ball3_tag)], [(3, ball4_tag)], removeObject=True, removeTool=True
-        )
+        gmsh.model.occ.cut([(3, ball3_tag)], [(3, ball4_tag)], removeObject=True, removeTool=True)
 
         # Set the maximum characteristic length (mesh size) for the mesh elements
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
@@ -851,9 +835,7 @@ def SphericalShellInternalBoundary(
 
         # Loop through all surface entities to categorize them based on their bounding box
         for surface in surfaces:
-            if np.isclose(
-                gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner
-            ):
+            if np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusInner):
                 gmsh.model.addPhysicalGroup(
                     surface[0],
                     [surface[1]],
@@ -861,9 +843,7 @@ def SphericalShellInternalBoundary(
                     name=boundaries.Lower.name,
                 )
                 print("Created inner boundary surface")
-            elif np.isclose(
-                gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter
-            ):
+            elif np.isclose(gmsh.model.get_bounding_box(surface[0], surface[1])[-1], radiusOuter):
                 gmsh.model.addPhysicalGroup(
                     surface[0],
                     [surface[1]],
@@ -910,18 +890,14 @@ def SphericalShellInternalBoundary(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -1053,11 +1029,7 @@ def SegmentofSphere(
     else:
         uw_filename = filename
 
-    if (
-        radiusInner <= 0
-        or not (0 < longitudeExtent < 180)
-        or not (0 < latitudeExtent < 180)
-    ):
+    if radiusInner <= 0 or not (0 < longitudeExtent < 180) or not (0 < latitudeExtent < 180):
         raise ValueError(
             "Invalid input parameters: "
             "radiusInner must be greater than 0, "
@@ -1096,9 +1068,7 @@ def SegmentofSphere(
         gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
         gmsh.model.add("SegmentOfSphere")
 
-        p0 = gmsh.model.geo.addPoint(
-            centroid[0], centroid[1], centroid[2], meshSize=cellSize
-        )
+        p0 = gmsh.model.geo.addPoint(centroid[0], centroid[1], centroid[2], meshSize=cellSize)
 
         # Create segment of sphere
         dim = 3
@@ -1195,18 +1165,14 @@ def SegmentofSphere(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -1267,9 +1233,7 @@ def QuarterAnnulus(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = (
-            f"uw_QuarterAnnulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
-        )
+        uw_filename = f"uw_QuarterAnnulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -1357,13 +1321,9 @@ def QuarterAnnulus(
             1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
         )
 
-        gmsh.model.addPhysicalGroup(
-            1, [l1], boundaries.Left.value, name=boundaries.Left.name
-        )
+        gmsh.model.addPhysicalGroup(1, [l1], boundaries.Left.value, name=boundaries.Left.name)
 
-        gmsh.model.addPhysicalGroup(
-            1, [l3], boundaries.Right.value, name=boundaries.Right.name
-        )
+        gmsh.model.addPhysicalGroup(1, [l3], boundaries.Right.value, name=boundaries.Right.name)
 
         print("add physical groups")
 
@@ -1435,9 +1395,7 @@ def Annulus(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = (
-            f".meshes/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
-        )
+        uw_filename = f".meshes/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -1460,9 +1418,7 @@ def Annulus(
 
         if radiusInner > 0.0:
             p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSizeInner)
-            p3 = gmsh.model.geo.add_point(
-                -radiusInner, 0.0, 0.0, meshSize=cellSizeInner
-            )
+            p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSizeInner)
 
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
@@ -1500,9 +1456,7 @@ def Annulus(
                     0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
                 )
 
-        gmsh.model.addPhysicalGroup(
-            1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name
-        )
+        gmsh.model.addPhysicalGroup(1, [c3, c4], boundaries.Upper.value, name=boundaries.Upper.name)
         gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
 
         gmsh.model.geo.synchronize()
@@ -1527,17 +1481,13 @@ def Annulus(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -1756,9 +1706,7 @@ def SegmentofAnnulus(
         gmsh.model.addPhysicalGroup(
             1, [c_upper], boundaries.Upper.value, name=boundaries.Upper.name
         )
-        gmsh.model.addPhysicalGroup(
-            1, [l_left], boundaries.Left.value, name=boundaries.Left.name
-        )
+        gmsh.model.addPhysicalGroup(1, [l_left], boundaries.Left.value, name=boundaries.Left.name)
         gmsh.model.addPhysicalGroup(
             1, [l_right], boundaries.Right.value, name=boundaries.Right.name
         )
@@ -1786,17 +1734,13 @@ def SegmentofAnnulus(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -2020,9 +1964,7 @@ def AnnulusWithSpokes(
 
         ####
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
 
@@ -2042,17 +1984,13 @@ def AnnulusWithSpokes(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -2155,12 +2093,8 @@ def AnnulusInternalBoundary(
         loops = []
 
         if radiusInner > 0.0:
-            p2 = gmsh.model.geo.add_point(
-                radiusInner, 0.0, 0.0, meshSize=cellSize_Inner
-            )
-            p3 = gmsh.model.geo.add_point(
-                -radiusInner, 0.0, 0.0, meshSize=cellSize_Inner
-            )
+            p2 = gmsh.model.geo.add_point(radiusInner, 0.0, 0.0, meshSize=cellSize_Inner)
+            p3 = gmsh.model.geo.add_point(-radiusInner, 0.0, 0.0, meshSize=cellSize_Inner)
 
             c1 = gmsh.model.geo.add_circle_arc(p2, p1, p3)
             c2 = gmsh.model.geo.add_circle_arc(p3, p1, p2)
@@ -2169,12 +2103,8 @@ def AnnulusInternalBoundary(
 
             loops = [cl1] + loops
 
-        p4 = gmsh.model.geo.add_point(
-            radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
-        p5 = gmsh.model.geo.add_point(
-            -radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
+        p4 = gmsh.model.geo.add_point(radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
+        p5 = gmsh.model.geo.add_point(-radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
 
         c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
         c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
@@ -2263,25 +2193,19 @@ def AnnulusInternalBoundary(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
 
-        internalIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Internal"
-            )
+        internalIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Internal"
         )
 
         coords[internalIndices] *= r_int / (1.0e-16 + R[internalIndices].reshape(-1, 1))
@@ -2380,12 +2304,8 @@ def DiscInternalBoundaries(
 
         # loops = [cl1] + loops
 
-        p4 = gmsh.model.geo.add_point(
-            radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
-        p5 = gmsh.model.geo.add_point(
-            -radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal
-        )
+        p4 = gmsh.model.geo.add_point(radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
+        p5 = gmsh.model.geo.add_point(-radiusInternal, 0.0, 0.0, meshSize=cellSize_Internal)
 
         c3 = gmsh.model.geo.add_circle_arc(p4, p1, p5)
         c4 = gmsh.model.geo.add_circle_arc(p5, p1, p4)
@@ -2419,9 +2339,7 @@ def DiscInternalBoundaries(
 
         gmsh.model.geo.synchronize()
 
-        gmsh.model.addPhysicalGroup(
-            1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
-        )
+        gmsh.model.addPhysicalGroup(1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name)
 
         gmsh.model.addPhysicalGroup(
             0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
@@ -2471,25 +2389,19 @@ def DiscInternalBoundaries(
         coords = c2.array.reshape(-1, 2)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
 
-        internalIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Internal"
-            )
+        internalIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Internal"
         )
 
         coords[internalIndices] *= r_int / (1.0e-16 + R[internalIndices].reshape(-1, 1))
@@ -2618,9 +2530,7 @@ def CubedSphere(
         gmsh.model.geo.rotate(
             gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi / 2.0
         )
-        gmsh.model.geo.rotate(
-            gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi
-        )
+        gmsh.model.geo.rotate(gmsh.model.geo.copy([(3, 1)]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, np.pi)
         gmsh.model.geo.rotate(
             gmsh.model.geo.copy([(3, 1)]),
             0.0,
@@ -2640,9 +2550,7 @@ def CubedSphere(
 
         gmsh.model.geo.synchronize()
 
-        gmsh.model.addPhysicalGroup(
-            2, [1, 34, 61, 88, 115, 137], boundaries.Upper.value
-        )
+        gmsh.model.addPhysicalGroup(2, [1, 34, 61, 88, 115, 137], boundaries.Upper.value)
         gmsh.model.setPhysicalName(2, boundaries.Upper.value, "Upper")
 
         gmsh.model.addPhysicalGroup(2, [2, 14, 41, 68, 95, 117], boundaries.Lower.value)
@@ -2695,18 +2603,14 @@ def CubedSphere(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -2989,18 +2893,14 @@ def RegionalSphericalBox(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -3030,19 +2930,11 @@ def RegionalSphericalBox(
     )
 
     class boundary_normals(Enum):
-        Lower = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True)
-            )
+        Lower = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True))
         )
-        Upper = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True)
-            )
+        Upper = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True))
         )
 
     new_mesh.boundary_normals = boundary_normals
@@ -3106,9 +2998,7 @@ def SegmentedSphericalSurface2D(
             theta = i * 2 * np.pi / num_segments
             x1 = np.cos(theta)
             y1 = np.sin(theta)
-            equator_pts.append(
-                gmsh.model.geo.addPoint(x1, y1, 0.0, tag=-1, meshSize=meshRes)
-            )
+            equator_pts.append(gmsh.model.geo.addPoint(x1, y1, 0.0, tag=-1, meshSize=meshRes))
 
         for i in range(num_segments):
             pEq = equator_pts[i]
@@ -3126,9 +3016,7 @@ def SegmentedSphericalSurface2D(
                 longitudesS[np.mod(i + 1, num_segments)],
                 longitudesN[np.mod(i + 1, num_segments)],
             ]
-            segments_clps.append(
-                gmsh.model.geo.addCurveLoop(loops[::-1], tag=-1, reorient=True)
-            )
+            segments_clps.append(gmsh.model.geo.addCurveLoop(loops[::-1], tag=-1, reorient=True))
 
         gmsh.model.geo.synchronize()
 
@@ -3136,9 +3024,7 @@ def SegmentedSphericalSurface2D(
 
         for i in range(num_segments):
             segments_surfs.append(
-                gmsh.model.geo.addSurfaceFilling(
-                    [segments_clps[i]], tag=-1, sphereCenterTag=centre
-                )
+                gmsh.model.geo.addSurfaceFilling([segments_clps[i]], tag=-1, sphereCenterTag=centre)
             )
 
         gmsh.model.geo.synchronize()
@@ -3188,9 +3074,7 @@ def SegmentedSphericalSurface2D(
             plex_0[1], [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
         )
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0[1])
 
     # Now do this collectively
@@ -3268,18 +3152,10 @@ def SegmentedSphericalShell(
 
         centre = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, tag=-1)
 
-        poleNo = gmsh.model.geo.addPoint(
-            0.0, 0.0, radiusOuter, tag=-1, meshSize=meshRes
-        )
-        poleSo = gmsh.model.geo.addPoint(
-            0.0, 0.0, -radiusOuter, tag=-1, meshSize=meshRes
-        )
-        poleNi = gmsh.model.geo.addPoint(
-            0.0, 0.0, radiusInner, tag=-1, meshSize=meshRes
-        )
-        poleSi = gmsh.model.geo.addPoint(
-            0.0, 0.0, -radiusInner, tag=-1, meshSize=meshRes
-        )
+        poleNo = gmsh.model.geo.addPoint(0.0, 0.0, radiusOuter, tag=-1, meshSize=meshRes)
+        poleSo = gmsh.model.geo.addPoint(0.0, 0.0, -radiusOuter, tag=-1, meshSize=meshRes)
+        poleNi = gmsh.model.geo.addPoint(0.0, 0.0, radiusInner, tag=-1, meshSize=meshRes)
+        poleSi = gmsh.model.geo.addPoint(0.0, 0.0, -radiusInner, tag=-1, meshSize=meshRes)
 
         dtheta = 2 * np.pi / num_segments
 
@@ -3299,15 +3175,11 @@ def SegmentedSphericalShell(
         # Make edges
 
         edgeWo = gmsh.model.geo.addCircleArc(poleNo, centre, equator_pts_0o, tag=-1)
-        edgeEqo = gmsh.model.geo.addCircleArc(
-            equator_pts_0o, centre, equator_pts_1o, tag=-1
-        )
+        edgeEqo = gmsh.model.geo.addCircleArc(equator_pts_0o, centre, equator_pts_1o, tag=-1)
         edgeEo = gmsh.model.geo.addCircleArc(equator_pts_1o, centre, poleNo, tag=-1)
 
         edgeWi = gmsh.model.geo.addCircleArc(poleNi, centre, equator_pts_0i, tag=-1)
-        edgeEqi = gmsh.model.geo.addCircleArc(
-            equator_pts_0i, centre, equator_pts_1i, tag=-1
-        )
+        edgeEqi = gmsh.model.geo.addCircleArc(equator_pts_0i, centre, equator_pts_1i, tag=-1)
         edgeEi = gmsh.model.geo.addCircleArc(equator_pts_1i, centre, poleNi, tag=-1)
 
         ## Struts
@@ -3318,12 +3190,8 @@ def SegmentedSphericalShell(
 
         # Make boundaries
 
-        faceLoopo = gmsh.model.geo.addCurveLoop(
-            [edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True
-        )
-        faceLoopi = gmsh.model.geo.addCurveLoop(
-            [edgeWi, edgeEqi, edgeEi], tag=-1, reorient=True
-        )
+        faceLoopo = gmsh.model.geo.addCurveLoop([edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True)
+        faceLoopi = gmsh.model.geo.addCurveLoop([edgeWi, edgeEqi, edgeEi], tag=-1, reorient=True)
         faceLoopW = gmsh.model.geo.addCurveLoop(
             [edgeWo, radialW, edgeWi, radialN], tag=-1, reorient=True
         )
@@ -3375,9 +3243,7 @@ def SegmentedSphericalShell(
 
         # Make volume
 
-        wedge_surf = gmsh.model.geo.addSurfaceLoop(
-            [face_o, face_i, face_W, face_E, face_S], tag=-1
-        )
+        wedge_surf = gmsh.model.geo.addSurfaceLoop([face_o, face_i, face_W, face_E, face_S], tag=-1)
 
         wedge_vol = gmsh.model.geo.addVolume([wedge_surf], tag=-1)
         wedges = [wedge_vol]
@@ -3527,9 +3393,7 @@ def SegmentedSphericalShell(
 
         ####
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
 
@@ -3559,18 +3423,14 @@ def SegmentedSphericalShell(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -3598,19 +3458,11 @@ def SegmentedSphericalShell(
     )
 
     class boundary_normals(Enum):
-        Lower = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True)
-            )
+        Lower = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True))
         )
-        Upper = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True)
-            )
+        Upper = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True))
         )
         Centre = None
 
@@ -3688,9 +3540,7 @@ def SegmentedSphericalBall(
         # Make edges
 
         edgeWo = gmsh.model.geo.addCircleArc(poleNo, centre, equator_pts_0o, tag=-1)
-        edgeEqo = gmsh.model.geo.addCircleArc(
-            equator_pts_0o, centre, equator_pts_1o, tag=-1
-        )
+        edgeEqo = gmsh.model.geo.addCircleArc(equator_pts_0o, centre, equator_pts_1o, tag=-1)
         edgeEo = gmsh.model.geo.addCircleArc(equator_pts_1o, centre, poleNo, tag=-1)
 
         ## Struts
@@ -3701,21 +3551,13 @@ def SegmentedSphericalBall(
 
         # Make boundaries
 
-        faceLoopo = gmsh.model.geo.addCurveLoop(
-            [edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True
-        )
+        faceLoopo = gmsh.model.geo.addCurveLoop([edgeWo, edgeEqo, edgeEo], tag=-1, reorient=True)
         # faceLoopi = gmsh.model.geo.addCurveLoop(
         #     [edgeWi, edgeEqi, edgeEi], tag=-1, reorient=True
         # )
-        faceLoopW = gmsh.model.geo.addCurveLoop(
-            [edgeWo, radialW, radialN], tag=-1, reorient=True
-        )
-        faceLoopE = gmsh.model.geo.addCurveLoop(
-            [edgeEo, radialE, radialN], tag=-1, reorient=True
-        )
-        faceLoopS = gmsh.model.geo.addCurveLoop(
-            [edgeEqo, radialW, radialE], tag=-1, reorient=True
-        )
+        faceLoopW = gmsh.model.geo.addCurveLoop([edgeWo, radialW, radialN], tag=-1, reorient=True)
+        faceLoopE = gmsh.model.geo.addCurveLoop([edgeEo, radialE, radialN], tag=-1, reorient=True)
+        faceLoopS = gmsh.model.geo.addCurveLoop([edgeEqo, radialW, radialE], tag=-1, reorient=True)
 
         # Make surfaces
 
@@ -3757,9 +3599,7 @@ def SegmentedSphericalBall(
 
         # Make volume
 
-        wedge_surf = gmsh.model.geo.addSurfaceLoop(
-            [face_o, face_W, face_E, face_S], tag=-1
-        )
+        wedge_surf = gmsh.model.geo.addSurfaceLoop([face_o, face_W, face_E, face_S], tag=-1)
 
         wedge_vol = gmsh.model.geo.addVolume([wedge_surf], tag=-1)
         wedges = [wedge_vol]
@@ -3897,9 +3737,7 @@ def SegmentedSphericalBall(
 
         ####
 
-        viewer = PETSc.ViewerHDF5().create(
-            uw_filename + ".h5", "w", comm=PETSc.COMM_SELF
-        )
+        viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
 
@@ -3929,18 +3767,14 @@ def SegmentedSphericalBall(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -3968,12 +3802,8 @@ def SegmentedSphericalBall(
     )
 
     class boundary_normals(Enum):
-        Upper = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radius), (0.0, True)
-            )
+        Upper = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radius), (0.0, True))
         )
         Centre = None
 

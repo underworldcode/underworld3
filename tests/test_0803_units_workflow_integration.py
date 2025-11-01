@@ -38,14 +38,14 @@ def test_geophysics_workflow_mixed_units():
     width_km = 6000  # Domain width in km
 
     # Temperature data from different sources in different units
-    surface_temp_celsius = 15     # Surface temperature in Celsius
-    cmb_temp_kelvin = 3500       # Core-mantle boundary in Kelvin
+    surface_temp_celsius = 15  # Surface temperature in Celsius
+    cmb_temp_kelvin = 3500  # Core-mantle boundary in Kelvin
 
     # Velocity data from plate tectonics in cm/year
-    plate_velocity_cm_year = 5   # Typical plate velocity
+    plate_velocity_cm_year = 5  # Typical plate velocity
 
     # Material properties in mixed units
-    density_kg_m3 = 3300        # Density in kg/m³
+    density_kg_m3 = 3300  # Density in kg/m³
     thermal_diffusivity_m2_s = 1e-6  # Thermal diffusivity in m²/s
 
     print("=== GEOPHYSICS WORKFLOW TEST ===")
@@ -63,15 +63,15 @@ def test_geophysics_workflow_mixed_units():
     model.set_reference_quantities(
         characteristic_length=depth_km * uw.units.km,  # Set depth as length scale
         plate_velocity=plate_velocity_cm_year * uw.units.cm / uw.units.year,
-        mantle_temperature=cmb_temp_kelvin * uw.units.kelvin
+        mantle_temperature=cmb_temp_kelvin * uw.units.kelvin,
     )
 
     # Create mesh using model coordinates (dimensionless)
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(8, 16),  # 8 in depth, 16 in width
         minCoords=(0.0, 0.0),
-        maxCoords=(1.0, width_km/depth_km),  # Aspect ratio preservation
-        qdegree=2
+        maxCoords=(1.0, width_km / depth_km),  # Aspect ratio preservation
+        qdegree=2,
     )
 
     # Create temperature field - demonstrate mixed unit inputs work seamlessly
@@ -81,17 +81,15 @@ def test_geophysics_workflow_mixed_units():
     x, y = mesh.X  # Physical coordinates
 
     # Surface boundary: use Celsius (convert to Kelvin internally)
-    surface_temp_K = fn.convert_array_units(
-        np.array([surface_temp_celsius]), 'degC', 'K'
-    )[0]
+    surface_temp_K = fn.convert_array_units(np.array([surface_temp_celsius]), "degC", "K")[0]
 
     # Set up temperature field with realistic profile
     # User can work in whatever units are natural
     with uw.synchronised_array_update():
         # Linear temperature profile from surface to CMB
         temp_profile = (
-            surface_temp_K +
-            (cmb_temp_kelvin - surface_temp_K) * mesh.X.coords[:, 0]  # Depth-dependent
+            surface_temp_K
+            + (cmb_temp_kelvin - surface_temp_K) * mesh.X.coords[:, 0]  # Depth-dependent
         )
         temperature.array[:, 0, 0] = temp_profile  # Correct shape for scalar field
 
@@ -107,9 +105,11 @@ def test_geophysics_workflow_mixed_units():
     mid_mantle_coords_model = np.array([[0.5, 0.5]], dtype=np.float64)
 
     # All these should give the same result with explicit coordinate units
-    temp_km_coords = uw.function.evaluate(temperature.sym, mid_mantle_coords_km, coord_units='km')
-    temp_m_coords = uw.function.evaluate(temperature.sym, mid_mantle_coords_m, coord_units='m')
-    temp_model_coords = uw.function.evaluate(temperature.sym, mid_mantle_coords_model)  # No units = model coords
+    temp_km_coords = uw.function.evaluate(temperature.sym, mid_mantle_coords_km, coord_units="km")
+    temp_m_coords = uw.function.evaluate(temperature.sym, mid_mantle_coords_m, coord_units="m")
+    temp_model_coords = uw.function.evaluate(
+        temperature.sym, mid_mantle_coords_model
+    )  # No units = model coords
 
     print("=== COORDINATE UNIT FLEXIBILITY ===")
     print("Evaluating temperature at mid-mantle using different coordinate units:")
@@ -153,13 +153,13 @@ def test_geophysics_workflow_mixed_units():
     # Reference velocity for conversion
     scales = model.get_fundamental_scales()
     # Construct velocity scale from length and time scales
-    ref_vel_pint = scales['length'] / scales['time']  # velocity = length / time
+    ref_vel_pint = scales["length"] / scales["time"]  # velocity = length / time
 
     # Display in various units users might want
-    vel_cm_year = (vel_model_magnitude * ref_vel_pint).to('cm/year').magnitude
-    vel_mm_year = (vel_model_magnitude * ref_vel_pint).to('mm/year').magnitude
-    vel_m_s = (vel_model_magnitude * ref_vel_pint).to('m/s').magnitude
-    vel_km_myr = (vel_model_magnitude * ref_vel_pint).to('km/megayear').magnitude
+    vel_cm_year = (vel_model_magnitude * ref_vel_pint).to("cm/year").magnitude
+    vel_mm_year = (vel_model_magnitude * ref_vel_pint).to("mm/year").magnitude
+    vel_m_s = (vel_model_magnitude * ref_vel_pint).to("m/s").magnitude
+    vel_km_myr = (vel_model_magnitude * ref_vel_pint).to("km/megayear").magnitude
 
     print(f"  {vel_cm_year:.2f} cm/year (plate tectonics scale)")
     print(f"  {vel_mm_year:.1f} mm/year (GPS scale)")
@@ -185,17 +185,20 @@ def test_geophysics_workflow_mixed_units():
     print("Querying points with different coordinate units:")
 
     # Define points of interest in different units
-    points_km = np.array([
-        [500, 1000],   # Shallow point
-        [1450, 3000],  # Mid-mantle
-        [2800, 5000],  # Deep mantle
-    ], dtype=np.float64)
+    points_km = np.array(
+        [
+            [500, 1000],  # Shallow point
+            [1450, 3000],  # Mid-mantle
+            [2800, 5000],  # Deep mantle
+        ],
+        dtype=np.float64,
+    )
 
     points_m = points_km * 1000  # Convert to meters
 
     # Query using both unit systems with explicit coordinate units
-    temps_km = uw.function.evaluate(temperature.sym, points_km, coord_units='km')
-    temps_m = uw.function.evaluate(temperature.sym, points_m, coord_units='m')
+    temps_km = uw.function.evaluate(temperature.sym, points_km, coord_units="km")
+    temps_m = uw.function.evaluate(temperature.sym, points_m, coord_units="m")
 
     print("  Points defined in km and m:")
     # Extract values from UnitAwareArray (already numpy arrays)
@@ -203,7 +206,9 @@ def test_geophysics_workflow_mixed_units():
     temps_m_flat = np.asarray(temps_m).flatten()
 
     for i, (pt_km, pt_m) in enumerate(zip(points_km, points_m)):
-        print(f"    Point {i+1}: ({pt_km[0]:.0f}, {pt_km[1]:.0f}) km = ({pt_m[0]:.0f}, {pt_m[1]:.0f}) m")
+        print(
+            f"    Point {i+1}: ({pt_km[0]:.0f}, {pt_km[1]:.0f}) km = ({pt_m[0]:.0f}, {pt_m[1]:.0f}) m"
+        )
         print(f"      Temperature (km coords): {temps_km_flat[i]:.1f} K")
         print(f"      Temperature (m coords):  {temps_m_flat[i]:.1f} K")
         assert np.isclose(temps_km_flat[i], temps_m_flat[i], rtol=1e-10)
@@ -217,15 +222,17 @@ def test_geophysics_workflow_mixed_units():
 
     # Start analysis in km
     analysis_point_km = np.array([[1000, 2000]], dtype=np.float64)
-    temp_analysis_1 = uw.function.evaluate(temperature.sym, analysis_point_km, coord_units='km')
+    temp_analysis_1 = uw.function.evaluate(temperature.sym, analysis_point_km, coord_units="km")
 
     # Switch to meters for detailed work
     analysis_point_m = analysis_point_km * 1000
-    temp_analysis_2 = uw.function.evaluate(temperature.sym, analysis_point_m, coord_units='m')
+    temp_analysis_2 = uw.function.evaluate(temperature.sym, analysis_point_m, coord_units="m")
 
     # Switch to model coordinates for numerical work
-    analysis_point_model = np.array([[1000/2900, 2000/6000]], dtype=np.float64)
-    temp_analysis_3 = uw.function.evaluate(temperature.sym, analysis_point_model)  # No units = model coords
+    analysis_point_model = np.array([[1000 / 2900, 2000 / 6000]], dtype=np.float64)
+    temp_analysis_3 = uw.function.evaluate(
+        temperature.sym, analysis_point_model
+    )  # No units = model coords
 
     # Extract scalar values from UnitAwareArray results (already numpy arrays)
     temp_1_val = float(np.asarray(temp_analysis_1).flatten()[0])
@@ -270,22 +277,19 @@ def test_engineering_workflow_precision_units():
     model.set_reference_quantities(
         characteristic_length=device_width_um * uw.units.micrometer,
         plate_velocity=1 * uw.units.mm / uw.units.second,  # Microfluidics scale
-        mantle_temperature=400 * uw.units.kelvin  # Operating temperature
+        mantle_temperature=400 * uw.units.kelvin,  # Operating temperature
     )
 
     # Create high-resolution mesh for precision
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(20, 10),
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 0.5),  # Aspect ratio
-        qdegree=2
+        elementRes=(20, 10), minCoords=(0.0, 0.0), maxCoords=(1.0, 0.5), qdegree=2  # Aspect ratio
     )
 
     # Test precision coordinate queries with different units
     # Point at 25.7 μm, 13.2 μm (specific feature location)
     query_point_um = np.array([[25.7, 13.2]], dtype=np.float64)
     query_point_nm = query_point_um * 1000  # Convert to nanometers
-    query_point_mm = query_point_um / 1000   # Convert to millimeters
+    query_point_mm = query_point_um / 1000  # Convert to millimeters
 
     # Create simple field for testing
     temperature = uw.discretisation.MeshVariable("T", mesh, 1)
@@ -296,9 +300,9 @@ def test_engineering_workflow_precision_units():
         temperature.array[:, 0, 0] = 300 + 100 * mesh.X.coords[:, 0]  # 300K to 400K
 
     # Query using different precision units with explicit coordinate units
-    temp_um = uw.function.evaluate(temperature.sym, query_point_um, coord_units='micrometer')
-    temp_nm = uw.function.evaluate(temperature.sym, query_point_nm, coord_units='nanometer')
-    temp_mm = uw.function.evaluate(temperature.sym, query_point_mm, coord_units='millimeter')
+    temp_um = uw.function.evaluate(temperature.sym, query_point_um, coord_units="micrometer")
+    temp_nm = uw.function.evaluate(temperature.sym, query_point_nm, coord_units="nanometer")
+    temp_mm = uw.function.evaluate(temperature.sym, query_point_mm, coord_units="millimeter")
 
     print(f"Engineering precision test at feature location:")
     print(f"  Query point: {query_point_um[0,0]:.1f} μm, {query_point_um[0,1]:.1f} μm")
@@ -338,15 +342,12 @@ def test_astronomical_workflow_extreme_scales():
     model.set_reference_quantities(
         characteristic_length=core_radius_km * uw.units.km,
         plate_velocity=1 * uw.units.km / uw.units.year,  # Geological velocity
-        mantle_temperature=5000 * uw.units.kelvin  # Core temperature
+        mantle_temperature=5000 * uw.units.kelvin,  # Core temperature
     )
 
     # Create mesh
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(6, 6),
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        qdegree=2
+        elementRes=(6, 6), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=2
     )
 
     # Test queries with extreme scale units
@@ -358,13 +359,13 @@ def test_astronomical_workflow_extreme_scales():
     temperature = uw.discretisation.MeshVariable("T", mesh, 1)
     with uw.synchronised_array_update():
         temperature.array[:, 0, 0] = 4000 + 1000 * np.sqrt(
-            mesh.X.coords[:, 0]**2 + mesh.X.coords[:, 1]**2
+            mesh.X.coords[:, 0] ** 2 + mesh.X.coords[:, 1] ** 2
         )  # Radial temperature
 
     # Query using extreme scale units with explicit coordinate units
-    temp_km = uw.function.evaluate(temperature.sym, query_point_km, coord_units='km')
-    temp_au = uw.function.evaluate(temperature.sym, query_point_au, coord_units='astronomical_unit')
-    temp_m = uw.function.evaluate(temperature.sym, query_point_m, coord_units='m')
+    temp_km = uw.function.evaluate(temperature.sym, query_point_km, coord_units="km")
+    temp_au = uw.function.evaluate(temperature.sym, query_point_au, coord_units="astronomical_unit")
+    temp_m = uw.function.evaluate(temperature.sym, query_point_m, coord_units="m")
 
     # Extract scalar values from UnitAwareArray (already numpy arrays)
     temp_km_val = float(np.asarray(temp_km).flatten()[0])

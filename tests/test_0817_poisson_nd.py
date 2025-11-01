@@ -36,27 +36,26 @@ def test_poisson_dimensional_vs_nondimensional(resolution):
 
     model = uw.get_default_model()
     model.set_reference_quantities(
-        length=uw.quantity(1, "kilometer"),
-        temperature_diff=uw.quantity(1000, "kelvin")
+        length=uw.quantity(1, "kilometer"), temperature_diff=uw.quantity(1000, "kelvin")
     )
 
     # Create mesh (with reference quantities already set)
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=resolution
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=resolution
     )
 
     # Mesh should have picked up length scale
-    assert mesh.length_scale == pytest.approx(1000.0, rel=1e-10), \
-        f"Mesh should have length_scale=1000m from 1km reference, got {mesh.length_scale}"
+    assert mesh.length_scale == pytest.approx(
+        1000.0, rel=1e-10
+    ), f"Mesh should have length_scale=1000m from 1km reference, got {mesh.length_scale}"
 
     # Create variables with units
-    T = uw.discretisation.MeshVariable('T', mesh, 1, degree=2, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="kelvin")
 
     # T should have picked up temperature scale
-    assert T.scaling_coefficient == pytest.approx(1000.0, rel=1e-10), \
-        f"T should have scaling_coefficient=1000K, got {T.scaling_coefficient}"
+    assert T.scaling_coefficient == pytest.approx(
+        1000.0, rel=1e-10
+    ), f"T should have scaling_coefficient=1000K, got {T.scaling_coefficient}"
 
     # ========================================================================
     # SOLVE DIMENSIONAL (baseline)
@@ -109,13 +108,16 @@ def test_poisson_dimensional_vs_nondimensional(resolution):
 
     print(f"\nDimensional vs Non-Dimensional Poisson Comparison (resolution={resolution}):")
     print(f"  Dimensional solution range: [{u_dimensional.min():.6f}, {u_dimensional.max():.6f}] K")
-    print(f"  Non-dimensional solution range: [{u_nondimensional.min():.6f}, {u_nondimensional.max():.6f}] K")
+    print(
+        f"  Non-dimensional solution range: [{u_nondimensional.min():.6f}, {u_nondimensional.max():.6f}] K"
+    )
     print(f"  Max absolute difference: {max_diff:.6e} K")
     print(f"  Max relative difference: {rel_diff:.6e}")
 
     # Solutions should match to machine precision
-    assert np.allclose(u_dimensional, u_nondimensional, rtol=1e-10, atol=1e-12), \
-        f"Dimensional and ND solutions should match (max_diff={max_diff:.6e}, rel_diff={rel_diff:.6e})"
+    assert np.allclose(
+        u_dimensional, u_nondimensional, rtol=1e-10, atol=1e-12
+    ), f"Dimensional and ND solutions should match (max_diff={max_diff:.6e}, rel_diff={rel_diff:.6e})"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -133,17 +135,13 @@ def test_poisson_with_source_term():
     uw.use_nondimensional_scaling(False)
 
     model = uw.get_default_model()
-    model.set_reference_quantities(
-        temperature_diff=uw.quantity(1000, "kelvin")
-    )
+    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, degree=2, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="kelvin")
 
     # ========================================================================
     # Dimensional solve
@@ -153,7 +151,7 @@ def test_poisson_with_source_term():
     poisson_dim = uw.systems.Poisson(mesh, u_Field=T)
     poisson_dim.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson_dim.constitutive_model.Parameters.diffusivity = 1.0
-    poisson_dim.f = 10.0  # Source term in K (dimensional)
+    poisson_dim.f = uw.quantity(10.0, "kelvin")  # Source term with units
 
     poisson_dim.add_dirichlet_bc(0.0, "Left")
     poisson_dim.add_dirichlet_bc(0.0, "Right")
@@ -169,7 +167,7 @@ def test_poisson_with_source_term():
     poisson_nd = uw.systems.Poisson(mesh, u_Field=T)
     poisson_nd.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson_nd.constitutive_model.Parameters.diffusivity = 1.0
-    poisson_nd.f = 10.0  # Same source (scaling happens in unwrap)
+    poisson_nd.f = uw.quantity(10.0, "kelvin")  # Same source with units (auto-scaled)
 
     poisson_nd.add_dirichlet_bc(0.0, "Left")
     poisson_nd.add_dirichlet_bc(0.0, "Right")
@@ -185,8 +183,9 @@ def test_poisson_with_source_term():
     print(f"\nPoisson with source term:")
     print(f"  Max difference: {max_diff:.6e} K")
 
-    assert np.allclose(u_dim, u_nd, rtol=1e-10, atol=1e-12), \
-        f"Solutions with source term should match (max_diff={max_diff:.6e})"
+    assert np.allclose(
+        u_dim, u_nd, rtol=1e-10, atol=1e-12
+    ), f"Solutions with source term should match (max_diff={max_diff:.6e})"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -202,17 +201,13 @@ def test_poisson_scaling_improves_conditioning():
     uw.reset_default_model()
 
     model = uw.get_default_model()
-    model.set_reference_quantities(
-        temperature_diff=uw.quantity(1000, "kelvin")
-    )
+    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, degree=2, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="kelvin")
 
     # ========================================================================
     # Solve with ND scaling
@@ -235,9 +230,8 @@ def test_poisson_scaling_improves_conditioning():
     assert solution_array.max() <= 1010.0, "Solution should be <= 1000"
 
     # Midpoint should be roughly 500 K
-    midpoint_value = solution_array[len(solution_array)//2]
-    assert 400 < midpoint_value < 600, \
-        f"Midpoint should be ~500K, got {midpoint_value:.1f}K"
+    midpoint_value = solution_array[len(solution_array) // 2]
+    assert 400 < midpoint_value < 600, f"Midpoint should be ~500K, got {midpoint_value:.1f}K"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)

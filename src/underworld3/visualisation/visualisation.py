@@ -107,9 +107,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
 
         cells_array = np.hstack((cells_size, cells_array), dtype=int)
 
-        pv_mesh = pv.UnstructuredGrid(
-            cells_array, cells_type, coords_to_pv_coords(mesh.X.coords)
-        )
+        pv_mesh = pv.UnstructuredGrid(cells_array, cells_type, coords_to_pv_coords(mesh.X.coords))
 
         return pv_mesh
 
@@ -282,12 +280,8 @@ def clip_mesh(pvmesh, clip_angle):
     )
 
     # Perform clipping
-    clip1 = pvmesh.clip(
-        origin=(0.0, 0.0, 0.0), normal=clip1_normal, invert=False, crinkle=False
-    )
-    clip2 = pvmesh.clip(
-        origin=(0.0, 0.0, 0.0), normal=clip2_normal, invert=False, crinkle=False
-    )
+    clip1 = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=clip1_normal, invert=False, crinkle=False)
+    clip2 = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=clip2_normal, invert=False, crinkle=False)
 
     return [clip1, clip2]
 
@@ -618,9 +612,7 @@ def plot_vector(
     print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
 
     velocity_points = meshVariable_to_pv_cloud(vector)
-    velocity_points.point_data[vector_name] = vector_fn_to_pv_points(
-        velocity_points, vector.sym
-    )
+    velocity_points.point_data[vector_name] = vector_fn_to_pv_points(velocity_points, vector.sym)
 
     pl = pv.Plotter(window_size=window_size)
     if clip_angle != 0.0:
@@ -771,18 +763,12 @@ def save_colorbar(
             y=cb_label_ypos,
             rotation=90,
         )
-        plt.savefig(
-            f"{output_path}{fname}_cbvert.{fformat}", dpi=150, bbox_inches="tight"
-        )
+        plt.savefig(f"{output_path}{fname}_cbvert.{fformat}", dpi=150, bbox_inches="tight")
 
     elif cb_orient == "horizontal":
         cax = plt.axes([0.1, 0.2, 1.15, 0.06])
         cb = plt.colorbar(orientation="horizontal", cax=cax)
-        cb.ax.set_title(
-            cb_axis_label, fontsize=primary_fs, x=cb_label_xpos, y=cb_label_ypos
-        )
-        plt.savefig(
-            f"{output_path}{fname}_cbhorz.{fformat}", dpi=150, bbox_inches="tight"
-        )
+        cb.ax.set_title(cb_axis_label, fontsize=primary_fs, x=cb_label_xpos, y=cb_label_ypos)
+        plt.savefig(f"{output_path}{fname}_cbhorz.{fformat}", dpi=150, bbox_inches="tight")
 
     return

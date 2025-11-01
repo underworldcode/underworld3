@@ -12,6 +12,7 @@ This tests the complete chain:
 
 Tests cover all solver types that use Templates and constitutive models.
 """
+
 import pytest
 import underworld3 as uw
 import sympy
@@ -41,10 +42,12 @@ class TestTemplateParameterPropagation:
         darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
 
         # Test 1: Bidirectional reference established
-        assert darcy.constitutive_model.Parameters._solver is not None, \
-            "Constitutive model should have solver reference"
-        assert darcy.constitutive_model.Parameters._solver is darcy, \
-            "Solver reference should point to correct solver"
+        assert (
+            darcy.constitutive_model.Parameters._solver is not None
+        ), "Constitutive model should have solver reference"
+        assert (
+            darcy.constitutive_model.Parameters._solver is darcy
+        ), "Solver reference should point to correct solver"
 
         # Test 2: Get initial F1 Template (no gravity)
         F1_before = darcy.F1
@@ -53,8 +56,7 @@ class TestTemplateParameterPropagation:
 
         # Test 3: Change gravity parameter
         darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T
-        assert darcy.is_setup is False, \
-            "Solver is_setup should be False after parameter change"
+        assert darcy.is_setup is False, "Solver is_setup should be False after parameter change"
 
         # Test 4: Get F1 Template after parameter change
         F1_after = darcy.F1
@@ -62,16 +64,16 @@ class TestTemplateParameterPropagation:
         F1_sym_after = F1_after.sym
 
         # Test 5: Verify object identity preserved
-        assert F1_before is F1_after, \
-            "F1 Template should return same object (identity preserved)"
-        assert F1_id_before == F1_id_after, \
-            "F1 Template should have same Python id"
+        assert F1_before is F1_after, "F1 Template should return same object (identity preserved)"
+        assert F1_id_before == F1_id_after, "F1 Template should have same Python id"
 
         # Test 6: Verify symbolic content updated
-        assert F1_sym_before != F1_sym_after, \
-            "F1 symbolic content should change after parameter update"
-        assert '+1' in str(F1_sym_after) or '+ 1' in str(F1_sym_after), \
-            "F1 should include gravity term after parameter change"
+        assert (
+            F1_sym_before != F1_sym_after
+        ), "F1 symbolic content should change after parameter update"
+        assert "+1" in str(F1_sym_after) or "+ 1" in str(
+            F1_sym_after
+        ), "F1 should include gravity term after parameter change"
 
     def test_darcy_permeability_parameter_propagation(self):
         """Test Darcy solver: changing permeability parameter updates F1 Template."""
@@ -88,8 +90,7 @@ class TestTemplateParameterPropagation:
 
         # Change permeability
         darcy.constitutive_model.Parameters.permeability = 2.5
-        assert darcy.is_setup is False, \
-            "Solver is_setup should be False after permeability change"
+        assert darcy.is_setup is False, "Solver is_setup should be False after permeability change"
 
         # Get F1 after permeability change
         F1_after = darcy.F1
@@ -97,10 +98,10 @@ class TestTemplateParameterPropagation:
         F1_sym_after = F1_after.sym
 
         # Verify object identity preserved
-        assert F1_before is F1_after, \
-            "F1 Template should return same object after permeability change"
-        assert F1_id_before == F1_id_after, \
-            "F1 should have same Python id"
+        assert (
+            F1_before is F1_after
+        ), "F1 Template should return same object after permeability change"
+        assert F1_id_before == F1_id_after, "F1 should have same Python id"
 
         # Verify symbolic content potentially updated (depends on expression structure)
         # The Template mechanism should work even if symbolic form doesn't visibly change
@@ -122,8 +123,7 @@ class TestTemplateParameterPropagation:
 
         # Change diffusivity
         poisson.constitutive_model.Parameters.diffusivity = 5.0
-        assert poisson.is_setup is False, \
-            "Solver is_setup should be False after diffusivity change"
+        assert poisson.is_setup is False, "Solver is_setup should be False after diffusivity change"
 
         # Get F1 after change
         F1_after = poisson.F1
@@ -152,8 +152,7 @@ class TestTemplateParameterPropagation:
 
         # Change viscosity
         stokes.constitutive_model.Parameters.shear_viscosity_0 = 10.0
-        assert stokes.is_setup is False, \
-            "Solver is_setup should be False after viscosity change"
+        assert stokes.is_setup is False, "Solver is_setup should be False after viscosity change"
 
         # Get F1 after change
         F1_after = stokes.F1
@@ -167,7 +166,9 @@ class TestTemplateParameterPropagation:
         # For Stokes, the Template should update (flux depends on viscosity)
         # Symbolic content may or may not look different depending on substitution
 
-    @pytest.mark.skip(reason="AdvDiffusion F1 not yet converted to Template pattern - creates new expressions instead of preserving identity")
+    @pytest.mark.skip(
+        reason="AdvDiffusion F1 not yet converted to Template pattern - creates new expressions instead of preserving identity"
+    )
     def test_advdiff_diffusivity_parameter_propagation(self):
         """Test AdvDiff solver: changing diffusivity parameter updates F1 Template.
 
@@ -201,16 +202,18 @@ class TestTemplateParameterPropagation:
 
         # Change diffusivity
         adv_diff.constitutive_model.Parameters.diffusivity = 3.0
-        assert adv_diff.is_setup is False, \
-            "Solver is_setup should be False after diffusivity change"
+        assert (
+            adv_diff.is_setup is False
+        ), "Solver is_setup should be False after diffusivity change"
 
         # Get F1 after change
         F1_after = adv_diff.F1
         F1_id_after = id(F1_after)
 
         # This currently FAILS - AdvDiffusion needs to be updated to use Templates
-        assert F1_before is F1_after, \
-            "F1 Template should preserve object identity (currently fails for AdvDiffusion)"
+        assert (
+            F1_before is F1_after
+        ), "F1 Template should preserve object identity (currently fails for AdvDiffusion)"
         assert F1_id_before == F1_id_after
 
     def test_multiple_parameter_changes(self):
@@ -229,10 +232,12 @@ class TestTemplateParameterPropagation:
         for i in range(3):
             darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -i]).T
             F1_current = darcy.F1
-            assert id(F1_current) == F1_id_initial, \
-                f"F1 should maintain same id after {i+1} parameter changes"
-            assert F1_current is F1_initial, \
-                f"F1 should be same object after {i+1} parameter changes"
+            assert (
+                id(F1_current) == F1_id_initial
+            ), f"F1 should maintain same id after {i+1} parameter changes"
+            assert (
+                F1_current is F1_initial
+            ), f"F1 should be same object after {i+1} parameter changes"
 
     def test_template_re_evaluation_on_access(self):
         """Test that Template only re-evaluates when accessed after parameter change."""
@@ -254,7 +259,7 @@ class TestTemplateParameterPropagation:
 
         # After accessing with is_setup=False, the lambda is re-evaluated
         # (We can't directly observe the re-evaluation, but we can verify the result)
-        assert '+1' in str(F1_updated.sym) or '+ 1' in str(F1_updated.sym)
+        assert "+1" in str(F1_updated.sym) or "+ 1" in str(F1_updated.sym)
 
     def test_parameter_change_without_solver_reference_fails_gracefully(self):
         """Test that constitutive models without solver reference don't crash."""

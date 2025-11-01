@@ -155,9 +155,7 @@ class SNES_MyEquation(SNES_Scalar):
         """
         if self.constitutive_model is None:
             # Default: simple diffusion
-            flux = -sympy.Matrix(
-                [sympy.symbols(f"du_dx{i}") for i in range(self.mesh.dim)]
-            )
+            flux = -sympy.Matrix([sympy.symbols(f"du_dx{i}") for i in range(self.mesh.dim)])
         else:
             flux = self.constitutive_model.flux.T
 
@@ -252,7 +250,7 @@ class SNES_MyEquation(SNES_Scalar):
         Returns
         -------
         Convergence information from PETSc solver
-        
+
         Note: This is a COLLECTIVE operation - all MPI ranks must call it.
         """
 

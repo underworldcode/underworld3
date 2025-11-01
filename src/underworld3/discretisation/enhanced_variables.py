@@ -98,9 +98,7 @@ class EnhancedSwarmVariable(UnitAwareMixin, _SwarmVariable):
                 from sympy import latex
 
                 units_latex = (
-                    latex(self.units)
-                    if hasattr(self.units, "_latex")
-                    else str(self.units)
+                    latex(self.units) if hasattr(self.units, "_latex") else str(self.units)
                 )
                 return latex_repr[:-2] + r"\\,\\mathrm{" + units_latex + r"}$$"
             return latex_repr
@@ -168,9 +166,7 @@ def demonstrate_enhanced_variables():
         import underworld3 as uw
 
         # Create a simple mesh
-        mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(4, 4), minCoords=(0, 0), maxCoords=(1, 1)
-        )
+        mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4), minCoords=(0, 0), maxCoords=(1, 1))
         print(f"✓ Created mesh")
 
         # Create enhanced mesh variables with units

@@ -58,8 +58,8 @@ class TestSwarmAdvectionUnits:
 
         # Get initial position of first particle (in physical units)
         initial_pos_phys = swarm.coords
-        if hasattr(initial_pos_phys, '_pint_qty'):
-            initial_pos = initial_pos_phys._pint_qty.to('km').magnitude[0]
+        if hasattr(initial_pos_phys, "_pint_qty"):
+            initial_pos = initial_pos_phys._pint_qty.to("km").magnitude[0]
         else:
             initial_pos = initial_pos_phys[0]
 
@@ -73,8 +73,8 @@ class TestSwarmAdvectionUnits:
 
         # Get final position (in physical units)
         final_pos_phys = swarm.coords
-        if hasattr(final_pos_phys, '_pint_qty'):
-            final_pos = final_pos_phys._pint_qty.to('km').magnitude[0]
+        if hasattr(final_pos_phys, "_pint_qty"):
+            final_pos = final_pos_phys._pint_qty.to("km").magnitude[0]
         else:
             final_pos = final_pos_phys[0]
 
@@ -324,9 +324,9 @@ class TestMixedReferenceScales:
             displacement_model = final_pos[0] - initial_pos[0]
 
             # Convert to physical units (meters) for comparison
-            displacement_physical_qty = model.from_model_magnitude(displacement_model, '[length]')
-            if hasattr(displacement_physical_qty, '_pint_qty'):
-                displacement_physical = displacement_physical_qty._pint_qty.to('m').magnitude
+            displacement_physical_qty = model.from_model_magnitude(displacement_model, "[length]")
+            if hasattr(displacement_physical_qty, "_pint_qty"):
+                displacement_physical = displacement_physical_qty._pint_qty.to("m").magnitude
             else:
                 displacement_physical = displacement_physical_qty
 

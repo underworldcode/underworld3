@@ -15,10 +15,7 @@ def test_bc_accepts_raw_numbers():
     """Test backward compatibility: BCs accept raw numbers."""
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -37,10 +34,7 @@ def test_bc_accepts_uwquantity():
     """Test that BCs accept UWQuantity objects."""
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -62,10 +56,7 @@ def test_bc_accepts_pint_quantity():
     """Test that BCs accept Pint Quantity objects (from uw.units())."""
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -87,10 +78,7 @@ def test_bc_mixed_none_and_uwquantity():
     """Test BCs with mixed None and UWQuantity in lists."""
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -122,10 +110,7 @@ def test_bc_unit_conversion_equivalence():
     """
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -144,6 +129,7 @@ def test_bc_unit_conversion_equivalence():
 
     # Extract BC values
     import sympy
+
     bc_top = stokes.essential_bcs[0]
     bc_bottom = stokes.essential_bcs[1]
 
@@ -153,7 +139,9 @@ def test_bc_unit_conversion_equivalence():
 
     # All should be 1.0 m/s (in SI base units)
     assert abs(val_top - 1.0) < 1e-10, f"Top BC: {val_top} != 1.0"
-    assert abs(val_bottom - 1.0) < 1e-6, f"Bottom BC: {val_bottom} != 1.0"  # Slightly looser due to conversion
+    assert (
+        abs(val_bottom - 1.0) < 1e-6
+    ), f"Bottom BC: {val_bottom} != 1.0"  # Slightly looser due to conversion
 
 
 def test_bc_unit_conversion_values():
@@ -165,10 +153,7 @@ def test_bc_unit_conversion_values():
     """
     uw.reset_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.2,
-        regular=False
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2, regular=False
     )
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -186,6 +171,7 @@ def test_bc_unit_conversion_values():
 
     # The BC function should be a SymPy Matrix
     import sympy
+
     assert isinstance(bc.fn, sympy.ImmutableDenseMatrix)
 
     # Extract the y-component value (should be converted to m/s, dimensionless)
@@ -195,8 +181,9 @@ def test_bc_unit_conversion_values():
     expected_ms = 1.0e-2 / (365.25 * 24 * 3600)  # cm to m, year to seconds
 
     # Should match within floating point precision
-    assert abs(y_value - expected_ms) / expected_ms < 1e-6, \
-        f"BC value {y_value} doesn't match expected {expected_ms}"
+    assert (
+        abs(y_value - expected_ms) / expected_ms < 1e-6
+    ), f"BC value {y_value} doesn't match expected {expected_ms}"
 
 
 if __name__ == "__main__":
@@ -228,6 +215,6 @@ if __name__ == "__main__":
     test_bc_unit_conversion_equivalence()
     print("   ✓ Passed")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("All BC unit conversion tests passed! ✅")
-    print("="*60)
+    print("=" * 60)

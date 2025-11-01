@@ -272,18 +272,14 @@ def RegionalSphericalBox(
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Upper"
-            )
+        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Upper"
         )
         coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
         # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
 
-        lowerIndices = (
-            uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-                dm, "Lower"
-            )
+        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+            dm, "Lower"
         )
 
         coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
@@ -313,19 +309,11 @@ def RegionalSphericalBox(
     )
 
     class boundary_normals(Enum):
-        Lower = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True)
-            )
+        Lower = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] < 1.01 * radiusInner), (0.0, True))
         )
-        Upper = sympy.UnevaluatedExpr(
-            new_mesh.CoordinateSystem.unit_e_0
-        ) * sympy.UnevaluatedExpr(
-            sympy.Piecewise(
-                (1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True)
-            )
+        Upper = sympy.UnevaluatedExpr(new_mesh.CoordinateSystem.unit_e_0) * sympy.UnevaluatedExpr(
+            sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True))
         )
 
     new_mesh.boundary_normals = boundary_normals
@@ -338,7 +326,7 @@ def RegionalGeographicBox(
     lon_range: Tuple[float, float] = (135.0, 140.0),
     lat_range: Tuple[float, float] = (-35.0, -30.0),
     depth_range: Tuple[float, float] = (0.0, 400.0),
-    ellipsoid = 'WGS84',
+    ellipsoid="WGS84",
     numElements: Tuple[int, int, int] = (10, 10, 10),
     degree: int = 1,
     qdegree: int = 2,
@@ -458,15 +446,14 @@ def RegionalGeographicBox(
     from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
 
     # Parse ellipsoid parameter
-    if ellipsoid is True or ellipsoid == 'WGS84':
-        ellipsoid_dict = ELLIPSOIDS['WGS84'].copy()
-    elif ellipsoid is False or ellipsoid == 'sphere':
-        ellipsoid_dict = ELLIPSOIDS['sphere'].copy()
+    if ellipsoid is True or ellipsoid == "WGS84":
+        ellipsoid_dict = ELLIPSOIDS["WGS84"].copy()
+    elif ellipsoid is False or ellipsoid == "sphere":
+        ellipsoid_dict = ELLIPSOIDS["sphere"].copy()
     elif isinstance(ellipsoid, str):
         if ellipsoid not in ELLIPSOIDS:
             raise ValueError(
-                f"Unknown ellipsoid '{ellipsoid}'. "
-                f"Available: {list(ELLIPSOIDS.keys())}"
+                f"Unknown ellipsoid '{ellipsoid}'. " f"Available: {list(ELLIPSOIDS.keys())}"
             )
         ellipsoid_dict = ELLIPSOIDS[ellipsoid].copy()
     elif isinstance(ellipsoid, (tuple, list)) and len(ellipsoid) == 2:
@@ -474,11 +461,11 @@ def RegionalGeographicBox(
         a, b = ellipsoid
         f = (a - b) / a if a != b else 0.0
         ellipsoid_dict = {
-            'a': float(a),
-            'b': float(b),
-            'f': f,
-            'planet': 'Custom',
-            'description': f'Custom ellipsoid (a={a} km, b={b} km)',
+            "a": float(a),
+            "b": float(b),
+            "f": f,
+            "planet": "Custom",
+            "description": f"Custom ellipsoid (a={a} km, b={b} km)",
         }
     else:
         raise ValueError(
@@ -486,8 +473,8 @@ def RegionalGeographicBox(
             "Use str name, (a, b) tuple, True for WGS84, or False for sphere."
         )
 
-    a = ellipsoid_dict['a']
-    b = ellipsoid_dict['b']
+    a = ellipsoid_dict["a"]
+    b = ellipsoid_dict["b"]
 
     # Unpack ranges and element counts
     lon_min, lon_max = lon_range
@@ -501,16 +488,18 @@ def RegionalGeographicBox(
     if not (-90 <= lat_min < lat_max <= 90):
         raise ValueError(f"Invalid latitude range: {lat_range}. Must be in [-90, 90].")
     if not (0 <= depth_min < depth_max):
-        raise ValueError(f"Invalid depth range: {depth_range}. Must be positive with depth_min < depth_max.")
+        raise ValueError(
+            f"Invalid depth range: {depth_range}. Must be positive with depth_min < depth_max."
+        )
 
     # Define boundary enum
     class boundaries(Enum):
         Surface = 1  # depth = depth_min (top)
-        Bottom = 2   # depth = depth_max (bottom)
-        North = 3    # lat = lat_max
-        South = 4    # lat = lat_min
-        East = 5     # lon = lon_max
-        West = 6     # lon = lon_min
+        Bottom = 2  # depth = depth_max (bottom)
+        North = 3  # lat = lat_max
+        South = 4  # lat = lat_min
+        East = 5  # lon = lon_max
+        West = 6  # lon = lon_min
 
     # Generate mesh filename if not provided
     if filename is None:
@@ -574,7 +563,7 @@ def RegionalGeographicBox(
         gmsh.model.geo.addLine(8, 5, tag=8)
 
         # Vertical edges
-        gmsh.model.geo.addLine(1, 5, tag=9)   # SW vertical
+        gmsh.model.geo.addLine(1, 5, tag=9)  # SW vertical
         gmsh.model.geo.addLine(2, 6, tag=10)  # SE vertical
         gmsh.model.geo.addLine(3, 7, tag=11)  # NE vertical
         gmsh.model.geo.addLine(4, 8, tag=12)  # NW vertical
@@ -685,16 +674,19 @@ def RegionalGeographicBox(
 
     # Recreate geographic accessor with updated ellipsoid (in case default was used)
     from underworld3.coordinates import GeographicCoordinateAccessor
-    new_mesh.CoordinateSystem._geo_accessor = GeographicCoordinateAccessor(new_mesh.CoordinateSystem)
+
+    new_mesh.CoordinateSystem._geo_accessor = GeographicCoordinateAccessor(
+        new_mesh.CoordinateSystem
+    )
 
     # Define boundary normals using geographic basis vectors
     class boundary_normals(Enum):
-        Surface = new_mesh.CoordinateSystem.geo.unit_up      # Outward at surface
-        Bottom = new_mesh.CoordinateSystem.geo.unit_down     # Downward at bottom
-        North = new_mesh.CoordinateSystem.geo.unit_north     # Northward at north boundary
-        South = new_mesh.CoordinateSystem.geo.unit_south     # Southward at south boundary
-        East = new_mesh.CoordinateSystem.geo.unit_east       # Eastward at east boundary
-        West = new_mesh.CoordinateSystem.geo.unit_west       # Westward at west boundary
+        Surface = new_mesh.CoordinateSystem.geo.unit_up  # Outward at surface
+        Bottom = new_mesh.CoordinateSystem.geo.unit_down  # Downward at bottom
+        North = new_mesh.CoordinateSystem.geo.unit_north  # Northward at north boundary
+        South = new_mesh.CoordinateSystem.geo.unit_south  # Southward at south boundary
+        East = new_mesh.CoordinateSystem.geo.unit_east  # Eastward at east boundary
+        West = new_mesh.CoordinateSystem.geo.unit_west  # Westward at west boundary
 
     new_mesh.boundary_normals = boundary_normals
 

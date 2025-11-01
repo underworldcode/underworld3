@@ -471,9 +471,7 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         curl_V = sympy.Matrix.zeros(1, 3)
 
         curl_V[0] = (
-            V_l1.diff(l2) / r
-            - sympy.tan(l2) * V_l1 / r
-            - V_l2.diff(l1) / (r * sympy.cos(l2))
+            V_l1.diff(l2) / r - sympy.tan(l2) * V_l1 / r - V_l2.diff(l1) / (r * sympy.cos(l2))
         )
         curl_V[1] = V_l2.diff(r) + V_l2 / r - V_r.diff(l2) / r
         curl_V[2] = V_r.diff(l1) / (r * sympy.cos(l2)) - V_l1.diff(r) - V_l1 / r
@@ -509,9 +507,7 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         E[2, 2] = V_r / r + cosec_t * (L[2, 2] - V_t * sympy.cos(t)) / r
 
         E[1, 0] = E[0, 1] = (L[0, 1] / r + L[1, 0] - V_t / r) / 2
-        E[1, 2] = E[2, 1] = (L[2, 1] + cosec_t * (L[1, 2] - V_t * sympy.cos(t))) / (
-            2 * r
-        )
+        E[1, 2] = E[2, 1] = (L[2, 1] + cosec_t * (L[1, 2] - V_t * sympy.cos(t))) / (2 * r)
 
         E[2, 0] = E[0, 2] = (cosec_t * L[0, 2] / r + L[2, 0] - V_p / r) / 2
 
@@ -635,9 +631,7 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
         E[1, 1] = (L[1, 1]) / r
 
         E[0, 1] = E[1, 0] = (
-            -L[0, 1]
-            - L[1, 0] / (1.0e-5 + sympy.cos(l2))
-            - V_l1 * sympy.Max(sympy.tan(l2), 100)
+            -L[0, 1] - L[1, 0] / (1.0e-5 + sympy.cos(l2)) - V_l1 * sympy.Max(sympy.tan(l2), 100)
         ) / (2 * r)
 
         return E

@@ -25,9 +25,7 @@ def test_default_length_scale():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Check default values
@@ -42,25 +40,24 @@ def test_length_scale_from_domain_depth():
 
     # Set reference quantities BEFORE creating mesh
     model.set_reference_quantities(
-        domain_depth=uw.quantity(100, "km"),
-        temperature_diff=uw.quantity(1000, "kelvin")
+        domain_depth=uw.quantity(100, "km"), temperature_diff=uw.quantity(1000, "kelvin")
     )
 
     # Create mesh - should pick up domain_depth as length scale
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Check that length scale was set from domain_depth
     # 100 km = 100000 m (Pint default units are SI)
     expected_scale = 100000.0  # meters
-    assert mesh.length_scale == pytest.approx(expected_scale, rel=1e-10), \
-        f"Length scale should be {expected_scale} m (from 100 km domain_depth)"
+    assert mesh.length_scale == pytest.approx(
+        expected_scale, rel=1e-10
+    ), f"Length scale should be {expected_scale} m (from 100 km domain_depth)"
 
-    assert "kilometer" in mesh.length_units or "meter" in mesh.length_units, \
-        f"Length units should be related to length, got {mesh.length_units}"
+    assert (
+        "kilometer" in mesh.length_units or "meter" in mesh.length_units
+    ), f"Length units should be related to length, got {mesh.length_units}"
 
 
 def test_length_scale_from_length_quantity():
@@ -69,22 +66,18 @@ def test_length_scale_from_length_quantity():
     model = uw.get_default_model()
 
     # Set reference quantities with 'length' instead of 'domain_depth'
-    model.set_reference_quantities(
-        length=uw.quantity(50, "km"),
-        time=uw.quantity(1, "megayear")
-    )
+    model.set_reference_quantities(length=uw.quantity(50, "km"), time=uw.quantity(1, "megayear"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Check that length scale was set from length
     # 50 km = 50000 m
     expected_scale = 50000.0  # meters
-    assert mesh.length_scale == pytest.approx(expected_scale, rel=1e-10), \
-        f"Length scale should be {expected_scale} m (from 50 km length)"
+    assert mesh.length_scale == pytest.approx(
+        expected_scale, rel=1e-10
+    ), f"Length scale should be {expected_scale} m (from 50 km length)"
 
 
 def test_domain_depth_priority_over_length():
@@ -94,20 +87,18 @@ def test_domain_depth_priority_over_length():
 
     # Set BOTH domain_depth and length
     model.set_reference_quantities(
-        domain_depth=uw.quantity(100, "km"),
-        length=uw.quantity(50, "km")  # Should be ignored
+        domain_depth=uw.quantity(100, "km"), length=uw.quantity(50, "km")  # Should be ignored
     )
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Check that domain_depth was used (priority)
     expected_scale = 100000.0  # from domain_depth, not length
-    assert mesh.length_scale == pytest.approx(expected_scale, rel=1e-10), \
-        "domain_depth should have priority over length"
+    assert mesh.length_scale == pytest.approx(
+        expected_scale, rel=1e-10
+    ), "domain_depth should have priority over length"
 
 
 def test_length_scale_immutability():
@@ -115,9 +106,7 @@ def test_length_scale_immutability():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     original_scale = mesh.length_scale
@@ -127,8 +116,9 @@ def test_length_scale_immutability():
         mesh.length_scale = 100.0
 
     # Verify it hasn't changed
-    assert mesh.length_scale == original_scale, \
-        "length_scale should be immutable after mesh creation"
+    assert (
+        mesh.length_scale == original_scale
+    ), "length_scale should be immutable after mesh creation"
 
     # Also test that internal attribute can't be easily changed
     # (Note: Python doesn't enforce true immutability, but we document it)
@@ -141,26 +131,21 @@ def test_multiple_meshes_same_scale():
     uw.reset_default_model()
     model = uw.get_default_model()
 
-    model.set_reference_quantities(
-        domain_depth=uw.quantity(100, "km")
-    )
+    model.set_reference_quantities(domain_depth=uw.quantity(100, "km"))
 
     # Create two meshes
     mesh1 = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     mesh2 = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 2.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(2.0, 2.0), cellSize=0.5
     )
 
     # Both should have same length scale (from same model)
-    assert mesh1.length_scale == mesh2.length_scale, \
-        "All meshes from same model should use same length scale"
+    assert (
+        mesh1.length_scale == mesh2.length_scale
+    ), "All meshes from same model should use same length scale"
 
     expected_scale = 100000.0  # 100 km in meters
     assert mesh1.length_scale == pytest.approx(expected_scale, rel=1e-10)
@@ -174,19 +159,17 @@ def test_mesh_after_model_with_no_length_quantities():
 
     # Set reference quantities without length or domain_depth
     model.set_reference_quantities(
-        temperature_diff=uw.quantity(1000, "kelvin"),
-        time=uw.quantity(1, "megayear")
+        temperature_diff=uw.quantity(1000, "kelvin"), time=uw.quantity(1, "megayear")
     )
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Should default to 1.0 since no length-related quantities provided
-    assert mesh.length_scale == 1.0, \
-        "Length scale should default to 1.0 when no length quantities in model"
+    assert (
+        mesh.length_scale == 1.0
+    ), "Length scale should default to 1.0 when no length quantities in model"
 
 
 def test_length_scale_with_different_units():
@@ -195,21 +178,18 @@ def test_length_scale_with_different_units():
     model = uw.get_default_model()
 
     # Use miles instead of km
-    model.set_reference_quantities(
-        domain_depth=uw.quantity(62.137, "miles")  # ~100 km
-    )
+    model.set_reference_quantities(domain_depth=uw.quantity(62.137, "miles"))  # ~100 km
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Should convert to SI units (meters)
     # 62.137 miles ≈ 100 km ≈ 100000 m
     expected_scale = pytest.approx(100000.0, rel=0.01)  # 1% tolerance for unit conversion
-    assert mesh.length_scale == expected_scale, \
-        f"Length scale should convert miles to meters, got {mesh.length_scale}"
+    assert (
+        mesh.length_scale == expected_scale
+    ), f"Length scale should convert miles to meters, got {mesh.length_scale}"
 
 
 def test_length_scale_property_is_readonly():
@@ -217,18 +197,17 @@ def test_length_scale_property_is_readonly():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Check that property exists and is callable
-    assert hasattr(mesh, 'length_scale')
+    assert hasattr(mesh, "length_scale")
     assert isinstance(mesh.length_scale, (int, float))
 
     # Check that there's no setter
-    assert not hasattr(type(mesh).length_scale, 'fset') or type(mesh).length_scale.fset is None, \
-        "length_scale should not have a setter (read-only property)"
+    assert (
+        not hasattr(type(mesh).length_scale, "fset") or type(mesh).length_scale.fset is None
+    ), "length_scale should not have a setter (read-only property)"
 
 
 def test_length_units_matches_coordinate_units():
@@ -236,14 +215,10 @@ def test_length_units_matches_coordinate_units():
     uw.reset_default_model()
     model = uw.get_default_model()
 
-    model.set_reference_quantities(
-        domain_depth=uw.quantity(100, "km")
-    )
+    model.set_reference_quantities(domain_depth=uw.quantity(100, "km"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # length_units should be related to coordinate units
@@ -257,14 +232,10 @@ def test_mesh_view_displays_length_scale():
     uw.reset_default_model()
     model = uw.get_default_model()
 
-    model.set_reference_quantities(
-        domain_depth=uw.quantity(100, "km")
-    )
+    model.set_reference_quantities(domain_depth=uw.quantity(100, "km"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Call view() and check it doesn't error

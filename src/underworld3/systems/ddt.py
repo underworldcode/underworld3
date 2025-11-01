@@ -702,9 +702,29 @@ class SemiLagrangian(uw_object):
 
         model = uw.get_default_model()
 
-        # Check if we're working in a units-aware context by examining coordinate system
+        # DIAGNOSTIC: Capture information about the unit system
         coords_template = self.psi_star[0].coords
         has_units = hasattr(coords_template, "magnitude") or hasattr(coords_template, "_magnitude")
+
+        # DIAGNOSTIC OUTPUT
+        if uw.mpi.rank == 0:
+            print("\n" + "="*70)
+            print("DIAGNOSTIC: Semi-Lagrangian Advection Unit Handling")
+            print("="*70)
+            print(f"1. Input dt: {dt}")
+            print(f"   - Type: {type(dt)}")
+            print(f"   - Has 'to' method: {hasattr(dt, 'to')}")
+            if hasattr(dt, 'to'):
+                print(f"   - Value in seconds: {dt.to('second')}")
+            print(f"\n2. Coordinate template: type={type(coords_template)}")
+            print(f"   - Shape: {coords_template.shape if hasattr(coords_template, 'shape') else 'N/A'}")
+            print(f"   - Sample values: {coords_template[0] if len(coords_template) > 0 else 'empty'}")
+            print(f"   - Has 'magnitude': {hasattr(coords_template, 'magnitude')}")
+            print(f"   - Has '_magnitude': {hasattr(coords_template, '_magnitude')}")
+            print(f"   - has_units determined: {has_units}")
+            print(f"\n3. Model state:")
+            print(f"   - has_units(): {model.has_units()}")
+            print(f"   - Reference quantities set: {hasattr(model, '_reference_quantities') and model._reference_quantities is not None}")
 
         # Maintain unit system consistency: either keep everything with units or convert to non-dimensional
         if has_units:
@@ -715,30 +735,143 @@ class SemiLagrangian(uw_object):
             else:
                 # If dt is already a dimensionless number, treat it as seconds
                 dt_for_calc = dt
+            if uw.mpi.rank == 0:
+                print(f"\n4. Path taken: PHYSICAL coordinate system (has_units=True)")
+                print(f"   - dt_for_calc: {dt_for_calc}")
         else:
             # Non-dimensional coordinate system - convert dt to non-dimensional
             dt_for_calc = model.to_model_magnitude(dt)
+            if uw.mpi.rank == 0:
+                print(f"\n4. Path taken: NON-DIMENSIONAL coordinate system (has_units=False)")
+                print(f"   - dt_for_calc = model.to_model_magnitude(dt)")
+                print(f"   - dt_for_calc value: {dt_for_calc}")
+                print(f"   - dt_for_calc type: {type(dt_for_calc)}")
 
         for i in range(self.order - 1, -1, -1):
             # 2nd order update along characteristics
+
+            # DIAGNOSTIC: Check velocity function BEFORE evaluation
+            if uw.mpi.rank == 0 and i == self.order - 1:
+                print(f"\n🔍 DIAGNOSTIC: BEFORE velocity evaluation")
+                print(f"   - self.V_fn type: {type(self.V_fn)}")
+                print(f"   - self.V_fn: {self.V_fn}")
+                print(f"   - node_coords shape: {node_coords.shape}")
+                print(f"   - node_coords range: [{node_coords.min():.6e}, {node_coords.max():.6e}]")
 
             v_at_node_pts = uw.function.evaluate(
                 self.V_fn,
                 node_coords,
             )[:, 0, :]
 
+            # DIAGNOSTIC: Check velocity values AFTER evaluation
+            if uw.mpi.rank == 0 and i == self.order - 1:
+                print(f"\n🔍 DIAGNOSTIC: AFTER velocity evaluation")
+                print(f"   - v_at_node_pts shape: {v_at_node_pts.shape}")
+                print(f"   - v_at_node_pts range: [{v_at_node_pts.min():.6e}, {v_at_node_pts.max():.6e}]")
+                print(f"   - v_at_node_pts sample values: {v_at_node_pts[0]}")
+                print(f"   ⚠️  If these values are ~1e10 instead of ~1e-6, evaluation is scaling incorrectly!")
+
+            # Non-dimensionalize velocities when working with dimensionless coordinates
+            # This prevents dimensional mismatch: velocities in m/s mixed with coords in [0,1]
+            if not has_units:
+                # Extract units from velocity function
+                v_units = uw.get_units(self.V_fn)
+
+                # DIAGNOSTIC
+                if uw.mpi.rank == 0 and i == self.order - 1:
+                    print(f"\n🔍 DIAGNOSTIC: Velocity non-dimensionalization")
+                    print(f"   - self.V_fn type: {type(self.V_fn)}")
+                    print(f"   - v_units from get_units(): {v_units}")
+                    print(f"   - v_at_node_pts before: min={v_at_node_pts.min():.6e}, max={v_at_node_pts.max():.6e}")
+
+                if v_units and v_units != "dimensionless":
+                    # Wrap numpy array with unit information
+                    from underworld3.function.unit_conversion import UnitAwareArray
+                    v_with_units = UnitAwareArray(v_at_node_pts, units=v_units)
+                    # Non-dimensionalize
+                    v_nondim = uw.non_dimensionalise(v_with_units, model)
+                    # Extract numpy array
+                    if isinstance(v_nondim, UnitAwareArray):
+                        v_at_node_pts = np.array(v_nondim)
+                    elif hasattr(v_nondim, 'value'):
+                        v_at_node_pts = v_nondim.value
+                    else:
+                        v_at_node_pts = v_nondim
+
+                    if uw.mpi.rank == 0 and i == self.order - 1:
+                        print(f"   - v_at_node_pts after non-dim: min={v_at_node_pts.min():.6e}, max={v_at_node_pts.max():.6e}")
+                else:
+                    if uw.mpi.rank == 0 and i == self.order - 1:
+                        print(f"   ⚠️  WARNING: No units found or units are dimensionless - velocities NOT non-dimensionalized!")
+                        print(f"   ⚠️  This will cause dimensional mismatch with dimensionless coordinates!")
+
             # Maintain consistency: use coordinates as-is without extracting magnitudes
             # to preserve unit information through the calculation
             coords = self.psi_star[i].coords
 
+            # DIAGNOSTIC: Log the arithmetic before computing
+            if uw.mpi.rank == 0 and i == self.order - 1:  # Only first iteration
+                print(f"\n5. Semi-Lagrangian calculation (iteration {i}):")
+                print(f"   - coords type: {type(coords)}")
+                print(f"   - coords shape: {coords.shape}")
+                print(f"   - coords[0]: {coords[0]}")
+                print(f"   - coords range: [{coords.min():.6e}, {coords.max():.6e}]")
+                print(f"\n   - v_at_node_pts type: {type(v_at_node_pts)}")
+                print(f"   - v_at_node_pts shape: {v_at_node_pts.shape}")
+                print(f"   - v_at_node_pts[0]: {v_at_node_pts[0]}")
+                print(f"   - v_at_node_pts magnitude: {np.linalg.norm(v_at_node_pts, axis=1).max():.6e}")
+                print(f"\n   - dt_for_calc: {dt_for_calc}")
+                print(f"   - dt_for_calc type: {type(dt_for_calc)}")
+
+                # Compute the product step by step
+                dt_times_v = dt_for_calc * v_at_node_pts
+                print(f"\n   - dt_for_calc * v_at_node_pts type: {type(dt_times_v)}")
+                print(f"   - dt_for_calc * v_at_node_pts[0]: {dt_times_v[0]}")
+                print(f"   - dt_for_calc * v_at_node_pts range: [{dt_times_v.min():.6e}, {dt_times_v.max():.6e}]")
+
             mid_pt_coords = coords - 0.5 * dt_for_calc * v_at_node_pts
+
+            # DIAGNOSTIC: Check mid_pt_coords
+            if uw.mpi.rank == 0 and i == self.order - 1:
+                print(f"\n   - mid_pt_coords type: {type(mid_pt_coords)}")
+                print(f"   - mid_pt_coords[0]: {mid_pt_coords[0]}")
+                print(f"   - mid_pt_coords range: [{mid_pt_coords.min():.6e}, {mid_pt_coords.max():.6e}]")
+                if abs(mid_pt_coords.max()) > 10:
+                    print(f"   ⚠️  WARNING: mid_pt_coords way outside mesh bounds!")
+                    print(f"   ⚠️  Mesh bounds should be approximately [-1, 1]")
 
             v_at_mid_pts = uw.function.global_evaluate(
                 self.V_fn,
                 mid_pt_coords,
             )[:, 0, :]
 
+            # Non-dimensionalize mid-point velocities when working with dimensionless coordinates
+            if not has_units:
+                # Extract units from velocity function
+                v_units = uw.get_units(self.V_fn)
+                if v_units and v_units != "dimensionless":
+                    # Wrap numpy array with unit information
+                    from underworld3.function.unit_conversion import UnitAwareArray
+                    v_with_units = UnitAwareArray(v_at_mid_pts, units=v_units)
+                    # Non-dimensionalize
+                    v_nondim = uw.non_dimensionalise(v_with_units, model)
+                    # Extract numpy array
+                    if isinstance(v_nondim, UnitAwareArray):
+                        v_at_mid_pts = np.array(v_nondim)
+                    elif hasattr(v_nondim, 'value'):
+                        v_at_mid_pts = v_nondim.value
+                    else:
+                        v_at_mid_pts = v_nondim
+
             end_pt_coords = coords - dt_for_calc * v_at_mid_pts
+
+            # DIAGNOSTIC: Check end_pt_coords
+            if uw.mpi.rank == 0 and i == self.order - 1:
+                print(f"\n   - end_pt_coords range: [{end_pt_coords.min():.6e}, {end_pt_coords.max():.6e}]")
+                if abs(end_pt_coords.max()) > 10:
+                    print(f"   ⚠️  ERROR: end_pt_coords way outside mesh bounds!")
+                    print(f"   ⚠️  Mesh bounds should be approximately [-1, 1]")
+                print("="*70 + "\n")
 
             value_at_end_points = uw.function.global_evaluate(
                 self.psi_star[i].sym,

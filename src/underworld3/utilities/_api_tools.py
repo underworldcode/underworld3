@@ -96,7 +96,7 @@ class SymbolicProperty:
     def __set__(self, obj, value):
         """Set the value, with automatic unwrapping."""
         # Mark solver as needing setup when property changes
-        if hasattr(obj, 'is_setup'):
+        if hasattr(obj, "is_setup"):
             obj.is_setup = False
 
         # Check None constraint
@@ -104,12 +104,13 @@ class SymbolicProperty:
             raise ValueError(f"Cannot set {self.attr_name[1:]} to None")
 
         # Auto-unwrap objects with _sympify_() protocol
-        if value is not None and hasattr(value, '_sympify_'):
+        if value is not None and hasattr(value, "_sympify_"):
             value = value._sympify_()
 
         # Auto-wrap in Matrix if requested
         if self.matrix_wrap and value is not None:
             import sympy
+
             # Only wrap if not already a Matrix
             if not isinstance(value, sympy.matrices.MatrixBase):
                 value = sympy.Matrix([value])
@@ -189,9 +190,17 @@ class ExpressionDescriptor:
     - For templates: .sym is immutable, contains expression references
     """
 
-    def __init__(self, name, value_fn, description,
-                 read_only=False, units=None, validator=None,
-                 category=None, attr_name=None):
+    def __init__(
+        self,
+        name,
+        value_fn,
+        description,
+        read_only=False,
+        units=None,
+        validator=None,
+        category=None,
+        attr_name=None,
+    ):
         self.name = name
         self.value_fn = value_fn
         self.description = description
@@ -242,7 +251,7 @@ class ExpressionDescriptor:
                 initial_value,
                 self.description,
                 units=self.units,
-                _unique_name_generation=True
+                _unique_name_generation=True,
             )
 
             # Store the expression container
@@ -271,14 +280,14 @@ class ExpressionDescriptor:
             value = self.validator(value)
 
         # Auto-unwrap if value has _sympify_
-        if hasattr(value, '_sympify_'):
+        if hasattr(value, "_sympify_"):
             value = value._sympify_()
 
         # Update the expression's .sym
         expr.sym = value
 
         # Mark solver as needing setup
-        if hasattr(obj, 'is_setup'):
+        if hasattr(obj, "is_setup"):
             obj.is_setup = False
 
 
@@ -303,12 +312,14 @@ class Parameter(ExpressionDescriptor):
 
     def __init__(self, name, value_fn, description, units=None, validator=None, **kwargs):
         super().__init__(
-            name, value_fn, description,
+            name,
+            value_fn,
+            description,
             read_only=False,
             units=units,
             validator=validator,
             category="parameter",
-            **kwargs
+            **kwargs,
         )
 
 
@@ -342,12 +353,7 @@ class Template(ExpressionDescriptor):
     """
 
     def __init__(self, name, value_fn, description, **kwargs):
-        super().__init__(
-            name, value_fn, description,
-            read_only=True,
-            category="template",
-            **kwargs
-        )
+        super().__init__(name, value_fn, description, read_only=True, category="template", **kwargs)
 
     def __get__(self, obj, objtype=None):
         """
@@ -364,7 +370,7 @@ class Template(ExpressionDescriptor):
 
         # Check if we need to refresh the symbolic content
         # This happens when parameters have changed (is_setup = False)
-        if hasattr(obj, 'is_setup') and not obj.is_setup:
+        if hasattr(obj, "is_setup") and not obj.is_setup:
             try:
                 # Re-evaluate the lambda to get updated symbolic content
                 updated_value = self.value_fn(obj)

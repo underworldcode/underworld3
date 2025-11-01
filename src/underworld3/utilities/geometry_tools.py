@@ -74,9 +74,7 @@ def points_in_simplex3D(p, a, b, c, d):
     w = vc6 * v6
     t = vd6 * v6
 
-    return np.logical_and(
-        np.logical_and((u >= 0), (t >= 0)), np.logical_and((v >= 0), (w >= 0))
-    )
+    return np.logical_and(np.logical_and((u >= 0), (t >= 0)), np.logical_and((v >= 0), (w >= 0)))
 
 
 def distance_pointcloud_triangle(p, a, b, c):

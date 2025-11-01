@@ -37,9 +37,7 @@ def test_single_coord(n, dim, coords):
 
     assert np.any(kd_id[0] > index.n) == False, "Some point weren't found. Error"
 
-    assert (
-        kd_id[0] == brute_id
-    ), "KDTree and brute force method did not find the same point."
+    assert kd_id[0] == brute_id, "KDTree and brute force method did not find the same point."
 
     assert np.allclose(kd_dist[0], brute_dist[brute_id]), (
         "KDTree and Numpy did not find the same distance.\n"

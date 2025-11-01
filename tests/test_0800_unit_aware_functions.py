@@ -28,15 +28,12 @@ def test_unit_aware_evaluate_basic():
     model.set_reference_quantities(
         characteristic_length=1000 * uw.units.km,
         plate_velocity=5 * uw.units.cm / uw.units.year,
-        mantle_temperature=1500 * uw.units.kelvin
+        mantle_temperature=1500 * uw.units.kelvin,
     )
 
     # Create mesh
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4),
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 1.0),
-        qdegree=2
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), qdegree=2
     )
 
     # Test constant expression
@@ -55,7 +52,9 @@ def test_unit_aware_evaluate_basic():
     assert np.allclose(result_physical, 42)
 
 
-@pytest.mark.skip(reason="UnitAwareArray return type not implemented - planned feature for evaluate()")
+@pytest.mark.skip(
+    reason="UnitAwareArray return type not implemented - planned feature for evaluate()"
+)
 def test_unit_aware_evaluate_coordinate_expressions():
     """Test unit-aware evaluate with coordinate-dependent expressions."""
     uw.reset_default_model()
@@ -63,14 +62,11 @@ def test_unit_aware_evaluate_coordinate_expressions():
     model.set_reference_quantities(
         characteristic_length=1000 * uw.units.km,
         plate_velocity=5 * uw.units.cm / uw.units.year,
-        mantle_temperature=1500 * uw.units.kelvin
+        mantle_temperature=1500 * uw.units.kelvin,
     )
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4),
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 1.0),
-        qdegree=2
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), qdegree=2
     )
 
     # Expression using physical coordinate symbols (scaled mesh coordinates)
@@ -96,10 +92,17 @@ def test_unit_aware_evaluate_coordinate_expressions():
 
     # Model expression should return model coordinate value with units
     # Both should be UnitAwareArray objects with length units
-    assert hasattr(result_model, '_units'), f"Expected UnitAwareArray with units, got {type(result_model)}"
+    assert hasattr(
+        result_model, "_units"
+    ), f"Expected UnitAwareArray with units, got {type(result_model)}"
     assert np.isclose(result_model[0], 1.0, rtol=1e-6)
     result_units_str = str(result_model._units) if result_model._units else ""
-    assert "kilometer" in result_units_str or "meter" in result_units_str or "km" in result_units_str or "m" in result_units_str
+    assert (
+        "kilometer" in result_units_str
+        or "meter" in result_units_str
+        or "km" in result_units_str
+        or "m" in result_units_str
+    )
 
 
 def test_mesh_points_in_domain_unit_aware():
@@ -109,29 +112,35 @@ def test_mesh_points_in_domain_unit_aware():
     model.set_reference_quantities(
         characteristic_length=1000 * uw.units.km,
         plate_velocity=5 * uw.units.cm / uw.units.year,
-        mantle_temperature=1500 * uw.units.kelvin
+        mantle_temperature=1500 * uw.units.kelvin,
     )
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4),
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 1.0),
-        qdegree=2
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), qdegree=2
     )
 
     # Test points in model coordinates
-    model_points = np.array([
-        [1.0, 0.5],   # Center (should be inside)
-        [0.5, 0.25],  # Quarter (should be inside)
-        [2.5, 0.5],   # Outside
-    ], dtype=np.float64)
+    model_points = np.array(
+        [
+            [1.0, 0.5],  # Center (should be inside)
+            [0.5, 0.25],  # Quarter (should be inside)
+            [2.5, 0.5],  # Outside
+        ],
+        dtype=np.float64,
+    )
 
     # Test points in physical coordinates (should be auto-converted)
-    physical_points = np.array([
-        [1_000_000.0, 500_000.0],    # Center in meters
-        [500_000.0, 250_000.0],     # Quarter in meters
-        [2_500_000.0, 500_000.0],   # Outside in meters
-    ], dtype=np.float64) * uw.units.m
+    physical_points = (
+        np.array(
+            [
+                [1_000_000.0, 500_000.0],  # Center in meters
+                [500_000.0, 250_000.0],  # Quarter in meters
+                [2_500_000.0, 500_000.0],  # Outside in meters
+            ],
+            dtype=np.float64,
+        )
+        * uw.units.m
+    )
 
     # Both should give same results due to automatic coordinate conversion
     result_model = mesh.points_in_domain(model_points)
@@ -139,8 +148,8 @@ def test_mesh_points_in_domain_unit_aware():
 
     # Results should be the same since coordinates represent same physical locations
     assert np.array_equal(result_model, result_physical)
-    assert result_model[0] == True   # Center inside
-    assert result_model[1] == True   # Quarter inside
+    assert result_model[0] == True  # Center inside
+    assert result_model[1] == True  # Quarter inside
     assert result_model[2] == False  # Outside
 
 
@@ -151,14 +160,11 @@ def test_mesh_get_closest_cells_unit_aware():
     model.set_reference_quantities(
         characteristic_length=1000 * uw.units.km,
         plate_velocity=5 * uw.units.cm / uw.units.year,
-        mantle_temperature=1500 * uw.units.kelvin
+        mantle_temperature=1500 * uw.units.kelvin,
     )
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4),
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 1.0),
-        qdegree=2
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), qdegree=2
     )
 
     # Test coordinates in model units
@@ -181,14 +187,11 @@ def test_mesh_test_if_points_in_cells_unit_aware():
     model.set_reference_quantities(
         characteristic_length=1000 * uw.units.km,
         plate_velocity=5 * uw.units.cm / uw.units.year,
-        mantle_temperature=1500 * uw.units.kelvin
+        mantle_temperature=1500 * uw.units.kelvin,
     )
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4),
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 1.0),
-        qdegree=2
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), qdegree=2
     )
 
     # Get a test cell using model coordinates
@@ -216,32 +219,25 @@ def test_coordinate_unit_conversion_functions():
     model.set_reference_quantities(
         characteristic_length=1000 * uw.units.km,
         plate_velocity=5 * uw.units.cm / uw.units.year,
-        mantle_temperature=1500 * uw.units.kelvin
+        mantle_temperature=1500 * uw.units.kelvin,
     )
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4),
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 1.0),
-        qdegree=2
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), qdegree=2
     )
 
-    from underworld3.function.unit_conversion import (
-        get_mesh_coordinate_units,
-        has_units,
-        get_units
-    )
+    from underworld3.function.unit_conversion import get_mesh_coordinate_units, has_units, get_units
 
     # Test mesh coordinate info
     mesh_info = get_mesh_coordinate_units(mesh)
     assert mesh_info is not None
-    assert mesh_info['scaled'] == True
-    assert mesh_info['length_scale'] == 1_000_000.0
+    assert mesh_info["scaled"] == True
+    assert mesh_info["length_scale"] == 1_000_000.0
 
     # Test manual coordinate conversion (no automatic conversion function)
     physical_coords = np.array([[1_000_000.0, 500_000.0]], dtype=np.float64)
     # Manual conversion: divide by length scale
-    scale_factor = mesh_info['length_scale']
+    scale_factor = mesh_info["length_scale"]
     converted_coords = physical_coords / scale_factor
     expected_coords = np.array([[1.0, 0.5]], dtype=np.float64)
 
@@ -259,10 +255,7 @@ def test_unit_aware_with_no_scaling():
 
     # Create mesh without scaling
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4),
-        minCoords=(0.0, 0.0),
-        maxCoords=(2.0, 1.0),
-        qdegree=2
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(2.0, 1.0), qdegree=2
     )
 
     # Test coordinates

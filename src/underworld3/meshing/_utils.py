@@ -27,14 +27,14 @@ def _to_base_units(value):
         return type(value)(_to_base_units(v) for v in value)
 
     # Check if it's a Pint Quantity
-    if hasattr(value, 'to_base_units') and hasattr(value, 'magnitude'):
+    if hasattr(value, "to_base_units") and hasattr(value, "magnitude"):
         try:
             return value.to_base_units().magnitude
         except:
             return value.magnitude
 
     # Check if it's a UWQuantity
-    if hasattr(value, '_pint_qty'):
+    if hasattr(value, "_pint_qty"):
         try:
             return value._pint_qty.to_base_units().magnitude
         except:

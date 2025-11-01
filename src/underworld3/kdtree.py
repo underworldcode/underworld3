@@ -109,7 +109,7 @@ class KDTree(_oKDTree):
         # Different units - convert to tree's coordinate system
         try:
             # Use UnitAwareArray's to_units method if available
-            if hasattr(coords, 'to_units'):
+            if hasattr(coords, "to_units"):
                 coords_converted = coords.to_units(self.coord_units)
                 return np.asarray(coords_converted)
             else:
@@ -124,6 +124,7 @@ class KDTree(_oKDTree):
                 f"Cannot convert query coordinates from '{query_units}' "
                 f"to KD-tree's coordinate system '{self.coord_units}': {e}"
             )
+
     def rbf_interpolator_local(
         self,
         coords,
@@ -145,7 +146,7 @@ class KDTree(_oKDTree):
 
     # NOTE: Override query() method from pykdtree so it has the same interface as ckdtree.
     # another option is to eliminate the sqr_dist argument from both ckdtree and pykdtree.
-    def query(self, coords, k = 1, sqr_dists = True):
+    def query(self, coords, k=1, sqr_dists=True):
         """
         Find the n points closest to the provided coordinates.
 
@@ -183,7 +184,7 @@ class KDTree(_oKDTree):
         coords_contiguous = np.ascontiguousarray(coords_converted)
 
         # Query parent KD-tree (returns actual distances, not squared)
-        distance_k, closest_k = super().query(query_pts = coords_contiguous, k = k)
+        distance_k, closest_k = super().query(query_pts=coords_contiguous, k=k)
 
         # Handle distance units
         if sqr_dists:
@@ -195,9 +196,9 @@ class KDTree(_oKDTree):
             if self.coord_units is not None:
                 # Wrap with unit-aware array
                 from underworld3.utilities.unit_aware_array import UnitAwareArray
+
                 distance_k = UnitAwareArray(distance_k, units=self.coord_units)
             return distance_k, closest_k
-    
 
     def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose):
         """
@@ -240,12 +241,11 @@ class KDTree(_oKDTree):
                 f"Data does not match kd-tree size array ({data.shape[0]} v ({self.n}))"
             )
 
-
         # query nnn points to the coords using wrapped query function
         # distance_n is a list of distance to the nearest neighbours for all coords_contiguous
         # closest_n is the index of the neighbours from ncoords for all coords_contiguous
         # Note: We use the converted coordinates here, and query() will handle them properly
-        distance_n, closest_n = self.query(coords, k=nnn, sqr_dists = False)
+        distance_n, closest_n = self.query(coords, k=nnn, sqr_dists=False)
 
         if np.any(closest_n > self.n):
             raise RuntimeError(

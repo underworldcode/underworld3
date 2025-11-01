@@ -252,13 +252,14 @@ def rank4_identity(dim):
         for j in range(dim):
             for k in range(dim):
                 for l in range(dim):
-                    I[i, j, k, l] = (
-                        sympy.sympify((i == k) * (j == l) + (i == l) * (j == k)) / 2
-                    )
+                    I[i, j, k, l] = sympy.sympify((i == k) * (j == l) + (i == l) * (j == k)) / 2
 
     return I
 
-def rank2_inner_product(A,B):
+
+def rank2_inner_product(A, B):
     r"""p = \Sum_i \Sum_j A_{ij} \cdot B_{ij}"""
 
-    return sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(A, B),(1,3)),(0,1))
+    return sympy.tensorcontraction(
+        sympy.tensorcontraction(sympy.tensorproduct(A, B), (1, 3)), (0, 1)
+    )

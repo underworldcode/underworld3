@@ -21,7 +21,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -32,11 +32,7 @@ class TestConstitutiveModelTensorOperations:
     @pytest.fixture
     def basic_mesh(self):
         """Create a basic mesh for testing."""
-        return uw.meshing.StructuredQuadBox(
-            elementRes=(4, 4),
-            minCoords=(0, 0),
-            maxCoords=(1, 1)
-        )
+        return uw.meshing.StructuredQuadBox(elementRes=(4, 4), minCoords=(0, 0), maxCoords=(1, 1))
 
     def test_viscosity_tensor_construction_2d(self, basic_mesh):
         """Test 2D viscosity tensor construction with UWexpression viscosity."""
@@ -63,11 +59,16 @@ class TestConstitutiveModelTensorOperations:
             assert tensor is not None
 
             # Check tensor dimensions - constitutive tensor is a rank-4 tensor
-            if hasattr(tensor, 'shape'):
+            if hasattr(tensor, "shape"):
                 assert len(tensor.shape) == 4, f"Expected rank-4 tensor, got shape {tensor.shape}"
                 # For 2D: should be (2, 2, 2, 2) - 4th order tensor
                 # C_ijkl relates stress σ_ij to strain rate ε_kl
-                assert tensor.shape == (2, 2, 2, 2), f"2D tensor should be (2,2,2,2), got {tensor.shape}"
+                assert tensor.shape == (
+                    2,
+                    2,
+                    2,
+                    2,
+                ), f"2D tensor should be (2,2,2,2), got {tensor.shape}"
 
         except (IndexError, ValueError) as e:
             pytest.fail(f"Viscosity tensor construction failed: {e}")
@@ -76,9 +77,7 @@ class TestConstitutiveModelTensorOperations:
         """Test 3D viscosity tensor construction with UWexpression viscosity."""
         # Create 3D mesh
         mesh_3d = uw.meshing.StructuredQuadBox(
-            elementRes=(3, 3, 3),
-            minCoords=(0, 0, 0),
-            maxCoords=(1, 1, 1)
+            elementRes=(3, 3, 3), minCoords=(0, 0, 0), maxCoords=(1, 1, 1)
         )
 
         u = uw.discretisation.MeshVariable("U", mesh_3d, mesh_3d.dim, degree=2)
@@ -98,11 +97,16 @@ class TestConstitutiveModelTensorOperations:
             assert tensor is not None
 
             # Check tensor dimensions - constitutive tensor is a rank-4 tensor
-            if hasattr(tensor, 'shape'):
+            if hasattr(tensor, "shape"):
                 assert len(tensor.shape) == 4, f"Expected rank-4 tensor, got shape {tensor.shape}"
                 # For 3D: should be (3, 3, 3, 3) - 4th order tensor
                 # C_ijkl relates stress σ_ij to strain rate ε_kl
-                assert tensor.shape == (3, 3, 3, 3), f"3D tensor should be (3,3,3,3), got {tensor.shape}"
+                assert tensor.shape == (
+                    3,
+                    3,
+                    3,
+                    3,
+                ), f"3D tensor should be (3,3,3,3), got {tensor.shape}"
 
         except (IndexError, ValueError) as e:
             pytest.fail(f"3D viscosity tensor construction failed: {e}")
@@ -114,7 +118,9 @@ class TestConstitutiveModelTensorOperations:
 
         for visc_val in viscosity_values:
             # Create fresh variables for each test
-            u = uw.discretisation.MeshVariable(f"U_{visc_val}", basic_mesh, basic_mesh.dim, degree=2)
+            u = uw.discretisation.MeshVariable(
+                f"U_{visc_val}", basic_mesh, basic_mesh.dim, degree=2
+            )
             p = uw.discretisation.MeshVariable(f"P_{visc_val}", basic_mesh, 1, degree=1)
             viscosity = uw.function.expression(rf"\eta_{visc_val}", sym=visc_val)
 
@@ -195,7 +201,7 @@ class TestTensorArrayCorruptionRegression:
             problematic_matrix = uw.maths.tensor.rank4_to_mandel(problematic_result, 2)
 
             # If it works, check dimensions
-            if hasattr(problematic_matrix, 'shape'):
+            if hasattr(problematic_matrix, "shape"):
                 # If corruption occurred, shape might be wrong
                 if problematic_matrix.shape != (3, 3):
                     # Expected behavior: corruption detected
@@ -222,7 +228,7 @@ class TestTensorArrayCorruptionRegression:
             matrix = uw.maths.tensor.rank4_to_mandel(tensor, 2)
 
             # This call was failing when arrays were corrupted
-            if hasattr(matrix, 'as_immutable'):
+            if hasattr(matrix, "as_immutable"):
                 immutable_result = matrix.as_immutable()
                 assert immutable_result is not None
 
@@ -282,8 +288,12 @@ class TestConstitutiveModelParameterTypes:
             stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
 
             # Set parameters that might trigger tensor operations
-            stokes.constitutive_model.Parameters.shear_modulus = uw.function.expression(r"G", sym=1e10)
-            stokes.constitutive_model.Parameters.shear_viscosity_0 = uw.function.expression(r"\eta", sym=1e21)
+            stokes.constitutive_model.Parameters.shear_modulus = uw.function.expression(
+                r"G", sym=1e10
+            )
+            stokes.constitutive_model.Parameters.shear_viscosity_0 = uw.function.expression(
+                r"\eta", sym=1e21
+            )
 
             constitutive_model = stokes.constitutive_model
 
@@ -412,10 +422,13 @@ class TestVoigtMandelConversions:
         recovered = uw.maths.tensor.voigt_to_rank4(voigt_matrix, 2)
 
         # Check shape is preserved
-        assert recovered.shape == identity.shape, f"Shape mismatch: {recovered.shape} vs {identity.shape}"
+        assert (
+            recovered.shape == identity.shape
+        ), f"Shape mismatch: {recovered.shape} vs {identity.shape}"
 
         # Check values are preserved (within numerical tolerance)
         import numpy as np
+
         identity_array = np.array(identity.tolist(), dtype=float)
         recovered_array = np.array(recovered.tolist(), dtype=float)
         assert np.allclose(identity_array, recovered_array, rtol=1e-10), "Voigt roundtrip failed"
@@ -430,10 +443,13 @@ class TestVoigtMandelConversions:
         recovered = uw.maths.tensor.voigt_to_rank4(voigt_matrix, 3)
 
         # Check shape is preserved
-        assert recovered.shape == identity.shape, f"Shape mismatch: {recovered.shape} vs {identity.shape}"
+        assert (
+            recovered.shape == identity.shape
+        ), f"Shape mismatch: {recovered.shape} vs {identity.shape}"
 
         # Check values are preserved (within numerical tolerance)
         import numpy as np
+
         identity_array = np.array(identity.tolist(), dtype=float)
         recovered_array = np.array(recovered.tolist(), dtype=float)
         assert np.allclose(identity_array, recovered_array, rtol=1e-10), "Voigt roundtrip failed"
@@ -448,10 +464,13 @@ class TestVoigtMandelConversions:
         recovered = uw.maths.tensor.mandel_to_rank4(mandel_matrix, 2)
 
         # Check shape is preserved
-        assert recovered.shape == identity.shape, f"Shape mismatch: {recovered.shape} vs {identity.shape}"
+        assert (
+            recovered.shape == identity.shape
+        ), f"Shape mismatch: {recovered.shape} vs {identity.shape}"
 
         # Check values are preserved (within numerical tolerance)
         import numpy as np
+
         identity_array = np.array(identity.tolist(), dtype=float)
         recovered_array = np.array(recovered.tolist(), dtype=float)
         assert np.allclose(identity_array, recovered_array, rtol=1e-10), "Mandel roundtrip failed"
@@ -466,10 +485,13 @@ class TestVoigtMandelConversions:
         recovered = uw.maths.tensor.mandel_to_rank4(mandel_matrix, 3)
 
         # Check shape is preserved
-        assert recovered.shape == identity.shape, f"Shape mismatch: {recovered.shape} vs {identity.shape}"
+        assert (
+            recovered.shape == identity.shape
+        ), f"Shape mismatch: {recovered.shape} vs {identity.shape}"
 
         # Check values are preserved (within numerical tolerance)
         import numpy as np
+
         identity_array = np.array(identity.tolist(), dtype=float)
         recovered_array = np.array(recovered.tolist(), dtype=float)
         assert np.allclose(identity_array, recovered_array, rtol=1e-10), "Mandel roundtrip failed"
@@ -499,9 +521,7 @@ class TestVoigtMandelConversions:
     def test_constitutive_tensor_3d_voigt_conversion(self):
         """Test Voigt conversion of 3D constitutive tensor."""
         mesh = uw.meshing.StructuredQuadBox(
-            elementRes=(3, 3, 3),
-            minCoords=(0, 0, 0),
-            maxCoords=(1, 1, 1)
+            elementRes=(3, 3, 3), minCoords=(0, 0, 0), maxCoords=(1, 1, 1)
         )
         u = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
         p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)

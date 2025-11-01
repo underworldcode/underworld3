@@ -65,7 +65,7 @@ class UnitAwareBaseScalar(BaseScalar):
         result = super().__truediv__(other)
 
         # If dividing by a quantity with units, adjust the result's units
-        if hasattr(other, 'units') and hasattr(other, 'value'):
+        if hasattr(other, "units") and hasattr(other, "value"):
             # This is a UWQuantity or similar
             if self._units is not None:
                 # Convert units if needed
@@ -134,20 +134,32 @@ def create_unit_aware_coordinate_system(name, units=None):
     orig_z = system.z
 
     # Create unit-aware replacements
-    system.x = UnitAwareBaseScalar('x', 0, system,
-                                    pretty_str=orig_x._pretty_form if hasattr(orig_x, '_pretty_form') else None,
-                                    latex_str=orig_x._latex_form if hasattr(orig_x, '_latex_form') else None,
-                                    units=units)
+    system.x = UnitAwareBaseScalar(
+        "x",
+        0,
+        system,
+        pretty_str=orig_x._pretty_form if hasattr(orig_x, "_pretty_form") else None,
+        latex_str=orig_x._latex_form if hasattr(orig_x, "_latex_form") else None,
+        units=units,
+    )
 
-    system.y = UnitAwareBaseScalar('y', 1, system,
-                                    pretty_str=orig_y._pretty_form if hasattr(orig_y, '_pretty_form') else None,
-                                    latex_str=orig_y._latex_form if hasattr(orig_y, '_latex_form') else None,
-                                    units=units)
+    system.y = UnitAwareBaseScalar(
+        "y",
+        1,
+        system,
+        pretty_str=orig_y._pretty_form if hasattr(orig_y, "_pretty_form") else None,
+        latex_str=orig_y._latex_form if hasattr(orig_y, "_latex_form") else None,
+        units=units,
+    )
 
-    system.z = UnitAwareBaseScalar('z', 2, system,
-                                    pretty_str=orig_z._pretty_form if hasattr(orig_z, '_pretty_form') else None,
-                                    latex_str=orig_z._latex_form if hasattr(orig_z, '_latex_form') else None,
-                                    units=units)
+    system.z = UnitAwareBaseScalar(
+        "z",
+        2,
+        system,
+        pretty_str=orig_z._pretty_form if hasattr(orig_z, "_pretty_form") else None,
+        latex_str=orig_z._latex_form if hasattr(orig_z, "_latex_form") else None,
+        units=units,
+    )
 
     # Update the base scalars list
     system._base_scalars = (system.x, system.y, system.z)
@@ -167,21 +179,22 @@ def patch_coordinate_units(mesh):
         mesh: The mesh whose coordinates should be made unit-aware
     """
     # Get mesh units if available
-    mesh_units = getattr(mesh, 'units', None)
+    mesh_units = getattr(mesh, "units", None)
 
     # If mesh doesn't have explicit units but we have a model with reference scales,
     # use the length units from the model
     if mesh_units is None:
         try:
             import underworld3 as uw
+
             model = uw.get_default_model()
-            if hasattr(model, '_fundamental_scales') and model._fundamental_scales:
+            if hasattr(model, "_fundamental_scales") and model._fundamental_scales:
                 scales = model._fundamental_scales
-                if 'length' in scales:
-                    length_scale = scales['length']
-                    if hasattr(length_scale, 'units'):
+                if "length" in scales:
+                    length_scale = scales["length"]
+                    if hasattr(length_scale, "units"):
                         mesh_units = str(length_scale.units)
-                    elif hasattr(length_scale, '_pint_qty'):
+                    elif hasattr(length_scale, "_pint_qty"):
                         mesh_units = str(length_scale._pint_qty.units)
         except Exception as e:
             # Silently continue if model not available
@@ -196,16 +209,16 @@ def patch_coordinate_units(mesh):
         # This ensures test isolation while preserving ND scaling behavior
         for coord in [mesh.N.x, mesh.N.y, mesh.N.z]:
             # Update units if they've changed or don't exist
-            current_units = getattr(coord, '_units', None)
+            current_units = getattr(coord, "_units", None)
             if current_units != mesh_units:
                 coord._units = mesh_units
 
             # Add get_units method for compatibility (idempotent)
-            if not hasattr(coord, 'get_units'):
+            if not hasattr(coord, "get_units"):
                 coord.get_units = lambda self=coord: self._units
 
             # Override division to handle units (only add once)
-            if not hasattr(coord, '_unit_aware_div_added'):
+            if not hasattr(coord, "_unit_aware_div_added"):
                 original_div = coord.__class__.__truediv__
 
                 def unit_aware_div(self, other):
@@ -219,13 +232,13 @@ def patch_coordinate_units(mesh):
                 # so division handling might need to be done at a higher level
 
         # Also patch the normal vector coordinates if they exist
-        if hasattr(mesh, '_Gamma'):
+        if hasattr(mesh, "_Gamma"):
             for coord in [mesh._Gamma.x, mesh._Gamma.y, mesh._Gamma.z]:
                 # Update units if they've changed or don't exist
-                current_units = getattr(coord, '_units', None)
+                current_units = getattr(coord, "_units", None)
                 if current_units != mesh_units:
                     coord._units = mesh_units
-                if not hasattr(coord, 'get_units'):
+                if not hasattr(coord, "get_units"):
                     coord.get_units = lambda self=coord: self._units
 
 
@@ -242,9 +255,9 @@ def get_coordinate_units(coord):
     Returns:
         Units of the coordinate or None if not unit-aware
     """
-    if hasattr(coord, '_units'):
+    if hasattr(coord, "_units"):
         return coord._units
-    elif hasattr(coord, 'units'):
+    elif hasattr(coord, "units"):
         return coord.units
     else:
         return None

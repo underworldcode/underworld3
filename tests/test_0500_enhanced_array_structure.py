@@ -22,7 +22,7 @@ def test_enhanced_array_classes_exist():
             "pack_uw_data_to_petsc",
             "unpack_uw_data_from_petsc",
             "use_enhanced_array",  # Now deprecated but preserved
-            "use_legacy_array",    # Now deprecated but preserved
+            "use_legacy_array",  # Now deprecated but preserved
             "sync_disabled",
         ]
 
@@ -95,9 +95,7 @@ def test_array_interface_documentation():
         assert (
             SwarmVariable.unpack_uw_data_from_petsc.__doc__ is not None
         ), "unpack_uw_data_from_petsc missing docstring"
-        assert (
-            SwarmVariable.sync_disabled.__doc__ is not None
-        ), "sync_disabled missing docstring"
+        assert SwarmVariable.sync_disabled.__doc__ is not None, "sync_disabled missing docstring"
 
         # Check docstring content
         pack_doc = SwarmVariable.pack_uw_data_to_petsc.__doc__
@@ -139,7 +137,7 @@ class TestEnhancedArrayStructure:
             assert hasattr(SwarmVariable, "_create_variable_array")
             assert hasattr(SwarmVariable, "pack_uw_data_to_petsc")
             assert hasattr(SwarmVariable, "unpack_uw_data_from_petsc")
-            
+
             # Test that legacy methods are preserved (but deprecated)
             assert hasattr(SwarmVariable, "use_legacy_array")
             assert hasattr(SwarmVariable, "use_enhanced_array")

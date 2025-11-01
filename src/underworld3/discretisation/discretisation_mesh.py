@@ -44,9 +44,7 @@ def extend_enum(inherited):
 
 
 @timing.routine_timer_decorator
-def _from_gmsh(
-    filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True
-):
+def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True):
     """Read a Gmsh .msh file from `filename`.
 
     :kwarg comm: Optional communicator to build the mesh on (defaults to
@@ -87,9 +85,7 @@ def _from_gmsh(
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
     if uw.mpi.rank == 0:
-        plex_0 = PETSc.DMPlex().createFromFile(
-            filename, interpolate=True, comm=PETSc.COMM_SELF
-        )
+        plex_0 = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=PETSc.COMM_SELF)
 
         plex_0.setName("uw_mesh")
         plex_0.markBoundaryFaces("All_Boundaries", 1001)
@@ -188,17 +184,19 @@ class Mesh(Stateful, uw_object):
         # Get coordinate units from model (not user parameter)
         # The model owns the unit system - all meshes use the same units
         import underworld3 as uw
+
         model = uw.get_default_model()
 
         # Ignore user-provided units parameter, get from model instead
         if units is not None and units != model.get_coordinate_unit():
             import warnings
+
             warnings.warn(
                 f"Ignoring units parameter '{units}'. Mesh coordinates will use "
                 f"model units '{model.get_coordinate_unit()}'. The model owns the "
                 "unit system to ensure consistency across all meshes and variables.",
                 UserWarning,
-                stacklevel=3
+                stacklevel=3,
             )
 
         # Set units from model
@@ -212,13 +210,15 @@ class Mesh(Stateful, uw_object):
         # The length scale is IMMUTABLE after mesh creation to ensure
         # synchronization with all spatial operators (grad, div, curl)
         self._length_scale = 1.0  # Default: no scaling
-        self._length_units = self.units if self.units else "dimensionless"  # Same as coordinate units
+        self._length_units = (
+            self.units if self.units else "dimensionless"
+        )  # Same as coordinate units
 
         # Derive length scale from model reference quantities if available
-        if hasattr(model, '_reference_quantities') and model._reference_quantities:
+        if hasattr(model, "_reference_quantities") and model._reference_quantities:
             # Priority order: domain_depth > length
-            if 'domain_depth' in model._reference_quantities:
-                ref_qty = model._reference_quantities['domain_depth']
+            if "domain_depth" in model._reference_quantities:
+                ref_qty = model._reference_quantities["domain_depth"]
                 # Convert to base units (SI: meters) for consistent scaling
                 try:
                     base_qty = ref_qty.to_base_units()
@@ -227,9 +227,11 @@ class Mesh(Stateful, uw_object):
                 except:
                     # Fallback if to_base_units() fails
                     self._length_scale = float(ref_qty.magnitude)
-                    self._length_units = str(ref_qty.units) if hasattr(ref_qty, 'units') else "dimensionless"
-            elif 'length' in model._reference_quantities:
-                ref_qty = model._reference_quantities['length']
+                    self._length_units = (
+                        str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
+                    )
+            elif "length" in model._reference_quantities:
+                ref_qty = model._reference_quantities["length"]
                 # Convert to base units (SI: meters) for consistent scaling
                 try:
                     base_qty = ref_qty.to_base_units()
@@ -238,7 +240,9 @@ class Mesh(Stateful, uw_object):
                 except:
                     # Fallback if to_base_units() fails
                     self._length_scale = float(ref_qty.magnitude)
-                    self._length_units = str(ref_qty.units) if hasattr(ref_qty, 'units') else "dimensionless"
+                    self._length_units = (
+                        str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
+                    )
 
         # Mesh coordinate version tracking for swarm coordination
         self._mesh_version = 0
@@ -272,9 +276,7 @@ class Mesh(Stateful, uw_object):
             # Note: should be able to handle a .geo as well on this pathway
             if ext.lower() == ".msh":
                 if verbose and uw.mpi.rank == 0:
-                    print(
-                        f"Constructing UW mesh from gmsh {plex_or_meshfile}", flush=True
-                    )
+                    print(f"Constructing UW mesh from gmsh {plex_or_meshfile}", flush=True)
 
                 self.sf0, self.dm = _from_gmsh(
                     plex_or_meshfile,
@@ -290,9 +292,7 @@ class Mesh(Stateful, uw_object):
                         f"Constructing UW mesh from DMPlex h5 file {plex_or_meshfile}",
                         flush=True,
                     )
-                self.sf0, self.dm = _from_plexh5(
-                    plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True
-                )
+                self.sf0, self.dm = _from_plexh5(plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True)
 
                 ## We can check if there is boundary metadata in the h5 file and we
                 ## should use it if it is present.
@@ -314,9 +314,7 @@ class Mesh(Stateful, uw_object):
                 try:
                     json_str = f["metadata"].attrs["coordinate_system_type"]
                     coord_type_dict = json.loads(json_str)
-                    coordinate_system_type = CoordinateSystemType(
-                        coord_type_dict["value"]
-                    )
+                    coordinate_system_type = CoordinateSystemType(coord_type_dict["value"])
                 except KeyError:
                     pass
 
@@ -329,8 +327,7 @@ class Mesh(Stateful, uw_object):
 
             else:
                 raise RuntimeError(
-                    "Mesh file %s has unknown format '%s'."
-                    % (plex_or_meshfile, ext[1:])
+                    "Mesh file %s has unknown format '%s'." % (plex_or_meshfile, ext[1:])
                 )
 
         ## Patch up the boundaries to include the additional
@@ -376,9 +373,7 @@ class Mesh(Stateful, uw_object):
         self.dm.createLabel("Null_Boundary")
         all_edges_label = self.dm.getLabel("Null_Boundary")
         if all_edges_label and all_edges_IS_dm:
-            all_edges_label.setStratumIS(
-                boundaries.Null_Boundary.value, all_edges_IS_dm
-            )
+            all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
 
         ## --- UW_Boundaries label
         if self.boundaries is not None:
@@ -518,9 +513,7 @@ class Mesh(Stateful, uw_object):
         # on all setter operations
 
         self._coords = uw.utilities.NDArray_With_Callback(
-            numpy.ndarray.view(
-                self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
-            ),
+            numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
             owner=self,
         )
 
@@ -586,6 +579,7 @@ class Mesh(Stateful, uw_object):
 
         # Add unit awareness to coordinate symbols if mesh has units or model has scales
         from ..utilities.unit_aware_coordinates import patch_coordinate_units
+
         patch_coordinate_units(self)
 
         try:
@@ -624,7 +618,6 @@ class Mesh(Stateful, uw_object):
             type: str
             entities: tuple
             face_entities: tuple
-
 
         if self.dm.isSimplex():
             if self.dim == 2:
@@ -675,7 +668,7 @@ class Mesh(Stateful, uw_object):
             self.vector = uw.maths.vector_calculus(mesh=self)
 
         super().__init__()
-        
+
         # Register with default model for orchestration and store reference
         self._model = uw.get_default_model()
         self._model._register_mesh(self)
@@ -769,15 +762,17 @@ class Mesh(Stateful, uw_object):
             uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
 
             # Display coordinate units if set
-            if hasattr(self, 'units') and self.units is not None:
+            if hasattr(self, "units") and self.units is not None:
                 uw.pprint(f"Coordinate units: {self.units}\n")
                 uw.pprint(f"  Access unit-aware coordinates via: mesh.X.coords\n")
                 uw.pprint(f"  Query units with: uw.get_units(mesh.X.coords)\n")
 
             # Display length scale for non-dimensionalization
-            if hasattr(self, '_length_scale'):
+            if hasattr(self, "_length_scale"):
                 if self._length_scale != 1.0:
-                    uw.pprint(f"Length scale (non-dimensionalization): {self._length_scale} {self._length_units}\n")
+                    uw.pprint(
+                        f"Length scale (non-dimensionalization): {self._length_scale} {self._length_units}\n"
+                    )
                 else:
                     uw.pprint(f"Length scale: 1.0 (no scaling)\n")
 
@@ -796,7 +791,9 @@ class Mesh(Stateful, uw_object):
                 uw.pprint(f"| ---------------------------------------------------------- |")
                 for vname in self.vars.keys():
                     v = self.vars[vname]
-                    uw.pprint(f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
+                    uw.pprint(
+                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                    )
 
                 uw.pprint(f"| ---------------------------------------------------------- |")
                 uw.pprint("\n")
@@ -856,21 +853,15 @@ class Mesh(Stateful, uw_object):
                 print(f"Number of cells: {num_cells}\n")
 
                 if len(self.vars) > 0:
-                    print(
-                        f"| Variable Name       | component | degree |     type        |"
-                    )
-                    print(
-                        f"| ---------------------------------------------------------- |"
-                    )
+                    print(f"| Variable Name       | component | degree |     type        |")
+                    print(f"| ---------------------------------------------------------- |")
                     for vname in self.vars.keys():
                         v = self.vars[vname]
                         print(
                             f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
                         )
 
-                    print(
-                        f"| ---------------------------------------------------------- |"
-                    )
+                    print(f"| ---------------------------------------------------------- |")
                     print("\n", flush=True)
                 else:
                     print(f"No variables are defined on the mesh\n", flush=True)
@@ -942,7 +933,9 @@ class Mesh(Stateful, uw_object):
             uw.pprint(f"| ---------------------------------------------------------- |")
             for vname in self.vars.keys():
                 v = self.vars[vname]
-                uw.pprint(f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
+                uw.pprint(
+                    f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                )
 
             uw.pprint(f"| ---------------------------------------------------------- |")
             uw.pprint("\n")
@@ -965,9 +958,7 @@ class Mesh(Stateful, uw_object):
                     i = l.getStratumSize(bd.value)
                 else:
                     i = 0
-                print(
-                    f"| {bd.name:<20}     | {bd.value:<5} | {i:<8} | {uw.mpi.rank:<8} |"
-                )
+                print(f"| {bd.name:<20}     | {bd.value:<5} | {i:<8} | {uw.mpi.rank:<8} |")
 
         uw.mpi.barrier()
 
@@ -1018,9 +1009,7 @@ class Mesh(Stateful, uw_object):
         # mesh coordinates to other mesh coordinates.
 
         options = PETSc.Options()
-        options.setValue(
-            f"meshproj_{self.mesh_instances}_petscspace_degree", self.degree
-        )
+        options.setValue(f"meshproj_{self.mesh_instances}_petscspace_degree", self.degree)
 
         self.petsc_fe = PETSc.FE().createDefault(
             self.dim,
@@ -1036,10 +1025,7 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
-        if (
-            PETSc.Sys.getVersion() <= (3, 20, 5)
-            and PETSc.Sys.getVersionInfo()["release"] == True
-        ):
+        if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
             self.dm.projectCoordinates(self.petsc_fe)
         else:
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
@@ -1142,9 +1128,7 @@ class Mesh(Stateful, uw_object):
         of all the mesh variables.
         """
         if self._stale_lvec:
-            raise RuntimeError(
-                "Mesh `lvec` needs to be updated using the update_lvec()` method."
-            )
+            raise RuntimeError("Mesh `lvec` needs to be updated using the update_lvec()` method.")
         return self._lvec
 
     def __del__(self):
@@ -1268,9 +1252,7 @@ class Mesh(Stateful, uw_object):
 
                     for i in range(0, var.shape[0]):
                         for j in range(0, var.shape[1]):
-                            var._data_container[i, j] = var._data_container[
-                                i, j
-                            ]._replace(
+                            var._data_container[i, j] = var._data_container[i, j]._replace(
                                 data=f"MeshVariable[...].data is only available within mesh.access() context",
                             )
 
@@ -1408,10 +1390,9 @@ class Mesh(Stateful, uw_object):
         This is an alias for mesh.points (which is also deprecated).
         """
         import warnings
+
         warnings.warn(
-            "mesh.data is deprecated, use mesh.X.coords instead",
-            DeprecationWarning,
-            stacklevel=2
+            "mesh.data is deprecated, use mesh.X.coords instead", DeprecationWarning, stacklevel=2
         )
         return self.X.coords
 
@@ -1435,16 +1416,15 @@ class Mesh(Stateful, uw_object):
             numpy.ndarray or UnitAwareArray: Node coordinates (with units if specified)
         """
         import warnings
+
         warnings.warn(
-            "mesh.points is deprecated, use mesh.X.coords instead",
-            DeprecationWarning,
-            stacklevel=2
+            "mesh.points is deprecated, use mesh.X.coords instead", DeprecationWarning, stacklevel=2
         )
 
         model_coords = self._coords
 
         # Apply scaling to convert model coordinates to physical coordinates
-        if hasattr(self.CoordinateSystem, '_scaled') and self.CoordinateSystem._scaled:
+        if hasattr(self.CoordinateSystem, "_scaled") and self.CoordinateSystem._scaled:
             scale_factor = self.CoordinateSystem._length_scale
             coords = model_coords * scale_factor
         else:
@@ -1453,6 +1433,7 @@ class Mesh(Stateful, uw_object):
         # Wrap with unit-aware array if units are specified
         if self.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray
+
             return UnitAwareArray(coords, units=self.units)
 
         return coords
@@ -1473,14 +1454,13 @@ class Mesh(Stateful, uw_object):
             value (numpy.ndarray): Node coordinates in physical units
         """
         import warnings
+
         warnings.warn(
-            "mesh.points is deprecated, use mesh.X.coords instead",
-            DeprecationWarning,
-            stacklevel=2
+            "mesh.points is deprecated, use mesh.X.coords instead", DeprecationWarning, stacklevel=2
         )
 
         # Apply inverse scaling to convert physical coordinates to model coordinates
-        if hasattr(self.CoordinateSystem, '_scaled') and self.CoordinateSystem._scaled:
+        if hasattr(self.CoordinateSystem, "_scaled") and self.CoordinateSystem._scaled:
             scale_factor = self.CoordinateSystem._length_scale
             model_coords = value / scale_factor
             self._coords = model_coords
@@ -1507,10 +1487,10 @@ class Mesh(Stateful, uw_object):
         >>> mesh = uw.meshing.StructuredQuadBox(...)
         >>> physical_coords = mesh.physical_coordinates  # In kilometers
         """
-        if not hasattr(self, '_model') or self._model is None:
+        if not hasattr(self, "_model") or self._model is None:
             return None
 
-        return self._model.scale_to_physical(self.points, dimension='length')
+        return self._model.scale_to_physical(self.points, dimension="length")
 
     @property
     def physical_bounds(self):
@@ -1530,16 +1510,17 @@ class Mesh(Stateful, uw_object):
         >>> physical_min, physical_max = mesh.physical_bounds
         >>> print(f"Domain: {physical_min} to {physical_max}")
         """
-        if not hasattr(self, '_model') or self._model is None:
+        if not hasattr(self, "_model") or self._model is None:
             return None
 
         import numpy as np
+
         min_coords = np.min(self.points, axis=0)
         max_coords = np.max(self.points, axis=0)
 
         return (
-            self._model.scale_to_physical(min_coords, dimension='length'),
-            self._model.scale_to_physical(max_coords, dimension='length')
+            self._model.scale_to_physical(min_coords, dimension="length"),
+            self._model.scale_to_physical(max_coords, dimension="length"),
         )
 
     @property
@@ -1559,15 +1540,16 @@ class Mesh(Stateful, uw_object):
         >>> extent = mesh.physical_extent
         >>> print(f"Domain size: {extent}")
         """
-        if not hasattr(self, '_model') or self._model is None:
+        if not hasattr(self, "_model") or self._model is None:
             return None
 
         import numpy as np
+
         min_coords = np.min(self.points, axis=0)
         max_coords = np.max(self.points, axis=0)
         extent = max_coords - min_coords
 
-        return self._model.scale_to_physical(extent, dimension='length')
+        return self._model.scale_to_physical(extent, dimension="length")
 
     @timing.routine_timer_decorator
     def write_timestep(
@@ -1621,16 +1603,12 @@ class Mesh(Stateful, uw_object):
 
         if meshVars is not None:
             for var in meshVars:
-                save_location = (
-                    output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
-                )
+                save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
                 var.write(save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
-                save_location = (
-                    output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
-                )
+                save_location = output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
                 svar.write_proxy(save_location)
 
         if uw.mpi.rank == 0:
@@ -1800,13 +1778,19 @@ class Mesh(Stateful, uw_object):
                 g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
 
                 # Add coordinate units metadata
-                if hasattr(self, 'coordinate_units'):
+                if hasattr(self, "coordinate_units"):
                     coord_units_dict = {
                         "coordinate_units": str(self.coordinate_units),
-                        "coordinate_dimensionality": str(self.coordinate_dimensionality) if hasattr(self, 'coordinate_dimensionality') else None,
-                        "length_scale": str(self.length_scale) if hasattr(self, 'length_scale') else None,
+                        "coordinate_dimensionality": (
+                            str(self.coordinate_dimensionality)
+                            if hasattr(self, "coordinate_dimensionality")
+                            else None
+                        ),
+                        "length_scale": (
+                            str(self.length_scale) if hasattr(self, "length_scale") else None
+                        ),
                         "mesh_type": type(self).__name__,
-                        "dimension": self.dim
+                        "dimension": self.dim,
                     }
                     g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
 
@@ -1870,9 +1854,7 @@ class Mesh(Stateful, uw_object):
         if key in self._coord_array:
             return self._coord_array[key]
         else:
-            self._coord_array[key] = self._get_coords_for_basis(
-                var.degree, var.continuous
-            )
+            self._coord_array[key] = self._get_coords_for_basis(var.degree, var.continuous)
             return self._coord_array[key]
 
     def _get_coords_for_basis(self, degree, continuous):
@@ -2004,9 +1986,7 @@ class Mesh(Stateful, uw_object):
             # Add points near the cell vertices
 
             for i in range(cell_point_coords.shape[0]):
-                control_points_list.append(
-                    0.99 * cell_point_coords[i] + 0.01 * cell_centroid
-                )
+                control_points_list.append(0.99 * cell_point_coords[i] + 0.01 * cell_centroid)
                 control_points_cell_list.append(cell_id)
 
             # Add centroid
@@ -2141,9 +2121,7 @@ class Mesh(Stateful, uw_object):
 
             for face in range(cell_num_faces):
 
-                points = self.dm.getTransitiveClosure(cell_faces[face])[0][
-                    -face_num_points:
-                ]
+                points = self.dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
                 # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
                 point_coords = self._coords[points - pStart]
 
@@ -2288,15 +2266,11 @@ class Mesh(Stateful, uw_object):
 
             for pt in range(0, face_num_points):
 
-                outside_control_point = (
-                    1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
-                )
+                outside_control_point = 1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
                 control_points_list.append(outside_control_point)
                 control_point_sign_list.append(-1)
 
-                inside_control_point = (
-                    -1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
-                )
+                inside_control_point = -1e-8 * normal + 0.8 * point_coords[pt] + 0.2 * face_centroid
                 control_points_list.append(inside_control_point)
                 control_point_sign_list.append(1)
 
@@ -2318,21 +2292,20 @@ class Mesh(Stateful, uw_object):
         Parameters
         ----------
         points : array-like
-            Coordinate array in any physical unit system (will be auto-converted)
+            Coordinate array in any physical unit system (will be auto-converted).
+            Plain numbers are assumed to be in model coordinates.
         strict_validation : bool
             Whether to perform strict validation near boundaries
 
         """
-        # Convert points to model units using the elegant protocol
+        # Convert points to model coordinates using the unified conversion function
+        # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
         import underworld3 as uw
-        model = uw.get_default_model()
-        model_quantity = model.to_model_units(points)
+        from underworld3.function.unit_conversion import _convert_coords_to_si
 
-        # Extract numerical values for internal mesh operations
-        if hasattr(model_quantity, '_pint_qty'):
-            model_points = model_quantity._pint_qty.magnitude
-        else:
-            model_points = model_quantity
+        # _convert_coords_to_si now converts to model coordinates (despite the name)
+        # and handles all the complexity of extracting values from unit-aware coordinates
+        model_points = _convert_coords_to_si(points)
 
         self._mark_local_boundary_faces_inside_and_out()
 
@@ -2341,12 +2314,10 @@ class Mesh(Stateful, uw_object):
         if model_points.shape[0] == 0:
             return numpy.array([], dtype=bool)
 
-        dist2, closest_control_points_ext = (
-            self.boundary_face_control_points_kdtree.query(model_points, k=1, sqr_dists=True)
+        dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
+            model_points, k=1, sqr_dists=True
         )
-        in_or_not = (
-            self.boundary_face_control_points_sign[closest_control_points_ext] > 0
-        )
+        in_or_not = self.boundary_face_control_points_sign[closest_control_points_ext] > 0
 
         ## This choice of distance needs some more thought
 
@@ -2380,6 +2351,7 @@ class Mesh(Stateful, uw_object):
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
             shape (n_coords,dim) in any physical unit system (will be auto-converted).
+            Plain numbers are assumed to be in model coordinates.
 
         Returns:
         --------
@@ -2390,16 +2362,9 @@ class Mesh(Stateful, uw_object):
         """
         import numpy as np
 
-        # Convert coords to model units using the elegant protocol
-        import underworld3 as uw
-        model = uw.get_default_model()
-        model_quantity = model.to_model_units(coords)
-
-        # Extract numerical values for internal mesh operations
-        if hasattr(model_quantity, '_pint_qty'):
-            model_coords = model_quantity._pint_qty.magnitude
-        else:
-            model_coords = model_quantity
+        # Convert coords to model coordinates
+        # Simply extract raw values - np.asarray handles unit-aware objects correctly
+        model_coords = np.asarray(coords)
 
         self._build_kd_tree_index()
 
@@ -2510,11 +2475,12 @@ class Mesh(Stateful, uw_object):
         """
         # Convert points to model units using the elegant protocol
         import underworld3 as uw
+
         model = uw.get_default_model()
         model_quantity = model.to_model_units(points)
 
         # Extract numerical values for internal mesh operations
-        if hasattr(model_quantity, '_pint_qty'):
+        if hasattr(model_quantity, "_pint_qty"):
             model_points = model_quantity._pint_qty.magnitude
         else:
             model_points = model_quantity
@@ -2546,11 +2512,12 @@ class Mesh(Stateful, uw_object):
         """
         # Convert coords to model units using the elegant protocol
         import underworld3 as uw
+
         model = uw.get_default_model()
         model_quantity = model.to_model_units(coords)
 
         # Extract numerical values for internal mesh operations
-        if hasattr(model_quantity, '_pint_qty'):
+        if hasattr(model_quantity, "_pint_qty"):
             model_coords = model_quantity._pint_qty.magnitude
         else:
             model_coords = model_quantity
@@ -2648,9 +2615,7 @@ class Mesh(Stateful, uw_object):
 
         import numpy as np
 
-        all_min_radii = uw.utilities.gather_data(
-            np.array((self._radii.min(),)), bcast=True
-        )
+        all_min_radii = uw.utilities.gather_data(np.array((self._radii.min(),)), bcast=True)
 
         return all_min_radii.min()
 
@@ -2664,9 +2629,7 @@ class Mesh(Stateful, uw_object):
 
         import numpy as np
 
-        all_max_radii = uw.utilities.gather_data(
-            np.array((self._radii.max(),)), bcast=True
-        )
+        all_max_radii = uw.utilities.gather_data(np.array((self._radii.max(),)), bcast=True)
 
         return all_max_radii.max()
 
@@ -2695,9 +2658,7 @@ class Mesh(Stateful, uw_object):
         from petsc4py.PETSc import NormType
 
         tmp = uw_meshVariable
-        tmp.data[...] = uw.function.evaluate(uw_function, tmp.coords, basis).reshape(
-            -1, 1
-        )
+        tmp.data[...] = uw.function.evaluate(uw_function, tmp.coords, basis).reshape(-1, 1)
 
         vsize = tmp._gvec.getSize()
         vmean = tmp.mean()
@@ -2875,9 +2836,7 @@ def checkpoint_xdmf(
     def get_cell_field_size(h5_filename, mesh_var):
         try:
             with h5py.File(h5_filename, "r") as f:
-                size = f[
-                    f"cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}"
-                ].shape[0]
+                size = f[f"cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}"].shape[0]
             return size
         except:
             with h5py.File(h5_filename, "r") as f:

@@ -111,12 +111,12 @@ def UnstructuredSimplexBox(
     # Detect units from UWQuantity inputs (if not explicitly specified)
     if units is None:
         # Try to detect units from maxCoords (most likely to have units)
-        if hasattr(maxCoords, '__iter__'):
+        if hasattr(maxCoords, "__iter__"):
             for coord in maxCoords:
-                if hasattr(coord, 'units'):  # UWQuantity
+                if hasattr(coord, "units"):  # UWQuantity
                     units = str(coord.units)
                     break
-                elif hasattr(coord, '_pint_qty'):  # Direct Pint Quantity
+                elif hasattr(coord, "_pint_qty"):  # Direct Pint Quantity
                     units = str(coord._pint_qty.units)
                     break
 
@@ -180,9 +180,7 @@ def UnstructuredSimplexBox(
             gmsh.model.setPhysicalName(2, 99999, "Elements")
 
             if regular:
-                gmsh.model.mesh.set_transfinite_surface(
-                    surface, cornerTags=[p1, p2, p3, p4]
-                )
+                gmsh.model.mesh.set_transfinite_surface(surface, cornerTags=[p1, p2, p3, p4])
 
         else:
             boundaries = boundaries_3D
@@ -231,9 +229,7 @@ def UnstructuredSimplexBox(
             cl = gmsh.model.geo.add_curve_loop((-l3, l12, l7, l11))
             back = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Back.value)
 
-            sloop = gmsh.model.geo.add_surface_loop(
-                [front, right, back, top, left, bottom]
-            )
+            sloop = gmsh.model.geo.add_surface_loop([front, right, back, top, left, bottom])
             volume = gmsh.model.geo.add_volume([sloop])
 
             gmsh.model.geo.synchronize()
@@ -841,12 +837,12 @@ def StructuredQuadBox(
     # Detect units from UWQuantity inputs (if not explicitly specified)
     if units is None:
         # Try to detect units from maxCoords (most likely to have units)
-        if maxCoords is not None and hasattr(maxCoords, '__iter__'):
+        if maxCoords is not None and hasattr(maxCoords, "__iter__"):
             for coord in maxCoords:
-                if hasattr(coord, 'units'):  # UWQuantity
+                if hasattr(coord, "units"):  # UWQuantity
                     units = str(coord.units)
                     break
-                elif hasattr(coord, '_pint_qty'):  # Direct Pint Quantity
+                elif hasattr(coord, "_pint_qty"):  # Direct Pint Quantity
                     units = str(coord._pint_qty.units)
                     break
 
@@ -867,9 +863,7 @@ def StructuredQuadBox(
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
 
-        uw_filename = (
-            f".meshes/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
-        )
+        uw_filename = f".meshes/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
     else:
         uw_filename = filename
 
@@ -976,9 +970,7 @@ def StructuredQuadBox(
             cl = gmsh.model.geo.add_curve_loop((-l3, l12, l7, l11))
             back = gmsh.model.geo.add_plane_surface([cl], tag=boundaries.Back.value)
 
-            sloop = gmsh.model.geo.add_surface_loop(
-                [front, right, back, top, left, bottom]
-            )
+            sloop = gmsh.model.geo.add_surface_loop([front, right, back, top, left, bottom])
             volume = gmsh.model.geo.add_volume([sloop])
 
             gmsh.model.geo.synchronize()

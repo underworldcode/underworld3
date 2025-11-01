@@ -27,18 +27,18 @@ def test_basic_dimensionality_tracking():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
-    v = uw.discretisation.MeshVariable('v', mesh, mesh.dim, units='meter/second')
-    p = uw.discretisation.MeshVariable('p', mesh, 1, units='pascal')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
+    v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, units="meter/second")
+    p = uw.discretisation.MeshVariable("p", mesh, 1, units="pascal")
 
     # Check dimensionality is derived from units
     assert T.dimensionality is not None
-    assert 'temperature' in str(T.dimensionality).lower() or 'kelvin' in str(T.dimensionality).lower()
+    assert (
+        "temperature" in str(T.dimensionality).lower() or "kelvin" in str(T.dimensionality).lower()
+    )
     assert v.dimensionality is not None
     assert p.dimensionality is not None
 
@@ -57,12 +57,10 @@ def test_manual_reference_scaling():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
 
     # Set reference scale
     T.set_reference_scale(1000.0)
@@ -81,12 +79,10 @@ def test_scalar_unwrap_preserves_function():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     T.set_reference_scale(1000.0)
 
     # Get non-dimensional expression
@@ -112,12 +108,10 @@ def test_vector_unwrap():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    v = uw.discretisation.MeshVariable('v', mesh, mesh.dim, units='meter/second')
+    v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, units="meter/second")
     v.set_reference_scale(0.05)
 
     # Get non-dimensional expression
@@ -140,12 +134,10 @@ def test_derivative_unwrap():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     T.set_reference_scale(1000.0)
 
     # Create derivative of non-dimensional variable
@@ -170,13 +162,11 @@ def test_multi_variable_expression():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
-    p = uw.discretisation.MeshVariable('p', mesh, 1, units='pascal')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
+    p = uw.discretisation.MeshVariable("p", mesh, 1, units="pascal")
 
     T.set_reference_scale(1000.0)
     p.set_reference_scale(1e9)
@@ -204,12 +194,10 @@ def test_gradient_unwrap():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     T.set_reference_scale(1000.0)
 
     T_nd = T.to_nd()
@@ -230,13 +218,11 @@ def test_mixed_dimensional_nondimensional():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
-    p = uw.discretisation.MeshVariable('p', mesh, 1, units='pascal')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
+    p = uw.discretisation.MeshVariable("p", mesh, 1, units="pascal")
 
     T.set_reference_scale(1000.0)
     p.set_reference_scale(1e9)
@@ -262,12 +248,10 @@ def test_scaling_coefficient_visibility():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     scale = 1000.0
     T.set_reference_scale(scale)
 
@@ -280,8 +264,9 @@ def test_scaling_coefficient_visibility():
     unwrap_str = str(unwrapped)
 
     # Should contain the reciprocal of the scale
-    assert "1000" in unwrap_str or "0.001" in unwrap_str, \
-        "Scaling coefficient not visible in unwrapped expression"
+    assert (
+        "1000" in unwrap_str or "0.001" in unwrap_str
+    ), "Scaling coefficient not visible in unwrapped expression"
 
 
 def test_automatic_scale_derivation():
@@ -298,19 +283,18 @@ def test_automatic_scale_derivation():
 
     # NOW create variables - they should auto-derive scales
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('Temperature', mesh, 1, units='kelvin')
-    v = uw.discretisation.MeshVariable('velocity', mesh, mesh.dim, units='meter/second')
+    T = uw.discretisation.MeshVariable("Temperature", mesh, 1, units="kelvin")
+    v = uw.discretisation.MeshVariable("velocity", mesh, mesh.dim, units="meter/second")
 
     # Check that scales were auto-derived (should not be default 1.0)
     # Temperature should pick up the temperature_diff reference
     # Note: The exact values depend on the heuristic matching
-    assert T.scaling_coefficient != 1.0 or v.scaling_coefficient != 1.0, \
-        "Variables should have auto-derived scaling coefficients"
+    assert (
+        T.scaling_coefficient != 1.0 or v.scaling_coefficient != 1.0
+    ), "Variables should have auto-derived scaling coefficients"
 
 
 def test_uwquantity_dimensionality():
@@ -342,13 +326,11 @@ def test_roundtrip_conversion():
     uw.reset_default_model()
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Test with MeshVariable
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     T.set_reference_scale(1000.0)
 
     # Set dimensional values
@@ -360,8 +342,9 @@ def test_roundtrip_conversion():
 
     # Convert back to dimensional
     T_dimensional = T.from_nd(T_nd_values)
-    assert np.allclose(T_dimensional, 1300.0), \
-        "Round-trip conversion should preserve original values"
+    assert np.allclose(
+        T_dimensional, 1300.0
+    ), "Round-trip conversion should preserve original values"
 
     # Test with UWQuantity
     pressure = uw.quantity(2e9, "pascal")
@@ -373,15 +356,13 @@ def test_roundtrip_conversion():
 
     # Convert back to dimensional
     p_dimensional = pressure.from_nd(2.0)
-    assert p_dimensional == 2e9, \
-        "Round-trip conversion should preserve original quantity value"
+    assert p_dimensional == 2e9, "Round-trip conversion should preserve original quantity value"
 
     # Test with array of values
     test_values_nd = np.array([0.5, 1.0, 1.5, 2.0])
     test_values_dim = T.from_nd(test_values_nd)
     expected_dim = np.array([500.0, 1000.0, 1500.0, 2000.0])
-    assert np.allclose(test_values_dim, expected_dim), \
-        "from_nd should work with arrays of values"
+    assert np.allclose(test_values_dim, expected_dim), "from_nd should work with arrays of values"
 
 
 if __name__ == "__main__":

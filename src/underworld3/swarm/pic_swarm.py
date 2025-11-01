@@ -369,9 +369,7 @@ class PICSwarm(Stateful, uw_object):
                 all_local_coords = np.vstack(
                     (self._particle_coordinates.data,) * (self.recycle_rate)
                 )
-                all_local_cells = np.vstack(
-                    (self._cellid_var.data,) * (self.recycle_rate)
-                )
+                all_local_cells = np.vstack((self._cellid_var.data,) * (self.recycle_rate))
 
                 swarm_new_size = all_local_coords.shape[0]
 
@@ -722,13 +720,9 @@ class PICSwarm(Stateful, uw_object):
             with open(f"{output_base_name}.{index:05d}.xdmf", "w") as xdmf:
                 # Write the XDMF header
                 xdmf.write('<?xml version="1.0" ?>\n')
-                xdmf.write(
-                    '<Xdmf xmlns:xi="http://www.w3.org/2001/XInclude" Version="2.0">\n'
-                )
+                xdmf.write('<Xdmf xmlns:xi="http://www.w3.org/2001/XInclude" Version="2.0">\n')
                 xdmf.write("<Domain>\n")
-                xdmf.write(
-                    f'<Grid Name="{output_base_name}.{index:05d}" GridType="Uniform">\n'
-                )
+                xdmf.write(f'<Grid Name="{output_base_name}.{index:05d}" GridType="Uniform">\n')
 
                 if time != None:
                     xdmf.write(f'	<Time Value="{time}" />\n')
@@ -838,9 +832,7 @@ class PICSwarm(Stateful, uw_object):
             # add to de-access list to rewind this later
             deaccess_list.append(var)
             # grab numpy object, setting read only if necessary
-            var._data = self.dm.getField(var.clean_name).reshape(
-                (-1, var.num_components)
-            )
+            var._data = self.dm.getField(var.clean_name).reshape((-1, var.num_components))
             assert var._data is not None
             if var not in writeable_vars:
                 var._old_data_flag = var._data.flags.writeable
@@ -930,9 +922,7 @@ class PICSwarm(Stateful, uw_object):
                         for i in range(0, var.shape[0]):
                             for j in range(0, var.shape[1]):
                                 # var._data_ij[i, j] = None
-                                var._data_container[i, j] = var._data_container[
-                                    i, j
-                                ]._replace(
+                                var._data_container[i, j] = var._data_container[i, j]._replace(
                                     data=f"SwarmVariable[...].data is only available within mesh.access() context",
                                 )
 
@@ -955,9 +945,7 @@ class PICSwarm(Stateful, uw_object):
             elif i == 0:
                 return j
             else:
-                raise IndexError(
-                    f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} "
-                )
+                raise IndexError(f"Vectors have shape {self.mesh.dim} or {(1, self.mesh.dim)} ")
         if self.vtype == uw.VarType.TENSOR:
             if self.mesh.dim == 2:
                 return ((0, 1), (2, 3))[i][j]
@@ -993,9 +981,7 @@ class PICSwarm(Stateful, uw_object):
         digest = h.intdigest()
         if digest not in self._nnmapdict:
             # self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
-            self._nnmapdict[digest] = self._index.query(
-                meshvar_coords, k=1, sqr_dists=False
-            )[0]
+            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1, sqr_dists=False)[0]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator
@@ -1096,8 +1082,7 @@ class PICSwarm(Stateful, uw_object):
                         ).reshape(-1)
 
                     mid_pt_coords = (
-                        self._particle_coordinates.data[...]
-                        + 0.5 * delta_t * v_at_Vpts / substeps
+                        self._particle_coordinates.data[...] + 0.5 * delta_t * v_at_Vpts / substeps
                     )
 
                     # validate_coords to ensure they live within the domain (or there will be trouble)
@@ -1236,9 +1221,7 @@ class PICSwarm(Stateful, uw_object):
             self.dm.migrate(remove_sent_points=True)
 
             with self.access(self._remeshed):
-                self._remeshed.data[...] = np.mod(
-                    self._remeshed.data[...] - 1, self.recycle_rate
-                )
+                self._remeshed.data[...] = np.mod(self._remeshed.data[...] - 1, self.recycle_rate)
 
             self.cycle += 1
 

@@ -115,9 +115,7 @@ def getext(
 
     for fn in raw_fns:
         expanded_fns.append(
-            underworld3.function.expressions.unwrap(
-                fn, keep_constants=False, return_self=False
-            )
+            underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
         )
 
     fns = tuple(expanded_fns)
@@ -413,9 +411,7 @@ def _createext(
     eqns = []
     for index, fn in enumerate(fns):
 
-        fn = underworld3.function.expressions.unwrap(
-            fn, keep_constants=False, return_self=False
-        )
+        fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
 
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
@@ -609,41 +605,31 @@ cpdef PtrContainer getptrobj():
 
     eqn_count = 0
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_residual)]):
-        pyx_str += "    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     residual_equations = (0, eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bcs)]):
-        pyx_str += "    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     boundary_equations = (residual_equations[1], eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_jacobian)]):
-        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     jacobian_equations = (boundary_equations[1], eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bd_residual)]):
-        pyx_str += "    clsguy.fns_bd_residual[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_bd_residual[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     boundary_residual_equations = (jacobian_equations[1], eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bd_jacobian)]):
-        pyx_str += "    clsguy.fns_bd_jacobian[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_bd_jacobian[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     boundary_jacobian_equations = (boundary_residual_equations[1], eqn_count)

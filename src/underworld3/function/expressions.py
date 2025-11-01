@@ -410,21 +410,22 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
 
     def _sympify_(self):
         """
-        Override the _sympify_ method to return the pure SymPy representation.
+        Return the Symbol itself for deferred evaluation.
 
-        This prevents infinite recursion in UWQuantity.atoms() method by returning
-        self._sym (pure SymPy object without UWQuantity.atoms method) instead of
-        self (UWexpression with inherited UWQuantity.atoms method).
+        CRITICAL CHANGE (2025-10-28): Changed from returning self._sym to returning self.
+        This is required for proper symbolic algebra with expressions.
 
-        The recursion occurs when:
-        1. UWQuantity.atoms() calls self._sympify_()
-        2. UWexpression._sympify_() returns self
-        3. UWQuantity.atoms() calls atoms() on the result
-        4. Since result is still UWexpression, infinite recursion ensues
+        Why return self:
+        - Preserves UWexpression as Symbol in SymPy expression trees
+        - Enables symbolic multiplication: alpha * kappa → \alpha*\kappa
+        - Prevents premature evaluation to numeric values
+        - Works with Symbol's natural arithmetic operators
 
-        Fix: Return self._sym (pure SymPy) to break the recursion chain.
+        Previous implementation returned self._sym which broke:
+        - Expression multiplication (Ra * T failed with TypeError)
+        - Symbolic preservation (alpha.sym returned 0.00003 instead of \alpha)
         """
-        return self._sym
+        return self  # NOT self._sym!
 
     def __bool__(self):
         """
@@ -435,6 +436,16 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
         SymPy from calling __len__ during boolean evaluation.
         """
         return True
+
+    def __hash__(self):
+        """
+        Make UWexpression hashable by delegating to Symbol's hash.
+
+        Required for SymPy's caching and algebraic operations. Since UWexpression
+        inherits from multiple classes (some of which may define __eq__), Python
+        requires explicit __hash__ to make the class hashable.
+        """
+        return Symbol.__hash__(self)
 
     # ===================================================================
     # Delegate SymPy assumption properties to wrapped expression
@@ -496,6 +507,59 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
         if self._sym is not None and hasattr(self._sym, 'is_infinite'):
             return self._sym.is_infinite
         return None  # Unknown
+
+    # ===================================================================
+    # Arithmetic method overrides - delegate to Symbol
+    # CRITICAL: Bypasses UWQuantity's __mul__ in MRO
+    # ===================================================================
+    # These overrides ensure that when a UWexpression (which inherits from
+    # Symbol) participates in arithmetic operations, we use Symbol's arithmetic
+    # instead of UWQuantity's. This prevents unhashable type errors and enables
+    # symbolic algebra.
+
+    def __mul__(self, other):
+        """Multiply - delegate to Symbol to preserve symbolic expressions."""
+        return Symbol.__mul__(self, other)
+
+    def __rmul__(self, other):
+        """Right multiply - delegate to Symbol."""
+        return Symbol.__rmul__(self, other)
+
+    def __truediv__(self, other):
+        """Divide - delegate to Symbol."""
+        return Symbol.__truediv__(self, other)
+
+    def __rtruediv__(self, other):
+        """Right divide - delegate to Symbol."""
+        return Symbol.__rtruediv__(self, other)
+
+    def __add__(self, other):
+        """Add - delegate to Symbol."""
+        return Symbol.__add__(self, other)
+
+    def __radd__(self, other):
+        """Right add - delegate to Symbol."""
+        return Symbol.__radd__(self, other)
+
+    def __sub__(self, other):
+        """Subtract - delegate to Symbol."""
+        return Symbol.__sub__(self, other)
+
+    def __rsub__(self, other):
+        """Right subtract - delegate to Symbol."""
+        return Symbol.__rsub__(self, other)
+
+    def __pow__(self, other):
+        """Power - delegate to Symbol."""
+        return Symbol.__pow__(self, other)
+
+    def __rpow__(self, other):
+        """Right power - delegate to Symbol."""
+        return Symbol.__rpow__(self, other)
+
+    def __neg__(self):
+        """Negation - delegate to Symbol."""
+        return Symbol.__neg__(self)
 
     def copy(self, other):
         if not isinstance(other, UWexpression):

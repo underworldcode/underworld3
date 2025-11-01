@@ -18,29 +18,24 @@ import json
 import tempfile
 import os
 
+
 def test_mesh_variable_unit_serialization():
     """Test MeshVariable unit metadata serialization."""
     print("=== Testing MeshVariable Unit Serialization ===")
 
     # Create a simple mesh
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Create a variable with units
     velocity = uw.discretisation.MeshVariable(
-        "velocity",
-        mesh,
-        vtype=uw.VarType.VECTOR,
-        degree=2,
-        units="m/s"
+        "velocity", mesh, vtype=uw.VarType.VECTOR, degree=2, units="m/s"
     )
 
     # Debug: Check if units were set
     print(f"  Variable has units: {hasattr(velocity, 'units')}")
-    if hasattr(velocity, 'units'):
+    if hasattr(velocity, "units"):
         print(f"  Units value: {velocity.units}")
 
     # Set some data
@@ -61,7 +56,10 @@ def test_mesh_variable_unit_serialization():
         with uw.selective_ranks(0) as should_execute:
             if should_execute:
                 with h5py.File(mesh_filename, "r") as f:
-                    if "metadata" in f and f"variable_{velocity.clean_name}_units" in f["metadata"].attrs:
+                    if (
+                        "metadata" in f
+                        and f"variable_{velocity.clean_name}_units" in f["metadata"].attrs
+                    ):
                         metadata_str = f["metadata"].attrs[f"variable_{velocity.clean_name}_units"]
                         metadata = json.loads(metadata_str)
                         print(f"✓ Variable unit metadata found: {metadata}")
@@ -111,24 +109,17 @@ def test_swarm_unit_serialization():
 
     # Create mesh and swarm
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     swarm = uw.swarm.Swarm(mesh)
 
     # Create a swarm variable with units (before populating)
-    material = uw.swarm.SwarmVariable(
-        "material",
-        swarm,
-        size=1,
-        units="kg/m^3"
-    )
+    material = uw.swarm.SwarmVariable("material", swarm, size=1, units="kg/m^3")
 
     # Debug: Check if units were set
     print(f"  SwarmVariable has units: {hasattr(material, 'units')}")
-    if hasattr(material, 'units'):
+    if hasattr(material, "units"):
         print(f"  Units value: {material.units}")
 
     # Now populate the swarm
@@ -196,13 +187,11 @@ def test_mesh_coordinate_unit_serialization():
 
     # Create a mesh
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Add coordinate units if supported (this might not exist yet)
-    if hasattr(mesh, 'coordinate_units'):
+    if hasattr(mesh, "coordinate_units"):
         mesh.coordinate_units = "km"
 
     with tempfile.NamedTemporaryFile(suffix=".h5", delete=False) as tmp:
@@ -238,7 +227,9 @@ def test_mesh_coordinate_unit_serialization():
                             print(f"✓ Coordinate units metadata found: {coord_units}")
                             print("✓ Mesh coordinate unit metadata test PASSED")
                         else:
-                            print("ℹ️ Coordinate units metadata not found (coordinate_units not set on mesh)")
+                            print(
+                                "ℹ️ Coordinate units metadata not found (coordinate_units not set on mesh)"
+                            )
                     else:
                         print("❌ Metadata group not found in mesh file")
 
@@ -264,6 +255,7 @@ def main():
     except Exception as e:
         print(f"\n❌ Test failed with error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

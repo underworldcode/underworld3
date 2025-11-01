@@ -33,13 +33,43 @@ class UnitAwareArray(np.ndarray):
     >>> temperature.array[:] = magnitudes  # Works fine
     """
 
-    def __new__(cls, input_array, units=None):
-        """Create a new UnitAwareArray instance."""
+    def __new__(cls, input_array, units=None, dimensionality=None):
+        """
+        Create a new UnitAwareArray instance.
+
+        Parameters
+        ----------
+        input_array : array_like
+            The input data
+        units : str, optional
+            Unit string (e.g., "m/s", "dimensionless")
+        dimensionality : dict, optional
+            Pint dimensionality dict for tracking original dimensions
+            even when numerically dimensionless
+        """
         # Input array is an already formed ndarray instance
         # We first cast to be our class type
         obj = np.asarray(input_array).view(cls)
         # Add the unit metadata attribute
         obj._units = units
+
+        # Add dimensionality metadata
+        if dimensionality is not None:
+            # Explicitly provided dimensionality
+            obj._dimensionality = dimensionality
+        elif units is not None and units != "dimensionless":
+            # Extract dimensionality from units string using Pint
+            try:
+                from ..scaling import units as ureg
+                pint_qty = 1.0 * ureg(units)
+                obj._dimensionality = dict(pint_qty.dimensionality)
+            except:
+                # If parsing fails, use empty dimensionality
+                obj._dimensionality = {}
+        else:
+            # No dimensionality information
+            obj._dimensionality = {}
+
         return obj
 
     def __array_finalize__(self, obj):
@@ -54,8 +84,9 @@ class UnitAwareArray(np.ndarray):
         # For operations, numpy returns plain arrays (correct behavior)
         if obj is None:
             return
-        # Only preserve units for view/slice operations, not ufuncs
-        self._units = getattr(obj, '_units', None)
+        # Only preserve units and dimensionality for view/slice operations, not ufuncs
+        self._units = getattr(obj, "_units", None)
+        self._dimensionality = getattr(obj, "_dimensionality", {})
 
     @property
     def units(self):
@@ -68,6 +99,89 @@ class UnitAwareArray(np.ndarray):
             Unit string if available
         """
         return self._units
+
+    @property
+    def dimensionality(self) -> dict:
+        """
+        Get dimensionality information (Pint format).
+
+        Returns the dimensionality dictionary, e.g., {'[length]': 1, '[time]': -1} for velocity.
+        This allows re-dimensionalization of dimensionless arrays by preserving their
+        original dimensional nature.
+
+        Returns
+        -------
+        dict
+            Pint dimensionality dictionary, empty dict {} if dimensionless
+
+        Examples
+        --------
+        >>> velocity = uw.function.evaluate(u.sym, coords)  # Returns UnitAwareArray
+        >>> velocity.dimensionality
+        {'[length]': 1, '[time]': -1}
+        """
+        return self._dimensionality
+
+    def non_dimensional_value(self, model=None):
+        """
+        Convert this unit-aware array to non-dimensional form using model scales.
+
+        This method implements the protocol for non-dimensionalization, allowing
+        UnitAwareArray instances to work with `uw.non_dimensionalise()`.
+
+        Parameters
+        ----------
+        model : Model, optional
+            Model instance with reference quantities. If None, uses default model.
+
+        Returns
+        -------
+        UnitAwareArray
+            Non-dimensional array with preserved dimensionality metadata
+
+        Examples
+        --------
+        >>> velocity = uw.function.evaluate(u.sym, coords)  # Returns UnitAwareArray with units
+        >>> nondim_velocity = velocity.non_dimensional_value(model)
+        >>> # Or via the function:
+        >>> nondim_velocity = uw.non_dimensionalise(velocity)
+        """
+        # Get model if not provided
+        if model is None:
+            model = uw.get_default_model()
+
+        # Extract dimensionality
+        dimensionality = self.dimensionality
+
+        if not dimensionality:
+            # Already dimensionless, return as-is
+            return UnitAwareArray(np.asarray(self), units="dimensionless", dimensionality={})
+
+        # Check if model has reference quantities
+        if not hasattr(model, "_fundamental_scales"):
+            # No reference quantities - return as plain array
+            return np.asarray(self)
+
+        try:
+            # Get appropriate scale from model using dimensionality
+            scale = model.get_scale_for_dimensionality(dimensionality)
+
+            # Need to create Pint quantity from units to divide
+            from ..scaling import units as ureg
+            if self._units:
+                # Create Pint quantity from array values and units
+                array_qty = self.view(np.ndarray) * ureg(self._units)
+                # Divide by scale to get dimensionless values
+                result_qty = array_qty / scale
+                nondim_values = result_qty.magnitude
+                # Return UnitAwareArray with preserved dimensionality
+                return UnitAwareArray(nondim_values, units="dimensionless", dimensionality=dimensionality)
+            else:
+                # No units available - return as plain array
+                return np.asarray(self)
+
+        except Exception as e:
+            raise ValueError(f"Cannot non-dimensionalise UnitAwareArray: {e}")
 
 
 def _extract_value(value, target_units=None):
@@ -127,7 +241,7 @@ def _extract_value(value, target_units=None):
         return type(value)(extracted)
 
     # Check if it's a Pint Quantity (has both units and magnitude)
-    if hasattr(value, 'magnitude') and hasattr(value, 'units'):
+    if hasattr(value, "magnitude") and hasattr(value, "units"):
         if target_units is not None:
             try:
                 return value.to(target_units).magnitude
@@ -137,8 +251,8 @@ def _extract_value(value, target_units=None):
         return value.magnitude
 
     # Check if it's a UWQuantity
-    if hasattr(value, 'value') and hasattr(value, '_has_pint_qty'):
-        if target_units is not None and hasattr(value, '_pint_qty'):
+    if hasattr(value, "value") and hasattr(value, "_has_pint_qty"):
+        if target_units is not None and hasattr(value, "_pint_qty"):
             try:
                 return value._pint_qty.to(target_units).magnitude
             except:
@@ -165,19 +279,19 @@ def has_units(obj):
         True if object has detectable units
     """
     # Check for UWQuantity
-    if hasattr(obj, '_has_pint_qty') and obj._has_pint_qty:
+    if hasattr(obj, "_has_pint_qty") and obj._has_pint_qty:
         return True
 
     # Check for Pint quantity
-    if hasattr(obj, 'units') and hasattr(obj, 'magnitude'):
+    if hasattr(obj, "units") and hasattr(obj, "magnitude"):
         return True
 
     # Check for array with unit metadata
-    if hasattr(obj, '_units') or hasattr(obj, 'units'):
+    if hasattr(obj, "_units") or hasattr(obj, "units"):
         return True
 
     # Check for NDArray with unit information
-    if hasattr(obj, '__array__') and hasattr(obj, '_unit_metadata'):
+    if hasattr(obj, "__array__") and hasattr(obj, "_unit_metadata"):
         return True
 
     return False
@@ -212,46 +326,46 @@ def get_units(obj):
     import underworld3 as uw
 
     # Priority 1: Direct unit attribute checks
-    if hasattr(obj, '_has_pint_qty') and obj._has_pint_qty:
-        if hasattr(obj, '_pint_qty'):
+    if hasattr(obj, "_has_pint_qty") and obj._has_pint_qty:
+        if hasattr(obj, "_pint_qty"):
             return obj._pint_qty.units
 
-    if hasattr(obj, 'units'):
+    if hasattr(obj, "units"):
         units = obj.units
         if units is not None:
             # If it's already a pint.Unit, return it
-            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+            if hasattr(units, "dimensionality") and not hasattr(units, "magnitude"):
                 return units
             # If it's a string, convert to pint.Unit (extract .units from Quantity)
             return uw.units(str(units)).units
         return None
 
-    if hasattr(obj, '_units'):
+    if hasattr(obj, "_units"):
         units = obj._units
         if units is not None:
             # If it's already a pint.Unit, return it
-            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+            if hasattr(units, "dimensionality") and not hasattr(units, "magnitude"):
                 return units
             # If it's a string, convert to pint.Unit (extract .units from Quantity)
             return uw.units(str(units)).units
         return None
 
     # Check for get_units method (for unit-aware coordinates)
-    if hasattr(obj, 'get_units'):
+    if hasattr(obj, "get_units"):
         units = obj.get_units()
         if units is not None:
             # If it's already a pint.Unit, return it
-            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+            if hasattr(units, "dimensionality") and not hasattr(units, "magnitude"):
                 return units
             # If it's a string, convert to pint.Unit (extract .units from Quantity)
             return uw.units(str(units)).units
         return None
 
-    if hasattr(obj, '_unit_metadata'):
-        units = obj._unit_metadata.get('units')
+    if hasattr(obj, "_unit_metadata"):
+        units = obj._unit_metadata.get("units")
         if units is not None:
             # If it's already a pint.Unit, return it
-            if hasattr(units, 'dimensionality') and not hasattr(units, 'magnitude'):
+            if hasattr(units, "dimensionality") and not hasattr(units, "magnitude"):
                 return units
             # If it's a string, convert to pint.Unit (extract .units from Quantity)
             return uw.units(str(units)).units
@@ -259,22 +373,22 @@ def get_units(obj):
 
     # Priority 2a: Check for DERIVATIVES first (before general UnderworldFunction)
     # Derivatives have diffindex attribute and need special handling: var_units / coord_units
-    if hasattr(obj, 'diffindex'):
+    if hasattr(obj, "diffindex"):
         # Delegate to compute_expression_units which has derivative handling
         computed_units = compute_expression_units(obj)
         if computed_units:
             return computed_units
 
     # Priority 2b: UnderworldFunction with meshvar (variables have priority over coordinates)
-    if hasattr(obj, 'meshvar'):
+    if hasattr(obj, "meshvar"):
         try:
             # meshvar is a weak reference, get the actual variable
             variable = obj.meshvar()
-            if variable and hasattr(variable, 'units'):
+            if variable and hasattr(variable, "units"):
                 var_units = variable.units
                 if var_units is not None:
                     # If it's already a pint.Unit, return it
-                    if hasattr(var_units, 'dimensionality'):  # pint.Unit check
+                    if hasattr(var_units, "dimensionality"):  # pint.Unit check
                         return var_units
                     # If it's a string, convert to pint.Unit
                     return uw.units(str(var_units))
@@ -285,6 +399,7 @@ def get_units(obj):
     # Priority 3: SymPy Matrix (check first element)
     try:
         import sympy
+
         if isinstance(obj, sympy.MatrixBase):
             if obj.shape[0] > 0 and obj.shape[1] > 0:
                 # Recursively check the first element
@@ -310,14 +425,14 @@ def get_units(obj):
             # SECOND: Check if this expression contains UnderworldFunctions
             atoms = obj.atoms()
             for atom in atoms:
-                if hasattr(atom, 'meshvar'):
+                if hasattr(atom, "meshvar"):
                     try:
                         variable = atom.meshvar()
-                        if variable and hasattr(variable, 'units'):
+                        if variable and hasattr(variable, "units"):
                             var_units = variable.units
                             if var_units is not None:
                                 # If it's already a pint.Unit, return it
-                                if hasattr(var_units, 'dimensionality'):  # pint.Unit check
+                                if hasattr(var_units, "dimensionality"):  # pint.Unit check
                                     return var_units
                                 # If it's a string, convert to pint.Unit
                                 return uw.units(str(var_units))
@@ -328,18 +443,18 @@ def get_units(obj):
             base_scalar_atoms = obj.atoms(BaseScalar)
             for atom in base_scalar_atoms:
                 # Check if this BaseScalar has units
-                if hasattr(atom, '_units') and atom._units is not None:
+                if hasattr(atom, "_units") and atom._units is not None:
                     units = atom._units
                     # If it's already a pint.Unit, return it
-                    if hasattr(units, 'dimensionality'):  # pint.Unit check
+                    if hasattr(units, "dimensionality"):  # pint.Unit check
                         return units
                     # If it's a string, convert to pint.Unit
                     return uw.units(str(units))
-                elif hasattr(atom, 'get_units'):
+                elif hasattr(atom, "get_units"):
                     units = atom.get_units()
                     if units is not None:
                         # If it's already a pint.Unit, return it
-                        if hasattr(units, 'dimensionality'):  # pint.Unit check
+                        if hasattr(units, "dimensionality"):  # pint.Unit check
                             return units
                         # If it's a string, convert to pint.Unit
                         return uw.units(str(units))
@@ -391,18 +506,18 @@ def compute_expression_units(expr):
         def is_dimensionless_unit(unit):
             if unit is None:
                 return True
-            if hasattr(unit, 'dimensionality'):
+            if hasattr(unit, "dimensionality"):
                 return len(unit.dimensionality) == 0
-            return str(unit) == 'dimensionless'
+            return str(unit) == "dimensionless"
 
         # Priority -1: Check for DERIVATIVES first (before general UnderworldFunction)
         # Derivatives are UnderworldFunctions with a diffindex attribute
         # Units of derivative = units(variable) / units(coordinate)
-        if hasattr(expr, 'diffindex'):
+        if hasattr(expr, "diffindex"):
             try:
                 # Get variable units from meshvar
                 variable = expr.meshvar()
-                if variable and hasattr(variable, 'units'):
+                if variable and hasattr(variable, "units"):
                     var_units = variable.units
                     if var_units is not None:
                         # Get the coordinate it's derived with respect to
@@ -412,9 +527,9 @@ def compute_expression_units(expr):
                             coord_units = get_units(coord)
                             if coord_units is not None:
                                 # Convert to pint.Unit if needed
-                                if not hasattr(var_units, 'dimensionality'):
+                                if not hasattr(var_units, "dimensionality"):
                                     var_units = uw.units(str(var_units))
-                                if not hasattr(coord_units, 'dimensionality'):
+                                if not hasattr(coord_units, "dimensionality"):
                                     coord_units = uw.units(str(coord_units))
                                 # Compute derivative units: var_units / coord_units
                                 result_qty = (1 * var_units) / (1 * coord_units)
@@ -425,14 +540,14 @@ def compute_expression_units(expr):
         # Priority 0: Check for UnderworldFunction (has meshvar) FIRST
         # This must come before is_Atom check because UnderworldFunctions
         # have args (coordinates) so is_Atom returns False
-        if hasattr(expr, 'meshvar'):
+        if hasattr(expr, "meshvar"):
             try:
                 variable = expr.meshvar()
-                if variable and hasattr(variable, 'units'):
+                if variable and hasattr(variable, "units"):
                     var_units = variable.units
                     if var_units is not None:
                         # Convert to pint.Unit if it's a string
-                        if not hasattr(var_units, 'dimensionality'):
+                        if not hasattr(var_units, "dimensionality"):
                             return uw.units(str(var_units))
                         return var_units
             except (ReferenceError, AttributeError):
@@ -450,9 +565,51 @@ def compute_expression_units(expr):
             units_obj = get_units(expr)
             if units_obj:
                 return units_obj
+
+            # SPECIAL CASE: Check if this symbol represents a UWexpression
+            # This handles cases like L_0**2 where the base L_0 is a UWexpression symbol
+            if isinstance(expr, sympy.Symbol):
+                try:
+                    # Try to find this symbol in the UWexpression registry
+                    from underworld3.function.expressions import UWexpression
+
+                    # Check the given_name (LaTeX name like "L_0")
+                    symbol_name = expr.name
+                    if symbol_name in UWexpression._expr_names:
+                        uw_expr = UWexpression._expr_names[symbol_name]
+                        if hasattr(uw_expr, "has_units") and uw_expr.has_units:
+                            if hasattr(uw_expr, "units") and uw_expr.units is not None:
+                                # Found it! Get the units
+                                units_from_uw = uw_expr.units
+                                if not hasattr(units_from_uw, "dimensionality"):
+                                    # Convert string to pint.Unit if needed
+                                    return uw.units(str(units_from_uw))
+                                return units_from_uw
+
+                    # Also check ephemeral expressions (with weak references)
+                    if symbol_name in UWexpression._ephemeral_expr_names:
+                        uw_expr_ref = UWexpression._ephemeral_expr_names[symbol_name]
+                        # Dereference the weak reference
+                        uw_expr = uw_expr_ref()
+                        if (
+                            uw_expr is not None
+                            and hasattr(uw_expr, "has_units")
+                            and uw_expr.has_units
+                        ):
+                            if hasattr(uw_expr, "units") and uw_expr.units is not None:
+                                # Found it! Get the units
+                                units_from_uw = uw_expr.units
+                                if not hasattr(units_from_uw, "dimensionality"):
+                                    # Convert string to pint.Unit if needed
+                                    return uw.units(str(units_from_uw))
+                                return units_from_uw
+                except Exception:
+                    # If lookup fails, continue with normal flow
+                    pass
+
             # Numbers are dimensionless
             if expr.is_Number:
-                return uw.units('dimensionless')
+                return uw.units("dimensionless")
             return None
 
         # Recursive case: compound expression
@@ -510,10 +667,10 @@ def compute_expression_units(expr):
                     return arg_units
             return None
 
-        elif hasattr(expr, 'func'):
+        elif hasattr(expr, "func"):
             # Function application (sin, cos, etc.) - usually dimensionless result
             # But argument should be dimensionless too
-            return uw.units('dimensionless')
+            return uw.units("dimensionless")
 
         # For other expression types, try to get units from args recursively
         for arg in expr.args:
@@ -543,7 +700,7 @@ def get_mesh_coordinate_units(mesh_or_expr):
         Dictionary with coordinate unit information, or None if not available
     """
     # Try to extract mesh from expression
-    if not hasattr(mesh_or_expr, 'CoordinateSystem'):
+    if not hasattr(mesh_or_expr, "CoordinateSystem"):
         try:
             mesh, _ = uw.function.expressions.mesh_vars_in_expression(mesh_or_expr)
             if mesh is None:
@@ -556,21 +713,18 @@ def get_mesh_coordinate_units(mesh_or_expr):
     coord_sys = mesh_or_expr.CoordinateSystem
 
     # Check if mesh has coordinate scaling (units applied)
-    if hasattr(coord_sys, '_scaled') and coord_sys._scaled:
-        if hasattr(coord_sys, '_length_scale'):
+    if hasattr(coord_sys, "_scaled") and coord_sys._scaled:
+        if hasattr(coord_sys, "_length_scale"):
             scale_factor = coord_sys._length_scale
             # Return unit information - internal units are what the mesh expects
             return {
-                'length_scale': scale_factor,
-                'scaled': True,
-                'units': 'model_units'  # Mesh expects internal model units
+                "length_scale": scale_factor,
+                "scaled": True,
+                "units": "model_units",  # Mesh expects internal model units
             }
 
     # No scaling - mesh uses whatever units were used to create it
-    return {
-        'scaled': False,
-        'units': 'native'  # No specific unit system
-    }
+    return {"scaled": False, "units": "native"}  # No specific unit system
 
 
 def convert_coordinates_to_mesh_units(coords, mesh_info, coord_units=None):
@@ -603,7 +757,7 @@ def convert_coordinates_to_mesh_units(coords, mesh_info, coord_units=None):
     coord_values = np.asarray(coords, dtype=np.float64)
 
     # If no mesh info or mesh is not scaled, coordinates must be model units
-    if mesh_info is None or not mesh_info.get('scaled', False):
+    if mesh_info is None or not mesh_info.get("scaled", False):
         if coord_units is not None:
             raise ValueError(
                 f"Cannot convert coordinates with units '{coord_units}' - "
@@ -614,24 +768,25 @@ def convert_coordinates_to_mesh_units(coords, mesh_info, coord_units=None):
     # For scaled meshes with explicit coordinate units
     if coord_units is not None:
         # Convert physical coordinates to model coordinates
-        scale_factor = mesh_info['length_scale']
+        scale_factor = mesh_info["length_scale"]
 
         # Create a temporary quantity for proper unit conversion
         import underworld3 as uw
+
         coord_qty = uw.function.quantity(coord_values, coord_units)
 
         # Convert coordinates to meters (scale factor is always in meters)
         # The scale factor represents the characteristic length in meters
-        coord_in_meters = convert_quantity_units(coord_qty, 'm')
+        coord_in_meters = convert_quantity_units(coord_qty, "m")
 
         # Get the magnitude for division
-        if hasattr(coord_in_meters, '_pint_qty'):
+        if hasattr(coord_in_meters, "_pint_qty"):
             coord_magnitude = coord_in_meters._pint_qty.magnitude
         else:
             coord_magnitude = coord_in_meters
 
         # Handle scale factor magnitude (should already be in meters)
-        if hasattr(scale_factor, '_pint_qty'):
+        if hasattr(scale_factor, "_pint_qty"):
             scale_magnitude = scale_factor._pint_qty.magnitude
         else:
             scale_magnitude = scale_factor  # Already in meters
@@ -661,17 +816,9 @@ def detect_coordinate_units(coords):
     """
     if has_units(coords):
         units_str = get_units(coords)
-        return {
-            'has_units': True,
-            'units': units_str,
-            'is_physical': True
-        }
+        return {"has_units": True, "units": units_str, "is_physical": True}
     else:
-        return {
-            'has_units': False,
-            'units': None,
-            'is_physical': False
-        }
+        return {"has_units": False, "units": None, "is_physical": False}
 
 
 def add_expression_units_to_result(result, expression, mesh_info):
@@ -702,6 +849,7 @@ def add_expression_units_to_result(result, expression, mesh_info):
         if expr_units is not None:
             # Convert result from model units to physical units
             import underworld3 as uw
+
             return uw.function.quantity(result, expr_units)
         else:
             # No units detectable - return plain array (likely dimensionless)
@@ -786,15 +934,15 @@ def convert_quantity_units(quantity, target_units):
     import underworld3 as uw
 
     # Handle UWQuantity
-    if hasattr(quantity, '_has_pint_qty') and quantity._has_pint_qty:
-        if hasattr(quantity, '_pint_qty'):
+    if hasattr(quantity, "_has_pint_qty") and quantity._has_pint_qty:
+        if hasattr(quantity, "_pint_qty"):
             # Convert using Pint
             converted_pint = quantity._pint_qty.to(target_units)
             # Return new UWQuantity
             return uw.function.quantity(converted_pint.magnitude, str(converted_pint.units))
 
     # Handle direct Pint quantity
-    if hasattr(quantity, 'to') and hasattr(quantity, 'units'):
+    if hasattr(quantity, "to") and hasattr(quantity, "units"):
         return quantity.to(target_units)
 
     # Handle plain arrays - assume they're already in target units
@@ -820,53 +968,48 @@ def detect_quantity_units(obj):
         - 'unit_type': str ('UWQuantity', 'Pint', 'metadata', 'none')
     """
     # Check for UWQuantity
-    if hasattr(obj, '_has_pint_qty') and obj._has_pint_qty:
-        if hasattr(obj, '_pint_qty'):
+    if hasattr(obj, "_has_pint_qty") and obj._has_pint_qty:
+        if hasattr(obj, "_pint_qty"):
             units_str = str(obj._pint_qty.units)
             return {
-                'has_units': True,
-                'units': units_str,
-                'is_dimensionless': units_str == 'dimensionless',
-                'unit_type': 'UWQuantity'
+                "has_units": True,
+                "units": units_str,
+                "is_dimensionless": units_str == "dimensionless",
+                "unit_type": "UWQuantity",
             }
 
     # Check for Pint quantity
-    if hasattr(obj, 'units') and hasattr(obj, 'magnitude'):
+    if hasattr(obj, "units") and hasattr(obj, "magnitude"):
         units_str = str(obj.units)
         return {
-            'has_units': True,
-            'units': units_str,
-            'is_dimensionless': units_str == 'dimensionless',
-            'unit_type': 'Pint'
+            "has_units": True,
+            "units": units_str,
+            "is_dimensionless": units_str == "dimensionless",
+            "unit_type": "Pint",
         }
 
     # Check for array with unit metadata
-    if hasattr(obj, '_units'):
+    if hasattr(obj, "_units"):
         units_str = str(obj._units) if obj._units is not None else None
         return {
-            'has_units': units_str is not None,
-            'units': units_str,
-            'is_dimensionless': units_str == 'dimensionless' if units_str else False,
-            'unit_type': 'metadata'
+            "has_units": units_str is not None,
+            "units": units_str,
+            "is_dimensionless": units_str == "dimensionless" if units_str else False,
+            "unit_type": "metadata",
         }
 
     # Check for NDArray with unit information
-    if hasattr(obj, '__array__') and hasattr(obj, '_unit_metadata'):
-        units_str = obj._unit_metadata.get('units')
+    if hasattr(obj, "__array__") and hasattr(obj, "_unit_metadata"):
+        units_str = obj._unit_metadata.get("units")
         return {
-            'has_units': units_str is not None,
-            'units': units_str,
-            'is_dimensionless': units_str == 'dimensionless' if units_str else False,
-            'unit_type': 'metadata'
+            "has_units": units_str is not None,
+            "units": units_str,
+            "is_dimensionless": units_str == "dimensionless" if units_str else False,
+            "unit_type": "metadata",
         }
 
     # No units detected
-    return {
-        'has_units': False,
-        'units': None,
-        'is_dimensionless': False,
-        'unit_type': 'none'
-    }
+    return {"has_units": False, "units": None, "is_dimensionless": False, "unit_type": "none"}
 
 
 def make_dimensionless(quantity, reference_scales):
@@ -888,24 +1031,26 @@ def make_dimensionless(quantity, reference_scales):
     import underworld3 as uw
 
     # Handle Model object
-    if hasattr(reference_scales, 'get_fundamental_scales'):
+    if hasattr(reference_scales, "get_fundamental_scales"):
         scales = reference_scales.get_fundamental_scales()
     else:
         scales = reference_scales
 
     # Get quantity info
     quantity_info = detect_quantity_units(quantity)
-    if not quantity_info['has_units']:
+    if not quantity_info["has_units"]:
         # Already dimensionless
-        return uw.function.quantity(quantity, 'dimensionless')
+        return uw.function.quantity(quantity, "dimensionless")
 
     # Extract Pint quantity
-    if quantity_info['unit_type'] == 'UWQuantity':
+    if quantity_info["unit_type"] == "UWQuantity":
         pint_qty = quantity._pint_qty
-    elif quantity_info['unit_type'] == 'Pint':
+    elif quantity_info["unit_type"] == "Pint":
         pint_qty = quantity
     else:
-        raise ValueError(f"Cannot make dimensionless: unsupported quantity type {quantity_info['unit_type']}")
+        raise ValueError(
+            f"Cannot make dimensionless: unsupported quantity type {quantity_info['unit_type']}"
+        )
 
     # Determine appropriate scale based on quantity dimensions
     dimensionality = pint_qty.dimensionality
@@ -913,44 +1058,47 @@ def make_dimensionless(quantity, reference_scales):
     # Map dimensions to scale factors
     scale_factor = None
 
-    if '[length]' in str(dimensionality):
-        if 'length' in scales:
-            scale_factor = scales['length']
-    elif '[time]' in str(dimensionality):
-        if 'time' in scales:
-            scale_factor = scales['time']
-    elif '[temperature]' in str(dimensionality):
-        if 'temperature' in scales:
-            scale_factor = scales['temperature']
-    elif '[mass]' in str(dimensionality):
-        if 'mass' in scales:
-            scale_factor = scales['mass']
+    if "[length]" in str(dimensionality):
+        if "length" in scales:
+            scale_factor = scales["length"]
+    elif "[time]" in str(dimensionality):
+        if "time" in scales:
+            scale_factor = scales["time"]
+    elif "[temperature]" in str(dimensionality):
+        if "temperature" in scales:
+            scale_factor = scales["temperature"]
+    elif "[mass]" in str(dimensionality):
+        if "mass" in scales:
+            scale_factor = scales["mass"]
 
     if scale_factor is None:
-        raise ValueError(f"No appropriate reference scale found for dimensionality: {dimensionality}")
+        raise ValueError(
+            f"No appropriate reference scale found for dimensionality: {dimensionality}"
+        )
 
     # Convert to dimensionless
-    if hasattr(scale_factor, '_pint_qty'):
+    if hasattr(scale_factor, "_pint_qty"):
         scale_pint = scale_factor._pint_qty
     else:
         scale_pint = scale_factor
 
     # Ensure both quantities use the same registry
     try:
-        dimensionless_value = (pint_qty / scale_pint).to('dimensionless')
+        dimensionless_value = (pint_qty / scale_pint).to("dimensionless")
     except Exception:
         # Handle registry mismatch by converting through magnitude and units
         import underworld3 as uw
-        scale_magnitude = scale_pint.magnitude if hasattr(scale_pint, 'magnitude') else scale_pint
-        scale_units = str(scale_pint.units) if hasattr(scale_pint, 'units') else str(scale_pint)
+
+        scale_magnitude = scale_pint.magnitude if hasattr(scale_pint, "magnitude") else scale_pint
+        scale_units = str(scale_pint.units) if hasattr(scale_pint, "units") else str(scale_pint)
 
         # Create new scale quantity in same registry as input
         registry = pint_qty._REGISTRY
         scale_in_same_registry = registry.Quantity(scale_magnitude, scale_units)
 
-        dimensionless_value = (pint_qty / scale_in_same_registry).to('dimensionless')
+        dimensionless_value = (pint_qty / scale_in_same_registry).to("dimensionless")
 
-    return uw.function.quantity(dimensionless_value.magnitude, 'dimensionless')
+    return uw.function.quantity(dimensionless_value.magnitude, "dimensionless")
 
 
 def convert_array_units(array, from_units, to_units):
@@ -978,9 +1126,9 @@ def convert_array_units(array, from_units, to_units):
     converted_qty = convert_quantity_units(temp_qty, to_units)
 
     # Extract the magnitude
-    if hasattr(converted_qty, '_pint_qty'):
+    if hasattr(converted_qty, "_pint_qty"):
         return converted_qty._pint_qty.magnitude
-    elif hasattr(converted_qty, 'magnitude'):
+    elif hasattr(converted_qty, "magnitude"):
         return converted_qty.magnitude
     else:
         return converted_qty
@@ -1042,6 +1190,7 @@ def add_units(array, units_str):
         Array wrapped with unit information
     """
     import underworld3 as uw
+
     return uw.function.quantity(array, units_str)
 
 
@@ -1067,6 +1216,7 @@ def make_evaluate_unit_aware(original_evaluate_func):
     callable
         Unit-aware version of the function
     """
+
     def unit_aware_evaluate(expr, coords=None, coord_sys=None, coord_units=None, **kwargs):
         """
         Unit-aware wrapper for evaluate function.
@@ -1096,7 +1246,8 @@ def make_evaluate_unit_aware(original_evaluate_func):
         """
         # Auto-extract .sym from MeshVariable for user convenience
         import underworld3 as uw
-        if hasattr(expr, 'sym') and hasattr(expr, 'mesh'):
+
+        if hasattr(expr, "sym") and hasattr(expr, "mesh"):
             # This is likely a MeshVariable - extract the symbolic representation
             expr = expr.sym
 
@@ -1119,9 +1270,10 @@ def make_evaluate_unit_aware(original_evaluate_func):
         if mesh_info is None:
             try:
                 import underworld3 as uw
+
                 model = uw.get_default_model()
                 # Look for any mesh in the model
-                if hasattr(model, '_meshes') and model._meshes:
+                if hasattr(model, "_meshes") and model._meshes:
                     # Get the first mesh (assuming single mesh context for now)
                     first_mesh = next(iter(model._meshes.values()))
                     mesh_info = get_mesh_coordinate_units(first_mesh)
@@ -1133,7 +1285,7 @@ def make_evaluate_unit_aware(original_evaluate_func):
 
         # Call original evaluate function with converted coordinates
         # Filter out coord_units from kwargs since Cython function doesn't accept it
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'coord_units'}
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k != "coord_units"}
         result = original_evaluate_func(expr, internal_coords, coord_sys, **filtered_kwargs)
 
         # Determine what units the result should have based on expression analysis
@@ -1152,3 +1304,89 @@ def make_evaluate_unit_aware(original_evaluate_func):
         return result
 
     return unit_aware_evaluate
+
+
+def _convert_coords_to_si(coords):
+    """
+    Convert coordinate input to numpy array in model coordinates.
+    
+    This function handles unit-aware coordinates by converting them to model units,
+    not SI units. This ensures coordinates work correctly with meshes that use
+    reference quantities for scaling.
+    
+    Accepts:
+    - numpy arrays (assumed to be in model coordinates if no units)
+    - lists/tuples of coordinates (each coordinate can be UWQuantity, Pint Quantity, or float/int)
+    - lists/tuples of tuples (for multiple points)
+    
+    Returns numpy array of shape (n_points, n_dims) with dtype=np.double in model coordinates.
+    """
+    import pint
+    
+    # Get the model for unit conversion
+    model = uw.get_default_model()
+    
+    # Helper function to convert a single coordinate value
+    def convert_single_coord(coord):
+        if isinstance(coord, uw.function.quantities.UWQuantity) or isinstance(coord, pint.Quantity):
+            # Unit-aware coordinate - convert to model units
+            model_qty = model.to_model_units(coord)
+            # Extract the magnitude
+            if hasattr(model_qty, '_pint_qty'):
+                return model_qty._pint_qty.magnitude
+            elif hasattr(model_qty, 'value'):
+                return float(model_qty.value)
+            else:
+                # Conversion returned plain number - use it
+                return float(model_qty)
+        elif isinstance(coord, (float, int, np.number)):
+            # Plain number - assume it's already in model coordinates
+            return float(coord)
+        else:
+            raise TypeError(f"Unsupported coordinate type: {type(coord)}. "
+                          f"Expected UWQuantity, pint.Quantity, or numeric value.")
+    
+    # If already numpy array with correct dtype, assume it's in model coordinates
+    if isinstance(coords, np.ndarray):
+        if coords.dtype == np.double:
+            return coords
+        else:
+            return np.array(coords, dtype=np.double)
+    
+    # Convert list/tuple input
+    if isinstance(coords, (list, tuple)):
+        # Check if it's a list of coordinates or a single point
+        if len(coords) > 0:
+            first_elem = coords[0]
+            
+            # Multiple points: [(x1, y1), (x2, y2), ...]
+            if isinstance(first_elem, (list, tuple)):
+                model_coords = []
+                for point in coords:
+                    model_point = []
+                    for coord in point:
+                        model_value = convert_single_coord(coord)
+                        model_point.append(model_value)
+                    model_coords.append(model_point)
+                return np.array(model_coords, dtype=np.double)
+            else:
+                # Flat list of coordinates - could be single point [x, y] or [x, y, z]
+                # Check if all elements are coordinate values (not lists/tuples)
+                all_coords = all(
+                    isinstance(elem, (uw.function.quantities.UWQuantity, pint.Quantity, float, int, np.number))
+                    for elem in coords
+                )
+                
+                if all_coords and len(coords) in [2, 3]:
+                    # This is a single point like [x, y] or [x, y, z]
+                    model_point = []
+                    for coord in coords:
+                        model_value = convert_single_coord(coord)
+                        model_point.append(model_value)
+                    # Return as 2D array with single point
+                    return np.array([model_point], dtype=np.double)
+                else:
+                    raise TypeError(f"Unable to parse coordinate format. Expected list of tuples like "
+                                  f"[(x1,y1), (x2,y2)] or single point like [x, y].")
+    
+    raise TypeError(f"coords must be numpy array, list, or tuple. Got {type(coords)}")

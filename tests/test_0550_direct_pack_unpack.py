@@ -20,9 +20,7 @@ def test_swarm_variable_direct_methods():
     from underworld3.meshing import UnstructuredSimplexBox
 
     # Create test environment with correct ordering
-    mesh = UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0
-    )
+    mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0)
     test_swarm = swarm.Swarm(mesh)
 
     # Define variables BEFORE populating (PETSc requirement)
@@ -66,9 +64,7 @@ def test_swarm_variable_direct_methods():
     vector_var.array[:, 0, 1] = test_vector_values[:, 1]
 
     # Read back and verify
-    result_vector = np.column_stack(
-        [vector_var.array[:, 0, 0], vector_var.array[:, 0, 1]]
-    )
+    result_vector = np.column_stack([vector_var.array[:, 0, 0], vector_var.array[:, 0, 1]])
     np.testing.assert_array_almost_equal(
         test_vector_values,
         result_vector,
@@ -165,7 +161,7 @@ def test_mesh_variable_array_interface():
             test_values = np.random.rand(n_nodes) * 10.0
             mesh_var.array[:, 0, 0] = test_values
 
-            # Read back using array interface (packed format) 
+            # Read back using array interface (packed format)
             result_values_array = mesh_var.array[:, 0, 0]
             np.testing.assert_array_almost_equal(
                 test_values,
@@ -174,11 +170,11 @@ def test_mesh_variable_array_interface():
                 err_msg="MeshVariable array assignment should preserve values",
             )
             print("✅ MeshVariable array assignment works")
-            
+
             # Also test that data interface gives different shape (unpacked format)
             with mesh.access(mesh_var):
                 result_values_data = mesh_var.data[:, 0].copy()
-                
+
             # Both should have same values but different access patterns
             np.testing.assert_array_almost_equal(
                 test_values,

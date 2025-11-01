@@ -16,18 +16,45 @@ include "../cython/petsc_extras.pxi"
 
 def _convert_coords_to_si(coords):
     """
-    Convert coordinate input to numpy array in SI base units.
+    Convert coordinate input to numpy array in model coordinates.
+
+    This function handles unit-aware coordinates by converting them to model units,
+    not SI units. This ensures coordinates work correctly with meshes that use
+    reference quantities for scaling.
 
     Accepts:
-    - numpy arrays (returned as-is if dtype is double, converted otherwise)
+    - numpy arrays (assumed to be in model coordinates if no units)
     - lists/tuples of coordinates (each coordinate can be UWQuantity, Pint Quantity, or float/int)
     - lists/tuples of tuples (for multiple points)
 
-    Returns numpy array of shape (n_points, n_dims) with dtype=np.double in SI base units.
+    Returns numpy array of shape (n_points, n_dims) with dtype=np.double in model coordinates.
     """
     import pint
 
-    # If already numpy array with correct dtype, return as-is
+    # Get the model for unit conversion
+    model = uw.get_default_model()
+
+    # Helper function to convert a single coordinate value
+    def convert_single_coord(coord):
+        if isinstance(coord, uw.function.quantities.UWQuantity) or isinstance(coord, pint.Quantity):
+            # Unit-aware coordinate - convert to model units
+            model_qty = model.to_model_units(coord)
+            # Extract the magnitude
+            if hasattr(model_qty, '_pint_qty'):
+                return model_qty._pint_qty.magnitude
+            elif hasattr(model_qty, 'value'):
+                return float(model_qty.value)
+            else:
+                # Conversion returned plain number - use it
+                return float(model_qty)
+        elif isinstance(coord, (float, int, np.number)):
+            # Plain number - assume it's already in model coordinates
+            return float(coord)
+        else:
+            raise TypeError(f"Unsupported coordinate type: {type(coord)}. "
+                          f"Expected UWQuantity, pint.Quantity, or numeric value.")
+
+    # If already numpy array with correct dtype, assume it's in model coordinates
     if isinstance(coords, np.ndarray):
         if coords.dtype == np.double:
             return coords
@@ -40,27 +67,16 @@ def _convert_coords_to_si(coords):
         if len(coords) > 0:
             first_elem = coords[0]
 
-            # Single point: [(x, y)] or [(x, y, z)]
+            # Multiple points: [(x1, y1), (x2, y2), ...]
             if isinstance(first_elem, (list, tuple)):
-                si_coords = []
+                model_coords = []
                 for point in coords:
-                    si_point = []
+                    model_point = []
                     for coord in point:
-                        if isinstance(coord, uw.function.quantities.UWQuantity) and hasattr(coord, '_pint_qty'):
-                            # UWQuantity - convert to SI base units
-                            si_value = coord._pint_qty.to_base_units().magnitude
-                        elif isinstance(coord, pint.Quantity):
-                            # Direct Pint Quantity - convert to SI base units
-                            si_value = coord.to_base_units().magnitude
-                        elif isinstance(coord, (float, int, np.number)):
-                            # Already dimensionless
-                            si_value = float(coord)
-                        else:
-                            raise TypeError(f"Unsupported coordinate type: {type(coord)}. "
-                                          f"Expected UWQuantity, pint.Quantity, or numeric value.")
-                        si_point.append(si_value)
-                    si_coords.append(si_point)
-                return np.array(si_coords, dtype=np.double)
+                        model_value = convert_single_coord(coord)
+                        model_point.append(model_value)
+                    model_coords.append(model_point)
+                return np.array(model_coords, dtype=np.double)
             else:
                 # Flat list of coordinates - could be single point [x, y] or [x, y, z]
                 # Check if all elements are coordinate values (not lists/tuples)
@@ -71,20 +87,12 @@ def _convert_coords_to_si(coords):
 
                 if all_coords and len(coords) in [2, 3]:
                     # This is a single point like [x, y] or [x, y, z]
-                    si_point = []
+                    model_point = []
                     for coord in coords:
-                        if isinstance(coord, uw.function.quantities.UWQuantity) and hasattr(coord, '_pint_qty'):
-                            si_value = coord._pint_qty.to_base_units().magnitude
-                        elif isinstance(coord, pint.Quantity):
-                            si_value = coord.to_base_units().magnitude
-                        elif isinstance(coord, (float, int, np.number)):
-                            si_value = float(coord)
-                        else:
-                            raise TypeError(f"Unsupported coordinate type: {type(coord)}. "
-                                          f"Expected UWQuantity, pint.Quantity, or numeric value.")
-                        si_point.append(si_value)
+                        model_value = convert_single_coord(coord)
+                        model_point.append(model_value)
                     # Return as 2D array with single point
-                    return np.array([si_point], dtype=np.double)
+                    return np.array([model_point], dtype=np.double)
                 else:
                     raise TypeError(f"Unable to parse coordinate format. Expected list of tuples like "
                                   f"[(x1,y1), (x2,y2)] or single point like [x, y].")

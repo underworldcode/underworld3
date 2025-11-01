@@ -3246,4 +3246,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         min_dx = self.mesh.get_min_radius()
-        return min_dx / max_magvel_glob
+        dt_nd = min_dx / max_magvel_glob
+
+        # Apply unit-aware scaling when model has units
+        from underworld3.systems.solvers import _apply_unit_aware_scaling
+        return _apply_unit_aware_scaling(dt_nd, self.u, self.mesh)

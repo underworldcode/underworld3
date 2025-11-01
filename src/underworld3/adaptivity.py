@@ -82,6 +82,7 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
 
 # dmAdaptLabel - but first you need to call dmplex set default distribute False
 
+
 def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=False):
     # Create / use a field on the old mesh to hold the metric
     # Perhaps that should be a user-definition
@@ -147,9 +148,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     with swarm0.access():
         swarm_data = swarm0._particle_coordinates.data.copy()
         for swarmVar in swarmVarList:
-            swarm_data = np.hstack(
-                (swarm_data, np.ascontiguousarray(swarmVar.data.astype(float)))
-            )
+            swarm_data = np.hstack((swarm_data, np.ascontiguousarray(swarmVar.data.astype(float))))
 
     s_coords0 = np.ascontiguousarray(swarm_data[:, 0 : mesh0.dim])
 
@@ -254,9 +253,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
         fieldData = varField.reshape(-1, varCpts)
 
         if n_found > 0:
-            fieldData[:, :] = swarm_data[found, offset : offset + varCpts].astype(
-                swarmVar.dtype
-            )
+            fieldData[:, :] = swarm_data[found, offset : offset + varCpts].astype(swarmVar.dtype)
 
         swarm1.dm.restoreField(swarmVar.clean_name)
         offset += varCpts
@@ -270,7 +267,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     cell = mesh1.get_closest_local_cells(global_unallocated_coords)
     # found1 = np.where(cell >= 0)[0]
     # not_found1 = np.where(cell == -1)[0]s
-    cell_arr = np.atleast_1d(cell)              
+    cell_arr = np.atleast_1d(cell)
     found1 = np.where(cell_arr >= 0)[0]
     not_found1 = np.where(cell_arr == -1)[0]
 
@@ -278,8 +275,8 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     n_not_found1 = not_found1.shape[0]
 
     if n_found1 > 0:
-        psize = swarm1.dm.getLocalSize()        
-        adds = n_found1     # swarm is not blank, so only need to use N for addNPoints
+        psize = swarm1.dm.getLocalSize()
+        adds = n_found1  # swarm is not blank, so only need to use N for addNPoints
 
         swarm1.dm.addNPoints(adds)
 
@@ -309,9 +306,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
         fieldData = varField.reshape(-1, varCpts)
 
         if n_found1 > 0:
-            fieldData[psize + 1 :, :] = global_unallocated_data[
-                found1, offset : offset + varCpts
-            ]
+            fieldData[psize + 1 :, :] = global_unallocated_data[found1, offset : offset + varCpts]
 
         swarm1.dm.restoreField(swarmVar.clean_name)
         offset += varCpts
@@ -369,6 +364,7 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
 ## Could also navigate there by letting the particles walk through the mesh towards
 ## their goal (if particle-restore works with funny mesh-holes)
 
+
 def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
     """Map a meshVar on mesh0 to a meshVar on mesh1 using
     an intermediary (temporary) swarm"""
@@ -383,28 +379,23 @@ def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
     var_cpts = meshVar0.num_components
 
     tmp_varS = uw.swarm.SwarmVariable(
-        var_name, tmp_swarm, size = (1,var_cpts), vtype=uw.VarType.MATRIX, _proxy=False
+        var_name, tmp_swarm, size=(1, var_cpts), vtype=uw.VarType.MATRIX, _proxy=False
     )
 
     # Maybe 3+ if var is higher order ??
     tmp_swarm.populate(fill_param=3)
-
 
     # Set data on the swarmVar
 
     # print(f"Map data to swarm (rbf) - points = {tmp_swarm.dm.getSize()}", flush=True)
 
     with tmp_swarm.access(tmp_varS):
-        tmp_varS.data[...] = meshVar0.rbf_interpolate(
-            tmp_swarm._particle_coordinates.data
-        )
+        tmp_varS.data[...] = meshVar0.rbf_interpolate(tmp_swarm._particle_coordinates.data)
 
     # print(f"Distribute swarm", flush=True)
 
     # Now ship this out to the other mesh via the tmp swarm
-    tmp_swarm1 = mesh2mesh_swarm(
-        mesh0, mesh1, tmp_swarm, [tmp_varS], proxy=False, verbose=verbose
-    )
+    tmp_swarm1 = mesh2mesh_swarm(mesh0, mesh1, tmp_swarm, [tmp_varS], proxy=False, verbose=verbose)
 
     if hasattr(tmp_swarm1, "_meshVar"):
         raise RuntimeError("Swarm should not have a proxy on it !")

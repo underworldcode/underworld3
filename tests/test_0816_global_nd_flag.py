@@ -27,8 +27,9 @@ def test_global_flag_default_state():
     uw.use_nondimensional_scaling(False)
 
     # Check default state
-    assert uw.is_nondimensional_scaling_active() == False, \
-        "Global ND scaling flag should default to False"
+    assert (
+        uw.is_nondimensional_scaling_active() == False
+    ), "Global ND scaling flag should default to False"
 
 
 def test_global_flag_can_be_enabled():
@@ -38,8 +39,9 @@ def test_global_flag_can_be_enabled():
     # Enable scaling
     uw.use_nondimensional_scaling(True)
 
-    assert uw.is_nondimensional_scaling_active() == True, \
-        "Global ND scaling flag should be True after enabling"
+    assert (
+        uw.is_nondimensional_scaling_active() == True
+    ), "Global ND scaling flag should be True after enabling"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -52,8 +54,9 @@ def test_global_flag_can_be_disabled():
     # Disable scaling
     uw.use_nondimensional_scaling(False)
 
-    assert uw.is_nondimensional_scaling_active() == False, \
-        "Global ND scaling flag should be False after disabling"
+    assert (
+        uw.is_nondimensional_scaling_active() == False
+    ), "Global ND scaling flag should be False after disabling"
 
 
 def test_global_flag_toggle():
@@ -82,17 +85,13 @@ def test_unwrap_without_scaling():
     uw.use_nondimensional_scaling(False)
 
     model = uw.get_default_model()
-    model.set_reference_quantities(
-        temperature_diff=uw.quantity(1000, "kelvin")
-    )
+    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     T.set_reference_scale(1000.0)
 
     # Unwrap with scaling DISABLED
@@ -103,8 +102,9 @@ def test_unwrap_without_scaling():
 
     # Should NOT contain scaling factor
     unwrap_str = str(unwrapped_scalar)
-    assert "1000" not in unwrap_str and "0.001" not in unwrap_str, \
-        f"Unwrapped expression should NOT contain scaling factor when flag=False: {unwrap_str}"
+    assert (
+        "1000" not in unwrap_str and "0.001" not in unwrap_str
+    ), f"Unwrapped expression should NOT contain scaling factor when flag=False: {unwrap_str}"
 
 
 def test_unwrap_with_scaling():
@@ -113,17 +113,13 @@ def test_unwrap_with_scaling():
     uw.use_nondimensional_scaling(True)  # Enable scaling
 
     model = uw.get_default_model()
-    model.set_reference_quantities(
-        temperature_diff=uw.quantity(1000, "kelvin")
-    )
+    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     T.set_reference_scale(1000.0)
 
     # Unwrap with scaling ENABLED
@@ -134,8 +130,9 @@ def test_unwrap_with_scaling():
 
     # Should contain scaling factor (1/1000)
     unwrap_str = str(unwrapped_scalar)
-    assert "1000" in unwrap_str or "0.001" in unwrap_str, \
-        f"Unwrapped expression should contain scaling factor when flag=True: {unwrap_str}"
+    assert (
+        "1000" in unwrap_str or "0.001" in unwrap_str
+    ), f"Unwrapped expression should contain scaling factor when flag=True: {unwrap_str}"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -149,29 +146,27 @@ def test_scaling_coefficient_always_computed():
     uw.use_nondimensional_scaling(False)
 
     model = uw.get_default_model()
-    model.set_reference_quantities(
-        temperature_diff=uw.quantity(1000, "kelvin")
-    )
+    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
     T.set_reference_scale(1000.0)
 
     # Scaling coefficient should be set even when flag is False
-    assert T.scaling_coefficient == 1000.0, \
-        "Scaling coefficient should be computed regardless of flag state"
+    assert (
+        T.scaling_coefficient == 1000.0
+    ), "Scaling coefficient should be computed regardless of flag state"
 
     # Now enable flag
     uw.use_nondimensional_scaling(True)
 
     # Coefficient should still be the same
-    assert T.scaling_coefficient == 1000.0, \
-        "Scaling coefficient should not change when flag changes"
+    assert (
+        T.scaling_coefficient == 1000.0
+    ), "Scaling coefficient should not change when flag changes"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -184,18 +179,15 @@ def test_multiple_variables_scaling():
 
     model = uw.get_default_model()
     model.set_reference_quantities(
-        temperature_diff=uw.quantity(1000, "kelvin"),
-        domain_depth=uw.quantity(100, "km")
+        temperature_diff=uw.quantity(1000, "kelvin"), domain_depth=uw.quantity(100, "km")
     )
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
-    p = uw.discretisation.MeshVariable('p', mesh, 1, units='pascal')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
+    p = uw.discretisation.MeshVariable("p", mesh, 1, units="pascal")
 
     T.set_reference_scale(1000.0)
     p.set_reference_scale(1e9)
@@ -212,8 +204,9 @@ def test_multiple_variables_scaling():
     # p scale: 1/1e9 = 1e-9
     # Combined: 1e-3 * 1e-9 = 1e-12
     unwrap_str = str(unwrapped_scalar)
-    assert ("e-" in unwrap_str or "1.0e-12" in unwrap_str), \
-        f"Scaling factors (combined 1e-12) should be in expression: {unwrap_str}"
+    assert (
+        "e-" in unwrap_str or "1.0e-12" in unwrap_str
+    ), f"Scaling factors (combined 1e-12) should be in expression: {unwrap_str}"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -222,12 +215,12 @@ def test_multiple_variables_scaling():
 def test_backward_compatibility():
     """Test that old _is_scaling_active() function still works."""
     uw.use_nondimensional_scaling(False)
-    assert uw._is_scaling_active() == False, \
-        "Legacy _is_scaling_active() should work"
+    assert uw._is_scaling_active() == False, "Legacy _is_scaling_active() should work"
 
     uw.use_nondimensional_scaling(True)
-    assert uw._is_scaling_active() == True, \
-        "Legacy _is_scaling_active() should reflect current state"
+    assert (
+        uw._is_scaling_active() == True
+    ), "Legacy _is_scaling_active() should reflect current state"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -245,8 +238,9 @@ def test_flag_state_persistence():
     model = uw.get_default_model()
 
     # Flag should still be True
-    assert uw.is_nondimensional_scaling_active() == True, \
-        "Flag state should persist across function calls"
+    assert (
+        uw.is_nondimensional_scaling_active() == True
+    ), "Flag state should persist across function calls"
 
     # Cleanup
     uw.use_nondimensional_scaling(False)
@@ -258,17 +252,16 @@ def test_no_scaling_without_reference_quantities():
     uw.use_nondimensional_scaling(True)  # Enable flag
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
     # Create variable WITHOUT setting reference quantities
-    T = uw.discretisation.MeshVariable('T', mesh, 1, units='kelvin')
+    T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
 
     # Should have default scaling coefficient = 1.0
-    assert T.scaling_coefficient == 1.0, \
-        "Default scaling coefficient should be 1.0 without reference quantities"
+    assert (
+        T.scaling_coefficient == 1.0
+    ), "Default scaling coefficient should be 1.0 without reference quantities"
 
     # Unwrap should work without error (but no scaling applied)
     try:
@@ -290,17 +283,13 @@ def test_vector_variable_scaling():
     uw.use_nondimensional_scaling(True)
 
     model = uw.get_default_model()
-    model.set_reference_quantities(
-        plate_velocity=uw.quantity(5, "cm/year")
-    )
+    model.set_reference_quantities(plate_velocity=uw.quantity(5, "cm/year"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(1.0, 1.0),
-        cellSize=0.5
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
     )
 
-    v = uw.discretisation.MeshVariable('v', mesh, mesh.dim, units='meter/second')
+    v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, units="meter/second")
     # Auto-derive scale from plate_velocity
     # 5 cm/year ≈ 1.58e-9 m/s
 

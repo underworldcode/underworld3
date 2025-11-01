@@ -11,9 +11,7 @@ def setup_enhanced_array_test():
     from underworld3.meshing import UnstructuredSimplexBox
 
     # Create a simple mesh
-    mesh = UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 16.0
-    )
+    mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 16.0)
 
     # Create swarm
     test_swarm = swarm.Swarm(mesh)

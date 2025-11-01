@@ -20,7 +20,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -106,7 +106,7 @@ class TestAutomaticSympificationInMathOperations:
             lambda a, b: a - b,
             lambda a, b: a * b,
             lambda a, b: a / b,
-            lambda a, b: a ** 2,  # Powers
+            lambda a, b: a**2,  # Powers
         ]
 
         for op in operations:
@@ -125,7 +125,7 @@ class TestAutomaticSympificationInMathOperations:
         assert result1 is not None
 
         # Mix with SymPy symbols
-        x = sympy.Symbol('x')
+        x = sympy.Symbol("x")
         result2 = expr * x
         assert result2 is not None
 
@@ -154,8 +154,10 @@ class TestCoordinateSystemRegression:
     def test_spherical_coordinate_expressions(self):
         """Test the exact pattern that was failing in spherical coordinates."""
         # Recreate the failing spherical coordinate pattern
-        r = uw.function.expression(r"r", sym=sympy.sqrt(sympy.Symbol('x')**2 + sympy.Symbol('y')**2))
-        z = uw.function.expression(r"z", sym=sympy.Symbol('z'))
+        r = uw.function.expression(
+            r"r", sym=sympy.sqrt(sympy.Symbol("x") ** 2 + sympy.Symbol("y") ** 2)
+        )
+        z = uw.function.expression(r"z", sym=sympy.Symbol("z"))
 
         # This division was causing SympifyError before the fix
         try:
@@ -175,9 +177,7 @@ class TestCoordinateSystemRegression:
         try:
             # Create a mesh to test coordinate systems
             mesh = uw.meshing.StructuredQuadBox(
-                elementRes=(4, 4),
-                minCoords=(0, 0),
-                maxCoords=(1, 1)
+                elementRes=(4, 4), minCoords=(0, 0), maxCoords=(1, 1)
             )
 
             # Access coordinate expressions (this uses sympification internally)

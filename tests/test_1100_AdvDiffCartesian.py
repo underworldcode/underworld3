@@ -136,54 +136,61 @@ def test_advDiff_boxmesh(mesh):
     ### moderate atol due to evaluating onto points
     assert np.allclose(T_UW, T_analytical, atol=0.05)
 
+
 # %%
 if uw.is_notebook:
-        import matplotlib.pyplot as plt
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-        
-        # Plot 1: Temperature field
-        coords = T.coords
-        T_vals = T.data.flatten()
-        scatter1 = ax1.scatter(coords[:, 0], coords[:, 1], c=T_vals, 
-                              s=15, cmap="coolwarm", alpha=0.8, vmin=0, vmax=1)
-        
-        # Add velocity vectors
-        vel_coords = v.coords
-        vel_data = v.data
-        skip = max(1, len(vel_coords) // 50)
-        ax1.quiver(vel_coords[::skip, 0], vel_coords[::skip, 1], 
-                  vel_data[::skip, 0], vel_data[::skip, 1], 
-                  alpha=0.5, scale=velocity*50)
-        
-        ax1.set_xlabel("x")
-        ax1.set_ylabel("y")
-        ax1.set_title(f"Advection-Diffusion (t={t_end:.2e}, v={velocity:.3f}, κ={kappa})")
-        ax1.set_aspect("equal")
-        plt.colorbar(scatter1, ax=ax1, label="Temperature")
-        
-        # Plot 2: Profile comparison
-        ax2.plot(sample_x, T_analytical, 'r-', linewidth=2, label='Analytical')
-        ax2.plot(sample_x, T_UW, 'bo', markersize=5, alpha=0.6, label='Numerical')
-        
-        # Show error
-        error = np.abs(T_UW - T_analytical)
-        ax2_twin = ax2.twinx()
-        ax2_twin.plot(sample_x, error, 'g--', alpha=0.5, label='Error')
-        ax2_twin.set_ylabel('Absolute Error', color='g')
-        ax2_twin.tick_params(axis='y', labelcolor='g')
-        
-        ax2.set_xlabel("x coordinate (at y=0.5)")
-        ax2.set_ylabel("Temperature")
-        ax2.set_title(f"Profile Comparison (max error: {error.max():.3e})")
-        ax2.legend(loc='upper left')
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
+    import matplotlib.pyplot as plt
 
-        del mesh
-        del adv_diff
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Plot 1: Temperature field
+    coords = T.coords
+    T_vals = T.data.flatten()
+    scatter1 = ax1.scatter(
+        coords[:, 0], coords[:, 1], c=T_vals, s=15, cmap="coolwarm", alpha=0.8, vmin=0, vmax=1
+    )
+
+    # Add velocity vectors
+    vel_coords = v.coords
+    vel_data = v.data
+    skip = max(1, len(vel_coords) // 50)
+    ax1.quiver(
+        vel_coords[::skip, 0],
+        vel_coords[::skip, 1],
+        vel_data[::skip, 0],
+        vel_data[::skip, 1],
+        alpha=0.5,
+        scale=velocity * 50,
+    )
+
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_title(f"Advection-Diffusion (t={t_end:.2e}, v={velocity:.3f}, κ={kappa})")
+    ax1.set_aspect("equal")
+    plt.colorbar(scatter1, ax=ax1, label="Temperature")
+
+    # Plot 2: Profile comparison
+    ax2.plot(sample_x, T_analytical, "r-", linewidth=2, label="Analytical")
+    ax2.plot(sample_x, T_UW, "bo", markersize=5, alpha=0.6, label="Numerical")
+
+    # Show error
+    error = np.abs(T_UW - T_analytical)
+    ax2_twin = ax2.twinx()
+    ax2_twin.plot(sample_x, error, "g--", alpha=0.5, label="Error")
+    ax2_twin.set_ylabel("Absolute Error", color="g")
+    ax2_twin.tick_params(axis="y", labelcolor="g")
+
+    ax2.set_xlabel("x coordinate (at y=0.5)")
+    ax2.set_ylabel("Temperature")
+    ax2.set_title(f"Profile Comparison (max error: {error.max():.3e})")
+    ax2.legend(loc="upper left")
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    del mesh
+    del adv_diff
 
 
 del meshStructuredQuadBox
