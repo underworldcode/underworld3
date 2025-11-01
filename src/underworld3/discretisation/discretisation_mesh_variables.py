@@ -2344,22 +2344,25 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         When mesh has reference quantities set, returns unit-aware coordinates in meters.
         """
-        # Get dimensionless [0-1] coordinates for this variable's specific DOF locations
-        coords_dimensionless = self.mesh._get_coords_for_var(self)
+        # Get non-dimensional [0-1] model coordinates for this variable's specific DOF locations
+        coords_nondim = self.mesh._get_coords_for_var(self)
 
-        # If mesh has units, scale to physical coordinates with unit metadata
+        # If mesh has units, dimensionalise to physical coordinates
         if self.mesh.units is not None:
-            # Scale from [0-1] to physical space using mesh bounds
-            min_radius = self.mesh.get_min_radius()
-            max_radius = self.mesh.get_max_radius()
-            coords_scaled = min_radius + coords_dimensionless * (max_radius - min_radius)
+            import underworld3 as uw
 
-            # Wrap with unit-aware array
-            from underworld3.utilities.unit_aware_array import UnitAwareArray
-            return UnitAwareArray(coords_scaled, units="meter")
+            # Dimensionalise using the proper units system
+            # Specify length dimensionality since coords have dimension [length]
+            length_dimensionality = {'[length]': 1}
+            coords_dimensional = uw.dimensionalise(
+                coords_nondim,
+                target_dimensionality=length_dimensionality
+            )
+
+            return coords_dimensional
         else:
-            # No units - return dimensionless coordinates
-            return coords_dimensionless
+            # No units - return non-dimensional coordinates
+            return coords_nondim
 
     # vector calculus routines - the advantage of using these inbuilt routines is
     # that they are tied to the appropriate mesh definition.
