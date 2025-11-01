@@ -135,7 +135,14 @@ import underworld3.parameters
 import underworld3.materials
 import underworld3.discretisation.persistence
 
-from .model import Model, create_model, get_default_model, reset_default_model, ThermalConvectionConfig, create_thermal_convection_model
+from .model import (
+    Model,
+    create_model,
+    get_default_model,
+    reset_default_model,
+    ThermalConvectionConfig,
+    create_thermal_convection_model,
+)
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
@@ -152,20 +159,17 @@ import underworld3.scaling
 import underworld3.visualisation
 import numpy as _np
 
-# Units support
-from .utilities import (
-    UnitAwareMixin,
-    UnitAwareMathematicalMixin,
-    UnitsBackend,
-    PintBackend,
-    make_units_aware,
-)
+# REMOVED: Deprecated Units mixin system (2025-11-01)
+# The UnitAwareMixin system was never integrated and is now deprecated
+# Active implementation: discretisation/enhanced_variables.py
+# Historical code preserved in: utilities/units_mixin.py (not exported)
 
 # High-level units utilities
 from . import units as _units_module  # Keep module for internal use
 from .units import (
     check_units_consistency,
     get_dimensionality,
+    assert_dimensionality,  # General type-safety gatekeeper for dimensionality
     units_of,
     non_dimensionalise,
     dimensionalise,
@@ -185,6 +189,7 @@ from .function.unit_conversion import get_units
 # Make units registry easily accessible (remove scaling terminology)
 # Users can now do uw.units.K, uw.units.Pa, etc. instead of uw.scaling.units.K
 from .scaling import units
+
 
 # Add view() method to units registry following established pattern
 def _units_view():
@@ -225,7 +230,9 @@ model.set_reference_quantities(
         # Fallback for non-Jupyter environments
         print("Underworld3 Units Registry")
         print("=" * 30)
-        print(f"Total units available: {len([attr for attr in dir(units) if not attr.startswith('_')])}")
+        print(
+            f"Total units available: {len([attr for attr in dir(units) if not attr.startswith('_')])}"
+        )
         print("\nCommon units:")
         print("  Temperature: uw.units.K, uw.units.celsius")
         print("  Pressure: uw.units.Pa, uw.units.bar")
@@ -234,6 +241,7 @@ model.set_reference_quantities(
         print("\nUsage:")
         print("  temperature = 1500 * uw.units.K")
         print("  viscosity = 1e21 * uw.units.Pa * uw.units.s")
+
 
 # Attach view method to units registry
 units.view = _units_view
@@ -326,11 +334,49 @@ def is_nondimensional_scaling_active():
     return _USE_NONDIMENSIONAL_SCALING
 
 
+@contextmanager
+def nondimensional_scaling_context(enabled=True):
+    """
+    Context manager to temporarily set non-dimensional scaling state.
+
+    Automatically restores the previous state when exiting the context.
+    This is useful for operations that need to temporarily work in
+    non-dimensional space (like semi-Lagrangian advection) without
+    affecting the global state.
+
+    Parameters
+    ----------
+    enabled : bool, default=True
+        True to enable non-dimensional scaling within context
+
+    Examples
+    --------
+    >>> # Temporarily enable non-dimensional mode
+    >>> with uw.nondimensional_scaling_context(True):
+    ...     # evaluate() returns non-dimensional results here
+    ...     velocity_nd = uw.function.evaluate(u.sym, coords)
+    >>> # Original state restored automatically
+
+    See Also
+    --------
+    use_nondimensional_scaling : Permanently set scaling state
+    is_nondimensional_scaling_active : Check current state
+    """
+    global _USE_NONDIMENSIONAL_SCALING
+    old_value = _USE_NONDIMENSIONAL_SCALING
+    _USE_NONDIMENSIONAL_SCALING = bool(enabled)
+    try:
+        yield
+    finally:
+        _USE_NONDIMENSIONAL_SCALING = old_value
+
+
 # ============================================================================
 # INTERNAL COMPATIBILITY - Do not use directly
 # ============================================================================
 # These exist for backward compatibility with old scaling experiments.
 # New code should use use_nondimensional_scaling() instead.
+
 
 @contextmanager
 def _apply_scaling():
@@ -343,12 +389,17 @@ def _apply_scaling():
     finally:
         _USE_NONDIMENSIONAL_SCALING = old_value
 
+
 def _is_scaling_active():
     """Internal check - DEPRECATED, use is_nondimensional_scaling_active() instead."""
     return _USE_NONDIMENSIONAL_SCALING
 
+
 # Backward compatibility aliases (deprecated)
-scaled_symbols = _apply_scaling  # For backward compatibility - use use_nondimensional_scaling() instead
+scaled_symbols = (
+    _apply_scaling  # For backward compatibility - use use_nondimensional_scaling() instead
+)
+
 
 def unwrap(fn, keep_constants=True, return_self=True, apply_scaling=False):
     """

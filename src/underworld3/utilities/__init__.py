@@ -25,17 +25,22 @@ from .create_dmplex_from_medit import create_dmplex_from_medit
 from .geometry_tools import *
 from .nd_array_callback import NDArray_With_Callback
 from .mathematical_mixin import MathematicalMixin
+
+# DEPRECATED: Units mixin system - preserved for historical reference only
+# These imports will trigger DeprecationWarning
+# DO NOT USE - see enhanced_variables.py for active units implementation
 from .units_mixin import (
-    UnitAwareMixin,
-    UnitAwareMathematicalMixin,
-    UnitsBackend,
-    PintBackend,
-    make_units_aware
+    UnitAwareMixin,           # DEPRECATED
+    UnitAwareMathematicalMixin,  # DEPRECATED
+    UnitsBackend,             # DEPRECATED
+    PintBackend,              # DEPRECATED
+    make_units_aware,         # DEPRECATED
 )
+
 from .unit_aware_array import (
     UnitAwareArray,
     create_unit_aware_array,
     zeros_with_units,
     ones_with_units,
-    full_with_units
+    full_with_units,
 )
