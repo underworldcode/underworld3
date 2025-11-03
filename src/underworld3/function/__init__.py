@@ -1,8 +1,8 @@
 from . import analytic
 from ._function import (
     UnderworldFunction,
-    global_evaluate as _global_evaluate_original,
-    evaluate as _evaluate_original,
+    global_evaluate_nd as _global_evaluate_nd,
+    evaluate_nd as _evaluate_nd,
     dm_swarm_get_migrate_type,
     dm_swarm_set_migrate_type,
     _dmswarm_get_migrate_type,
@@ -23,182 +23,15 @@ from .unit_conversion import (
     convert_evaluation_result,
     add_units,
     has_units,
-    get_units,
+    # NOTE: get_units has been moved to units module - use uw.get_units() or import from units
 )
 
 
-# Wrap evaluate to return unit-aware objects
-def evaluate(expr, coords, **kwargs):
-    """
-    Evaluate expression at coordinates, returning unit-aware results.
-
-    This function wraps the Cython evaluate implementation to automatically
-    return UWQuantity or UnitAwareArray objects when the expression has units.
-
-    When non-dimensional scaling is active (via use_nondimensional_scaling(True)),
-    returns raw non-dimensional results without unit wrapping, as required by
-    solver operations like semi-Lagrangian advection.
-
-    **Smart Unit Handling**: This function intelligently handles coordinates with
-    or without units. If dimensional coordinates are passed (e.g., from T.coords
-    or mesh.X.coords), they are automatically converted to non-dimensional form
-    for evaluation. The symbolic expressions remain purely dimensionless.
-
-    Parameters
-    ----------
-    expr : sympy expression or UWexpression
-        Expression to evaluate
-    coords : array-like
-        Coordinates at which to evaluate. Can be dimensional (with units) or
-        non-dimensional (plain arrays). Both work transparently.
-    **kwargs : dict
-        Additional arguments passed to underlying evaluate function
-
-    Returns
-    -------
-    UWQuantity, UnitAwareArray, or ndarray
-        - If non-dimensional scaling is active: plain ndarray (non-dimensional)
-        - If expression has units and result is scalar: UWQuantity
-        - If expression has units and result is array: UnitAwareArray
-        - If expression has no units: plain ndarray (as before)
-
-    Examples
-    --------
-    >>> # Works with both dimensional and non-dimensional coords
-    >>> result = uw.function.evaluate(T.sym, T.coords)  # dimensional coords
-    >>> result = uw.function.evaluate(T.sym, mesh.data[:,  :2])  # non-dimensional
-    >>> result.to('K')  # Convert to Kelvin
-    >>> print(f"Temperature: {result}")
-    """
-    import numpy as np
-    import underworld3 as uw
-
-    # SMART COORDINATE HANDLING: Always non-dimensionalise coords before evaluation
-    # This is safe because non_dimensionalise() is idempotent:
-    #   - If coords are already dimensionless → returns them unchanged
-    #   - If coords have units → converts to dimensionless
-    # Symbolic expressions are purely dimensionless, so coords must match
-    coords_for_eval = uw.non_dimensionalise(coords)
-
-    # Ensure we have a plain array (non_dimensionalise might return UnitAwareArray)
-    if not isinstance(coords_for_eval, np.ndarray):
-        coords_for_eval = np.asarray(coords_for_eval)
-
-    # Call the original Cython implementation with non-dimensional coords
-    raw_result = _evaluate_original(expr, coords_for_eval, **kwargs)
-
-    # Check if non-dimensional scaling is active
-    # When active, return raw results without unit wrapping
-    if uw.is_nondimensional_scaling_active():
-        return raw_result
-
-    # Try to get units from the expression
-    result_units = get_units(expr)
-
-    if result_units is None:
-        # No units - return as-is (backward compatible)
-        return raw_result
-
-    # Expression has units - wrap result
-    if np.isscalar(raw_result):
-        # Scalar result - wrap as UWQuantity
-        return quantity(float(raw_result), result_units)
-    else:
-        # Array result - wrap as UnitAwareArray
-        from ..utilities.unit_aware_array import UnitAwareArray
-
-        return UnitAwareArray(raw_result, units=result_units)
-
-
-# Wrap global_evaluate similarly
-def global_evaluate(
-    expr,
-    coords=None,
-    coord_sys=None,
-    other_arguments=None,
-    simplify=True,
-    verbose=False,
-    evalf=False,
-    rbf=False,
-    data_layout=None,
-    check_extrapolated=False,
-):
-    """
-    Global evaluate with unit-aware results.
-
-    Similar to evaluate() but performs global evaluation across all processes.
-    Returns unit-aware objects when expression has units.
-
-    When non-dimensional scaling is active (via use_nondimensional_scaling(True)),
-    returns raw non-dimensional results without unit wrapping.
-
-    Parameters
-    ----------
-    expr : sympy expression or UWexpression
-        Expression to evaluate
-    coords : array-like, optional
-        Coordinates at which to evaluate (default: None)
-    coord_sys : CoordinateSystem, optional
-        Coordinate system to use (default: None)
-    other_arguments : dict, optional
-        Additional arguments for evaluation (default: None)
-    simplify : bool, optional
-        Whether to simplify expression (default: True)
-    verbose : bool, optional
-        Verbose output (default: False)
-    evalf : bool, optional
-        Force numerical evaluation (default: False)
-    rbf : bool, optional
-        Use RBF interpolation (default: False)
-    data_layout : str, optional
-        Data layout specification (default: None)
-    check_extrapolated : bool, optional
-        Check for extrapolated values (default: False)
-
-    Returns
-    -------
-    UWQuantity, UnitAwareArray, or ndarray
-        - If non-dimensional scaling is active: plain ndarray (non-dimensional)
-        - Otherwise: result with appropriate unit tracking
-    """
-    import numpy as np
-    import underworld3 as uw
-
-    # Call the original Cython implementation with all parameters
-    raw_result = _global_evaluate_original(
-        expr,
-        coords=coords,
-        coord_sys=coord_sys,
-        other_arguments=other_arguments,
-        simplify=simplify,
-        verbose=verbose,
-        evalf=evalf,
-        rbf=rbf,
-        data_layout=data_layout,
-        check_extrapolated=check_extrapolated,
-    )
-
-    # Check if non-dimensional scaling is active
-    # When active, return raw results without unit wrapping
-    if uw.is_nondimensional_scaling_active():
-        return raw_result
-
-    # Try to get units from the expression
-    result_units = get_units(expr)
-
-    if result_units is None:
-        # No units - return as-is
-        return raw_result
-
-    # Expression has units - wrap result
-    if np.isscalar(raw_result):
-        # Scalar result - wrap as UWQuantity
-        return quantity(float(raw_result), result_units)
-    else:
-        # Array result - wrap as UnitAwareArray
-        from ..utilities.unit_aware_array import UnitAwareArray
-
-        return UnitAwareArray(raw_result, units=result_units)
+# Import clean unit-aware wrapper functions
+from .functions_unit_system import (
+    evaluate,
+    global_evaluate,
+)
 
 
 from .expressions import UWexpression as expression
@@ -252,7 +85,8 @@ def with_units(sympy_expr, name=None):
         # Try to create a reasonable name from the expression
         name = str(sympy_expr)[:50]  # Truncate if too long
 
-    # Extract units from the expression
+    # Extract units from the expression (import from unified units module)
+    from ..units import get_units
     units_str = get_units(sympy_expr)
 
     # Create description from units if available

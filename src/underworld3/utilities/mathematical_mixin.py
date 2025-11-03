@@ -279,9 +279,12 @@ class MathematicalMixin:
         """Multiplication with error handling."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
+        # Handle MathematicalMixin objects (including UWexpression) specially:
+        # When other is a MathematicalMixin with a .sym property, extract it
+        # This ensures both operands are pure SymPy objects, avoiding type mismatches
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other = other.sym
+        elif hasattr(other, "_sympify_"):
             other = other._sympify_()
 
         try:
@@ -295,19 +298,14 @@ class MathematicalMixin:
         """Right multiplication with error handling."""
         sym = self._validate_sym()
 
-        # Call _sympify_() to get SymPy representation that can multiply with matrices
-        # Skip for MathematicalMixin objects (MeshVariable, SwarmVariable) to preserve lazy evaluation
-        # UWexpression no longer inherits from MathematicalMixin, so it will be sympified
-
-        if hasattr(other, "_sympify_"):
-            # Allow sympification for non-MathematicalMixin objects (includes UWexpression)
-            if not isinstance(other, MathematicalMixin):
-                other = other._sympify_()
-
-        # SymPy naturally handles scalar * Matrix correctly:
-        # - scalar * 1x1 Matrix → 1x1 Matrix (scalar result)
-        # - scalar * Nx1 Matrix → Nx1 Matrix (vector result)
-        # UWexpression._sympify_() returns _sym (pure SymPy Float/Symbol/Mul/etc), enabling multiplication
+        # Handle MathematicalMixin objects (including UWexpression) specially:
+        # When other is a MathematicalMixin with a .sym property, extract it
+        # This ensures both operands are pure SymPy objects, avoiding type mismatches
+        # between UWexpression and MutableDenseMatrix in the multiplication
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other = other.sym
+        elif hasattr(other, "_sympify_"):
+            other = other._sympify_()
 
         try:
             return other * sym
@@ -334,8 +332,6 @@ class MathematicalMixin:
         """Right division with error handling."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
         if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
             other = other._sympify_()
 
