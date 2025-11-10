@@ -836,15 +836,59 @@ class CoordinateSystem:
         return self.mesh.units
 
     @property
+    def with_units(self):
+        """
+        Unit-aware coordinate symbols for arithmetic operations.
+
+        Returns symbolic coordinates wrapped in UnitAwareExpression, enabling
+        natural arithmetic operations that preserve units:
+
+        Examples:
+            >>> x_u, y_u = mesh.X.with_units
+            >>> area = x_u * y_u  # Returns UnitAwareExpression with km**2
+            >>> perimeter = 2 * (x_u + y_u)  # Returns UnitAwareExpression with km
+
+        Note: For use in symbolic expressions with mesh variables, use the
+        standard coordinates (mesh.X or mesh.N.x) instead, as SymPy cannot
+        sympify UnitAwareExpression objects in strict mode.
+
+        Returns:
+            tuple: Unit-aware coordinate symbols (x, y) or (x, y, z)
+        """
+        import underworld3 as uw
+        from underworld3.expression.unit_aware_expression import UnitAwareExpression
+
+        coord_units = self.units
+        if coord_units is None:
+            # No units - return raw coordinates
+            return tuple(self._X)
+
+        # Wrap each coordinate in UnitAwareExpression
+        wrapped_coords = []
+        for coord in self._X:
+            # Get units from the coordinate (should have _units from patching)
+            units = uw.get_units(coord)
+            if units is not None:
+                wrapped_coords.append(UnitAwareExpression(coord, units))
+            else:
+                # Fallback: use mesh units
+                wrapped_coords.append(UnitAwareExpression(coord, coord_units))
+
+        return tuple(wrapped_coords)
+
+    @property
     def shape(self):
         """Shape of the symbolic coordinate matrix."""
         return self._X.shape
 
     # === SymPy Integration (for mathematical operations) ===
 
-    def _sympify_(self):
+    def _sympy_(self):
         """
         Tell SymPy how to convert this object to a SymPy expression.
+
+        Note: Uses _sympy_() protocol (not _sympify_()) for SymPy 1.14+ compatibility.
+        This is required for proper symbolic algebra in strict mode (matrix operations).
 
         This enables CoordinateSystem to work seamlessly with SymPy operations
         like diff, jacobian, and arithmetic operations.

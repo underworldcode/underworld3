@@ -56,7 +56,8 @@ def _substitute_one_expr(fn, sub_expr, keep_constants=True, return_self=True):
 
 # Not sure the best name for this
 def substitute(fn, keep_constants=True, return_self=True):
-    return unwrap(fn, keep_constants, return_self)
+    """Alias for _unwrap_for_compilation() - used internally for substitution."""
+    return _unwrap_for_compilation(fn, keep_constants, return_self)
 
 
 def _unwrap_expressions(fn, keep_constants=True, return_self=True):
@@ -70,9 +71,15 @@ def _unwrap_expressions(fn, keep_constants=True, return_self=True):
     return expr
 
 
-def unwrap(fn, keep_constants=True, return_self=True):
+def _unwrap_for_compilation(fn, keep_constants=True, return_self=True):
     """
-    Unwrap UW expressions to pure SymPy expressions for compilation.
+    INTERNAL ONLY: Unwrap UW expressions to pure SymPy for JIT compilation.
+
+    This function recursively flattens nested UW expressions, applies non-dimensional
+    scaling transformations, and strips ALL metadata including units. It is designed
+    exclusively for pre-compilation use in solvers.
+
+    DO NOT USE THIS IN USER-FACING CODE. Use `expand()` instead for user inspection.
 
     Args:
         fn: Expression to unwrap
@@ -81,6 +88,7 @@ def unwrap(fn, keep_constants=True, return_self=True):
 
     Returns:
         Pure SymPy expression with scale factors applied if scaling context is active
+        (all UW wrappers and metadata stripped for compilation)
     """
     # Handle UWDerivativeExpression specially - evaluate it first
     if isinstance(fn, UWDerivativeExpression):
@@ -101,6 +109,80 @@ def unwrap(fn, keep_constants=True, return_self=True):
         result = _apply_scaling_to_unwrapped(result)
 
     return result
+
+
+def unwrap(fn, keep_constants=True, return_self=True):
+    """
+    DEPRECATED: Use `expand()` for user-facing expansion or call internal
+    `_unwrap_for_compilation()` directly in solver code.
+
+    This function is kept for backward compatibility but will be removed in a future version.
+    """
+    import warnings
+    warnings.warn(
+        "unwrap() is deprecated and will be removed. "
+        "Use expand() for user inspection or _unwrap_for_compilation() for solver code.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return _unwrap_for_compilation(fn, keep_constants, return_self)
+
+
+def expand(expr):
+    """
+    Recursively expand UW expression for user inspection while preserving units.
+
+    This function is the user-facing counterpart to _unwrap_for_compilation().
+    It recursively expands nested UW expressions to reveal their SymPy structure
+    while preserving unit metadata that would be stripped by compilation unwrapping.
+
+    Unlike _unwrap_for_compilation(), this function:
+    - Does NOT apply non-dimensional scaling
+    - DOES preserve unit information
+    - Returns a unit-aware expression wrapper suitable for display
+
+    Args:
+        expr: UW expression to expand (UWexpression, MeshVariable, etc.)
+
+    Returns:
+        Expanded expression with units preserved (same type as input when possible,
+        or plain SymPy if no units)
+
+    Example:
+        >>> T = uw.discretisation.MeshVariable("T", mesh, 1, units="kelvin")
+        >>> Ra = uw.discretisation.MeshVariable("Ra", mesh, 1)
+        >>> buoyancy = Ra * T
+        >>> expanded = uw.expand(buoyancy)  # Shows Ra(x,y) * T(x,y) with units preserved
+    """
+    import sympy
+
+    # Extract units before expansion
+    units = getattr(expr, 'units', None)
+
+    # Get the SymPy expression
+    if hasattr(expr, 'sym'):
+        sym_expr = expr.sym
+    elif isinstance(expr, sympy.Basic):
+        sym_expr = expr
+    else:
+        # Try sympify
+        sym_expr = sympy.sympify(expr)
+
+    # Recursively expand .sym attributes (but don't apply scaling)
+    expanded_sym = _unwrap_expressions(sym_expr, keep_constants=True, return_self=True)
+
+    # If we have units, try to return a unit-aware wrapper
+    if units is not None:
+        try:
+            # Try to use the hierarchical unit-aware architecture if available
+            from underworld3.expression import LazyExpression
+            return LazyExpression(expanded_sym, units)
+        except ImportError:
+            # Fallback: just return SymPy with a note
+            pass
+
+    # Return pure SymPy (no units to preserve)
+    return expanded_sym
 
 
 def _apply_scaling_to_unwrapped(expr):
@@ -356,35 +438,30 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
                 "Both 'sym' and 'value' attributes are provided, please use one"
             )
 
-        # Initialize UnitAwareMixin attributes directly to avoid MRO conflicts
-        from underworld3.utilities.units_mixin import UnitAwareMixin
-        UnitAwareMixin.__init__(self)
-
+        # Determine the value and units for UWQuantity initialization
         # Handle UWQuantity as sym parameter (the beautiful symmetry!)
         if isinstance(sym, UWQuantity):
             if units is not None:
                 # Convert quantity to match expression's target units
                 if sym.has_units:
                     converted_qty = sym.to(units)
-                    quantity_value = converted_qty.value
-                    self.set_units(units)  # Set units directly on UnitAwareMixin
+                    sym_value = converted_qty.value
+                    final_units = units
                 else:
                     # Dimensionless quantity, just use the value
-                    quantity_value = sym.value
+                    sym_value = sym.value
+                    final_units = units
             else:
                 # Use quantity's units directly
-                if sym.has_units:
-                    quantity_value = sym.value
-                    self.set_units(sym.units)  # Set units directly on UnitAwareMixin
-                else:
-                    quantity_value = sym.value
-            # Use the converted value for the expression's symbolic representation
-            sym_value = quantity_value
+                sym_value = sym.value
+                final_units = sym.units if sym.has_units else None
         else:
-            # Traditional initialization - set units if provided
-            if units is not None:
-                self.set_units(units)
+            # Traditional initialization - use provided sym and units
             sym_value = sym
+            final_units = units
+
+        # Initialize UWQuantity parent class with extracted value and units
+        UWQuantity.__init__(self, value=sym_value if sym_value is not None else 0, units=final_units)
 
         # UWexpression-specific attributes
         self.symbol = self._given_name
@@ -408,9 +485,12 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
         """
         return str(self.name)
 
-    def _sympify_(self):
+    def _sympy_(self):
         """
         Return the Symbol itself for deferred evaluation.
+
+        Note: Uses _sympy_() protocol (not _sympify_()) for SymPy 1.14+ compatibility.
+        This is required for proper symbolic algebra in strict mode (matrix operations).
 
         CRITICAL CHANGE (2025-10-28): Changed from returning self._sym to returning self.
         This is required for proper symbolic algebra with expressions.
@@ -519,6 +599,21 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
 
     def __mul__(self, other):
         """Multiply - delegate to Symbol to preserve symbolic expressions."""
+        # Special case: If self.sym is a Matrix, use matrix multiplication
+        if hasattr(self, '_sym') and isinstance(self._sym, sympy.MatrixBase):
+            return self._sym.__mul__(other)
+
+        # Special case: If multiplying by a Matrix, scalar * Matrix element-wise multiplication
+        # Convert self to its symbolic value first so SymPy's matrix multiplication works
+        # Note: Check for both MatrixBase and MatrixExpr to catch transpose, slices, etc.
+        if isinstance(other, (sympy.MatrixBase, sympy.matrices.expressions.MatrixExpr)):
+            # For UWexpression * Matrix, use self.sym if available, otherwise self (as Symbol)
+            if hasattr(self, '_sym') and self._sym is not None:
+                return self._sym * other  # Let SymPy handle it
+            else:
+                # Fallback to Symbol behavior
+                return Symbol.__mul__(self, other)
+
         return Symbol.__mul__(self, other)
 
     def __rmul__(self, other):

@@ -197,6 +197,7 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 
     import underworld3 as uw
     import sympy
+    import numpy as np
 
     if simplify:
         uw_fn = sympy.simplify(uw_fn)
@@ -209,6 +210,15 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 
     coords = pv_mesh.points[:, 0:dim]
     scalar_values = uw.function.evaluate(uw_fn, coords, evalf=True)
+
+    # Convert UnitAwareArray to plain numpy array for PyVista compatibility
+    # PyVista doesn't support UnitAwareArray and calls np.ndim() which fails
+    if hasattr(scalar_values, 'magnitude'):
+        # UnitAwareArray - strip units for visualization
+        scalar_values = scalar_values.magnitude
+    else:
+        # Plain array - ensure it's numpy
+        scalar_values = np.asarray(scalar_values)
 
     return scalar_values
 
@@ -227,9 +237,18 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
         print(f"UW vector function should have dimension 2 or 3")
 
     coords = pv_mesh.points[:, 0:dim]
-    vector_values = np.zeros_like(pv_mesh.points)
+    vector_values_raw = uw.function.evaluate(uw_fn, coords, evalf=True).squeeze()
 
-    vector_values[:, 0:dim] = uw.function.evaluate(uw_fn, coords, evalf=True).squeeze()
+    # Convert UnitAwareArray to plain numpy array for PyVista compatibility
+    if hasattr(vector_values_raw, 'magnitude'):
+        # UnitAwareArray - strip units for visualization
+        vector_values_raw = vector_values_raw.magnitude
+    else:
+        # Plain array - ensure it's numpy
+        vector_values_raw = np.asarray(vector_values_raw)
+
+    vector_values = np.zeros_like(pv_mesh.points)
+    vector_values[:, 0:dim] = vector_values_raw
 
     return vector_values
 

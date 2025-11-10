@@ -3,11 +3,15 @@
 Fixed Mathematical Mixin for Underworld3 Variables
 
 This version addresses inconsistencies identified through comprehensive testing.
+Integrates UnitAwareExpression to wrap compound expressions with unit metadata.
 """
 
 import sympy
 import inspect
 from typing import Any
+
+# Note: UnitAwareExpression uses lazy imports to avoid circular dependency issues
+# Import it inside methods when needed, not at module load time
 
 
 class MathematicalMixin:
@@ -46,8 +50,11 @@ class MathematicalMixin:
             )
         return sym
 
-    def _sympify_(self):
-        """SymPy protocol: Tell SymPy to use the symbolic form."""
+    def _sympy_(self):
+        """SymPy protocol: Tell SymPy to use the symbolic form.
+
+        Note: Uses _sympy_() (not _sympify_()) for SymPy 1.14+ strict mode compatibility.
+        """
         return self._validate_sym()
 
     def __getitem__(self, index):
@@ -83,7 +90,21 @@ class MathematicalMixin:
                     # General matrix or scalar - delegate to SymPy's error handling
                     pass
 
-        return sym[index]
+        # Get the component
+        result_sym = sym[index]
+
+        # Preserve units if the parent variable has them (lazy import)
+        self_units = getattr(self, 'units', None)
+        if self_units is not None:
+            try:
+                from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                # Wrap component with parent's units
+                return UnitAwareExpression(result_sym, self_units)
+            except ImportError:
+                pass  # Fall through to return plain SymPy
+
+        # Otherwise return plain SymPy
+        return result_sym
 
     def __iter__(self):
         """Allow iteration for matrix-type UWexpressions.
@@ -174,17 +195,35 @@ class MathematicalMixin:
             velocity.diff(x)        # Returns UnitAwareDerivativeMatrix with unit-aware elements
         """
         sym = self._validate_sym()
-        result = sym.diff(*args, **kwargs)
+
+        # Unwrap any UnitAwareExpression arguments to their SymPy expressions
+        unwrapped_args = []
+        for arg in args:
+            if hasattr(arg, '_expr'):
+                # It's a UnitAwareExpression - extract the SymPy expression
+                unwrapped_args.append(arg._expr)
+            elif hasattr(arg, 'sym'):
+                # It's a variable with .sym property
+                unwrapped_args.append(arg.sym)
+            else:
+                # Regular SymPy object or symbol
+                unwrapped_args.append(arg)
+
+        result = sym.diff(*unwrapped_args, **kwargs)
 
         # Try to wrap the result with units
         try:
             import underworld3 as uw
 
+            # Get the source units from this variable
+            source_units = uw.get_units(self)
+
             if hasattr(uw, "with_units"):
                 # Check if result is a Matrix
                 if hasattr(result, "shape"):
                     # Return a special Matrix wrapper that provides unit-aware indexing
-                    return UnitAwareDerivativeMatrix(result, uw.with_units)
+                    # Pass source_units so it can compute derivative units correctly
+                    return UnitAwareDerivativeMatrix(result, uw.with_units, source_units=source_units)
                 else:
                     # Scalar result - wrap directly
                     return uw.with_units(result)
@@ -196,147 +235,314 @@ class MathematicalMixin:
 
     # Arithmetic operations with better error handling
     def __add__(self, other):
-        """Addition with scalar broadcasting and error handling."""
+        """Addition with scalar broadcasting, error handling, and unit-aware wrapping."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
-            other = other._sympify_()
+        # Convert MathematicalMixin objects to their symbolic form
+        # This ensures both operands are SymPy objects, avoiding type mismatches
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other_sym = other.sym
+        elif hasattr(other, "_sympify_"):
+            other_sym = other._sympify_()
+        else:
+            other_sym = other
 
         try:
             # Try normal SymPy addition first
-            return sym + other
+            result_sym = sym + other_sym
         except (TypeError, ValueError):
             # If that fails, try scalar broadcasting
             try:
-                other_sym = sympy.sympify(other)
-                if other_sym.is_number and hasattr(sym, "shape"):
+                other_broadcasted = sympy.sympify(other_sym)
+                if other_broadcasted.is_number and hasattr(sym, "shape"):
                     # Broadcast scalar to matrix shape
-                    broadcasted = other_sym * sympy.ones(*sym.shape)
-                    return sym + broadcasted
+                    broadcasted = other_broadcasted * sympy.ones(*sym.shape)
+                    result_sym = sym + broadcasted
+                else:
+                    raise
             except:
-                pass
-            # If broadcasting doesn't work, re-raise with helpful message
-            raise TypeError(
-                f"Cannot add {type(self).__name__} and {type(other).__name__}. "
-                f"Check dimensional compatibility."
-            )
+                # If broadcasting doesn't work, re-raise with helpful message
+                raise TypeError(
+                    f"Cannot add {type(self).__name__} and {type(other).__name__}. "
+                    f"Check dimensional compatibility."
+                )
+
+        # If this variable has units, try to wrap result (lazy import)
+        self_units = getattr(self, 'units', None)
+        if self_units is not None:
+            try:
+                import underworld3 as uw
+                # Use get_units() to compute result units (handles unit compatibility checking)
+                result_units = uw.get_units(result_sym)
+
+                if result_units is not None:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    return UnitAwareExpression(result_sym, result_units)
+            except ImportError:
+                pass  # Fall through to return plain SymPy
+
+        # Otherwise return raw SymPy
+        return result_sym
 
     def __radd__(self, other):
         """Right addition with scalar broadcasting."""
         return self.__add__(other)
 
     def __sub__(self, other):
-        """Subtraction with scalar broadcasting and error handling."""
+        """Subtraction with scalar broadcasting, error handling, and unit-aware wrapping."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
-            other = other._sympify_()
+        # Convert MathematicalMixin objects to their symbolic form
+        # This ensures both operands are SymPy objects, avoiding type mismatches
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other_sym = other.sym
+        elif hasattr(other, "_sympify_"):
+            other_sym = other._sympify_()
+        else:
+            other_sym = other
 
         try:
-            return sym - other
+            result_sym = sym - other_sym
         except (TypeError, ValueError):
             try:
-                other_sym = sympy.sympify(other)
-                if other_sym.is_number and hasattr(sym, "shape"):
-                    broadcasted = other_sym * sympy.ones(*sym.shape)
-                    return sym - broadcasted
+                other_broadcasted = sympy.sympify(other_sym)
+                if other_broadcasted.is_number and hasattr(sym, "shape"):
+                    broadcasted = other_broadcasted * sympy.ones(*sym.shape)
+                    result_sym = sym - broadcasted
+                else:
+                    raise
             except:
-                pass
-            raise TypeError(
-                f"Cannot subtract {type(other).__name__} from {type(self).__name__}. "
-                f"Check dimensional compatibility."
-            )
+                raise TypeError(
+                    f"Cannot subtract {type(other).__name__} from {type(self).__name__}. "
+                    f"Check dimensional compatibility."
+                )
+
+        # If this variable has units, try to wrap result (lazy import)
+        self_units = getattr(self, 'units', None)
+        if self_units is not None:
+            try:
+                import underworld3 as uw
+                # Use get_units() to compute result units (handles unit compatibility checking)
+                result_units = uw.get_units(result_sym)
+
+                if result_units is not None:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    return UnitAwareExpression(result_sym, result_units)
+            except ImportError:
+                pass  # Fall through to return plain SymPy
+
+        # Otherwise return raw SymPy
+        return result_sym
 
     def __rsub__(self, other):
-        """Right subtraction with scalar broadcasting."""
+        """Right subtraction with scalar broadcasting and unit-aware wrapping."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
-            other = other._sympify_()
+        # Convert MathematicalMixin objects to their symbolic form
+        # This ensures both operands are SymPy objects, avoiding type mismatches
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other_sym = other.sym
+        elif hasattr(other, "_sympify_"):
+            other_sym = other._sympify_()
+        else:
+            other_sym = other
 
         try:
-            return other - sym
+            result_sym = other_sym - sym
         except (TypeError, ValueError):
             try:
-                other_sym = sympy.sympify(other)
-                if other_sym.is_number and hasattr(sym, "shape"):
-                    broadcasted = other_sym * sympy.ones(*sym.shape)
-                    return broadcasted - sym
+                other_broadcasted = sympy.sympify(other_sym)
+                if other_broadcasted.is_number and hasattr(sym, "shape"):
+                    broadcasted = other_broadcasted * sympy.ones(*sym.shape)
+                    result_sym = broadcasted - sym
+                else:
+                    raise
             except:
-                pass
-            raise TypeError(
-                f"Cannot subtract {type(self).__name__} from {type(other).__name__}. "
-                f"Check dimensional compatibility."
-            )
+                raise TypeError(
+                    f"Cannot subtract {type(self).__name__} from {type(other).__name__}. "
+                    f"Check dimensional compatibility."
+                )
+
+        # If this variable has units, try to wrap result (lazy import)
+        self_units = getattr(self, 'units', None)
+        if self_units is not None:
+            try:
+                import underworld3 as uw
+                # Use get_units() to compute result units (handles unit compatibility checking)
+                result_units = uw.get_units(result_sym)
+
+                if result_units is not None:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    return UnitAwareExpression(result_sym, result_units)
+            except ImportError:
+                pass  # Fall through to return plain SymPy
+
+        # Otherwise return raw SymPy
+        return result_sym
 
     def __mul__(self, other):
-        """Multiplication with error handling."""
+        """Multiplication with unit-aware wrapping for compound expressions."""
         sym = self._validate_sym()
 
-        # Handle MathematicalMixin objects (including UWexpression) specially:
-        # When other is a MathematicalMixin with a .sym property, extract it
-        # This ensures both operands are pure SymPy objects, avoiding type mismatches
+        # Extract symbolic form and units from other
         if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
-            other = other.sym
+            other_sym = other.sym
+            other_units = getattr(other, 'units', None)
         elif hasattr(other, "_sympify_"):
-            other = other._sympify_()
+            other_sym = other._sympify_()
+            other_units = getattr(other, 'units', None)
+        else:
+            other_sym = other
+            other_units = None
 
         try:
-            return sym * other
+            # Compute SymPy result
+            result_sym = sym * other_sym
+
+            # If both have units, try to wrap result (lazy import)
+            self_units = getattr(self, 'units', None)
+            if self_units is not None and other_units is not None:
+                try:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    from underworld3.scaling import units as ureg
+                    # Combine units using Pint algebra
+                    combined_units = self_units * other_units
+                    return UnitAwareExpression(result_sym, combined_units)
+                except ImportError:
+                    pass  # Fall through to return plain SymPy
+
+            # Otherwise return raw SymPy (no units or UnitAwareExpression unavailable)
+            return result_sym
         except (TypeError, ValueError) as e:
             raise TypeError(
                 f"Cannot multiply {type(self).__name__} and {type(other).__name__}: {e}"
             )
 
     def __rmul__(self, other):
-        """Right multiplication with error handling."""
+        """Right multiplication with unit-aware wrapping."""
         sym = self._validate_sym()
 
-        # Handle MathematicalMixin objects (including UWexpression) specially:
-        # When other is a MathematicalMixin with a .sym property, extract it
-        # This ensures both operands are pure SymPy objects, avoiding type mismatches
-        # between UWexpression and MutableDenseMatrix in the multiplication
+        # Extract symbolic form and units from other
         if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
-            other = other.sym
+            other_sym = other.sym
+            other_units = getattr(other, 'units', None)
         elif hasattr(other, "_sympify_"):
-            other = other._sympify_()
+            other_sym = other._sympify_()
+            other_units = getattr(other, 'units', None)
+        else:
+            other_sym = other
+            other_units = None
 
         try:
-            return other * sym
+            # Compute SymPy result
+            result_sym = other_sym * sym
+
+            # If both have units, try to wrap result (lazy import)
+            self_units = getattr(self, 'units', None)
+            if other_units is not None and self_units is not None:
+                try:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    from underworld3.scaling import units as ureg
+                    # Combine units using Pint algebra
+                    combined_units = other_units * self_units
+                    return UnitAwareExpression(result_sym, combined_units)
+                except ImportError:
+                    pass  # Fall through to return plain SymPy
+
+            # Otherwise return raw SymPy
+            return result_sym
         except (TypeError, ValueError) as e:
             raise TypeError(
                 f"Cannot multiply {type(other).__name__} and {type(self).__name__}: {e}"
             )
 
     def __truediv__(self, other):
-        """Division with error handling."""
+        """Division with unit-aware wrapping."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
-            other = other._sympify_()
+        # Extract symbolic form and units from other
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other_sym = other.sym
+            other_units = getattr(other, 'units', None)
+        elif hasattr(other, "_sympify_"):
+            other_sym = other._sympify_()
+            other_units = getattr(other, 'units', None)
+        else:
+            other_sym = other
+            other_units = None
 
         try:
-            return sym / other
+            # Compute SymPy result
+            result_sym = sym / other_sym
+
+            # If units are present, try to wrap result (lazy import)
+            self_units = getattr(self, 'units', None)
+            if self_units is not None or other_units is not None:
+                try:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    from underworld3.scaling import units as ureg
+                    # Divide units using Pint
+                    if self_units and other_units:
+                        combined_units = self_units / other_units
+                    elif self_units:
+                        combined_units = self_units
+                    elif other_units:
+                        combined_units = ureg.dimensionless / other_units
+                    else:
+                        combined_units = None
+
+                    if combined_units is not None:
+                        return UnitAwareExpression(result_sym, combined_units)
+                except ImportError:
+                    pass  # Fall through to return plain SymPy
+
+            # Otherwise return raw SymPy
+            return result_sym
         except (TypeError, ValueError) as e:
             raise TypeError(f"Cannot divide {type(self).__name__} by {type(other).__name__}: {e}")
 
     def __rtruediv__(self, other):
-        """Right division with error handling."""
+        """Right division with unit-aware wrapping."""
         sym = self._validate_sym()
 
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
-            other = other._sympify_()
+        # Extract symbolic form and units from other
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other_sym = other.sym
+            other_units = getattr(other, 'units', None)
+        elif hasattr(other, "_sympify_"):
+            other_sym = other._sympify_()
+            other_units = getattr(other, 'units', None)
+        else:
+            other_sym = other
+            other_units = None
 
         try:
-            return other / sym
+            # Compute SymPy result
+            result_sym = other_sym / sym
+
+            # If units are present, try to wrap result (lazy import)
+            self_units = getattr(self, 'units', None)
+            if other_units is not None or self_units is not None:
+                try:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    from underworld3.scaling import units as ureg
+                    # Divide units using Pint
+                    if other_units and self_units:
+                        combined_units = other_units / self_units
+                    elif other_units:
+                        combined_units = other_units
+                    elif self_units:
+                        combined_units = ureg.dimensionless / self_units
+                    else:
+                        combined_units = None
+
+                    if combined_units is not None:
+                        return UnitAwareExpression(result_sym, combined_units)
+                except ImportError:
+                    pass  # Fall through to return plain SymPy
+
+            # Otherwise return raw SymPy
+            return result_sym
         except TypeError:
             # Division by matrix/vector often not supported
             raise TypeError(
@@ -345,16 +551,38 @@ class MathematicalMixin:
             )
 
     def __pow__(self, other):
-        """Power with error handling."""
+        """Power with unit-aware wrapping."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
-            other = other._sympify_()
+        # Convert MathematicalMixin objects to their symbolic form
+        # This ensures both operands are SymPy objects, avoiding type mismatches
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other_sym = other.sym
+        elif hasattr(other, "_sympify_"):
+            other_sym = other._sympify_()
+        else:
+            other_sym = other
 
         try:
-            return sym**other
+            # Compute SymPy result
+            result_sym = sym ** other_sym
+
+            # If this variable has units, try to wrap result (lazy import)
+            self_units = getattr(self, 'units', None)
+            if self_units is not None:
+                try:
+                    import underworld3 as uw
+                    # Use get_units() to compute result units via Pint dimensional analysis
+                    result_units = uw.get_units(result_sym)
+
+                    if result_units is not None:
+                        from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                        return UnitAwareExpression(result_sym, result_units)
+                except ImportError:
+                    pass  # Fall through to return plain SymPy
+
+            # Otherwise return raw SymPy
+            return result_sym
         except (TypeError, ValueError) as e:
             raise TypeError(
                 f"Cannot raise {type(self).__name__} to power {type(other).__name__}: {e}"
@@ -364,9 +592,11 @@ class MathematicalMixin:
         """Right power with error handling."""
         sym = self._validate_sym()
 
-        # KEY FIX: Don't substitute .sym for MathematicalMixin objects
-        # This preserves symbolic expressions for lazy evaluation
-        if hasattr(other, "_sympify_") and not isinstance(other, MathematicalMixin):
+        # Convert MathematicalMixin objects to their symbolic form
+        # This ensures both operands are SymPy objects, avoiding type mismatches
+        if isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
+            other = other.sym
+        elif hasattr(other, "_sympify_"):
             other = other._sympify_()
 
         try:
@@ -379,10 +609,24 @@ class MathematicalMixin:
             )
 
     def __neg__(self):
-        """Negation."""
+        """Negation with unit preservation."""
         sym = self._validate_sym()
         try:
-            return -sym
+            # Compute SymPy result
+            result_sym = -sym
+
+            # If this variable has units, preserve them (lazy import)
+            self_units = getattr(self, 'units', None)
+            if self_units is not None:
+                try:
+                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+                    # Negation doesn't change units
+                    return UnitAwareExpression(result_sym, self_units)
+                except ImportError:
+                    pass  # Fall through to return plain SymPy
+
+            # Otherwise return raw SymPy
+            return result_sym
         except (TypeError, ValueError) as e:
             raise TypeError(f"Cannot negate {type(self).__name__}: {e}")
 
@@ -526,18 +770,101 @@ class UnitAwareDerivativeMatrix:
     to the underlying SymPy Matrix via the _sympify_() protocol.
     """
 
-    def __init__(self, sympy_matrix, with_units_func):
+    def __init__(self, sympy_matrix, with_units_func, source_units=None):
         self._matrix = sympy_matrix
         self._with_units = with_units_func
+        self._source_units = source_units  # Units of the variable being differentiated
+        # Compute and cache units for this derivative matrix
+        self._cached_units = None
 
-    def _sympify_(self):
-        """SymPy protocol: Return the underlying SymPy Matrix for arithmetic operations."""
+    def _sympy_(self):
+        """SymPy protocol: Return the underlying SymPy Matrix for arithmetic operations.
+
+        Note: Uses _sympy_() (not _sympify_()) for SymPy 1.14+ strict mode compatibility.
+        """
         return self._matrix
 
+    @property
+    def has_units(self):
+        """Check if this derivative matrix has units (for protocol compatibility)."""
+        return self.units is not None
+
+    @property
+    def _units_backend(self):
+        """Get the units backend (for protocol compatibility with get_units)."""
+        # Import here to avoid circular dependency
+        from underworld3.units import _get_default_backend
+        return _get_default_backend()
+
+    @property
+    def units(self):
+        """Get the units of this derivative matrix, accounting for derivatives."""
+        if self._cached_units is None:
+            # Compute units once and cache
+            try:
+                import underworld3 as uw
+
+                # Get the first element to check if it's a derivative
+                if hasattr(self._matrix, '__getitem__') and len(self._matrix) > 0:
+                    elem = self._matrix[0]
+
+                    # Check if this is a derivative expression (has diffindex)
+                    if hasattr(elem, 'diffindex'):
+                        # This is a derivative!  Compute derivative units
+                        # Use source units if available (from the original variable)
+                        var_units = self._source_units if self._source_units is not None else uw.get_units(elem.func)
+
+                        # Get the coordinate being differentiated with respect to
+                        # diffindex tells us which coordinate (0=x, 1=y, 2=z)
+                        diff_index = elem.diffindex
+
+                        # Get coordinate units from the arguments
+                        if hasattr(elem, 'args') and len(elem.args) > diff_index:
+                            coord = elem.args[diff_index]
+                            coord_units = uw.get_units(coord)
+
+                            # Compute derivative units: var_units / coord_units
+                            if var_units and coord_units:
+                                # Use Pint arithmetic
+                                self._cached_units = var_units / coord_units
+                            elif var_units:
+                                # No coord units - just return var units
+                                self._cached_units = var_units
+                            else:
+                                self._cached_units = None
+                        else:
+                            # Fallback: just get variable units
+                            self._cached_units = var_units
+                    else:
+                        # Not a derivative - use standard units extraction
+                        self._cached_units = uw.get_units(self._matrix)
+                else:
+                    # Empty or non-indexable matrix
+                    self._cached_units = None
+            except Exception:
+                self._cached_units = None
+        return self._cached_units
+
+    @property
+    def dimensionality(self):
+        """Get the dimensionality of this derivative matrix."""
+        if not self.has_units:
+            return None
+        if self._units_backend is None:
+            return None
+        quantity = self._units_backend.create_quantity(1.0, self.units)
+        return self._units_backend.get_dimensionality(quantity)
+
     def __getitem__(self, index):
-        """Index into matrix and wrap result with units."""
+        """Index into matrix and wrap result with units.
+
+        Passes the derivative units explicitly to ensure indexed elements
+        have correct units (e.g., kelvin / kilometer for temperature derivative).
+        """
         element = self._matrix[index]
-        return self._with_units(element)
+        # Pass derivative units explicitly to avoid having to infer from SymPy structure
+        # Convert units to string since with_units() expects a string
+        return self._with_units(element, units=str(self.units) if self.units else None)
 
     def __repr__(self):
         return repr(self._matrix)
@@ -558,6 +885,32 @@ class UnitAwareDerivativeMatrix:
     def __len__(self):
         """Return length of matrix for SymPy compatibility."""
         return len(self._matrix)
+
+    def diff(self, *args, **kwargs):
+        """
+        Differentiate the derivative matrix, unwrapping UnitAwareExpression arguments.
+
+        This allows chained differentiation like temperature.diff(x).diff(y)
+        where x and y are UnitAwareExpression objects.
+        """
+        # Unwrap any UnitAwareExpression arguments to their SymPy expressions
+        unwrapped_args = []
+        for arg in args:
+            if hasattr(arg, '_expr'):
+                # It's a UnitAwareExpression - extract the SymPy expression
+                unwrapped_args.append(arg._expr)
+            elif hasattr(arg, 'sym'):
+                # It's a variable with .sym property
+                unwrapped_args.append(arg.sym)
+            else:
+                # Regular SymPy object or symbol
+                unwrapped_args.append(arg)
+
+        result = self._matrix.diff(*unwrapped_args, **kwargs)
+
+        # Wrap the result with units
+        # Pass along the source units for proper derivative unit computation
+        return UnitAwareDerivativeMatrix(result, self._with_units, source_units=self._source_units)
 
     def __getattr__(self, name):
         """Delegate other attributes to the underlying matrix."""

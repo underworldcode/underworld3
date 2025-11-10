@@ -1,4 +1,6 @@
 from . import analytic
+# Import the _function module to expose it in the namespace (needed by expressions.py)
+from . import _function
 from ._function import (
     UnderworldFunction,
     global_evaluate_nd as _global_evaluate_nd,
@@ -39,6 +41,7 @@ from .expressions import UWDerivativeExpression as _derivative_expression
 from .quantities import quantity, UWQuantity
 from .expressions import substitute as fn_substitute_expressions
 from .expressions import unwrap as fn_unwrap
+from .expressions import expand as fn_expand
 from .expressions import substitute_expr as fn_substitute_one_expression
 from .expressions import is_constant_expr as fn_is_constant_expr
 from .expressions import extract_expressions as fn_extract_expressions
@@ -46,7 +49,7 @@ from .expressions import extract_expressions as fn_extract_expressions_and_funct
 from .expressions import mesh_vars_in_expression as fn_mesh_vars_in_expression
 
 
-def with_units(sympy_expr, name=None):
+def with_units(sympy_expr, name=None, units=None):
     """
     Wrap a SymPy expression in a unit-aware object with .units and .to() methods.
 
@@ -59,6 +62,10 @@ def with_units(sympy_expr, name=None):
         The SymPy expression to wrap (e.g., from temperature.diff(y))
     name : str, optional
         Optional name for the expression (auto-generated if not provided)
+    units : str, optional
+        Explicit units for the expression. If provided, these units are used
+        instead of trying to extract units from the expression. This is useful
+        for derivatives where units are known from the derivative operation.
 
     Returns
     -------
@@ -77,6 +84,9 @@ def with_units(sympy_expr, name=None):
 
     >>> # Also works with other SymPy operations
     >>> combined = uw.with_units(2 * temperature.sym + pressure.sym)
+
+    >>> # Explicit units for derivatives
+    >>> dTdy_elem = uw.with_units(derivative_expr, units="kelvin / kilometer")
     """
     import sympy
 
@@ -85,9 +95,13 @@ def with_units(sympy_expr, name=None):
         # Try to create a reasonable name from the expression
         name = str(sympy_expr)[:50]  # Truncate if too long
 
-    # Extract units from the expression (import from unified units module)
-    from ..units import get_units
-    units_str = get_units(sympy_expr)
+    # Use explicit units if provided, otherwise extract from expression
+    if units is None:
+        # Extract units from the expression (import from unified units module)
+        from ..units import get_units
+        units_str = get_units(sympy_expr)
+    else:
+        units_str = units
 
     # Create description from units if available
     if units_str:

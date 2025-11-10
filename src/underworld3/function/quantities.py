@@ -19,11 +19,10 @@ UWQuantity objects are intended for:
 
 import sympy
 from typing import Union, Optional, Any
-from ..utilities.units_mixin import UnitAwareMixin
 from ..utilities.dimensionality_mixin import DimensionalityMixin
 
 
-class UWQuantity(DimensionalityMixin, UnitAwareMixin):
+class UWQuantity(DimensionalityMixin):
     """
     Lightweight unit-aware quantity.
 
@@ -85,33 +84,54 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
                 self._model_instance = _model_instance  # Store model instance for alias access
                 self._custom_units = _custom_units
                 self._has_custom_units = True
+                self._symbolic_with_units = False
             except (AttributeError, ImportError):
                 # Fallback to old approach if model registry doesn't have the constant
                 self._custom_units = _custom_units
                 self._has_custom_units = True
                 self._has_pint_qty = False
+                self._symbolic_with_units = False
         elif _custom_units is not None:
             # OLD: Custom units without model registry (legacy support)
             self._custom_units = _custom_units
             self._has_custom_units = True
             self._has_pint_qty = False
+            self._symbolic_with_units = False
         elif units is not None:
             # Regular units: create standard Pint quantity
             try:
                 # Use the scaling module's registry which includes planetary units
                 from ..scaling import units as ureg
-                self._pint_qty = value * ureg.parse_expression(units)
-                self._has_pint_qty = True
-                self._has_custom_units = False
+
+                # Check if value is a SymPy expression (symbolic)
+                # SymPy expressions with units should be stored symbolically, not as Pint quantities
+                if isinstance(value, sympy.Basic):
+                    # Symbolic expression with units - store separately
+                    # Create a unit object for dimensionality tracking
+                    unit_obj = ureg.parse_expression(units)
+                    self._pint_qty = unit_obj  # Store just the unit for dimensionality
+                    self._has_pint_qty = True
+                    self._has_custom_units = False
+                    self._symbolic_with_units = True  # Flag for symbolic expressions with units
+                else:
+                    # Numeric value - create standard Pint quantity
+                    self._pint_qty = value * ureg.parse_expression(units)
+                    self._has_pint_qty = True
+                    self._has_custom_units = False
+                    self._symbolic_with_units = False
             except ImportError:
-                # Fallback to UnitAwareMixin if Pint not available
+                # If Pint is not available, treat as dimensionless
+                # NOTE: This should not happen in normal use - Pint is a required dependency
+                import warnings
+                warnings.warn(f"Pint not available, treating quantity with units '{units}' as dimensionless")
                 self._has_custom_units = False
                 self._has_pint_qty = False
-                self.set_units(units)  # From UnitAwareMixin - sets up scale factors
+                self._symbolic_with_units = False
         else:
             # Dimensionless
             self._has_custom_units = False
             self._has_pint_qty = False
+            self._symbolic_with_units = False
 
         # Dimensionality tracking for non-dimensionalization/re-dimensionalization
         if dimensionality is not None:
@@ -190,6 +210,23 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
         {'[length]': 1, '[time]': -1}
         """
         return self._dimensionality
+
+    @property
+    def _units_backend(self):
+        """
+        Get units backend (for protocol compatibility).
+
+        Returns a PintBackend for compatibility with the units protocol.
+        UWQuantity uses Pint directly via _pint_qty, so this creates a backend on-demand.
+        """
+        # Import here to avoid circular dependencies
+        from ..utilities.units_mixin import PintBackend
+
+        # UWQuantity doesn't store the backend, it uses Pint directly
+        # Create one on-demand for protocol compliance
+        if not hasattr(self, '_cached_backend'):
+            self._cached_backend = PintBackend()
+        return self._cached_backend
 
     @classmethod
     def _from_pint(cls, pint_qty, model_registry=None):
@@ -341,25 +378,6 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
         # Extract magnitude and create new quantity
         magnitude = self._units_backend.get_magnitude(converted_qty)
         return UWQuantity(magnitude, target_units)
-
-    def to_units(self, target_units: str) -> 'UWQuantity':
-        """
-        Convert to different units using Pint-native approach.
-
-        This method overrides UnitAwareMixin.to_units() to provide proper
-        Pint-native unit conversion for UWQuantity objects.
-
-        Parameters
-        ----------
-        target_units : str
-            Target units specification
-
-        Returns
-        -------
-        UWQuantity
-            New quantity with converted value and target units
-        """
-        return self.to(target_units)
 
     def to_compact(self) -> 'UWQuantity':
         """
@@ -616,9 +634,12 @@ class UWQuantity(DimensionalityMixin, UnitAwareMixin):
                 # Fallback for non-Pint quantities
                 return UWQuantity(self.value * other, self.units if self.has_units else None)
 
-    def _sympify_(self):
+    def _sympy_(self):
         """
         Return SymPy representation for symbolic mathematics.
+
+        Note: Uses _sympy_() protocol (not _sympify_()) for SymPy 1.14+ compatibility.
+        This is required for proper symbolic algebra in strict mode (matrix operations).
 
         This enables UWQuantity objects to work in mathematical operations
         with symbolic variables (mesh variables, expressions, etc.).
