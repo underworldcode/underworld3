@@ -30,7 +30,23 @@ def _substitute_all_once(fn, keep_constants=True, return_self=True):
             if keep_constants and is_constant_expr(atom):
                 continue
             else:
-                expr = expr.subs(atom, atom.sym)
+                # Check if scaling is active - if yes, use non-dimensional value
+                if underworld3._is_scaling_active() and hasattr(atom, '_pint_qty') and atom._pint_qty is not None:
+                    # Atom has units - compute non-dimensional value
+                    try:
+                        nondim_atom = underworld3.non_dimensionalise(atom)
+                        # non_dimensionalise returns UWQuantity with dimensionless value
+                        if hasattr(nondim_atom, 'value'):
+                            expr = expr.subs(atom, nondim_atom.value)
+                        else:
+                            # Fallback to .sym if non-dimensionalisation didn't work
+                            expr = expr.subs(atom, atom.sym)
+                    except:
+                        # If non-dimensionalisation fails, use dimensional value
+                        expr = expr.subs(atom, atom.sym)
+                else:
+                    # No scaling or no units - use dimensional value
+                    expr = expr.subs(atom, atom.sym)
 
     return expr
 
@@ -665,9 +681,28 @@ class UWexpression(MathematicalMixin, UWQuantity, uw_object, Symbol):
             # value can be changed. As a result, copy is just an assignment to
             # self.sym and should be deprecated.
 
+            # Update the symbolic value
             # self.symbol = other.symbol # Can't change this
             self._sym = other._sym
             # self.description = other.description # Shouldn't change this
+
+            # Copy unit metadata if present
+            if hasattr(other, '_pint_qty'):
+                self._pint_qty = other._pint_qty
+            if hasattr(other, '_has_pint_qty'):
+                self._has_pint_qty = other._has_pint_qty
+            if hasattr(other, '_custom_units'):
+                self._custom_units = other._custom_units
+            if hasattr(other, '_has_custom_units'):
+                self._has_custom_units = other._has_custom_units
+            if hasattr(other, '_symbolic_with_units'):
+                self._symbolic_with_units = other._symbolic_with_units
+            if hasattr(other, '_dimensionality'):
+                self._dimensionality = other._dimensionality
+            if hasattr(other, '_model_registry'):
+                self._model_registry = other._model_registry
+            if hasattr(other, '_model_instance'):
+                self._model_instance = other._model_instance
 
         return
 

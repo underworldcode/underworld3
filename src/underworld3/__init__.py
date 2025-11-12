@@ -149,7 +149,7 @@ from .constitutive_models import MultiMaterialConstitutiveModel
 from .function import quantity, expression, with_units
 
 # Unit utilities (top-level convenience for user code)
-from .function.unit_conversion import get_units, _extract_value
+from .function.unit_conversion import _extract_value
 
 # Currently on binder, pykdtree is hanging - fallback to previous implementation
 # import underworld3.kdtree
@@ -171,8 +171,10 @@ from .units import (
     get_dimensionality,
     assert_dimensionality,  # General type-safety gatekeeper for dimensionality
     units_of,
+    get_units,
     non_dimensionalise,
     dimensionalise,
+    show_nondimensional_form,  # User-facing inspection of non-dimensional expressions
     create_quantity,
     convert_units,
     is_dimensionless,
@@ -183,8 +185,8 @@ from .units import (
     # derivative_units removed - use natural pint arithmetic: var.units / mesh.units
 )
 
-# Universal unit query function (from function.unit_conversion)
-from .function.unit_conversion import get_units
+# Universal unit query function is already imported from units module (line 172)
+# NOTE: get_units has been moved to units module for unified API
 
 # Make units registry easily accessible (remove scaling terminology)
 # Users can now do uw.units.K, uw.units.Pa, etc. instead of uw.scaling.units.K

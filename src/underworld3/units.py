@@ -60,7 +60,58 @@ def _extract_units_info(obj):
     Returns:
         tuple: (has_units, units, backend) or (False, None, None)
     """
-    # Check if it's a unit-aware variable
+    # PRIORITY 0: Check for SymPy expressions first (including derivatives)
+    # This must come before unit-aware object check because UWexpression wraps
+    # SymPy derivatives and we need to detect the derivative, not the wrapper's units
+    try:
+        import sympy
+
+        # Check if object has a SymPy expression inside (UWexpression, UnitAwareExpression, etc.)
+        sympy_expr = None
+        if hasattr(obj, 'sym'):
+            sympy_expr = obj.sym
+        elif hasattr(obj, '_expr'):
+            sympy_expr = obj._expr
+        elif isinstance(obj, sympy.Basic):
+            sympy_expr = obj
+
+        if sympy_expr is not None and isinstance(sympy_expr, sympy.Basic):
+            # Check for derivatives FIRST before anything else
+            if hasattr(sympy_expr, 'diffindex'):
+                # This is a derivative! Compute derivative units: var_units / coord_units
+                try:
+                    # Get the function being differentiated
+                    if hasattr(sympy_expr, 'func'):
+                        var_units_info = _extract_units_info(sympy_expr.func)
+                        var_units = var_units_info[1] if var_units_info[0] else None
+
+                        # Get the coordinate being differentiated with respect to
+                        if hasattr(sympy_expr, 'args') and len(sympy_expr.args) > sympy_expr.diffindex:
+                            coord = sympy_expr.args[sympy_expr.diffindex]
+                            coord_units_info = _extract_units_info(coord)
+                            coord_units = coord_units_info[1] if coord_units_info[0] else None
+
+                            # Compute derivative units
+                            if var_units and coord_units:
+                                backend = _get_default_backend()
+                                # Parse as Pint units and compute derivative
+                                var_qty = backend.create_quantity(1.0, var_units)
+                                coord_qty = backend.create_quantity(1.0, coord_units)
+                                derivative_qty = var_qty / coord_qty
+                                derivative_units = str(derivative_qty.units)
+                                return True, derivative_units, backend
+                            elif var_units:
+                                # No coord units - just return var units
+                                backend = _get_default_backend()
+                                return True, var_units, backend
+                except Exception:
+                    # Fall through to other checks if derivative units computation fails
+                    pass
+    except ImportError:
+        pass
+
+    # PRIORITY 1: Check if it's a unit-aware object (variables, UnitAwareExpression, etc.)
+    # All unit-aware objects implement the protocol: has_units, units, _units_backend
     if hasattr(obj, "has_units") and hasattr(obj, "units") and hasattr(obj, "_units_backend"):
         if obj.has_units:
             return True, obj.units, obj._units_backend
@@ -81,29 +132,68 @@ def _extract_units_info(obj):
     try:
         import sympy
 
+        # FIRST: Check for Matrix objects before checking sympy.Basic
+        # Matrix doesn't inherit from Basic in the expected way, so check it first
+        if isinstance(obj, sympy.Matrix) and obj.shape[0] > 0:
+            first_element_units = _extract_units_info(obj[0])
+            if first_element_units[0]:  # has_units
+                return first_element_units
+
         if isinstance(obj, sympy.Basic):
+            # PRIORITY 1: Check for derivatives (diffindex attribute)
+            # This must come first because derivatives need special units computation
+            if hasattr(obj, 'diffindex'):
+                # This is a derivative! Compute derivative units: var_units / coord_units
+                try:
+                    # Get the function being differentiated
+                    if hasattr(obj, 'func'):
+                        var_units_info = _extract_units_info(obj.func)
+                        var_units = var_units_info[1] if var_units_info[0] else None
+
+                        # Get the coordinate being differentiated with respect to
+                        if hasattr(obj, 'args') and len(obj.args) > obj.diffindex:
+                            coord = obj.args[obj.diffindex]
+                            coord_units_info = _extract_units_info(coord)
+                            coord_units = coord_units_info[1] if coord_units_info[0] else None
+
+                            # Compute derivative units
+                            if var_units and coord_units:
+                                backend = _get_default_backend()
+                                # Parse as Pint units and compute derivative
+                                var_qty = backend.create_quantity(1.0, var_units)
+                                coord_qty = backend.create_quantity(1.0, coord_units)
+                                derivative_qty = var_qty / coord_qty
+                                derivative_units = str(derivative_qty.units)
+                                return True, derivative_units, backend
+                            elif var_units:
+                                # No coord units - just return var units
+                                backend = _get_default_backend()
+                                return True, var_units, backend
+                except Exception:
+                    # Fall through to other checks if derivative units computation fails
+                    pass
+
+            # PRIORITY 2: Check for patched _units attribute (coordinate units from patch_coordinate_units)
+            # This handles mesh.X[0], mesh.N.x, etc. which have _units directly attached
+            if hasattr(obj, '_units') and obj._units is not None:
+                backend = _get_default_backend()
+                return True, obj._units, backend
+
             # SymPy units backend removed - use Pint-native approach instead
-            # First, try the improved get_units from function module which handles symbolic expressions
-            try:
-                from underworld3.function.unit_conversion import get_units as function_get_units
+            # Third try: use compute_expression_units which handles symbolic expressions with dimensional analysis
+            from underworld3.function.unit_conversion import compute_expression_units
 
-                units_result = function_get_units(obj)
-                if units_result is not None:
-                    backend = _get_default_backend()
-                    return True, units_result, backend
-            except Exception:
-                pass  # Fall through to other methods
+            units_result = compute_expression_units(obj)
+            if units_result is not None:
+                backend = _get_default_backend()
+                # compute_expression_units returns pint.Unit objects, convert to string
+                units_str = str(units_result)
+                return True, units_str, backend
 
-            # Second try: extract unit-aware variables from the expression
+            # Third try: extract unit-aware variables from the expression
             units_from_variables = _extract_units_from_sympy_expression(obj)
             if units_from_variables is not None:
                 return units_from_variables
-
-            # Third try: for Matrix expressions, try the first element
-            if isinstance(obj, sympy.Matrix) and obj.shape[0] > 0:
-                first_element_units = _extract_units_info(obj[0])
-                if first_element_units[0]:  # has_units
-                    return first_element_units
 
             # Fourth try: check if the object contains physics units atoms
             try:
@@ -161,7 +251,14 @@ def _extract_units_from_sympy_expression(expr):
                     # Check if this symbol matches any component of the variable
                     if hasattr(variable, "num_components"):
                         var_symbols = [variable.sym[i] for i in range(variable.num_components)]
-                        if symbol in var_symbols and variable.has_units:
+                        # Also check if symbol's function class matches variable function class
+                        # This handles component access like v[0] which creates a derived symbol
+                        symbol_matches = symbol in var_symbols
+                        if not symbol_matches and hasattr(symbol, 'func') and hasattr(variable.sym[0], 'func'):
+                            # Check if the function classes match (e.g., both are instances of same UW function)
+                            symbol_matches = type(symbol.func) == type(variable.sym[0].func)
+
+                        if symbol_matches and variable.has_units:
                             unit_info_list.append((variable.units, variable._units_backend))
                             break  # Found the variable, no need to continue
 
@@ -207,7 +304,7 @@ def _analyze_expression_units(expr, unit_info_list):
         # For now, implement simple heuristics
         # TODO: Full dimensional analysis implementation
 
-        # If expression is just multiplication by a constant, preserve units
+        # If expression is multiplication, combine units using Pint
         if isinstance(expr, sympy.Mul):
             # Check if it's a constant times a variable
             constants = []
@@ -221,6 +318,33 @@ def _analyze_expression_units(expr, unit_info_list):
             if len(variables) == 1 and len(unit_info_list) == 1:
                 # Simple case: constant * variable
                 return unit_info_list[0][0]  # Return the variable's units
+
+            elif len(unit_info_list) > 1:
+                # Multiple variables: multiply their units together using Pint
+                from underworld3.scaling import units as ureg
+                result_unit = ureg("dimensionless")  # Start with dimensionless
+                for units_str, backend in unit_info_list:
+                    result_unit = result_unit * ureg(units_str)
+                return str(result_unit.units)
+
+        # If expression is division, divide units using Pint
+        if isinstance(expr, sympy.Pow):
+            # Check for division (negative power)
+            if len(expr.args) == 2 and expr.args[1] == -1:
+                # This is a division: expr.args[0] ** -1
+                if len(unit_info_list) >= 1:
+                    # Return reciprocal units
+                    from underworld3.scaling import units as ureg
+                    units_str = unit_info_list[0][0]
+                    result_unit = ureg(units_str) ** -1
+                    return str(result_unit.units)
+            elif len(expr.args) == 2 and len(unit_info_list) >= 1:
+                # General power: raise units to the power
+                from underworld3.scaling import units as ureg
+                units_str = unit_info_list[0][0]
+                power = float(expr.args[1])
+                result_unit = ureg(units_str) ** power
+                return str(result_unit.units)
 
         # If expression is addition/subtraction, all terms must have same units
         if isinstance(expr, sympy.Add):
@@ -323,9 +447,14 @@ def get_dimensionality(expression) -> Optional[Any]:
     return backend.get_dimensionality(quantity)
 
 
-def units_of(expression) -> Optional[Any]:
+def get_units(expression) -> Optional[Any]:
     """
     Get the units of an expression or quantity.
+
+    This is the unified, public API for extracting units from any object type
+    (variables, quantities, SymPy expressions, etc.). It replaces the previous
+    `units_of()` function and the internal `function.unit_conversion.get_units()`
+    for a clean, single API surface.
 
     Args:
         expression: Expression, quantity, or unit-aware object
@@ -334,12 +463,16 @@ def units_of(expression) -> Optional[Any]:
         Units object or None if no units
 
     Examples:
-        >>> velocity = EnhancedMeshVariable("velocity", mesh, 2, units="m/s")
-        >>> units = units_of(velocity)
+        >>> velocity = uw.discretisation.MeshVariable("velocity", mesh, 2, units="m/s")
+        >>> units = uw.get_units(velocity)
         >>> print(units)  # meter / second
     """
     has_units, units, backend = _extract_units_info(expression)
     return units if has_units else None
+
+
+# Backward compatibility alias - deprecated, use get_units() instead
+units_of = get_units
 
 
 def non_dimensionalise(expression, model=None) -> Any:
@@ -427,12 +560,15 @@ def non_dimensionalise(expression, model=None) -> Any:
         UnitAwareArray = None  # Not available
 
     if UnitAwareArray is not None and isinstance(expression, UnitAwareArray):
-        # Extract units from UnitAwareArray
+        # IDEMPOTENCY CHECK: Return early if already non-dimensional
+        # Non-dimensional arrays have units=None or units='dimensionless'
         units_str = expression._units if hasattr(expression, '_units') else None
 
         if units_str is None or units_str == "dimensionless":
-            # Already dimensionless - return as plain array
-            return np.asarray(expression)
+            # Already dimensionless - return the UnitAwareArray as-is (idempotent)
+            # Important: Return the original object, not np.asarray(), to preserve
+            # the UnitAwareArray type so idempotency check works on subsequent calls
+            return expression
 
         # Get scale for this dimensionality
         if not hasattr(model, "_fundamental_scales"):
@@ -446,14 +582,27 @@ def non_dimensionalise(expression, model=None) -> Any:
             dimensionality = temp_qty.dimensionality
 
             if not dimensionality:
-                # Dimensionless
+                # Dimensionless - return as plain array
                 return np.asarray(expression)
 
             # Get scale from model
             scale = model.get_scale_for_dimensionality(dimensionality)
 
             # Divide array by scale to get dimensionless values
-            return np.asarray(expression) / float(scale.magnitude)
+            nondim_array = np.asarray(expression) / float(scale.magnitude)
+
+            # Create new UnitAwareArray with 'dimensionless' units to make future
+            # calls idempotent (subsequent non_dimensionalise calls will recognize
+            # the array as already non-dimensional). IMPORTANT: Preserve the original
+            # dimensionality metadata so results can be re-dimensionalized later
+            nondim_ua = UnitAwareArray(nondim_array, units="dimensionless")
+
+            # Copy the dimensionality metadata from the original array's units
+            # This allows subsequent non_dimensionalise() calls to be truly idempotent
+            # while preserving information needed for dimensionalization
+            nondim_ua._dimensionality = dimensionality
+
+            return nondim_ua
 
         except Exception as e:
             # Could not compute scale - return plain array
@@ -500,11 +649,132 @@ def non_dimensionalise(expression, model=None) -> Any:
         # It's a MeshVariable or SwarmVariable with the method AND data attribute
         return expression.non_dimensional_value()
 
+    # Protocol 7: Duck-typing protocol for unit-aware objects
+    # Check for complete units protocol (has_units, units, _units_backend, dimensionality)
+    # This handles UnitAwareExpression and any future unit-aware objects
+    if (hasattr(expression, 'has_units') and hasattr(expression, 'units') and
+        hasattr(expression, '_units_backend') and hasattr(expression, 'dimensionality')):
+
+        # Check if it actually has units
+        if not expression.has_units or not expression.units:
+            # No units - treat as dimensionless
+            # For UnitAwareExpression, return the SymPy expression itself
+            if hasattr(expression, '_expr'):
+                return expression._expr
+            return expression
+
+        # Get dimensionality
+        dimensionality = expression.dimensionality
+
+        # Handle both dict and string dimensionality formats
+        if isinstance(dimensionality, str):
+            # Convert string format like "[length]" to dict format
+            # This is simple for single dimensions - for complex ones, use Pint
+            try:
+                from .function.quantities import UWQuantity
+                temp_qty = UWQuantity(1.0, expression.units)
+                dimensionality = temp_qty.dimensionality
+            except:
+                # Fallback: treat as dimensionless
+                if hasattr(expression, '_expr'):
+                    return expression._expr
+                return expression
+
+        if not dimensionality or dimensionality == {}:
+            # Dimensionless - return underlying expression
+            if hasattr(expression, '_expr'):
+                return expression._expr
+            return expression
+
+        # Get scale from model
+        if not hasattr(model, "_fundamental_scales"):
+            # No reference quantities - return underlying expression
+            if hasattr(expression, '_expr'):
+                return expression._expr
+            return expression
+
+        try:
+            scale = model.get_scale_for_dimensionality(dimensionality)
+
+            # For UnitAwareExpression, return the scaled SymPy expression
+            # The scale division happens symbolically, not numerically
+            if hasattr(expression, '_expr'):
+                # Create UWQuantity from the scale to get a dimensionless result
+                # The expression remains symbolic, but conceptually divided by scale
+                from .function.quantities import UWQuantity
+                return expression._expr  # Return underlying SymPy expression
+
+            # For other unit-aware objects, try to extract value
+            if hasattr(expression, 'value'):
+                value = expression.value
+            elif hasattr(expression, '_sym'):
+                value = expression._sym
+            else:
+                # Can't extract value - return as-is
+                return expression
+
+            # Divide by scale
+            result_value = value / float(scale.magnitude)
+
+            # Return as UWQuantity with preserved dimensionality
+            from .function.quantities import UWQuantity
+            return UWQuantity(result_value, units="dimensionless", dimensionality=dimensionality)
+
+        except ValueError as e:
+            # Could not compute scale
+            raise ValueError(f"Cannot non-dimensionalise {type(expression).__name__}: {e}")
+
     # Could not non-dimensionalise
     raise TypeError(
         f"Cannot non-dimensionalise object of type {type(expression)}. "
         f"Must be MeshVariable, SwarmVariable, UWQuantity, UnitAwareArray, or plain number."
     )
+
+
+def show_nondimensional_form(expression, model=None):
+    """
+    Display the non-dimensionalized form of a complex expression.
+
+    This function unwraps the expression (expanding UW wrappers to SymPy),
+    applies non-dimensional scaling, and returns the result for inspection.
+    Useful for seeing what will actually be compiled into C code when
+    scaling is active.
+
+    Args:
+        expression: Any SymPy expression, UW expression, or variable
+        model: Model instance with reference quantities (uses default if None)
+
+    Returns:
+        SymPy expression with non-dimensional scaling applied
+
+    Examples:
+        >>> # See what the Stokes flux looks like non-dimensionally
+        >>> flux = stokes.constitutive_model.flux
+        >>> nondim_flux = uw.show_nondimensional_form(flux)
+        >>> print(nondim_flux)  # Should show values close to 1.0, not 1e21
+
+        >>> # Check a parameter
+        >>> viscosity = model.Parameters.shear_viscosity_0
+        >>> print(uw.show_nondimensional_form(viscosity))  # Should be ~1.0
+    """
+    import underworld3 as uw
+    from .function.expressions import _unwrap_for_compilation
+
+    # Get model
+    if model is None:
+        model = uw.get_default_model()
+
+    # Check if scaling is active
+    if not uw._is_scaling_active():
+        raise ValueError(
+            "Non-dimensional scaling is not active. "
+            "Set reference quantities first: model.set_reference_quantities(...)"
+        )
+
+    # Unwrap the expression (this will apply non-dimensional scaling to parameters)
+    unwrapped = _unwrap_for_compilation(expression, keep_constants=False, return_self=False)
+
+    return unwrapped
 
 
 def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
@@ -561,7 +831,7 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
     # IDEMPOTENCY CHECK: If input already has dimensional units, return as-is
     # This prevents double-conversion (e.g., 2900 km → 2900000 km)
     from .function.quantities import UWQuantity
-    from .function.unit_conversion import UnitAwareArray
+    from .utilities.unit_aware_array import UnitAwareArray
 
     if isinstance(expression, UWQuantity):
         # Check if units are already dimensional (not "dimensionless")
@@ -582,7 +852,7 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
         dimensionality = expression.dimensionality
 
     # Try to extract from UnitAwareArray
-    from .function.unit_conversion import UnitAwareArray
+    from .utilities.unit_aware_array import UnitAwareArray
     if isinstance(expression, UnitAwareArray) and dimensionality is None:
         dimensionality = expression.dimensionality
 
@@ -634,10 +904,10 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
         # Multiply array by scale
         result_qty = expression.view(np.ndarray) * scale
         # Return UnitAwareArray with proper units
+        # NOTE: UnitAwareArray doesn't store dimensionality, only units
         return UnitAwareArray(
             result_qty.magnitude,
-            units=str(result_qty.units),
-            dimensionality=dimensionality
+            units=str(result_qty.units)
         )
 
     elif isinstance(expression, (int, float, complex, np.ndarray)):
@@ -645,10 +915,10 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
         result_qty = expression * scale
         if isinstance(expression, np.ndarray):
             # Return UnitAwareArray
+            # NOTE: UnitAwareArray doesn't store dimensionality, only units
             return UnitAwareArray(
                 result_qty.magnitude,
-                units=str(result_qty.units),
-                dimensionality=dimensionality
+                units=str(result_qty.units)
             )
         else:
             # Return UWQuantity
