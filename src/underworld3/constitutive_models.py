@@ -412,40 +412,38 @@ class ViscousFlowModel(Constitutive_Model):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Now uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Define shear_viscosity_0 as a Parameter descriptor
+        # The lambda receives the _Parameters instance and creates the expression via the owning model
+        shear_viscosity_0 = api_tools.Parameter(
+            r"\eta",
+            lambda params_instance: params_instance._owning_model.create_unique_symbol(
+                r"\eta", 1, "Shear viscosity"
+            ),
+            "Shear viscosity",
+            units="Pa*s"
+        )
 
         def __init__(
             inner_self,
             _owning_model,
         ):
-
             inner_self._owning_model = _owning_model
-
-            # Create unique symbol using base class helper
-            inner_self._shear_viscosity_0 = _owning_model.create_unique_symbol(
-                r"\eta", 1, "Shear viscosity"
-            )
-
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value: Union[float, sympy.Function, UWQuantity]):
-
-            visc_expr = validate_parameters(R"\eta", value, default=None, allow_number=True)
-
-            inner_self._shear_viscosity_0.copy(visc_expr)
-            del visc_expr
-
-            return
+            # Note: shear_viscosity_0 is now a descriptor, no need to create it here
 
     @property
     def viscosity(self):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters._shear_viscosity_0
+        return self.Parameters.shear_viscosity_0
 
     @property
     def K(self):
@@ -502,32 +500,39 @@ class ViscousFlowModel(Constitutive_Model):
         d = self.dim
         viscosity = self.viscosity
 
-        try:
-            # CRITICAL: Use .sym property to avoid UWexpression array corruption issues
-            #
-            # When SymPy's array operations encounter UWexpression objects directly,
-            # they can corrupt the internal array storage (e.g., reducing 16 elements
-            # to 12 in rank-4 tensors), causing IndexError on as_immutable().
-            #
-            # This affects ANY tensor operations with UWexpression objects:
-            # - User custom constitutive models: tensor * uwexpression
-            # - Advanced mathematical operations with arrays/tensors
-            #
-            # Solution: Always use .sym property for tensor/array operations
-            # Example: tensor * uwexpression.sym (works) vs tensor * uwexpression (fails)
-            viscosity_sym = viscosity.sym if hasattr(viscosity, "sym") else viscosity
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity_sym
-        except:
-            d = self.dim
-            dv = uw.maths.tensor.idxmap[d][0]
-            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-                self._c = 2 * viscosity
-            else:
-                raise RuntimeError(
-                    "Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor"
-                )
+        # Check for tensor forms first (Mandel matrix or full rank-4 tensor)
+        dv = uw.maths.tensor.idxmap[d][0]
+        if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
+            # Mandel form of constitutive tensor
+            self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
+        elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
+            # Full rank-4 tensor
+            self._c = 2 * viscosity
+        else:
+            # Scalar viscosity case
+            # UWexpression has __getitem__ from MathematicalMixin, making it Iterable,
+            # which causes SymPy's array multiplication operator to reject it.
+            # Solution: Use element-wise loop construction instead of operator overloading.
+            # The multiplication creates Mul(scalar, UWexpression) objects which are NOT
+            # Iterable, so array assignment accepts them. JIT unwrapper finds the
+            # UWexpression atoms inside and substitutes correctly.
+
+            identity = uw.maths.tensor.rank4_identity(d)
+            result = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
+
+            # Element-wise multiplication: c_ijkl = 2 * I_ijkl * viscosity
+            for i in range(d):
+                for j in range(d):
+                    for k in range(d):
+                        for l in range(d):
+                            val = 2 * identity[i, j, k, l] * viscosity
+                            # If simplification returns bare UWexpression (e.g., 2*(1/2)*visc = visc),
+                            # wrap it to avoid Iterable check failure during assignment
+                            if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                                val = sympy.Mul(sympy.S.One, val, evaluate=False)
+                            result[i, j, k, l] = val
+
+            self._c = result
 
         self._is_setup = True
         self._solver_is_setup = False

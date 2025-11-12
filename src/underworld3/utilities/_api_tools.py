@@ -263,8 +263,13 @@ class ExpressionDescriptor:
         """
         Set the expression's symbolic content.
 
-        For parameters (read_only=False): Updates .sym
+        For parameters (read_only=False): Updates .sym or copies unit metadata
         For templates (read_only=True): Raises error
+
+        Special handling for UWQuantity:
+        - If value is a pure UWQuantity (not UWexpression), copy unit metadata
+          without changing the symbolic value to preserve lazy evaluation
+        - Otherwise, update .sym as normal
         """
         if self.read_only:
             raise AttributeError(
@@ -275,19 +280,53 @@ class ExpressionDescriptor:
         # Get or create the expression
         expr = self.__get__(obj, type(obj))
 
-        # Run validator if provided
-        if self.validator is not None:
-            value = self.validator(value)
+        # Import here to avoid circular dependency
+        from ..function.quantities import UWQuantity
+        from ..function.expressions import UWexpression
 
-        # Auto-unwrap if value has _sympify_
-        if hasattr(value, "_sympify_"):
-            value = value._sympify_()
+        # Special case: UWQuantity assignment (update ._sym AND copy metadata)
+        # Check for pure UWQuantity (not UWexpression which is a subclass)
+        if isinstance(value, UWQuantity) and not isinstance(value, UWexpression):
+            # Update the symbolic value AND copy unit metadata
+            # The expression object (being a SymPy Symbol) preserves identity
+            # while ._sym contains the value for JIT substitution
+            expr.sym = value._sym  # Update substitution value
 
-        # Update the expression's .sym
-        expr.sym = value
+            # Copy unit metadata
+            if hasattr(value, '_pint_qty'):
+                expr._pint_qty = value._pint_qty
+            if hasattr(value, '_has_pint_qty'):
+                expr._has_pint_qty = value._has_pint_qty
+            if hasattr(value, '_dimensionality'):
+                expr._dimensionality = value._dimensionality
+            if hasattr(value, '_custom_units'):
+                expr._custom_units = value._custom_units
+            if hasattr(value, '_has_custom_units'):
+                expr._has_custom_units = value._has_custom_units
+            if hasattr(value, '_model_registry'):
+                expr._model_registry = value._model_registry
+            if hasattr(value, '_model_instance'):
+                expr._model_instance = value._model_instance
+            if hasattr(value, '_symbolic_with_units'):
+                expr._symbolic_with_units = value._symbolic_with_units
+        else:
+            # Normal assignment: update symbolic value
+            # Run validator if provided
+            if self.validator is not None:
+                value = self.validator(value)
 
-        # Mark solver as needing setup
-        if hasattr(obj, "is_setup"):
+            # Auto-unwrap if value has _sympify_
+            if hasattr(value, "_sympify_"):
+                value = value._sympify_()
+
+            # Update the expression's .sym
+            expr.sym = value
+
+        # Mark solver/model as needing setup
+        if hasattr(obj, "_reset"):
+            # For constitutive model Parameters, call _reset() to invalidate setup
+            obj._reset()
+        elif hasattr(obj, "is_setup"):
             obj.is_setup = False
 
 
