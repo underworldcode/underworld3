@@ -13,7 +13,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# REMOVED: sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
 
@@ -114,7 +114,7 @@ class TestMeshUnitsRealisticUseCases:
         )
 
         # 3. Convert to different coordinate systems as needed
-        survey_mesh_km = survey_mesh.to_units("km")
+        survey_mesh_km = survey_mesh.to("km")
         print(
             f"Same extent in km: {survey_mesh_km.X.coords.min():.3f} to {survey_mesh_km.X.coords.max():.3f} km"
         )
@@ -178,8 +178,8 @@ class TestMeshUnitsRealisticUseCases:
 
         # 4. Coordinate transformations between scales
         # Map local region to regional coordinates
-        local_in_regional = regional_mesh.to_units("km")
-        detail_in_meters = detail_mesh.to_units("m")
+        local_in_regional = regional_mesh.to("km")
+        detail_in_meters = detail_mesh.to("m")
 
         print(f"Detail model in meters: {detail_in_meters.X.coords.max():.2f} m")
 

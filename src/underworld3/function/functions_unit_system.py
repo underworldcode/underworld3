@@ -103,22 +103,33 @@ def evaluate(
     # Check if expr has .sym property (MeshVariables, etc.) and use that
     # IMPORTANT: Get units BEFORE unwrapping to preserve unit context
     if hasattr(expr, 'sym'):
-        result_units = get_units(expr.sym)  # Check units BEFORE unwrap
+        # For MeshVariables, get units from the variable itself, not from .sym
+        # (since .sym might be a Matrix which doesn't carry units)
+        result_units = get_units(expr)  # Get from MeshVariable
         expr_unwrapped = fn_unwrap(expr.sym)
     else:
         result_units = get_units(expr)  # Check units BEFORE unwrap
         expr_unwrapped = fn_unwrap(expr)
+
+    # DEBUG: Print what we got
+    if verbose:
+        print(f"[evaluate DEBUG] result_units = {result_units}, type = {type(result_units)}")
 
     # Step 2: Convert dimensional coordinates to non-dimensional [0-1] form
     # Internal mesh KDTrees are built with non-dimensional [0-1] coordinates from PETSc
     # User-facing var.coords properties may have dimensional units (meters)
 
     # Handle different coordinate input types
-    if isinstance(coords, np.ndarray):
+    # IMPORTANT: Check for UnitAwareArray BEFORE np.ndarray since it inherits from ndarray
+    if isinstance(coords, UnitAwareArray):
+        # Unit-aware array - need to non-dimensionalise
+        coords_nondim = uw.non_dimensionalise(coords)
+        coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+    elif isinstance(coords, np.ndarray):
         # Plain numpy array - assume it's already [0-1] non-dimensional
         coords_for_eval = np.asarray(coords, dtype=np.double)
     else:
-        # Has units or is other type - try to non-dimensionalise
+        # Other type - try to non-dimensionalise
         coords_nondim = uw.non_dimensionalise(coords)
         coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
 
@@ -166,7 +177,12 @@ def evaluate(
         raw_values = raw_result_nondim
         extrapolated = None
 
-    # Get dimensionality from units (result_units is already a Pint Unit object)
+    # Convert result_units string to Pint Unit object if needed
+    from ..scaling import units as ureg
+    if isinstance(result_units, str):
+        result_units = ureg(result_units)
+
+    # Get dimensionality from units (result_units is now a Pint Unit object)
     pint_qty = 1.0 * result_units
     dimensionality = dict(pint_qty.dimensionality)
 
@@ -178,7 +194,18 @@ def evaluate(
     )
 
     # Step 7: Wrap the dimensional result with units
-    if np.isscalar(raw_result_dimensional):
+    if verbose:
+        print(f"[evaluate DEBUG] Before wrapping:")
+        print(f"  raw_result_dimensional type: {type(raw_result_dimensional)}")
+        print(f"  raw_result_dimensional shape: {np.asarray(raw_result_dimensional).shape if not np.isscalar(raw_result_dimensional) else 'scalar'}")
+        print(f"  result_units: {result_units}")
+
+    # Check if dimensionalise() already returned a unit-aware object
+    # If so, use it directly instead of wrapping again
+    if hasattr(raw_result_dimensional, 'units') and raw_result_dimensional.units is not None:
+        # Already unit-aware (from dimensionalise)
+        wrapped_result = raw_result_dimensional
+    elif np.isscalar(raw_result_dimensional):
         # Scalar result - wrap as UWQuantity
         wrapped_result = quantity(float(raw_result_dimensional), result_units)
     else:
@@ -186,6 +213,11 @@ def evaluate(
         wrapped_result = UnitAwareArray(
             np.asarray(raw_result_dimensional), units=result_units
         )
+
+    if verbose:
+        print(f"[evaluate DEBUG] After wrapping:")
+        print(f"  wrapped_result type: {type(wrapped_result)}")
+        print(f"  wrapped_result.units: {getattr(wrapped_result, 'units', 'NO ATTRIBUTE')}")
 
     # Return result with extrapolation flag if requested
     if check_extrapolated:

@@ -263,6 +263,115 @@ class UnitAwareExpression:
         """Negation preserves units."""
         return self.__class__(-self._expr, self._units)
 
+    # =========================================================================
+    # Unit Conversion
+    # =========================================================================
+
+    def to(self, target_units: str) -> 'UnitAwareExpression':
+        """
+        Convert to different units, returning a new symbolic expression with scaling wrapper.
+
+        For symbolic expressions (not yet evaluated), this returns a NEW expression
+        with the appropriate scaling factor/offset applied. The original expression
+        remains unchanged.
+
+        Parameters
+        ----------
+        target_units : str
+            Target units to convert to (e.g., 'km/s', 'degC')
+
+        Returns
+        -------
+        UnitAwareExpression
+            New expression with scaling wrapper and target units
+
+        Examples
+        --------
+        >>> # Simple scaling (no offset)
+        >>> velocity_ms = velocity[0]  # Has units 'm/s'
+        >>> velocity_kms = velocity_ms.to('km/s')  # Returns velocity[0] * 0.001
+
+        >>> # Offset conversion (temperature)
+        >>> temp_kelvin = temperature  # Has units 'K'
+        >>> temp_celsius = temp_kelvin.to('degC')  # Returns temperature - 273.15
+
+        Notes
+        -----
+        - Symbolic conversion preserves lazy evaluation
+        - Only compatible units can be converted (e.g., can't convert 'm/s' to 'kelvin')
+        - Uses Pint for dimensional analysis and conversion factor computation
+        """
+        # IMPORTANT: Use the computed .units property, not self._units!
+        # For compound expressions, self._units might be stale but .units
+        # is computed lazily from the expression tree
+        computed_units = self.units  # This calls the lazy @property
+
+        if not computed_units:
+            raise ValueError(f"Cannot convert expression without units. Expression: {self._expr}")
+
+        # Convert current units to Pint unit if it's a string
+        if isinstance(computed_units, str):
+            current_pint = ureg(computed_units)
+        elif hasattr(computed_units, 'dimensionality'):
+            current_pint = computed_units
+        else:
+            # Try to create Pint unit from whatever we have
+            current_pint = ureg(str(computed_units))
+
+        # Parse target units
+        target_pint = ureg(target_units)
+
+        # Check dimensionality compatibility
+        if current_pint.dimensionality != target_pint.dimensionality:
+            raise ValueError(
+                f"Cannot convert from {self._units} to {target_units}: "
+                f"incompatible dimensionalities"
+            )
+
+        # Create quantities to compute conversion
+        from_qty = 1.0 * current_pint
+        to_qty = from_qty.to(target_pint)
+
+        # Check if this is an offset unit (like Celsius/Fahrenheit)
+        # For offset units: new = old * factor + offset
+        # For regular units: new = old * factor
+        try:
+            # Try zero conversion to detect offset
+            zero_from = 0.0 * current_pint
+            zero_to = zero_from.to(target_pint)
+            offset = zero_to.magnitude
+            has_offset = abs(offset) > 1e-10
+        except:
+            # If offset detection fails, assume no offset
+            has_offset = False
+            offset = 0.0
+
+        # Compute conversion factor
+        factor = to_qty.magnitude
+
+        # Create new symbolic expression with scaling wrapper
+        # Handle both scalar and matrix expressions
+        import sympy
+
+        if has_offset:
+            # Offset conversion: expr * factor + offset
+            # For matrices, we need to use elementwise operations
+            if isinstance(self._expr, sympy.MatrixBase):
+                # Matrix: apply operation element-wise
+                new_expr = self._expr * factor + sympy.ones(*self._expr.shape) * offset
+            else:
+                # Scalar: direct operation
+                new_expr = self._expr * factor + offset
+        else:
+            # Simple scaling: expr * factor
+            if abs(factor - 1.0) > 1e-10:  # Only apply scaling if factor != 1
+                new_expr = self._expr * factor
+            else:
+                new_expr = self._expr
+
+        # Return new UnitAwareExpression with target units
+        return self.__class__(new_expr, target_pint)
+
     # For SymPy compatibility
     def _sympy_(self):
         """Allow sympify to extract the SymPy expression.

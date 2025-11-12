@@ -12,11 +12,11 @@ from typing import Optional, Union, Any
 import numpy as np
 
 from .discretisation_mesh_variables import _BaseMeshVariable
-from ..utilities import MathematicalMixin, UnitAwareMixin
+from ..utilities import MathematicalMixin
 from ..utilities.dimensionality_mixin import DimensionalityMixin
 
 
-class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixin):
+class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
     """
     Enhanced MeshVariable with mathematical operations, units support, and persistence.
 
@@ -129,7 +129,6 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
 
         # Initialize mixins
         DimensionalityMixin.__init__(self)  # Initialize dimensionality tracking
-        UnitAwareMixin.__init__(self, units=units, units_backend=units_backend)
         # MathematicalMixin is initialized automatically via inheritance
 
         # Always register with model (AFTER all attributes are set)
@@ -618,6 +617,72 @@ class EnhancedMeshVariable(DimensionalityMixin, UnitAwareMixin, MathematicalMixi
     def degree(self) -> int:
         """Polynomial degree."""
         return self._base_var.degree
+
+    # === UNITS PROTOCOL DELEGATION ===
+    # Delegate units protocol to _base_var (which has complete implementation)
+
+    @property
+    def units(self):
+        """Units for this variable."""
+        return self._base_var.units
+
+    @property
+    def has_units(self) -> bool:
+        """Check if this variable has units."""
+        return self._base_var.has_units
+
+    @property
+    def _units_backend(self):
+        """Units backend (for protocol compatibility)."""
+        return self._base_var._units_backend
+
+    @property
+    def dimensionality(self):
+        """Get dimensionality (delegates to DimensionalityMixin or base variable)."""
+        # DimensionalityMixin.dimensionality uses self.units, which now delegates to _base_var
+        # This ensures consistency
+        return DimensionalityMixin.dimensionality.fget(self)
+
+    def units_repr(self):
+        """
+        Return string representation with units information.
+
+        Returns a formatted string showing the variable's units.
+        """
+        if self.has_units:
+            return f"Variable '{self.name}' (units: {self.units})"
+        else:
+            return f"Variable '{self.name}' (no units)"
+
+    def non_dimensional_value(self, model=None):
+        """
+        Get non-dimensionalized values of the variable.
+
+        Returns the variable's data array in non-dimensional form based on
+        the model's reference quantities.
+
+        Parameters
+        ----------
+        model : underworld3.Model, optional
+            Model containing reference quantities. If None, uses default model.
+
+        Returns
+        -------
+        numpy.ndarray
+            Non-dimensionalized values with same shape as self.data
+        """
+        import underworld3 as uw
+
+        # Use provided model or get default
+        if model is None:
+            model = uw.get_default_model()
+
+        # Just return the data divided by scaling coefficient
+        if hasattr(self._base_var, 'scaling_coefficient'):
+            return self.data / float(self._base_var.scaling_coefficient)
+        else:
+            # No scaling, return data as-is
+            return self.data
 
     @property
     def continuous(self) -> bool:

@@ -12,7 +12,7 @@ import sys
 import os
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# REMOVED: sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from underworld3.utilities.mathematical_mixin import MathematicalMixin
 

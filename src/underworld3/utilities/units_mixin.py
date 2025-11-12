@@ -358,27 +358,6 @@ class UnitAwareMixin:
             self._dimensional_quantity, other._dimensional_quantity
         )
 
-    def to_units(self, target_units: Union[str, Any]) -> Any:
-        """
-        Convert this variable's data to different units.
-
-        Args:
-            target_units: Target units to convert to
-
-        Returns:
-            Data converted to target units
-        """
-        if not self.has_units:
-            raise ValueError("Cannot convert units - variable has no units")
-
-        current_quantity = self.create_quantity(self.data)
-        target_quantity = self._units_backend.create_quantity(1.0, target_units)
-
-        # This would need backend-specific conversion logic
-        # For now, return a placeholder
-        warnings.warn("Unit conversion not fully implemented")
-        return self.data
-
     def units_repr(self) -> str:
         """
         Get string representation including units information.

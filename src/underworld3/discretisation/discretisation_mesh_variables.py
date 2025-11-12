@@ -826,7 +826,8 @@ class _BaseMeshVariable(Stateful, uw_object):
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
 
-        mesh_kdt = uw.kdtree.KDTree(self.coords)
+        # Use non-dimensional coordinates for internal RBF interpolation KDTree
+        mesh_kdt = uw.kdtree.KDTree(self.coords_nd)
         values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
         del mesh_kdt
 
@@ -1950,6 +1951,51 @@ class _BaseMeshVariable(Stateful, uw_object):
 
     ## ToDo: We should probably deprecate this in favour of using integrals
 
+    def _dimensionalise_stat(self, value: Union[float, tuple]) -> Union[float, tuple]:
+        """
+        Helper to dimensionalise statistical values using uw.dimensionalise().
+
+        Takes non-dimensional value(s) from PETSc and converts to dimensional
+        form using the variable's units and model reference quantities.
+
+        Parameters
+        ----------
+        value : float or tuple
+            Non-dimensional value(s) from PETSc
+
+        Returns
+        -------
+        float, tuple, or UWQuantity
+            Dimensionalised value(s) if units are enabled, else unchanged
+        """
+        # Check if units mode is enabled
+        model = uw.get_default_model()
+        if not model.has_units() or not hasattr(self, 'units') or self.units is None:
+            return value  # Backward compatible - no units mode or variable has no units
+
+        # Extract dimensionality from units
+        # self.units is already a Pint Unit object with .dimensionality attribute
+        try:
+            if hasattr(self.units, 'dimensionality'):
+                # Pint Unit object - extract dimensionality directly
+                dimensionality = dict(self.units.dimensionality)
+            else:
+                # String or other - parse using Pint
+                from ..scaling import units as ureg
+                pint_unit = ureg(self.units)
+                dimensionality = dict(pint_unit.dimensionality)
+        except Exception as e:
+            # If extraction fails, fall back to no dimensionality
+            import warnings
+            warnings.warn(f"Failed to extract dimensionality from units '{self.units}': {e}")
+            return value
+
+        # Dimensionalise using proper units system
+        if isinstance(value, tuple):
+            return tuple(uw.dimensionalise(val, target_dimensionality=dimensionality, model=model) for val in value)
+        else:
+            return uw.dimensionalise(value, target_dimensionality=dimensionality, model=model)
+
     def min(self) -> Union[float, tuple]:
         """
         The global variable minimum value.
@@ -1968,23 +2014,15 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset.destroy()
         subdm.destroy()
 
-        # Get raw values from PETSc
+        # Get raw non-dimensional values from PETSc
         if self.num_components == 1:
             rank, value = self._gvec.min()
             min_vals = value
         else:
             min_vals = tuple([self._gvec.strideMin(i)[1] for i in range(self.num_components)])
 
-        # Check if units mode is enabled
-        model = uw.get_default_model()
-        if not model.has_units() or not hasattr(self, 'units') or self.units is None:
-            return min_vals  # Backward compatible - no units mode or variable has no units
-
-        # Wrap with units + dimensionality
-        if isinstance(min_vals, tuple):
-            return tuple(uw.quantity(val, self.units) for val in min_vals)
-        else:
-            return uw.quantity(min_vals, self.units)
+        # Dimensionalise using units system
+        return self._dimensionalise_stat(min_vals)
 
     def max(self) -> Union[float, tuple]:
         """
@@ -2004,27 +2042,22 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset.destroy()
         subdm.destroy()
 
-        # Get raw values from PETSc
+        # Get raw non-dimensional values from PETSc
         if self.num_components == 1:
             rank, value = self._gvec.max()
             max_vals = value
         else:
             max_vals = tuple([self._gvec.strideMax(i)[1] for i in range(self.num_components)])
 
-        # Check if units mode is enabled
-        model = uw.get_default_model()
-        if not model.has_units() or not hasattr(self, 'units') or self.units is None:
-            return max_vals  # Backward compatible - no units mode or variable has no units
-
-        # Wrap with units + dimensionality
-        if isinstance(max_vals, tuple):
-            return tuple(uw.quantity(val, self.units) for val in max_vals)
-        else:
-            return uw.quantity(max_vals, self.units)
+        # Dimensionalise using units system
+        return self._dimensionalise_stat(max_vals)
 
     def sum(self) -> Union[float, tuple]:
         """
         The global variable sum value.
+
+        When units are enabled (model.has_units() == True), returns UWQuantity
+        with proper dimensionality.
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
@@ -2035,14 +2068,17 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset.destroy()
         subdm.destroy()
 
+        # Get raw non-dimensional values from PETSc
         if self.num_components == 1:
-            return self._gvec.sum()
+            sum_vals = self._gvec.sum()
         else:
             cpts = []
             for i in range(0, self.num_components):
                 cpts.append(self._gvec.strideSum(i))
+            sum_vals = tuple(cpts)
 
-            return tuple(cpts)
+        # Dimensionalise using units system
+        return self._dimensionalise_stat(sum_vals)
 
     def norm(self, norm_type) -> Union[float, tuple]:
         """
@@ -2052,6 +2088,9 @@ class _BaseMeshVariable(Stateful, uw_object):
             - 0: NORM 1 ||v|| = sum_i | v_i |. ||A|| = max_j || v_*j ||
             - 1: NORM 2 ||v|| = sqrt(sum_i |v_i|^2) (vectors only)
             - 3: NORM INFINITY ||v|| = max_i |v_i|. ||A|| = max_i || v_i* ||, maximum row sum
+
+        When units are enabled (model.has_units() == True), returns UWQuantity
+        with proper dimensionality.
         """
         if not self._lvec:
             raise RuntimeError("It doesn't appear that any data has been set.")
@@ -2065,10 +2104,14 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset.destroy()
         subdm.destroy()
 
+        # Get raw non-dimensional values from PETSc
         if self.num_components == 1:
-            return self._gvec.norm(norm_type)
+            norm_vals = self._gvec.norm(norm_type)
         else:
-            return tuple([self._gvec.strideNorm(i, norm_type) for i in range(self.num_components)])
+            norm_vals = tuple([self._gvec.strideNorm(i, norm_type) for i in range(self.num_components)])
+
+        # Dimensionalise using units system
+        return self._dimensionalise_stat(norm_vals)
 
     def mean(self) -> Union[float, tuple]:
         """
@@ -2086,7 +2129,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset.destroy()
         subdm.destroy()
 
-        # Get raw values from PETSc
+        # Get raw non-dimensional values from PETSc
         if self.num_components == 1:
             vecsize = self._gvec.getSize()
             mean_vals = self._gvec.sum() / vecsize
@@ -2094,16 +2137,8 @@ class _BaseMeshVariable(Stateful, uw_object):
             vecsize = self._gvec.getSize() / self.num_components
             mean_vals = tuple([self._gvec.strideSum(i) / vecsize for i in range(self.num_components)])
 
-        # Check if units mode is enabled
-        model = uw.get_default_model()
-        if not model.has_units() or not hasattr(self, 'units') or self.units is None:
-            return mean_vals  # Backward compatible - no units mode or variable has no units
-
-        # Wrap with units + dimensionality
-        if isinstance(mean_vals, tuple):
-            return tuple(uw.quantity(val, self.units) for val in mean_vals)
-        else:
-            return uw.quantity(mean_vals, self.units)
+        # Dimensionalise using units system
+        return self._dimensionalise_stat(mean_vals)
 
     def std(self) -> Union[float, tuple]:
         """
@@ -2157,16 +2192,8 @@ class _BaseMeshVariable(Stateful, uw_object):
 
             std_vals = tuple(stds)
 
-        # Check if units mode is enabled
-        model = uw.get_default_model()
-        if not model.has_units() or not hasattr(self, 'units') or self.units is None:
-            return std_vals  # Backward compatible - no units mode or variable has no units
-
-        # Wrap with units + dimensionality
-        if isinstance(std_vals, tuple):
-            return tuple(uw.quantity(val, self.units) for val in std_vals)
-        else:
-            return uw.quantity(std_vals, self.units)
+        # Dimensionalise using units system
+        return self._dimensionalise_stat(std_vals)
 
     @uw.collective_operation
     def stats(self):
@@ -2363,6 +2390,44 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             # No units - return non-dimensional coordinates
             return coords_nondim
+
+    @property
+    def coords_nd(self) -> numpy.ndarray:
+        """
+        Non-dimensional [0-1] coordinates for this variable's DOF locations.
+
+        Returns raw model coordinates from PETSc without any unit wrapping.
+        This is the coordinate system used by internal KDTree indexing, evaluation,
+        and other algorithmic operations.
+
+        For user-facing operations with physical units, use `.coords` which returns
+        dimensional coordinates when the model has reference quantities set.
+
+        Returns
+        -------
+        ndarray
+            Non-dimensional [0-1] coordinates, shape (N, dim)
+
+        Examples
+        --------
+        >>> # Internal algorithmic use - KDTree indexing
+        >>> kd_tree = uw.kdtree.KDTree(var.coords_nd)
+        >>>
+        >>> # User-facing display with dimensional units
+        >>> print(f"Positions: {var.coords}")  # Shows meters, km, etc.
+
+        Notes
+        -----
+        This is a zero-copy operation that returns a view of the cached coordinate
+        array directly from the mesh. No memory allocation or copying occurs.
+
+        See Also
+        --------
+        coords : Dimensional coordinates with unit wrapping (user-facing)
+        """
+        # Direct access to non-dimensional coordinates from mesh cache
+        # This is a ZERO-COPY operation - returns cached array directly
+        return self.mesh._get_coords_for_var(self)
 
     # vector calculus routines - the advantage of using these inbuilt routines is
     # that they are tied to the appropriate mesh definition.

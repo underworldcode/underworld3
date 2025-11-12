@@ -14,90 +14,9 @@ import underworld3
 
 include "../cython/petsc_extras.pxi"
 
-def _convert_coords_to_si(coords):
-    """
-    Convert coordinate input to numpy array in model coordinates.
-
-    This function handles unit-aware coordinates by converting them to model units,
-    not SI units. This ensures coordinates work correctly with meshes that use
-    reference quantities for scaling.
-
-    Accepts:
-    - numpy arrays (assumed to be in model coordinates if no units)
-    - lists/tuples of coordinates (each coordinate can be UWQuantity, Pint Quantity, or float/int)
-    - lists/tuples of tuples (for multiple points)
-
-    Returns numpy array of shape (n_points, n_dims) with dtype=np.double in model coordinates.
-    """
-    import pint
-
-    # Get the model for unit conversion
-    model = uw.get_default_model()
-
-    # Helper function to convert a single coordinate value
-    def convert_single_coord(coord):
-        if isinstance(coord, uw.function.quantities.UWQuantity) or isinstance(coord, pint.Quantity):
-            # Unit-aware coordinate - convert to model units
-            model_qty = model.to_model_units(coord)
-            # Extract the magnitude
-            if hasattr(model_qty, '_pint_qty'):
-                return model_qty._pint_qty.magnitude
-            elif hasattr(model_qty, 'value'):
-                return float(model_qty.value)
-            else:
-                # Conversion returned plain number - use it
-                return float(model_qty)
-        elif isinstance(coord, (float, int, np.number)):
-            # Plain number - assume it's already in model coordinates
-            return float(coord)
-        else:
-            raise TypeError(f"Unsupported coordinate type: {type(coord)}. "
-                          f"Expected UWQuantity, pint.Quantity, or numeric value.")
-
-    # If already numpy array with correct dtype, assume it's in model coordinates
-    if isinstance(coords, np.ndarray):
-        if coords.dtype == np.double:
-            return coords
-        else:
-            return np.array(coords, dtype=np.double)
-
-    # Convert list/tuple input
-    if isinstance(coords, (list, tuple)):
-        # Check if it's a list of coordinates or a single point
-        if len(coords) > 0:
-            first_elem = coords[0]
-
-            # Multiple points: [(x1, y1), (x2, y2), ...]
-            if isinstance(first_elem, (list, tuple)):
-                model_coords = []
-                for point in coords:
-                    model_point = []
-                    for coord in point:
-                        model_value = convert_single_coord(coord)
-                        model_point.append(model_value)
-                    model_coords.append(model_point)
-                return np.array(model_coords, dtype=np.double)
-            else:
-                # Flat list of coordinates - could be single point [x, y] or [x, y, z]
-                # Check if all elements are coordinate values (not lists/tuples)
-                all_coords = all(
-                    isinstance(elem, (uw.function.quantities.UWQuantity, pint.Quantity, float, int, np.number))
-                    for elem in coords
-                )
-
-                if all_coords and len(coords) in [2, 3]:
-                    # This is a single point like [x, y] or [x, y, z]
-                    model_point = []
-                    for coord in coords:
-                        model_value = convert_single_coord(coord)
-                        model_point.append(model_value)
-                    # Return as 2D array with single point
-                    return np.array([model_point], dtype=np.double)
-                else:
-                    raise TypeError(f"Unable to parse coordinate format. Expected list of tuples like "
-                                  f"[(x1,y1), (x2,y2)] or single point like [x, y].")
-
-    raise TypeError(f"coords must be numpy array, list, or tuple. Got {type(coords)}")
+# NOTE: Coordinate conversion removed 2025-11-02 (commit to clean architecture)
+# The Python wrapper in functions_unit_system.py handles all dimensional ↔ non-dimensional conversions
+# Cython functions evaluate_nd() and global_evaluate_nd() now expect plain numpy arrays in [0-1] space
 
 # Make Cython aware of this type.
 cdef extern from "petsc.h" nogil:
@@ -249,7 +168,7 @@ class UnderworldFunction(sympy.Function):
 
         return ourcls
 
-def global_evaluate(   expr,
+def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
@@ -287,13 +206,14 @@ def global_evaluate(   expr,
 
     """
 
-    # Convert coordinates to SI base units if needed
-    cdef np.ndarray coords_array = _convert_coords_to_si(coords)
+    # NOTE: Coordinates should be non-dimensional [0-1] at this point
+    # Python wrapper in functions_unit_system.py handles dimensional conversions
+    coords_array = np.asarray(coords, dtype=np.double)
 
     mesh, varfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
     if mesh is None: #  or uw.mpi.size==1:
-        return evaluate(
+        return evaluate_nd(
             expr,
             coords_array,
             coord_sys,
@@ -374,7 +294,7 @@ def global_evaluate(   expr,
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
     local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
-    values, extrapolated = evaluate(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
+    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
 
     data_container.array[...] = values[...]
     is_extrapolated.array[:,0,0] = extrapolated[:]
@@ -403,7 +323,7 @@ def global_evaluate(   expr,
     else:
         return return_value, return_mask
 
-def evaluate(   expr,
+def evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
@@ -438,8 +358,9 @@ def evaluate(   expr,
         Not yet implemented.
     """
 
-    # Convert coordinates to SI base units if needed
-    cdef np.ndarray coords_array = _convert_coords_to_si(coords)
+    # NOTE: Coordinates should be non-dimensional [0-1] at this point
+    # Python wrapper in functions_unit_system.py handles dimensional conversions
+    coords_array = np.asarray(coords, dtype=np.double)
 
     dim = coords_array.shape[1]
     mesh, varfns = uw.function.fn_mesh_vars_in_expression(expr)
@@ -838,7 +759,7 @@ def petsc_interpolate(   expr,
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
 # we can pass in the `class_name` parameter.
-evaluate = timing.routine_timer_decorator(routine=evaluate, class_name="Function")
+evaluate_nd = timing.routine_timer_decorator(routine=evaluate_nd, class_name="Function")
 
 ### ------------------------------
 

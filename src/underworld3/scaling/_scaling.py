@@ -93,15 +93,24 @@ def non_dimensionalise(dimValue):
     This function uses pint to perform a dimension analysis and
     return a value scaled according to a set of scaling coefficients.
 
+    The function is idempotent: calling it multiple times with the same
+    input returns the same result. Non-dimensional arrays (plain numpy arrays,
+    or UnitAwareArray with units=None or units='dimensionless') are returned
+    unchanged, as they are already in non-dimensional form.
+
     Parameters
     ----------
-    dimValue : pint.Quantity
-        A pint quantity.
+    dimValue : pint.Quantity, UnitAwareArray, ndarray, or float
+        A value to be non-dimensionalized.
+        - pint.Quantity: Converted to non-dimensional value
+        - UnitAwareArray with no units or dimensionless: Returned as-is (already ND)
+        - Plain numpy array: Returned as-is (already ND)
+        - Plain number (int/float): Returned as-is (assumed already ND)
 
     Returns
     -------
-    float
-        The scaled value.
+    float or ndarray
+        The non-dimensional value.
 
     Example
     -------
@@ -133,12 +142,44 @@ def non_dimensionalise(dimValue):
     >>> # Get a scaled value:
     >>> gravity = uw.scaling.non_dimensionalise(9.81 * u.meter / u.second**2)
     """
+    # IDEMPOTENCY CHECK: Return early if already non-dimensional
+    # Non-dimensional values are:
+    # 1. Plain numpy arrays (no unit information)
+    # 2. UnitAwareArray with units=None (no units assigned)
+    # 3. UnitAwareArray with units='dimensionless' (explicitly dimensionless)
+    # 4. Unitless pint quantities
+
+    # Check if it's a plain numpy array (definitely non-dimensional)
+    import numpy as np
+    if isinstance(dimValue, np.ndarray) and not hasattr(dimValue, 'units'):
+        return dimValue
+
+    # Check if it's a UnitAwareArray with no units
+    if hasattr(dimValue, 'units'):
+        units_val = dimValue.units
+        # If units is None or 'dimensionless', it's already non-dimensional
+        if units_val is None:
+            return dimValue
+        if hasattr(units_val, 'dimensionless') and units_val.dimensionless:
+            return dimValue
+        # Also check string representation for dimensionless
+        if str(units_val).lower() in ['dimensionless', 'none', '']:
+            return dimValue
+
+    # Check if it's a plain number (int, float) - already non-dimensional
+    if isinstance(dimValue, (int, float)):
+        return dimValue
+
+    # Check for pint Quantity that's already unitless
     try:
         val = dimValue.unitless
         if val:
             return dimValue
     except AttributeError:
-        return dimValue
+        # Not a pint Quantity, check if it's something else we should return as-is
+        # If we can't determine it has units, assume it's already non-dimensional
+        if not hasattr(dimValue, 'dimensionality'):
+            return dimValue
 
     dimValue = dimValue.to_base_units()
 

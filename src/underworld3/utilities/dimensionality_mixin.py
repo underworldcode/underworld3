@@ -98,59 +98,6 @@ class DimensionalityMixin:
 
         return np.array(self.array) / self._scaling_coefficient
 
-    def to_nd(self):
-        """
-        Convert to non-dimensional form using scaling coefficient.
-        Similar to to_model_units() but for non-dimensionalization.
-
-        For variables with symbolic form (.sym), returns a SymPy expression
-        that can be used in JIT compilation: var.sym / scaling_coefficient
-
-        For UWQuantity, returns a non-dimensional quantity.
-        """
-        if self._is_nondimensional:
-            return self  # Already non-dimensional
-
-        # For variables with symbolic representation (MeshVariable, SwarmVariable)
-        # Return SymPy expression for JIT compatibility
-        if hasattr(self, "sym"):
-            import sympy
-
-            # Return the symbolic form divided by the scaling coefficient
-            # This preserves the original function symbol for JIT substitution
-            nd_expr = self.sym / self._scaling_coefficient
-
-            # Wrap in UWexpression to preserve metadata
-            from underworld3.function import expression
-
-            var_name = getattr(self, "name", "variable")
-            result = expression(
-                f"{var_name}_nd",  # Name string
-                nd_expr,  # The SymPy expression
-                f"Non-dimensional {var_name}",  # Description
-            )
-            result._scaling_coefficient = self._scaling_coefficient
-            result._is_nondimensional = True
-            result._original_variable = self
-            return result
-
-        # For UWQuantity and similar
-        if hasattr(self, "value"):
-            from underworld3.function.quantities import UWQuantity
-
-            nd_value = self.value / self._scaling_coefficient
-
-            # Create non-dimensional quantity
-            nd_qty = UWQuantity(nd_value, units=None)
-            nd_qty._scaling_coefficient = self._scaling_coefficient
-            nd_qty._is_nondimensional = True
-            nd_qty._original_units = self.units if hasattr(self, "units") else None
-            nd_qty._original_dimensionality = self.dimensionality
-            return nd_qty
-
-        # Default: return scaled value
-        return self / self._scaling_coefficient
-
     def from_nd(self, nd_value):
         """
         Convert a non-dimensional value back to dimensional form.

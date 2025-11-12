@@ -58,7 +58,7 @@ class EnhancedSwarmVariable(UnitAwareMixin, _SwarmVariable):
 
         # Units operations
         density_scaled = density.non_dimensional_value()  # For calculations
-        density_gcc = density.to_units("g/cm^3")         # Unit conversion
+        density_gcc = density.to("g/cm^3")               # Unit conversion
     """
 
     def __init__(self, *args, units=None, units_backend=None, **kwargs):

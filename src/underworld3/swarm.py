@@ -756,7 +756,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         # 1 - Average particles to nodes with distance weighted average
 
-        kd = uw.kdtree.KDTree(meshVar.coords)
+        # Use non-dimensional coordinates for internal KDTree (matches swarm.data coordinate system)
+        kd = uw.kdtree.KDTree(meshVar.coords_nd)
 
         with self.swarm.access():
             d, n = kd.query(self.swarm.data, k=1, sqr_dists=False)  # need actual distances
@@ -1684,7 +1685,8 @@ class IndexSwarmVariable(SwarmVariable):
 
         """
         if self.update_type == 0:
-            kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords)
+            # Use non-dimensional coordinates for internal level set KDTree
+            kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords_nd)
 
             n_distance, n_indices = kd.query(
                 self.swarm._particle_coordinates.data, k=self.nnn, sqr_dists=False

@@ -62,7 +62,7 @@ def test_unit_aware_array_unit_conversion():
     length_m = UnitAwareArray([1, 2, 3], units="m")
 
     # Convert to different units
-    length_mm = length_m.to_units("mm")
+    length_mm = length_m.to("mm")
     assert length_mm.units == "millimeter"
     assert np.allclose(np.asarray(length_mm), [1000, 2000, 3000])
 
@@ -170,7 +170,7 @@ def test_unit_aware_array_edge_cases():
     # Test conversion to invalid units
     length = UnitAwareArray([1, 2, 3], units="m")
     with pytest.raises(ValueError):
-        length.to_units("invalid_unit")
+        length.to("invalid_unit")
 
 
 def test_unit_aware_array_integration_with_uw_quantities():
@@ -185,7 +185,7 @@ def test_unit_aware_array_integration_with_uw_quantities():
     assert length_array.units == "km"
 
     # Test conversion using UW3 system
-    length_m = length_array.to_units("m")
+    length_m = length_array.to("m")
     assert np.allclose(np.asarray(length_m), [1000, 2000, 3000])
 
 
@@ -208,7 +208,7 @@ def test_unit_aware_array_with_scaling():
     assert physical_coords.units == "m"
 
     # Convert to km
-    coords_km = physical_coords.to_units("km")
+    coords_km = physical_coords.to("km")
     assert np.allclose(np.asarray(coords_km), [[1000, 500]])
 
 

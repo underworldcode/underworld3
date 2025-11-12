@@ -690,6 +690,54 @@ class MathematicalMixin:
         """
         return str(self.sym)
 
+    def to(self, target_units: str):
+        """
+        Convert to different units, returning a new symbolic expression with scaling wrapper.
+
+        For variables (not yet evaluated), this delegates to the symbolic form and returns
+        a new `UnitAwareExpression` with the appropriate scaling factor/offset applied.
+
+        Parameters
+        ----------
+        target_units : str
+            Target units to convert to (e.g., 'km/s', 'degC')
+
+        Returns
+        -------
+        UnitAwareExpression
+            New expression with scaling wrapper and target units
+
+        Examples
+        --------
+        >>> # Temperature variable with Kelvin units
+        >>> temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=2, units="K")
+        >>> temp_celsius = temperature.to("degC")  # Returns temperature - 273.15
+
+        >>> # Velocity component with m/s units
+        >>> velocity_ms = velocity[0]  # Has units 'm/s'
+        >>> velocity_kms = velocity_ms.to('km/s')  # Returns velocity[0] * 0.001
+
+        Notes
+        -----
+        - Symbolic conversion preserves lazy evaluation
+        - Only compatible units can be converted
+        - Uses Pint for dimensional analysis and conversion factor computation
+        """
+        sym = self._validate_sym()
+
+        # Get current units
+        if not hasattr(self, 'units') or self.units is None:
+            raise ValueError(f"Cannot convert variable without units. Variable: {self}")
+
+        # Create a UnitAwareExpression from sym and call its .to() method
+        from underworld3.expression.unit_aware_expression import UnitAwareExpression
+
+        # Wrap sym in UnitAwareExpression with current units
+        expr_with_units = UnitAwareExpression(sym, self.units)
+
+        # Call .to() on it and return the result
+        return expr_with_units.to(target_units)
+
     def __getattr__(self, name):
         """Enhanced method delegation with signature handling."""
         # Prevent recursion if _validate_sym is being accessed
@@ -854,6 +902,80 @@ class UnitAwareDerivativeMatrix:
             return None
         quantity = self._units_backend.create_quantity(1.0, self.units)
         return self._units_backend.get_dimensionality(quantity)
+
+    def to(self, target_units: str):
+        """
+        Convert derivative matrix to different units.
+
+        Returns a new UnitAwareExpression wrapping the matrix with converted units.
+
+        Parameters
+        ----------
+        target_units : str
+            Target units to convert to
+
+        Returns
+        -------
+        UnitAwareExpression
+            New expression with scaling wrapper and target units
+        """
+        from underworld3.expression.unit_aware_expression import UnitAwareExpression
+        from underworld3.scaling import units as ureg
+
+        # Get current units (already computed correctly by self.units property)
+        current_units = self.units
+
+        if not current_units:
+            raise ValueError(f"Cannot convert derivative matrix without units")
+
+        # Convert to Pint units if string
+        if isinstance(current_units, str):
+            current_pint = ureg(current_units)
+        elif hasattr(current_units, 'dimensionality'):
+            current_pint = current_units
+        else:
+            current_pint = ureg(str(current_units))
+
+        # Parse target units
+        target_pint = ureg(target_units)
+
+        # Check dimensionality compatibility
+        if current_pint.dimensionality != target_pint.dimensionality:
+            raise ValueError(
+                f"Cannot convert from {current_units} to {target_units}: "
+                f"incompatible dimensionalities"
+            )
+
+        # Compute conversion factor
+        from_qty = 1.0 * current_pint
+        to_qty = from_qty.to(target_pint)
+        factor = to_qty.magnitude
+
+        # Check for offset units
+        try:
+            zero_from = 0.0 * current_pint
+            zero_to = zero_from.to(target_pint)
+            offset = zero_to.magnitude
+            has_offset = abs(offset) > 1e-10
+        except:
+            has_offset = False
+            offset = 0.0
+
+        # Create scaled expression
+        import sympy
+        if has_offset:
+            if isinstance(self._matrix, sympy.MatrixBase):
+                new_expr = self._matrix * factor + sympy.ones(*self._matrix.shape) * offset
+            else:
+                new_expr = self._matrix * factor + offset
+        else:
+            if abs(factor - 1.0) > 1e-10:
+                new_expr = self._matrix * factor
+            else:
+                new_expr = self._matrix
+
+        # Return UnitAwareExpression with target units
+        return UnitAwareExpression(new_expr, target_pint)
 
     def __getitem__(self, index):
         """Index into matrix and wrap result with units.

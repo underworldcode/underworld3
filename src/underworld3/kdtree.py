@@ -108,9 +108,9 @@ class KDTree(_oKDTree):
 
         # Different units - convert to tree's coordinate system
         try:
-            # Use UnitAwareArray's to_units method if available
-            if hasattr(coords, "to_units"):
-                coords_converted = coords.to_units(self.coord_units)
+            # Use UnitAwareArray's to method if available
+            if hasattr(coords, "to"):
+                coords_converted = coords.to(self.coord_units)
                 return np.asarray(coords_converted)
             else:
                 # Convert using Pint directly

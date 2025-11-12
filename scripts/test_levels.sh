@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
             SKIP_PARALLEL=1
             shift
             ;;
-        --help)
+        --help|-h)
             grep "^#" "$0" | sed 's/^# \?//'
             exit 0
             ;;

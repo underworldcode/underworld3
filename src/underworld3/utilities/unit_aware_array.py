@@ -18,12 +18,13 @@ from typing import Optional, Union, Any, Dict, List
 from .nd_array_callback import NDArray_With_Callback
 from ..function.unit_conversion import (
     has_units,
-    get_units,
     detect_quantity_units,
     convert_quantity_units,
     add_units,
     convert_array_units,
 )
+# NOTE: get_units has been moved to units module
+from ..units import get_units
 
 
 class UnitAwareArray(NDArray_With_Callback):
@@ -220,9 +221,11 @@ class UnitAwareArray(NDArray_With_Callback):
         # This avoids our overridden view() method which preserves units
         return np.asarray(self)
 
-    def to_units(self, target_units):
+    def to(self, target_units):
         """
         Convert this array to different units.
+
+        Provides a unified interface matching Pint's `.to()` pattern.
 
         Parameters
         ----------
@@ -233,6 +236,13 @@ class UnitAwareArray(NDArray_With_Callback):
         -------
         UnitAwareArray
             New array with converted values and target units
+
+        Examples
+        --------
+        >>> coords = UnitAwareArray([1, 2, 3], units='km')
+        >>> coords_m = coords.to('m')  # Convert to meters
+        >>> print(coords_m)
+        [1000. 2000. 3000.] [meter]
         """
         if not self.has_units:
             raise ValueError("Cannot convert units - array has no units")
@@ -258,33 +268,6 @@ class UnitAwareArray(NDArray_With_Callback):
 
         except Exception as e:
             raise ValueError(f"Unit conversion failed: {e}")
-
-    def to(self, target_units):
-        """
-        Convert this array to different units (unified interface).
-
-        This is an alias for `to_units()` to provide a unified interface
-        matching Pint's `.to()` pattern. Both `.to()` and `.to_units()`
-        work identically.
-
-        Parameters
-        ----------
-        target_units : str
-            Target units to convert to
-
-        Returns
-        -------
-        UnitAwareArray
-            New array with converted values and target units
-
-        Examples
-        --------
-        >>> coords = UnitAwareArray([1, 2, 3], units='km')
-        >>> coords_m = coords.to('m')  # Convert to meters
-        >>> print(coords_m)
-        [1000. 2000. 3000.] [meter]
-        """
-        return self.to_units(target_units)
 
     def _check_unit_compatibility(self, other, operation="operation"):
         """
