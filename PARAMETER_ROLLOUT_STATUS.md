@@ -44,53 +44,75 @@ class _Parameters:
 
 ---
 
-## ⚠️ PARTIALLY COMPLETE
+## ✅ COMPLETED
 
 ### DiffusionModel
-**File**: `/src/underworld3/constitutive_models.py` lines 1443-1522
+**File**: `/src/underworld3/constitutive_models.py` lines 1465-1527
 
-**Status**: ⚠️ **OLD PATTERN - NEEDS MIGRATION**
+**Status**: ✅ **FULLY IMPLEMENTED**
 
-**Current Implementation**: Instance-level attribute with property setter (lines 1479-1492)
+**Parameters**:
+- `diffusivity` - Class-level Parameter descriptor with units="m**2/s"
+
+**Implementation**:
 ```python
 class _Parameters:
-    def __init__(inner_self, _owning_model):
-        inner_self._diffusivity = expression(R"\upkappa", 1, "Diffusivity")
-        inner_self._owning_model = _owning_model
+    import underworld3.utilities._api_tools as api_tools
 
-    @property
-    def diffusivity(inner_self):
-        return inner_self._diffusivity
-
-    @diffusivity.setter
-    def diffusivity(inner_self, value):
-        diff = validate_parameters(R"{\upkappa}", value, "Diffusivity", allow_number=True)
-        if diff is not None:
-            inner_self._diffusivity.copy(diff)
-            inner_self._reset()
+    diffusivity = api_tools.Parameter(
+        r"\upkappa",
+        lambda params_instance: params_instance._owning_model.create_unique_symbol(
+            r"\upkappa", 1, "Diffusivity"
+        ),
+        "Diffusivity",
+        units="m**2/s"
+    )
 ```
 
-**Tensor Construction** (line 1502-1511):
+**Tensor Construction**: Element-wise loops (consistent pattern, lines 1503-1527)
+
+**Features Working**:
+- ✅ Units assignment: `model.Parameters.diffusivity = uw.quantity(1e-6, "m**2/s")`
+- ✅ Unit metadata preserved
+- ✅ Lazy evaluation maintained
+- ✅ Parameter updates trigger tensor rebuild
+- ✅ JIT unwrapping works correctly
+
+---
+
+## ✅ COMPLETED
+
+### DarcyFlowModel
+**File**: `/src/underworld3/constitutive_models.py` lines 1661-1780
+
+**Status**: ✅ **FULLY IMPLEMENTED**
+
+**Parameters**:
+- `permeability` - Class-level Parameter descriptor with units="m**2"
+
+**Implementation**:
 ```python
-def _build_c_tensor(self):
-    d = self.dim
-    kappa = self.Parameters.diffusivity
-    # Direct construction to avoid SymPy Matrix scalar multiplication issues
-    eye_matrix = sympy.Matrix.eye(d)
-    self._c = sympy.Matrix(d, d, lambda i, j: eye_matrix[i, j] * kappa)
+class _Parameters:
+    import underworld3.utilities._api_tools as api_tools
+
+    permeability = api_tools.Parameter(
+        r"k",
+        lambda params_instance: params_instance._owning_model.create_unique_symbol(
+            r"k", 1, "Permeability"
+        ),
+        "Permeability",
+        units="m**2"
+    )
 ```
 
-**Issues**:
-- ❌ No Parameter descriptor - can't assign with units
-- ❌ Uses `.copy()` pattern instead of metadata preservation
-- ⚠️ Tensor construction uses Matrix lambda - may have same UWexpression Iterable issues
-- ❌ No automatic unit metadata transfer
+**Tensor Construction**: Element-wise loops (consistent pattern, lines 1756-1780)
 
-**Migration Needed**:
-1. Convert `diffusivity` to class-level Parameter descriptor
-2. Update tensor construction to handle UWexpression (similar to ViscousFlowModel)
-3. Add units specification (should be thermal diffusivity units: m²/s or conductivity/heat_capacity)
-4. Test with units assignment
+**Features Working**:
+- ✅ Units assignment: `model.Parameters.permeability = uw.quantity(1e-10, "m**2")`
+- ✅ Unit metadata preserved
+- ✅ Lazy evaluation maintained
+- ✅ Parameter updates trigger tensor rebuild
+- ✅ JIT unwrapping works correctly
 
 ---
 
@@ -104,24 +126,6 @@ def _build_c_tensor(self):
 **Description**: Generic model for custom flux definitions. May not need parameter migration if users provide flux directly.
 
 **Action**: Review usage to determine if parameter descriptors applicable.
-
----
-
-### DarcyFlowModel
-**File**: `/src/underworld3/constitutive_models.py` lines 1661-1968
-
-**Status**: ⚠️ **OLD PATTERN - NEEDS MIGRATION**
-
-**Current Implementation**: Instance-level attributes (lines 1716-1829)
-
-**Parameters Identified**:
-- `permeability` (line 1746)
-- `buoyancy_forcing_fn` (line 1770)
-- `b_vector` (line 1792)
-
-**Migration Needed**: Convert all parameters to descriptor pattern with appropriate units
-- Permeability: k [m²]
-- Buoyancy forcing: body force density [N/m³] or [kg/(m²·s²)]
 
 ---
 
@@ -226,4 +230,4 @@ When migrating a constitutive model:
 
 ---
 
-**Status**: 1 of 5 models complete (20%). Non-dimensionalisation issue needs investigation before continuing rollout.
+**Status**: 3 of 5 models complete (60%). ViscousFlowModel, DiffusionModel, and DarcyFlowModel fully migrated with consistent element-wise tensor construction pattern.

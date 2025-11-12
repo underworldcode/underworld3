@@ -1702,12 +1702,28 @@ class DarcyFlowModel(Constitutive_Model):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Uses Parameter descriptor pattern for scalar permeability.
+        Matrix-valued `s` remains instance-level (special case).
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Define permeability as a Parameter descriptor
+        permeability = api_tools.Parameter(
+            r"\kappa",
+            lambda params_instance: params_instance._owning_model.create_unique_symbol(
+                r"\kappa", 1, "Permeability"
+            ),
+            "Permeability",
+            units="m**2"  # Intrinsic permeability
+        )
 
         def __init__(
             inner_self,
             _owning_model,
-            permeabililty: Union[float, sympy.Function] = 1,
+            permeabililty: Union[float, sympy.Function] = 1,  # Note: typo in param name preserved for compatibility
         ):
 
             inner_self._s = expression(
@@ -1718,13 +1734,8 @@ class DarcyFlowModel(Constitutive_Model):
                 "Gravitational forcing",
             )
 
-            inner_self._permeability = expression(
-                R"{\kappa}",
-                1,
-                "Permeability",
-            )
-
             inner_self._owning_model = _owning_model
+            # Note: permeability is now a descriptor, no need to create it here
 
         @property
         def s(inner_self):
@@ -1732,39 +1743,39 @@ class DarcyFlowModel(Constitutive_Model):
 
         @s.setter
         def s(inner_self, value: sympy.Matrix):
-            # Wrap matrix in expression then copy, like permeability setter
+            # Wrap matrix in expression then copy
             # Cannot use validate_parameters() as it doesn't handle matrices
             s_expr = expression(R"{s}", value, "Gravitational forcing")
             inner_self._s.copy(s_expr)
             inner_self._reset()
-
-        @property
-        def permeability(inner_self):
-            return inner_self._permeability
-
-        @permeability.setter
-        def permeability(inner_self, value: Union[int, float, sympy.Function]):
-
-            perm = validate_parameters(R"{\upkappa}", value, "Permeability", allow_number=True)
-
-            if perm is not None:
-                inner_self._permeability.copy(perm)
-                inner_self._reset()
-
-            return
 
     @property
     def K(self):
         return self.Parameters.permeability
 
     def _build_c_tensor(self):
-        """For this constitutive law, we expect just a diffusivity function"""
+        """For this constitutive law, we expect just a permeability function"""
 
         d = self.dim
         kappa = self.Parameters.permeability
-        # Direct construction to avoid SymPy Matrix scalar multiplication issues
-        eye_matrix = sympy.Matrix.eye(d)
-        self._c = sympy.Matrix(d, d, lambda i, j: eye_matrix[i, j] * kappa)
+
+        # Scalar permeability case
+        # Use element-wise construction (consistent with ViscousFlowModel and DiffusionModel)
+        # to handle UWexpression properly and preserve for JIT unwrapping
+        result = sympy.Matrix.zeros(d, d)
+
+        for i in range(d):
+            for j in range(d):
+                if i == j:
+                    # Diagonal element: kappa
+                    val = kappa
+                    # Wrap if bare UWexpression to avoid Iterable check failure
+                    if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                        val = sympy.Mul(sympy.S.One, val, evaluate=False)
+                    result[i, j] = val
+                # Off-diagonal elements remain 0
+
+        self._c = result
 
         return
 
