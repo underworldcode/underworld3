@@ -12,10 +12,23 @@ def _substitute_all_once(fn, keep_constants=True, return_self=True):
 
     # Handle UWQuantity objects directly
     if isinstance(fn, underworld3.function.UWQuantity):
-        if hasattr(fn, '_sympy_'):
-            return fn._sympy_()
-        elif hasattr(fn, 'sym'):
-            return fn.sym
+        # If scaling is active and quantity has units, non-dimensionalize it
+        if underworld3._is_scaling_active() and fn.has_units:
+            try:
+                nondim = underworld3.non_dimensionalise(fn)
+                if hasattr(nondim, '_sym'):
+                    return nondim._sym
+                elif hasattr(nondim, 'value'):
+                    # Convert to SymPy so downstream code can use .atoms(), .subs(), etc.
+                    return sympy.sympify(nondim.value)
+            except:
+                pass
+        # Otherwise return the symbolic/numeric value
+        if hasattr(fn, '_sym'):
+            return fn._sym
+        elif hasattr(fn, 'value'):
+            # Convert to SymPy for consistency
+            return sympy.sympify(fn.value)
         else:
             return fn
 
