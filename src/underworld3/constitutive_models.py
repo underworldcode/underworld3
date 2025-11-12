@@ -1466,30 +1466,31 @@ class DiffusionModel(Constitutive_Model):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Now uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Define diffusivity as a Parameter descriptor
+        # The lambda receives the _Parameters instance and creates the expression via the owning model
+        diffusivity = api_tools.Parameter(
+            r"\upkappa",
+            lambda params_instance: params_instance._owning_model.create_unique_symbol(
+                r"\upkappa", 1, "Diffusivity"
+            ),
+            "Diffusivity",
+            units="m**2/s"  # Thermal or mass diffusivity
+        )
 
         def __init__(
             inner_self,
             _owning_model,
         ):
-
-            inner_self._diffusivity = expression(R"\upkappa", 1, "Diffusivity")
             inner_self._owning_model = _owning_model
-
-        @property
-        def diffusivity(inner_self):
-            return inner_self._diffusivity
-
-        @diffusivity.setter
-        def diffusivity(inner_self, value: Union[int, float, sympy.Function]):
-
-            diff = validate_parameters(R"{\upkappa}", value, "Diffusivity", allow_number=True)
-
-            if diff is not None:
-                inner_self._diffusivity.copy(diff)
-                inner_self._reset()
-
-            return
+            # Note: diffusivity is now a descriptor, no need to create it here
 
     @property
     def K(self):
@@ -1504,9 +1505,24 @@ class DiffusionModel(Constitutive_Model):
 
         d = self.dim
         kappa = self.Parameters.diffusivity
-        # Direct construction to avoid SymPy Matrix scalar multiplication issues
-        eye_matrix = sympy.Matrix.eye(d)
-        self._c = sympy.Matrix(d, d, lambda i, j: eye_matrix[i, j] * kappa)
+
+        # Scalar diffusivity case
+        # Use element-wise construction (consistent with ViscousFlowModel pattern)
+        # to handle UWexpression properly and preserve for JIT unwrapping
+        result = sympy.Matrix.zeros(d, d)
+
+        for i in range(d):
+            for j in range(d):
+                if i == j:
+                    # Diagonal element: kappa
+                    val = kappa
+                    # Wrap if bare UWexpression to avoid Iterable check failure
+                    if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                        val = sympy.Mul(sympy.S.One, val, evaluate=False)
+                    result[i, j] = val
+                # Off-diagonal elements remain 0
+
+        self._c = result
 
         return
 

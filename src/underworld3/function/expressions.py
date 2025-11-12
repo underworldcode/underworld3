@@ -12,7 +12,12 @@ def _substitute_all_once(fn, keep_constants=True, return_self=True):
 
     # Handle UWQuantity objects directly
     if isinstance(fn, underworld3.function.UWQuantity):
-        return fn._sympify_()
+        if hasattr(fn, '_sympy_'):
+            return fn._sympy_()
+        elif hasattr(fn, 'sym'):
+            return fn.sym
+        else:
+            return fn
 
     if keep_constants and return_self and is_constant_expr(fn):
         if isinstance(fn, UWexpression):
