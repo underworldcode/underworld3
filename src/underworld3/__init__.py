@@ -174,7 +174,6 @@ from .units import (
     get_units,
     non_dimensionalise,
     dimensionalise,
-    show_nondimensional_form,  # User-facing inspection of non-dimensional expressions
     create_quantity,
     convert_units,
     is_dimensionless,
@@ -443,9 +442,9 @@ def unwrap(fn, keep_constants=True, return_self=True, apply_scaling=False):
 # Enhanced variables with units and mathematical operations (internal use only)
 from .discretisation.enhanced_variables import (
     # EnhancedMeshVariable,  # Hidden - use uw.discretisation.MeshVariable
-    # EnhancedSwarmVariable,  # Hidden - use uw.swarm.SwarmVariable
     create_enhanced_mesh_variable,
-    create_enhanced_swarm_variable,
+    # Note: SwarmVariable already has enhanced functionality built-in (see swarm.py)
+    # No separate EnhancedSwarmVariable needed - use uw.swarm.SwarmVariable directly
 )
 
 # Make MeshVariable available at top level (this is the enhanced version)

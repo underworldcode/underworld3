@@ -140,7 +140,7 @@ class UnitAwareArray(NDArray_With_Callback):
 
         Parameters
         ----------
-        units : str or UWQuantity
+        units : str, Pint Unit, or UWQuantity
             Units specification
         """
         if isinstance(units, str):
@@ -154,7 +154,13 @@ class UnitAwareArray(NDArray_With_Callback):
                 raise ValueError(f"Invalid units '{units}': {e}")
         elif has_units(units):
             # Extract units from UWQuantity or similar
-            self._units = get_units(units)
+            extracted_units = get_units(units)
+            if extracted_units is not None:
+                self._units = extracted_units
+            else:
+                # Fallback: get_units() returned None (e.g., for Pint Unit objects)
+                # Convert to string representation
+                self._units = str(units)
         else:
             self._units = str(units)
 

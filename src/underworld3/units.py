@@ -540,7 +540,23 @@ def non_dimensionalise(expression, model=None) -> Any:
 
             # Divide quantity by scale to get dimensionless value
             if hasattr(expression, '_pint_qty') and expression._pint_qty is not None:
-                result_qty = expression._pint_qty / scale
+                # CRITICAL FIX: Convert to base SI units BEFORE dividing by scale
+                # The scale is in SI units (e.g., m/s), so the input must also be in SI
+                # to ensure proper unit cancellation. Without this, km/yr and cm/yr both
+                # give the same dimensionless value (wrong!).
+                qty_si = expression._pint_qty.to_base_units()
+                result_qty = qty_si / scale
+
+                # After division, should be dimensionless (or very close)
+                # Check that units actually cancelled
+                if result_qty.dimensionality:
+                    # Units didn't cancel - something is wrong
+                    raise ValueError(
+                        f"Units did not cancel during non-dimensionalisation. "
+                        f"Input: {expression._pint_qty}, Scale: {scale}, "
+                        f"Result: {result_qty} (expected dimensionless)"
+                    )
+
                 # Create dimensionless UWQuantity with preserved dimensionality
                 nondim_value = float(result_qty.magnitude)
                 return UWQuantity(nondim_value, units="dimensionless", dimensionality=dimensionality)
