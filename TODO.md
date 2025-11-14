@@ -62,6 +62,22 @@
 **Status**: Some updated, full validation needed
 **Location**: `docs/examples/*.ipynb`
 
+### Simplify Notebook 13 (Coordinate Units Demo)
+**Status**: Pending
+**Priority**: Medium
+**Location**: `docs/beginner/tutorials/13-Scaling-problems-with-physical-units.ipynb`
+
+**Issues to Address**:
+- Review and fix arrow diagrams (clarity issues)
+- Simplify explanations - remove verbose print statements
+- Remove excessive comments - let code speak for itself
+- Ensure "it just works" message through simplicity
+- Use UK/Australian spelling (metres, kilometres)
+
+**Goal**: Demonstrate natural elegance of units system without over-explaining.
+Show that working in different coordinate units (metres vs kilometres) with
+automatic scaling "just works".
+
 ---
 
 ## Low Priority / Future Work
