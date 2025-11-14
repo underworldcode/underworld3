@@ -108,6 +108,34 @@ def substitute(fn, keep_constants=True, return_self=True):
 
 
 def _unwrap_expressions(fn, keep_constants=True, return_self=True):
+    """
+    Main unwrapping logic for JIT compilation.
+
+    Handles all expression types uniformly:
+    - UWQuantity constants: non-dimensionalize if scaling active
+    - UWexpression atoms: extract .sym, non-dimensionalize constants
+    - Variable symbols: leave unchanged (already ND in PETSc)
+    """
+    import underworld3 as uw
+    import sympy
+    from .quantities import UWQuantity
+
+    # Handle UWQuantity: non-dimensionalize if scaling active
+    if isinstance(fn, UWQuantity):
+        if uw._is_scaling_active() and fn.has_units:
+            nondim = uw.non_dimensionalise(fn)
+            if hasattr(nondim, 'value'):
+                return sympy.sympify(nondim.value)
+            elif hasattr(nondim, '_sym'):
+                return nondim._sym
+        # No scaling: return plain value
+        if hasattr(fn, 'value'):
+            return sympy.sympify(fn.value)
+        elif hasattr(fn, '_sym'):
+            return fn._sym
+        return fn
+
+    # Fixed-point iteration for other expression types
     expr = fn
     expr_s = _substitute_all_once(expr, keep_constants, return_self)
 
@@ -139,37 +167,6 @@ def _unwrap_for_compilation(fn, keep_constants=True, return_self=True):
     """
     import underworld3 as uw
 
-    # Handle UWQuantity specially - non-dimensionalize if scaling is active
-    if isinstance(fn, UWQuantity):
-        import os
-        debug = os.environ.get('UW_DEBUG_UNWRAP', False)
-        if debug:
-            print(f"[_unwrap_for_compilation] UWQuantity: {fn}")
-            print(f"  scaling_active: {uw._is_scaling_active()}")
-            print(f"  has_units: {fn.has_units}")
-        if uw._is_scaling_active() and fn.has_units:
-            nondim = uw.non_dimensionalise(fn)
-            if debug:
-                print(f"  nondim: {nondim}")
-            if hasattr(nondim, 'value'):
-                result = sympy.sympify(nondim.value)
-                if debug:
-                    print(f"  returning value: {result}")
-                return result
-            elif hasattr(nondim, '_sym'):
-                if debug:
-                    print(f"  returning _sym: {nondim._sym}")
-                return nondim._sym
-        # Otherwise just return the value
-        if hasattr(fn, '_sym'):
-            return fn._sym
-        elif hasattr(fn, 'value'):
-            result = sympy.sympify(fn.value)
-            if debug:
-                print(f"  returning plain value: {result}")
-            return result
-        return fn
-
     # Handle UWDerivativeExpression specially - evaluate it first
     if isinstance(fn, UWDerivativeExpression):
         result = fn.doit()
@@ -179,11 +176,13 @@ def _unwrap_for_compilation(fn, keep_constants=True, return_self=True):
         )
         result = fn.applyfunc(f)
     else:
+        # Main unwrapping flow - handles all expression types including UWQuantity
         result = _unwrap_expressions(
             fn, keep_constants=keep_constants, return_self=return_self
         )
 
     # Apply scaling if context is active
+    # Note: Variable scaling is disabled - see _apply_scaling_to_unwrapped()
     if uw._is_scaling_active():
         result = _apply_scaling_to_unwrapped(result)
 
