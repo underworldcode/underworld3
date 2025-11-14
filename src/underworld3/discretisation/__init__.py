@@ -1,5 +1,5 @@
 from .discretisation_mesh import Mesh
-from .persistence import EnhancedMeshVariable as MeshVariable
+from .enhanced_variables import EnhancedMeshVariable as MeshVariable
 from .discretisation_mesh import checkpoint_xdmf
 from .discretisation_mesh import meshVariable_lookup_by_symbol
 from .discretisation_mesh import petsc_dm_find_labeled_points_local
