@@ -268,88 +268,28 @@ def _apply_scaling_to_unwrapped(expr):
     """
     Apply non-dimensional scaling to an unwrapped SymPy expression.
 
-    This function finds all variable symbols in the expression and scales them
-    by dividing by their scaling_coefficient (reference scale).
+    IMPORTANT: As of 2025-11-14, this function no longer scales variable symbols.
+    PETSc stores all variable data in non-dimensional [0-1] form, so variable
+    symbols like p(x,y), T(x,y) already return ND values when evaluated.
 
-    Non-dimensionalization: T(x,y) → T(x,y) / T_ref
+    Only constants (UWQuantity objects) need non-dimensionalization, which is
+    handled separately in _unwrap_for_compilation() before this function is called.
+
+    Historical note: This function previously scaled variables by dividing by
+    their scaling_coefficient, but this caused double non-dimensionalization:
+    - First ND: PETSc stores p_ND in vectors
+    - Second ND: This function divided p(x,y) by p_ref again
+    - Result: Incorrect coefficients like 0.000315576 instead of 1.0
 
     Args:
         expr: SymPy expression (potentially with UW variable symbols)
 
     Returns:
-        SymPy expression with non-dimensional scaling applied
+        SymPy expression unchanged (no scaling applied)
     """
-    import underworld3 as uw
-    import sympy
-
-    # SURGICAL FIX (2025-11-14): Disable variable scaling during JIT compilation
-    # PETSc stores variables in non-dimensional form already, so variable symbols
-    # like p(x,y) return ND values. Scaling them again creates double-ND bug.
-    # Only constants (UWQuantity) need ND conversion, which happens earlier in
-    # _unwrap_for_compilation() at lines 142-171.
-    #
-    # See: User bug report showing pressure coefficient 0.000315576 instead of 1.0
-    # Test: Auto-ND vs manual-ND should produce identical expressions for PETSc
+    # Variables are already non-dimensional in PETSc - no scaling needed
+    # Constants are handled in _unwrap_for_compilation() before we get here
     return expr
-
-    try:
-        # Get the model registry to find variables
-        model = uw.get_default_model()
-        substitutions = {}
-
-        # Find all function symbols in the expression
-        # These represent UW variables like T(x,y), v_0(x,y), etc.
-        if hasattr(expr, 'atoms'):
-            function_symbols = expr.atoms(sympy.Function)
-        else:
-            function_symbols = set()
-
-        # For each variable in the model, check if it has scaling
-        for var_name, variable in model._variables.items():
-            # Check for scaling_coefficient (from dimensionality_mixin)
-            if not hasattr(variable, 'scaling_coefficient'):
-                continue
-
-            coeff = variable.scaling_coefficient
-
-            # Only scale if coefficient != 1.0 (actually has scaling)
-            if coeff == 1.0:
-                continue
-
-            # Get the variable's symbol
-            if hasattr(variable, '_base_var'):
-                # For enhanced variables, get the base variable's symbol
-                var_sym = variable._base_var.sym
-            else:
-                var_sym = getattr(variable, 'sym', None)
-
-            if var_sym is None:
-                continue
-
-            # Get all function symbols from the variable's symbol
-            if hasattr(var_sym, 'atoms'):
-                var_function_symbols = var_sym.atoms(sympy.Function)
-            else:
-                continue
-
-            # Find matching symbols and create substitutions
-            # Substitution: T(x,y) → T(x,y) / T_ref (non-dimensionalize)
-            for func_symbol in function_symbols:
-                for var_func_symbol in var_function_symbols:
-                    if str(func_symbol) == str(var_func_symbol):
-                        # DIVIDE by scaling coefficient for non-dimensionalization
-                        substitutions[func_symbol] = func_symbol / coeff
-
-        # Apply all substitutions
-        if substitutions:
-            return expr.subs(substitutions)
-        else:
-            return expr
-
-    except Exception as e:
-        import warnings
-        warnings.warn(f"Could not apply non-dimensional scaling to expression: {e}")
-        return expr
 
 
 def unwrap_for_evaluate(expr, scaling_active=None):
