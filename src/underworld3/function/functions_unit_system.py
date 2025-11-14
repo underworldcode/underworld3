@@ -95,25 +95,17 @@ def evaluate(
     from ._function import evaluate_nd as _evaluate_nd
     from .unit_conversion import has_units
     from underworld3.units import get_units
-    from .expressions import unwrap as fn_unwrap
+    from .expressions import unwrap_for_evaluate  # NEW: Use evaluate-specific unwrapper
     from .quantities import quantity, UWQuantity
     from ..utilities.unit_aware_array import UnitAwareArray
 
-    # Step 1: Auto-unwrap EnhancedMeshVariable wrappers
-    # Check if expr has .sym property (MeshVariables, etc.) and use that
-    # IMPORTANT: Get units BEFORE unwrapping to preserve unit context
-    if hasattr(expr, 'sym'):
-        # For MeshVariables, get units from the variable itself, not from .sym
-        # (since .sym might be a Matrix which doesn't carry units)
-        result_units = get_units(expr)  # Get from MeshVariable
-        expr_unwrapped = fn_unwrap(expr.sym)
-    else:
-        result_units = get_units(expr)  # Check units BEFORE unwrap
-        expr_unwrapped = fn_unwrap(expr)
-
-    # DEBUG: Print what we got
-    if verbose:
-        print(f"[evaluate DEBUG] result_units = {result_units}, type = {type(result_units)}")
+    # Step 1: Unwrap expression with proper unit handling for evaluate path
+    # NEW: unwrap_for_evaluate() handles:
+    # - Constants: Non-dimensionalized (e.g., 1500 K → 1.0)
+    # - Variables: Preserved as symbols (already ND in PETSc)
+    # - Dimensionality: Tracked for re-dimensionalization
+    scaling_is_active = uw.is_nondimensional_scaling_active()
+    expr_unwrapped, result_dimensionality = unwrap_for_evaluate(expr, scaling_active=scaling_is_active)
 
     # Step 2: Convert dimensional coordinates to non-dimensional [0-1] form
     # Internal mesh KDTrees are built with non-dimensional [0-1] coordinates from PETSc
@@ -149,81 +141,42 @@ def evaluate(
         check_extrapolated=check_extrapolated,
     )
 
-    # Step 4: Check if non-dimensional scaling is active
-    # When active, return raw results without unit wrapping
-    if uw.is_nondimensional_scaling_active():
-        if check_extrapolated:
-            return raw_result_nondim[0], raw_result_nondim[1]
-        else:
-            return raw_result_nondim
-
-    # Step 5: Use result_units obtained before unwrapping (Step 1)
-    if result_units is None:
-        # No units - return as-is (backward compatible)
-        if check_extrapolated:
-            return raw_result_nondim[0], raw_result_nondim[1]
-        else:
-            return raw_result_nondim
-
-    # Step 6: Expression has units - need to dimensionalise results
-    # The KDTree evaluation returned non-dimensional values [0-1],
-    # but we need to convert them to dimensional values (e.g., 3000 K)
-    # before wrapping with units
-
-    # Unpack extrapolation flag if needed
+    # Step 4: Unpack extrapolation flag if needed
     if check_extrapolated:
         raw_values, extrapolated = raw_result_nondim
     else:
         raw_values = raw_result_nondim
         extrapolated = None
 
-    # Convert result_units string to Pint Unit object if needed
-    from ..scaling import units as ureg
-    if isinstance(result_units, str):
-        result_units = ureg(result_units)
+    # Step 5: Handle dimensionalization based on scaling mode
+    # NEW: Use result_dimensionality from unwrap_for_evaluate()
 
-    # Get dimensionality from units (result_units is now a Pint Unit object)
-    pint_qty = 1.0 * result_units
-    dimensionality = dict(pint_qty.dimensionality)
+    # If scaling is NOT active, return raw results (already dimensional from PETSc)
+    if not scaling_is_active:
+        # No scaling - results are already dimensional, return as-is
+        if check_extrapolated:
+            return raw_values, extrapolated
+        else:
+            return raw_values
 
-    # Dimensionalise the non-dimensional result
-    # This converts [0-1] → physical values using model scales
-    raw_result_dimensional = uw.dimensionalise(
-        raw_values,
-        target_dimensionality=dimensionality,
-    )
+    # Scaling IS active - raw_values are non-dimensional, need to re-dimensionalize
 
-    # Step 7: Wrap the dimensional result with units
-    if verbose:
-        print(f"[evaluate DEBUG] Before wrapping:")
-        print(f"  raw_result_dimensional type: {type(raw_result_dimensional)}")
-        print(f"  raw_result_dimensional shape: {np.asarray(raw_result_dimensional).shape if not np.isscalar(raw_result_dimensional) else 'scalar'}")
-        print(f"  result_units: {result_units}")
+    # No dimensionality info - return plain array
+    if result_dimensionality is None:
+        if check_extrapolated:
+            return raw_values, extrapolated
+        else:
+            return raw_values
 
-    # Check if dimensionalise() already returned a unit-aware object
-    # If so, use it directly instead of wrapping again
-    if hasattr(raw_result_dimensional, 'units') and raw_result_dimensional.units is not None:
-        # Already unit-aware (from dimensionalise)
-        wrapped_result = raw_result_dimensional
-    elif np.isscalar(raw_result_dimensional):
-        # Scalar result - wrap as UWQuantity
-        wrapped_result = quantity(float(raw_result_dimensional), result_units)
-    else:
-        # Array result - wrap as UnitAwareArray
-        wrapped_result = UnitAwareArray(
-            np.asarray(raw_result_dimensional), units=result_units
-        )
-
-    if verbose:
-        print(f"[evaluate DEBUG] After wrapping:")
-        print(f"  wrapped_result type: {type(wrapped_result)}")
-        print(f"  wrapped_result.units: {getattr(wrapped_result, 'units', 'NO ATTRIBUTE')}")
+    # Step 6: Re-dimensionalize using dimensionality from unwrapper
+    # Use uw.dimensionalise() to convert ND values back to dimensional with units
+    dimensionalized_result = uw.dimensionalise(raw_values, result_dimensionality)
 
     # Return result with extrapolation flag if requested
     if check_extrapolated:
-        return wrapped_result, extrapolated
+        return dimensionalized_result, extrapolated
     else:
-        return wrapped_result
+        return dimensionalized_result
 
 
 def global_evaluate(

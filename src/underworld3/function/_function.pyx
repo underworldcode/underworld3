@@ -526,7 +526,10 @@ def petsc_interpolate(   expr,
 
 
     ## Substitute any UWExpressions for their values before calculation
-    expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+    ## NOTE: We use _unwrap_expressions directly (not fn_substitute_expressions) to avoid
+    ## applying scaling transformations which would cause double-scaling since PETSc
+    ## already stores non-dimensional values
+    expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
 
     if simplify:
         expr = sympy.simplify(expr)
@@ -542,7 +545,8 @@ def petsc_interpolate(   expr,
 
     if mesh is not None:
         expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
-        expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+        ## NOTE: Use _unwrap_expressions (not fn_substitute_expressions) to prevent double-scaling
+        expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
 
     # if (len(varfns)==0) and (coords is None):
     #     raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
@@ -843,19 +847,21 @@ def rbf_evaluate(  expr,
 
 
     ## Substitute any uw_expressions for their values before calculation
-    expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+    ## NOTE: Use _unwrap_expressions (not fn_substitute_expressions) to avoid
+    ## double-scaling - same fix as petsc_interpolate
+    expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
 
     if simplify:
         expr = sympy.simplify(expr)
 
     if mesh is not None:
         expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
-        expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+        expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
     else:
         try:
             any_basis_vector = tuple(expr.atoms(sympy.vector.scalar.BaseScalar))[0]
             expr = expr + any_basis_vector.CS.zero_matrix(expr.shape)
-            expr = uw.function.fn_substitute_expressions(expr, keep_constants=False)
+            expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
         except IndexError:
             pass
 
