@@ -12,16 +12,29 @@ def _substitute_all_once(fn, keep_constants=True, return_self=True):
 
     # Handle UWQuantity objects directly
     if isinstance(fn, underworld3.function.UWQuantity):
+        import os
+        debug = os.environ.get('UW_DEBUG_UNWRAP', False)
+        if debug:
+            print(f"[_substitute_all_once] UWQuantity detected: {fn}")
+            print(f"  has_units: {fn.has_units}")
+            print(f"  scaling_active: {underworld3._is_scaling_active()}")
         # If scaling is active and quantity has units, non-dimensionalize it
         if underworld3._is_scaling_active() and fn.has_units:
             try:
                 nondim = underworld3.non_dimensionalise(fn)
+                if debug:
+                    print(f"  non_dimensionalised: {nondim}")
                 if hasattr(nondim, '_sym'):
-                    return nondim._sym
+                    result = nondim._sym
                 elif hasattr(nondim, 'value'):
                     # Convert to SymPy so downstream code can use .atoms(), .subs(), etc.
-                    return sympy.sympify(nondim.value)
-            except:
+                    result = sympy.sympify(nondim.value)
+                if debug:
+                    print(f"  returning: {result}")
+                return result
+            except Exception as e:
+                if debug:
+                    print(f"  ERROR: {e}")
                 pass
         # Otherwise return the symbolic/numeric value
         if hasattr(fn, '_sym'):
@@ -124,6 +137,39 @@ def _unwrap_for_compilation(fn, keep_constants=True, return_self=True):
         Pure SymPy expression with scale factors applied if scaling context is active
         (all UW wrappers and metadata stripped for compilation)
     """
+    import underworld3 as uw
+
+    # Handle UWQuantity specially - non-dimensionalize if scaling is active
+    if isinstance(fn, UWQuantity):
+        import os
+        debug = os.environ.get('UW_DEBUG_UNWRAP', False)
+        if debug:
+            print(f"[_unwrap_for_compilation] UWQuantity: {fn}")
+            print(f"  scaling_active: {uw._is_scaling_active()}")
+            print(f"  has_units: {fn.has_units}")
+        if uw._is_scaling_active() and fn.has_units:
+            nondim = uw.non_dimensionalise(fn)
+            if debug:
+                print(f"  nondim: {nondim}")
+            if hasattr(nondim, 'value'):
+                result = sympy.sympify(nondim.value)
+                if debug:
+                    print(f"  returning value: {result}")
+                return result
+            elif hasattr(nondim, '_sym'):
+                if debug:
+                    print(f"  returning _sym: {nondim._sym}")
+                return nondim._sym
+        # Otherwise just return the value
+        if hasattr(fn, '_sym'):
+            return fn._sym
+        elif hasattr(fn, 'value'):
+            result = sympy.sympify(fn.value)
+            if debug:
+                print(f"  returning plain value: {result}")
+            return result
+        return fn
+
     # Handle UWDerivativeExpression specially - evaluate it first
     if isinstance(fn, UWDerivativeExpression):
         result = fn.doit()
@@ -138,7 +184,6 @@ def _unwrap_for_compilation(fn, keep_constants=True, return_self=True):
         )
 
     # Apply scaling if context is active
-    import underworld3 as uw
     if uw._is_scaling_active():
         result = _apply_scaling_to_unwrapped(result)
 
@@ -237,6 +282,16 @@ def _apply_scaling_to_unwrapped(expr):
     import underworld3 as uw
     import sympy
 
+    # SURGICAL FIX (2025-11-14): Disable variable scaling during JIT compilation
+    # PETSc stores variables in non-dimensional form already, so variable symbols
+    # like p(x,y) return ND values. Scaling them again creates double-ND bug.
+    # Only constants (UWQuantity) need ND conversion, which happens earlier in
+    # _unwrap_for_compilation() at lines 142-171.
+    #
+    # See: User bug report showing pressure coefficient 0.000315576 instead of 1.0
+    # Test: Auto-ND vs manual-ND should produce identical expressions for PETSc
+    return expr
+
     try:
         # Get the model registry to find variables
         model = uw.get_default_model()
@@ -297,6 +352,121 @@ def _apply_scaling_to_unwrapped(expr):
         return expr
 
 
+def unwrap_for_evaluate(expr, scaling_active=None):
+    """
+    Unwrap expression for evaluate/lambdify path with proper unit handling.
+
+    This is specifically designed for the evaluate pathway where:
+    - MeshVariables reference PETSc data (already non-dimensional)
+    - Constants (UWQuantity) need non-dimensionalization if scaling active
+    - Expression is passed to lambdify, not JIT compiled
+
+    Process:
+    1. Compute expression dimensionality (for later re-dimensionalization)
+    2. Flatten expression to unit-aware atoms
+    3. Non-dimensionalize constants (NOT variables - they're already ND in PETSc)
+    4. Return flattened expression and dimensionality
+
+    Args:
+        expr: Expression to unwrap (any UW expression type)
+        scaling_active: Override ND scaling check (default: use global state)
+
+    Returns:
+        tuple: (unwrapped_expr, result_dimensionality)
+            - unwrapped_expr: SymPy expression ready for lambdify
+            - result_dimensionality: Dict for re-dimensionalization (or None)
+
+    Example:
+        >>> # Constant: gets non-dimensionalized
+        >>> expr = uw.quantity(0.0001, 'cm/yr')
+        >>> unwrapped, dims = unwrap_for_evaluate(expr)
+
+        >>> # Variable: left as-is (PETSc has ND data)
+        >>> expr = velocity[0]
+        >>> unwrapped, dims = unwrap_for_evaluate(expr)
+
+        >>> # Mixed: constants scaled, variables left alone
+        >>> expr = 2 * velocity[0] + uw.quantity(0.0001, 'cm/yr')
+        >>> unwrapped, dims = unwrap_for_evaluate(expr)
+    """
+    import underworld3 as uw
+    import sympy
+    from .quantities import UWQuantity
+    from underworld3.units import get_units, get_dimensionality
+
+    # Step 1: Get expression dimensionality for later re-dimensionalization
+    result_units = get_units(expr)
+    if result_units is not None:
+        try:
+            result_dimensionality = get_dimensionality(expr)
+        except:
+            result_dimensionality = None
+    else:
+        result_dimensionality = None
+
+    # Determine if we should non-dimensionalize
+    if scaling_active is None:
+        scaling_active = uw.is_nondimensional_scaling_active()
+
+    model = uw.get_default_model()
+    should_scale = scaling_active and model.has_units()
+
+    # Step 2 & 3: Extract SymPy expression and process atoms
+    # First, get the SymPy core from various wrapper types
+    from underworld3.expression.unit_aware_expression import UnitAwareExpression
+
+    if isinstance(expr, UWQuantity):
+        # UWQuantity: needs special handling for non-dimensionalization
+        if should_scale:
+            # Non-dimensionalize the constant
+            nondim_qty = uw.non_dimensionalise(expr)
+            if hasattr(nondim_qty, 'value'):
+                return sympy.sympify(nondim_qty.value), result_dimensionality
+            elif hasattr(nondim_qty, '_sym'):
+                return nondim_qty._sym, result_dimensionality
+        # No scaling: just return the value
+        if hasattr(expr, 'value'):
+            return sympy.sympify(expr.value), result_dimensionality
+        elif hasattr(expr, '_sym'):
+            return expr._sym, result_dimensionality
+
+    elif isinstance(expr, UnitAwareExpression):
+        # UnitAwareExpression: get underlying SymPy
+        sym_expr = expr._sym if hasattr(expr, '_sym') else expr
+    elif hasattr(expr, 'sym'):
+        # MeshVariable or similar: get .sym
+        sym_expr = expr.sym
+    else:
+        # Already SymPy or plain
+        sym_expr = expr
+
+    # Step 3: Process the expression - find and non-dimensionalize constants
+    # but leave variable function symbols untouched
+    if should_scale and hasattr(sym_expr, 'atoms'):
+        # Find all UWQuantity atoms in the expression
+        # We need to substitute them with their non-dimensional values
+        substitutions = {}
+
+        # Check for UWexpression atoms that wrap constants
+        for atom in sym_expr.atoms():
+            # Look for UWexpression wrapper atoms
+            if hasattr(atom, '_pint_qty') and atom._pint_qty is not None:
+                # This is a UW constant with units - non-dimensionalize it
+                try:
+                    nondim_atom = uw.non_dimensionalise(atom)
+                    if hasattr(nondim_atom, 'value'):
+                        substitutions[atom] = nondim_atom.value
+                except:
+                    pass  # Skip if non-dimensionalization fails
+
+        # Apply substitutions
+        if substitutions:
+            sym_expr = sym_expr.subs(substitutions)
+
+    # Step 4: Return unwrapped expression and dimensionality
+    # Note: Variable symbols like T(x,y) are left as-is
+    # They'll be interpolated from PETSc (which stores ND values)
+    return sym_expr, result_dimensionality
 
 
 def substitute_expr(fn, sub_expr, keep_constants=True, return_self=True):

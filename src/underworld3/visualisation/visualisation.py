@@ -1,5 +1,6 @@
 ## pyvista helper routines
 import os
+import underworld3 as uw
 
 
 def initialise(jupyter_backend):
@@ -82,11 +83,23 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
             case (False, 3):
                 meshio_cell_type = "hexahedron"
 
+        # Use non-dimensional [0-1] coordinates for PyVista
+        # PyVista only needs coordinates for spatial positioning (visualization)
+        # evaluate() expects non-dimensional coords to query PETSc KDTrees
+        mesh_coordinates_nd = np.asarray(mesh.X.coords, dtype=np.double)
+
+        # Store units metadata for labeling and axis annotation
+        mesh_units = mesh.units if mesh.units is not None else uw.units.dimensionless
+
         mmesh = meshio.Mesh(
-            points=mesh.X.coords, cells=[(meshio_cell_type, np.array(cell_points_list))]
+            points=mesh_coordinates_nd, cells=[(meshio_cell_type, np.array(cell_points_list))]
         )
 
         pv_mesh = pv.from_meshio(mmesh)
+        pv_mesh.units = mesh_units
+        # Store original coordinate array for proper evaluation
+        pv_mesh.coord_array = mesh.X.coords
+
         return pv_mesh
 
     except ImportError:
@@ -107,7 +120,14 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
 
         cells_array = np.hstack((cells_size, cells_array), dtype=int)
 
-        pv_mesh = pv.UnstructuredGrid(cells_array, cells_type, coords_to_pv_coords(mesh.X.coords))
+        # Use non-dimensional [0-1] coordinates for PyVista (see meshio path above)
+        mesh_coordinates_nd = np.asarray(mesh.X.coords, dtype=np.double)
+        pv_mesh = pv.UnstructuredGrid(cells_array, cells_type, coords_to_pv_coords(mesh_coordinates_nd))
+
+        # Store units metadata for labeling
+        pv_mesh.units = mesh.units if mesh.units is not None else uw.units.dimensionless
+        # Store original coordinate array for proper evaluation
+        pv_mesh.coord_array = mesh.X.coords
 
         return pv_mesh
 
@@ -208,12 +228,20 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
         else:
             dim = 3
 
-    coords = pv_mesh.points[:, 0:dim]
+    # Use stored coordinate array if available (preserves units and dimensional info)
+    # Otherwise fall back to pv_mesh.points (non-dimensional [0-1] coordinates)
+    if hasattr(pv_mesh, 'coord_array'):
+        # Use the original mesh coordinate array (may be UnitAwareArray)
+        coords = pv_mesh.coord_array[:, 0:dim]
+    else:
+        # Fallback: use PyVista points directly (non-dimensional)
+        coords = pv_mesh.points[:, 0:dim]
+
     scalar_values = uw.function.evaluate(uw_fn, coords, evalf=True)
 
     # Convert UnitAwareArray to plain numpy array for PyVista compatibility
     # PyVista doesn't support UnitAwareArray and calls np.ndim() which fails
-    if hasattr(scalar_values, 'magnitude'):
+    if hasattr(scalar_values, "magnitude"):
         # UnitAwareArray - strip units for visualization
         scalar_values = scalar_values.magnitude
     else:
@@ -236,11 +264,19 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
     if dim != 2 and dim != 3:
         print(f"UW vector function should have dimension 2 or 3")
 
-    coords = pv_mesh.points[:, 0:dim]
-    vector_values_raw = uw.function.evaluate(uw_fn, coords, evalf=True).squeeze()
+    # Use stored coordinate array if available (preserves units and dimensional info)
+    # Otherwise fall back to pv_mesh.points (non-dimensional [0-1] coordinates)
+    if hasattr(pv_mesh, 'coord_array'):
+        # Use the original mesh coordinate array (may be UnitAwareArray)
+        coords = pv_mesh.coord_array[:, 0:dim]
+    else:
+        # Fallback: use PyVista points directly (non-dimensional)
+        coords = pv_mesh.points[:, 0:dim]
+
+    vector_values_raw = uw.function.evaluate(uw_fn, coords, evalf=True)
 
     # Convert UnitAwareArray to plain numpy array for PyVista compatibility
-    if hasattr(vector_values_raw, 'magnitude'):
+    if hasattr(vector_values_raw, "magnitude"):
         # UnitAwareArray - strip units for visualization
         vector_values_raw = vector_values_raw.magnitude
     else:
@@ -248,7 +284,7 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
         vector_values_raw = np.asarray(vector_values_raw)
 
     vector_values = np.zeros_like(pv_mesh.points)
-    vector_values[:, 0:dim] = vector_values_raw
+    vector_values[:, 0:dim] = vector_values_raw.squeeze()
 
     return vector_values
 
