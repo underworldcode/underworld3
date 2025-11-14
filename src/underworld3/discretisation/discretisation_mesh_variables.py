@@ -652,17 +652,66 @@ class _BaseMeshVariable(Stateful, uw_object):
         Enhanced pack method that directly accesses mesh data without access() context.
         Designed for the new meshVariable.array interface.
 
+        CRITICAL: This is the entry point where dimensional data enters PETSc storage.
+        All unit conversion and non-dimensionalization must happen here.
+
         Parameters
         ----------
-        data_array : numpy.ndarray
-            Array data to pack into mesh field
+        data_array : numpy.ndarray or UWQuantity or UnitAwareArray
+            Array data to pack into mesh field. Can have units (will be converted).
         sync : bool
             Whether to sync parallel operations (default True)
         """
         import numpy as np
+        import underworld3 as uw
+        from ..function.quantities import UWQuantity
+        from ..utilities.unit_aware_array import UnitAwareArray
 
+        # STEP 1: Handle unit conversion for incoming data
+        # This is CRITICAL for the array setter to work correctly with units
+        processed_data = data_array
+
+        # Check if data has units (UWQuantity or UnitAwareArray)
+        if isinstance(data_array, (UWQuantity, UnitAwareArray)):
+            # Data has units - need to convert and extract magnitude
+            model = uw.get_default_model()
+
+            if model.has_units() and hasattr(self, 'units') and self.units is not None:
+                # Convert incoming units to variable's units
+                from ..scaling import units as ureg
+
+                # Get target units (variable's units)
+                target_units = self.units
+                if isinstance(target_units, str):
+                    target_units = ureg(target_units)
+
+                # Convert data to target units
+                if isinstance(data_array, UWQuantity):
+                    # UWQuantity: convert and extract magnitude
+                    converted = data_array.to(target_units)
+                    processed_data = converted.magnitude
+                else:
+                    # UnitAwareArray: convert and extract array
+                    converted = data_array.to(target_units)
+                    processed_data = converted.magnitude if hasattr(converted, 'magnitude') else np.asarray(converted)
+
+                # STEP 2: Non-dimensionalize if scaling is active
+                # Check if we're in non-dimensional scaling mode
+                if uw.is_nondimensional_scaling_active():
+                    # Non-dimensionalize the converted value
+                    # Create a temporary UWQuantity for non-dimensionalization
+                    temp_qty = uw.quantity(processed_data, target_units)
+                    processed_data = uw.non_dimensionalise(temp_qty)
+            else:
+                # No units mode or variable has no units - extract raw magnitude
+                if hasattr(data_array, 'magnitude'):
+                    processed_data = data_array.magnitude
+                else:
+                    processed_data = np.asarray(data_array)
+
+        # STEP 3: Pack the processed (potentially non-dimensional) data into PETSc
         shape = self.shape
-        data_array_2d = np.atleast_2d(data_array)
+        data_array_2d = np.atleast_2d(processed_data)
 
         # Direct PETSc access (following mesh.access pattern)
         # Ensure vector is available
@@ -1433,67 +1482,111 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # For simple variables, reshape to (N, a, b) format
                 reshaped = data.reshape(data.shape[0], *self.parent.shape)
 
-                # Apply ND scaling if active: convert ND → dimensional
+                # Apply dimensionalization if needed
                 import underworld3 as uw
 
-                if uw.is_nondimensional_scaling_active():
-                    if hasattr(self.parent, "scaling_coefficient"):
-                        scale = self.parent.scaling_coefficient
-                        if scale != 1.0 and scale != 0.0:
-                            # Convert ND values to dimensional: T_dim = T_ND * T_scale
-                            reshaped = reshaped * scale
+                # Check if variable has units and model has reference quantities
+                model = uw.get_default_model()
+                has_units = hasattr(self.parent, "units") and self.parent.units is not None
 
-                # Wrap in UnitAwareArray if variable has units
-                if hasattr(self.parent, "units") and self.parent.units is not None:
-                    return UnitAwareArray(reshaped, units=str(self.parent.units))
+                if has_units and model.has_units():
+                    # Variable has units - wrap with UnitAwareArray
+                    # Get variable units (needed for both branches)
+                    from ..scaling import units as ureg
+                    var_units = self.parent.units
+                    if isinstance(var_units, str):
+                        var_units = ureg(var_units)
+
+                    # If ND scaling is active, data is non-dimensional and needs dimensionalization
+                    if uw.is_nondimensional_scaling_active():
+                        # Get dimensionality
+                        pint_qty = 1.0 * var_units
+                        dimensionality = dict(pint_qty.dimensionality)
+
+                        # Dimensionalize: ND → dimensional using model reference scales
+                        dimensional_values = uw.dimensionalise(reshaped, target_dimensionality=dimensionality)
+
+                        # Wrap with units
+                        return UnitAwareArray(dimensional_values, units=var_units)
+                    else:
+                        # ND scaling not active - data is already dimensional
+                        return UnitAwareArray(reshaped, units=var_units)
                 else:
+                    # No units - return plain array
                     return reshaped
 
             def __getitem__(self, key):
                 return self._get_array_data()[key]
 
             def __setitem__(self, key, value):
-                # Get current array view
-                array_data = self._get_array_data()
-                # Create a copy to modify (avoid modifying view directly)
-                modified_data = (
-                    array_data.copy()
-                    if hasattr(array_data, "copy")
-                    else np.array(array_data).copy()
-                )
+                # Get current NON-DIMENSIONAL array data from PETSc
+                array_data = self.parent.data
+                reshaped = array_data.reshape(array_data.shape[0], *self.parent.shape)
 
-                # Extract magnitude if value is a UWQuantity or UnitAwareArray
-                if hasattr(value, "magnitude"):
-                    # Convert to variable's units if needed
-                    if (
-                        hasattr(value, "units")
-                        and hasattr(self.parent, "units")
-                        and self.parent.units
-                    ):
-                        # TODO: Add unit conversion here if units mismatch
-                        value = value.magnitude
-                    else:
-                        value = value.magnitude
+                # Create a copy to modify
+                modified_data = reshaped.copy()
 
-                modified_data[key] = value
-                # Reshape back to flat format and assign to canonical data
-                # Extract magnitude from UnitAwareArray if needed
-                if hasattr(modified_data, "magnitude"):
-                    flat_data = modified_data.magnitude.reshape(-1, self.parent.num_components)
-                else:
-                    flat_data = modified_data.reshape(-1, self.parent.num_components)
+                # FULL CONVERSION PIPELINE for the input value
+                # Step 1: Convert units if needed
+                # Step 2: Non-dimensionalize if scaling active
+                # Step 3: Assign NON-DIMENSIONAL value to array
 
-                # Apply inverse ND scaling if active: convert dimensional → ND before storing
                 import underworld3 as uw
 
-                if uw.is_nondimensional_scaling_active():
-                    if hasattr(self.parent, "scaling_coefficient"):
-                        scale = self.parent.scaling_coefficient
-                        if scale != 1.0 and scale != 0.0:
-                            # Convert dimensional values to ND: T_ND = T_dim / T_scale
-                            flat_data = flat_data / scale
+                if hasattr(value, 'magnitude') or hasattr(value, 'value'):
+                    # Value has units - need full conversion pipeline
+                    model = uw.get_default_model()
 
-                self.parent.data[...] = flat_data
+                    if model.has_units() and hasattr(self.parent, 'units') and self.parent.units:
+                        from ..scaling import units as ureg
+
+                        # Step 1: Convert to variable's units (keep as string for .to())
+                        target_units_str = self.parent.units if isinstance(self.parent.units, str) else str(self.parent.units)
+
+                        # Convert and extract numerical value
+                        converted = value.to(target_units_str)
+
+                        # Parse to Pint Unit for non-dimensionalization
+                        target_units = ureg(target_units_str)
+                        if hasattr(converted, 'value'):
+                            dimensional_value = converted.value
+                        elif hasattr(converted, 'magnitude'):
+                            dimensional_value = converted.magnitude
+                        else:
+                            dimensional_value = float(converted)
+
+                        # Step 2: Non-dimensionalize if scaling active
+                        if uw.is_nondimensional_scaling_active():
+                            # Create temporary quantity for non-dimensionalization
+                            temp_qty = uw.quantity(dimensional_value, target_units)
+                            nd_value = uw.non_dimensionalise(temp_qty)
+                            # Extract value - nd_value should be plain float or UWQuantity with value
+                            if hasattr(nd_value, 'value'):
+                                value = nd_value.value
+                            elif hasattr(nd_value, 'magnitude'):
+                                value = nd_value.magnitude
+                            else:
+                                value = nd_value
+                        else:
+                            # No scaling - use dimensional value
+                            value = dimensional_value
+                    else:
+                        # No units mode - just extract value/magnitude
+                        if hasattr(value, 'value'):
+                            value = value.value
+                        elif hasattr(value, 'magnitude'):
+                            value = value.magnitude
+                        else:
+                            value = float(value)
+
+                # Step 3: Assign the (now non-dimensional) value
+                modified_data[key] = value
+
+                # Pack the entire NON-DIMENSIONAL array to PETSc
+                # Don't use pack_uw_data_to_petsc - it expects dimensional input
+                # Use pack_raw_data_to_petsc instead - it handles plain arrays
+                flat_data = modified_data.reshape(-1, self.parent.num_components)
+                self.parent.pack_raw_data_to_petsc(flat_data, sync=True)
 
             @property
             def shape(self):
@@ -1649,68 +1742,107 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Use complex pack/unpack for tensor layouts
                 unpacked = self.parent.unpack_uw_data_from_petsc(squeeze=False)
 
-                # Apply ND scaling if active: convert ND → dimensional
+                # Apply dimensionalization if needed
                 import underworld3 as uw
 
-                if uw.is_nondimensional_scaling_active():
-                    if hasattr(self.parent, "scaling_coefficient"):
-                        scale = self.parent.scaling_coefficient
-                        if scale != 1.0 and scale != 0.0:
-                            # Convert ND values to dimensional: T_dim = T_ND * T_scale
-                            unpacked = unpacked * scale
+                # Check if variable has units and model has reference quantities
+                model = uw.get_default_model()
+                has_units = hasattr(self.parent, "units") and self.parent.units is not None
 
-                # Wrap in UnitAwareArray if variable has units
-                if hasattr(self.parent, "units") and self.parent.units is not None:
-                    return UnitAwareArray(unpacked, units=str(self.parent.units))
+                if has_units and model.has_units():
+                    # Variable has units - wrap with UnitAwareArray
+                    # Get variable units (needed for both branches)
+                    from ..scaling import units as ureg
+                    var_units = self.parent.units
+                    if isinstance(var_units, str):
+                        var_units = ureg(var_units)
+
+                    # If ND scaling is active, unpacked data is non-dimensional and needs dimensionalization
+                    if uw.is_nondimensional_scaling_active():
+                        # Get dimensionality
+                        pint_qty = 1.0 * var_units
+                        dimensionality = dict(pint_qty.dimensionality)
+
+                        # Dimensionalize: ND → dimensional using model reference scales
+                        dimensional_values = uw.dimensionalise(unpacked, target_dimensionality=dimensionality)
+
+                        # Wrap with units
+                        return UnitAwareArray(dimensional_values, units=var_units)
+                    else:
+                        # ND scaling not active - data is already dimensional
+                        return UnitAwareArray(unpacked, units=var_units)
                 else:
+                    # No units - return plain array
                     return unpacked
 
             def __getitem__(self, key):
                 return self._get_array_data()[key]
 
             def __setitem__(self, key, value):
-                # Get current array view
-                array_data = self._get_array_data()
-                # Create a copy to modify (avoid modifying view directly)
-                modified_data = (
-                    array_data.copy()
-                    if hasattr(array_data, "copy")
-                    else np.array(array_data).copy()
-                )
+                # Get current NON-DIMENSIONAL array data from PETSc
+                unpacked = self.parent.unpack_uw_data_from_petsc(squeeze=False)
 
-                # Extract magnitude if value is a UWQuantity or UnitAwareArray
-                if hasattr(value, "magnitude"):
-                    # Convert to variable's units if needed
-                    if (
-                        hasattr(value, "units")
-                        and hasattr(self.parent, "units")
-                        and self.parent.units
-                    ):
-                        # TODO: Add unit conversion here if units mismatch
-                        value = value.magnitude
-                    else:
-                        value = value.magnitude
+                # Create a copy to modify
+                modified_data = unpacked.copy()
 
-                modified_data[key] = value
+                # FULL CONVERSION PIPELINE for the input value
+                # Step 1: Convert units if needed
+                # Step 2: Non-dimensionalize if scaling active
+                # Step 3: Assign NON-DIMENSIONAL value to array
 
-                # Extract magnitude from UnitAwareArray if needed
-                if hasattr(modified_data, "magnitude"):
-                    data_to_pack = modified_data.magnitude
-                else:
-                    data_to_pack = modified_data
-
-                # Apply inverse ND scaling if active: convert dimensional → ND before storing
                 import underworld3 as uw
 
-                if uw.is_nondimensional_scaling_active():
-                    if hasattr(self.parent, "scaling_coefficient"):
-                        scale = self.parent.scaling_coefficient
-                        if scale != 1.0 and scale != 0.0:
-                            # Convert dimensional values to ND: T_ND = T_dim / T_scale
-                            data_to_pack = data_to_pack / scale
+                if hasattr(value, 'magnitude') or hasattr(value, 'value'):
+                    # Value has units - need full conversion pipeline
+                    model = uw.get_default_model()
 
-                # Pack back to canonical data format
-                self.parent.pack_uw_data_to_petsc(data_to_pack)
+                    if model.has_units() and hasattr(self.parent, 'units') and self.parent.units:
+                        from ..scaling import units as ureg
+
+                        # Step 1: Convert to variable's units (keep as string for .to())
+                        target_units_str = self.parent.units if isinstance(self.parent.units, str) else str(self.parent.units)
+
+                        # Convert and extract numerical value
+                        converted = value.to(target_units_str)
+
+                        # Parse to Pint Unit for non-dimensionalization
+                        target_units = ureg(target_units_str)
+                        if hasattr(converted, 'value'):
+                            dimensional_value = converted.value
+                        elif hasattr(converted, 'magnitude'):
+                            dimensional_value = converted.magnitude
+                        else:
+                            dimensional_value = float(converted)
+
+                        # Step 2: Non-dimensionalize if scaling active
+                        if uw.is_nondimensional_scaling_active():
+                            # Create temporary quantity for non-dimensionalization
+                            temp_qty = uw.quantity(dimensional_value, target_units)
+                            nd_value = uw.non_dimensionalise(temp_qty)
+                            # Extract value - nd_value should be plain float or UWQuantity with value
+                            if hasattr(nd_value, 'value'):
+                                value = nd_value.value
+                            elif hasattr(nd_value, 'magnitude'):
+                                value = nd_value.magnitude
+                            else:
+                                value = nd_value
+                        else:
+                            # No scaling - use dimensional value
+                            value = dimensional_value
+                    else:
+                        # No units mode - just extract value/magnitude
+                        if hasattr(value, 'value'):
+                            value = value.value
+                        elif hasattr(value, 'magnitude'):
+                            value = value.magnitude
+                        else:
+                            value = float(value)
+
+                # Step 3: Assign the (now non-dimensional) value
+                modified_data[key] = value
+
+                # Pack the entire NON-DIMENSIONAL array to PETSc using complex tensor layout
+                self.parent.pack_uw_data_to_petsc(modified_data, sync=True)
 
             @property
             def shape(self):
