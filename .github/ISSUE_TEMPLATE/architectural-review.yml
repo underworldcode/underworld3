@@ -1,0 +1,127 @@
+name: Architectural Review
+description: Submit a formal architectural review for approval
+title: "[REVIEW] "
+labels: ["architectural-review", "review:submitted"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Architectural Review Submission
+
+        This template is for formal architectural reviews documented in `docs/reviews/`.
+        These reviews cover system design, implementation rationale, and architectural decisions.
+
+        **See**: `docs/developer/CODE-REVIEW-PROCESS.md` for the full review process.
+
+  - type: input
+    id: review-doc
+    attributes:
+      label: Review Document Path
+      description: Path to review document in docs/reviews/
+      placeholder: docs/reviews/2025-11/FUNCTION-EVALUATION-SYSTEM-REVIEW.md
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Urgency level for this review
+      options:
+        - HIGH
+        - MEDIUM
+        - LOW
+    validations:
+      required: true
+
+  - type: dropdown
+    id: review-type
+    attributes:
+      label: Review Category
+      description: Primary focus area of this review
+      options:
+        - System Architecture
+        - Code Implementation
+        - Testing Infrastructure
+        - Documentation
+        - Performance Optimization
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Executive Summary
+      description: 2-3 sentence overview of what this review covers
+      placeholder: |
+        This review documents the merger of evaluate() and global_evaluate() code paths,
+        introducing automatic lambdification optimization that provides ~10,000x speedup
+        for pure SymPy expressions through cached compiled functions.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope & Key Changes
+      description: What files, systems, or components are affected?
+      placeholder: |
+        **Files Modified**:
+        - src/underworld3/function/functions_unit_system.py
+        - src/underworld3/function/pure_sympy_evaluator.py
+
+        **Systems Affected**:
+        - Function evaluation system
+        - Expression unwrapping
+        - DMInterpolation caching
+
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Key Metrics
+      description: Quantified impacts (performance, test coverage, LOC, etc.)
+      placeholder: |
+        - Performance: 22s → 0.003s (7,400x faster)
+        - Test coverage: 20 comprehensive tests, all passing
+        - New code: ~360 lines in pure_sympy_evaluator.py
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies & Blockers
+      description: Does this review depend on or block other reviews?
+      placeholder: |
+        **Depends on**: None
+        **Blocks**: #XXX (Related feature implementation)
+        **Related**: #YYY (Units system review)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-Submission Checklist
+      description: Ensure review is ready for formal evaluation
+      options:
+        - label: All referenced tests are passing
+          required: true
+        - label: Review document follows template structure
+          required: true
+        - label: Sign-off table is included
+          required: true
+        - label: Known limitations are documented
+          required: true
+        - label: Testing instructions are provided
+          required: true
+        - label: Tracking index (REVIEW-TRACKING-INDEX.md) is updated
+          required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other information reviewers should know
+      placeholder: |
+        - Background discussions: Link to GitHub Discussions
+        - Related PRs: #XXX, #YYY
+        - External references: Papers, benchmarks, etc.
