@@ -8,6 +8,41 @@
 
 ---
 
+## How to Review This Document
+
+### Quick Orientation
+
+**You are reviewing**: The formal architectural review system itself (meta-review!)
+
+**This PR contains**: 6 files specific to review system infrastructure
+- 3 GitHub templates/workflows
+- 2 process documentation guides
+- 1 review document (this file)
+
+**How to navigate**:
+1. Click **"Files changed"** tab in PR #35
+2. Each file has a tree view on the left
+3. Click any file to view inline
+4. Hover over lines to add comments
+
+**What to look for**:
+- Are templates clear and helpful?
+- Is the process usable?
+- Does overhead justify benefits?
+- Can you understand the reviewer workflow?
+
+**Time needed**: ~30-60 minutes for thorough review
+
+### Review via Pull Request #35
+
+**PR Link**: https://github.com/underworldcode/underworld3/pull/35
+
+This review is being conducted via **scoped Pull Request** showing only the 6 files relevant to the review system (not all files from the branch). This makes navigation much easier than the initial Issue-based approach.
+
+**Why PR instead of Issue**: Better file navigation, inline commenting, clear approval path.
+
+---
+
 ## Overview
 
 ### Summary
@@ -419,6 +454,115 @@ This review document itself will serve as the validation test:
 - Refine workflow based on real usage
 - Validate automation works as intended
 - Establish precedent for future reviews
+
+---
+
+## Reviewer Workflow
+
+### How to Provide Feedback
+
+**Option 1: Comment on PR** (recommended for this review)
+1. Go to PR #35: https://github.com/underworldcode/underworld3/pull/35
+2. Click "Files changed" tab
+3. Click on any file to view it
+4. Hover over a line and click `+` button to add comment
+5. Submit comments individually or as a batch review
+
+**Option 2: Comment on specific lines in this document**
+1. In "Files changed" tab, open this file
+2. Find the section needing clarification
+3. Add inline comment: "This section needs more detail about X"
+
+**Option 3: High-level feedback**
+1. Add comment to PR conversation tab
+2. Reference sections by name: "In 'System Architecture' section..."
+
+### How to Change Review Status
+
+**Current labels**: `architectural-review`, `review:changes-requested`, `priority:medium`, `type:architecture`
+
+**To update status** (requires write access):
+
+```bash
+# Mark as in-progress (when actively reviewing)
+/usr/local/bin/gh pr edit 35 --remove-label "review:changes-requested" \
+                              --add-label "review:in-progress"
+
+# Request more changes
+/usr/local/bin/gh pr edit 35 --add-label "review:changes-requested"
+
+# Approve (when satisfied)
+/usr/local/bin/gh pr edit 35 --remove-label "review:changes-requested" \
+                              --add-label "review:approved"
+```
+
+**Or via GitHub UI**:
+1. Go to PR #35
+2. Click on existing label to remove it
+3. Click "Labels" → Select new label
+
+### How to Approve This Review
+
+**Step 1: Evaluate** against review checklist (see "Sign-Off" section below)
+
+**Step 2: Provide approval** (choose one method):
+
+**Method A - Via GitHub UI**:
+1. Go to PR #35
+2. Click "Review changes" button (top right of "Files changed" tab)
+3. Select "Approve" radio button
+4. Add comment explaining approval
+5. Click "Submit review"
+
+**Method B - Via CLI**:
+```bash
+/usr/local/bin/gh pr review 35 --approve --body "LGTM - Review system is well-designed and documented"
+```
+
+**Step 3: Update sign-off table** in this document:
+```markdown
+| Primary Reviewer | @yourname | 2025-11-17 | ✅ Approved |
+```
+
+**Step 4: Merge when ready** (project lead):
+```bash
+gh pr merge 35 --squash --delete-branch
+```
+
+### Status Transitions
+
+```
+review:submitted        → Initial submission
+   ↓
+review:in-progress      → Reviewer actively working
+   ↓
+   ├─→ review:changes-requested  → Issues found, author fixes
+   │      ↓
+   │   (author updates)
+   │      ↓
+   │   review:in-progress         → Re-review
+   │      ↓
+   └─→ review:approved    → All reviewers satisfied
+          ↓
+       [MERGE PR]        → Review formally approved!
+```
+
+### What Happens After Approval
+
+1. **PR is merged**: Review document goes into `main` branch
+2. **Permanent archive**: Review is now part of permanent documentation
+3. **Sign-off table**: Updated with final approval dates
+4. **Master index**: Updated to reflect approved status
+5. **Review history markers**: Remain in files permanently (boilerplate)
+
+### Questions or Issues?
+
+- **Process unclear?**: Add comment to PR with question
+- **Template confusing?**: Comment on the specific template file
+- **Workflow too complex?**: Suggest simplifications in PR comments
+- **Missing something?**: Point out gaps directly
+
+**Remember**: This is a pilot review - finding issues with the process is valuable feedback!
 
 ---
 
