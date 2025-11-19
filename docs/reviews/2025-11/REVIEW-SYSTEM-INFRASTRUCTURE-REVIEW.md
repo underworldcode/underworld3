@@ -8,6 +8,45 @@
 
 ---
 
+## How to Review This Document
+
+### Quick Orientation
+
+**You are reviewing**: The formal architectural review system itself (meta-review!)
+
+**This PR contains**: 6 files specific to review system infrastructure
+- 3 GitHub templates/workflows
+- 2 process documentation guides
+- 1 review document (this file)
+
+**How to navigate**:
+1. Click **"Files changed"** tab in PR #35
+2. Each file has a tree view on the left
+3. Click any file to view inline
+4. Hover over lines to add comments
+
+**What to look for**:
+- Are templates clear and helpful?
+- Is the process usable?
+- Does overhead justify benefits?
+- Can you understand the reviewer workflow?
+
+**Time needed**: ~30-60 minutes for thorough review
+
+### Review via Pull Request #35
+
+**PR Link**: https://github.com/underworldcode/underworld3/pull/35
+**Review Branch**: https://github.com/underworldcode/underworld3/tree/review/review-system-infrastructure
+**Files in Review**: https://github.com/underworldcode/underworld3/tree/review/review-system-infrastructure/docs/reviews/2025-11
+
+This review is being conducted via **scoped Pull Request** showing only the 6 files relevant to the review system (not all files from the branch). This makes navigation much easier than the initial Issue-based approach.
+
+**Why PR instead of Issue**: Better file navigation, inline commenting, clear approval path.
+
+**Note**: Use the "Review Branch" link above to view files directly, or use PR "Files changed" tab for diff view.
+
+---
+
 ## Overview
 
 ### Summary
@@ -309,6 +348,217 @@ docs/reviews/
 | Project Lead | ... | ... | Pending |
 ```
 
+### Code Change Review Requirements
+
+**For reviews involving code changes** (not just process/documentation), the review MUST include:
+
+#### 1. Purpose of Change
+**Required in "Overview" section**:
+```markdown
+## Overview
+
+### Purpose
+[Clear 2-3 sentence summary of what this change accomplishes]
+
+**Problem Solved**: [What issue does this address?]
+**Solution**: [How does the implementation solve it?]
+**Benefit**: [What improvement does this provide?]
+```
+
+#### 2. Breaking Changes & API Changes
+**Required in dedicated section**:
+```markdown
+## Breaking Changes & API Compatibility
+
+### Breaking Changes
+**None** | **Yes - see below**
+
+[If yes, list each breaking change:]
+- **Change**: [What changed?]
+- **Old behavior**: [How did it work before?]
+- **New behavior**: [How does it work now?]
+- **Reason**: [Why was this necessary?]
+- **Impact**: [Who/what is affected?]
+
+### API Changes
+**Backward compatible**: Yes | No
+
+[If No, document:]
+- **Old API**: `old_function(args)`
+- **New API**: `new_function(args)`
+- **Migration path**: [How to update code]
+```
+
+#### 3. Rationale for Changes
+**Required in "System Architecture" section**:
+```markdown
+## System Architecture
+
+### Design Rationale
+[Explain WHY this approach was chosen]
+
+**Alternatives Considered**:
+1. **Alternative A**: [Description] - Rejected because [reason]
+2. **Alternative B**: [Description] - Rejected because [reason]
+
+**Chosen Approach**: [Description]
+**Why**: [Technical reasons, trade-offs, benefits]
+```
+
+#### 4. Deprecation Plan
+**Required if breaking changes exist**:
+```markdown
+## Deprecation Plan
+
+### Timeline
+- **v3.1 (current)**: Old API deprecated, warnings added
+- **v3.2 (Q1 2026)**: Old and new APIs coexist, migration guide published
+- **v3.3 (Q2 2026)**: Old API removed
+
+### Deprecation Warnings
+```python
+warnings.warn(
+    "old_function() is deprecated, use new_function() instead. "
+    "Will be removed in v3.3.",
+    DeprecationWarning,
+    stacklevel=2
+)
+```
+
+### Support Period
+- **Documentation**: Updated immediately with migration examples
+- **Community Support**: Active help for 2 release cycles
+- **Final Removal**: Not before [date]
+```
+
+#### 5. Migration Strategy
+**Required if API changes affect users**:
+```markdown
+## Migration Strategy
+
+### Who Is Affected
+- **User code**: If using [specific feature/API]
+- **Examples/tutorials**: [List which examples need updates]
+- **Tests**: [Which test patterns need changes]
+
+### Migration Steps
+**Step 1**: [Update imports/dependencies]
+```python
+# Old
+from underworld3 import old_module
+
+# New
+from underworld3 import new_module
+```
+
+**Step 2**: [Update function calls]
+```python
+# Old
+result = old_function(arg1, arg2)
+
+# New
+result = new_function(arg1, new_arg=arg2)
+```
+
+**Step 3**: [Test changes]
+```bash
+pytest tests/test_migration.py
+```
+
+### Automated Migration Tools
+[If available, provide scripts or tools to automate migration]
+
+### Migration Timeline
+- **Week 1**: Update documentation and examples
+- **Week 2**: Publish migration guide
+- **Week 3-4**: Support user migrations via discussions
+- **Month 2**: Review and address migration issues
+
+### Support Resources
+- **Migration Guide**: [Link to detailed guide]
+- **Example Updates**: [Links to updated examples]
+- **Discussion**: [Link to Q&A thread]
+```
+
+#### 6. Example Complete Code Review
+
+```markdown
+# Array Access Simplification - Code Review
+
+## Overview
+
+### Purpose
+Eliminate `with mesh.access()` requirement by implementing automatic
+PETSc synchronization via NDArray_With_Callback.
+
+**Problem Solved**: Verbose, error-prone access context managers
+**Solution**: Automatic sync on array writes
+**Benefit**: Simpler user code, fewer bugs
+
+## Breaking Changes & API Compatibility
+
+### Breaking Changes
+**None** - fully backward compatible
+
+### API Changes
+**Backward compatible**: Yes
+
+**Old API** (still works):
+```python
+with mesh.access(var):
+    var.data[...] = values
+```
+
+**New API** (recommended):
+```python
+var.array[...] = values
+```
+
+## System Architecture
+
+### Design Rationale
+Chose callback-based sync over proxy objects because:
+- Simpler implementation
+- Better performance (no double copying)
+- Works with existing NumPy ecosystem
+
+**Alternatives Considered**:
+1. **Proxy objects** - Rejected due to NumPy compatibility issues
+2. **Explicit sync calls** - Rejected as too error-prone
+
+## Deprecation Plan
+
+**Not Applicable** - old API remains supported indefinitely
+- No deprecation needed (backward compatible)
+- Both patterns work equally well
+- Users can migrate at their own pace
+
+## Migration Strategy
+
+### Who Is Affected
+- **User code**: Optional migration, old code still works
+- **Examples**: Will be updated to show new pattern
+- **Tests**: No changes required
+
+### Migration Steps (Optional)
+**Step 1**: Replace access context with direct array assignment
+```python
+# Old (still works)
+with mesh.access(var):
+    var.data[...] = values
+
+# New (recommended)
+var.array[...] = values
+```
+
+**Benefits of migrating**: Simpler code, fewer lines, clearer intent
+
+### Timeline
+- **No forced migration**: Old pattern continues to work
+- **Examples updated**: Over next 2 months
+- **Recommendation**: Use new pattern for new code
+```
+
 ### Automation Features
 
 **Validation Workflow** (runs on every PR to `docs/reviews/`):
@@ -419,6 +669,115 @@ This review document itself will serve as the validation test:
 - Refine workflow based on real usage
 - Validate automation works as intended
 - Establish precedent for future reviews
+
+---
+
+## Reviewer Workflow
+
+### How to Provide Feedback
+
+**Option 1: Comment on PR** (recommended for this review)
+1. Go to PR #35: https://github.com/underworldcode/underworld3/pull/35
+2. Click "Files changed" tab
+3. Click on any file to view it
+4. Hover over a line and click `+` button to add comment
+5. Submit comments individually or as a batch review
+
+**Option 2: Comment on specific lines in this document**
+1. In "Files changed" tab, open this file
+2. Find the section needing clarification
+3. Add inline comment: "This section needs more detail about X"
+
+**Option 3: High-level feedback**
+1. Add comment to PR conversation tab
+2. Reference sections by name: "In 'System Architecture' section..."
+
+### How to Change Review Status
+
+**Current labels**: `architectural-review`, `review:changes-requested`, `priority:medium`, `type:architecture`
+
+**To update status** (requires write access):
+
+```bash
+# Mark as in-progress (when actively reviewing)
+/usr/local/bin/gh pr edit 35 --remove-label "review:changes-requested" \
+                              --add-label "review:in-progress"
+
+# Request more changes
+/usr/local/bin/gh pr edit 35 --add-label "review:changes-requested"
+
+# Approve (when satisfied)
+/usr/local/bin/gh pr edit 35 --remove-label "review:changes-requested" \
+                              --add-label "review:approved"
+```
+
+**Or via GitHub UI**:
+1. Go to PR #35
+2. Click on existing label to remove it
+3. Click "Labels" → Select new label
+
+### How to Approve This Review
+
+**Step 1: Evaluate** against review checklist (see "Sign-Off" section below)
+
+**Step 2: Provide approval** (choose one method):
+
+**Method A - Via GitHub UI**:
+1. Go to PR #35
+2. Click "Review changes" button (top right of "Files changed" tab)
+3. Select "Approve" radio button
+4. Add comment explaining approval
+5. Click "Submit review"
+
+**Method B - Via CLI**:
+```bash
+/usr/local/bin/gh pr review 35 --approve --body "LGTM - Review system is well-designed and documented"
+```
+
+**Step 3: Update sign-off table** in this document:
+```markdown
+| Primary Reviewer | @yourname | 2025-11-17 | ✅ Approved |
+```
+
+**Step 4: Merge when ready** (project lead):
+```bash
+gh pr merge 35 --squash --delete-branch
+```
+
+### Status Transitions
+
+```
+review:submitted        → Initial submission
+   ↓
+review:in-progress      → Reviewer actively working
+   ↓
+   ├─→ review:changes-requested  → Issues found, author fixes
+   │      ↓
+   │   (author updates)
+   │      ↓
+   │   review:in-progress         → Re-review
+   │      ↓
+   └─→ review:approved    → All reviewers satisfied
+          ↓
+       [MERGE PR]        → Review formally approved!
+```
+
+### What Happens After Approval
+
+1. **PR is merged**: Review document goes into `main` branch
+2. **Permanent archive**: Review is now part of permanent documentation
+3. **Sign-off table**: Updated with final approval dates
+4. **Master index**: Updated to reflect approved status
+5. **Review history markers**: Remain in files permanently (boilerplate)
+
+### Questions or Issues?
+
+- **Process unclear?**: Add comment to PR with question
+- **Template confusing?**: Comment on the specific template file
+- **Workflow too complex?**: Suggest simplifications in PR comments
+- **Missing something?**: Point out gaps directly
+
+**Remember**: This is a pilot review - finding issues with the process is valuable feedback!
 
 ---
 
@@ -822,3 +1181,8 @@ This review document itself will serve as the validation test:
 **Last Updated**: 2025-11-17
 **Status**: Submitted for review - awaiting first pilot review through new system
 **Meta**: This review documents itself being reviewed through the process it describes 🔄
+
+---
+
+**Review Marker**: This document is under formal review (Review #10, 2025-11-17)  
+**Status**: Changes requested - addressing file navigation and reviewer workflow gaps
