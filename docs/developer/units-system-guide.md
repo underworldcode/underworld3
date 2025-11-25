@@ -227,6 +227,146 @@ print(f"Temperature scale: {scales['temperature']}")  # 1500 kelvin
 model_coords = model.to_model_units(points_km)  # Converts to model units
 ```
 
+## Unit Conversion Methods (UPDATED 2025-11-25)
+
+The units system provides several methods for converting and simplifying unit expressions. Understanding when to use each method is crucial for correct results, especially with composite expressions.
+
+### .to_compact() - Automatic Readable Units (RECOMMENDED)
+
+The `.to_compact()` method automatically selects the most readable unit representation:
+
+```python
+# ✅ RECOMMENDED: Best for display and unit simplification
+distance = uw.quantity(1500, "m")
+compact = distance.to_compact()  # → 1.5 km (automatic)
+
+# Works correctly on composite expressions
+kappa = uw.quantity(1e-6, "m**2/s")
+t_now = uw.expression("t_now", uw.quantity(1, 'Myr'), "Current time")
+sqrt_expr = ((2 * kappa * t_now))**0.5
+
+# Simplifies display units without breaking evaluation
+sqrt_compact = sqrt_expr.to_compact()
+# Units: kilometer * year^0.5 / second^0.5 (readable)
+# evaluate(sqrt_compact) == evaluate(sqrt_expr) ✅
+```
+
+### .to_base_units() - SI Base Units (USE WITH CAUTION)
+
+Converts to SI base units (meter, kilogram, second, etc.). **Behavior differs for simple vs composite expressions:**
+
+```python
+# ✅ Simple expressions: Conversion factor applied
+velocity = uw.quantity(5, "km/hour")
+velocity_ms = velocity.to_base_units()  # → 1.38889 m/s
+# Value actually changes (correct conversion)
+
+# ⚠️ Composite expressions: Display units only (with warning)
+sqrt_expr = ((kappa * t_now))**0.5
+sqrt_base = sqrt_expr.to_base_units()
+# UserWarning: "changing display units only..."
+# Units: meter (simplified display)
+# evaluate(sqrt_base) == evaluate(sqrt_expr) ✅ (same value!)
+```
+
+**Why the difference?**
+- Composite expressions contain `UWexpression` symbols that handle their own unit conversions via the scaling system
+- Embedding conversion factors would cause **double-application** during nondimensional evaluation cycles
+- Display-only conversion prevents this bug while still simplifying unit representation
+
+### .to_reduced_units() - Cancel Common Factors (USE WITH CAUTION)
+
+Simplifies units by canceling common factors:
+
+```python
+# ✅ Simple expressions: Applies simplification factor
+distance = velocity * time  # m/s * s → m
+simplified = distance.to_reduced_units()
+# Cancels seconds: Result in meters
+
+# ⚠️ Composite expressions: Display units only (with warning)
+sqrt_expr = ((kappa * t_now))**0.5
+sqrt_reduced = sqrt_expr.to_reduced_units()
+# UserWarning: "changing display units only..."
+# Units: meter (after cancellation)
+# evaluate(sqrt_reduced) == evaluate(sqrt_expr) ✅
+```
+
+### Comparison Table
+
+| Method | Simple Expressions | Composite Expressions | Use Case |
+|--------|-------------------|----------------------|----------|
+| `.to_compact()` | ✅ Converts + readable | ✅ Preserves eval + readable | **Primary recommendation** |
+| `.to_base_units()` | ✅ Converts to SI | ⚠️ Display only + warning | Force SI base units |
+| `.to_reduced_units()` | ✅ Simplifies + converts | ⚠️ Display only + warning | Cancel unit factors |
+
+### Best Practices
+
+**For unit simplification and display:**
+```python
+# ✅ RECOMMENDED: Use .to_compact()
+expr = ((kappa * temperature * time))**0.5
+display_expr = expr.to_compact()
+# Automatic readable units, no warnings, preserves evaluation
+```
+
+**For debugging unit issues:**
+```python
+# Check what units an expression has
+print(f"Units: {uw.get_units(expr)}")
+
+# Simplify for clearer understanding
+simplified = expr.to_compact()  # or .to_reduced_units()
+print(f"Simplified: {uw.get_units(simplified)}")
+
+# Verify evaluation unchanged
+assert np.allclose(
+    uw.function.evaluate(expr, coords),
+    uw.function.evaluate(simplified, coords)
+)
+```
+
+**Understanding the warnings:**
+```python
+# If you see this warning:
+# UserWarning: "to_base_units() on composite expression with symbols:
+#               changing display units only..."
+
+# It means:
+# 1. Your expression contains UWexpression symbols
+# 2. Only display units changed, not the expression tree
+# 3. Evaluation results are preserved (this is correct!)
+# 4. Consider using .to_compact() instead to avoid the warning
+```
+
+### Technical Note: Why Composite Expressions Need Special Treatment
+
+With nondimensional scaling active, embedding conversion factors in composite expressions causes double-application:
+
+```
+1. Original: sqrt(kappa * t_now)
+   - kappa: 1e-6 m²/s
+   - t_now: 1 Myr (symbol)
+
+2. Wrong approach: sqrt(5617615.15 * kappa * t_now)  [factor embedded]
+   - Factor gets applied during evaluation
+   - Scaling system ALSO converts Myr → seconds
+   - Result: Double-application! ❌
+
+3. Correct approach: sqrt(kappa * t_now) [no factor]
+   - Display units: "meter" (metadata only)
+   - Scaling system handles conversion correctly
+   - Result: Correct value ✅
+```
+
+This is why `.to_base_units()` and `.to_reduced_units()` only change display units for composite expressions - it prevents this double-application bug.
+
+### See Also
+
+- **Comprehensive Review**: `docs/reviews/2025-11/UNITS-EVALUATION-FIXES-2025-11-25.md`
+- **Bug Reports**: Issues fixed in 2025-11-25 session
+- **Test Suite**: `tests/test_0759_unit_conversion_composite_expressions.py`
+
 ## Current Limitations and Future Directions
 
 ### Known Limitations
