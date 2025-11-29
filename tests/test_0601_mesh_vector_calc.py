@@ -11,6 +11,10 @@ import sympy
 import pytest
 from IPython.display import display  # since pytest runs pure python
 
+# Reset model and disable strict units for this test module
+# (Tests unit metadata functionality, not physical correctness)
+uw.reset_default_model()
+uw.use_strict_units(False)
 
 # ### Mesh based data types
 #
