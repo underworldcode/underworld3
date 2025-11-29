@@ -66,12 +66,13 @@ def _extract_units_info(obj):
     try:
         import sympy
 
-        # Check if object has a SymPy expression inside (UWexpression, UnitAwareExpression, etc.)
+        # Check if object has a SymPy expression inside (UWexpression, variables, etc.)
+        # TRANSPARENT CONTAINER PRINCIPLE (2025-11-26): Check .sym property (UWexpression,
+        # variables) or raw SymPy. The ._expr attribute was part of the deleted
+        # UnitAwareExpression class and is no longer used.
         sympy_expr = None
         if hasattr(obj, 'sym'):
             sympy_expr = obj.sym
-        elif hasattr(obj, '_expr'):
-            sympy_expr = obj._expr
         elif isinstance(obj, sympy.Basic):
             sympy_expr = obj
 
@@ -98,7 +99,7 @@ def _extract_units_info(obj):
                                 var_qty = backend.create_quantity(1.0, var_units)
                                 coord_qty = backend.create_quantity(1.0, coord_units)
                                 derivative_qty = var_qty / coord_qty
-                                derivative_units = str(derivative_qty.units)
+                                derivative_units = derivative_qty.units  # Keep as Pint Unit object
                                 return True, derivative_units, backend
                             elif var_units:
                                 # No coord units - just return var units
@@ -110,7 +111,31 @@ def _extract_units_info(obj):
     except ImportError:
         pass
 
-    # PRIORITY 1: Check if it's a unit-aware object (variables, UnitAwareExpression, etc.)
+    # PRIORITY 1: Check for UWexpression (has has_units and units but NOT _units_backend)
+    # TRANSPARENT CONTAINER PRINCIPLE (2025-11-26): UWexpression is a container that
+    # derives units from its contents. It doesn't store units itself when wrapping
+    # a composite SymPy expression, so we must check .sym to discover units.
+    if hasattr(obj, "has_units") and hasattr(obj, "units") and hasattr(obj, "sym"):
+        # First check if the object directly reports units (atomic case)
+        if obj.has_units and obj.units is not None:
+            backend = _get_default_backend()
+            return True, obj.units, backend
+
+        # For composite expressions, check the .sym property
+        # This handles: th1 = uw.expression("th1", x - xx0 - velocity*t_now)
+        # where th1.has_units=False but th1.sym contains unit-aware atoms
+        try:
+            import sympy
+            if hasattr(obj, 'sym') and isinstance(obj.sym, sympy.Basic) and not isinstance(obj.sym, sympy.Number):
+                # Recursively check the wrapped expression for units
+                sym_units_info = _extract_units_info(obj.sym)
+                if sym_units_info[0]:  # If .sym has units, return them
+                    return sym_units_info
+        except Exception:
+            pass
+        return False, None, None
+
+    # PRIORITY 2: Check if it's a unit-aware object with full protocol (variables, quantities)
     # All unit-aware objects implement the protocol: has_units, units, _units_backend
     if hasattr(obj, "has_units") and hasattr(obj, "units") and hasattr(obj, "_units_backend"):
         if obj.has_units:
@@ -163,7 +188,7 @@ def _extract_units_info(obj):
                                 var_qty = backend.create_quantity(1.0, var_units)
                                 coord_qty = backend.create_quantity(1.0, coord_units)
                                 derivative_qty = var_qty / coord_qty
-                                derivative_units = str(derivative_qty.units)
+                                derivative_units = derivative_qty.units  # Keep as Pint Unit object
                                 return True, derivative_units, backend
                             elif var_units:
                                 # No coord units - just return var units
@@ -186,9 +211,8 @@ def _extract_units_info(obj):
             units_result = compute_expression_units(obj)
             if units_result is not None:
                 backend = _get_default_backend()
-                # compute_expression_units returns pint.Unit objects, convert to string
-                units_str = str(units_result)
-                return True, units_str, backend
+                # compute_expression_units returns pint.Unit objects - keep as Pint object
+                return True, units_result, backend
 
             # Third try: extract unit-aware variables from the expression
             units_from_variables = _extract_units_from_sympy_expression(obj)
@@ -323,9 +347,14 @@ def _analyze_expression_units(expr, unit_info_list):
                 # Multiple variables: multiply their units together using Pint
                 from underworld3.scaling import units as ureg
                 result_unit = ureg("dimensionless")  # Start with dimensionless
-                for units_str, backend in unit_info_list:
-                    result_unit = result_unit * ureg(units_str)
-                return str(result_unit.units)
+                for units_obj, backend in unit_info_list:
+                    # Handle both strings and Pint Unit objects
+                    if isinstance(units_obj, str):
+                        units_qty = ureg(units_obj)
+                    else:
+                        units_qty = 1.0 * units_obj  # Convert Pint Unit to Quantity
+                    result_unit = result_unit * units_qty
+                return result_unit.units  # Keep as Pint Unit object
 
         # If expression is division, divide units using Pint
         if isinstance(expr, sympy.Pow):
@@ -335,16 +364,26 @@ def _analyze_expression_units(expr, unit_info_list):
                 if len(unit_info_list) >= 1:
                     # Return reciprocal units
                     from underworld3.scaling import units as ureg
-                    units_str = unit_info_list[0][0]
-                    result_unit = ureg(units_str) ** -1
-                    return str(result_unit.units)
+                    units_obj = unit_info_list[0][0]
+                    # Handle both strings and Pint Unit objects
+                    if isinstance(units_obj, str):
+                        units_qty = ureg(units_obj)
+                    else:
+                        units_qty = 1.0 * units_obj  # Convert Pint Unit to Quantity
+                    result_unit = units_qty ** -1
+                    return result_unit.units  # Keep as Pint Unit object
             elif len(expr.args) == 2 and len(unit_info_list) >= 1:
                 # General power: raise units to the power
                 from underworld3.scaling import units as ureg
-                units_str = unit_info_list[0][0]
+                units_obj = unit_info_list[0][0]
                 power = float(expr.args[1])
-                result_unit = ureg(units_str) ** power
-                return str(result_unit.units)
+                # Handle both strings and Pint Unit objects
+                if isinstance(units_obj, str):
+                    units_qty = ureg(units_obj)
+                else:
+                    units_qty = 1.0 * units_obj  # Convert Pint Unit to Quantity
+                result_unit = units_qty ** power
+                return result_unit.units  # Keep as Pint Unit object
 
         # If expression is addition/subtraction, all terms must have same units
         if isinstance(expr, sympy.Add):
@@ -447,7 +486,7 @@ def get_dimensionality(expression) -> Optional[Any]:
     return backend.get_dimensionality(quantity)
 
 
-def get_units(expression) -> Optional[Any]:
+def get_units(expression, simplify: bool = False) -> Optional[Any]:
     """
     Get the units of an expression or quantity.
 
@@ -456,19 +495,45 @@ def get_units(expression) -> Optional[Any]:
     `units_of()` function and the internal `function.unit_conversion.get_units()`
     for a clean, single API surface.
 
+    IMPORTANT: This function ALWAYS returns Pint Unit objects (or None), never strings.
+    We accept strings for INPUT (user convenience), but always return Pint objects.
+
     Args:
         expression: Expression, quantity, or unit-aware object
+        simplify: If True, convert mixed units to simplified base SI units.
+                  For example, `megayear ** 0.5 * meter / second ** 0.5`
+                  simplifies to just `meter`. Default: False.
 
     Returns:
-        Units object or None if no units
+        Pint Unit object or None if no units
 
     Examples:
         >>> velocity = uw.discretisation.MeshVariable("velocity", mesh, 2, units="m/s")
         >>> units = uw.get_units(velocity)
-        >>> print(units)  # meter / second
+        >>> print(units)  # <Unit('meter / second')>
+
+        >>> # Mixed units from composite expressions
+        >>> th2 = uw.expression("th2", ((2 * kappa * t_now))**0.5)
+        >>> uw.get_units(th2)  # megayear ** 0.5 * meter / second ** 0.5
+        >>> uw.get_units(th2, simplify=True)  # meter (simplified!)
     """
     has_units, units, backend = _extract_units_info(expression)
-    return units if has_units else None
+
+    if not has_units or units is None:
+        return None
+
+    # Optionally simplify mixed units to base SI units
+    if simplify:
+        try:
+            # Create a quantity with value 1 and these units, then simplify
+            qty = 1 * units
+            simplified = qty.to_base_units()
+            return simplified.units
+        except Exception:
+            # If simplification fails, return original units
+            pass
+
+    return units
 
 
 # Backward compatibility alias - deprecated, use get_units() instead
@@ -558,8 +623,23 @@ def non_dimensionalise(expression, model=None) -> Any:
                     )
 
                 # Create dimensionless UWQuantity with preserved dimensionality
-                nondim_value = float(result_qty.magnitude)
-                return UWQuantity(nondim_value, units="dimensionless", dimensionality=dimensionality)
+                # Handle both scalar and array magnitudes
+                mag = result_qty.magnitude
+                if hasattr(mag, '__len__') and not isinstance(mag, str):
+                    # Array magnitude - return as plain array (or UnitAwareArray for consistency)
+                    try:
+                        from .utilities.unit_aware_array import UnitAwareArray
+                        nondim_array = UnitAwareArray(np.asarray(mag), units="dimensionless")
+                        nondim_array._dimensionality = dimensionality
+                        return nondim_array
+                    except ImportError:
+                        return np.asarray(mag)
+                else:
+                    # Scalar magnitude
+                    nondim_value = float(mag)
+                    result = UWQuantity(nondim_value, units="dimensionless")
+                    result._dimensionality = dimensionality  # Store for unit tracking
+                    return result
             else:
                 # No Pint quantity available - just return value
                 # (This case should be rare)
@@ -578,13 +658,18 @@ def non_dimensionalise(expression, model=None) -> Any:
     if UnitAwareArray is not None and isinstance(expression, UnitAwareArray):
         # IDEMPOTENCY CHECK: Return early if already non-dimensional
         # Non-dimensional arrays have units=None or units='dimensionless'
-        units_str = expression._units if hasattr(expression, '_units') else None
+        units_obj = expression._units if hasattr(expression, '_units') else None
 
-        if units_str is None or units_str == "dimensionless":
-            # Already dimensionless - return the UnitAwareArray as-is (idempotent)
-            # Important: Return the original object, not np.asarray(), to preserve
-            # the UnitAwareArray type so idempotency check works on subsequent calls
+        # Check if already dimensionless using Pint
+        if units_obj is None:
             return expression
+
+        # Use Pint to check if dimensionless
+        from .scaling import units as ureg
+        if hasattr(units_obj, 'dimensionality'):
+            # Pint Unit object - check dimensionality directly
+            if units_obj.dimensionality == ureg.dimensionless.dimensionality:
+                return expression
 
         # Get scale for this dimensionality
         if not hasattr(model, "_fundamental_scales"):
@@ -592,10 +677,13 @@ def non_dimensionalise(expression, model=None) -> Any:
             return np.asarray(expression)
 
         try:
-            # Create a quantity to get its dimensionality
-            from .function.quantities import UWQuantity
-            temp_qty = UWQuantity(1.0, units_str)
-            dimensionality = temp_qty.dimensionality
+            # Get dimensionality directly from Pint Unit object
+            # POLICY: units_obj should always be a Pint Unit, never a string
+            if not hasattr(units_obj, 'dimensionality'):
+                raise ValueError(f"Units object has no dimensionality: {type(units_obj)}")
+
+            # Extract dimensionality as dict for model.get_scale_for_dimensionality()
+            dimensionality = dict(units_obj.dimensionality)
 
             if not dimensionality:
                 # Dimensionless - return as plain array
@@ -604,8 +692,19 @@ def non_dimensionalise(expression, model=None) -> Any:
             # Get scale from model
             scale = model.get_scale_for_dimensionality(dimensionality)
 
-            # Divide array by scale to get dimensionless values
-            nondim_array = np.asarray(expression) / float(scale.magnitude)
+            # CRITICAL FIX (2025-11-27): Convert array to SI units BEFORE dividing by scale.
+            # The scale is computed in SI units (e.g., m/s), so the input must also be
+            # in SI for proper unit cancellation. Without this conversion:
+            # - Array in cm/yr with values [1.0] would give 1.0 / 31709791.983765 = 3.15e-8
+            # - But 1 cm/yr = 3.17e-10 m/s, so correct result = 3.17e-10 / (scale_m/s)
+            #
+            # Create Pint Quantity with array values and units, convert to SI, then divide
+            qty_with_units = np.asarray(expression) * units_obj  # Pint Quantity
+            qty_si = qty_with_units.to_base_units()              # Convert to SI base units
+            result_qty = qty_si / scale                          # Divide by scale (units cancel)
+
+            # Extract the dimensionless magnitude
+            nondim_array = np.asarray(result_qty.magnitude)
 
             # Create new UnitAwareArray with 'dimensionless' units to make future
             # calls idempotent (subsequent non_dimensionalise calls will recognize
@@ -665,80 +764,12 @@ def non_dimensionalise(expression, model=None) -> Any:
         # It's a MeshVariable or SwarmVariable with the method AND data attribute
         return expression.non_dimensional_value()
 
-    # Protocol 7: Duck-typing protocol for unit-aware objects
-    # Check for complete units protocol (has_units, units, _units_backend, dimensionality)
-    # This handles UnitAwareExpression and any future unit-aware objects
-    if (hasattr(expression, 'has_units') and hasattr(expression, 'units') and
-        hasattr(expression, '_units_backend') and hasattr(expression, 'dimensionality')):
-
-        # Check if it actually has units
-        if not expression.has_units or not expression.units:
-            # No units - treat as dimensionless
-            # For UnitAwareExpression, return the SymPy expression itself
-            if hasattr(expression, '_expr'):
-                return expression._expr
-            return expression
-
-        # Get dimensionality
-        dimensionality = expression.dimensionality
-
-        # Handle both dict and string dimensionality formats
-        if isinstance(dimensionality, str):
-            # Convert string format like "[length]" to dict format
-            # This is simple for single dimensions - for complex ones, use Pint
-            try:
-                from .function.quantities import UWQuantity
-                temp_qty = UWQuantity(1.0, expression.units)
-                dimensionality = temp_qty.dimensionality
-            except:
-                # Fallback: treat as dimensionless
-                if hasattr(expression, '_expr'):
-                    return expression._expr
-                return expression
-
-        if not dimensionality or dimensionality == {}:
-            # Dimensionless - return underlying expression
-            if hasattr(expression, '_expr'):
-                return expression._expr
-            return expression
-
-        # Get scale from model
-        if not hasattr(model, "_fundamental_scales"):
-            # No reference quantities - return underlying expression
-            if hasattr(expression, '_expr'):
-                return expression._expr
-            return expression
-
-        try:
-            scale = model.get_scale_for_dimensionality(dimensionality)
-
-            # For UnitAwareExpression, return the scaled SymPy expression
-            # The scale division happens symbolically, not numerically
-            if hasattr(expression, '_expr'):
-                # Create UWQuantity from the scale to get a dimensionless result
-                # The expression remains symbolic, but conceptually divided by scale
-                from .function.quantities import UWQuantity
-                return expression._expr  # Return underlying SymPy expression
-
-            # For other unit-aware objects, try to extract value
-            if hasattr(expression, 'value'):
-                value = expression.value
-            elif hasattr(expression, '_sym'):
-                value = expression._sym
-            else:
-                # Can't extract value - return as-is
-                return expression
-
-            # Divide by scale
-            result_value = value / float(scale.magnitude)
-
-            # Return as UWQuantity with preserved dimensionality
-            from .function.quantities import UWQuantity
-            return UWQuantity(result_value, units="dimensionless", dimensionality=dimensionality)
-
-        except ValueError as e:
-            # Could not compute scale
-            raise ValueError(f"Cannot non-dimensionalise {type(expression).__name__}: {e}")
+    # Protocol 7: Objects with .data or ._compute_nondimensional_value()
+    # TRANSPARENT CONTAINER PRINCIPLE (2025-11-27): Let objects handle their own
+    # non-dimensionalization. If an object has .data, delegate to it.
+    if hasattr(expression, 'data') and hasattr(expression, 'has_units'):
+        # Object knows how to non-dimensionalize itself - delegate!
+        return expression.data
 
     # Could not non-dimensionalise
     raise TypeError(
@@ -904,7 +935,7 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
             # Return UWQuantity with proper units
             return UWQuantity(
                 float(result_qty.magnitude),
-                units=str(result_qty.units),
+                units=result_qty.units,  # ✅ Pass Pint Unit, not string
                 dimensionality=dimensionality
             )
         else:
@@ -912,7 +943,7 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
             result_qty = expression.value * scale
             return UWQuantity(
                 float(result_qty.magnitude),
-                units=str(result_qty.units),
+                units=result_qty.units,  # ✅ Pass Pint Unit, not string
                 dimensionality=dimensionality
             )
 
@@ -923,7 +954,7 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
         # NOTE: UnitAwareArray doesn't store dimensionality, only units
         return UnitAwareArray(
             result_qty.magnitude,
-            units=str(result_qty.units)
+            units=result_qty.units  # ✅ Pass Pint Unit, not string
         )
 
     elif isinstance(expression, (int, float, complex, np.ndarray)):
@@ -934,13 +965,13 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
             # NOTE: UnitAwareArray doesn't store dimensionality, only units
             return UnitAwareArray(
                 result_qty.magnitude,
-                units=str(result_qty.units)
+                units=result_qty.units  # ✅ Pass Pint Unit, not string
             )
         else:
             # Return UWQuantity
             return UWQuantity(
                 float(result_qty.magnitude),
-                units=str(result_qty.units),
+                units=result_qty.units,  # ✅ Pass Pint Unit, not string
                 dimensionality=dimensionality
             )
 

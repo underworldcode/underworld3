@@ -1,0 +1,29 @@
+# Fly.io configuration for CuckooBot
+# Auto-generated - customize as needed
+
+app = "uw3-cuckoobot"
+primary_region = "syd"  # Sydney (close to ANU) - change if needed
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # These are non-secret environment variables
+  BOT_MAX_FILE_SIZE = "200000"
+  BOT_BASE_URL = "https://github.com/underworldcode/underworld3/blob/main"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0  # Scale to zero when idle (free tier friendly)
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 1024  # 1GB RAM - enough for sentence-transformers
+
+# Secrets (set via: fly secrets set KEY=value)
+# - ANTHROPIC_API_KEY
+# - BOT_REPO_PATH (will be /data/repo in persistent volume)

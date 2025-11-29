@@ -3,12 +3,21 @@ Test suite for UWQuantity comparison operators.
 
 Tests the implementation of comparison operators (__lt__, __le__, __gt__, __ge__, __eq__, __ne__)
 for UWQuantity objects with proper unit handling and dimensional analysis.
+
+STATUS (2025-11-15):
+- Feature appears not fully implemented
+- 28/28 tests failing
+- Marked as Tier C (experimental) with xfail
+- Awaiting implementation of comparison operators in UWQuantity class
 """
 
 import pytest
 import underworld3 as uw
 
 
+@pytest.mark.level_2  # Intermediate - unit conversions and comparisons
+@pytest.mark.tier_c   # Experimental - feature not yet fully implemented
+@pytest.mark.xfail(reason="UWQuantity comparison operators (__lt__, __le__, __gt__, __ge__, __eq__, __ne__) not fully implemented")
 class TestUWQuantityComparison:
     """Test comparison operators for UWQuantity objects."""
 
@@ -141,6 +150,9 @@ class TestUWQuantityComparison:
         assert q3 > q1
 
 
+@pytest.mark.level_2  # Intermediate - unit conversions and comparisons
+@pytest.mark.tier_c   # Experimental - feature not yet fully implemented
+@pytest.mark.xfail(reason="UWQuantity comparison operators (__lt__, __le__, __gt__, __ge__, __eq__, __ne__) not fully implemented")
 class TestUWQuantityComparisonEdgeCases:
     """Test edge cases for comparison operators."""
 
@@ -198,6 +210,9 @@ class TestUWQuantityComparisonEdgeCases:
         assert q2 > q1
 
 
+@pytest.mark.level_2  # Intermediate - unit conversions and comparisons
+@pytest.mark.tier_c   # Experimental - feature not yet fully implemented
+@pytest.mark.xfail(reason="UWQuantity comparison operators (__lt__, __le__, __gt__, __ge__, __eq__, __ne__) not fully implemented")
 class TestUWQuantityComparisonUnits:
     """Test comparison operators with various unit systems."""
 

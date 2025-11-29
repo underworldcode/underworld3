@@ -528,8 +528,16 @@ class NDArray_With_Callback(np.ndarray):
         else:
             old_value = None
 
+        # Handle UnitAwareArray values by extracting magnitude
+        # This allows: T.array[...] = uw.function.evaluate(...) where evaluate returns UnitAwareArray
+        # Without this, numpy raises "only length-1 arrays can be converted to Python scalars"
+        actual_value = value
+        if hasattr(value, 'magnitude'):
+            # UnitAwareArray or similar - extract the raw numeric data
+            actual_value = value.magnitude
+
         # Perform the actual assignment
-        super().__setitem__(key, value)
+        super().__setitem__(key, actual_value)
 
         # Trigger callbacks
         self._trigger_callback("setitem", indices=key, old_value=old_value, new_value=value)

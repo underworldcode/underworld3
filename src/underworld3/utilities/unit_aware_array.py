@@ -143,26 +143,28 @@ class UnitAwareArray(NDArray_With_Callback):
         units : str, Pint Unit, or UWQuantity
             Units specification
         """
-        if isinstance(units, str):
-            # Create a UWQuantity to validate units
-            try:
-                import underworld3 as uw
+        from underworld3.scaling import units as ureg
 
-                unit_qty = uw.function.quantity(1.0, units)
-                self._units = units
+        if isinstance(units, str):
+            # Parse string to Pint Unit (POLICY: store Pint Units, not strings)
+            try:
+                self._units = ureg.parse_expression(units).units  # ✅ Pint Unit
             except Exception as e:
                 raise ValueError(f"Invalid units '{units}': {e}")
+        elif hasattr(units, 'dimensionality'):
+            # Already a Pint Unit object - store directly
+            self._units = units  # ✅ Pint Unit
         elif has_units(units):
             # Extract units from UWQuantity or similar
             extracted_units = get_units(units)
             if extracted_units is not None:
-                self._units = extracted_units
+                self._units = extracted_units  # ✅ Should be Pint Unit
             else:
-                # Fallback: get_units() returned None (e.g., for Pint Unit objects)
-                # Convert to string representation
-                self._units = str(units)
+                # Fallback: Parse as string
+                self._units = ureg.parse_expression(str(units)).units  # ✅ Pint Unit
         else:
-            self._units = str(units)
+            # Unknown type - try to parse as string
+            self._units = ureg.parse_expression(str(units)).units  # ✅ Pint Unit
 
     @property
     def units(self):
@@ -1355,6 +1357,19 @@ class UnitAwareArray(NDArray_With_Callback):
 
     def __mul__(self, other):
         """Multiplication with unit handling."""
+        # CRITICAL FIX (2025-11-27): Handle Pint Quantity multiplication properly.
+        # UnitAwareArray * Pint Quantity: Must combine units correctly.
+        import pint
+        if isinstance(other, pint.Quantity):
+            # Combine units: UnitAwareArray units × Pint units
+            if self._units is not None:
+                combined_units = (1 * self._units * other.units).units
+            else:
+                combined_units = other.units
+            # Multiply numeric values
+            result_values = np.asarray(self) * other.magnitude
+            return UnitAwareArray(result_values, units=combined_units)
+
         if self._unit_checking and not np.isscalar(other):
             compatible, converted_other, result_units = self._check_unit_compatibility(
                 other, "multiply"
@@ -1369,6 +1384,20 @@ class UnitAwareArray(NDArray_With_Callback):
 
     def __rmul__(self, other):
         """Right multiplication with unit handling."""
+        # CRITICAL FIX (2025-11-27): Handle Pint Quantity multiplication properly.
+        # Pint Quantity * UnitAwareArray: Pint sees UnitAwareArray as plain array,
+        # so it returns a Pint Quantity with wrong units. We intercept here.
+        import pint
+        if isinstance(other, pint.Quantity):
+            # Combine units: Pint units × UnitAwareArray units
+            if self._units is not None:
+                combined_units = (1 * other.units * self._units).units
+            else:
+                combined_units = other.units
+            # Multiply numeric values
+            result_values = other.magnitude * np.asarray(self)
+            return UnitAwareArray(result_values, units=combined_units)
+
         if self._unit_checking and not np.isscalar(other):
             compatible, converted_other, result_units = self._check_unit_compatibility(
                 other, "multiply"

@@ -6,6 +6,12 @@ This test validates that std() has been added to:
 2. _BaseMeshVariable (global std with PETSc)
 3. SimpleMeshArrayView and TensorMeshArrayView (array views)
 4. UnitAwareArray (already existed, testing for consistency)
+
+STATUS (2025-11-15):
+- SWARM TESTS FIXED: Corrected variable ordering (create before adding particles)
+- All swarm tests now use proper initialization sequence
+- Mesh tests validated separately
+- Marked as Tier B - tests should pass, testing std() reduction method
 """
 
 import numpy as np
@@ -13,6 +19,8 @@ import pytest
 import underworld3 as uw
 
 
+@pytest.mark.level_2  # Intermediate - array reductions
+@pytest.mark.tier_b   # Validated - some tests have bugs, mesh tests may be OK
 class TestStdMethodOnArrayViews:
     """Test std() method on array views."""
 
@@ -51,10 +59,14 @@ class TestStdMethodOnArrayViews:
         # Use simple grid points instead of random
         pts = np.mgrid[0:1:0.2, 0:1:0.2].reshape(2, -1).T
         if len(pts) > 0:
-            swarm.add_particles_with_coordinates(pts)
-
+            # Create variable BEFORE adding particles (CRITICAL!)
             var = uw.swarm.SwarmVariable("test_scalar", swarm, 1)
-            var.data[:, 0] = np.linspace(1, 10, len(pts))
+
+            # NOW add particles
+            swarm.add_particles_with_coordinates(pts)
+            # Use actual swarm particle count (may differ from pts if some rejected)
+            n_particles = swarm._particle_coordinates.data.shape[0]
+            var.data[:, 0] = np.linspace(1, 10, n_particles)
 
             # Test that std() method exists and works
             std_result = var.array.std()
@@ -66,11 +78,15 @@ class TestStdMethodOnArrayViews:
         swarm = uw.swarm.Swarm(uw.meshing.StructuredQuadBox(elementRes=(3, 3)))
         pts = np.mgrid[0:1:0.2, 0:1:0.2].reshape(2, -1).T
         if len(pts) > 0:
-            swarm.add_particles_with_coordinates(pts)
-
+            # Create variable BEFORE adding particles (CRITICAL!)
             var = uw.swarm.SwarmVariable("test_vector", swarm, 2)
-            var.data[:, 0] = np.linspace(1, 5, len(pts))
-            var.data[:, 1] = np.linspace(5, 10, len(pts))
+
+            # NOW add particles
+            swarm.add_particles_with_coordinates(pts)
+            # Use actual swarm particle count (may differ from pts if some rejected)
+            n_particles = swarm._particle_coordinates.data.shape[0]
+            var.data[:, 0] = np.linspace(1, 5, n_particles)
+            var.data[:, 1] = np.linspace(5, 10, n_particles)
 
             # Test that std() method exists and returns tuple
             std_result = var.array.std()

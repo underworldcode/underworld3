@@ -54,8 +54,16 @@
 - `material_properties_plan.md` - Material properties architecture
 - `mathematical_objects_plan.md` - Mathematical objects design (✅ IMPLEMENTED)
 - `claude_examples_plan.md` - Example usage patterns
-- `units_system_plan.md` - Units and dimensional analysis system
+- `units_system_plan.md` - ⚠️ **SUPERSEDED** by `UNITS_SIMPLIFIED_DESIGN_2025-11.md`
 - `MultiMaterial_ConstitutiveModel_Plan.md` - Multi-material constitutive models
+
+#### Units System (✅ SIMPLIFIED 2025-11)
+- **`UNITS_SIMPLIFIED_DESIGN_2025-11.md`** - **AUTHORITATIVE**: Current units architecture
+  - Gateway pattern: units at boundaries, not during symbolic ops
+  - `UWQuantity`: lightweight Pint-backed numbers
+  - `UWexpression`: preferred user-facing lazy wrapper
+  - Arithmetic closure: operations return unit-preserving types
+  - See this document for implementation requirements
 
 #### Parallel Safety System (✅ IMPLEMENTED 2025-01-24)
 - `PARALLEL_PRINT_SIMPLIFIED.md` - **Main design**: `uw.pprint()` and `selective_ranks()` (✅ **IMPLEMENTED**)
@@ -249,6 +257,54 @@ velocity_ms = velocity.to_base_units()  # → 1.38889 m/s (actually converts)
 - `evaluate(expr.to_base_units())` now equals `evaluate(expr)`
 - System is "bulletproof" for evaluation with nondimensional scaling
 - See: `docs/reviews/2025-11/UNITS-EVALUATION-FIXES-2025-11-25.md`
+
+### CRITICAL: Transparent Container Principle (2025-11-26)
+
+**Principle**: A container cannot know in advance what it contains. If an object is lazy-evaluated, its properties must also be lazy-evaluated.
+
+**The Atomic vs Container Distinction**:
+| Type | Role | What it stores |
+|------|------|----------------|
+| **UWQuantity** | Atomic leaf node | Value + Units (indivisible, this IS the data) |
+| **UWexpression** | Container | Reference to contents only (derives everything) |
+
+**Why This Matters**:
+- **UWexpression is always a container**, whether wrapping:
+  - A UWQuantity (atomic) → derives `.units` from `self._value_with_units.units`
+  - A SymPy tree (composite) → derives `.units` from `get_units(self._sym)`
+- **The container never "owns" units** - it provides access to what's inside
+- **No cached state on composites** - eliminates sync issues between stored and computed values
+
+**Implementation Pattern**:
+```python
+class UWexpression:
+    @property
+    def units(self):
+        # Always derived, never stored separately
+        if self._value_with_units is not None:
+            return self._value_with_units.units  # From contained atom
+        return get_units(self._sym)  # From contained tree
+
+    def __mul__(self, other):
+        if isinstance(other, UWexpression):
+            # Return raw SymPy product - units derived on demand via get_units()
+            # This preserves lazy evaluation and eliminates sync issues
+            return Symbol.__mul__(self, other)
+```
+
+**Anti-Pattern (WRONG)**:
+```python
+# DON'T store computed units on composite results!
+def __mul__(self, other):
+    if isinstance(other, UWexpression):
+        result = Symbol.__mul__(self, other)
+        result._units = self.units * other.units  # ❌ Creates sync liability
+        return result  # ❌ Also fails: SymPy Mul is immutable!
+```
+
+**Key Insight**: If you design an object to be lazily evaluated, it's inconsistent to eagerly compute and store properties. Caching creates sync liability and violates the laziness contract.
+
+**See**: `planning/UNITS_SIMPLIFIED_DESIGN_2025-11.md` for full architectural details.
 
 ## Project Context
 Migrating Underworld3 from access context manager pattern to direct data access using NDArray_With_Callback for backward compatibility.

@@ -1,0 +1,9 @@
+# Don't include these in Docker image
+*.pyc
+__pycache__/
+*.md
+*.typ
+*.yml
+.env
+.git/
+*.log

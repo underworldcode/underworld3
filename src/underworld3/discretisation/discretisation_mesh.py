@@ -633,6 +633,12 @@ class Mesh(Stateful, uw_object):
         # Initialize generic parameters property - mesh factories can set this
         self.parameters = None
 
+        # Initialize DMInterpolation caching system
+        from underworld3.function.dminterpolation_cache import DMInterpolationCache
+        self._topology_version = 0  # Track mesh topology changes
+        self._dminterpolation_cache = DMInterpolationCache(self, name=self.name)
+        self.enable_dminterpolation_cache = True  # User can disable if needed
+
         if verbose and uw.mpi.rank == 0:
             print(
                 f"PETSc spatial discretisation",
@@ -1184,6 +1190,10 @@ class Mesh(Stateful, uw_object):
             self._evaluation_hash = None
             self._evaluation_interpolated_results = None
 
+            # Invalidate DMInterpolation cache when DM structure changes
+            self._topology_version += 1
+            self._dminterpolation_cache.invalidate_all("DM rebuilt with new variables")
+
         self._dm_initialized = True
         deaccess_list = []
         for var in self.vars.values():
@@ -1451,21 +1461,62 @@ class Mesh(Stateful, uw_object):
         to internal model coordinates for PETSc storage.
 
         Args:
-            value (numpy.ndarray): Node coordinates in physical units
+            value (numpy.ndarray or UnitAwareArray): Node coordinates in physical units
         """
         import warnings
+        import underworld3 as uw
 
         warnings.warn(
             "mesh.points is deprecated, use mesh.X.coords instead", DeprecationWarning, stacklevel=2
         )
 
+        # PRINCIPLE (2025-11-27): When units are active, require unit-aware input
+        # to avoid ambiguity about whether values are dimensional or non-dimensional.
+        has_unit_info = hasattr(value, 'magnitude') or hasattr(value, 'value')
+        model = uw.get_default_model()
+        units_active = model.has_units() and uw.is_nondimensional_scaling_active()
+        mesh_has_units = hasattr(self, 'units') and self.units is not None
+
+        if not has_unit_info and mesh_has_units and units_active:
+            # Plain array assigned when units are active - ambiguous
+            mesh_units = self.units
+            raise ValueError(
+                f"Cannot assign plain array to mesh coordinates when units are active.\n"
+                f"\n"
+                f"The mesh has coordinate units '{mesh_units}', but the assigned\n"
+                f"value has no unit information. This is ambiguous: should the values be\n"
+                f"interpreted as dimensional (in {mesh_units}) or non-dimensional?\n"
+                f"\n"
+                f"Solutions:\n"
+                f"  1. Wrap with units: UnitAwareArray(coords, units='{mesh_units}')\n"
+                f"  2. Use uw.quantity() for coordinate values\n"
+                f"  3. For non-dimensional values, assign directly to mesh._coords\n"
+            )
+
+        # Handle unit-aware input
+        if has_unit_info:
+            # Extract numerical value from unit-aware object
+            if hasattr(value, 'magnitude'):
+                coord_values = value.magnitude
+            elif hasattr(value, 'value'):
+                coord_values = value.value
+            else:
+                coord_values = value
+
+            # Convert to model units if needed
+            if units_active and mesh_has_units:
+                # Use model's conversion if available
+                coord_values = model.to_model_magnitude(value)
+        else:
+            coord_values = value
+
         # Apply inverse scaling to convert physical coordinates to model coordinates
         if hasattr(self.CoordinateSystem, "_scaled") and self.CoordinateSystem._scaled:
             scale_factor = self.CoordinateSystem._length_scale
-            model_coords = value / scale_factor
+            model_coords = coord_values / scale_factor
             self._coords = model_coords
         else:
-            self._coords = value
+            self._coords = coord_values
 
     @property
     def physical_coordinates(self):
@@ -2374,11 +2425,11 @@ class Mesh(Stateful, uw_object):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
                 )
+            return self._indexMap[closest_points]
         else:
-            ### returns an empty array if no coords are on a proc
-            closest_points, dist, found = False, False, numpy.array([None])
-
-        return self._indexMap[closest_points]
+            ### returns an empty 1D array if no coords are provided
+            # CRITICAL: Must return 1D array, not 2D, for Cython buffer compatibility
+            return numpy.array([], dtype=numpy.int64)
 
     def _get_closest_local_cells_internal(self, coords: numpy.ndarray) -> numpy.ndarray:
         """

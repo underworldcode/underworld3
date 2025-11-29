@@ -1294,6 +1294,12 @@ class SNES_Scalar(SolverBaseClass):
         self.u.vec.array[:] = lvec.array[:]
         self.mesh._stale_lvec = True
 
+        # Invalidate cached data views - PETSc buffer may have changed
+        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
@@ -1338,7 +1344,7 @@ class SNES_Scalar(SolverBaseClass):
             display(Markdown("*Where:*"))
 
             for expr in exprs:
-                expr._object_viewer(description=False)
+                expr._object_viewer()
 
 
         display(
@@ -1987,6 +1993,12 @@ class SNES_Vector(SolverBaseClass):
         self.u.vec.array[:] = lvec.array[:]
         self.mesh._stale_lvec = True
 
+        # Invalidate cached data views - PETSc buffer may have changed
+        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
@@ -2030,7 +2042,7 @@ class SNES_Vector(SolverBaseClass):
             display(Markdown("*Where:*"))
 
             for expr in exprs:
-                expr._object_viewer(description=False)
+                expr._object_viewer()
 
         display(
             Markdown(fr"# Boundary Conditions"),)
@@ -2436,7 +2448,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             display(Markdown("*Where:*"))
 
             for expr in exprs:
-                expr._object_viewer(description=False)
+                expr._object_viewer()
 
         display(
             Markdown(fr"# Boundary Conditions"),)

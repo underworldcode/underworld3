@@ -169,6 +169,15 @@ extensions = [
         **conf,
     ),
     Extension(
+        "underworld3.function._dminterp_wrapper",
+        sources=[
+            "src/underworld3/function/_dminterp_wrapper.pyx",
+        ],
+        extra_compile_args=extra_compile_args,
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        **conf,
+    ),
+    Extension(
         "underworld3.function.analytic",
         sources=[
             "src/underworld3/function/analytic.pyx",

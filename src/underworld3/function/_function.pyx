@@ -208,7 +208,9 @@ def global_evaluate_nd(   expr,
 
     # NOTE: Coordinates should be non-dimensional [0-1] at this point
     # Python wrapper in functions_unit_system.py handles dimensional conversions
-    coords_array = np.asarray(coords, dtype=np.double)
+    # CRITICAL: Use np.array() to force copy and strip subclass (e.g. UnitAwareArray)
+    # np.asarray() preserves subclass if dtype matches, causing downstream issues
+    coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
 
     mesh, varfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
@@ -360,7 +362,9 @@ def evaluate_nd(   expr,
 
     # NOTE: Coordinates should be non-dimensional [0-1] at this point
     # Python wrapper in functions_unit_system.py handles dimensional conversions
-    coords_array = np.asarray(coords, dtype=np.double)
+    # CRITICAL: Use np.array() to force copy and strip subclass (e.g. UnitAwareArray)
+    # np.asarray() preserves subclass if dtype matches, causing downstream issues
+    coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
 
     dim = coords_array.shape[1]
     mesh, varfns = uw.function.fn_mesh_vars_in_expression(expr)
@@ -523,7 +527,18 @@ def petsc_interpolate(   expr,
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
-
+    # Early return for empty coordinate arrays (SECOND CHECK - top-level function)
+    # CRITICAL: Avoid lambdify errors with LaTeX variable names when coords is empty
+    # This handles cases where empty arrays pass through from evaluate_nd
+    if len(coords) == 0:
+        # Determine output shape based on expression type
+        try:
+            expr_shape = expr.shape
+            # Return empty array with correct shape: (0, rows, cols)
+            return np.empty([0] + list(expr_shape), dtype=np.double)
+        except AttributeError:
+            # Scalar expression - return (0,) shaped array
+            return np.empty([0], dtype=np.double)
 
     ## Substitute any UWExpressions for their values before calculation
     ## NOTE: We use _unwrap_expressions directly (not fn_substitute_expressions) to avoid
@@ -611,15 +626,6 @@ def petsc_interpolate(   expr,
         vars = mesh.vars.values()
 
         cdef DM dm = mesh.dm
-        # vars = mesh.vars.values()
-        # Now construct and perform the PETSc evaluate of these variables
-        # Use MPI_COMM_SELF as following uw2 paradigm, interpolations will be local.
-        # TODO: Investigate whether it makes sense to default to global operations here.
-
-        cdef DMInterpolationInfo ipInfo
-        cdef PetscErrorCode ierr
-        ierr = DMInterpolationCreate(MPI_COMM_SELF, &ipInfo); CHKERRQ(ierr)
-        ierr = DMInterpolationSetDim(ipInfo, mesh.dim); CHKERRQ(ierr)
 
         # Get and set total count of dofs
         dofcount = 0
@@ -628,39 +634,61 @@ def petsc_interpolate(   expr,
             var_start_index[var] = dofcount
             dofcount += var.num_components
 
-        ierr = DMInterpolationSetDof(ipInfo, dofcount); CHKERRQ(ierr)
-
-        # Add interpolation points
-        # Get c-pointer to data buffer
-        # First grab copy, as we're unsure about the underlying array's
-        # memory layout
-
+        # Make coords contiguous for caching and C access
         coords = np.ascontiguousarray(coords)
-        cdef double* coords_buff = <double*> coords.data
-        ierr = DMInterpolationAddPoints(ipInfo, coords.shape[0], coords_buff); CHKERRQ(ierr)
 
-        # Generate a vector to hold the interpolation results.
-        # First create a numpy array of the required size.
+        # Early return for empty coordinate arrays
+        # CRITICAL: Avoid DMInterpolation setup with zero points
+        if len(coords) == 0:
+            # Return empty array with correct shape: (0, dofcount)
+            return np.empty([0, dofcount], dtype=np.double)
+
+        # === DMInterpolation CACHING ===
+        # Declare variables at function scope (Cython requirement)
+        cdef np.ndarray cells
+
+        # Try to get cached structure first
+        from underworld3.function._dminterp_wrapper import CachedDMInterpolationInfo
+
+        # coords is already np.ndarray type in petsc_interpolate function signature
+        cached_info = mesh._dminterpolation_cache.get_structure(coords, dofcount)
+
+        # Create output array
         cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.double)
-        # Now create a PETSc vector to wrap the numpy memory.
-        cdef Vec outvec = PETSc.Vec().createWithArray(outarray,comm=PETSc.COMM_SELF)
 
-        # INTERPOLATE ALL VARIABLES ON THE DM
+        if cached_info is not None:
+            # CACHE HIT - Fast path! Just evaluate with cached structure
+            mesh.update_lvec()  # Ensure fresh values
+            cached_info.evaluate(mesh, outarray)
 
-        # grab closest cells to use as hint for DMInterpolationSetUp
-        cdef np.ndarray cells = mesh.get_closest_cells(coords)
-        cdef long unsigned int* cells_buff = <long unsigned int*> cells.data
-        ierr = DMInterpolationSetUp_UW(ipInfo, dm.dm, 0, 0, <size_t*> cells_buff)
+        else:
+            # CACHE MISS - Create structure and cache it
+            cached_info = CachedDMInterpolationInfo()
 
-        if ierr != 0:
-            raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
-                               "Interpolation location is possibly outside the domain.")
-        mesh.update_lvec()
-        cdef Vec pyfieldvec = mesh.lvec
-        # Use our custom routine as the PETSc one is broken.
+            # Get cell hints
+            # coords is already np.ndarray type (function signature ensures this)
+            cells = mesh.get_closest_cells(coords)
 
-        ierr = DMInterpolationEvaluate_UW(ipInfo, dm.dm, pyfieldvec.vec, outvec.vec);CHKERRQ(ierr)
-        ierr = DMInterpolationDestroy(&ipInfo);CHKERRQ(ierr)
+            # Create and set up DMInterpolation structure (EXPENSIVE!)
+            try:
+                # coords is already np.ndarray type (function signature ensures this)
+                cached_info.create_structure(mesh, coords, cells, dofcount)
+            except RuntimeError as e:
+                # Handle DMInterpolationSetUp failures gracefully
+                if "outside the domain" in str(e):
+                    raise RuntimeError("Error encountered when trying to interpolate mesh variable.\n"
+                                     "Interpolation location is possibly outside the domain.")
+                else:
+                    raise
+
+            # Store in cache for reuse
+            # coords is already np.ndarray type (function signature ensures this)
+            mesh._dminterpolation_cache.store_structure(coords, dofcount, cached_info)
+
+            # Evaluate
+            mesh.update_lvec()
+            cached_info.evaluate(mesh, outarray)
+        # === END CACHING ===
 
         # Create map between array slices and variable functions
         #
@@ -678,11 +706,6 @@ def petsc_interpolate(   expr,
         coord_hash = xxh.intdigest()
         mesh._evaluation_hash = coord_hash
         mesh._evaluation_interpolated_results = varfns_arrays
-
-        del outarray
-        del coords
-        del cells
-        outvec.destroy()
 
         return varfns_arrays
 

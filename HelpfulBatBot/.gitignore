@@ -1,0 +1,31 @@
+# HelpfulBatBot local files - don't commit these
+
+# Environment variables (contains secrets!)
+.env
+
+# Runtime files
+bot.port
+bot.pid
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# FAISS index (built at runtime)
+*.index
+*.faiss
+
+# Model cache (sentence-transformers downloads models here)
+.cache/
+models/
+
+# Logs
+*.log
+logs/
+
+# Local testing
+test_output/
+.pytest_cache/

@@ -161,6 +161,38 @@ while current_time < total_time:
 
 ## Implementation Details
 
+### Transparent Container Principle (2025-11-26)
+
+The units system follows a key architectural principle: **containers derive properties lazily, they don't store computed values**.
+
+**The Atomic vs Container Distinction:**
+| Type | Role | Unit Storage |
+|------|------|--------------|
+| `UWQuantity` | Atomic leaf node | Stores value + units (this IS the data) |
+| `UWexpression` | Container/wrapper | Derives units from contents on demand |
+
+**Why This Matters:**
+- `UWexpression` wrapping a `UWQuantity` → derives `.units` from the contained quantity
+- `UWexpression` wrapping a SymPy tree → derives `.units` via `get_units()` tree traversal
+- Composite expressions (e.g., `alpha * beta`) return raw SymPy products; units are derived when queried
+
+**Practical Implication:**
+```python
+# Multiplying two expressions returns a SymPy Mul (not a new UWexpression)
+t_now = uw.expression("t_now", uw.quantity(11, "Myr"))
+velocity = uw.expression("V_0", uw.quantity(1, "cm/yr"))
+
+product = t_now * velocity  # → SymPy Mul object
+type(product)               # → sympy.core.mul.Mul
+
+# Units are derived on demand, not stored
+uw.get_units(product)       # → centimeter * megayear / year
+```
+
+This design eliminates sync issues between stored and computed values, and maintains lazy evaluation throughout the expression tree.
+
+**Reference:** See `planning/UNITS_SIMPLIFIED_DESIGN_2025-11.md` for complete architectural details.
+
 ### Variable Unit Metadata
 
 Variables store unit information that persists through operations:

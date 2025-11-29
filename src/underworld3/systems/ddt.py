@@ -513,6 +513,17 @@ class SemiLagrangian(uw_object):
         psi_star = []
         self.psi_star = psi_star
 
+        # Propagate units from psi_fn to psi_star if the model supports units.
+        # Internal psi_star variables should match the user's variable units when possible,
+        # but if no reference quantities are set, use unitless variables to avoid strict mode errors.
+        psi_units = uw.get_units(psi_fn)
+
+        # Check if the model can handle units (has reference quantities set)
+        model = uw.get_default_model()
+        if psi_units is not None and not model.has_units():
+            # Model doesn't have reference quantities - don't propagate units to internal vars
+            psi_units = None
+
         for i in range(order):
             self.psi_star.append(
                 uw.discretisation.MeshVariable(
@@ -522,6 +533,7 @@ class SemiLagrangian(uw_object):
                     degree=self.degree,
                     continuous=self.continuous,
                     varsymbol=rf"{{ {varsymbol}^{{ {'*'*(i+1)} }} }}",
+                    units=psi_units,  # Inherit units from psi_fn (or None if model has no units)
                 )
             )
 
@@ -536,6 +548,7 @@ class SemiLagrangian(uw_object):
             degree=self.swarm_degree,
             continuous=self.swarm_continuous,
             varsymbol=rf"{{ {varsymbol}^\nabla }}",
+            units=psi_units,  # Inherit units from psi_fn
         )
 
         # We just need one swarm since this is inherently a sequential operation
@@ -658,34 +671,61 @@ class SemiLagrangian(uw_object):
         #    (e.g. of derivatives)
         #
 
-        # Handle unit-aware coordinates: extract magnitude for mesh operations
+        # CRITICAL FIX (2025-11-28): Handle coordinates correctly for unit-aware mode.
+        # Previous bug: extracting .magnitude gives METERS (e.g., 1000000), but:
+        # - mesh.get_closest_cells() expects [0-1] non-dimensional coords
+        # - evaluate() assumes plain numpy is [0-1] non-dimensional
+        # Solution: use uw.non_dimensionalise() for proper conversion, OR pass
+        # unit-aware coords to evaluate() which handles conversion internally.
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
         psi_star_0_coords = self.psi_star[0].coords
+
+        # For mesh internal operations, need non-dimensional [0-1] coordinates
         if hasattr(psi_star_0_coords, "magnitude"):
-            psi_star_0_coords_magnitude = psi_star_0_coords.magnitude
-        elif hasattr(psi_star_0_coords, "_magnitude"):
-            psi_star_0_coords_magnitude = psi_star_0_coords._magnitude
+            # Unit-aware coords - need to non-dimensionalize (not just extract magnitude!)
+            psi_star_0_coords_nd = uw.non_dimensionalise(psi_star_0_coords)
+            # Extract to plain numpy for mesh operations
+            if isinstance(psi_star_0_coords_nd, UnitAwareArray):
+                psi_star_0_coords_nd = np.array(psi_star_0_coords_nd)
+            elif hasattr(psi_star_0_coords_nd, 'magnitude'):
+                psi_star_0_coords_nd = psi_star_0_coords_nd.magnitude
+            else:
+                psi_star_0_coords_nd = np.array(psi_star_0_coords_nd)
         else:
-            psi_star_0_coords_magnitude = psi_star_0_coords
+            # Plain numpy - assume already non-dimensional
+            psi_star_0_coords_nd = psi_star_0_coords
 
         cellid = self.mesh.get_closest_cells(
-            psi_star_0_coords_magnitude,
+            psi_star_0_coords_nd,
         )
 
         # Move slightly within the chosen cell to avoid edge effects
         centroid_coords = self.mesh._centroids[cellid]
 
         shift = 0.001
-        node_coords = (1.0 - shift) * psi_star_0_coords_magnitude[:, :] + shift * centroid_coords[
+        node_coords_nd = (1.0 - shift) * psi_star_0_coords_nd[:, :] + shift * centroid_coords[
             :, :
         ]
 
         try:
-            self.psi_star[0].array[...] = uw.function.evaluate(
+            # Pass unit-aware coords to evaluate() - it's the gateway that handles conversion
+            # evaluate() returns dimensional results, which .array then stores properly
+            eval_result = uw.function.evaluate(
                 self.psi_fn,
-                node_coords,
+                psi_star_0_coords,
                 evalf=evalf,
             )
-        except:
+            # Wrap result with units if psi_star has units but eval didn't return UnitAwareArray
+            psi_star_units = self.psi_star[0].units
+            if psi_star_units is not None and not isinstance(eval_result, UnitAwareArray):
+                eval_result = UnitAwareArray(eval_result, units=psi_star_units)
+
+            self.psi_star[0].array[...] = eval_result
+
+        except Exception:
+            # Fallback to projection solver for expressions that can't be directly evaluated
+            # (e.g., containing derivatives)
             self._psi_star_projection_solver.uw_function = self.psi_fn
             self._psi_star_projection_solver.smoothing = 0.0
             self._psi_star_projection_solver.solve(verbose=verbose)
@@ -698,8 +738,7 @@ class SemiLagrangian(uw_object):
 
         # Convert dt to model units for numerical arithmetic
         # (after symbolic logic that may use dt with units)
-        import underworld3 as uw
-
+        # Note: uw is already imported at module level (line 7)
         model = uw.get_default_model()
 
         # DIAGNOSTIC: Capture information about the unit system
@@ -717,73 +756,178 @@ class SemiLagrangian(uw_object):
                 dt_for_calc = dt
         else:
             # Non-dimensional coordinate system - convert dt to non-dimensional
-            dt_for_calc = dt
+            # CRITICAL: Actually non-dimensionalize the timestep!
+            if hasattr(dt, "magnitude") or hasattr(dt, "value"):
+                # dt has units - non-dimensionalize it
+                dt_nondim = uw.non_dimensionalise(dt, model)
+                # Extract the dimensionless value
+                if hasattr(dt_nondim, "magnitude"):
+                    dt_for_calc = float(dt_nondim.magnitude)
+                elif hasattr(dt_nondim, "value"):
+                    dt_for_calc = float(dt_nondim.value)
+                else:
+                    dt_for_calc = float(dt_nondim)
+            else:
+                # Already dimensionless
+                dt_for_calc = dt
 
         for i in range(self.order - 1, -1, -1):
             # 2nd order update along characteristics
 
-            v_at_node_pts = uw.function.evaluate(
+            # CRITICAL FIX (2025-11-28): Use unit-aware coords for evaluate()
+            # Previously used node_coords which was in meters (buggy)
+            v_result = uw.function.evaluate(
                 self.V_fn,
-                node_coords,
-            )[:, 0, :]
+                psi_star_0_coords,  # Use unit-aware coords - evaluate() handles conversion
+            )
+
+            # CRITICAL: Preserve UnitAwareArray through slicing
+            # Slicing can sometimes return plain numpy views - need to preserve wrapper
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+            if isinstance(v_result, UnitAwareArray):
+                # Slice and rewrap to preserve units
+                v_at_node_pts = v_result[:, 0, :]
+                if not isinstance(v_at_node_pts, UnitAwareArray):
+                    # Slicing lost the wrapper - rewrap it
+                    v_at_node_pts = UnitAwareArray(v_at_node_pts, units=v_result.units)
+            else:
+                v_at_node_pts = v_result[:, 0, :]
 
             # Non-dimensionalize velocities when working with dimensionless coordinates
             # This prevents dimensional mismatch: velocities in m/s mixed with coords in [0,1]
+            # CRITICAL: evaluate now returns UnitAwareArray with units attached
+            # Check if velocities already have units before trying to add them manually
             if not has_units:
-                # Extract units from velocity function
-                v_units = uw.get_units(self.V_fn)
-
-                if v_units and v_units != "dimensionless":
-                    # Wrap numpy array with unit information
-                    from underworld3.utilities.unit_aware_array import UnitAwareArray
-
-                    v_with_units = UnitAwareArray(v_at_node_pts, units=v_units)
-                    # Non-dimensionalize
-                    v_nondim = uw.non_dimensionalise(v_with_units, model)
-                    # Extract numpy array
+                # Coordinates are dimensionless - need to non-dimensionalize velocities too
+                if isinstance(v_at_node_pts, UnitAwareArray):
+                    # Velocities already have units from evaluate - just non-dimensionalize
+                    v_nondim = uw.non_dimensionalise(v_at_node_pts, model)
+                    # Extract numpy array for dimensionless calculation
                     if isinstance(v_nondim, UnitAwareArray):
                         v_at_node_pts = np.array(v_nondim)
                     elif hasattr(v_nondim, "value"):
                         v_at_node_pts = v_nondim.value
                     else:
                         v_at_node_pts = v_nondim
+                else:
+                    # Velocities don't have units - try to add them manually (legacy path)
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        v_with_units = UnitAwareArray(v_at_node_pts, units=v_units)
+                        v_nondim = uw.non_dimensionalise(v_with_units, model)
+                        if isinstance(v_nondim, UnitAwareArray):
+                            v_at_node_pts = np.array(v_nondim)
+                        elif hasattr(v_nondim, "value"):
+                            v_at_node_pts = v_nondim.value
+                        else:
+                            v_at_node_pts = v_nondim
+            else:
+                # Dimensional mode - ensure velocities have units
+                # CRITICAL FIX (2025-11-27): Variable data is stored NON-DIMENSIONALLY.
+                # We must DIMENSIONALIZE (not just wrap) the values before dimensional arithmetic.
+                # Previous bug: wrapping 0.01 (ND) with cm/yr gave 0.01 cm/yr instead of 1 cm/yr.
+                if not isinstance(v_at_node_pts, UnitAwareArray):
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        # Re-dimensionalize using the scaling system
+                        if uw.is_nondimensional_scaling_active():
+                            from underworld3.scaling import dimensionalise
+                            # dimensionalise(nd_value, units) -> value * scale in those units
+                            v_dimensional = dimensionalise(v_at_node_pts, v_units)
+                            v_at_node_pts = UnitAwareArray(v_dimensional.magnitude, units=v_dimensional.units)
+                        else:
+                            # No scaling active - assume values are already dimensional
+                            v_at_node_pts = UnitAwareArray(v_at_node_pts, units=v_units)
 
-            # Maintain consistency: use coordinates as-is without extracting magnitudes
-            # to preserve unit information through the calculation
+            # Get coordinates
             coords = self.psi_star[i].coords
 
-            mid_pt_coords = coords - 0.5 * dt_for_calc * v_at_node_pts
+            # CRITICAL: When working in dimensionless mode, extract coords to plain arrays
+            # to match the dimensionless velocities (otherwise unit mismatch occurs)
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
 
-            v_at_mid_pts = uw.function.global_evaluate(
+            if not has_units and isinstance(coords, UnitAwareArray):
+                # Extract to plain numpy for dimensionless arithmetic
+                coords = np.array(coords)
+
+            # CRITICAL (2025-11-27): Multiply velocity FIRST so UnitAwareArray.__mul__ handles it.
+            # If we do `dt_for_calc * v_at_node_pts`, Pint handles it and loses UnitAwareArray units.
+            mid_pt_coords = coords - v_at_node_pts * (0.5 * dt_for_calc)
+
+            v_mid_result = uw.function.global_evaluate(
                 self.V_fn,
                 mid_pt_coords,
-            )[:, 0, :]
+            )
+
+            # CRITICAL: Preserve UnitAwareArray through slicing
+            if isinstance(v_mid_result, UnitAwareArray):
+                # Slice and rewrap to preserve units
+                v_at_mid_pts = v_mid_result[:, 0, :]
+                if not isinstance(v_at_mid_pts, UnitAwareArray):
+                    # Slicing lost the wrapper - rewrap it
+                    v_at_mid_pts = UnitAwareArray(v_at_mid_pts, units=v_mid_result.units)
+            else:
+                v_at_mid_pts = v_mid_result[:, 0, :]
 
             # Non-dimensionalize mid-point velocities when working with dimensionless coordinates
+            # CRITICAL: global_evaluate now returns UnitAwareArray with units attached
+            # Check if velocities already have units before trying to add them manually
             if not has_units:
-                # Extract units from velocity function
-                v_units = uw.get_units(self.V_fn)
-                if v_units and v_units != "dimensionless":
-                    # Wrap numpy array with unit information
-                    from underworld3.utilities.unit_aware_array import UnitAwareArray
-
-                    v_with_units = UnitAwareArray(v_at_mid_pts, units=v_units)
-                    # Non-dimensionalize
-                    v_nondim = uw.non_dimensionalise(v_with_units, model)
-                    # Extract numpy array
+                # Coordinates are dimensionless - need to non-dimensionalize velocities too
+                if isinstance(v_at_mid_pts, UnitAwareArray):
+                    # Velocities already have units from global_evaluate - just non-dimensionalize
+                    v_nondim = uw.non_dimensionalise(v_at_mid_pts, model)
+                    # Extract numpy array for dimensionless calculation
                     if isinstance(v_nondim, UnitAwareArray):
                         v_at_mid_pts = np.array(v_nondim)
                     elif hasattr(v_nondim, "value"):
                         v_at_mid_pts = v_nondim.value
                     else:
                         v_at_mid_pts = v_nondim
+                else:
+                    # Velocities don't have units - try to add them manually (legacy path)
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        v_with_units = UnitAwareArray(v_at_mid_pts, units=v_units)
+                        v_nondim = uw.non_dimensionalise(v_with_units, model)
+                        if isinstance(v_nondim, UnitAwareArray):
+                            v_at_mid_pts = np.array(v_nondim)
+                        elif hasattr(v_nondim, "value"):
+                            v_at_mid_pts = v_nondim.value
+                        else:
+                            v_at_mid_pts = v_nondim
+            else:
+                # Dimensional mode - ensure velocities have units
+                # CRITICAL: If V_fn doesn't have unit metadata, evaluate() returns plain numpy
+                # We need to manually wrap it with units for dimensional arithmetic to work
+                if not isinstance(v_at_mid_pts, UnitAwareArray):
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        # Wrap velocities with their proper units
+                        v_at_mid_pts = UnitAwareArray(v_at_mid_pts, units=v_units)
 
-            end_pt_coords = coords - dt_for_calc * v_at_mid_pts
+            # Calculate upstream coordinates: current position - velocity * timestep
+            end_pt_coords = coords - v_at_mid_pts * dt_for_calc
 
+            # Extract scalar from (1,1) Matrix for scalar variables
+            # MeshVariable.sym returns Matrix([[value]]) for scalars
+            expr_to_evaluate = self.psi_star[i].sym
+            if hasattr(expr_to_evaluate, 'shape') and expr_to_evaluate.shape == (1, 1):
+                expr_to_evaluate = expr_to_evaluate[0, 0]
+
+            # Evaluate psi_star at upstream coordinates
+            # global_evaluate now returns dimensional results (gateway fix 2025-11-28)
             value_at_end_points = uw.function.global_evaluate(
-                self.psi_star[i].sym,
+                expr_to_evaluate,
                 end_pt_coords,
             )
+
+            # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned
+            # value also has units. global_evaluate may return plain arrays.
+            psi_star_units = self.psi_star[i].units
+            if psi_star_units is not None and not isinstance(value_at_end_points, UnitAwareArray):
+                value_at_end_points = UnitAwareArray(value_at_end_points, units=psi_star_units)
 
             self.psi_star[i].array[...] = value_at_end_points
 

@@ -1,0 +1,11 @@
+# CuckooBot Dependencies
+# Python packages needed to run the bot
+
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+anthropic==0.7.8
+sentence-transformers==2.2.2
+faiss-cpu==1.7.4
+numpy==1.24.3
+requests==2.31.0

@@ -838,43 +838,24 @@ class CoordinateSystem:
     @property
     def with_units(self):
         """
-        Unit-aware coordinate symbols for arithmetic operations.
+        Coordinate symbols with unit information.
 
-        Returns symbolic coordinates wrapped in UnitAwareExpression, enabling
-        natural arithmetic operations that preserve units:
+        DEPRECATED (2025-11-26): Following the Transparent Container Principle,
+        this now returns raw coordinate symbols. Units are derived on demand via
+        uw.get_units() which finds the _units attribute on coordinate atoms.
 
         Examples:
-            >>> x_u, y_u = mesh.X.with_units
-            >>> area = x_u * y_u  # Returns UnitAwareExpression with km**2
-            >>> perimeter = 2 * (x_u + y_u)  # Returns UnitAwareExpression with km
-
-        Note: For use in symbolic expressions with mesh variables, use the
-        standard coordinates (mesh.X or mesh.N.x) instead, as SymPy cannot
-        sympify UnitAwareExpression objects in strict mode.
+            >>> x, y = mesh.X.with_units  # Same as mesh.X[0], mesh.X[1]
+            >>> area = x * y  # Raw SymPy Mul; uw.get_units(area) → km**2
+            >>> uw.get_units(x)  # → kilometer (derived from _units attribute)
 
         Returns:
-            tuple: Unit-aware coordinate symbols (x, y) or (x, y, z)
+            tuple: Coordinate symbols (x, y) or (x, y, z)
         """
-        import underworld3 as uw
-        from underworld3.expression.unit_aware_expression import UnitAwareExpression
-
-        coord_units = self.units
-        if coord_units is None:
-            # No units - return raw coordinates
-            return tuple(self._X)
-
-        # Wrap each coordinate in UnitAwareExpression
-        wrapped_coords = []
-        for coord in self._X:
-            # Get units from the coordinate (should have _units from patching)
-            units = uw.get_units(coord)
-            if units is not None:
-                wrapped_coords.append(UnitAwareExpression(coord, units))
-            else:
-                # Fallback: use mesh units
-                wrapped_coords.append(UnitAwareExpression(coord, coord_units))
-
-        return tuple(wrapped_coords)
+        # TRANSPARENT CONTAINER PRINCIPLE (2025-11-26):
+        # Just return raw coordinates. They have _units attributes from patching,
+        # and uw.get_units() can derive units on demand. No wrapping needed.
+        return tuple(self._X)
 
     @property
     def shape(self):

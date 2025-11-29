@@ -13,6 +13,12 @@ Key aspects:
 
 Validation: Solutions with uw.use_nondimensional_scaling(True) should match
 dimensional solutions to machine precision.
+
+STATUS (2025-11-15):
+- All 5 tests PASS when run in isolation ✓
+- Tests FAIL in full suite run (test state pollution from earlier tests)
+- Errors: RuntimeError in solver when run after other units tests
+- Marked as Tier B - validated, needs promotion to Tier A after isolation fixes
 """
 
 import os
@@ -24,6 +30,12 @@ import sympy
 os.environ["SYMPY_USE_CACHE"] = "no"
 
 import underworld3 as uw
+
+# Module-level markers for all tests
+pytestmark = [
+    pytest.mark.level_3,  # Physics - full Stokes solver validation
+    pytest.mark.tier_b,   # Validated - tests pass in isolation, need isolation fix
+]
 
 
 @pytest.mark.parametrize("resolution", [8, 16])
@@ -86,7 +98,7 @@ def test_stokes_dimensional_vs_nondimensional(resolution):
     uw.use_nondimensional_scaling(False)
 
     stokes_dim = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_dim.Unknowns)
     stokes_dim.constitutive_model.Parameters.viscosity = 1.0  # Dimensionless for test
 
     # Boundary conditions: simple shear (top moves right, bottom fixed)
@@ -110,7 +122,7 @@ def test_stokes_dimensional_vs_nondimensional(resolution):
 
     # Create NEW solver (important - must recompile with ND)
     stokes_nd = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_nd.Unknowns)
     stokes_nd.constitutive_model.Parameters.viscosity = 1.0
 
     # Same BCs (dimensional values - scaling happens internally)
@@ -203,7 +215,7 @@ def test_stokes_buoyancy_driven():
     uw.use_nondimensional_scaling(False)
 
     stokes_dim = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_dim.Unknowns)
     stokes_dim.constitutive_model.Parameters.viscosity = 1.0
 
     # Body force (dimensionless for this test)
@@ -226,7 +238,7 @@ def test_stokes_buoyancy_driven():
     uw.use_nondimensional_scaling(True)
 
     stokes_nd = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_nd.Unknowns)
     stokes_nd.constitutive_model.Parameters.viscosity = 1.0
 
     # Same body force (scaling happens in unwrap)
@@ -294,7 +306,7 @@ def test_stokes_variable_viscosity():
     uw.use_nondimensional_scaling(False)
 
     stokes_dim = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_dim.Unknowns)
     stokes_dim.constitutive_model.Parameters.viscosity = eta_field
 
     stokes_dim.add_dirichlet_bc((1.0, 0.0), "Top")
@@ -311,7 +323,7 @@ def test_stokes_variable_viscosity():
     uw.use_nondimensional_scaling(True)
 
     stokes_nd = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_nd.Unknowns)
     stokes_nd.constitutive_model.Parameters.viscosity = eta_field
 
     stokes_nd.add_dirichlet_bc((1.0, 0.0), "Top")

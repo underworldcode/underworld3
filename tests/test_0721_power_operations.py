@@ -26,17 +26,17 @@ def test_integer_powers():
 
     # Test L0**2
     L0_squared = L0**2
-    assert L0_squared.units == "meter ** 2", f"Expected 'meter ** 2', got '{L0_squared.units}'"
+    assert str(L0_squared.units) == "meter ** 2", f"Expected 'meter ** 2', got '{L0_squared.units}'"
     assert abs(L0_squared.value - (2900000.0**2)) < 1e-6
 
     # Test L0**3 (the original bug case)
     L0_cubed = L0**3
-    assert L0_cubed.units == "meter ** 3", f"Expected 'meter ** 3', got '{L0_cubed.units}'"
+    assert str(L0_cubed.units) == "meter ** 3", f"Expected 'meter ** 3', got '{L0_cubed.units}'"
     assert abs(L0_cubed.value - (2900000.0**3)) < 1e10
 
     # Test L0**4
     L0_fourth = L0**4
-    assert L0_fourth.units == "meter ** 4", f"Expected 'meter ** 4', got '{L0_fourth.units}'"
+    assert str(L0_fourth.units) == "meter ** 4", f"Expected 'meter ** 4', got '{L0_fourth.units}'"
 
 
 def test_fractional_powers():
@@ -45,13 +45,13 @@ def test_fractional_powers():
 
     # Square root
     L0_sqrt = L0**0.5
-    assert L0_sqrt.units == "meter ** 0.5", f"Expected 'meter ** 0.5', got '{L0_sqrt.units}'"
+    assert str(L0_sqrt.units) == "meter ** 0.5", f"Expected 'meter ** 0.5', got '{L0_sqrt.units}'"
     assert abs(L0_sqrt.value - (2900000.0**0.5)) < 1e-6
 
     # Cube root
     L0_cbrt = L0 ** (1.0 / 3.0)
     # Pint truncates floating point precision in unit strings
-    assert "meter ** 0.333" in L0_cbrt.units, f"Expected 'meter ** 0.333...', got '{L0_cbrt.units}'"
+    assert "meter ** 0.333" in str(L0_cbrt.units), f"Expected 'meter ** 0.333...', got '{L0_cbrt.units}'"
 
 
 def test_negative_powers():
@@ -60,13 +60,13 @@ def test_negative_powers():
 
     # Inverse (1/L0 = L0**-1)
     L0_inv = L0 ** (-1)
-    assert L0_inv.units == "1 / meter", f"Expected '1 / meter', got '{L0_inv.units}'"
+    assert str(L0_inv.units) == "1 / meter", f"Expected '1 / meter', got '{L0_inv.units}'"
     assert abs(L0_inv.value - (1.0 / 2900000.0)) < 1e-12
 
     # Inverse squared
     L0_inv_sq = L0 ** (-2)
     assert (
-        L0_inv_sq.units == "1 / meter ** 2"
+        str(L0_inv_sq.units) == "1 / meter ** 2"
     ), f"Expected '1 / meter ** 2', got '{L0_inv_sq.units}'"
 
 
@@ -95,11 +95,11 @@ def test_unit_conversion_after_power():
 
     # Square the quantity
     L0_squared = L0**2
-    assert L0_squared.units == "kilometer ** 2"
+    assert str(L0_squared.units) == "kilometer ** 2"
 
     # Convert to m^2
     L0_squared_m = L0_squared.to("meter ** 2")
-    assert L0_squared_m.units == "meter ** 2"
+    assert str(L0_squared_m.units) == "meter ** 2"
     assert abs(L0_squared_m.value - (2900000.0**2)) < 1e-6
 
 
@@ -108,18 +108,18 @@ def test_power_of_different_units():
     # Test with velocity
     v = uw.quantity(5, "cm/year").to("m/s")
     v_squared = v**2
-    assert "meter ** 2" in v_squared.units
-    assert "second ** 2" in v_squared.units or "second ** -2" in v_squared.units
+    assert "meter ** 2" in str(v_squared.units)
+    assert "second ** 2" in str(v_squared.units) or "second ** -2" in str(v_squared.units)
 
     # Test with temperature (no powers, just checking it doesn't break)
     T = uw.quantity(3000, "K")
     T_squared = T**2
-    assert "kelvin ** 2" in T_squared.units
+    assert "kelvin ** 2" in str(T_squared.units)
 
     # Test with pressure-like quantity
     P = uw.quantity(1e21, "Pa")
     P_squared = P**2
-    assert "pascal ** 2" in P_squared.units
+    assert "pascal ** 2" in str(P_squared.units)
 
 
 def test_edge_cases():
@@ -133,7 +133,7 @@ def test_edge_cases():
 
     # Power of 1 should preserve value and units
     L0_one = L0**1
-    assert L0_one.units == "meter"
+    assert str(L0_one.units) == "meter"
     assert abs(L0_one.value - 2900000.0) < 1e-6
 
 
@@ -170,7 +170,7 @@ def test_rayleigh_number_calculation():
 
     # Ra should be dimensionless
     assert (
-        Ra_quantity.units is None or Ra_quantity.units == "dimensionless"
+        Ra_quantity.units is None or str(Ra_quantity.units) == "dimensionless"
     ), f"Ra should be dimensionless, got: {Ra_quantity.units}"
 
     # Ra should be on the order of 1e7 for these parameters
