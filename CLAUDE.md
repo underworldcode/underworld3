@@ -44,10 +44,11 @@
 - **Useful for documentation**: Contains high-level overview, design rationale, key features explanation
 - **Mining potential**: Executive summaries, architecture descriptions, comparison with other tools
 
-### Planning Documents
-**Location**: `planning/`
+### Design Documents
+**Location**: `docs/developer/design/`
 - **Purpose**: Architecture plans, design documents, feature roadmaps
 - **Status**: Mix of historical plans and current/future designs
+- **Changelog**: See `docs/developer/CHANGELOG.md` for quarterly-reportable work
 
 #### Feature Plans (Historical - verify against implementation)
 - `parameter_system_plan.md` - Parameter system design (note: current implementation differs)
@@ -304,7 +305,7 @@ def __mul__(self, other):
 
 **Key Insight**: If you design an object to be lazily evaluated, it's inconsistent to eagerly compute and store properties. Caching creates sync liability and violates the laziness contract.
 
-**See**: `planning/UNITS_SIMPLIFIED_DESIGN_2025-11.md` for full architectural details.
+**See**: `docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md` for full architectural details.
 
 ## Project Context
 Migrating Underworld3 from access context manager pattern to direct data access using NDArray_With_Callback for backward compatibility.
@@ -371,8 +372,8 @@ with uw.selective_ranks(0) as should_execute:
 **See**: 
 - `src/underworld3/mpi.py` - **Implementation** of `pprint()` and `selective_ranks()`
 - `docs/advanced/parallel-computing.qmd` - **User documentation** with comprehensive examples and migration guide
-- `planning/PARALLEL_PRINT_SIMPLIFIED.md` - Original design document
-- `planning/RANK_SELECTION_SPECIFICATION.md` - Complete rank selection syntax specification
+- `docs/developer/design/PARALLEL_PRINT_SIMPLIFIED.md` - Original design document
+- `docs/developer/design/RANK_SELECTION_SPECIFICATION.md` - Complete rank selection syntax specification
 
 ## Architecture Priorities & Module Purposes
 

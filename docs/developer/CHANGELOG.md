@@ -1,0 +1,74 @@
+# Underworld3 Development Changelog
+
+This log tracks significant development work at a conceptual level, suitable for quarterly reporting to CIG and stakeholders. For detailed commit history, see git log.
+
+---
+
+## 2025 Q4 (October – December)
+
+### Units System Overhaul (November 2025)
+
+**Gateway pattern implementation**: Units are now handled at system boundaries (user input/output) rather than propagating through internal symbolic operations. This eliminates unit-related errors during solver execution while preserving dimensional correctness for users.
+
+- `UWQuantity` provides lightweight Pint-backed quantities
+- `UWexpression` wraps symbolic expressions with lazy unit evaluation
+- Linear algebra dimensional analysis replaces fragile pattern-matching
+- Proper non-dimensional scaling throughout advection-diffusion solvers
+- **Pint-only arithmetic policy**: All unit conversions delegated to Pint — no manual fallbacks that could lose scale factors
+
+**Key fixes:**
+- `delta_t` setter correctly converts between unit systems (Pint's `.to_reduced_units()`)
+- `estimate_dt()` properly non-dimensionalizes diffusivity parameters
+- Data cache invalidation after PETSc solves (buffer pointer changes)
+- JIT compilation unwrapping respects `keep_constants` parameter
+- Subtraction chain unit propagation fixed (chained operations preserve correct units)
+
+### Automatic Expression Optimisation (November 2025)
+
+**Lambdification for pure sympy expressions**: `uw.function.evaluate()` now automatically detects pure sympy expressions (no UW3 MeshVariables) and uses cached lambdified functions for dramatic performance improvements.
+
+- 10,000x+ speedups for analytical solutions — no code changes required
+- Automatic detection: UW3 variables use RBF interpolation, pure sympy uses lambdify
+- Cached compilation: repeated evaluations reuse compiled functions
+- Transparent fallback: mixed expressions still work correctly
+
+### Timing System (November 2025)
+
+**Unified PETSc timing integration**: Refactored timing system to route all profiling through PETSc's event system, eliminating environment variable complexity.
+
+- `uw.timing.start()` / `uw.timing.print_summary()` API for simple profiling
+- Filters PETSc internals to show only UW3-relevant operations
+- Now Jupyter-friendly — no environment variables needed
+- Programmatic access via `uw.timing.get_summary()`
+
+### Solver Robustness (November 2025)
+
+**Quad mesh boundary interpolation**: Fixed Semi-Lagrangian advection scheme failing on `StructuredQuadBox` meshes. The point location algorithm was receiving coordinates exactly on element boundaries. Solution: use pre-computed centroid-shifted coordinates for evaluation.
+
+### Test Infrastructure (November 2025)
+
+- Strict units mode enforcement in test collection
+- All advection-diffusion tests now pass across mesh types (StructuredQuadBox, UnstructuredSimplex regular/irregular)
+- **Dual test classification system**: Levels (0000-9999 complexity prefixes) + Tiers (A/B/C reliability markers)
+  - Tier A: Production-ready, trusted for TDD
+  - Tier B: Validated but recent, use with caution
+  - Tier C: Experimental, development only
+
+### Documentation & Planning (November 2025)
+
+- Reorganised `planning/` → `docs/developer/design/` to distinguish from strategic planning
+- Hub-spoke planning system integration for cross-project coordination
+- This changelog established for quarterly reporting
+
+---
+
+## Format Guide
+
+Each quarter should capture:
+
+1. **Major features or capabilities** — What can users do now that they couldn't before?
+2. **Architectural improvements** — What's better about the system design?
+3. **Significant bug fixes** — Only those affecting correctness of results
+4. **Infrastructure changes** — Testing, documentation, build system
+
+Keep entries conceptual. Technical details belong in design documents or commit messages.
