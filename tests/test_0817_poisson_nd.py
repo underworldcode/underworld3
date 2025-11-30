@@ -11,6 +11,9 @@ should match dimensional solutions to machine precision.
 
 import os
 import pytest
+
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
 import numpy as np
 
 # DISABLE SYMPY CACHE

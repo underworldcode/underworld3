@@ -9,6 +9,9 @@ import underworld3 as uw
 import numpy as np
 import sympy
 import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 from IPython.display import display  # since pytest runs pure python
 
 # Reset model and disable strict units for this test module

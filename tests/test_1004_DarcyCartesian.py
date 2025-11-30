@@ -2,6 +2,9 @@
 import underworld3 as uw
 import numpy as np
 import pytest
+
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
 from sympy import Piecewise
 import sympy
 

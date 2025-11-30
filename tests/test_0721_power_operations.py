@@ -17,6 +17,9 @@ Test Coverage:
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import underworld3 as uw
 
 

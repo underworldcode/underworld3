@@ -7,6 +7,9 @@ values [0-1] but claiming units of "meters", causing a factor of 1e6 error for a
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import underworld3 as uw
 

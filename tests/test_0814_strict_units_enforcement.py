@@ -10,6 +10,9 @@ a warning is issued but the variable is created (backward compatible).
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import underworld3 as uw
 import warnings
 

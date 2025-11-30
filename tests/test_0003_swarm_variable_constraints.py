@@ -6,6 +6,9 @@ ensuring users get clear error messages instead of PETSc crashes.
 """
 
 import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 import underworld3 as uw
 
 

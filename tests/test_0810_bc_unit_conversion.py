@@ -7,6 +7,9 @@ are equivalent regardless of the units used to specify the BCs.
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import underworld3 as uw
 import numpy as np
 

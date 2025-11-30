@@ -17,6 +17,9 @@ The key validation is that gradient dimensions are correct:
 """
 
 import pytest
+
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
 import numpy as np
 import underworld3 as uw
 from underworld3 import function as fn

@@ -11,6 +11,9 @@ Test numbering: 0814 (units system advanced tests)
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import underworld3 as uw
 

@@ -2,6 +2,9 @@ import underworld3 as uw
 import numpy as np
 import pytest
 
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
+
 
 # calculate rbf interpolation by using a known analytic fields on var
 # and calculating rbf interpolation of field to random points.

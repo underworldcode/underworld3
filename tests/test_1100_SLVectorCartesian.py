@@ -4,6 +4,9 @@ import sympy
 import math
 import pytest
 
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
+
 # %% [markdown]
 # ### Test Semi-Lagrangian method in advecting vector fields
 # ### Scalar field advection together diffusion tested in a different pytest

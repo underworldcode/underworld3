@@ -13,6 +13,9 @@ to get the current field count from the live mesh DM, not the cloned DM.
 """
 
 import pytest
+
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
 import underworld3 as uw
 import numpy as np
 

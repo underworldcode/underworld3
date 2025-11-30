@@ -7,6 +7,9 @@ and checks for inconsistent patterns in the implementation.
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import sympy
 import sys
 import os

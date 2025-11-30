@@ -16,6 +16,9 @@ Tests both patterns:
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import underworld3 as uw
 

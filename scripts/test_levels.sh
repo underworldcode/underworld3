@@ -4,10 +4,13 @@
 #
 # Usage: ./test_levels.sh [OPTIONS] [LEVELS]
 #
+# This script uses pytest markers to select tests by complexity level.
+# Tests are tagged with @pytest.mark.level_1, level_2, or level_3 in the source.
+#
 # LEVELS:
-#   1      = Quick tests only (core functionality, ~2-5 minutes)
-#   2      = Intermediate tests only (~5-10 minutes)
-#   3      = Physics/solver tests only (~10-15 minutes)
+#   1      = Quick tests only (core functionality, ~2 minutes)
+#   2      = Intermediate tests only (~5 minutes)
+#   3      = Physics/solver tests only (~10+ minutes)
 #   1,2    = Quick + intermediate tests
 #   1,3    = Quick + physics tests
 #   2,3    = Intermediate + physics tests
@@ -18,6 +21,7 @@
 #   --parallel-ranks N     Number of MPI ranks for parallel tests (default: 2)
 #   --full-parallel        Run parallel tests with both 2 and 4 ranks
 #   --no-parallel          Skip parallel tests entirely
+#   --verbose              Show verbose test output
 #   --help                 Show this help message
 #
 # Examples:
@@ -29,10 +33,11 @@
 
 set -e  # Exit on any error
 
-# Default values for parallel testing
+# Default values
 PARALLEL_RANKS=2
 FULL_PARALLEL=0
 SKIP_PARALLEL=0
+VERBOSE=""
 
 # Parse options
 while [[ $# -gt 0 ]]; do
@@ -47,6 +52,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-parallel)
             SKIP_PARALLEL=1
+            shift
+            ;;
+        --verbose|-v)
+            VERBOSE="-v"
             shift
             ;;
         --help|-h)
@@ -75,9 +84,9 @@ IFS=',' read -ra TEST_LEVELS <<< "$TEST_LEVELS_ARG"
 # Initialize status
 status=0
 
-# Configure pytest
+# Configure pytest base command
 export UW_NO_USAGE_METRICS=0
-PYTEST="pytest --config-file=tests/pytest.ini"
+PYTEST_BASE="pytest --config-file=tests/pytest.ini $VERBOSE"
 
 # Function to run pytest with error handling
 run_tests() {
@@ -86,7 +95,7 @@ run_tests() {
     echo "=========================================="
     echo "Running: $description"
     echo "=========================================="
-    if ! $PYTEST "$@"; then
+    if ! $PYTEST_BASE "$@"; then
         echo "❌ FAILED: $description"
         status=1
     else
@@ -95,34 +104,27 @@ run_tests() {
     echo ""
 }
 
-# Functions for each test level
+# Functions for each test level using pytest markers
 run_level_1() {
-    echo "⚠️ Running LEVEL 1: Quick Tests (Core Functionality)"
-    echo "Expected runtime: ~2-5 minutes"
+    echo "⚡ Running LEVEL 1: Quick Tests (Core Functionality)"
+    echo "Using pytest marker: -m level_1"
+    echo "Expected runtime: ~2 minutes"
     echo ""
 
-    # Core imports and basic functionality (0000-0499)
-    # This includes: imports, meshes, models, save/load, swarms, data access, etc.
-    run_tests "Core functionality tests (0000-0499)" \
-        tests/test_0[0-4]*py
+    # Run all tests marked with level_1
+    run_tests "Level 1 tests (quick core functionality)" \
+        tests/ -m level_1
 }
 
 run_level_2() {
-    echo "⚠️ Running LEVEL 2: Intermediate Tests"
-    echo "Expected runtime: ~5-10 minutes"
+    echo "🔧 Running LEVEL 2: Intermediate Tests"
+    echo "Using pytest marker: -m level_2"
+    echo "Expected runtime: ~5 minutes"
     echo ""
 
-    # Intermediate functionality (0500-0799)
-    run_tests "Enhanced array structures and data migration" \
-        tests/test_05*py
-
-    # Regression tests (0600-0699) - These are important for stability
-    run_tests "Critical regression tests" \
-        tests/test_06*py
-
-    # Units system (0700-0799) - serial tests only
-    run_tests "Mathematical objects and units integration (serial)" \
-        tests/test_07*py
+    # Run all tests marked with level_2
+    run_tests "Level 2 tests (units, integration, projections)" \
+        tests/ -m level_2
 
     # Parallel tests for global statistics (requires MPI)
     if [ $SKIP_PARALLEL -eq 0 ] && command -v mpirun &> /dev/null && command -v pytest &> /dev/null; then
@@ -132,7 +134,7 @@ run_level_2() {
 
         # Parallel tests with specified number of ranks
         echo "Testing with $PARALLEL_RANKS MPI ranks..."
-        if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py; then
+        if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
             echo "✅ PASSED: Parallel tests ($PARALLEL_RANKS ranks)"
         else
             echo "❌ FAILED: Parallel tests ($PARALLEL_RANKS ranks)"
@@ -143,7 +145,7 @@ run_level_2() {
         if [ $FULL_PARALLEL -eq 1 ]; then
             echo ""
             echo "Running extended parallel tests (4 ranks)..."
-            if mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_075*py; then
+            if mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
                 echo "✅ PASSED: Parallel tests (4 ranks)"
             else
                 echo "❌ FAILED: Parallel tests (4 ranks)"
@@ -158,30 +160,26 @@ run_level_2() {
         echo "⚠️  Skipping parallel tests (mpirun or pytest not available)"
         echo ""
     fi
-
-    # Unit-aware functionality (0800-0899)
-    run_tests "Unit-aware functions and workflows" \
-        tests/test_08*py
 }
 
 run_level_3() {
-    echo "⚠️ Running LEVEL 3: Physics and Solver Tests"
+    echo "🔬 Running LEVEL 3: Physics and Solver Tests"
+    echo "Using pytest marker: -m level_3"
     echo "Expected runtime: ~10-15 minutes"
     echo ""
 
-    # Level 3: Physics and solver tests (1000+)
-    run_tests "Poisson solvers (including Darcy flow)" \
-        tests/test_100[0-9]*py
-
-    run_tests "Stokes flow solvers" \
-        tests/test_1010*py tests/test_1011*py tests/test_1050*py
-
-    run_tests "Advection-diffusion and time-stepping" \
-        tests/test_1100*py tests/test_1110*py tests/test_1120*py
+    # Run all tests marked with level_3
+    run_tests "Level 3 tests (physics solvers, time-stepping)" \
+        tests/ -m level_3
 }
 
 # Validate and run selected test levels
 echo "🚀 Running Test Levels: ${TEST_LEVELS[*]}"
+echo ""
+echo "Test level criteria:"
+echo "  Level 1: Quick core tests - imports, setup, no solving"
+echo "  Level 2: Intermediate - units, integration, simple projections"
+echo "  Level 3: Physics - full solvers, time-stepping, benchmarks"
 echo ""
 
 for level in "${TEST_LEVELS[@]}"; do

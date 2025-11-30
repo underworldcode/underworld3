@@ -1,3 +1,7 @@
+import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_2
 # # Projection-based function evaluation
 #
 # Here we Use SNES solvers to project sympy / mesh variable functions and derivatives to nodes. Pointwise / symbolic functions cannot always be evaluated using `uw.function.evaluate` because they contain a mix of mesh variables, derivatives and symbols which may not be defined everywhere.

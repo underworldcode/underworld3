@@ -9,6 +9,9 @@ import os
 import numpy as np
 import pytest
 
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
+
 # DISABLE SYMPY CACHE
 os.environ["SYMPY_USE_CACHE"] = "no"
 

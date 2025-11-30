@@ -13,6 +13,9 @@ STATUS (2025-11-15):
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import sys
 import os

@@ -16,6 +16,9 @@ functions are view-only and do NOT apply scaling transformations.
 
 import os
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import sympy
 

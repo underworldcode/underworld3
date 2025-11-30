@@ -10,6 +10,9 @@ import numpy as np
 import sympy
 import pytest
 
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
+
 
 n = 10
 x = np.linspace(0.1, 0.9, n)

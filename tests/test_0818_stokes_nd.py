@@ -23,6 +23,9 @@ STATUS (2025-11-15):
 
 import os
 import pytest
+
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
 import numpy as np
 import sympy
 

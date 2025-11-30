@@ -11,6 +11,9 @@ This test suite validates that:
 """
 
 import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 import re
 import underworld3 as uw
 from underworld3.function.expressions import UWexpression
