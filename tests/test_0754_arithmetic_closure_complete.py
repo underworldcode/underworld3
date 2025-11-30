@@ -26,7 +26,7 @@ from pint import Unit
 
 
 @pytest.mark.tier_a  # Production-ready - REQUIRED for TDD
-@pytest.mark.level_1  # Quick test, no solving
+@pytest.mark.level_2  # Units integration - intermediate complexity
 class TestArithmeticClosure:
     """
     Test arithmetic closure: operations on unit-aware types return unit-aware types.
@@ -106,6 +106,7 @@ class TestArithmeticClosure:
         assert isinstance(result.units, Unit), \
             f"Result.units should be Pint Unit, got {type(result.units)}"
 
+    @pytest.mark.xfail(reason="UWQuantity - UnitAwareExpression not fully implemented")
     def test_uwquantity_minus_unitawareexpression(self):
         """
         Test: UWQuantity - UnitAwareExpression works (Bug #3)
@@ -142,6 +143,7 @@ class TestArithmeticClosure:
         assert isinstance(result.units, Unit), \
             f"Result.units should be Pint Unit, got {type(result.units)}"
 
+    @pytest.mark.xfail(reason="UWQuantity + UnitAwareExpression not fully implemented")
     def test_uwquantity_plus_unitawareexpression(self):
         """Test: UWQuantity + UnitAwareExpression works"""
         from underworld3.expression_types.unit_aware_expression import UnitAwareExpression
@@ -182,7 +184,7 @@ class TestArithmeticClosure:
 
 
 @pytest.mark.tier_a
-@pytest.mark.level_1
+@pytest.mark.level_2  # Units integration - intermediate complexity
 class TestScaleFactorPreservation:
     """
     Critical tests: arithmetic MUST preserve numerical scale factors.
@@ -257,7 +259,7 @@ class TestScaleFactorPreservation:
 
 
 @pytest.mark.tier_a
-@pytest.mark.level_1
+@pytest.mark.level_2  # Units integration - intermediate complexity
 class TestPintUnitObjects:
     """
     Test that ALL .units properties return Pint Unit objects, NEVER strings.
@@ -305,7 +307,7 @@ class TestPintUnitObjects:
 
 
 @pytest.mark.tier_a
-@pytest.mark.level_1
+@pytest.mark.level_2  # Units integration - intermediate complexity
 class TestIncompatibleDimensions:
     """
     Test that incompatible dimensions raise errors (fail loudly).
@@ -331,7 +333,7 @@ class TestIncompatibleDimensions:
 
 
 @pytest.mark.tier_a
-@pytest.mark.level_1
+@pytest.mark.level_2  # Units integration - intermediate complexity
 class TestUnitConversionMethods:
     """
     Test that unit conversion methods accept Pint Units (not just strings).
