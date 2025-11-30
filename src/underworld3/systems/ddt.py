@@ -709,11 +709,12 @@ class SemiLagrangian(uw_object):
         ]
 
         try:
-            # Pass unit-aware coords to evaluate() - it's the gateway that handles conversion
-            # evaluate() returns dimensional results, which .array then stores properly
+            # Use shifted ND coords to avoid quad mesh boundary issues
+            # node_coords_nd is slightly shifted toward cell centroids (lines 703-709)
+            # evaluate() treats plain numpy as ND [0-1] coordinates
             eval_result = uw.function.evaluate(
                 self.psi_fn,
-                psi_star_0_coords,
+                node_coords_nd,
                 evalf=evalf,
             )
             # Wrap result with units if psi_star has units but eval didn't return UnitAwareArray
@@ -774,11 +775,12 @@ class SemiLagrangian(uw_object):
         for i in range(self.order - 1, -1, -1):
             # 2nd order update along characteristics
 
-            # CRITICAL FIX (2025-11-28): Use unit-aware coords for evaluate()
-            # Previously used node_coords which was in meters (buggy)
+            # Use shifted ND coords to avoid quad mesh boundary issues
+            # node_coords_nd is slightly shifted toward cell centroids (lines 703-709)
+            # evaluate() treats plain numpy as ND [0-1] coordinates
             v_result = uw.function.evaluate(
                 self.V_fn,
-                psi_star_0_coords,  # Use unit-aware coords - evaluate() handles conversion
+                node_coords_nd,
             )
 
             # CRITICAL: Preserve UnitAwareArray through slicing
