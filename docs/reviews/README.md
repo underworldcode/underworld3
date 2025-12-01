@@ -28,6 +28,43 @@ docs/reviews/
 
 ## 2025 Reviews
 
+### December 2025
+
+#### 1. Units System Architecture (Comprehensive)
+
+**Status**: 🔍 Under Review
+**Date**: 2025-12-01
+**Priority**: HIGH
+**PR**: [#36](https://github.com/underworldcode/underworld3/pull/36)
+
+**Summary**: Comprehensive architectural review of the Units System. Users work entirely in physically-dimensioned quantities while the solver architecture automatically handles non-dimensionalization. The automatic ND system produces identical numerical values to manual non-dimensionalization.
+
+**Files**: [`2025-12/UNITS-SYSTEM-ARCHITECTURE-REVIEW.md`](2025-12/UNITS-SYSTEM-ARCHITECTURE-REVIEW.md)
+
+**Key Components**:
+- Pint Quantity Wrappers (`UWQuantity`, `UWexpression`)
+- PETSc Array Wrappers (`UnitAwareArray`) - dual dimensional/ND views
+- Reference Quantity System (`Model`) with linear algebra dimensional analysis
+- Gateway Pattern: units at boundaries, dimensionless internally
+
+**Test Results (Level 2)**:
+- 288/411 passing (78 failures, 34 skipped)
+- Core units tests (07XX): ~98% passing
+- Integration tests (08XX): Known test quality issues documented
+
+---
+
+#### 2. Units: Integrals and Derivatives (Historical)
+
+**Status**: ✅ Consolidated into Architecture Review
+**Date**: 2025-12-01
+
+**Summary**: Enhanced units system with derivative units computation (`get_units(dv/dx)` returns correct derivative units) and integral unit propagation (`Integral.evaluate()` returns `UWQuantity` with proper units when mesh has coordinate units).
+
+**Files**: [`2025-12/UNITS-INTEGRALS-DERIVATIVES-2025-12-01.md`](2025-12/UNITS-INTEGRALS-DERIVATIVES-2025-12-01.md) (historical reference)
+
+---
+
 ### November 2025
 
 **Review Period**: November 2025
@@ -221,6 +258,8 @@ docs/reviews/
 
 | Review | Component | Tests | Pass Rate | Approval Date | Status |
 |--------|-----------|-------|-----------|---------------|--------|
+| **Units System Architecture** | Units System | 411 | 70% (288 pass) | TBD | 🔍 Under Review |
+| Units: Integrals & Derivatives | Units System | 9 | ✅ 100% | 2025-12-01 | ✅ Consolidated |
 | Reduction Operations | Mesh/Swarm Arrays | 5 | ✅ 100% | 2025-10-25 | ✅ Approved |
 | Integration Statistics | Swarm Integration | 7 | ✅ 100% | 2025-10-25 | ✅ Approved |
 | Test Coverage | Overall Quality | - | - | 2025-10-25 | ✅ Complete |
@@ -306,7 +345,7 @@ For general process questions, see [`CODE-REVIEW-PROCESS.md`](../developer/CODE-
 
 ---
 
-**Last Updated**: 2025-10-25
+**Last Updated**: 2025-12-01
 **Maintained By**: Project Leadership
 **Archive Status**: Active
 
