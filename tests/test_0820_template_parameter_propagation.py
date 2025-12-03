@@ -14,6 +14,9 @@ Tests cover all solver types that use Templates and constitutive models.
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import underworld3 as uw
 import sympy
 import numpy as np

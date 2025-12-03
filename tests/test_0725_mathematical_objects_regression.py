@@ -17,6 +17,9 @@ Key patterns tested:
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import sympy
 

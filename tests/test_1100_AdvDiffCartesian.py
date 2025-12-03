@@ -10,6 +10,9 @@ import numpy as np
 import sympy as sp
 import math
 import pytest
+
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
 import matplotlib.pyplot as plt
 
 

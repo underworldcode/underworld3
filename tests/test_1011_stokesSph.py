@@ -1,5 +1,8 @@
 # %%
 import pytest
+
+# Physics solver tests - full solver execution
+pytestmark = pytest.mark.level_3
 import sympy
 import underworld3 as uw
 

@@ -1,3 +1,7 @@
+import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 #!/usr/bin/env python3
 """
 Test script for unit metadata serialization implementation.

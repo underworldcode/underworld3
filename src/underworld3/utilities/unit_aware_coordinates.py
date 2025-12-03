@@ -60,190 +60,18 @@ class UnitAwareBaseScalar(BaseScalar):
         """Set the units of this coordinate."""
         self._units = value
 
-    def __truediv__(self, other):
-        """
-        Override division to return UnitAwareExpression with proper units.
-
-        This allows operations like y/length to work with proper unit conversion.
-        """
-        result_sym = super().__truediv__(other)
-
-        # If this coordinate has units, wrap result in UnitAwareExpression
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                # Use get_units() to compute result units via Pint dimensional analysis
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass  # Fall through to return plain SymPy
-
-        return result_sym
-
-    def __rtruediv__(self, other):
-        """Override right division to return UnitAwareExpression with proper units."""
-        result_sym = super().__rtruediv__(other)
-
-        # If this coordinate has units, wrap result in UnitAwareExpression
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __mul__(self, other):
-        """Override multiplication to return UnitAwareExpression with combined units."""
-        result_sym = super().__mul__(other)
-
-        # If this coordinate has units, wrap result in UnitAwareExpression
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __rmul__(self, other):
-        """Override right multiplication to return UnitAwareExpression with combined units."""
-        result_sym = super().__rmul__(other)
-
-        # If this coordinate has units, wrap result in UnitAwareExpression
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __add__(self, other):
-        """Override addition to return UnitAwareExpression."""
-        result_sym = super().__add__(other)
-
-        # If this coordinate has units, wrap result
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __radd__(self, other):
-        """Override right addition to return UnitAwareExpression."""
-        result_sym = super().__radd__(other)
-
-        # If this coordinate has units, wrap result
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __sub__(self, other):
-        """Override subtraction to return UnitAwareExpression."""
-        result_sym = super().__sub__(other)
-
-        # If this coordinate has units, wrap result
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __rsub__(self, other):
-        """Override right subtraction to return UnitAwareExpression."""
-        result_sym = super().__rsub__(other)
-
-        # If this coordinate has units, wrap result
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __pow__(self, other):
-        """Override power to return UnitAwareExpression with exponentiated units."""
-        result_sym = super().__pow__(other)
-
-        # If this coordinate has units, wrap result
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
-
-    def __neg__(self):
-        """Override negation to return UnitAwareExpression with same units."""
-        result_sym = super().__neg__()
-
-        # If this coordinate has units, wrap result
-        if self._units is not None:
-            try:
-                import underworld3 as uw
-                result_units = uw.get_units(result_sym)
-
-                if result_units is not None:
-                    from underworld3.expression.unit_aware_expression import UnitAwareExpression
-                    return UnitAwareExpression(result_sym, result_units)
-            except ImportError:
-                pass
-
-        return result_sym
+    # TRANSPARENT CONTAINER PRINCIPLE (2025-11-26):
+    # Arithmetic operators return plain SymPy results.
+    # Units are derived on demand via uw.get_units() which traverses the
+    # expression tree and finds atoms with ._units attributes.
+    #
+    # This eliminates:
+    # - UnitAwareExpression wrapping overhead
+    # - Unit sync issues between stored and computed values
+    # - Complexity in arithmetic operator implementations
+    #
+    # The coordinate symbols carry ._units attributes, so get_units() can
+    # discover them when needed. No special operator overloading required.
 
     def get_units(self):
         """
@@ -351,11 +179,14 @@ def patch_coordinate_units(mesh):
             pass
 
     if mesh_units is not None:
-        # Add units property and unit-aware operators to existing coordinates
-        # This monkey-patching approach preserves object identity for JIT compatibility
+        # Add units attribute to existing coordinates
+        # TRANSPARENT CONTAINER PRINCIPLE (2025-11-26):
+        # We only set ._units on the coordinate atoms. No operator overloading needed.
+        # uw.get_units() traverses expression trees and finds these atoms with ._units.
+        # This preserves object identity for JIT compatibility.
 
         def _patch_coordinate(coord, units):
-            """Helper to patch a single coordinate with unit-aware operators."""
+            """Helper to add units information to a coordinate."""
             # Update units if they've changed or don't exist
             current_units = getattr(coord, "_units", None)
             if current_units != units:
@@ -364,52 +195,6 @@ def patch_coordinate_units(mesh):
             # Add get_units method for compatibility (idempotent)
             if not hasattr(coord, "get_units"):
                 coord.get_units = lambda self=coord: self._units
-
-            # Only add operators once
-            if not hasattr(coord, "_unit_aware_operators_added"):
-                # Import at function level to avoid circular imports
-                import underworld3 as uw
-                from underworld3.expression.unit_aware_expression import UnitAwareExpression
-
-                # Save original BaseScalar methods
-                _BaseScalar = coord.__class__.__bases__[0]  # Get BaseScalar class
-
-                # Monkey-patch arithmetic operators to return UnitAwareExpression
-                def _make_unit_aware_operator(original_method):
-                    """Factory to create unit-aware operator wrapper."""
-                    def unit_aware_op(self, other=None):
-                        # Call original SymPy operation
-                        if other is None:
-                            result_sym = original_method(self)
-                        else:
-                            result_sym = original_method(self, other)
-
-                        # If this coordinate has units, wrap result
-                        if hasattr(self, '_units') and self._units is not None:
-                            try:
-                                result_units = uw.get_units(result_sym)
-                                if result_units is not None:
-                                    return UnitAwareExpression(result_sym, result_units)
-                            except:
-                                pass
-
-                        return result_sym
-                    return unit_aware_op
-
-                # Patch all arithmetic operators
-                coord.__mul__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__mul__(s, o))
-                coord.__rmul__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__rmul__(s, o))
-                coord.__add__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__add__(s, o))
-                coord.__radd__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__radd__(s, o))
-                coord.__sub__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__sub__(s, o))
-                coord.__rsub__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__rsub__(s, o))
-                coord.__truediv__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__truediv__(s, o))
-                coord.__rtruediv__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__rtruediv__(s, o))
-                coord.__pow__ = _make_unit_aware_operator(lambda s, o: _BaseScalar.__pow__(s, o))
-                coord.__neg__ = _make_unit_aware_operator(lambda s: _BaseScalar.__neg__(s))
-
-                # Mark that we've added operators
-                coord._unit_aware_operators_added = True
 
         # Patch the x, y, z coordinates
         for coord in [mesh.N.x, mesh.N.y, mesh.N.z]:

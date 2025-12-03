@@ -3,6 +3,9 @@
 # since we haven't validated the solvers yet
 
 import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 import sympy
 import underworld3 as uw
 import numpy as np

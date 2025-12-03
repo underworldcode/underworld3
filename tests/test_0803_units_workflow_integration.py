@@ -9,6 +9,9 @@ working with mixed units, solving problems, and viewing results in different uni
 
 import os
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 
 # DISABLE SYMPY CACHE

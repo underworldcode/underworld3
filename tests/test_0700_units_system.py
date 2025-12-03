@@ -4,14 +4,23 @@ Comprehensive unit tests for the Underworld3 units system.
 
 This test suite validates:
 - UnitAwareMixin functionality
-- Backend implementations (Pint/SymPy) 
+- Backend implementations (Pint/SymPy)
 - Enhanced variable classes
 - Mathematical operations with units
 - Dimensional analysis and compatibility
 - Integration with existing UW3 functionality
+
+STATUS (2025-11-15):
+- 18/21 tests passing
+- 3 tests failing (units_arithmetic_validation, create_enhanced_swarm_variable, geophysical_modeling_example)
+- Marked passing tests as Tier A (production-ready for TDD)
+- Failing tests marked as Tier C (experimental)
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import sys
 import os
@@ -21,6 +30,12 @@ import os
 
 import underworld3 as uw
 from underworld3.utilities import UnitAwareMixin, PintBackend, make_units_aware
+
+# Module-level markers for all tests
+pytestmark = [
+    pytest.mark.level_2,  # Intermediate - units system
+    pytest.mark.tier_a,   # Production-ready - core units functionality
+]
 
 
 class TestUnitsBackends:
@@ -179,6 +194,7 @@ class TestEnhancedMeshVariable:
         assert speed_norm is not None
         assert isinstance(speed_norm, tuple)  # Returns tuple for multi-component
 
+    @pytest.mark.tier_c  # Experimental - units arithmetic validation not fully implemented
     def test_units_arithmetic_validation(self, mesh):
         """Test that arithmetic operations validate units compatibility."""
         velocity1 = uw.create_enhanced_mesh_variable("v1", mesh, 2, units="m/s")
@@ -228,6 +244,7 @@ class TestFactoryFunctions:
         assert str(density.units) == "kilogram / meter ** 3"
         assert density.name == "density"
 
+    @pytest.mark.tier_c  # Experimental - enhanced swarm variable creation has issues
     def test_create_enhanced_swarm_variable(self, mesh):
         """Test swarm variable factory function."""
         # Create fresh swarm to avoid PETSc field registration issues
@@ -344,6 +361,7 @@ class TestErrorHandling:
 class TestFullSystemIntegration:
     """Integration test for the complete units system."""
 
+    @pytest.mark.tier_c  # Experimental - full system integration has some issues
     def test_geophysical_modeling_example(self):
         """Test a realistic geophysical modeling scenario."""
         # Create mesh

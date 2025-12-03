@@ -1351,6 +1351,10 @@ class _BaseMeshVariable(Stateful, uw_object):
             self.mesh.dm = dm_new
             self.mesh.dm_hierarchy[-1] = dm_new
 
+            # Invalidate DMInterpolation cache since DM structure changed
+            self.mesh._topology_version += 1
+            self.mesh._dminterpolation_cache.invalidate_all("DM rebuilt - new variable added")
+
             # Restore data to variables (this will create new vectors from new DM)
             for var in self.mesh.vars.values():
                 if var.clean_name in var_data_backup:
@@ -1504,10 +1508,11 @@ class _BaseMeshVariable(Stateful, uw_object):
                         dimensionality = dict(pint_qty.dimensionality)
 
                         # Dimensionalize: ND → dimensional using model reference scales
+                        # This returns a UnitAwareArray with SI base units
                         dimensional_values = uw.dimensionalise(reshaped, target_dimensionality=dimensionality)
 
-                        # Wrap with units
-                        return UnitAwareArray(dimensional_values, units=var_units)
+                        # Convert from SI base units to variable's units (e.g., m/s → cm/yr)
+                        return dimensional_values.to(var_units)
                     else:
                         # ND scaling not active - data is already dimensional
                         return UnitAwareArray(reshaped, units=var_units)
@@ -1527,49 +1532,114 @@ class _BaseMeshVariable(Stateful, uw_object):
                 modified_data = reshaped.copy()
 
                 # FULL CONVERSION PIPELINE for the input value
-                # Step 1: Convert units if needed
-                # Step 2: Non-dimensionalize if scaling active
-                # Step 3: Assign NON-DIMENSIONAL value to array
+                # Step 1: Check for unit-awareness when required
+                # Step 2: Convert units if needed
+                # Step 3: Non-dimensionalize if scaling active
+                # Step 4: Assign NON-DIMENSIONAL value to array
 
                 import underworld3 as uw
 
-                if hasattr(value, 'magnitude') or hasattr(value, 'value'):
+                # PRINCIPLE (2025-11-27): When units are active and variable has units,
+                # we REQUIRE unit-aware input to avoid ambiguity. Plain arrays are ambiguous:
+                # are they dimensional or non-dimensional? We don't guess.
+                #
+                # - Use .array for unit-aware assignment (requires UnitAwareArray)
+                # - Use .data for non-dimensional assignment (plain arrays OK)
+                #
+                # This prevents subtle bugs where users assign dimensional values thinking
+                # they'll be stored as-is, but they get re-dimensionalized on read.
+
+                has_unit_info = hasattr(value, 'magnitude') or hasattr(value, 'value')
+                model = uw.get_default_model()
+                var_has_units = hasattr(self.parent, 'units') and self.parent.units is not None
+                units_active = model.has_units() and uw.is_nondimensional_scaling_active()
+
+                if not has_unit_info and var_has_units and units_active:
+                    # Plain array assigned to unit-aware variable with scaling active
+                    # This is ambiguous - reject with helpful error
+                    var_units = self.parent.units
+                    raise ValueError(
+                        f"Cannot assign plain array to '{self.parent.name}.array' when units are active.\n"
+                        f"\n"
+                        f"The variable '{self.parent.name}' has units '{var_units}', but the assigned\n"
+                        f"value has no unit information. This is ambiguous: should the values be\n"
+                        f"interpreted as dimensional (in {var_units}) or non-dimensional?\n"
+                        f"\n"
+                        f"Solutions:\n"
+                        f"  1. Wrap with units: UnitAwareArray(data, units='{var_units}')\n"
+                        f"  2. Use uw.function.evaluate() which returns unit-aware arrays\n"
+                        f"  3. For non-dimensional values, use: {self.parent.name}.data[...] = value\n"
+                    )
+
+                if has_unit_info:
                     # Value has units - need full conversion pipeline
                     model = uw.get_default_model()
 
                     if model.has_units() and hasattr(self.parent, 'units') and self.parent.units:
                         from ..scaling import units as ureg
 
-                        # Step 1: Convert to variable's units (keep as string for .to())
-                        target_units_str = self.parent.units if isinstance(self.parent.units, str) else str(self.parent.units)
+                        # SPECIAL CASE (2025-11-27): Dimensionless input values
+                        # If the input is already dimensionless, it's already in non-dimensional
+                        # form. No conversion needed - accept it directly. This supports:
+                        # - Results from uw.non_dimensionalise() which return dimensionless
+                        # - Pre-computed non-dimensional values
+                        input_is_dimensionless = False
+                        if hasattr(value, 'units') and value.units is not None:
+                            val_units = value.units
+                            # Check for dimensionless: either string 'dimensionless' or Pint dimensionless
+                            if str(val_units).lower() == 'dimensionless':
+                                input_is_dimensionless = True
+                            elif hasattr(val_units, 'dimensionality') and not val_units.dimensionality:
+                                input_is_dimensionless = True
 
-                        # Convert and extract numerical value
-                        converted = value.to(target_units_str)
-
-                        # Parse to Pint Unit for non-dimensionalization
-                        target_units = ureg(target_units_str)
-                        if hasattr(converted, 'value'):
-                            dimensional_value = converted.value
-                        elif hasattr(converted, 'magnitude'):
-                            dimensional_value = converted.magnitude
-                        else:
-                            dimensional_value = float(converted)
-
-                        # Step 2: Non-dimensionalize if scaling active
-                        if uw.is_nondimensional_scaling_active():
-                            # Create temporary quantity for non-dimensionalization
-                            temp_qty = uw.quantity(dimensional_value, target_units)
-                            nd_value = uw.non_dimensionalise(temp_qty)
-                            # Extract value - nd_value should be plain float or UWQuantity with value
-                            if hasattr(nd_value, 'value'):
-                                value = nd_value.value
-                            elif hasattr(nd_value, 'magnitude'):
-                                value = nd_value.magnitude
+                        if input_is_dimensionless:
+                            # Already non-dimensional - extract numeric value and use directly
+                            if hasattr(value, 'value'):
+                                value = value.value
+                            elif hasattr(value, 'magnitude'):
+                                value = value.magnitude
                             else:
-                                value = nd_value
+                                value = np.asarray(value)
                         else:
-                            # No scaling - use dimensional value
-                            value = dimensional_value
+                            # REFACTORED (2025-11-27): Use Pint objects throughout, not strings.
+                            # self.parent.units is already a Pint Unit object (converted at init).
+                            # We use Pint arithmetic for unit conversion, never string intermediates.
+                            target_units = self.parent.units  # Pint Unit object
+
+                            # Step 1: Convert to variable's units using Pint
+                            # Create Pint Quantity from input, then convert
+                            if hasattr(value, '_pint_qty'):
+                                # UWQuantity - use internal Pint quantity
+                                pint_qty = value._pint_qty
+                            elif hasattr(value, 'units') and hasattr(value, 'magnitude'):
+                                # UnitAwareArray or Pint Quantity
+                                pint_qty = np.asarray(value) * value.units  # Pint Quantity
+                            elif hasattr(value, 'value') and hasattr(value, 'units'):
+                                # Other unit-aware object
+                                pint_qty = value.value * value.units
+                            else:
+                                # Fallback - assume already in target units
+                                pint_qty = np.asarray(value) * target_units
+
+                            # Convert to target units using Pint
+                            converted_qty = pint_qty.to(target_units)
+                            dimensional_value = converted_qty.magnitude
+
+                            # Step 2: Non-dimensionalize if scaling active
+                            if uw.is_nondimensional_scaling_active():
+                                # Create temporary quantity for non-dimensionalization
+                                temp_qty = uw.quantity(dimensional_value, target_units)
+                                nd_value = uw.non_dimensionalise(temp_qty)
+                                # Extract value - nd_value should be plain float or UWQuantity with value
+                                if hasattr(nd_value, 'value'):
+                                    value = nd_value.value
+                                elif hasattr(nd_value, 'magnitude'):
+                                    value = nd_value.magnitude
+                                else:
+                                    value = nd_value
+                            else:
+                                # No scaling - use dimensional value
+                                value = dimensional_value
                     else:
                         # No units mode - just extract value/magnitude
                         if hasattr(value, 'value'):
@@ -1764,10 +1834,16 @@ class _BaseMeshVariable(Stateful, uw_object):
                         dimensionality = dict(pint_qty.dimensionality)
 
                         # Dimensionalize: ND → dimensional using model reference scales
+                        # This returns a UnitAwareArray with SI base units
                         dimensional_values = uw.dimensionalise(unpacked, target_dimensionality=dimensionality)
 
-                        # Wrap with units
-                        return UnitAwareArray(dimensional_values, units=var_units)
+                        # Ensure we have a UnitAwareArray (dimensionalise may return numpy for empty dimensionality)
+                        if not isinstance(dimensional_values, UnitAwareArray):
+                            # Wrap plain array - treat as already in target units
+                            return UnitAwareArray(dimensional_values, units=var_units)
+
+                        # Convert from SI base units to variable's units (e.g., m/s → cm/yr)
+                        return dimensional_values.to(var_units)
                     else:
                         # ND scaling not active - data is already dimensional
                         return UnitAwareArray(unpacked, units=var_units)
@@ -1792,43 +1868,90 @@ class _BaseMeshVariable(Stateful, uw_object):
 
                 import underworld3 as uw
 
-                if hasattr(value, 'magnitude') or hasattr(value, 'value'):
+                # PRINCIPLE (2025-11-27): When units are active and variable has units,
+                # we REQUIRE unit-aware input to avoid ambiguity. Plain arrays are ambiguous:
+                # are they dimensional or non-dimensional? We don't guess.
+                #
+                # - Use .array for unit-aware assignment (requires UnitAwareArray)
+                # - Use .data for non-dimensional assignment (plain arrays OK)
+
+                has_unit_info = hasattr(value, 'magnitude') or hasattr(value, 'value')
+                model = uw.get_default_model()
+                var_has_units = hasattr(self.parent, 'units') and self.parent.units is not None
+                units_active = model.has_units() and uw.is_nondimensional_scaling_active()
+
+                if not has_unit_info and var_has_units and units_active:
+                    # Plain array assigned to unit-aware variable with scaling active
+                    # This is ambiguous - reject with helpful error
+                    var_units = self.parent.units
+                    raise ValueError(
+                        f"Cannot assign plain array to '{self.parent.name}.array' when units are active.\n"
+                        f"\n"
+                        f"The variable '{self.parent.name}' has units '{var_units}', but the assigned\n"
+                        f"value has no unit information. This is ambiguous: should the values be\n"
+                        f"interpreted as dimensional (in {var_units}) or non-dimensional?\n"
+                        f"\n"
+                        f"Solutions:\n"
+                        f"  1. Wrap with units: UnitAwareArray(data, units='{var_units}')\n"
+                        f"  2. Use uw.function.evaluate() which returns unit-aware arrays\n"
+                        f"  3. For non-dimensional values, use: {self.parent.name}.data[...] = value\n"
+                    )
+
+                if has_unit_info:
                     # Value has units - need full conversion pipeline
-                    model = uw.get_default_model()
 
                     if model.has_units() and hasattr(self.parent, 'units') and self.parent.units:
                         from ..scaling import units as ureg
 
-                        # Step 1: Convert to variable's units (keep as string for .to())
-                        target_units_str = self.parent.units if isinstance(self.parent.units, str) else str(self.parent.units)
+                        # SPECIAL CASE (2025-11-27): Dimensionless input values
+                        # If the input is already dimensionless, it's already in non-dimensional
+                        # form. No conversion needed - accept it directly.
+                        input_is_dimensionless = False
+                        if hasattr(value, 'units') and value.units is not None:
+                            val_units = value.units
+                            if str(val_units).lower() == 'dimensionless':
+                                input_is_dimensionless = True
+                            elif hasattr(val_units, 'dimensionality') and not val_units.dimensionality:
+                                input_is_dimensionless = True
 
-                        # Convert and extract numerical value
-                        converted = value.to(target_units_str)
-
-                        # Parse to Pint Unit for non-dimensionalization
-                        target_units = ureg(target_units_str)
-                        if hasattr(converted, 'value'):
-                            dimensional_value = converted.value
-                        elif hasattr(converted, 'magnitude'):
-                            dimensional_value = converted.magnitude
-                        else:
-                            dimensional_value = float(converted)
-
-                        # Step 2: Non-dimensionalize if scaling active
-                        if uw.is_nondimensional_scaling_active():
-                            # Create temporary quantity for non-dimensionalization
-                            temp_qty = uw.quantity(dimensional_value, target_units)
-                            nd_value = uw.non_dimensionalise(temp_qty)
-                            # Extract value - nd_value should be plain float or UWQuantity with value
-                            if hasattr(nd_value, 'value'):
-                                value = nd_value.value
-                            elif hasattr(nd_value, 'magnitude'):
-                                value = nd_value.magnitude
+                        if input_is_dimensionless:
+                            # Already non-dimensional - extract numeric value and use directly
+                            if hasattr(value, 'value'):
+                                value = value.value
+                            elif hasattr(value, 'magnitude'):
+                                value = value.magnitude
                             else:
-                                value = nd_value
+                                value = np.asarray(value)
                         else:
-                            # No scaling - use dimensional value
-                            value = dimensional_value
+                            # REFACTORED (2025-11-27): Use Pint objects throughout, not strings.
+                            target_units = self.parent.units  # Pint Unit object
+
+                            # Create Pint Quantity from input, then convert
+                            if hasattr(value, '_pint_qty'):
+                                pint_qty = value._pint_qty
+                            elif hasattr(value, 'units') and hasattr(value, 'magnitude'):
+                                pint_qty = np.asarray(value) * value.units
+                            elif hasattr(value, 'value') and hasattr(value, 'units'):
+                                pint_qty = value.value * value.units
+                            else:
+                                pint_qty = np.asarray(value) * target_units
+
+                            # Convert to target units using Pint
+                            converted_qty = pint_qty.to(target_units)
+                            dimensional_value = converted_qty.magnitude
+
+                            # Step 2: Non-dimensionalize if scaling active
+                            if uw.is_nondimensional_scaling_active():
+                                temp_qty = uw.quantity(dimensional_value, target_units)
+                                nd_value = uw.non_dimensionalise(temp_qty)
+                                if hasattr(nd_value, 'value'):
+                                    value = nd_value.value
+                                elif hasattr(nd_value, 'magnitude'):
+                                    value = nd_value.magnitude
+                                else:
+                                    value = nd_value
+                            else:
+                                value = dimensional_value
                     else:
                         # No units mode - just extract value/magnitude
                         if hasattr(value, 'value'):

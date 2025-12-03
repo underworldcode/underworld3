@@ -124,6 +124,39 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._units = units
         self._units_backend = units_backend
 
+        # STRICT UNITS MODE CHECK
+        # Enforce units-scales contract: variables with units require reference quantities
+        if units is not None:
+            model = uw.get_default_model()
+
+            # Check if strict mode is enabled
+            if uw.is_strict_units_active() and not model.has_units():
+                raise ValueError(
+                    f"Strict units mode: Cannot create swarm variable '{name}' with units='{units}' "
+                    f"when model has no reference quantities.\n\n"
+                    f"Options:\n"
+                    f"  1. Set reference quantities FIRST:\n"
+                    f"     model = uw.get_default_model()\n"
+                    f"     model.set_reference_quantities(\n"
+                    f"         domain_depth=uw.quantity(1000, 'km'),\n"
+                    f"         plate_velocity=uw.quantity(5, 'cm/year')\n"
+                    f"     )\n\n"
+                    f"  2. Remove units parameter (use plain numbers):\n"
+                    f"     swarm.add_variable('{name}', ...)  # No units\n\n"
+                    f"  3. Disable strict mode (not recommended):\n"
+                    f"     uw.use_strict_units(False)\n"
+                )
+
+            # If not strict mode and no reference quantities, warn as before
+            if not model.has_units():
+                warnings.warn(
+                    f"\nSwarm variable '{name}' has units '{units}' but no reference quantities are set.\n"
+                    f"Call model.set_reference_quantities() before creating variables with units.\n"
+                    f"Variable will use scaling_coefficient=1.0, which may lead to poor numerical conditioning.\n"
+                    f"Consider enabling strict mode: uw.use_strict_units(True)",
+                    UserWarning
+                )
+
         if not isinstance(vtype, uw.VarType):
             raise ValueError(
                 "'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`."
@@ -380,16 +413,123 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Simple reshape: (-1, num_components) -> (N, a, b)
                 data = self.parent.data
                 # For simple variables, reshape to (N, a, b) format
-                return data.reshape(data.shape[0], *self.parent.shape)
+                reshaped = data.reshape(data.shape[0], *self.parent.shape)
+
+                # Apply dimensionalization if needed
+                import underworld3 as uw
+                from .utilities.unit_aware_array import UnitAwareArray
+
+                # Check if variable has units and model has reference quantities
+                model = uw.get_default_model()
+                has_units = hasattr(self.parent, "units") and self.parent.units is not None
+
+                if has_units and model.has_units():
+                    # Variable has units - wrap with UnitAwareArray
+                    from .scaling import units as ureg
+                    var_units = self.parent.units
+                    if isinstance(var_units, str):
+                        var_units = ureg(var_units)
+
+                    # If ND scaling is active, data is non-dimensional and needs dimensionalization
+                    if uw.is_nondimensional_scaling_active():
+                        # Get dimensionality
+                        pint_qty = 1.0 * var_units
+                        dimensionality = dict(pint_qty.dimensionality)
+
+                        # Dimensionalize: ND → dimensional using model reference scales
+                        # This returns a UnitAwareArray with SI base units
+                        dimensional_values = uw.dimensionalise(reshaped, target_dimensionality=dimensionality)
+
+                        # Convert from SI base units to variable's units (e.g., m/s → cm/yr)
+                        return dimensional_values.to(var_units)
+                    else:
+                        # ND scaling not active - data is already dimensional
+                        return UnitAwareArray(reshaped, units=var_units)
+                else:
+                    # No units - return plain array
+                    return reshaped
 
             def __getitem__(self, key):
                 return self._get_array_data()[key]
 
             def __setitem__(self, key, value):
-                # Get current array view
-                array_data = self._get_array_data()
+                import underworld3 as uw
+
+                # PRINCIPLE (2025-11-27): When units are active and variable has units,
+                # we REQUIRE unit-aware input to avoid ambiguity. Plain arrays are ambiguous:
+                # are they dimensional or non-dimensional? We don't guess.
+                #
+                # - Use .array for unit-aware assignment (requires UnitAwareArray)
+                # - Use .data for non-dimensional assignment (plain arrays OK)
+
+                has_unit_info = hasattr(value, 'magnitude') or hasattr(value, 'value')
+                model = uw.get_default_model()
+                var_has_units = hasattr(self.parent, 'units') and self.parent.units is not None
+                units_active = model.has_units() and uw.is_nondimensional_scaling_active()
+
+                if not has_unit_info and var_has_units and units_active:
+                    # Plain array assigned to unit-aware variable with scaling active
+                    # This is ambiguous - reject with helpful error
+                    var_units = self.parent.units
+                    raise ValueError(
+                        f"Cannot assign plain array to '{self.parent.name}.array' when units are active.\n"
+                        f"\n"
+                        f"The variable '{self.parent.name}' has units '{var_units}', but the assigned\n"
+                        f"value has no unit information. This is ambiguous: should the values be\n"
+                        f"interpreted as dimensional (in {var_units}) or non-dimensional?\n"
+                        f"\n"
+                        f"Solutions:\n"
+                        f"  1. Wrap with units: UnitAwareArray(data, units='{var_units}')\n"
+                        f"  2. Use uw.function.evaluate() which returns unit-aware arrays\n"
+                        f"  3. For non-dimensional values, use: {self.parent.name}.data[...] = value\n"
+                    )
+
+                # Get current NON-DIMENSIONAL array data
+                # Note: We use data directly here, not _get_array_data() which dimensionalizes
+                raw_data = self.parent.data
+                array_data = raw_data.reshape(raw_data.shape[0], *self.parent.shape)
                 # Create a copy to modify (avoid modifying view directly)
                 modified_data = array_data.copy()
+
+                if has_unit_info:
+                    # Value has units - need full conversion pipeline
+                    if model.has_units() and var_has_units:
+                        from .scaling import units as ureg
+
+                        # Step 1: Convert to variable's units
+                        target_units_str = self.parent.units if isinstance(self.parent.units, str) else str(self.parent.units)
+                        converted = value.to(target_units_str)
+
+                        # Extract numerical value
+                        if hasattr(converted, 'value'):
+                            dimensional_value = converted.value
+                        elif hasattr(converted, 'magnitude'):
+                            dimensional_value = converted.magnitude
+                        else:
+                            dimensional_value = float(converted)
+
+                        # Step 2: Non-dimensionalize if scaling active
+                        if uw.is_nondimensional_scaling_active():
+                            target_units = ureg(target_units_str)
+                            temp_qty = uw.quantity(dimensional_value, target_units)
+                            nd_value = uw.non_dimensionalise(temp_qty)
+                            if hasattr(nd_value, 'value'):
+                                value = nd_value.value
+                            elif hasattr(nd_value, 'magnitude'):
+                                value = nd_value.magnitude
+                            else:
+                                value = nd_value
+                        else:
+                            value = dimensional_value
+                    else:
+                        # No units mode - just extract value/magnitude
+                        if hasattr(value, 'value'):
+                            value = value.value
+                        elif hasattr(value, 'magnitude'):
+                            value = value.magnitude
+                        else:
+                            value = float(value)
+
                 # Update the specific elements
                 modified_data[key] = value
                 # Reshape back to canonical data format: ensure exact shape match
@@ -481,16 +621,122 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
             def _get_array_data(self):
                 # Use complex pack/unpack for tensor layouts
-                return self.parent.unpack_uw_data_from_petsc(squeeze=False)
+                unpacked = self.parent.unpack_uw_data_from_petsc(squeeze=False)
+
+                # Apply dimensionalization if needed
+                import underworld3 as uw
+                from .utilities.unit_aware_array import UnitAwareArray
+
+                # Check if variable has units and model has reference quantities
+                model = uw.get_default_model()
+                has_units = hasattr(self.parent, "units") and self.parent.units is not None
+
+                if has_units and model.has_units():
+                    # Variable has units - wrap with UnitAwareArray
+                    from .scaling import units as ureg
+                    var_units = self.parent.units
+                    if isinstance(var_units, str):
+                        var_units = ureg(var_units)
+
+                    # If ND scaling is active, data is non-dimensional and needs dimensionalization
+                    if uw.is_nondimensional_scaling_active():
+                        # Get dimensionality
+                        pint_qty = 1.0 * var_units
+                        dimensionality = dict(pint_qty.dimensionality)
+
+                        # Dimensionalize: ND → dimensional using model reference scales
+                        # This returns a UnitAwareArray with SI base units
+                        dimensional_values = uw.dimensionalise(unpacked, target_dimensionality=dimensionality)
+
+                        # Convert from SI base units to variable's units (e.g., m/s → cm/yr)
+                        return dimensional_values.to(var_units)
+                    else:
+                        # ND scaling not active - data is already dimensional
+                        return UnitAwareArray(unpacked, units=var_units)
+                else:
+                    # No units - return plain array
+                    return unpacked
 
             def __getitem__(self, key):
                 return self._get_array_data()[key]
 
             def __setitem__(self, key, value):
-                # Get current array view
-                array_data = self._get_array_data()
+                import underworld3 as uw
+
+                # PRINCIPLE (2025-11-27): When units are active and variable has units,
+                # we REQUIRE unit-aware input to avoid ambiguity. Plain arrays are ambiguous:
+                # are they dimensional or non-dimensional? We don't guess.
+                #
+                # - Use .array for unit-aware assignment (requires UnitAwareArray)
+                # - Use .data for non-dimensional assignment (plain arrays OK)
+
+                has_unit_info = hasattr(value, 'magnitude') or hasattr(value, 'value')
+                model = uw.get_default_model()
+                var_has_units = hasattr(self.parent, 'units') and self.parent.units is not None
+                units_active = model.has_units() and uw.is_nondimensional_scaling_active()
+
+                if not has_unit_info and var_has_units and units_active:
+                    # Plain array assigned to unit-aware variable with scaling active
+                    # This is ambiguous - reject with helpful error
+                    var_units = self.parent.units
+                    raise ValueError(
+                        f"Cannot assign plain array to '{self.parent.name}.array' when units are active.\n"
+                        f"\n"
+                        f"The variable '{self.parent.name}' has units '{var_units}', but the assigned\n"
+                        f"value has no unit information. This is ambiguous: should the values be\n"
+                        f"interpreted as dimensional (in {var_units}) or non-dimensional?\n"
+                        f"\n"
+                        f"Solutions:\n"
+                        f"  1. Wrap with units: UnitAwareArray(data, units='{var_units}')\n"
+                        f"  2. Use uw.function.evaluate() which returns unit-aware arrays\n"
+                        f"  3. For non-dimensional values, use: {self.parent.name}.data[...] = value\n"
+                    )
+
+                # Get current NON-DIMENSIONAL array data from PETSc
+                # Note: We use unpack directly here, not _get_array_data() which dimensionalizes
+                array_data = self.parent.unpack_uw_data_from_petsc(squeeze=False)
                 # Create a copy to modify (avoid modifying view directly)
                 modified_data = array_data.copy()
+
+                if has_unit_info:
+                    # Value has units - need full conversion pipeline
+                    if model.has_units() and var_has_units:
+                        from .scaling import units as ureg
+
+                        # Step 1: Convert to variable's units
+                        target_units_str = self.parent.units if isinstance(self.parent.units, str) else str(self.parent.units)
+                        converted = value.to(target_units_str)
+
+                        # Extract numerical value
+                        if hasattr(converted, 'value'):
+                            dimensional_value = converted.value
+                        elif hasattr(converted, 'magnitude'):
+                            dimensional_value = converted.magnitude
+                        else:
+                            dimensional_value = float(converted)
+
+                        # Step 2: Non-dimensionalize if scaling active
+                        if uw.is_nondimensional_scaling_active():
+                            target_units = ureg(target_units_str)
+                            temp_qty = uw.quantity(dimensional_value, target_units)
+                            nd_value = uw.non_dimensionalise(temp_qty)
+                            if hasattr(nd_value, 'value'):
+                                value = nd_value.value
+                            elif hasattr(nd_value, 'magnitude'):
+                                value = nd_value.magnitude
+                            else:
+                                value = nd_value
+                        else:
+                            value = dimensional_value
+                    else:
+                        # No units mode - just extract value/magnitude
+                        if hasattr(value, 'value'):
+                            value = value.value
+                        elif hasattr(value, 'magnitude'):
+                            value = value.magnitude
+                        else:
+                            value = float(value)
+
                 # Update the specific elements
                 modified_data[key] = value
                 # Pack back to canonical data format

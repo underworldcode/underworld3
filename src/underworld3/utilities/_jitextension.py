@@ -411,6 +411,9 @@ def _createext(
     eqns = []
     for index, fn in enumerate(fns):
 
+        # Save original for debugging
+        fn_original = fn
+
         fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
 
         if isinstance(fn, sympy.vector.Vector):
@@ -422,6 +425,19 @@ def _createext(
 
         if verbose:
             print("Processing JIT {:4d} / {}".format(index, fn))
+            # Enhanced debugging output
+            free_syms = fn.free_symbols
+            if free_syms:
+                print("  WARNING: Free symbols remaining after unwrap:")
+                for sym in free_syms:
+                    print(f"    - {sym} (type: {type(sym).__name__}, repr: {repr(sym)})")
+                    # Check if it's a UWexpression with units
+                    if hasattr(sym, 'units'):
+                        print(f"      has .units = {sym.units}")
+                    if hasattr(sym, 'magnitude'):
+                        print(f"      has .magnitude = {sym.magnitude}")
+                print(f"  Original expression before unwrap: {fn_original}")
+                print(f"  After unwrap: {fn}")
 
         out = sympy.MatrixSymbol("out", *fn.shape)
         eqn = ("eqn_" + str(index), printer.doprint(fn, out))

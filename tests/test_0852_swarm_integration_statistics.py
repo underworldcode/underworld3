@@ -12,6 +12,12 @@ Key concepts tested:
 4. Comparison with analytical results
 
 See docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md for coordinate units context.
+
+STATUS (2025-11-15):
+- All tests PASS when run in isolation (7/7 ✓)
+- Failures in full suite run due to test state pollution from earlier tests
+- Tests use CORRECT swarm ordering (variables before populate)
+- Marked as Tier B - validated, needs promotion to Tier A after isolation fixes
 """
 
 import numpy as np
@@ -19,6 +25,8 @@ import pytest
 import underworld3 as uw
 
 
+@pytest.mark.level_2  # Intermediate - swarm integration and RBF
+@pytest.mark.tier_b   # Validated - tests pass, need isolation fix for Tier A promotion
 class TestSwarmIntegrationStatistics:
     """Test integration-based statistics for non-uniformly distributed swarms."""
 
@@ -249,6 +257,8 @@ class TestSwarmIntegrationStatistics:
         assert proxy_max <= 1.1
 
 
+@pytest.mark.level_2  # Intermediate - complete workflow
+@pytest.mark.tier_b   # Validated - tests pass, need isolation fix for Tier A promotion
 class TestSwarmStatisticsWorkflow:
     """Complete workflow examples for swarm statistics."""
 
@@ -328,6 +338,8 @@ class TestSwarmStatisticsWorkflow:
         assert integration_mean < arithmetic_max  # Integration mean is spatial average
 
 
+@pytest.mark.level_2  # Intermediate - integration vs arithmetic comparison
+@pytest.mark.tier_b   # Validated - tests pass, need isolation fix for Tier A promotion
 class TestSwarmIntegrationVsArithmetic:
     """Demonstrate when integration is preferred over simple arithmetic."""
 

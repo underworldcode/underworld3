@@ -10,6 +10,9 @@ import numpy as np
 import sympy
 import pytest
 
+# Integration tests - multiple variables, polynomial evaluation, 3D meshes
+pytestmark = pytest.mark.level_2
+
 
 n = 10
 x = np.linspace(0.1, 0.9, n)

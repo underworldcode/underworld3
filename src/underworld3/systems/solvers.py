@@ -25,38 +25,72 @@ def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
     """
     Helper function to apply unit-aware scaling to timestep estimates.
 
-    If the field has units and model time scales available, returns a Pint Quantity
-    with physical time units. Otherwise, returns the nondimensional value unchanged.
+    Detects the units of the velocity field and applies appropriate time scaling
+    to convert nondimensional timestep to physical time units.
 
     Parameters
     ----------
     dt_nondimensional : float or np.ndarray
         The nondimensional timestep estimate
-    field : MeshVariable or similar
-        The field (velocity, diffusivity, etc.) that may have units attached
+    field : MeshVariable or SymPy expression (often a Matrix)
+        The velocity field - units are detected from this
     mesh : Mesh
         The mesh (may have reference to model with time scales)
 
     Returns
     -------
     float or UWQuantity
-        Timestep with physical time units if possible, otherwise nondimensional
+        Timestep with physical time units if detectable, otherwise nondimensional
     """
-    # Check if field has units
-    if not (hasattr(field, "units") and field.units is not None):
-        return dt_nondimensional
-
     try:
-        # Get the default model to access time scales
+        from ..function.quantities import UWQuantity
+        from ..units import get_units
+        import sympy
+
+        # Extract a component from field if it's a Matrix (common for velocity)
+        field_to_check = field
+        if isinstance(field, sympy.MatrixBase):
+            # Extract first component: V_fn[0] or V_fn[0,0]
+            if field.shape[0] > 0:
+                field_to_check = field[0] if len(field.shape) == 1 else field[0, 0]
+
+        # Try to get units from the field expression
+        field_units = get_units(field_to_check)
+
+        if field_units is not None:
+            # Field has units - verify it has time dimension (as expected for velocity)
+            # Get dimensionality: e.g., {'[length]': 1, '[time]': -1} for velocity
+            field_dimensionality = field_units.dimensionality
+
+            # Check if this has time dimension (velocity should have time^-1)
+            if '[time]' in field_dimensionality:
+                # Velocity field has time dimension - use model time scale for result
+                # Don't try to match the velocity's specific time units (fragile string parsing)
+                # Instead, always return in model's fundamental time scale and let user convert
+                model = uw.get_default_model()
+                if model and hasattr(model, "fundamental_scales"):
+                    model_time_scale = model.fundamental_scales.get("time")
+                    if model_time_scale is not None:
+                        # Apply scaling: dt_physical = dt_nd * time_scale
+                        dt_physical = dt_nondimensional * model_time_scale
+
+                        # Return as UWQuantity
+                        if not isinstance(dt_physical, UWQuantity):
+                            dt_physical = UWQuantity._from_pint(dt_physical)
+                        return dt_physical
+
+        # Fallback: check if model has time scales (old behavior)
         model = uw.get_default_model()
         if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
             time_scale = model.fundamental_scales.get("time")
             if time_scale is not None:
-                # Convert ND timestep to physical time using time scale
-                # dt_physical = dt_nondimensional * time_scale
                 dt_physical = dt_nondimensional * time_scale
+                if not isinstance(dt_physical, UWQuantity):
+                    dt_physical = UWQuantity._from_pint(dt_physical)
                 return dt_physical
-    except Exception:
+
+    except Exception as e:
+        # Silently fall back to nondimensional
         pass
 
     return dt_nondimensional
@@ -1099,6 +1133,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     ## Need to over-ride solve method to run over all components
 
+    @timing.routine_timer_decorator
     def solve(self, verbose=False):
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
@@ -1273,7 +1308,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         if DuDt is None:
             self.Unknowns.DuDt = SemiLagrangian_DDt(
                 self.mesh,
-                u_Field.sym,
+                u_Field.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
                 self._V_fn,
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
@@ -1406,10 +1441,27 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                         time_scale = model.fundamental_scales.get("time")
                         if time_scale is not None:
                             # Physical time / time scale = nondimensional time
-                            value = value / time_scale
-                            # Extract magnitude from result
-                            if hasattr(value, "magnitude"):
-                                value = value.magnitude
+                            # Must use to_reduced_units() to convert both quantities
+                            # to same base units before extracting magnitude.
+                            # Otherwise Pint keeps different unit bases (megayear/second)
+                            # and .magnitude returns the unconverted number!
+                            result = value / time_scale
+
+                            # Get the internal Pint quantity for proper unit conversion
+                            if hasattr(result, "_pint_qty"):
+                                # UWQuantity - access internal Pint quantity
+                                pint_result = result._pint_qty.to_reduced_units()
+                            elif hasattr(result, "to_reduced_units"):
+                                # Raw Pint Quantity
+                                pint_result = result.to_reduced_units()
+                            else:
+                                pint_result = result
+
+                            # Extract the dimensionless magnitude
+                            if hasattr(pint_result, "magnitude"):
+                                value = float(pint_result.magnitude)
+                            else:
+                                value = float(pint_result)
             except Exception:
                 pass  # If anything fails, try to use value as-is
 
@@ -1428,31 +1480,96 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
         """
 
-        if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            if uw.function.fn_is_constant_expr(self.constitutive_model.Parameters.diffusivity):
+        # Handle different types of diffusivity parameter
+        from ..function.expressions import UWexpression
+        from ..function.quantities import UWQuantity
+
+        diff_param = self.constitutive_model.Parameters.diffusivity
+
+        if isinstance(diff_param, (UWexpression, UWQuantity)):
+            # UWexpression or UWQuantity - need to get ND value, not physical value!
+            # Check if the parameter has units that need conversion to ND
+            has_units = False
+            if hasattr(diff_param, 'units') and diff_param.units is not None:
+                has_units = True
+            elif hasattr(diff_param, '_has_pint_qty') and diff_param._has_pint_qty:
+                has_units = True
+
+            if has_units:
+                # Parameter has physical units - convert to ND using model scales
+                model = uw.get_default_model()
+                if model and hasattr(model, 'fundamental_scales') and model.fundamental_scales:
+                    # Get diffusivity scale: L^2 / T
+                    L = model.fundamental_scales.get('length')
+                    T = model.fundamental_scales.get('time')
+                    if L is not None and T is not None:
+                        # Compute diffusivity scale
+                        if hasattr(L, 'magnitude'):
+                            L_val = L.magnitude
+                        else:
+                            L_val = float(L)
+                        if hasattr(T, 'magnitude'):
+                            T_val = T.magnitude
+                        else:
+                            T_val = float(T)
+                        diff_scale = L_val**2 / T_val
+
+                        # Get physical diffusivity value
+                        if hasattr(diff_param, '_pint_qty'):
+                            # Convert to base units first
+                            phys_val = float(diff_param._pint_qty.to_base_units().magnitude)
+                        elif hasattr(diff_param, 'magnitude'):
+                            phys_val = float(diff_param.magnitude)
+                        else:
+                            phys_val = float(diff_param.value)
+
+                        # Convert to ND: physical / scale
+                        max_diffusivity = phys_val / diff_scale
+                    else:
+                        # No scales available - use raw value
+                        max_diffusivity = diff_param.magnitude if hasattr(diff_param, 'magnitude') else diff_param.value
+                else:
+                    # No model scales - use raw value
+                    max_diffusivity = diff_param.magnitude if hasattr(diff_param, 'magnitude') else diff_param.value
+            else:
+                # No units - already in ND form
+                if hasattr(diff_param, 'magnitude'):
+                    max_diffusivity = diff_param.magnitude
+                else:
+                    max_diffusivity = diff_param.value
+
+        elif isinstance(diff_param, sympy.Expr):
+            # Pure SymPy expression - needs evaluation
+            if uw.function.fn_is_constant_expr(diff_param):
                 max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.Parameters.diffusivity,
+                    diff_param,
                     np.zeros((1, self.mesh.dim)),
                 )
-
             else:
+                # Spatially-varying expression - evaluate over mesh
                 k = uw.function.evaluate(
-                    sympy.sympify(self.constitutive_model.Parameters.diffusivity),
+                    sympy.sympify(diff_param),
                     self.mesh._centroids,
                     self.mesh.N,
                 )
-
                 max_diffusivity = k.max()
         else:
-            k = self.constitutive_model.Parameters.diffusivity
-            max_diffusivity = k
+            # Numeric value - use directly
+            max_diffusivity = diff_param
 
         ### required modules
         from mpi4py import MPI
 
+        # Extract numeric value if max_diffusivity is a UWQuantity
+        # (can happen if evaluate() returns unit-aware result)
+        if hasattr(max_diffusivity, 'magnitude'):
+            max_diffusivity_value = float(max_diffusivity.magnitude)
+        else:
+            max_diffusivity_value = float(max_diffusivity)
+
         ## get global max dif value
         comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+        diffusivity_glob = comm.allreduce(max_diffusivity_value, op=MPI.MAX)
 
         ### get the velocity values
         vel = uw.function.evaluate(
@@ -1535,6 +1652,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
         super().solve(zero_init_guess, _force_setup)
+
+        # Invalidate cached data views - PETSc may have replaced underlying buffers
+        # This ensures .data and .array properties return fresh data from PETSc
+        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
 
         self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
@@ -1737,10 +1861,27 @@ class SNES_Diffusion(SNES_Scalar):
                         time_scale = model.fundamental_scales.get("time")
                         if time_scale is not None:
                             # Physical time / time scale = nondimensional time
-                            value = value / time_scale
-                            # Extract magnitude from result
-                            if hasattr(value, "magnitude"):
-                                value = value.magnitude
+                            # Must use to_reduced_units() to convert both quantities
+                            # to same base units before extracting magnitude.
+                            # Otherwise Pint keeps different unit bases (megayear/second)
+                            # and .magnitude returns the unconverted number!
+                            result = value / time_scale
+
+                            # Get the internal Pint quantity for proper unit conversion
+                            if hasattr(result, "_pint_qty"):
+                                # UWQuantity - access internal Pint quantity
+                                pint_result = result._pint_qty.to_reduced_units()
+                            elif hasattr(result, "to_reduced_units"):
+                                # Raw Pint Quantity
+                                pint_result = result.to_reduced_units()
+                            else:
+                                pint_result = result
+
+                            # Extract the dimensionless magnitude
+                            if hasattr(pint_result, "magnitude"):
+                                value = float(pint_result.magnitude)
+                            else:
+                                value = float(pint_result)
             except Exception:
                 pass  # If anything fails, try to use value as-is
 
@@ -1973,7 +2114,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if self.Unknowns.DuDt is None:
             self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
-                self.u.sym,
+                self.u.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
                 self.u.sym,
                 vtype=uw.VarType.VECTOR,
                 degree=self.u.degree,

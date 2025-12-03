@@ -7,6 +7,9 @@ values [0-1] but claiming units of "meters", causing a factor of 1e6 error for a
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import underworld3 as uw
 
@@ -103,10 +106,11 @@ def test_variable_coords_different_degrees():
     assert p_deg1.coords.shape[0] == 25
 
     # Both should have proper dimensional scaling
-    assert np.isclose(T_deg2.coords.min(), 0.0, rtol=1e-5)
-    assert np.isclose(T_deg2.coords.max(), 1e6, rtol=1e-5)
-    assert np.isclose(p_deg1.coords.min(), 0.0, rtol=1e-5)
-    assert np.isclose(p_deg1.coords.max(), 1e6, rtol=1e-5)
+    # coords.min() returns UWQuantity - extract magnitude for comparison
+    assert np.isclose(T_deg2.coords.min().magnitude, 0.0, rtol=1e-5)
+    assert np.isclose(T_deg2.coords.max().magnitude, 1e6, rtol=1e-5)
+    assert np.isclose(p_deg1.coords.min().magnitude, 0.0, rtol=1e-5)
+    assert np.isclose(p_deg1.coords.max().magnitude, 1e6, rtol=1e-5)
 
 
 def test_variable_coords_consistency_with_mesh():

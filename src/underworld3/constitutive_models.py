@@ -29,7 +29,15 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 # How do we use the default here if input is required ?
 def validate_parameters(symbol, input, default=None, allow_number=True, allow_expression=True):
 
-    if isinstance(input, UWQuantity):
+    # CRITICAL: Check for UWexpression FIRST, before checking sympy.Basic
+    # UWexpression inherits from sympy.Symbol, so it would match the Basic check
+    # and cause double-wrapping, losing unit information
+    from .function.expressions import UWexpression
+    if isinstance(input, UWexpression):
+        # Already a UWexpression - return as-is, no wrapping needed
+        return input
+
+    elif isinstance(input, UWQuantity):
         # Convert UWQuantity to UWexpression - this is the beautiful symmetry!
         # The UWexpression constructor will handle unit conversion automatically
         input = expression(

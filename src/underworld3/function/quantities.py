@@ -1,1098 +1,870 @@
 """
-UWQuantity - Lightweight unit-aware quantities for Underworld3
+UWQuantity - Simplified unit-aware quantities for Underworld3
 
-This module provides UWQuantity, a minimal unit-aware object that serves as the base
-class for UWexpression. UWQuantity objects are ephemeral and lightweight, carrying
-only the essential information needed for unit-aware operations:
+This is a simplified implementation following the MeshVariable pattern:
+- Stores dimensional values (what user sees via .value)
+- Provides non-dimensional values (what solver sees via .data)
+- All arithmetic delegated to Pint
+- No UnitAwareExpression complexity
 
-- Numerical or symbolic value
-- Units and scale factors (via UnitAwareMixin)
-- Unit conversion methods
-- Basic arithmetic operations
-
-UWQuantity objects are intended for:
-- Temporary calculations and intermediate results
-- Parameter assignments to constitutive models
-- Unit conversions between different unit systems
-- Input to UWexpression constructor for promotion
+Design Principles:
+1. UWQuantity is just a number with units - nothing more
+2. Arithmetic uses Pint directly, returns UWQuantity
+3. .value = dimensional (user view), .data = non-dimensional (solver view)
+4. No symbolic complexity - that belongs in UWexpression
 """
 
 import sympy
+import numpy as np
 from typing import Union, Optional, Any
-from ..utilities.dimensionality_mixin import DimensionalityMixin
 
 
-class UWQuantity(DimensionalityMixin):
+class UWQuantity:
     """
-    Lightweight unit-aware quantity.
+    A number with units.
 
-    A minimal object that carries a value with units and scale factors,
-    designed for ephemeral use and as a base class for UWexpression.
+    Simple, clean, Pint-backed. Follows the MeshVariable pattern:
+    - .value → dimensional (what user sees)
+    - .data → non-dimensional (what solver sees)
+    - .units → Pint Unit object
+
+    All arithmetic is delegated to Pint. No symbolic complexity.
 
     Parameters
     ----------
-    value : float, int, sympy.Expr
-        The numerical or symbolic value
-    units : str, optional
+    value : float, int, array-like
+        The numerical value (dimensional)
+    units : str or Pint Unit, optional
         Units specification (e.g., "Pa*s", "cm/year", "K")
 
     Examples
     --------
-    >>> import underworld3 as uw
-    >>> # Create quantity with units
     >>> viscosity = uw.quantity(1e21, "Pa*s")
-    >>> velocity = uw.quantity(5, "cm/year")
-    >>>
-    >>> # Unit conversions
-    >>> velocity_mps = velocity.to("m/s")
-    >>> velocity_base = velocity.to_model_units()
-    >>>
-    >>> # Arithmetic operations preserve units
-    >>> time_scale = distance / velocity  # Automatic unit calculation
+    >>> viscosity.value  # 1e21 (dimensional)
+    >>> viscosity.data   # 1.0 (non-dimensional, if model is set up)
+    >>> viscosity.units  # <Unit('pascal * second')>
+
+    >>> # Arithmetic via Pint
+    >>> T1 = uw.quantity(1000, "kelvin")
+    >>> T2 = uw.quantity(273, "kelvin")
+    >>> dT = T1 - T2  # UWQuantity(727, "kelvin")
     """
 
-    def __init__(self, value: Union[float, int, sympy.Basic], units: Optional[str] = None, dimensionality: Optional[dict] = None, _custom_units: Optional[str] = None, _model_registry=None, _model_instance=None):
+    def __init__(
+        self,
+        value: Union[float, int, np.ndarray],
+        units: Optional[str] = None
+    ):
         """
         Initialize a UWQuantity.
 
         Parameters
         ----------
-        value : float, int, sympy.Basic
-            The value of the quantity
-        units : str, optional
+        value : float, int, or array-like
+            The dimensional value
+        units : str or Pint Unit, optional
             Units specification
-        dimensionality : dict, optional
-            Pint dimensionality dictionary (e.g., {'[length]': 1, '[time]': -1} for velocity).
-            Used to preserve original dimensionality for dimensionless quantities.
-        _custom_units : str, optional
-            Custom unit name that bypasses Pint validation (for model units)
         """
-        # Initialize DimensionalityMixin
-        DimensionalityMixin.__init__(self)
+        from ..scaling import units as ureg
 
-        # Initialize the symbolic value
-        self._sym = sympy.sympify(value)
-
-        # Handle custom model units that don't exist in Pint registry
-        if _custom_units is not None and _model_registry is not None:
-            # NEW: Native Pint approach using model's registry with _constants
-            try:
-                import pint
-                self._pint_qty = value * getattr(_model_registry, _custom_units)
-                self._has_pint_qty = True
-                self._model_registry = _model_registry
-                self._model_instance = _model_instance  # Store model instance for alias access
-                self._custom_units = _custom_units
-                self._has_custom_units = True
-                self._symbolic_with_units = False
-            except (AttributeError, ImportError):
-                # Fallback to old approach if model registry doesn't have the constant
-                self._custom_units = _custom_units
-                self._has_custom_units = True
-                self._has_pint_qty = False
-                self._symbolic_with_units = False
-        elif _custom_units is not None:
-            # OLD: Custom units without model registry (legacy support)
-            self._custom_units = _custom_units
-            self._has_custom_units = True
-            self._has_pint_qty = False
-            self._symbolic_with_units = False
-        elif units is not None:
-            # Regular units: create standard Pint quantity
-            try:
-                # Use the scaling module's registry which includes planetary units
-                from ..scaling import units as ureg
-
-                # Check if value is a SymPy expression (symbolic)
-                # SymPy expressions with units should be stored symbolically, not as Pint quantities
-                if isinstance(value, sympy.Basic):
-                    # Symbolic expression with units - store separately
-                    # Create a unit object for dimensionality tracking
-                    unit_obj = ureg.parse_expression(units)
-                    self._pint_qty = unit_obj  # Store just the unit for dimensionality
-                    self._has_pint_qty = True
-                    self._has_custom_units = False
-                    self._symbolic_with_units = True  # Flag for symbolic expressions with units
-                else:
-                    # Numeric value - create standard Pint quantity
-                    self._pint_qty = value * ureg.parse_expression(units)
-                    self._has_pint_qty = True
-                    self._has_custom_units = False
-                    self._symbolic_with_units = False
-            except ImportError:
-                # If Pint is not available, treat as dimensionless
-                # NOTE: This should not happen in normal use - Pint is a required dependency
-                import warnings
-                warnings.warn(f"Pint not available, treating quantity with units '{units}' as dimensionless")
-                self._has_custom_units = False
-                self._has_pint_qty = False
-                self._symbolic_with_units = False
+        # Store value as numpy array or scalar
+        if isinstance(value, (list, tuple)):
+            self._value = np.asarray(value)
+        elif isinstance(value, np.ndarray):
+            self._value = value
         else:
-            # Dimensionless
-            self._has_custom_units = False
-            self._has_pint_qty = False
-            self._symbolic_with_units = False
+            # Scalar - store directly
+            self._value = value
 
-        # Dimensionality tracking for non-dimensionalization/re-dimensionalization
-        if dimensionality is not None:
-            # Explicitly provided dimensionality (for dimensionless with memory)
-            self._dimensionality = dimensionality
-        elif self._has_pint_qty and hasattr(self._pint_qty, 'dimensionality'):
-            # Extract from Pint quantity (normal case)
-            self._dimensionality = dict(self._pint_qty.dimensionality)
+        # Handle units
+        if units is not None:
+            # Accept both strings and Pint Unit objects
+            if hasattr(units, 'dimensionality'):
+                # Already a Pint Unit
+                self._pint_unit = units
+            else:
+                # String - parse it
+                self._pint_unit = ureg.parse_expression(units).units
+
+            # Create Pint Quantity for arithmetic
+            self._pint_qty = self._value * self._pint_unit
         else:
-            # No dimensionality information
-            self._dimensionality = {}
+            self._pint_unit = None
+            self._pint_qty = None
+
+        # Cache for non-dimensional value (computed lazily)
+        self._nd_value_cache = None
+        self._nd_value_valid = False
+
+        # Units backend for protocol compatibility (units.py uses this)
+        self._units_backend = "pint"
+
+    @classmethod
+    def _from_pint(cls, pint_qty, model_registry=None):
+        """
+        Create UWQuantity from a Pint Quantity object.
+
+        This is used by Model.to_model_units() and other internal methods
+        that work with Pint quantities directly.
+
+        Parameters
+        ----------
+        pint_qty : pint.Quantity
+            A Pint Quantity object
+        model_registry : pint.UnitRegistry, optional
+            Model-specific registry (for model units)
+
+        Returns
+        -------
+        UWQuantity
+            New quantity with the Pint quantity's value and units
+        """
+        value = pint_qty.magnitude
+        units = pint_qty.units
+        return cls(value, units)
+
+    # =========================================================================
+    # Core Properties - The MeshVariable Pattern
+    # =========================================================================
 
     @property
-    def value(self) -> Union[float, sympy.Basic]:
-        """Get the value in the quantity's specified units."""
-        if hasattr(self._sym, 'evalf'):
-            # Try to get numerical value, fall back to symbolic
-            try:
-                return float(self._sym.evalf())
-            except (TypeError, ValueError):
-                return self._sym
-        else:
-            return self._sym
+    def value(self) -> Union[float, np.ndarray]:
+        """
+        Dimensional value (what the user sees).
+
+        Returns
+        -------
+        float or np.ndarray
+            The value in the quantity's units
+        """
+        return self._value
+
+    @property
+    def data(self) -> Union[float, np.ndarray]:
+        """
+        Non-dimensional value (what the solver sees).
+
+        Returns the value scaled by the model's reference quantities.
+        If no model is registered or no scaling is active, returns the
+        dimensional value.
+
+        Returns
+        -------
+        float or np.ndarray
+            Non-dimensional value for solver use
+        """
+        if self._nd_value_valid:
+            return self._nd_value_cache
+
+        # Compute non-dimensional value
+        self._nd_value_cache = self._compute_nd_value()
+        self._nd_value_valid = True
+        return self._nd_value_cache
+
+    def _compute_nd_value(self) -> Union[float, np.ndarray]:
+        """Compute the non-dimensional value using model scaling."""
+        import underworld3 as uw
+
+        # If no units, value is already "non-dimensional"
+        if self._pint_unit is None:
+            return self._value
+
+        # Try to get scaling from model
+        try:
+            model = uw.get_default_model()
+            if model is not None and model.has_units():
+                # Get the scale factor for our dimensionality
+                scale = model.get_scale_for_dimensionality(self.dimensionality)
+                if scale is not None:
+                    # Extract scalar from scale (may be Pint Quantity)
+                    if hasattr(scale, 'magnitude'):
+                        scale_value = scale.magnitude
+                    else:
+                        scale_value = float(scale)
+
+                    if scale_value != 0:
+                        # Convert to base units first, then scale
+                        base_value = self._pint_qty.to_base_units().magnitude
+                        return base_value / scale_value
+        except Exception:
+            pass
+
+        # Fallback: return dimensional value
+        return self._value
+
+    @property
+    def magnitude(self) -> Union[float, np.ndarray]:
+        """Alias for .value (Pint compatibility)."""
+        return self.value
+
+    @property
+    def units(self):
+        """
+        Get the Pint Unit object.
+
+        Returns
+        -------
+        pint.Unit or None
+            The unit, or None if dimensionless
+        """
+        return self._pint_unit
 
     @property
     def has_units(self) -> bool:
-        """
-        Override UnitAwareMixin.has_units to handle custom model units and
-        cases where UnitAwareMixin wasn't properly initialized.
-        """
-        if hasattr(self, '_has_pint_qty') and self._has_pint_qty:
-            return True
-        if hasattr(self, '_has_custom_units') and self._has_custom_units:
-            return True
-        return hasattr(self, '_dimensional_quantity') and self._dimensional_quantity is not None
-
-    @property
-    def units(self) -> str:
-        """Get the units string for this quantity."""
-        if hasattr(self, '_has_pint_qty') and self._has_pint_qty:
-            return str(self._pint_qty.units)
-        elif hasattr(self, '_has_custom_units') and self._has_custom_units:
-            return self._custom_units
-        elif hasattr(self, '_units_backend') and hasattr(self, '_dimensional_quantity') and self._dimensional_quantity is not None:
-            return str(self._units_backend.get_units(self._dimensional_quantity))
-        else:
-            return None
-
-    @property
-    def sym(self) -> sympy.Basic:
-        """Get the symbolic representation (in model base units if scaled)."""
-        return self._sym
+        """Check if this quantity has units."""
+        return self._pint_unit is not None
 
     @property
     def dimensionality(self) -> dict:
         """
-        Get dimensionality information (Pint format).
-
-        Returns the dimensionality dictionary, e.g., {'[length]': 1, '[time]': -1} for velocity.
-        This allows re-dimensionalization of dimensionless quantities by preserving their
-        original dimensional nature.
+        Get the Pint dimensionality dictionary.
 
         Returns
         -------
         dict
-            Pint dimensionality dictionary, empty dict {} if dimensionless
-
-        Examples
-        --------
-        >>> velocity = uw.quantity(5, "cm/year")
-        >>> velocity.dimensionality
-        {'[length]': 1, '[time]': -1}
-
-        >>> nondim_velocity = uw.quantity(1.5, "dimensionless", dimensionality={'[length]': 1, '[time]': -1})
-        >>> nondim_velocity.dimensionality
-        {'[length]': 1, '[time]': -1}
+            e.g., {'[length]': 1, '[time]': -1} for velocity
         """
-        return self._dimensionality
+        if self._pint_qty is not None:
+            return dict(self._pint_qty.dimensionality)
+        return {}
 
-    @property
-    def _units_backend(self):
-        """
-        Get units backend (for protocol compatibility).
-
-        Returns a PintBackend for compatibility with the units protocol.
-        UWQuantity uses Pint directly via _pint_qty, so this creates a backend on-demand.
-        """
-        # Import here to avoid circular dependencies
-        from ..utilities.units_mixin import PintBackend
-
-        # UWQuantity doesn't store the backend, it uses Pint directly
-        # Create one on-demand for protocol compliance
-        if not hasattr(self, '_cached_backend'):
-            self._cached_backend = PintBackend()
-        return self._cached_backend
-
-    @classmethod
-    def _from_pint(cls, pint_qty, model_registry=None):
-        """Create UWQuantity from Pint quantity."""
-        value = pint_qty.magnitude
-
-        # Try to extract model registry from pint quantity if it contains _constants
-        if model_registry is None and hasattr(pint_qty, 'units') and hasattr(pint_qty.units, '_REGISTRY'):
-            # Check if this looks like a model registry (has _constants)
-            registry = pint_qty.units._REGISTRY
-            if hasattr(registry, '_definitions') and any(name.startswith('_') for name in registry._definitions):
-                model_registry = registry
-
-        units_str = str(pint_qty.units)
-
-        # Check if units contain model constants (names starting with _)
-        has_model_constants = any(part.strip().startswith('_') for part in units_str.replace('*', ' ').replace('/', ' ').replace('**', ' ').split())
-
-        if model_registry is not None and has_model_constants:
-            # This contains model constants - treat as custom units with model registry
-            return cls(value, _custom_units=units_str, _model_registry=model_registry)
-        elif has_model_constants:
-            # Has model constants but no registry - store as custom units (fallback)
-            return cls(value, _custom_units=units_str)
-        else:
-            # Regular Pint units - for offset units, create a simple value-only UWQuantity
-            # This handles Celsius, Fahrenheit, etc. that can't be multiplied by their units
-            try:
-                # Try normal construction first
-                return cls(value, units=units_str)
-            except:
-                # For offset units, create without Pint reconstruction
-                instance = cls.__new__(cls)
-                instance._value = value
-                instance.units = units_str
-                instance._has_pint_qty = True
-                instance._pint_qty = pint_qty
-                return instance
-
-    def copy(self, other: 'UWQuantity') -> None:
-        """
-        Copy the symbolic value from another UWQuantity.
-
-        This transfers the symbolic representation (in model base units)
-        from the source quantity to this quantity, preserving the
-        target object identity while updating its internal value.
-
-        Parameters
-        ----------
-        other : UWQuantity
-            Source quantity to copy from
-        """
-        if not isinstance(other, UWQuantity):
-            raise TypeError(f"Can only copy from UWQuantity objects, got {type(other)}")
-
-        # Copy the symbolic value (which should be in model base units if scaling is active)
-        self._sym = other._sym
+    # =========================================================================
+    # Unit Conversion Methods
+    # =========================================================================
 
     def to(self, target_units: str) -> 'UWQuantity':
         """
-        Convert to different units, returning a new UWQuantity.
+        Convert to different units.
 
         Parameters
         ----------
         target_units : str
-            Target units specification
+            Target units (e.g., "m/s", "km", "degC")
 
         Returns
         -------
         UWQuantity
-            New quantity with converted value and target units
-
-        Raises
-        ------
-        ValueError
-            If this quantity has no units
-        pint.DimensionalityError
-            If units are incompatible
+            New quantity with converted value and units
         """
-        if not self.has_units:
-            raise ValueError("Cannot convert quantity without units - create with units parameter")
+        if self._pint_qty is None:
+            raise ValueError("Cannot convert dimensionless quantity")
 
-        # NEW: Try Pint-native conversion first for model units
-        if hasattr(self, '_has_pint_qty') and self._has_pint_qty:
-            try:
-                # Use the model registry if available, otherwise standard Pint
-                if hasattr(self, '_model_registry') and self._model_registry:
-                    target_qty = self._model_registry.parse_expression(target_units)
-                    converted_pint = self._pint_qty.to(target_qty)
-                else:
-                    import pint
-                    ureg = pint.UnitRegistry()
-                    target_qty = ureg.parse_expression(target_units)
-                    converted_pint = self._pint_qty.to(target_qty)
+        converted = self._pint_qty.to(target_units)
+        return UWQuantity(converted.magnitude, converted.units)
 
-                # Try _from_pint, but handle offset unit issues
-                try:
-                    return UWQuantity._from_pint(converted_pint)
-                except Exception as inner_e:
-                    # Handle offset units and setter issues
-                    from pint.errors import OffsetUnitCalculusError
+    def to_base_units(self) -> 'UWQuantity':
+        """Convert to SI base units."""
+        if self._pint_qty is None:
+            return self
 
-                    # For any error in _from_pint, return a simple value-only result
-                    # This handles both offset units and property setter issues
-                    return type('ConvertedQuantity', (), {
-                        'value': converted_pint.magnitude,
-                        'units': str(converted_pint.units),
-                        '__str__': lambda self: f"{self.value} {self.units}",
-                        '__repr__': lambda self: self.__str__(),
-                        '__float__': lambda self: float(self.value)
-                    })()
+        base = self._pint_qty.to_base_units()
+        return UWQuantity(base.magnitude, base.units)
 
-            except Exception as e:
-                # Check for invalid unit names first
-                if "is not defined" in str(e) or "Unknown unit" in str(e):
-                    raise ValueError(
-                        f"Invalid unit name '{target_units}'. "
-                        f"For temperature conversions, use 'degC' (not 'Celsius') or 'degF'. "
-                        f"Original error: {str(e)}"
-                    ) from e
-                # Fall back to legacy approach if Pint conversion fails
-                elif "Cannot convert from" in str(e) or "_constants" in str(e):
-                    raise ValueError(
-                        f"Cannot convert model units '{self.units}' to '{target_units}'. "
-                        f"Model units use special scaling constants that are not convertible. "
-                        f"Original error: {str(e)}"
-                    ) from e
+    def to_reduced_units(self) -> 'UWQuantity':
+        """Simplify units by canceling common factors."""
+        if self._pint_qty is None:
+            return self
 
-        # Legacy approach for non-Pint quantities
-        if not hasattr(self, '_units_backend'):
-            raise AttributeError(
-                f"UWQuantity missing _units_backend - cannot convert units. "
-                f"For model quantities, ensure you're using valid Pint unit names. "
-                f"For temperature: use 'degC' or 'degF', not 'Celsius' or 'Fahrenheit'."
-            )
-
-        current_qty = self._units_backend.create_quantity(self.value, self.units)
-
-        try:
-            converted_qty = self._units_backend.convert_units(current_qty, target_units)
-        except Exception as e:
-            # Enhance error message for common cases
-            raise type(e)(
-                f"Cannot convert {self.units} to {target_units}. "
-                f"Units have incompatible dimensionalities. "
-                f"Original error: {str(e)}"
-            ) from e
-
-        # Extract magnitude and create new quantity
-        magnitude = self._units_backend.get_magnitude(converted_qty)
-        return UWQuantity(magnitude, target_units)
+        reduced = self._pint_qty.to_reduced_units()
+        return UWQuantity(reduced.magnitude, reduced.units)
 
     def to_compact(self) -> 'UWQuantity':
-        """
-        Convert to compact representation with best automatic units.
+        """Convert to most readable unit representation."""
+        if self._pint_qty is None:
+            return self
 
-        This uses Pint's to_compact() method to automatically select the most
-        readable unit representation. For example, 1e-9 GPa becomes 1.0 Pa,
-        and 1000000 mm becomes 1.0 km.
+        compact = self._pint_qty.to_compact()
+        return UWQuantity(compact.magnitude, compact.units)
 
-        Returns
-        -------
-        UWQuantity
-            New quantity with automatically selected compact units
+    # =========================================================================
+    # Arithmetic - Pure Pint Delegation
+    # =========================================================================
 
-        Raises
-        ------
-        ValueError
-            If this quantity has no units or doesn't have Pint quantity
-
-        Examples
-        --------
-        >>> import underworld3 as uw
-        >>> awkward = uw.quantity(1e-9, "GPa")
-        >>> nice = awkward.to_compact()
-        >>> print(nice)  # 1.0 pascal
-
-        >>> distance = uw.quantity(1000000, "mm")
-        >>> compact = distance.to_compact()
-        >>> print(compact)  # 1.0 kilometer
-        """
-        if not self.has_units:
-            raise ValueError("Cannot compact quantity without units")
-
-        if not (hasattr(self, '_has_pint_qty') and self._has_pint_qty):
-            raise ValueError("to_compact() requires Pint quantity (not available for model units)")
-
-        try:
-            # Use Pint's compact functionality
-            compact_pint = self._pint_qty.to_compact()
-            return UWQuantity._from_pint(compact_pint)
-        except AttributeError:
-            # Pint version doesn't have to_compact() (requires Pint >= 0.17)
-            raise AttributeError(
-                "to_compact() requires Pint >= 0.17. "
-                "Upgrade with: pip install --upgrade pint"
-            )
-
-    def to_nice_units(self) -> 'UWQuantity':
-        """
-        Convert to 'nice' representation using automatic compact units.
-
-        Alias for to_compact() - finds the most readable unit representation.
-
-        Returns
-        -------
-        UWQuantity
-            New quantity with nice, readable units
-
-        Examples
-        --------
-        >>> import underworld3 as uw
-        >>> pressure = uw.quantity(0.001, "GPa")
-        >>> nice = pressure.to_nice_units()
-        >>> print(nice)  # 1.0 megapascal
-        """
-        return self.to_compact()
-
-    def _to_model_units_(self, model) -> 'UWQuantity':
-        """
-        Hidden method for model.to_model_units() protocol.
-
-        This follows the _sympify_() pattern - called by model.to_model_units()
-        when available, allowing UWQuantity objects to handle their own conversion.
-
-        Parameters
-        ----------
-        model : Model
-            The model instance requesting conversion
-
-        Returns
-        -------
-        UWQuantity or None
-            Converted quantity, or None if cannot convert
-        """
-        if not self.has_units:
-            return None  # Dimensionless - let model handle gracefully
-
-        # For UWQuantity objects, delegate to the model's general conversion method
-        # This ensures consistent behavior and avoids code duplication
-        return None  # Let model handle the conversion with its scaling system
-
-    # Arithmetic operations that preserve units
     def __add__(self, other: Union['UWQuantity', float, int]) -> 'UWQuantity':
-        """Addition with automatic unit handling."""
+        """Addition via Pint."""
+        from .expressions import UWexpression
+
         if isinstance(other, UWQuantity):
-            if self.has_units and other.has_units:
-                # NEW: Try Pint-native arithmetic first
-                if (hasattr(self, '_has_pint_qty') and self._has_pint_qty and
-                    hasattr(other, '_has_pint_qty') and other._has_pint_qty):
-                    try:
-                        result_pint = self._pint_qty + other._pint_qty
-                        return self._from_pint(result_pint,
-                                             getattr(self, '_model_registry', None))
-                    except Exception:
-                        # Fall back to value arithmetic if Pint fails
-                        pass
-
-                # Legacy approach with unit conversion
-                try:
-                    other_converted = other.to(self.units)
-                    result_value = self.value + other_converted.value
-                    return UWQuantity(result_value, self.units)
-                except (AttributeError, ValueError):
-                    # If conversion fails, check if units are the same and do direct addition
-                    if self.units == other.units:
-                        result_value = self.value + other.value
-                        return UWQuantity(result_value, self.units)
-                    else:
-                        raise
-            elif self.has_units:
-                # Self has units, other doesn't - assume other matches self's units
-                result_value = self.value + other.value
-                return UWQuantity(result_value, self.units)
-            elif other.has_units:
-                # Other has units, self doesn't - assume self matches other's units
-                result_value = self.value + other.value
-                return UWQuantity(result_value, other.units)
+            if self._pint_qty is not None and other._pint_qty is not None:
+                result = self._pint_qty + other._pint_qty
+                return UWQuantity(result.magnitude, result.units)
             else:
-                # Neither has units
-                return UWQuantity(self.value + other.value)
-        else:
-            # Scalar addition - preserve units
-            return UWQuantity(self.value + other, self.units if self.has_units else None)
+                # One or both dimensionless
+                return UWQuantity(self._value + other._value, self._pint_unit or other._pint_unit)
 
-    def __radd__(self, other: Union[float, int]) -> 'UWQuantity':
+        # Handle UWexpression
+        if isinstance(other, UWexpression):
+            # Delegate to UWexpression's __radd__
+            return NotImplemented
+
+        # Handle SymPy expressions - LAZY EVALUATION approach
+        if isinstance(other, sympy.Basic):
+            if self._pint_qty is not None:
+                # Wrap self in UWexpression first, then add symbolically
+                # This preserves unit information AND the symbolic structure for diff/subs
+                # Use Pint's LaTeX format for readable names (e.g., "300\ \mathrm{K}")
+                # Uniqueness handled by _unique_name_generation via \hspace trick
+                latex_name = f"{self._pint_qty:~L}"
+                wrapped_self = UWexpression(
+                    latex_name,
+                    self,  # Store the full UWQuantity - Transparent Container
+                    _unique_name_generation=True
+                )
+                # Symbolic addition: UWexpression (symbol) + sympy expr
+                # Result is a sympy Add - preserves structure for differentiation
+                return wrapped_self + other
+            else:
+                # No units - return plain SymPy result
+                return self._value + other
+
+        # Scalar addition
+        if self._pint_qty is not None:
+            result = self._pint_qty + other
+            return UWQuantity(result.magnitude, result.units)
+        else:
+            return UWQuantity(self._value + other)
+
+    def __radd__(self, other):
         """Right addition."""
         return self.__add__(other)
 
     def __sub__(self, other: Union['UWQuantity', float, int]) -> 'UWQuantity':
-        """Subtraction with automatic unit handling."""
+        """Subtraction via Pint."""
+        from .expressions import UWexpression
+
         if isinstance(other, UWQuantity):
-            if self.has_units and other.has_units:
-                # NEW: Try Pint-native arithmetic first
-                if (hasattr(self, '_has_pint_qty') and self._has_pint_qty and
-                    hasattr(other, '_has_pint_qty') and other._has_pint_qty):
-                    try:
-                        result_pint = self._pint_qty - other._pint_qty
-                        return self._from_pint(result_pint,
-                                             getattr(self, '_model_registry', None))
-                    except Exception:
-                        # Fall back to value arithmetic if Pint fails
-                        pass
-
-                # Legacy approach with unit conversion
-                try:
-                    other_converted = other.to(self.units)
-                    result_value = self.value - other_converted.value
-                    return UWQuantity(result_value, self.units)
-                except (AttributeError, ValueError):
-                    # Handle cases where .to() fails (missing _units_backend)
-                    # For model units, assume same units if unit strings match
-                    if str(self.units) == str(other.units):
-                        result_value = self.value - other.value
-                        return UWQuantity(result_value, self.units)
-                    else:
-                        raise ValueError(f"Cannot subtract {other.units} from {self.units} - units incompatible")
-            elif self.has_units:
-                result_value = self.value - other.value
-                return UWQuantity(result_value, self.units)
-            elif other.has_units:
-                result_value = self.value - other.value
-                return UWQuantity(result_value, other.units)
+            if self._pint_qty is not None and other._pint_qty is not None:
+                result = self._pint_qty - other._pint_qty
+                return UWQuantity(result.magnitude, result.units)
             else:
-                return UWQuantity(self.value - other.value)
-        else:
-            return UWQuantity(self.value - other, self.units if self.has_units else None)
+                return UWQuantity(self._value - other._value, self._pint_unit or other._pint_unit)
 
-    def __rsub__(self, other: Union[float, int]) -> 'UWQuantity':
-        """Right subtraction."""
-        return UWQuantity(other - self.value, self.units if self.has_units else None)
+        # Handle UWexpression: UWQuantity - UWexpression → UWexpression
+        if isinstance(other, UWexpression):
+            from ..units import get_units
+            other_units = other.units
+
+            # For subtraction, units must be compatible - convert other to self's units
+            if self._pint_unit is not None and other_units is not None:
+                try:
+                    from ..scaling import units as ureg
+                    # Convert other's value to self's units
+                    other_converted = (other.value * other_units).to(self._pint_unit).magnitude
+                except Exception:
+                    # Units incompatible - use raw value (will be wrong but won't crash)
+                    other_converted = other.value
+            else:
+                other_converted = other.value
+
+            result_sym = self._value - other_converted
+            combined_units = self._pint_unit  # Result in self's units
+            return UWexpression(
+                f"(qty-{other.name})",
+                result_sym,
+                _unique_name_generation=True,
+                units=combined_units
+            )
+
+        # Handle SymPy expressions
+        if isinstance(other, sympy.Basic):
+            if self._pint_qty is not None:
+                from ..units import get_units
+                other_units = get_units(other)
+                combined_units = self._pint_unit  # Subtraction preserves units
+                result_sym = self._value - other
+                return UWexpression(
+                    f"(qty-sympy)",
+                    result_sym,
+                    _unique_name_generation=True,
+                    units=combined_units
+                )
+            else:
+                return self._value - other
+
+        if self._pint_qty is not None:
+            result = self._pint_qty - other
+            return UWQuantity(result.magnitude, result.units)
+        else:
+            return UWQuantity(self._value - other)
+
+    def __rsub__(self, other):
+        """Right subtraction: other - self."""
+        from .expressions import UWexpression
+
+        # Handle UWexpression: UWexpression - UWQuantity is handled by UWexpression.__sub__
+        # This handles: sympy.Basic - UWQuantity
+        if isinstance(other, sympy.Basic):
+            if self._pint_qty is not None:
+                from ..units import get_units
+                other_units = get_units(other)
+                # For subtraction, if other has units, use those; otherwise use inverted self units
+                if other_units is not None:
+                    combined_units = other_units  # other - self has other's units
+                else:
+                    combined_units = self._pint_unit  # Fallback to self's units
+                result_sym = other - self._value
+                return UWexpression(
+                    f"(sympy-qty)",
+                    result_sym,
+                    _unique_name_generation=True,
+                    units=combined_units
+                )
+            else:
+                return other - self._value
+
+        if self._pint_qty is not None:
+            result = other - self._pint_qty
+            return UWQuantity(result.magnitude, result.units)
+        else:
+            return UWQuantity(other - self._value)
 
     def __mul__(self, other: Union['UWQuantity', float, int]) -> 'UWQuantity':
-        """Multiplication with unit combination - NEW: Pint-native approach."""
+        """Multiplication via Pint."""
         if isinstance(other, UWQuantity):
-            # NEW: Try Pint-native arithmetic first
-            self_has_pint = hasattr(self, '_has_pint_qty') and self._has_pint_qty
-            other_has_pint = hasattr(other, '_has_pint_qty') and other._has_pint_qty
-
-            if self_has_pint and other_has_pint:
-                # Both have Pint quantities - use native Pint arithmetic
-                result_pint = self._pint_qty * other._pint_qty
-                # Pass model registry if available
-                model_registry = getattr(self, '_model_registry', None) or getattr(other, '_model_registry', None)
-                return self._from_pint(result_pint, model_registry)
-            elif self_has_pint:
-                # Self has Pint, other doesn't - multiply by scalar
-                result_pint = self._pint_qty * other.value
-                model_registry = getattr(self, '_model_registry', None)
-                return self._from_pint(result_pint, model_registry)
-            elif other_has_pint:
-                # Other has Pint, self doesn't - multiply by scalar
-                result_pint = self.value * other._pint_qty
-                model_registry = getattr(other, '_model_registry', None)
-                return self._from_pint(result_pint, model_registry)
-
-            # FALLBACK: Old approach for non-Pint quantities
-            if self.has_units and other.has_units:
-                # Check if either operand has custom model units
-                self_has_custom = hasattr(self, '_has_custom_units') and self._has_custom_units
-                other_has_custom = hasattr(other, '_has_custom_units') and other._has_custom_units
-
-                if self_has_custom or other_has_custom:
-                    # Model units fallback: just multiply values and return dimensionless
-                    # This allows model unit arithmetic to work without complex unit tracking
-                    result_value = self.value * other.value
-                    return UWQuantity(result_value, units=None)
-                elif hasattr(self, '_units_backend') and self._units_backend is not None:
-                    # Let the units backend handle unit multiplication for regular Pint units
-                    self_qty = self._units_backend.create_quantity(self.value, self.units)
-                    other_qty = other._units_backend.create_quantity(other.value, other.units)
-                    result_qty = self_qty * other_qty
-
-                    result_magnitude = self._units_backend.get_magnitude(result_qty)
-                    result_units = str(self._units_backend.get_units(result_qty))
-                    return UWQuantity(result_magnitude, result_units)
-                else:
-                    # No units backend available, use fallback
-                    result_value = self.value * other.value
-                    return UWQuantity(result_value, units=None)
-            elif self.has_units:
-                # Check if self has custom model units
-                if hasattr(self, '_has_custom_units') and self._has_custom_units:
-                    # Don't try to preserve custom model units, return dimensionless
-                    return UWQuantity(self.value * other.value, units=None)
-                else:
-                    return UWQuantity(self.value * other.value, self.units)
-            elif other.has_units:
-                # Check if other has custom model units
-                if hasattr(other, '_has_custom_units') and other._has_custom_units:
-                    # Don't try to preserve custom model units, return dimensionless
-                    return UWQuantity(self.value * other.value, units=None)
-                else:
-                    return UWQuantity(self.value * other.value, other.units)
+            if self._pint_qty is not None and other._pint_qty is not None:
+                result = self._pint_qty * other._pint_qty
+                return UWQuantity(result.magnitude, result.units)
+            elif self._pint_qty is not None:
+                result = self._pint_qty * other._value
+                return UWQuantity(result.magnitude, result.units)
+            elif other._pint_qty is not None:
+                result = self._value * other._pint_qty
+                return UWQuantity(result.magnitude, result.units)
             else:
-                return UWQuantity(self.value * other.value)
+                return UWQuantity(self._value * other._value)
         else:
-            # Scalar multiplication
-            if hasattr(self, '_has_pint_qty') and self._has_pint_qty:
-                # Use Pint arithmetic for scalar multiplication
-                result_pint = self._pint_qty * other
-                model_registry = getattr(self, '_model_registry', None)
-                return self._from_pint(result_pint, model_registry)
-            else:
-                # Fallback for non-Pint quantities
-                return UWQuantity(self.value * other, self.units if self.has_units else None)
-
-    def _sympy_(self):
-        """
-        Return SymPy representation for symbolic mathematics.
-
-        Note: Uses _sympy_() protocol (not _sympify_()) for SymPy 1.14+ compatibility.
-        This is required for proper symbolic algebra in strict mode (matrix operations).
-
-        This enables UWQuantity objects to work in mathematical operations
-        with symbolic variables (mesh variables, expressions, etc.).
-        Returns the scalar value for symbolic computation.
-        """
-        import sympy
-        # Handle cases where value is already a SymPy expression
-        if hasattr(self.value, '_sympify_') or isinstance(self.value, (sympy.Basic,)):
-            return self.value
-        # For scalar numeric values, convert to SymPy Float
-        try:
-            return sympy.Float(self.value)
-        except (TypeError, ValueError):
-            # If conversion fails, return value as-is
-            return self.value
-
-    def diff(self, *args, **kwargs):
-        """
-        Derivative of a UWQuantity (constant) is always zero.
-
-        This enables UWQuantity objects to work in SymPy derivative operations
-        that the solver performs when setting up equations.
-
-        Returns
-        -------
-        int
-            Always returns 0 since UWQuantity represents a constant
-        """
-        return 0
-
-    def __float__(self):
-        """Convert to float for SymPy compatibility."""
-        return float(self.value)
-
-    def is_number(self):
-        """UWQuantity represents a number/constant."""
-        return True
-
-    def atoms(self, *types):
-        """
-        Return atomic parts of UWQuantity for SymPy compatibility.
-
-        UWQuantity represents a constant, so it returns itself if it matches
-        the requested types, otherwise delegates to the SymPy representation.
-        """
-        import sympy
-        if not types:
-            # Default to all atomic types
-            types = (sympy.Atom,)
-
-        # Get SymPy representation
-        sympy_repr = self._sympify_()
-
-        # If the SymPy representation has its own atoms method, use it
-        if hasattr(sympy_repr, 'atoms'):
-            return sympy_repr.atoms(*types)
-
-        # Otherwise, check if this UWQuantity matches the requested types
-        if any(isinstance(sympy_repr, t) for t in types):
-            return {sympy_repr}
-        return set()
-
-    def __format__(self, format_spec: str) -> str:
-        """
-        Format the UWQuantity using the format specification.
-
-        This applies the format specification to the numerical value.
-        For model units with no format spec, includes human-readable interpretation.
-
-        Examples
-        --------
-        >>> qty = UWQuantity(3.14159, "m")
-        >>> f"{qty:.2f}"  # "3.14 m" (with units)
-        >>> f"{qty:e}"    # "3.141590e+00 m"
-
-        >>> qty_model = model.to_model_units(uw.quantity(5, "cm/year"))
-        >>> f"{qty_model}"  # "3.16e9 (≈ 5.000 cm/year)"
-        """
-        try:
-            # Format the numerical value
-            if format_spec:
-                formatted_value = format(self.value, format_spec)
-            else:
-                formatted_value = str(self.value)
-
-            # Add units or interpretation
-            if self.has_units:
-                # Check if model units can be interpreted
-                interpretation = self._interpret_model_units()
-                if interpretation:
-                    # Model units: show interpretation
-                    return f"{formatted_value} ({interpretation})"
+            # Handle UnitAwareArray - Pint doesn't properly combine units with UnitAwareArray
+            # We need to manually combine units and multiply values
+            from ..utilities.unit_aware_array import UnitAwareArray
+            if isinstance(other, UnitAwareArray):
+                other_units = other.units
+                if self._pint_qty is not None and other_units is not None:
+                    # Both have units - combine them via Pint
+                    from ..scaling import units as ureg
+                    combined_units = (1 * self._pint_unit * other_units).units
+                    # Multiply numeric values (extract numpy from UnitAwareArray)
+                    result_values = self._value * np.array(other)
+                    # Return UnitAwareArray with combined units
+                    return UnitAwareArray(result_values, units=combined_units)
+                elif self._pint_qty is not None:
+                    # Only self has units
+                    result_values = self._value * np.array(other)
+                    return UnitAwareArray(result_values, units=self._pint_unit)
+                elif other_units is not None:
+                    # Only other has units
+                    result_values = self._value * np.array(other)
+                    return UnitAwareArray(result_values, units=other_units)
                 else:
-                    # Regular units: show units
-                    units_str = self.units
-                    if units_str:
-                        display_units = self._get_display_units(units_str)
-                        return f"{formatted_value} {display_units}"
+                    # Neither has units - return plain numpy
+                    return self._value * np.array(other)
 
-            return formatted_value
+            # Check if other is a UWexpression - handle specially to preserve units
+            # Import here to avoid circular import
+            from .expressions import UWexpression
+            if isinstance(other, UWexpression):
+                # Both may have units - combine them via Pint
+                other_units = other.units
+                if self._pint_qty is not None and other_units is not None:
+                    # Both have units - compute combined units
+                    from ..scaling import units as ureg
+                    combined_units = (1 * self._pint_unit * other_units).units
+                    # Create SymPy product using values
+                    sympy_product = self._value * other.value
+                    # Return UWexpression with combined units
+                    return UWexpression(
+                        f"({self}*{other.name})",
+                        UWQuantity(sympy_product, combined_units),
+                        _unique_name_generation=True
+                    )
+                elif self._pint_qty is not None:
+                    # Only self has units
+                    sympy_product = self._value * other.value
+                    return UWexpression(
+                        f"({self}*{other.name})",
+                        UWQuantity(sympy_product, self._pint_unit),
+                        _unique_name_generation=True
+                    )
+                elif other_units is not None:
+                    # Only other has units
+                    sympy_product = self._value * other.value
+                    return UWexpression(
+                        f"({self}*{other.name})",
+                        UWQuantity(sympy_product, other_units),
+                        _unique_name_generation=True
+                    )
+                else:
+                    # Neither has units - just delegate to SymPy
+                    return NotImplemented
 
-        except (ValueError, TypeError):
-            # If formatting fails, fall back to string representation
-            return str(self)
+            # Handle SymPy expressions - LAZY EVALUATION approach
+            # Keep UWQuantity in the expression tree so get_units() can find it later
+            if isinstance(other, sympy.Basic):
+                if self._pint_qty is not None:
+                    # Check if the result will be numeric (concrete) or symbolic
+                    test_product = self._value * other
 
-    def __rmul__(self, other: Union[float, int]) -> 'UWQuantity':
+                    if test_product.is_number:
+                        # Concrete numeric result - compute combined units directly
+                        from ..units import get_units
+                        other_units = get_units(other)
+                        if other_units is not None:
+                            combined_units = self._pint_unit * other_units
+                        else:
+                            combined_units = self._pint_unit
+                        return UWexpression(
+                            f"({self}*sympy)",
+                            UWQuantity(float(test_product), combined_units),
+                            _unique_name_generation=True
+                        )
+                    else:
+                        # LAZY EVALUATION: Keep UWQuantity in expression tree
+                        # Wrap self in UWexpression first, then do symbolic multiplication
+                        # This preserves unit information for later get_units() traversal
+                        # Use Pint's LaTeX format for readable symbol names (e.g., "300\ \mathrm{K}")
+                        latex_name = f"{self._pint_qty:~L}"
+                        wrapped_self = UWexpression(
+                            latex_name,
+                            self,  # Store the full UWQuantity - Transparent Container
+                            _unique_name_generation=True
+                        )
+                        # Symbolic multiplication: UWexpression (symbol) * sympy expr
+                        # Result is sympy expression containing wrapped_self
+                        return wrapped_self * other
+                else:
+                    # No units - return plain SymPy result
+                    return self._value * other
+
+            # Scalar multiplication
+            if self._pint_qty is not None:
+                result = self._pint_qty * other
+                return UWQuantity(result.magnitude, result.units)
+            else:
+                return UWQuantity(self._value * other)
+
+    def __rmul__(self, other):
         """Right multiplication."""
         return self.__mul__(other)
 
     def __truediv__(self, other: Union['UWQuantity', float, int]) -> 'UWQuantity':
-        """Division with unit combination."""
+        """Division via Pint."""
         if isinstance(other, UWQuantity):
-            if self.has_units and other.has_units:
-                # Check if either operand has custom model units
-                self_has_custom = hasattr(self, '_has_custom_units') and self._has_custom_units
-                other_has_custom = hasattr(other, '_has_custom_units') and other._has_custom_units
-
-                if self_has_custom or other_has_custom:
-                    # Model units fallback: just divide values and return dimensionless
-                    result_value = self.value / other.value
-                    return UWQuantity(result_value, units=None)
-                elif hasattr(self, '_units_backend') and self._units_backend is not None:
-                    # Let the units backend handle unit division for regular Pint units
-                    self_qty = self._units_backend.create_quantity(self.value, self.units)
-                    other_qty = other._units_backend.create_quantity(other.value, other.units)
-                    result_qty = self_qty / other_qty
-
-                    result_magnitude = self._units_backend.get_magnitude(result_qty)
-                    result_units = str(self._units_backend.get_units(result_qty))
-                    return UWQuantity(result_magnitude, result_units)
-                else:
-                    # No units backend available, use fallback
-                    result_value = self.value / other.value
-                    return UWQuantity(result_value, units=None)
-            elif self.has_units:
-                # Check if self has custom model units
-                if hasattr(self, '_has_custom_units') and self._has_custom_units:
-                    # Don't try to preserve custom model units, return dimensionless
-                    return UWQuantity(self.value / other.value, units=None)
-                else:
-                    return UWQuantity(self.value / other.value, self.units)
-            elif other.has_units:
-                # Check if other has custom model units
-                if hasattr(other, '_has_custom_units') and other._has_custom_units:
-                    # Don't try to create inverse of custom model units, return dimensionless
-                    return UWQuantity(self.value / other.value, units=None)
-                else:
-                    # Result has inverse units for regular units
-                    inv_units = f"1/({other.units})"
-                    return UWQuantity(self.value / other.value, inv_units)
+            if self._pint_qty is not None and other._pint_qty is not None:
+                result = self._pint_qty / other._pint_qty
+                return UWQuantity(result.magnitude, result.units)
+            elif self._pint_qty is not None:
+                result = self._pint_qty / other._value
+                return UWQuantity(result.magnitude, result.units)
+            elif other._pint_qty is not None:
+                result = self._value / other._pint_qty
+                return UWQuantity(result.magnitude, result.units)
             else:
-                return UWQuantity(self.value / other.value)
+                return UWQuantity(self._value / other._value)
         else:
-            # Scalar division - check for custom model units
-            if self.has_units and hasattr(self, '_has_custom_units') and self._has_custom_units:
-                # Don't try to preserve custom model units, return dimensionless
-                return UWQuantity(self.value / other, units=None)
-            else:
-                # Scalar division preserves units for regular units
-                return UWQuantity(self.value / other, self.units if self.has_units else None)
+            # Check if other is a UWexpression - handle specially to preserve units
+            from .expressions import UWexpression
+            if isinstance(other, UWexpression):
+                other_units = other.units
+                if self._pint_qty is not None and other_units is not None:
+                    # Both have units - compute combined units (self / other)
+                    from ..scaling import units as ureg
+                    combined_units = (1 * self._pint_unit / other_units).units
+                    sympy_quotient = self._value / other.value
+                    return UWexpression(
+                        f"({self}/{other.name})",
+                        UWQuantity(sympy_quotient, combined_units),
+                        _unique_name_generation=True
+                    )
+                elif self._pint_qty is not None:
+                    # Only self has units
+                    sympy_quotient = self._value / other.value
+                    return UWexpression(
+                        f"({self}/{other.name})",
+                        UWQuantity(sympy_quotient, self._pint_unit),
+                        _unique_name_generation=True
+                    )
+                elif other_units is not None:
+                    # Only other has units - result has 1/other_units
+                    from ..scaling import units as ureg
+                    combined_units = (1 / other_units).units
+                    sympy_quotient = self._value / other.value
+                    return UWexpression(
+                        f"({self}/{other.name})",
+                        UWQuantity(sympy_quotient, combined_units),
+                        _unique_name_generation=True
+                    )
+                else:
+                    # Neither has units - just delegate to SymPy
+                    return NotImplemented
 
-    def __rtruediv__(self, other: Union[float, int]) -> 'UWQuantity':
-        """Right division."""
-        if self.has_units:
-            # Check if self has custom model units
-            if hasattr(self, '_has_custom_units') and self._has_custom_units:
-                # Don't try to create inverse of custom model units, return dimensionless
-                return UWQuantity(other / self.value, units=None)
+            # Handle SymPy expressions - wrap in UWexpression to preserve units
+            if isinstance(other, sympy.Basic):
+                if self._pint_qty is not None:
+                    sympy_quotient = self._value / other
+                    # If result is a number, convert to Python float for UWQuantity
+                    if sympy_quotient.is_number:
+                        return UWexpression(
+                            f"({self}/sympy)",
+                            UWQuantity(float(sympy_quotient), self._pint_unit),
+                            _unique_name_generation=True
+                        )
+                    else:
+                        # Symbolic result - store sympy expr with units
+                        return UWexpression(
+                            f"({self}/sympy)",
+                            sympy_quotient,
+                            _unique_name_generation=True,
+                            units=self._pint_unit
+                        )
+                else:
+                    # No units - return plain SymPy result
+                    return self._value / other
+
+            if self._pint_qty is not None:
+                result = self._pint_qty / other
+                return UWQuantity(result.magnitude, result.units)
             else:
-                # Create inverse units for regular units
-                inv_units = f"1/({self.units})"
-                return UWQuantity(other / self.value, inv_units)
+                return UWQuantity(self._value / other)
+
+    def __rtruediv__(self, other):
+        """Right division: other / self."""
+        from .expressions import UWexpression
+
+        # Handle SymPy types - return UWexpression with combined units
+        # other / self → units = units(other) / units(self)
+        if isinstance(other, sympy.Basic):
+            if self._pint_qty is not None:
+                from ..units import get_units
+                from ..scaling import units as ureg
+                inverted_units = 1 / self._pint_unit  # Unit / Unit = Unit
+
+                # Compute combined units: get_units(other) / self.units
+                other_units = get_units(other)
+                if other_units is not None:
+                    # Unit / Unit = Unit (no .units needed)
+                    combined_units = other_units / self._pint_unit
+                else:
+                    combined_units = inverted_units
+
+                sympy_quotient = other / self._value
+                if sympy_quotient.is_number:
+                    return UWexpression(
+                        f"(sympy/{self})",
+                        UWQuantity(float(sympy_quotient), combined_units),
+                        _unique_name_generation=True
+                    )
+                else:
+                    return UWexpression(
+                        f"(sympy/{self})",
+                        sympy_quotient,
+                        _unique_name_generation=True,
+                        units=combined_units
+                    )
+            else:
+                return other / self._value
+
+        # Python scalars with Pint
+        if self._pint_qty is not None:
+            result = other / self._pint_qty
+            return UWQuantity(result.magnitude, result.units)
         else:
-            return UWQuantity(other / self.value)
+            return UWQuantity(other / self._value)
 
     def __pow__(self, exponent: Union[float, int]) -> 'UWQuantity':
-        """Power with unit exponentiation."""
-        if self.has_units:
-            # Check if self has custom model units
-            if hasattr(self, '_has_custom_units') and self._has_custom_units:
-                # Don't try to exponentiate custom model units, return dimensionless
-                return UWQuantity(self.value ** exponent, units=None)
-            elif hasattr(self, '_units_backend') and self._units_backend is not None:
-                # Let units backend handle unit exponentiation for regular units
-                self_qty = self._units_backend.create_quantity(self.value, self.units)
-                result_qty = self_qty ** exponent
-
-                result_magnitude = self._units_backend.get_magnitude(result_qty)
-                result_units = str(self._units_backend.get_units(result_qty))
-                return UWQuantity(result_magnitude, result_units)
-            else:
-                # No units backend, preserve units as-is (may not be mathematically correct)
-                return UWQuantity(self.value ** exponent, self.units)
+        """Exponentiation via Pint."""
+        if self._pint_qty is not None:
+            result = self._pint_qty ** exponent
+            return UWQuantity(result.magnitude, result.units)
         else:
-            return UWQuantity(self.value ** exponent)
+            return UWQuantity(self._value ** exponent)
 
     def __neg__(self) -> 'UWQuantity':
-        """Negation preserves units."""
-        return UWQuantity(-self.value, self.units if self.has_units else None)
+        """Negation."""
+        if self._pint_qty is not None:
+            result = -self._pint_qty
+            return UWQuantity(result.magnitude, result.units)
+        else:
+            return UWQuantity(-self._value)
+
+    # =========================================================================
+    # Comparisons - Via Pint
+    # =========================================================================
+
+    def __lt__(self, other):
+        if isinstance(other, UWQuantity):
+            if self._pint_qty is not None and other._pint_qty is not None:
+                return self._pint_qty < other._pint_qty
+            return self._value < other._value
+        return self._value < other
+
+    def __le__(self, other):
+        if isinstance(other, UWQuantity):
+            if self._pint_qty is not None and other._pint_qty is not None:
+                return self._pint_qty <= other._pint_qty
+            return self._value <= other._value
+        return self._value <= other
+
+    def __gt__(self, other):
+        if isinstance(other, UWQuantity):
+            if self._pint_qty is not None and other._pint_qty is not None:
+                return self._pint_qty > other._pint_qty
+            return self._value > other._value
+        return self._value > other
+
+    def __ge__(self, other):
+        if isinstance(other, UWQuantity):
+            if self._pint_qty is not None and other._pint_qty is not None:
+                return self._pint_qty >= other._pint_qty
+            return self._value >= other._value
+        return self._value >= other
+
+    def __eq__(self, other):
+        if isinstance(other, UWQuantity):
+            if self._pint_qty is not None and other._pint_qty is not None:
+                return self._pint_qty == other._pint_qty
+            return self._value == other._value
+        return self._value == other
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    # =========================================================================
+    # SymPy Compatibility
+    # =========================================================================
+
+    def _sympy_(self):
+        """
+        SymPy protocol - controls how SymPy converts this object.
+
+        For quantities WITH units: raise SympifyError to force SymPy to
+        return NotImplemented, which triggers our __rmul__/__radd__ etc.
+
+        For quantities WITHOUT units: return the numeric value.
+        """
+        from sympy.core.sympify import SympifyError
+
+        # If we have units, don't let SymPy consume us silently
+        # This forces SymPy to return NotImplemented so our __rmul__ gets called
+        if self._pint_unit is not None:
+            raise SympifyError(self)
+
+        # No units - safe to return numeric value
+        if isinstance(self._value, np.ndarray):
+            return sympy.Matrix(self._value.tolist())
+        try:
+            return sympy.Float(float(self._value))
+        except (TypeError, ValueError):
+            return sympy.sympify(self._value)
+
+    def __float__(self):
+        """Convert to float."""
+        return float(self._value)
+
+    def diff(self, *args, **kwargs):
+        """Derivative of a constant is zero."""
+        return 0
+
+    # =========================================================================
+    # Display
+    # =========================================================================
 
     def __str__(self) -> str:
-        """
-        String representation with human-readable units.
-
-        For regular units: "5.0 cm/year"
-        For model units: "1.0 (≈ 0.05 cm/year)" - shows interpretation prominently
-        """
-        if self.has_units:
-            units_str = self.units
-            if units_str:
-                # Check if we have model units that can be interpreted
-                interpretation = self._interpret_model_units()
-                if interpretation:
-                    # For model units, show the human-readable interpretation prominently
-                    return f"{self.value} ({interpretation})"
-                else:
-                    # For regular units, use elegant aliases if available
-                    display_units = self._get_display_units(units_str)
-                    return f"{self.value} {display_units}"
-            else:
-                return str(self.value)
-        else:
-            return str(self.value)
-
-    def _get_display_units(self, units_str: str) -> str:
-        """
-        Get display-friendly unit string using aliases if available.
-
-        Converts technical constants like '_6p31e41kg' to elegant aliases like 'ℳ'.
-        """
-        # Check if we have a model instance with alias substitution
-        if hasattr(self, '_model_instance') and self._model_instance:
-            if hasattr(self._model_instance, '_substitute_display_aliases'):
-                return self._model_instance._substitute_display_aliases(units_str)
-
-        # Fallback: Check model registry (older approach)
-        if hasattr(self, '_model_registry') and self._model_registry:
-            if hasattr(self._model_registry, '_substitute_display_aliases'):
-                return self._model_registry._substitute_display_aliases(units_str)
-
-        # Fallback: return original units
-        return units_str
-
-    def _interpret_model_units(self) -> str:
-        """
-        Interpret model units in human-readable form.
-
-        For model units like '_2900000m / _1p83E15s', this:
-        1. Combines the Pint constants (e.g., 2.9e6 m / 1.83e15 s = 1.58e-9 m/s)
-        2. Converts to user-friendly units (e.g., ≈ 0.05 cm/year)
-
-        Returns
-        -------
-        str
-            Human-readable interpretation like "≈ 0.05 cm/year", or None if not interpretable
-        """
-        # Only interpret if we have model units
-        if not (hasattr(self, '_has_custom_units') and self._has_custom_units):
-            return None
-
-        # Need Pint quantity to work with
-        if not hasattr(self, '_pint_qty'):
-            return None
-
-        try:
-            # STEP 1: Convert the actual value (not just 1.0) to base units
-            # This combines the numerical value with all the Pint constants
-            # e.g., 1.584e-24 * (_2900000m / _1p83E15s) → 2.5e-33 m/s → 5 cm/year
-
-            # Convert to SI base units using the actual quantity value
-            base_qty = self._pint_qty.to_base_units()
-
-            # STEP 2: Try to express in user-friendly units
-            from ..scaling import units as u
-
-            # Common user-friendly unit combinations
-            # Ordered by priority within each category
-            friendly_conversions = [
-                # Velocity (geological first)
-                ('cm/year', u.cm / u.year),
-                ('km/Myr', u.km / (1e6 * u.year)),
-                ('mm/year', u.mm / u.year),
-                ('m/Myr', u.m / (1e6 * u.year)),
-                ('m/s', u.m / u.s),
-                ('km/s', u.km / u.s),
-                # Length
-                ('km', u.km),
-                ('m', u.m),
-                ('cm', u.cm),
-                ('mm', u.mm),
-                # Time (geological first)
-                ('Myr', 1e6 * u.year),
-                ('kyr', 1e3 * u.year),
-                ('year', u.year),
-                ('day', u.day),
-                ('hour', u.hour),
-                ('s', u.s),
-                # Pressure/stress (geological scales first)
-                ('GPa', 1e9 * u.Pa),
-                ('MPa', 1e6 * u.Pa),
-                ('kPa', 1e3 * u.Pa),
-                ('Pa', u.Pa),
-                # Temperature
-                ('K', u.K),
-                ('degC', u.degC),
-                # Viscosity
-                ('Pa*s', u.Pa * u.s),
-                # Density
-                ('kg/m**3', u.kg / u.m**3),
-                ('g/cm**3', u.g / u.cm**3),
-            ]
-
-            # Try each friendly unit to find the best representation
-            best_conversion = None
-            best_magnitude = None
-            best_score = float('inf')
-
-            for name, friendly_unit in friendly_conversions:
-                try:
-                    # Check if dimensionally compatible
-                    # If friendly_unit is a Quantity (e.g., 1e6 * year), we need to:
-                    # 1. Convert to its base units (e.g., year)
-                    # 2. Divide by its magnitude (e.g., 1e6) to get the scaled value
-                    if hasattr(friendly_unit, 'magnitude') and hasattr(friendly_unit, 'units'):
-                        # It's a Quantity with a scale factor
-                        converted = base_qty.to(friendly_unit.units)
-                        magnitude = abs(converted.magnitude / friendly_unit.magnitude)
-                    else:
-                        # It's a pure Unit (no scale factor)
-                        converted = base_qty.to(friendly_unit)
-                        magnitude = abs(converted.magnitude)
-
-                    # Skip zero or invalid magnitudes
-                    if magnitude == 0 or not (0 < magnitude < 1e100):
-                        continue
-
-                    import math
-                    log_mag = math.log10(magnitude)
-
-                    # SCORING: Prefer magnitudes in range [0.001, 1000]
-                    # with sweet spot around 0.01-100
-                    if -3 <= log_mag <= 3:
-                        # In good range - score by distance from ideal ~1
-                        score = abs(log_mag)
-                    elif log_mag < -3:
-                        # Too small - penalize heavily
-                        score = 100 + abs(log_mag + 3)
-                    else:
-                        # Too large - penalize heavily
-                        score = 100 + (log_mag - 3)
-
-                    if score < best_score:
-                        best_score = score
-                        best_magnitude = magnitude
-                        best_conversion = name
-
-                except:
-                    # Dimensionally incompatible or conversion error, skip
-                    continue
-
-            if best_conversion and best_magnitude is not None:
-                # Format the magnitude nicely based on size
-                if abs(best_magnitude) >= 1000:
-                    mag_str = f"{best_magnitude:.2e}"
-                elif abs(best_magnitude) >= 100:
-                    mag_str = f"{best_magnitude:.1f}"
-                elif abs(best_magnitude) >= 10:
-                    mag_str = f"{best_magnitude:.2f}"
-                elif abs(best_magnitude) >= 1:
-                    mag_str = f"{best_magnitude:.3f}"
-                elif abs(best_magnitude) >= 0.01:
-                    mag_str = f"{best_magnitude:.4f}"
-                else:
-                    mag_str = f"{best_magnitude:.3g}"
-
-                return f"≈ {mag_str} {best_conversion}"
-
-            # If no good conversion found, at least show the base units with magnitude
-            base_mag = base_qty.magnitude
-            base_units = str(base_qty.units)
-            if abs(base_mag - 1.0) > 1e-10:  # Not unity
-                if abs(base_mag) >= 1000 or abs(base_mag) < 0.001:
-                    return f"≈ {base_mag:.2e} {base_units}"
-                else:
-                    return f"≈ {base_mag:.4g} {base_units}"
-            else:
-                return f"model units"
-
-        except Exception as e:
-            # If interpretation fails, return None silently
-            return None
+        """String representation matching UWexpression style: value [units]."""
+        if self._pint_unit is not None:
+            return f"{self._value} [{self._pint_unit}]"
+        return str(self._value)
 
     def __repr__(self) -> str:
-        """
-        Detailed representation with human-readable interpretation for model units.
+        """User-friendly representation matching UWexpression style: value [units]."""
+        if self._pint_unit is not None:
+            return f"{self._value} [{self._pint_unit}]"
+        return str(self._value)
 
-        For regular units: UWQuantity(5.0, 'cm/year')
-        For model units: UWQuantity(0.9999..., '_2900000m / _1p83E15s')  [≈ 0.05 cm/year]
-        """
-        if self.has_units:
-            units_str = self.units
-            if units_str:
-                # Check if we have model units and can interpret them
-                interpretation = self._interpret_model_units()
-                if interpretation:
-                    # Show both technical units and human-readable interpretation
-                    return f"UWQuantity({self.value}, '{units_str}')  [{interpretation}]"
-                else:
-                    # Regular units or cannot interpret
-                    return f"UWQuantity({self.value}, '{units_str}')"
-            else:
-                return f"UWQuantity({self.value})"
+    def __format__(self, format_spec: str) -> str:
+        """Formatted representation matching UWexpression style."""
+        if format_spec:
+            formatted = format(self._value, format_spec)
         else:
-            return f"UWQuantity({self.value})"
+            formatted = str(self._value)
+
+        if self._pint_unit is not None:
+            return f"{formatted} [{self._pint_unit}]"
+        return formatted
+
+    # =========================================================================
+    # Jupyter Display Methods
+    # =========================================================================
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        value = self._value
+
+        # Format value for LaTeX
+        if isinstance(value, float):
+            # Use scientific notation for very small/large numbers
+            if value != 0 and (abs(value) < 0.01 or abs(value) >= 10000):
+                value_latex = f"{value:.2e}".replace('e', r' \times 10^{') + '}'
+            else:
+                value_latex = str(value)
+        else:
+            value_latex = str(value)
+
+        # Format units for LaTeX
+        if self._pint_unit is not None:
+            units_str = str(self._pint_unit).replace('**', '^').replace('*', r' \cdot ')
+            return f"${value_latex} \\; \\mathrm{{{units_str}}}$"
+        else:
+            return f"${value_latex}$"
+
+    def _repr_mimebundle_(self, **kwargs):
+        """
+        MIME bundle for Jupyter display - highest priority representation.
+
+        This method has ABSOLUTE HIGHEST PRIORITY in Jupyter's display system.
+        """
+        return {
+            'text/latex': self._repr_latex_(),
+            'text/plain': repr(self),
+        }
+
+    def _ipython_display_(self):
+        """
+        IPython/Jupyter display hook - ABSOLUTE highest priority.
+
+        Shows the quantity with units in LaTeX format.
+        """
+        try:
+            from IPython.display import display, Latex
+
+            latex_str = self._repr_latex_()
+            display(Latex(latex_str))
+        except ImportError:
+            # IPython not available - silent fallback
+            pass
 
 
-
-def quantity(value: Union[float, int, sympy.Basic], units: Optional[Union[str, Any]] = None, _custom_units: Optional[str] = None, _model_registry=None, _model_instance=None, _is_model_units: bool = False) -> UWQuantity:
+def quantity(
+    value: Union[float, int, np.ndarray],
+    units: Optional[str] = None
+) -> UWQuantity:
     """
-    Create a lightweight unit-aware quantity.
+    Create a unit-aware quantity.
 
     Parameters
     ----------
-    value : float, int, sympy.Basic
-        The numerical or symbolic value
-    units : str or Pint Unit, optional
-        Units specification (e.g., "Pa*s", "cm/year", "K", uw.units.earth_mass)
-    _custom_units : str, optional
-        Custom unit name that bypasses Pint validation (for model units)
+    value : float, int, or array-like
+        The numerical value
+    units : str, optional
+        Units specification (e.g., "Pa*s", "cm/year", "K")
 
     Returns
     -------
     UWQuantity
-        Unit-aware quantity object
+        Unit-aware quantity
 
     Examples
     --------
-    >>> import underworld3 as uw
     >>> viscosity = uw.quantity(1e21, "Pa*s")
     >>> velocity = uw.quantity(5, "cm/year")
-    >>> mass = uw.quantity(1, "earth_mass")  # Planetary units
-    >>> mass2 = uw.quantity(1, uw.units.earth_mass)  # Or use Unit object
-    >>> time_scale = distance / velocity  # Units calculated automatically
+    >>> dT = uw.quantity(1000, "K") - uw.quantity(273, "K")
     """
-    # Handle Pint Unit objects
-    if units is not None and hasattr(units, 'dimensionality'):
-        # This is a Pint Unit object - convert to string
-        units = str(units)
-
-    qty = UWQuantity(value, units, _custom_units=_custom_units, _model_registry=_model_registry, _model_instance=_model_instance)
-
-    # Set model units flag if specified
-    if _is_model_units:
-        qty._is_model_units = True
-
-    return qty
+    return UWQuantity(value, units)

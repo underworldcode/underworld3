@@ -84,81 +84,127 @@ def _derive_scale_for_variable(var, fundamental_scales, reference_quantities):
 
 def _construct_from_fundamental_scales(var_dimensionality, fundamental_scales):
     """
-    Try to construct a scaling coefficient from fundamental scales using Pint dimensionality objects.
+    Construct a scaling coefficient from fundamental scales using dimensional powers.
+
+    Uses LINEAR ALGEBRA: scale = L^a * T^b * M^c * θ^d where [a,b,c,d] are the
+    dimensional exponents from the Pint dimensionality object.
 
     Args:
-        var_dimensionality: Pint dimensionality object (not string!)
+        var_dimensionality: Pint dimensionality object, dict, or string representation
         fundamental_scales: Dict with 'length', 'time', 'mass', 'temperature' Pint Quantity scales
 
     Returns:
-        Scaling coefficient or None
+        Scaling coefficient (float) or None if scales are incomplete
     """
     if not fundamental_scales:
         return None
 
-    # Get Pint units registry for dimensionality comparisons
-    try:
-        from ..scaling import units as ureg
-    except ImportError:
-        import pint
+    # Map Pint dimension names to our fundamental_scales keys
+    dim_to_key = {
+        "[length]": "length",
+        "[time]": "time",
+        "[mass]": "mass",
+        "[temperature]": "temperature",
+    }
 
-        ureg = pint.UnitRegistry()
+    # Convert dimensionality to a dict of {dimension: power}
+    if isinstance(var_dimensionality, dict):
+        dim_dict = var_dimensionality
+    elif isinstance(var_dimensionality, str):
+        # Parse string like "[length] / [time]" or "[length] ** 2 / [time]"
+        dim_dict = _parse_dimensionality_string(var_dimensionality)
+        if dim_dict is None:
+            return None
+    elif hasattr(var_dimensionality, "items"):
+        # Pint UnitsContainer or similar dict-like object
+        dim_dict = dict(var_dimensionality.items())
+    else:
+        # Try direct dict conversion as fallback
+        try:
+            dim_dict = dict(var_dimensionality)
+        except (TypeError, ValueError):
+            return None
 
-    # Define dimensionality objects for common physical quantities
-    # These are the canonical Pint dimensionality objects
-    dim_checks = [
-        # (dimensionality, formula to compute scale)
-        (
-            (ureg.meter / ureg.second).dimensionality,
-            lambda s: s.get("length") / s.get("time") if "length" in s and "time" in s else None,
-        ),
-        (
-            (ureg.meter**2 / ureg.second).dimensionality,
-            lambda s: (
-                s.get("length") ** 2 / s.get("time") if "length" in s and "time" in s else None
-            ),
-        ),
-        (
-            (ureg.pascal).dimensionality,  # Pressure: mass / (length * time^2)
-            lambda s: (
-                s.get("mass") / (s.get("length") * s.get("time") ** 2)
-                if all(k in s for k in ["mass", "length", "time"])
-                else None
-            ),
-        ),
-        (
-            (ureg.pascal * ureg.second).dimensionality,  # Viscosity: mass / (length * time)
-            lambda s: (
-                s.get("mass") / (s.get("length") * s.get("time"))
-                if all(k in s for k in ["mass", "length", "time"])
-                else None
-            ),
-        ),
-        (
-            ureg.kelvin.dimensionality,
-            lambda s: s.get("temperature") if "temperature" in s else None,
-        ),
-        (ureg.meter.dimensionality, lambda s: s.get("length") if "length" in s else None),
-        (ureg.second.dimensionality, lambda s: s.get("time") if "time" in s else None),
-        (ureg.kilogram.dimensionality, lambda s: s.get("mass") if "mass" in s else None),
-    ]
+    # Compute scale = product of (fundamental_scale ^ power) for each dimension
+    result = 1.0
+    for pint_dim, power in dim_dict.items():
+        if power == 0:
+            continue
 
-    # Check each known dimensionality pattern
-    for target_dim, formula in dim_checks:
-        if var_dimensionality == target_dim:
-            try:
-                result = formula(fundamental_scales)
-                if result is None:
-                    continue
-                # Extract magnitude from Pint Quantity if needed
-                if hasattr(result, "magnitude"):
-                    return float(result.magnitude)
-                else:
-                    return float(result)
-            except:
-                continue
+        key = dim_to_key.get(pint_dim)
+        if key is None or key not in fundamental_scales:
+            # Missing a required fundamental scale
+            return None
 
-    return None
+        scale = fundamental_scales[key]
+        # Extract magnitude from Pint Quantity
+        if hasattr(scale, "magnitude"):
+            scale_value = float(scale.magnitude)
+        else:
+            scale_value = float(scale)
+
+        result *= scale_value ** power
+
+    return result
+
+
+def _parse_dimensionality_string(dim_str):
+    """
+    Parse a dimensionality string like "[length] / [time]" into a dict.
+
+    Examples:
+        "[length]" -> {"[length]": 1}
+        "[length] / [time]" -> {"[length]": 1, "[time]": -1}
+        "[length] ** 2 / [time]" -> {"[length]": 2, "[time]": -1}
+        "[mass] / [length] ** 3" -> {"[mass]": 1, "[length]": -3}
+
+    Returns:
+        dict mapping dimension names to powers, or None if parsing fails
+    """
+    import re
+
+    if not dim_str or not isinstance(dim_str, str):
+        return None
+
+    result = {}
+
+    # Handle dimensionless
+    if dim_str.strip() == "dimensionless" or dim_str.strip() == "":
+        return {}
+
+    # Split by "/" to get numerator and denominator
+    parts = dim_str.split("/")
+
+    # Process numerator (positive powers)
+    if len(parts) >= 1:
+        numerator = parts[0].strip()
+        _parse_dim_part(numerator, result, positive=True)
+
+    # Process denominator (negative powers)
+    if len(parts) >= 2:
+        denominator = "/".join(parts[1:]).strip()
+        _parse_dim_part(denominator, result, positive=False)
+
+    return result if result else None
+
+
+def _parse_dim_part(part, result_dict, positive=True):
+    """Parse a part of dimensionality string (numerator or denominator)."""
+    import re
+
+    # Find all dimensions with optional exponents
+    # Matches: [length], [length] ** 2, [time] ** 3, etc.
+    pattern = r"\[(\w+)\](?:\s*\*\*\s*(\d+))?"
+
+    for match in re.finditer(pattern, part):
+        dim_name = f"[{match.group(1)}]"
+        power = int(match.group(2)) if match.group(2) else 1
+
+        if not positive:
+            power = -power
+
+        # Accumulate powers for same dimension
+        result_dict[dim_name] = result_dict.get(dim_name, 0) + power
 
 
 def get_required_reference_quantities(units_str, reference_quantities=None):
@@ -224,8 +270,9 @@ def _check_derivability_from_dimensions(target_dim, ref_dimensions, ureg):
     """
     Check if a target dimensionality can be derived from reference quantity dimensions.
 
-    Uses pure dimensional analysis to determine if the combination of available
-    reference quantities can produce the target dimensionality.
+    Uses LINEAR ALGEBRA on the dimensional matrix - the same approach as
+    _comprehensive_dimensional_analysis(). If the reference quantities span
+    the dimensional space (matrix rank = 4), any dimensionality can be derived.
 
     Args:
         target_dim: Target Pint dimensionality object
@@ -235,103 +282,56 @@ def _check_derivability_from_dimensions(target_dim, ref_dimensions, ureg):
     Returns:
         tuple: (can_derive, explanation_message)
     """
-    import itertools
+    import numpy as np
 
-    # Get the fundamental dimensions from reference quantities
-    # We need to determine [L], [M], [T], [θ]
-    L = M = T = theta = None
+    # The four fundamental dimensions
+    fundamental_dims = ["[length]", "[time]", "[mass]", "[temperature]"]
 
-    # Track velocity and viscosity for compound derivations
-    has_velocity = False
-    has_viscosity = False
-
-    # Try to extract fundamental scales from reference quantities
+    # Build dimensional matrix from reference quantities (same as _comprehensive_dimensional_analysis)
+    matrix = []
     for name, dim in ref_dimensions.items():
-        # Check for pure length
-        if dim == ureg.meter.dimensionality:
-            L = (name, "direct")
+        dim_dict = dict(dim)
+        row = [dim_dict.get(fund_dim, 0) for fund_dim in fundamental_dims]
+        matrix.append(row)
 
-        # Check for pure time
-        elif dim == ureg.second.dimensionality:
-            T = (name, "direct")
+    if not matrix:
+        return (False, "No reference quantities with valid dimensionality")
 
-        # Check for pure mass
-        elif dim == ureg.kilogram.dimensionality:
-            M = (name, "direct")
+    matrix = np.array(matrix)
 
-        # Check for pure temperature
-        elif dim == ureg.kelvin.dimensionality:
-            theta = (name, "direct")
+    # Check matrix rank - if rank == 4, all fundamental dimensions are covered
+    rank = np.linalg.matrix_rank(matrix)
 
-        # Check for velocity: [L]/[T]
-        elif dim == (ureg.meter / ureg.second).dimensionality:
-            has_velocity = True
+    if rank >= 4:
+        # Full coverage - any dimensionality can be derived
+        return (True, f"Reference quantities span all fundamental dimensions (rank {rank}/4)")
 
-        # Check for viscosity: [M]/([L][T])
-        elif dim == (ureg.pascal * ureg.second).dimensionality:
-            has_viscosity = True
+    # Partial coverage - identify which dimensions are missing
+    covered_dims = []
+    for i, dim_name in enumerate(fundamental_dims):
+        if np.any(matrix[:, i] != 0):
+            covered_dims.append(dim_name.strip("[]"))
 
-    # Now try to compute the target dimensionality from [L], [M], [T], [θ]
+    missing_dims = [d.strip("[]") for d in fundamental_dims if d.strip("[]") not in covered_dims]
 
-    # Case 1: We have all three fundamental scales directly
-    if L is not None and T is not None and M is not None:
-        # We have all fundamental scales - can derive almost anything
-        return (True, f"Dimensionality can be derived from all fundamental scales [L], [M], [T]")
+    # Check if the target dimensionality only uses covered dimensions
+    target_dict = dict(target_dim)
+    target_needs = []
+    for fund_dim in fundamental_dims:
+        if target_dict.get(fund_dim, 0) != 0:
+            target_needs.append(fund_dim.strip("[]"))
 
-    # Case 2: Derive [T] from [L] and velocity [L]/[T]
-    if L is not None and has_velocity:
-        T_derived = True
-    else:
-        T_derived = T is not None
+    # If target only needs dimensions we have, it can be derived
+    missing_for_target = [d for d in target_needs if d not in covered_dims]
+    if not missing_for_target:
+        return (True, f"Target dimensionality uses only covered dimensions: {covered_dims}")
 
-    # Case 3: Derive [M] from viscosity [M]/[L]/[T] when we have [L] and [T]
-    if has_viscosity and L is not None and T_derived:
-        M_derived = True
-    else:
-        M_derived = M is not None
-
-    # Case 4: Check if we can now derive the target dimensionality
-    if L is not None and T_derived and M_derived:
-        # We have all fundamental scales (at least derivable)
-        return (True, f"Dimensionality can be derived from available reference quantities")
-
-    # Case 5: Specific patterns for velocity
-    velocity_dim = (ureg.meter / ureg.second).dimensionality
-    if target_dim == velocity_dim:
-        if L is not None and T_derived:
-            return (
-                True,
-                "Velocity scale can be derived from length and velocity reference quantities",
-            )
-        else:
-            return (
-                False,
-                f"Velocity scale [L]/[T] requires length and either time or velocity references",
-            )
-
-    # Case 6: Specific pattern for pressure [M]/[L]/[T²]
-    pressure_dim = ureg.pascal.dimensionality
-    if target_dim == pressure_dim:
-        if L is not None and T_derived and M_derived:
-            return (True, "Pressure scale can be derived from available reference quantities")
-        else:
-            missing = []
-            if not L:
-                missing.append("[L]")
-            if not T_derived:
-                missing.append(
-                    "[T] (try providing domain length with velocity, or direct time scale)"
-                )
-            if not M_derived:
-                missing.append("[M] (try providing viscosity with length/time scales)")
-            return (False, f"Pressure scale [M]/[L]/[T²] missing: {', '.join(missing)}")
-
-    # Case 7: Generic success for anything else with all scales
-    if L is not None and T_derived and M_derived:
-        return (True, "Dimensionality can be derived through dimensional analysis")
-
-    # Default: cannot derive
-    return (True, "Dimensionality checking incomplete - using default scaling")
+    # Cannot derive - report what's missing
+    return (
+        False,
+        f"Incomplete dimensional coverage (rank {rank}/4). "
+        f"Missing: {missing_dims}. Target needs: {missing_for_target}",
+    )
 
 
 def validate_variable_reference_quantities(var_name, units_str, model):

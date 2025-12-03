@@ -141,6 +141,41 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
             **kwargs,
         )
 
+        # STRICT UNITS MODE CHECK
+        # Enforce units-scales contract: variables with units require reference quantities
+        if units is not None:
+            import underworld3 as uw
+            model = uw.get_default_model()
+
+            # Check if strict mode is enabled
+            if uw.is_strict_units_active() and not model.has_units():
+                # Format variable name for error message
+                if isinstance(varname, str):
+                    name_str = f"'{varname}'"
+                elif isinstance(varname, list):
+                    name_str = f"'{varname[0]}'"
+                else:
+                    name_str = "variable"
+
+                raise ValueError(
+                    f"Strict units mode: Cannot create variable {name_str} with units='{units}' "
+                    f"when model has no reference quantities.\n\n"
+                    f"Options:\n"
+                    f"  1. Set reference quantities FIRST:\n"
+                    f"     model = uw.get_default_model()\n"
+                    f"     model.set_reference_quantities(\n"
+                    f"         domain_depth=uw.quantity(1000, 'km'),\n"
+                    f"         plate_velocity=uw.quantity(5, 'cm/year')\n"
+                    f"     )\n\n"
+                    f"  2. Remove units parameter (use plain numbers):\n"
+                    f"     uw.discretisation.MeshVariable({name_str}, mesh, ...)\n\n"
+                    f"  3. Disable strict mode (not recommended):\n"
+                    f"     uw.use_strict_units(False)\n"
+                )
+
+            # If not strict mode and no reference quantities, warn as before
+            # (Warning is already in _BaseMeshVariable.__init__)
+
         # Cache frequently accessed properties IMMEDIATELY
         self._name = self._base_var.name
         self._clean_name = self._base_var.clean_name

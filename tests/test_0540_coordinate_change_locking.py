@@ -1,3 +1,7 @@
+import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 #!/usr/bin/env python3
 """
 Coordinate Change Locking Test
@@ -52,10 +56,10 @@ def test_mesh_variable_locking():
     thread.start()
 
     # Simulate mesh coordinate change
-    original_coords = mesh.points.copy()
+    original_coords = mesh.X.coords.copy()
     try:
         # This should acquire the mesh update lock
-        mesh.points += np.random.rand(*mesh.points.shape) * 0.01
+        mesh.X.coords[:] = mesh.X.coords + np.random.rand(*mesh.X.coords.shape) * 0.01
         print("✅ Mesh coordinate change completed")
     except Exception as e:
         print(f"❌ Mesh coordinate change failed: {e}")

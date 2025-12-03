@@ -276,7 +276,7 @@ def compute_expression_units(expr):
 
             # Numbers are dimensionless
             if expr.is_Number:
-                return uw.units("dimensionless")
+                return uw.units.dimensionless
 
             # LAST RESORT: For BaseScalar coordinates, return None (not coordinate units)
             # Coordinates should not contribute units to compound expressions.
@@ -290,10 +290,14 @@ def compute_expression_units(expr):
         if isinstance(expr, sympy.Mul):
             # Multiplication: multiply units
             result_unit = None
+            found_any_units = False  # Track if we found any unit-aware terms
+
             for arg in expr.args:
                 arg_units = compute_expression_units(arg)
                 if arg_units is None:
                     continue
+
+                found_any_units = True
 
                 if is_dimensionless_unit(arg_units):
                     continue
@@ -308,6 +312,20 @@ def compute_expression_units(expr):
                         result_unit = result_qty.units
                 except Exception:
                     continue
+
+            # IMPORTANT: Check if result is dimensionless
+            # This handles both: (1) all units canceled → result_unit is None
+            #                   (2) mixed units that are dimensionless (kg*km³/m⁴/Pa/s²)
+            if found_any_units:
+                if result_unit is None:
+                    # All units canceled out - return dimensionless Unit (not Quantity)
+                    return uw.units.dimensionless
+                elif hasattr(result_unit, 'dimensionality'):
+                    # Check if Pint says it's dimensionless
+                    dim = result_unit.dimensionality
+                    # UnitsContainer is empty (len == 0) for dimensionless units
+                    if len(dim) == 0:
+                        return uw.units.dimensionless
 
             return result_unit
 
@@ -342,7 +360,7 @@ def compute_expression_units(expr):
         elif hasattr(expr, "func"):
             # Function application (sin, cos, etc.) - usually dimensionless result
             # But argument should be dimensionless too
-            return uw.units("dimensionless")
+            return uw.units.dimensionless
 
         # For other expression types, try to get units from args recursively
         for arg in expr.args:

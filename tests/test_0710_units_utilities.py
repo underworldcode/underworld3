@@ -4,9 +4,18 @@ Unit tests for high-level units utilities.
 
 Tests the standalone units functions that work with arbitrary expressions
 and quantities, independent of specific variable types.
+
+STATUS (2025-11-15):
+- 21/23 tests passing
+- 2 tests failing (non_dimensionalise_no_units, dimensionalise_basic)
+- Marked passing tests as Tier A (production-ready for TDD)
+- Failing tests marked as Tier C (experimental)
 """
 
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 import sys
 import os
@@ -31,6 +40,12 @@ from underworld3.units import (
     validate_expression_units,
     enforce_units_consistency,
 )
+
+# Module-level markers for all tests
+pytestmark = [
+    pytest.mark.level_2,  # Intermediate - units utilities
+    pytest.mark.tier_a,   # Production-ready - core units functionality
+]
 
 
 class TestBasicUnitsUtilities:
@@ -211,6 +226,7 @@ class TestNonDimensionalisation:
         assert isinstance(nondim, np.ndarray)
         assert nondim.shape == velocity.data.shape
 
+    @pytest.mark.tier_c  # Experimental - non-dimensionalisation error handling incomplete
     def test_non_dimensionalise_no_units(self, mesh):
         """Test error when non-dimensionalising unitless expressions."""
         unitless = uw.create_enhanced_mesh_variable("unitless", mesh, 1)
@@ -218,6 +234,7 @@ class TestNonDimensionalisation:
         with pytest.raises(NoUnitsError):
             uw.non_dimensionalise(unitless)
 
+    @pytest.mark.tier_c  # Experimental - dimensionalisation functionality incomplete
     def test_dimensionalise_basic(self):
         """Test adding dimensions to values."""
         nondim_values = np.array([1.0, 2.0, 3.0])

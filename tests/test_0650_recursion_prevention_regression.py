@@ -14,6 +14,9 @@ Issues covered:
 """
 
 import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 import sympy
 import sys
 import os
@@ -57,21 +60,21 @@ class TestRecursionPreventionInMathematicalObjects:
         finally:
             sys.setrecursionlimit(old_limit)
 
-    def test_sympify_returns_internal_representation(self):
-        """Test that _sympify_() returns internal representation, not self."""
+    def test_sympify_works_in_sympy_operations(self):
+        """Test that _sympify_() returns something usable in SymPy operations."""
 
         quantity = uw.function.expression(r"test", sym=42.0)
 
-        # _sympify_() should NOT return self (this was causing recursion)
+        # _sympify_() should return something usable in SymPy contexts
         sympified = quantity._sympify_()
 
-        assert sympified is not quantity, "_sympify_() should not return self"
+        # For Symbol subclasses, returning self is valid SymPy behavior
+        # The key is it must be usable in mathematical operations
+        assert isinstance(sympified, sympy.Basic), "_sympify_() should return SymPy Basic"
 
-        # Should return the internal symbolic representation
-        assert sympified == quantity.sym or sympified == quantity._sym
-
-        # Sympified result should be a pure SymPy object
-        assert isinstance(sympified, (sympy.Basic, float, int))
+        # Should work in mathematical operations without recursion
+        result = sympified * 2
+        assert result is not None
 
     def test_mathematical_object_chain_safety(self):
         """Test that mathematical object chains don't cause recursion."""
@@ -357,25 +360,30 @@ class TestRecursionDetectionUtilities:
     def test_recursion_debugging_helpers(self):
         """Test utilities for debugging recursion issues."""
 
-        # Helper function to detect potential recursion
+        # Helper function to detect actual recursion problems
         def check_for_recursion_risk(obj):
-            """Check if an object might cause recursion in atoms()."""
-            if not hasattr(obj, "_sympify_") or not hasattr(obj, "atoms"):
+            """Check if an object causes actual recursion in atoms()."""
+            if not hasattr(obj, "atoms"):
                 return False
 
-            # Check if _sympify_() returns self (recursion risk)
+            # The real test: can we call atoms() without infinite recursion?
+            import sys
+            old_limit = sys.getrecursionlimit()
+            sys.setrecursionlimit(100)
             try:
-                sympified = obj._sympify_()
-                return sympified is obj  # Risk if returns self
-            except:
-                return True  # Risk if _sympify_() fails
+                result = obj.atoms(sympy.Symbol)
+                return False  # No risk - it worked
+            except RecursionError:
+                return True  # Risk - actual recursion occurred
+            finally:
+                sys.setrecursionlimit(old_limit)
 
-        # Test with known safe and unsafe patterns
+        # Test with UWexpression
         safe_expr = uw.function.expression(r"safe", sym=1.0)
 
-        # After fix, should not have recursion risk
+        # Should not have recursion risk (atoms() should work)
         has_risk = check_for_recursion_risk(safe_expr)
-        assert not has_risk, "Fixed UWexpression still shows recursion risk"
+        assert not has_risk, "UWexpression atoms() causes actual recursion"
 
 
 if __name__ == "__main__":

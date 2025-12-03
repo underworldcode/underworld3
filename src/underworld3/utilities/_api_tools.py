@@ -284,15 +284,15 @@ class ExpressionDescriptor:
         from ..function.quantities import UWQuantity
         from ..function.expressions import UWexpression
 
-        # Special case: UWQuantity assignment (update ._sym AND copy metadata)
-        # Check for pure UWQuantity (not UWexpression which is a subclass)
-        if isinstance(value, UWQuantity) and not isinstance(value, UWexpression):
+        # Special case: UWexpression assignment (update ._sym AND copy metadata)
+        # UWexpression has ._sym attribute for symbolic value
+        if isinstance(value, UWexpression):
             # Update the symbolic value AND copy unit metadata
             # The expression object (being a SymPy Symbol) preserves identity
             # while ._sym contains the value for JIT substitution
             expr.sym = value._sym  # Update substitution value
 
-            # Copy unit metadata
+            # Copy unit metadata from UWexpression
             if hasattr(value, '_pint_qty'):
                 expr._pint_qty = value._pint_qty
             if hasattr(value, '_has_pint_qty'):
@@ -309,6 +309,16 @@ class ExpressionDescriptor:
                 expr._model_instance = value._model_instance
             if hasattr(value, '_symbolic_with_units'):
                 expr._symbolic_with_units = value._symbolic_with_units
+
+        # Special case: Plain UWQuantity (not UWexpression) - has ._value and ._pint_qty
+        # These are simple numbers with units, not symbolic expressions
+        elif isinstance(value, UWQuantity):
+            # TRANSPARENT CONTAINER PRINCIPLE: Store the entire UWQuantity in _sym
+            # This allows UWexpression's .units, .dimensionality, etc. properties
+            # to correctly derive values from the wrapped object.
+            # If we only stored value._value (a float), units would be lost!
+            expr.sym = value  # Store UWQuantity so .units derives correctly
+
         else:
             # Normal assignment: update symbolic value
             # Run validator if provided

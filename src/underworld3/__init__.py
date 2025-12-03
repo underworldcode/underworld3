@@ -146,7 +146,7 @@ from .model import (
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
-from .function import quantity, expression, with_units
+from .function import quantity, expression, with_units, expand, unwrap
 
 # Unit utilities (top-level convenience for user code)
 from .function.unit_conversion import _extract_value
@@ -370,6 +370,89 @@ def nondimensional_scaling_context(enabled=True):
         yield
     finally:
         _USE_NONDIMENSIONAL_SCALING = old_value
+
+
+# ============================================================================
+# STRICT UNITS MODE - ENFORCES UNITS-SCALES CONTRACT
+# ============================================================================
+# This flag enforces the principle: "Units require reference quantities"
+# When enabled, variables with units REQUIRE reference quantities to be set.
+# DEFAULT: ON - enforces best practices from the start
+# ============================================================================
+
+# SINGLE GLOBAL FLAG for strict units enforcement
+_STRICT_UNITS_MODE = True  # Default: ON (enforces units-scales contract)
+
+
+def use_strict_units(enabled=True):
+    """
+    Enable or disable strict units enforcement.
+
+    **DEFAULT: ON** - Strict units mode is enabled by default to enforce best
+    practices from the start. Variables with units REQUIRE reference quantities.
+
+    When disabled, variables with units are allowed without reference quantities
+    but will get scaling_coefficient=1.0 and a warning. This "half-way zone"
+    leads to poor numerical conditioning and silent errors.
+
+    **Disabling strict mode is only recommended for:**
+    - Expert users who understand the implications
+    - Debugging specific issues
+    - Legacy code migration (temporary)
+
+    Parameters
+    ----------
+    enabled : bool, default=True
+        True to enforce strict units (DEFAULT - recommended)
+        False to allow units without reference quantities (expert/debugging only)
+
+    Examples
+    --------
+    Normal usage (strict mode ON by default):
+
+    >>> import underworld3 as uw
+    >>> # Strict mode is ON by default - no need to enable
+    >>>
+    >>> # Set reference quantities FIRST:
+    >>> model = uw.get_default_model()
+    >>> model.set_reference_quantities(
+    ...     domain_depth=uw.quantity(1000, 'km'),
+    ...     plate_velocity=uw.quantity(5, 'cm/year')
+    ... )
+    >>>
+    >>> # Then create mesh and variables:
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    >>> v = uw.discretisation.MeshVariable("v", mesh, 2, units="m/s")  # ✓ OK
+
+    Disable for debugging (expert use only):
+
+    >>> uw.use_strict_units(False)  # Expert/debugging only
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    >>> v = uw.discretisation.MeshVariable("v", mesh, 2, units="m/s")  # ⚠️ Warning
+
+    See Also
+    --------
+    is_strict_units_active : Check current strict mode
+    Model.set_reference_quantities : Set reference quantities
+    """
+    global _STRICT_UNITS_MODE
+    _STRICT_UNITS_MODE = bool(enabled)
+
+
+def is_strict_units_active():
+    """
+    Check if strict units enforcement is enabled.
+
+    Returns
+    -------
+    bool
+        True if strict units mode is active, False otherwise
+
+    See Also
+    --------
+    use_strict_units : Enable/disable strict units
+    """
+    return _STRICT_UNITS_MODE
 
 
 # ============================================================================

@@ -176,17 +176,28 @@ def meshVariable_to_pv_cloud(meshVar):
 
     import numpy as np
     import pyvista as pv
+    import underworld3 as uw
 
-    points = np.zeros((meshVar.coords.shape[0], 3))
-    points[:, 0] = meshVar.coords[:, 0]
-    points[:, 1] = meshVar.coords[:, 1]
+    # Use non-dimensional [0-1] coordinates for PyVista (same as mesh_to_pv_mesh)
+    # PyVista only needs coordinates for spatial positioning (visualization)
+    # evaluate() expects non-dimensional coords to query PETSc KDTrees
+    coords_nd = np.asarray(meshVar.coords, dtype=np.double)
+
+    points = np.zeros((coords_nd.shape[0], 3))
+    points[:, 0] = coords_nd[:, 0]
+    points[:, 1] = coords_nd[:, 1]
 
     if meshVar.mesh.dim == 2:
         points[:, 2] = 0.0
     else:
-        points[:, 2] = meshVar.coords[:, 2]
+        points[:, 2] = coords_nd[:, 2]
 
     point_cloud = pv.PolyData(points)
+
+    # Store units metadata for labeling (same as mesh_to_pv_mesh)
+    point_cloud.units = meshVar.mesh.units if meshVar.mesh.units is not None else uw.units.dimensionless
+    # Store original coordinate array for proper evaluation (same as mesh_to_pv_mesh)
+    point_cloud.coord_array = meshVar.coords
 
     return point_cloud
 

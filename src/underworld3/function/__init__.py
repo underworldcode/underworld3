@@ -1,4 +1,5 @@
 from . import analytic
+
 # Import the _function module to expose it in the namespace (needed by expressions.py)
 from . import _function
 from ._function import (
@@ -47,6 +48,9 @@ from .expressions import is_constant_expr as fn_is_constant_expr
 from .expressions import extract_expressions as fn_extract_expressions
 from .expressions import extract_expressions as fn_extract_expressions_and_functions
 from .expressions import mesh_vars_in_expression as fn_mesh_vars_in_expression
+
+# Expose user-facing expand and unwrap functions (without fn_ prefix)
+from .expressions import expand, unwrap
 
 
 def with_units(sympy_expr, name=None, units=None):
@@ -99,6 +103,7 @@ def with_units(sympy_expr, name=None, units=None):
     if units is None:
         # Extract units from the expression (import from unified units module)
         from ..units import get_units
+
         units_str = get_units(sympy_expr)
     else:
         units_str = units

@@ -28,6 +28,138 @@ docs/reviews/
 
 ## 2025 Reviews
 
+### November 2025
+
+**Review Period**: November 2025
+**Focus**: Major architectural improvements and system refactoring
+**Tracking**: See [`2025-11/REVIEW-TRACKING-INDEX.md`](2025-11/REVIEW-TRACKING-INDEX.md) for detailed progress tracking
+
+#### 1. Function Evaluation System
+
+**Status**: 🔍 Under Review
+**Date**: 2025-11-17
+**Priority**: HIGH
+
+**Summary**: Merger of evaluate() and global_evaluate() code paths with automatic lambdification optimization providing ~10,000x speedup for pure SymPy expressions through cached compiled functions.
+
+**Files**: [`2025-11/FUNCTION-EVALUATION-SYSTEM-REVIEW.md`](2025-11/FUNCTION-EVALUATION-SYSTEM-REVIEW.md)
+
+**Key Metrics**:
+- Performance: 22s → 0.003s (7,400x faster)
+- Test coverage: 20 comprehensive tests, all passing
+- New module: `pure_sympy_evaluator.py` (~360 lines)
+
+---
+
+#### 2. Array System & Mathematical Mixins
+
+**Status**: 🔍 Under Review
+**Date**: 2025-11-17
+**Priority**: HIGH
+
+**Summary**: NDArray_With_Callback for automatic PETSc synchronization and MathematicalMixin enabling natural mathematical notation, eliminating `with mesh.access()` requirement.
+
+**Files**: [`2025-11/ARRAY-SYSTEM-MATHEMATICAL-MIXINS-REVIEW.md`](2025-11/ARRAY-SYSTEM-MATHEMATICAL-MIXINS-REVIEW.md)
+
+**Key Metrics**:
+- Code changes: 4 core files modified
+- Test coverage: ~25 tests covering array access and math operations
+- API improvement: Direct `.array` access replaces context managers
+
+---
+
+#### 3. Units-Awareness System
+
+**Status**: 🔍 Under Review
+**Date**: 2025-11-17
+**Priority**: HIGH
+
+**Summary**: Comprehensive units system using Pint for dimensional analysis, with UWQuantity base class, UnitAwareArray integration, and coordinate units via patching.
+
+**Files**: [`2025-11/UNITS-AWARENESS-SYSTEM-REVIEW.md`](2025-11/UNITS-AWARENESS-SYSTEM-REVIEW.md)
+
+**Key Metrics**:
+- Test coverage: 79/81 tests passing (98%)
+- New modules: `quantities.py`, `unit_aware_array.py`, `unit_aware_coordinates.py`
+- Coordinate units: Fixed via model auto-registration and enhanced get_units()
+
+---
+
+#### 4. Non-Dimensionalization System
+
+**Status**: 🔍 Under Review
+**Date**: 2025-11-17
+**Priority**: HIGH
+
+**Summary**: Elegant `to_model_units()` using Pint dimensional analysis for automatic composite unit construction, with human-readable display of model units in geological terms.
+
+**Files**: [`2025-11/NON-DIMENSIONALIZATION-SYSTEM-REVIEW.md`](2025-11/NON-DIMENSIONALIZATION-SYSTEM-REVIEW.md)
+
+**Key Metrics**:
+- Implementation: ~300 lines in `model.py`
+- Composite units: Automatic (velocity = length/time, density = mass/length³)
+- Display: Human-readable interpretations (≈ 5.000 cm/year)
+
+---
+
+#### 5. Parallel-Safe System
+
+**Status**: 🔍 Under Review
+**Date**: 2025-11-17
+**Priority**: HIGH
+
+**Summary**: Parallel safety system with `uw.pprint()` and `uw.selective_ranks()` preventing MPI deadlocks through comprehensive rank selection and collective operation awareness.
+
+**Files**: [`2025-11/PARALLEL-SAFE-SYSTEM-REVIEW.md`](2025-11/PARALLEL-SAFE-SYSTEM-REVIEW.md)
+
+**Key Metrics**:
+- Migration: 60+ occurrences updated to new patterns
+- Rank selection: 11 different selection methods supported
+- Documentation: Comprehensive user guide with 6 practical patterns
+
+---
+
+#### 6. Testing Suite Organization
+
+**Status**: 🔍 Under Review
+**Date**: 2025-11-17
+**Priority**: MEDIUM
+
+**Summary**: Dual classification system (test levels + reliability tiers) with pytest markers enabling flexible test execution strategies for TDD and CI/CD.
+
+**Files**: [`2025-11/TESTING-SUITE-ORGANIZATION-REVIEW.md`](2025-11/TESTING-SUITE-ORGANIZATION-REVIEW.md)
+
+**Key Metrics**:
+- Test organization: 150+ tests classified
+- Markers: 6 pytest markers (level_1/2/3, tier_a/b/c)
+- Execution flexibility: Combined filtering for targeted test runs
+
+---
+
+#### 7. Timing System
+
+**Status**: ✅ Complete
+**Date**: 2025-11-15
+**Priority**: MEDIUM
+
+**Summary**: PETSc-based unified timing system with user-friendly API and filtered output.
+
+**Files**: [`2025-11/TIMING-SYSTEM-REFACTOR-REVIEW.md`](2025-11/TIMING-SYSTEM-REFACTOR-REVIEW.md)
+
+---
+
+#### 8. Expression Unwrapping
+
+**Status**: ✅ Complete
+**Date**: 2025-11-14
+**Priority**: HIGH
+
+**Summary**: Refactored expression unwrapping system consolidating logic and preparing for JIT/evaluate pathway unification.
+
+**Files**: [`2025-11/UNWRAPPING-REFACTORING-REVIEW.md`](2025-11/UNWRAPPING-REFACTORING-REVIEW.md)
+
+---
+
 ### October 2025
 
 #### 1. Reduction Operations Implementation

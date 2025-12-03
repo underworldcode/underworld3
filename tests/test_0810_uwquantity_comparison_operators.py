@@ -3,12 +3,19 @@ Test suite for UWQuantity comparison operators.
 
 Tests the implementation of comparison operators (__lt__, __le__, __gt__, __ge__, __eq__, __ne__)
 for UWQuantity objects with proper unit handling and dimensional analysis.
+
+STATUS (2025-12-01):
+- Feature NOW IMPLEMENTED ✅
+- 28/28 tests passing
+- Upgraded from Tier C to Tier B (validated)
 """
 
 import pytest
 import underworld3 as uw
 
 
+@pytest.mark.level_2  # Intermediate - unit conversions and comparisons
+@pytest.mark.tier_b   # Validated - feature implemented and tests passing
 class TestUWQuantityComparison:
     """Test comparison operators for UWQuantity objects."""
 
@@ -141,6 +148,8 @@ class TestUWQuantityComparison:
         assert q3 > q1
 
 
+@pytest.mark.level_2  # Intermediate - unit conversions and comparisons
+@pytest.mark.tier_b   # Validated - feature implemented
 class TestUWQuantityComparisonEdgeCases:
     """Test edge cases for comparison operators."""
 
@@ -198,6 +207,8 @@ class TestUWQuantityComparisonEdgeCases:
         assert q2 > q1
 
 
+@pytest.mark.level_2  # Intermediate - unit conversions and comparisons
+@pytest.mark.tier_b   # Validated - feature implemented
 class TestUWQuantityComparisonUnits:
     """Test comparison operators with various unit systems."""
 

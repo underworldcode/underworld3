@@ -8,6 +8,9 @@ expected workflow and user experience.
 """
 
 import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 import numpy as np
 import sys
 import os

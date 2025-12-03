@@ -3,6 +3,9 @@
 
 import os
 import pytest
+
+# Units system tests - intermediate complexity
+pytestmark = pytest.mark.level_2
 import numpy as np
 
 # DISABLE SYMPY CACHE

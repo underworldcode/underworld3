@@ -44,18 +44,27 @@
 - **Useful for documentation**: Contains high-level overview, design rationale, key features explanation
 - **Mining potential**: Executive summaries, architecture descriptions, comparison with other tools
 
-### Planning Documents
-**Location**: `planning/`
+### Design Documents
+**Location**: `docs/developer/design/`
 - **Purpose**: Architecture plans, design documents, feature roadmaps
 - **Status**: Mix of historical plans and current/future designs
+- **Changelog**: See `docs/developer/CHANGELOG.md` for quarterly-reportable work
 
 #### Feature Plans (Historical - verify against implementation)
 - `parameter_system_plan.md` - Parameter system design (note: current implementation differs)
 - `material_properties_plan.md` - Material properties architecture
 - `mathematical_objects_plan.md` - Mathematical objects design (✅ IMPLEMENTED)
 - `claude_examples_plan.md` - Example usage patterns
-- `units_system_plan.md` - Units and dimensional analysis system
+- `units_system_plan.md` - ⚠️ **SUPERSEDED** by `UNITS_SIMPLIFIED_DESIGN_2025-11.md`
 - `MultiMaterial_ConstitutiveModel_Plan.md` - Multi-material constitutive models
+
+#### Units System (✅ SIMPLIFIED 2025-11)
+- **`UNITS_SIMPLIFIED_DESIGN_2025-11.md`** - **AUTHORITATIVE**: Current units architecture
+  - Gateway pattern: units at boundaries, not during symbolic ops
+  - `UWQuantity`: lightweight Pint-backed numbers
+  - `UWexpression`: preferred user-facing lazy wrapper
+  - Arithmetic closure: operations return unit-preserving types
+  - See this document for implementation requirements
 
 #### Parallel Safety System (✅ IMPLEMENTED 2025-01-24)
 - `PARALLEL_PRINT_SIMPLIFIED.md` - **Main design**: `uw.pprint()` and `selective_ranks()` (✅ **IMPLEMENTED**)
@@ -71,6 +80,232 @@
 **Status**: Core parallel safety system implemented and integrated. Codebase migrated to new patterns. See implementation in `src/underworld3/mpi.py` and documentation in `docs/advanced/parallel-computing.qmd`.
 
 **Documentation Strategy**: Mine planning documents for important information to consolidate into developer guide (`docs/developer/`), then clean up planning directory to avoid repository clutter. Developer guide should serve dual purpose as implementation reference and code patterns guide.
+
+## Units System Design Principles ⚠️
+
+### CRITICAL: String Input, Pint Object Storage (2025-11-19)
+
+**Principle**: Accept strings for user convenience, but ALWAYS store and return Pint objects internally.
+
+**Why This Matters**:
+- **User API**: Strings are convenient and readable (`"Pa*s"` vs `ureg.pascal * ureg.second`)
+- **Internal Operations**: Pint objects enable dimensional analysis, unit arithmetic, compatibility checking
+- **Type Violations**: Returning strings from `.units` property breaks the units protocol
+
+**Pattern (CORRECT)**:
+```python
+# 1. User creates quantity with string (convenience)
+viscosity = uw.quantity(1e21, "Pa*s")
+
+# 2. Internally convert and store as Pint object
+class UWQuantity:
+    def __init__(self, value, units: Optional[str] = None):
+        if units is not None:
+            from ..scaling import units as ureg
+            self._pint_qty = value * ureg.parse_expression(units)  # String → Pint
+            self._has_pint_qty = True
+
+# 3. Return Pint objects from properties (NOT strings!)
+    @property
+    def units(self):
+        """Get the units object for this quantity."""
+        if self._has_pint_qty:
+            return self._pint_qty.units  # Pint Unit object
+        return None
+
+# 4. Arithmetic works correctly with Pint objects
+Ra = (rho0 * alpha * g * DeltaT * L**3) / (eta0 * kappa)  # Units combine properly
+```
+
+**Anti-Pattern (WRONG)**:
+```python
+# DON'T return strings from .units property!
+@property
+def units(self) -> str:  # Type hint forces wrong behavior
+    return str(self._pint_qty.units)  # ❌ Converts to string - breaks dimensional analysis!
+
+# This causes errors:
+model.get_scale_for_dimensionality(qty.units)
+# AttributeError: 'str' object has no attribute 'items'
+# Because dimensionality checking expects Pint objects, not strings!
+```
+
+**Historical Bug (2025-11-19)**:
+- Added type annotation `-> str` to UWQuantity.units property
+- Forced string conversion: `return str(self._pint_qty.units)`
+- Broke Rayleigh number calculations and all unit arithmetic
+- Fixed by removing type hint and returning raw Pint object
+
+**Testing Checklist**:
+- ✅ Accept string inputs: `uw.quantity(5, "cm/year")`
+- ✅ Store as Pint internally: `isinstance(qty._pint_qty, pint.Quantity)`
+- ✅ Return Pint from properties: `isinstance(qty.units, pint.Unit)`
+- ✅ Unit arithmetic works: `(qty1 * qty2).units` has correct dimensions
+- ✅ Dimensional analysis works: `model.get_scale_for_dimensionality(qty.units)` doesn't crash
+
+### CRITICAL: Pint Unit vs Quantity Distinction (2025-11-19)
+
+**Principle**: Understand the difference between Pint **Unit** objects and **Quantity** objects.
+
+**The Distinction**:
+```python
+# Pint Quantity = value + units together
+qty = 5 * ureg.meter           # Quantity: has both magnitude and units
+qty.magnitude                  # 5
+qty.units                      # <Unit('meter')>
+qty.to("km")                   # ✅ Can convert (has value)
+qty.to_base_units()            # ✅ Can convert (has value)
+qty.to_reduced_units()         # ✅ Can simplify (has value)
+
+# Pint Unit = just the unit, no value
+unit = ureg.meter              # Unit: just the unit definition
+unit.dimensionality            # ✅ Can check dimensions
+unit.to("km")                  # ❌ AttributeError - no value to convert
+unit.to_base_units()           # ❌ AttributeError - no value to convert
+```
+
+**UWQuantity Architecture**:
+```python
+qty = uw.quantity(2900, "km")
+
+# Public API:
+qty.value          # 2900 (numeric value)
+qty.units          # <Unit('kilometer')> - Pint Unit object (not Quantity!)
+qty.magnitude      # 2900 (alias for .value)
+
+# Conversion methods (work on UWQuantity, not on .units):
+qty.to("m")              # ✅ Returns new UWQuantity
+qty.to_base_units()      # ✅ Returns new UWQuantity
+qty.to_reduced_units()   # ✅ Returns new UWQuantity
+qty.to_compact()         # ✅ Returns new UWQuantity
+
+# WRONG - these fail because .units is a Unit, not a Quantity:
+qty.units.to("m")              # ❌ AttributeError
+qty.units.to_base_units()      # ❌ AttributeError
+qty.units.to_reduced_units()   # ❌ AttributeError
+
+# Internal (not part of public API):
+qty._pint_qty      # Full Pint Quantity object (2900 kilometer)
+qty._pint_qty.to_base_units()  # ✅ Works but uses private API
+```
+
+**Why This Matters**:
+1. **`.units` is for inspection**: Check what units something has, compare compatibility
+2. **Conversion methods on UWQuantity**: Use the full object, not just `.units`
+3. **Error messages are correct**: `AttributeError: 'Unit' object has no attribute 'to_compact'` is expected behavior
+
+**Common Mistakes**:
+```python
+# WRONG
+L = uw.quantity(2900, "km")
+L.units.to_base_units()     # ❌ Unit has no to_base_units method
+
+# CORRECT
+L = uw.quantity(2900, "km")
+L.to_base_units()           # ✅ Returns UWQuantity(2900000, "m")
+```
+
+**Unit Simplification for Dimensionless Quantities**:
+```python
+# Problem: Mixed units create complex expressions
+Ra = (rho0 * alpha * g * DeltaT * L**3) / (eta0 * kappa)
+# With L in km, this shows: "kg * km³ / m⁴ / Pa / s²"
+# Even though it's dimensionless!
+
+# Solution: Use to_reduced_units() to simplify
+Ra_clean = Ra.to_reduced_units()
+# Shows: "7.1e6 dimensionless" (properly simplified)
+
+# Then extract magnitude for calculations
+Ra_value = float(Ra_clean.magnitude)  # 7100000.0
+```
+
+**Historical Issue (2025-11-19)**:
+- User tried `L.units.to_compact()` and got AttributeError
+- This is **correct behavior** - Units alone can't be compacted
+- Only full Quantities (value + units) support conversion methods
+
+### CRITICAL: Unit Conversion on Composite Expressions (2025-11-25) ✅ FIXED
+
+**Problem Solved**: `.to_base_units()` and `.to_reduced_units()` were causing evaluation errors on composite expressions.
+
+**Root Cause**:
+- Methods embedded conversion factors in expression tree: `new_expr = expr * 5617615.15`
+- During nondimensional evaluation cycles, factors were **double-applied**
+- Example: `sqrt((kappa * t_now))**0.5` would evaluate to wrong value after conversion
+
+**Fix Applied**:
+- Composite expressions (containing UWexpression symbols): Only change display units, no factor embedding
+- Simple expressions (no symbols): Apply conversion factors as before
+- Issues UserWarning when display-only conversion occurs
+
+**User Guidance**:
+```python
+# ✅ RECOMMENDED: Use .to_compact() for unit simplification
+sqrt_expr = ((kappa * t_now))**0.5
+display_expr = sqrt_expr.to_compact()  # Automatic readable units, no warning
+
+# ⚠️ WORKS BUT WARNS: Use .to_base_units() or .to_reduced_units()
+display_expr = sqrt_expr.to_base_units()  # Display units only, with warning
+# UserWarning: "changing display units only..."
+
+# ✅ SIMPLE EXPRESSIONS: Conversion factor applied
+velocity = uw.quantity(5, "km/hour")
+velocity_ms = velocity.to_base_units()  # → 1.38889 m/s (actually converts)
+```
+
+**Verification**: All evaluation bugs fixed ✅
+- `evaluate(expr.to_base_units())` now equals `evaluate(expr)`
+- System is "bulletproof" for evaluation with nondimensional scaling
+- See: `docs/reviews/2025-11/UNITS-EVALUATION-FIXES-2025-11-25.md`
+
+### CRITICAL: Transparent Container Principle (2025-11-26)
+
+**Principle**: A container cannot know in advance what it contains. If an object is lazy-evaluated, its properties must also be lazy-evaluated.
+
+**The Atomic vs Container Distinction**:
+| Type | Role | What it stores |
+|------|------|----------------|
+| **UWQuantity** | Atomic leaf node | Value + Units (indivisible, this IS the data) |
+| **UWexpression** | Container | Reference to contents only (derives everything) |
+
+**Why This Matters**:
+- **UWexpression is always a container**, whether wrapping:
+  - A UWQuantity (atomic) → derives `.units` from `self._value_with_units.units`
+  - A SymPy tree (composite) → derives `.units` from `get_units(self._sym)`
+- **The container never "owns" units** - it provides access to what's inside
+- **No cached state on composites** - eliminates sync issues between stored and computed values
+
+**Implementation Pattern**:
+```python
+class UWexpression:
+    @property
+    def units(self):
+        # Always derived, never stored separately
+        if self._value_with_units is not None:
+            return self._value_with_units.units  # From contained atom
+        return get_units(self._sym)  # From contained tree
+
+    def __mul__(self, other):
+        if isinstance(other, UWexpression):
+            # Return raw SymPy product - units derived on demand via get_units()
+            # This preserves lazy evaluation and eliminates sync issues
+            return Symbol.__mul__(self, other)
+```
+
+**Anti-Pattern (WRONG)**:
+```python
+# DON'T store computed units on composite results!
+def __mul__(self, other):
+    if isinstance(other, UWexpression):
+        result = Symbol.__mul__(self, other)
+        result._units = self.units * other.units  # ❌ Creates sync liability
+        return result  # ❌ Also fails: SymPy Mul is immutable!
+```
+
+**Key Insight**: If you design an object to be lazily evaluated, it's inconsistent to eagerly compute and store properties. Caching creates sync liability and violates the laziness contract.
+
+**See**: `docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md` for full architectural details.
 
 ## Project Context
 Migrating Underworld3 from access context manager pattern to direct data access using NDArray_With_Callback for backward compatibility.
@@ -137,8 +372,8 @@ with uw.selective_ranks(0) as should_execute:
 **See**: 
 - `src/underworld3/mpi.py` - **Implementation** of `pprint()` and `selective_ranks()`
 - `docs/advanced/parallel-computing.qmd` - **User documentation** with comprehensive examples and migration guide
-- `planning/PARALLEL_PRINT_SIMPLIFIED.md` - Original design document
-- `planning/RANK_SELECTION_SPECIFICATION.md` - Complete rank selection syntax specification
+- `docs/developer/design/PARALLEL_PRINT_SIMPLIFIED.md` - Original design document
+- `docs/developer/design/RANK_SELECTION_SPECIFICATION.md` - Complete rank selection syntax specification
 
 ## Architecture Priorities & Module Purposes
 
@@ -303,6 +538,174 @@ Tests reorganized by complexity level for better execution order:
 - Poisson solvers (1000-1009)
 - Stokes solvers (1010-1050)
 - Advection-diffusion (1100-1120)
+
+## Test Classification: Integrated Levels + Reliability Tiers (2025-11-15)
+
+### Dual Classification System
+
+Underworld3 uses **two orthogonal dimensions** to classify tests:
+
+1. **Test Levels (Number Prefix)** - Complexity/Scope (existing system from `scripts/test_levels.sh`)
+2. **Reliability Tiers (Letter Markers)** - Trust Level (new system, see `docs/developer/TESTING-RELIABILITY-SYSTEM.md`)
+
+### Test Levels (Pytest Markers) - What Kind of Test
+
+**IMPORTANT**: Number prefixes (0000-9999) are for **organization only**. Actual complexity is marked explicitly.
+
+**Level 1** (`@pytest.mark.level_1`): Quick Core Tests
+- Imports, basic setup, simple operations
+- No solving, minimal computation
+- Runtime: Seconds
+- Examples:
+  - test_0000_imports.py - Basic imports
+  - test_1010_stokes_setup.py - Stokes mesh/variable setup (no solve)
+  - test_1015_stokes_bc_validation.py - Boundary condition checks (no solve)
+
+**Level 2** (`@pytest.mark.level_2`): Intermediate Tests
+- Integration tests, units, regression
+- May involve solving but simple cases
+- Runtime: Minutes
+- Examples:
+  - test_0700_units_system.py - Core units functionality
+  - test_0813_mesh_variable_ordering.py - Regression test
+  - test_1010_stokes_simple_solve.py - Basic Stokes solve (small mesh)
+
+**Level 3** (`@pytest.mark.level_3`): Physics/Solver Tests
+- Complex solvers, time-stepping, benchmarks
+- Full physics validation
+- Runtime: Minutes to hours
+- Examples:
+  - test_1010_stokes_benchmark.py - Stokes solver benchmark
+  - test_1110_advdiff_time_stepping.py - Time-dependent problems
+  - test_1150_coupled_stokes_advdiff.py - Coupled systems
+
+**Number Prefix Organization** (for ordering only):
+- 0000-0499: Core functionality (imports, meshes, data access)
+- 0500-0599: Enhanced arrays and migration
+- 0600-0699: Regression tests
+- 0700-0799: Units system
+- 0800-0899: Unit-aware integration
+- 1000-1099: Poisson/Darcy
+- 1100-1199: Stokes flow
+- 1200+: Advection-diffusion, coupled systems
+
+**Run by level**:
+- `pytest -m level_1` (quick checks, ~1-2 min total)
+- `pytest -m level_2` (intermediate, ~5-10 min total)
+- `pytest -m "level_1 or level_2"` (skip heavy physics)
+- `pixi run underworld-test` (uses number ranges, still works)
+
+### Reliability Tiers (Pytest Markers) - How Much to Trust
+
+**Tier A** (`@pytest.mark.tier_a`): Production-Ready
+- Trusted for Test-Driven Development (TDD) and CI
+- Long-lived (>3 months), consistently passing
+- Failure indicates DEFINITE regression
+- Examples: Core Stokes tests, basic mesh creation, stable units tests
+
+**Tier B** (`@pytest.mark.tier_b`): Validated (Use with Caution)
+- Passed at least once, but not battle-tested
+- New features (<3 months) or recently refactored
+- Failure could be test OR code issue - needs investigation
+- Examples: Recently added units integration, new reduction operations
+
+**Tier C** (`@pytest.mark.tier_c`): Experimental (Development Only)
+- Feature may not be fully implemented
+- Test OR code (or both) may be incorrect
+- Mark with `@pytest.mark.xfail(reason="...")` if expected to fail
+- Examples: Unimplemented features, tests under active development
+
+**Run by tier**: `pytest -m tier_a` (TDD-safe), `pytest -m "tier_a or tier_b"` (full validation)
+
+### Combined Examples: Levels + Tiers
+
+**Example 1**: Core units test
+```python
+@pytest.mark.level_2  # Intermediate - has some complexity
+@pytest.mark.tier_a   # Production-ready - trusted for TDD
+def test_units_conversion():
+    """Test basic unit conversion."""
+    # File: test_0700_units_system.py (number = organization)
+```
+
+**Example 2**: Simple Stokes setup (no solving)
+```python
+@pytest.mark.level_1  # Quick - just setup, no computation
+@pytest.mark.tier_a   # Production-ready - stable API
+def test_stokes_mesh_variable_creation():
+    """Test creating Stokes mesh and variables."""
+    # File: test_1010_stokes_basic.py (lives in 1010 but Level 1!)
+```
+
+**Example 3**: Complex Stokes benchmark
+```python
+@pytest.mark.level_3  # Physics - full solver with benchmarking
+@pytest.mark.tier_a   # Production-ready - validated against published results
+def test_stokes_sinking_block_benchmark():
+    """Test Stokes solver against analytical solution."""
+    # File: test_1010_stokes_benchmark.py (1010 + Level 3)
+```
+
+**Example 4**: Experimental units feature
+```python
+@pytest.mark.level_2  # Intermediate complexity
+@pytest.mark.tier_c   # Experimental - feature in development
+@pytest.mark.xfail(reason="Advanced units propagation not yet implemented")
+def test_units_symbolic_propagation():
+    """Test automatic unit propagation through symbolic operations."""
+    # File: test_0850_units_propagation.py
+```
+
+**Key Insight**: Number prefix ≠ Level marker!
+- `test_1010_stokes_basic.py` could have both Level 1 (setup) AND Level 3 (benchmark) tests
+- Organization by topic (1010 = Stokes), not complexity
+
+### Integration with Pixi Tasks
+
+```bash
+# === By number range (existing system, still works) ===
+pixi run underworld-test 1      # Run 0000-0499 tests
+pixi run underworld-test 2      # Run 0500-0899 tests
+pixi run underworld-test 3      # Run 1000+ tests
+pixi run underworld-test        # Run all tests
+
+# === By complexity level (new, more flexible) ===
+pytest -m level_1               # Quick tests only (~1-2 min)
+pytest -m level_2               # Intermediate tests (~5-10 min)
+pytest -m level_3               # Physics tests (~10+ min)
+pytest -m "level_1 or level_2"  # Everything except heavy physics
+
+# === By reliability tier (new, for TDD) ===
+pytest -m tier_a                # Production-ready only (TDD-safe)
+pytest -m "tier_a or tier_b"    # Full validation suite
+pytest -m "not tier_c"          # Exclude experimental tests
+
+# === Combined filtering (powerful!) ===
+# Quick validation before commit
+pytest -m "level_1 and tier_a"
+
+# All Stokes tests that are production-ready
+pytest tests/test_1*stokes*.py -m tier_a
+
+# Intermediate tests, exclude experimental
+pytest -m "level_2 and not tier_c"
+
+# Fast TDD cycle: Level 1+2, Tier A only
+pytest -m "(level_1 or level_2) and tier_a" -v
+```
+
+### Current Classification Status (2025-11-15)
+
+**Immediate Actions**:
+1. ✅ **FIXED**: JIT unwrapping bug (test_0818_stokes_nd.py: all 5 tests passing)
+2. 🔄 **IN PROGRESS**: Classify 79 failing units tests into Tiers B or C
+3. 📋 **TODO**: Mark all Tier A tests with `@pytest.mark.tier_a`
+4. 📋 **TODO**: Mark incomplete features as Tier C with `@pytest.mark.xfail`
+
+**Key Documents**:
+- **System Overview**: `docs/developer/TESTING-RELIABILITY-SYSTEM.md`
+- **Current Analysis**: `docs/developer/TEST-CLASSIFICATION-2025-11-15.md`
+- **Test Script**: `scripts/test_levels.sh`
 
 ## Symmetric Tensor Fix (Latest)
 **Problem**: For symmetric tensors, `num_components` (6 in 3D) ≠ array components (9 in 3D)

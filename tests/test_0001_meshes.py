@@ -1,3 +1,7 @@
+import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 # These tests just check if all the meshes can be built / returned but no validation
 # about whether they can be used.
 
