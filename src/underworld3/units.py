@@ -156,6 +156,25 @@ def _extract_units_info(obj):
         else:
             return False, None, None
 
+    # PRIORITY 2.5: Objects with .units property but not full protocol (e.g., SwarmVariable)
+    # These store units as strings but may not have has_units or _units_backend properly set
+    if hasattr(obj, "units") and obj.units is not None:
+        units = obj.units
+        # Convert string units to Pint Unit object for consistency
+        if isinstance(units, str):
+            try:
+                from underworld3.scaling import units as ureg
+                pint_units = ureg.parse_expression(units).units
+                backend = _get_default_backend()
+                return True, pint_units, backend
+            except Exception:
+                # If parsing fails, return None
+                pass
+        else:
+            # Already a Pint Unit object
+            backend = _get_default_backend()
+            return True, units, backend
+
     # Check if it's a Pint quantity
     try:
         import pint
@@ -1069,35 +1088,404 @@ def convert_units(quantity, target_units: Union[str, Any]) -> Any:
     """
     Convert quantity to different units.
 
+    This is the SINGLE SOURCE OF TRUTH for unit conversion in UW3.
+    All .to() methods on unit-aware types should delegate to this function.
+
+    Handles:
+    - UWQuantity → returns new UWQuantity with converted value
+    - UWexpression → returns new UWexpression with converted value
+    - UnitAwareArray → returns new UnitAwareArray with converted values
+    - Pint Quantity → returns converted Pint Quantity
+
     Args:
-        quantity: Quantity to convert
-        target_units: Target units for conversion
+        quantity: Quantity to convert (UWQuantity, UWexpression, UnitAwareArray, Pint)
+        target_units: Target units for conversion (str or Pint Unit)
 
     Returns:
-        Quantity converted to target units
+        Same type as input, converted to target units
 
     Raises:
         DimensionalityError: If units are not compatible for conversion
         NoUnitsError: If quantity has no units
 
     Examples:
-        >>> velocity_ms = create_quantity(10, "m/s")
-        >>> velocity_kmh = convert_units(velocity_ms, "km/h")
-        >>> print(velocity_kmh)  # 36.0 kilometer / hour
-    """
-    has_units, units, backend = _extract_units_info(quantity)
+        >>> velocity = uw.quantity(10, "m/s")
+        >>> velocity_kmh = uw.convert_units(velocity, "km/h")
+        >>> print(velocity_kmh)  # 36.0 [kilometer / hour]
 
-    if not has_units:
+        >>> radius = uw.expression("r", uw.quantity(6370, "km"))
+        >>> radius_m = uw.convert_units(radius, "m")
+        >>> print(radius_m.value)  # 6370000.0
+    """
+    from underworld3.scaling import units as ureg
+
+    # Get current units info
+    has_units_flag, current_units, backend = _extract_units_info(quantity)
+
+    if not has_units_flag:
         raise NoUnitsError("Cannot convert quantity without units")
 
-    # Check compatibility
-    target_quantity = backend.create_quantity(1.0, target_units)
-    if not backend.check_dimensionality(quantity, target_quantity):
-        raise DimensionalityError(f"Cannot convert {units} to {target_units}")
+    # Parse target units if string
+    if isinstance(target_units, str):
+        target_pint_unit = ureg.parse_expression(target_units).units
+    else:
+        target_pint_unit = target_units
 
-    # This would need backend-specific conversion implementation
-    warnings.warn("Unit conversion not fully implemented")
-    return quantity
+    # Check dimensional compatibility
+    try:
+        # Create test quantities to check compatibility
+        test_current = 1.0 * current_units
+        test_target = 1.0 * target_pint_unit
+        # This will raise DimensionalityError if incompatible
+        test_current.to(target_pint_unit)
+    except Exception as e:
+        raise DimensionalityError(f"Cannot convert {current_units} to {target_units}: {e}")
+
+    # === Handle different input types ===
+
+    # 1. UWQuantity - use its native .to() method
+    from underworld3.function.quantities import UWQuantity
+    if isinstance(quantity, UWQuantity):
+        return quantity.to(target_units)
+
+    # 2. UWexpression - convert the wrapped value, return new expression
+    from underworld3.function.expressions import UWexpression
+    if isinstance(quantity, UWexpression):
+        # Get the wrapped value via _sym (Transparent Container Principle)
+        wrapped = quantity._sym
+        if isinstance(wrapped, UWQuantity):
+            # Wraps a UWQuantity - convert it
+            converted_qty = convert_units(wrapped, target_units)
+            return UWexpression(
+                quantity._given_name,
+                converted_qty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        elif hasattr(quantity, 'value') and quantity.units is not None:
+            # Has value and units - create converted quantity
+            pint_qty = quantity.value * current_units
+            converted_pint = pint_qty.to(target_pint_unit)
+            converted_uwqty = UWQuantity(converted_pint.magnitude, converted_pint.units)
+            return UWexpression(
+                quantity._given_name,
+                converted_uwqty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        else:
+            # UWexpression wraps a symbolic expression (no numeric value)
+            # Check if we can at least detect units from the expression
+            detected_units = get_units(quantity)
+            if detected_units is not None:
+                raise TypeError(
+                    f"Cannot convert symbolic expression '{quantity.name}' to different units.\n"
+                    f"The expression has units '{detected_units}' but no numeric value to convert.\n"
+                    f"Unit conversion requires a numeric value. Options:\n"
+                    f"  1. Evaluate first: result = uw.function.evaluate({quantity.name}, coords)\n"
+                    f"  2. For display purposes, units are already tracked via uw.get_units()"
+                )
+            else:
+                raise NoUnitsError(
+                    f"UWexpression '{quantity.name}' is dimensionless or has no detectable units."
+                )
+
+    # 3. UnitAwareArray - use its native .to() method
+    from underworld3.utilities.unit_aware_array import UnitAwareArray
+    if isinstance(quantity, UnitAwareArray):
+        return quantity.to(target_units)
+
+    # 4. Pint Quantity - convert directly
+    if hasattr(quantity, 'to') and hasattr(quantity, 'magnitude'):
+        return quantity.to(target_pint_unit)
+
+    # 5. Raw SymPy expressions (Pow, Mul, Add, etc.) - return unchanged with warning
+    import sympy
+    if isinstance(quantity, sympy.Basic):
+        warnings.warn(
+            f"Unit conversion on SymPy {type(quantity).__name__} only affects display. "
+            f"Use uw.get_units() to check units, uw.function.evaluate() preserves units."
+        )
+        return quantity
+
+    # 6. Fallback: try to create UWQuantity and convert
+    if hasattr(quantity, 'value'):
+        value = quantity.value
+        pint_qty = value * current_units
+        converted_pint = pint_qty.to(target_pint_unit)
+        return UWQuantity(converted_pint.magnitude, converted_pint.units)
+
+    raise TypeError(f"Don't know how to convert {type(quantity)} to different units")
+
+
+def to_base_units(quantity) -> Any:
+    """
+    Convert quantity to SI base units.
+
+    This is a convenience function that converts any unit-aware quantity
+    to its SI base unit representation.
+
+    Args:
+        quantity: Quantity to convert (UWQuantity, UWexpression, UnitAwareArray, Pint)
+
+    Returns:
+        Same type as input, converted to SI base units
+
+    Raises:
+        NoUnitsError: If quantity has no units
+
+    Examples:
+        >>> velocity = uw.quantity(36, "km/h")
+        >>> velocity_si = uw.to_base_units(velocity)
+        >>> print(velocity_si)  # 10.0 [meter / second]
+
+        >>> radius = uw.expression("r", uw.quantity(6370, "km"))
+        >>> radius_si = uw.to_base_units(radius)
+        >>> print(radius_si.value)  # 6370000.0
+    """
+    from underworld3.scaling import units as ureg
+
+    # Get current units info
+    has_units_flag, current_units, backend = _extract_units_info(quantity)
+
+    if not has_units_flag:
+        raise NoUnitsError("Cannot convert quantity without units to base units")
+
+    # === Handle different input types ===
+
+    # 1. UWQuantity - use its native .to_base_units() method
+    from underworld3.function.quantities import UWQuantity
+    if isinstance(quantity, UWQuantity):
+        return quantity.to_base_units()
+
+    # 2. UWexpression - convert the wrapped value
+    from underworld3.function.expressions import UWexpression
+    if isinstance(quantity, UWexpression):
+        # Get the wrapped value via _sym (Transparent Container Principle)
+        wrapped = quantity._sym
+        if isinstance(wrapped, UWQuantity):
+            converted_qty = to_base_units(wrapped)
+            return UWexpression(
+                quantity._given_name,
+                converted_qty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        elif hasattr(quantity, 'value') and quantity.units is not None:
+            pint_qty = quantity.value * current_units
+            converted_pint = pint_qty.to_base_units()
+            converted_uwqty = UWQuantity(converted_pint.magnitude, converted_pint.units)
+            return UWexpression(
+                quantity._given_name,
+                converted_uwqty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        else:
+            raise NoUnitsError(f"UWexpression {quantity.name} has no convertible units")
+
+    # 3. UnitAwareArray - convert via Pint
+    from underworld3.utilities.unit_aware_array import UnitAwareArray
+    if isinstance(quantity, UnitAwareArray):
+        import numpy as np
+        pint_qty = ureg.Quantity(quantity.view(np.ndarray), quantity.units)
+        converted = pint_qty.to_base_units()
+        return UnitAwareArray(converted.magnitude, units=str(converted.units))
+
+    # 4. Pint Quantity - convert directly
+    if hasattr(quantity, 'to_base_units'):
+        return quantity.to_base_units()
+
+    # 5. Raw SymPy expressions (Pow, Mul, Add, etc.) - wrap and convert
+    import sympy
+    if isinstance(quantity, sympy.Basic):
+        # For composite SymPy expressions, we can't convert in place.
+        # Return the expression unchanged - it preserves units through evaluation.
+        # This follows the design principle: unit conversion on composite expressions
+        # only changes the display, not the expression tree.
+        warnings.warn(
+            f"Unit conversion on SymPy {type(quantity).__name__} only affects display. "
+            f"Use uw.get_units() to check units, uw.function.evaluate() preserves units."
+        )
+        return quantity
+
+    raise TypeError(f"Don't know how to convert {type(quantity)} to base units")
+
+
+def to_reduced_units(quantity) -> Any:
+    """
+    Simplify units by canceling common factors.
+
+    This is useful for complex unit expressions like (kg * m / s²) / (kg / m³)
+    which would simplify to m⁴ / s².
+
+    Args:
+        quantity: Quantity to simplify (UWQuantity, UWexpression, UnitAwareArray, Pint)
+
+    Returns:
+        Same type as input, with simplified units
+
+    Raises:
+        NoUnitsError: If quantity has no units
+
+    Examples:
+        >>> force = uw.quantity(100, "kg*m/s**2")
+        >>> force_simplified = uw.to_reduced_units(force)
+        >>> print(force_simplified)  # 100.0 [newton]
+    """
+    from underworld3.scaling import units as ureg
+
+    # Get current units info
+    has_units_flag, current_units, backend = _extract_units_info(quantity)
+
+    if not has_units_flag:
+        raise NoUnitsError("Cannot simplify quantity without units")
+
+    # === Handle different input types ===
+
+    # 1. UWQuantity - use its native .to_reduced_units() method
+    from underworld3.function.quantities import UWQuantity
+    if isinstance(quantity, UWQuantity):
+        return quantity.to_reduced_units()
+
+    # 2. UWexpression - convert the wrapped value
+    from underworld3.function.expressions import UWexpression
+    if isinstance(quantity, UWexpression):
+        # Get the wrapped value via _sym (Transparent Container Principle)
+        wrapped = quantity._sym
+        if isinstance(wrapped, UWQuantity):
+            converted_qty = to_reduced_units(wrapped)
+            return UWexpression(
+                quantity._given_name,
+                converted_qty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        elif hasattr(quantity, 'value') and quantity.units is not None:
+            pint_qty = quantity.value * current_units
+            converted_pint = pint_qty.to_reduced_units()
+            converted_uwqty = UWQuantity(converted_pint.magnitude, converted_pint.units)
+            return UWexpression(
+                quantity._given_name,
+                converted_uwqty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        else:
+            raise NoUnitsError(f"UWexpression {quantity.name} has no convertible units")
+
+    # 3. UnitAwareArray - convert via Pint
+    from underworld3.utilities.unit_aware_array import UnitAwareArray
+    if isinstance(quantity, UnitAwareArray):
+        import numpy as np
+        pint_qty = ureg.Quantity(quantity.view(np.ndarray), quantity.units)
+        converted = pint_qty.to_reduced_units()
+        return UnitAwareArray(converted.magnitude, units=str(converted.units))
+
+    # 4. Pint Quantity - convert directly
+    if hasattr(quantity, 'to_reduced_units'):
+        return quantity.to_reduced_units()
+
+    # 5. Raw SymPy expressions (Pow, Mul, Add, etc.) - return unchanged with warning
+    import sympy
+    if isinstance(quantity, sympy.Basic):
+        warnings.warn(
+            f"Unit simplification on SymPy {type(quantity).__name__} only affects display. "
+            f"Use uw.get_units() to check units, uw.function.evaluate() preserves units."
+        )
+        return quantity
+
+    raise TypeError(f"Don't know how to simplify {type(quantity)} units")
+
+
+def to_compact(quantity) -> Any:
+    """
+    Convert quantity to most human-readable unit representation.
+
+    This automatically chooses unit prefixes (kilo, mega, micro, etc.)
+    to make the number more readable. For example, 0.001 km becomes 1 m.
+
+    Args:
+        quantity: Quantity to make compact (UWQuantity, UWexpression, UnitAwareArray, Pint)
+
+    Returns:
+        Same type as input, with compact units
+
+    Raises:
+        NoUnitsError: If quantity has no units
+
+    Examples:
+        >>> length = uw.quantity(0.001, "km")
+        >>> length_compact = uw.to_compact(length)
+        >>> print(length_compact)  # 1.0 [meter]
+
+        >>> big_length = uw.quantity(1e9, "m")
+        >>> big_compact = uw.to_compact(big_length)
+        >>> print(big_compact)  # 1.0 [gigameter]
+    """
+    from underworld3.scaling import units as ureg
+
+    # Get current units info
+    has_units_flag, current_units, backend = _extract_units_info(quantity)
+
+    if not has_units_flag:
+        raise NoUnitsError("Cannot compact quantity without units")
+
+    # === Handle different input types ===
+
+    # 1. UWQuantity - use its native .to_compact() method
+    from underworld3.function.quantities import UWQuantity
+    if isinstance(quantity, UWQuantity):
+        return quantity.to_compact()
+
+    # 2. UWexpression - convert the wrapped value
+    from underworld3.function.expressions import UWexpression
+    if isinstance(quantity, UWexpression):
+        # Get the wrapped value via _sym (Transparent Container Principle)
+        wrapped = quantity._sym
+        if isinstance(wrapped, UWQuantity):
+            converted_qty = to_compact(wrapped)
+            return UWexpression(
+                quantity._given_name,
+                converted_qty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        elif hasattr(quantity, 'value') and quantity.units is not None:
+            pint_qty = quantity.value * current_units
+            converted_pint = pint_qty.to_compact()
+            converted_uwqty = UWQuantity(converted_pint.magnitude, converted_pint.units)
+            return UWexpression(
+                quantity._given_name,
+                converted_uwqty,
+                quantity._description if hasattr(quantity, '_description') else None,
+                _unique_name_generation=True
+            )
+        else:
+            raise NoUnitsError(f"UWexpression {quantity.name} has no convertible units")
+
+    # 3. UnitAwareArray - convert via Pint
+    from underworld3.utilities.unit_aware_array import UnitAwareArray
+    if isinstance(quantity, UnitAwareArray):
+        import numpy as np
+        pint_qty = ureg.Quantity(quantity.view(np.ndarray), quantity.units)
+        converted = pint_qty.to_compact()
+        return UnitAwareArray(converted.magnitude, units=str(converted.units))
+
+    # 4. Pint Quantity - convert directly
+    if hasattr(quantity, 'to_compact'):
+        return quantity.to_compact()
+
+    # 5. Raw SymPy expressions (Pow, Mul, Add, etc.) - return unchanged with warning
+    import sympy
+    if isinstance(quantity, sympy.Basic):
+        warnings.warn(
+            f"Unit compaction on SymPy {type(quantity).__name__} only affects display. "
+            f"Use uw.get_units() to check units, uw.function.evaluate() preserves units."
+        )
+        return quantity
+
+    raise TypeError(f"Don't know how to compact {type(quantity)} units")
 
 
 def get_scaling_coefficients() -> Dict[str, Any]:

@@ -3572,7 +3572,18 @@ class Model(PintNativeModelMixin, BaseModel):
             traceback.print_exc()
             return None
 
-    def to_model_magnitude(self, quantity):
+    def has_units_active(self):
+        """
+        Check if the units system is active (reference quantities have been set).
+
+        Returns
+        -------
+        bool
+            True if reference quantities have been set, False otherwise.
+        """
+        return hasattr(self, "_pint_registry") and hasattr(self, "_reference_quantities") and bool(self._reference_quantities)
+
+    def to_model_magnitude(self, quantity, expected_dimension=None):
         """
         Convert quantity to model units and extract numerical magnitude.
 
@@ -3585,6 +3596,11 @@ class Model(PintNativeModelMixin, BaseModel):
         ----------
         quantity : Any
             Quantity to convert (UWQuantity, Pint quantity, numeric, tuple, etc.)
+        expected_dimension : str, optional
+            Expected dimension like '[length]', '[time]', etc. If provided and
+            the quantity is a plain number when units are active, a warning is
+            issued to alert the user that they may have forgotten units.
+            Common values: '[length]', '[time]', '[temperature]', '[mass]'
 
         Returns
         -------
@@ -3603,6 +3619,12 @@ class Model(PintNativeModelMixin, BaseModel):
         >>> model.to_model_magnitude([0.1, 0.2])
         [0.1, 0.2]
 
+        >>> # With expected_dimension, warns on plain numbers when units active
+        >>> model.to_model_magnitude(6370, expected_dimension='[length]')
+        UserWarning: Plain number 6370 passed for [length] parameter when units
+        are active. If you intended physical units, use uw.quantity(6370, 'km').
+        Value is being interpreted as 6370 model units.
+
         >>> # Works with time
         >>> dt_physical = 1000 * uw.units.year
         >>> dt_model = model.to_model_magnitude(dt_physical)
@@ -3612,13 +3634,28 @@ class Model(PintNativeModelMixin, BaseModel):
         This method is intended for internal use at API boundaries where user
         inputs need to be converted to model units for computations. The conversion
         respects dimensional analysis and reference quantities.
+
+        When `expected_dimension` is provided, this acts as a "gatekeeper" to catch
+        potential bugs where users forget to attach units to their values.
         """
         import numpy as np
+        import warnings
 
         # Handle tuples/lists recursively (for coordinate inputs)
         if isinstance(quantity, (list, tuple)):
-            converted = [self.to_model_magnitude(q) for q in quantity]
+            converted = [self.to_model_magnitude(q, expected_dimension) for q in quantity]
             return type(quantity)(converted)
+
+        # Gatekeeper: warn if plain number passed when units are active
+        if expected_dimension is not None and self.has_units_active():
+            if isinstance(quantity, (int, float)) and not isinstance(quantity, bool):
+                warnings.warn(
+                    f"Plain number {quantity} passed for {expected_dimension} parameter when units "
+                    f"are active. If you intended physical units, use uw.quantity({quantity}, 'unit'). "
+                    f"Value is being interpreted as {quantity} model units.",
+                    UserWarning,
+                    stacklevel=3  # Point to the mesh function caller
+                )
 
         # Convert to model units first
         model_quantity = self.to_model_units(quantity)

@@ -233,55 +233,47 @@ def compute_expression_units(expr):
             # Instead, prioritize UWexpressions (registered variables) and only
             # extract coordinate units if explicitly requested for a pure coordinate
 
-            # FIRST: Check if this symbol represents a UWexpression
-            # This handles cases like L_0**2 where the base L_0 is a UWexpression symbol
-            if isinstance(expr, sympy.Symbol):
-                try:
-                    # Try to find this symbol in the UWexpression registry
-                    from underworld3.function.expressions import UWexpression
+            # FIRST: Check if this symbol IS a UWexpression (direct isinstance check)
+            # This is the DRY approach - UWexpression inherits from Symbol and has
+            # has_units/units properties, so we just ask it directly for units.
+            # No need for dictionary lookups by name - the object knows its own units.
+            from underworld3.function.expressions import UWexpression
 
-                    # Check the given_name (LaTeX name like "L_0")
-                    symbol_name = expr.name
-                    if symbol_name in UWexpression._expr_names:
-                        uw_expr = UWexpression._expr_names[symbol_name]
-                        if hasattr(uw_expr, "has_units") and uw_expr.has_units:
-                            if hasattr(uw_expr, "units") and uw_expr.units is not None:
-                                # Found it! Get the units
-                                units_from_uw = uw_expr.units
-                                if not hasattr(units_from_uw, "dimensionality"):
-                                    # Convert string to pint.Unit if needed
-                                    return uw.units(str(units_from_uw))
-                                return units_from_uw
+            if isinstance(expr, UWexpression):
+                # Case 1: UWexpression with explicit units (e.g., uw.expression("r_i", uw.quantity(3000, "km")))
+                if expr.has_units and expr.units is not None:
+                    units_from_uw = expr.units
+                    # Ensure we return a Pint Unit object
+                    if not hasattr(units_from_uw, "dimensionality"):
+                        return uw.units(str(units_from_uw))
+                    return units_from_uw
 
-                    # Also check ephemeral expressions (with weak references)
-                    if symbol_name in UWexpression._ephemeral_expr_names:
-                        uw_expr_ref = UWexpression._ephemeral_expr_names[symbol_name]
-                        # Dereference the weak reference
-                        uw_expr = uw_expr_ref()
-                        if (
-                            uw_expr is not None
-                            and hasattr(uw_expr, "has_units")
-                            and uw_expr.has_units
-                        ):
-                            if hasattr(uw_expr, "units") and uw_expr.units is not None:
-                                # Found it! Get the units
-                                units_from_uw = uw_expr.units
-                                if not hasattr(units_from_uw, "dimensionality"):
-                                    # Convert string to pint.Unit if needed
-                                    return uw.units(str(units_from_uw))
-                                return units_from_uw
-                except Exception:
-                    # If lookup fails, continue with normal flow
-                    pass
+                # Case 2: UWexpression wrapping a SymPy expression that has units
+                # (e.g., r - inner_radius where r = sqrt(x**2 + y**2) with coordinate units)
+                # Check if ._sym is a SymPy expression (not a number) and recurse
+                if hasattr(expr, '_sym') and expr._sym is not None:
+                    inner_sym = expr._sym
+                    # Don't recurse on numbers or other simple types
+                    if isinstance(inner_sym, sympy.Basic) and not isinstance(inner_sym, sympy.Number):
+                        inner_units = compute_expression_units(inner_sym)
+                        if inner_units is not None:
+                            return inner_units
+                # UWexpression without discoverable units - fall through to other checks
 
             # Numbers are dimensionless
             if expr.is_Number:
                 return uw.units.dimensionless
 
-            # LAST RESORT: For BaseScalar coordinates, return None (not coordinate units)
-            # Coordinates should not contribute units to compound expressions.
-            # If someone needs the units of a pure coordinate expression, that should
-            # be handled specially (e.g., in derivative rules), not here.
+            # Check for coordinate symbols (BaseScalar with _units attribute)
+            # These carry length units from the mesh coordinate system
+            if hasattr(expr, '_units') and expr._units is not None:
+                coord_units = expr._units
+                # Ensure we return a Pint Unit object
+                if not hasattr(coord_units, 'dimensionality'):
+                    return uw.units(str(coord_units))
+                return coord_units
+
+            # No units detected for this atom
             return None
 
         # Recursive case: compound expression

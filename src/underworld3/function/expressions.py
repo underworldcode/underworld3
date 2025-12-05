@@ -5,11 +5,13 @@ This module provides:
 - UWexpression: A SymPy Symbol that wraps values for lazy evaluation
 - Helper functions for unwrapping expressions for JIT compilation and display
 
-Design Principles (Simplified Architecture 2025-11):
+Design Principles (Simplified Architecture 2025-11, updated 2025-12):
 1. UWexpression is a SymPy Symbol that wraps something (lazy evaluation)
 2. Units are DISCOVERED from the wrapped thing, not tracked separately
 3. Arithmetic returns pure SymPy expressions - delegate to Symbol
-4. No .to(), .to_base_units() on expressions - those only make sense for quantities
+4. Unit conversion (.to(), .to_base_units(), etc.) delegates to uw.* base functions
+   - This follows the DRY principle: conversion logic in ONE place (units.py)
+   - UWexpression.to() simply calls uw.convert_units(self, target)
 """
 
 import sympy
@@ -417,7 +419,14 @@ def unwrap_for_evaluate(expr, scaling_active=None):
                     else:
                         substitutions[sym] = float(sym.value)
                 else:
-                    substitutions[sym] = sym.sym
+                    # RECURSIVE UNWRAP: When a UWexpression has no units but wraps
+                    # a composite expression (like r - inner_radius), we need to
+                    # recursively unwrap its .sym to nondimensionalize any
+                    # UWexpressions inside it.
+                    #
+                    # Without this, (r - 3000 km) stays as (r - 3000) instead of (r - 3.0)
+                    inner_unwrapped, _ = unwrap_for_evaluate(sym.sym, scaling_active=should_scale)
+                    substitutions[sym] = inner_unwrapped
 
         if substitutions:
             sym_expr = sym_expr.subs(substitutions)
@@ -689,6 +698,92 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
             return self._sym
         else:
             return UWQuantity(self.value, units=None)
+
+    # =========================================================================
+    # Unit Conversion Methods - Delegate to uw.* base functions
+    # =========================================================================
+
+    def to(self, target_units: str) -> 'UWexpression':
+        """
+        Convert to different units.
+
+        Delegates to uw.convert_units() for the actual conversion.
+
+        Parameters
+        ----------
+        target_units : str
+            Target units (e.g., "m/s", "km", "degC")
+
+        Returns
+        -------
+        UWexpression
+            New expression with converted value and units
+
+        Examples
+        --------
+        >>> radius = uw.expression("r", uw.quantity(6370, "km"))
+        >>> radius_m = radius.to("m")
+        >>> print(radius_m.value)  # 6370000.0
+        """
+        import underworld3 as uw
+        return uw.convert_units(self, target_units)
+
+    def to_base_units(self) -> 'UWexpression':
+        """
+        Convert to SI base units.
+
+        Delegates to uw.to_base_units() for the actual conversion.
+
+        Returns
+        -------
+        UWexpression
+            New expression with value in SI base units
+
+        Examples
+        --------
+        >>> velocity = uw.expression("v", uw.quantity(100, "km/h"))
+        >>> velocity_si = velocity.to_base_units()
+        >>> print(velocity_si.value)  # 27.78 (m/s)
+        """
+        import underworld3 as uw
+        return uw.to_base_units(self)
+
+    def to_reduced_units(self) -> 'UWexpression':
+        """
+        Simplify units by canceling common factors.
+
+        Delegates to uw.to_reduced_units() for the actual simplification.
+
+        Returns
+        -------
+        UWexpression
+            New expression with simplified units
+        """
+        import underworld3 as uw
+        return uw.to_reduced_units(self)
+
+    def to_compact(self) -> 'UWexpression':
+        """
+        Convert to most human-readable unit representation.
+
+        Automatically chooses unit prefixes (kilo, mega, micro, etc.)
+        to make the number more readable.
+
+        Delegates to uw.to_compact() for the actual conversion.
+
+        Returns
+        -------
+        UWexpression
+            New expression with compact units
+
+        Examples
+        --------
+        >>> length = uw.expression("L", uw.quantity(0.001, "km"))
+        >>> length_compact = length.to_compact()
+        >>> print(length_compact)  # 1.0 [meter]
+        """
+        import underworld3 as uw
+        return uw.to_compact(self)
 
     # =========================================================================
     # SymPy Compatibility
@@ -1007,58 +1102,43 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         return Symbol.__radd__(self, other)
 
     def __sub__(self, other):
-        """Subtraction - handle UWQuantity and UWexpression with unit conversion."""
+        """Subtraction - LAZY EVALUATION pattern.
+
+        When subtracting UWexpressions, we preserve both symbols in the tree
+        rather than doing eager arithmetic. This allows unwrap_for_evaluate()
+        to substitute the correct nondimensional values later.
+
+        The key insight is that if one operand is a coordinate (no units) and
+        the other has units, we CANNOT do the subtraction eagerly because:
+        - Coordinates are already in ND form (from mesh scaling)
+        - Unit-bearing quantities need to be nondimensionalized by .data
+
+        By keeping both symbols, unwrap_for_evaluate can process each one
+        correctly according to its type.
+        """
         from .quantities import UWQuantity
 
-        # Handle UWexpression - UWexpression
+        # Handle UWexpression - UWexpression: LAZY EVALUATION
+        # Keep both symbols in the tree - don't do eager arithmetic
         if isinstance(other, UWexpression):
-            self_units = self.units
-            other_units = other.units
+            # Delegate to SymPy Symbol subtraction - preserves both symbols
+            return Symbol.__sub__(self, other)
 
-            if self_units is not None and other_units is not None:
-                # Convert other to self's units for correct subtraction
-                try:
-                    from ..scaling import units as ureg
-                    other_converted = (other.value * other_units).to(self_units).magnitude
-                except Exception:
-                    other_converted = other.value
-            else:
-                other_converted = other.value
-
-            # Use self.value (not self.sym) for arithmetic to avoid UWQuantity Pint checks
-            result_value = self.value - other_converted
-            return UWexpression(
-                f"({self.name}-{other.name})",
-                result_value,
-                _unique_name_generation=True,
-                units=self_units
-            )
-
-        # Handle UWexpression - UWQuantity
+        # Handle UWexpression - UWQuantity: Wrap in UWexpression first (LAZY)
         if isinstance(other, UWQuantity):
-            # UWexpression - UWQuantity → UWexpression with preserved units
-            # For subtraction, units must be compatible - convert other to self's units
-            self_units = self.units
-            other_units = other.units
-
-            if self_units is not None and other_units is not None:
-                # Convert other to self's units for correct subtraction
-                try:
-                    other_converted = other._pint_qty.to(self_units).magnitude
-                except Exception:
-                    # Units incompatible - just subtract raw values
-                    other_converted = other.value
+            # Wrap the UWQuantity in a UWexpression to preserve it as a symbol
+            # This allows unwrap_for_evaluate to find and nondimensionalize it
+            if other._pint_qty is not None:
+                latex_name = f"{other._pint_qty:~L}"
             else:
-                other_converted = other.value
-
-            # Use self.value (not self.sym) for arithmetic to avoid UWQuantity Pint checks
-            result_value = self.value - other_converted
-            return UWexpression(
-                f"({self.name}-qty)",
-                result_value,
-                _unique_name_generation=True,
-                units=self_units  # Units preserved from expression
+                latex_name = str(other.value)
+            wrapped_other = UWexpression(
+                latex_name,
+                other,  # Store the full UWQuantity - Transparent Container
+                _unique_name_generation=True
             )
+            return Symbol.__sub__(self, wrapped_other)
+
         return Symbol.__sub__(self, other)
 
     def __rsub__(self, other):

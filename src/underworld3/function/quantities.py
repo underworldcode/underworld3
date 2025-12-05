@@ -365,19 +365,21 @@ class UWQuantity:
                 units=combined_units
             )
 
-        # Handle SymPy expressions
+        # Handle SymPy expressions - use LAZY EVALUATION like __add__
         if isinstance(other, sympy.Basic):
             if self._pint_qty is not None:
-                from ..units import get_units
-                other_units = get_units(other)
-                combined_units = self._pint_unit  # Subtraction preserves units
-                result_sym = self._value - other
-                return UWexpression(
-                    f"(qty-sympy)",
-                    result_sym,
-                    _unique_name_generation=True,
-                    units=combined_units
+                # Wrap self in UWexpression first, then subtract symbolically
+                # This preserves unit information AND the symbolic structure
+                # Use Pint's LaTeX format for readable names
+                latex_name = f"{self._pint_qty:~L}"
+                wrapped_self = UWexpression(
+                    latex_name,
+                    self,  # Store the full UWQuantity - Transparent Container
+                    _unique_name_generation=True
                 )
+                # Symbolic subtraction: UWexpression (symbol) - sympy expr
+                # Result preserves structure for differentiation
+                return wrapped_self - other
             else:
                 return self._value - other
 
@@ -395,20 +397,21 @@ class UWQuantity:
         # This handles: sympy.Basic - UWQuantity
         if isinstance(other, sympy.Basic):
             if self._pint_qty is not None:
-                from ..units import get_units
-                other_units = get_units(other)
-                # For subtraction, if other has units, use those; otherwise use inverted self units
-                if other_units is not None:
-                    combined_units = other_units  # other - self has other's units
-                else:
-                    combined_units = self._pint_unit  # Fallback to self's units
-                result_sym = other - self._value
-                return UWexpression(
-                    f"(sympy-qty)",
-                    result_sym,
-                    _unique_name_generation=True,
-                    units=combined_units
+                # LAZY EVALUATION approach (like __add__):
+                # Wrap self in UWexpression first, preserving the full UWQuantity.
+                # This ensures evaluate() knows the value has units and won't re-scale it.
+                #
+                # RED FLAG: Never embed bare numbers (self._value) in symbolic expressions!
+                # Bare numbers get re-dimensionalized during evaluation, causing unit bugs.
+                latex_name = f"{self._pint_qty:~L}"
+                wrapped_self = UWexpression(
+                    latex_name,
+                    self,  # Store the full UWQuantity - Transparent Container
+                    _unique_name_generation=True
                 )
+                # Symbolic subtraction: sympy expr - UWexpression (symbol)
+                # Result preserves structure and unit information for evaluation
+                return other - wrapped_self
             else:
                 return other - self._value
 
@@ -596,25 +599,21 @@ class UWQuantity:
                     # Neither has units - just delegate to SymPy
                     return NotImplemented
 
-            # Handle SymPy expressions - wrap in UWexpression to preserve units
+            # Handle SymPy expressions - use LAZY EVALUATION
+            # RED FLAG: Never embed bare numbers (self._value) in symbolic expressions!
+            # Bare numbers get re-dimensionalized during evaluation, causing unit bugs.
             if isinstance(other, sympy.Basic):
                 if self._pint_qty is not None:
-                    sympy_quotient = self._value / other
-                    # If result is a number, convert to Python float for UWQuantity
-                    if sympy_quotient.is_number:
-                        return UWexpression(
-                            f"({self}/sympy)",
-                            UWQuantity(float(sympy_quotient), self._pint_unit),
-                            _unique_name_generation=True
-                        )
-                    else:
-                        # Symbolic result - store sympy expr with units
-                        return UWexpression(
-                            f"({self}/sympy)",
-                            sympy_quotient,
-                            _unique_name_generation=True,
-                            units=self._pint_unit
-                        )
+                    # LAZY EVALUATION approach:
+                    # Wrap self in UWexpression first, preserving the full UWQuantity.
+                    latex_name = f"{self._pint_qty:~L}"
+                    wrapped_self = UWexpression(
+                        latex_name,
+                        self,  # Store the full UWQuantity - Transparent Container
+                        _unique_name_generation=True
+                    )
+                    # Symbolic division: UWexpression (symbol) / sympy expr
+                    return wrapped_self / other
                 else:
                     # No units - return plain SymPy result
                     return self._value / other
@@ -626,39 +625,32 @@ class UWQuantity:
                 return UWQuantity(self._value / other)
 
     def __rtruediv__(self, other):
-        """Right division: other / self."""
+        """Right division: other / self.
+
+        LAZY EVALUATION approach (same as __rsub__ and __add__):
+        Wrap self in UWexpression first, preserving the full UWQuantity.
+        This ensures evaluate() knows the value has units and won't re-scale it.
+
+        RED FLAG: Never embed bare numbers (self._value) in symbolic expressions!
+        Bare numbers get re-dimensionalized during evaluation, causing unit bugs.
+        """
         from .expressions import UWexpression
 
-        # Handle SymPy types - return UWexpression with combined units
-        # other / self → units = units(other) / units(self)
+        # Handle SymPy types - use LAZY EVALUATION
         if isinstance(other, sympy.Basic):
             if self._pint_qty is not None:
-                from ..units import get_units
-                from ..scaling import units as ureg
-                inverted_units = 1 / self._pint_unit  # Unit / Unit = Unit
-
-                # Compute combined units: get_units(other) / self.units
-                other_units = get_units(other)
-                if other_units is not None:
-                    # Unit / Unit = Unit (no .units needed)
-                    combined_units = other_units / self._pint_unit
-                else:
-                    combined_units = inverted_units
-
-                sympy_quotient = other / self._value
-                if sympy_quotient.is_number:
-                    return UWexpression(
-                        f"(sympy/{self})",
-                        UWQuantity(float(sympy_quotient), combined_units),
-                        _unique_name_generation=True
-                    )
-                else:
-                    return UWexpression(
-                        f"(sympy/{self})",
-                        sympy_quotient,
-                        _unique_name_generation=True,
-                        units=combined_units
-                    )
+                # LAZY EVALUATION approach:
+                # Wrap self in UWexpression first, preserving the full UWQuantity.
+                # This ensures evaluate() knows the value has units and won't re-scale it.
+                latex_name = f"{self._pint_qty:~L}"
+                wrapped_self = UWexpression(
+                    latex_name,
+                    self,  # Store the full UWQuantity - Transparent Container
+                    _unique_name_generation=True
+                )
+                # Symbolic division: sympy expr / UWexpression (symbol)
+                # Result preserves structure and unit information for evaluation
+                return other / wrapped_self
             else:
                 return other / self._value
 

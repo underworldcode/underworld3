@@ -4,7 +4,7 @@ Annulus mesh generation functions for Underworld3.
 This module contains mesh generation functions for 2D cylindrical/annular geometries.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from enum import Enum
 
 import tempfile
@@ -24,6 +24,10 @@ import underworld3.cython.petsc_discretisation
 
 import sympy
 
+# Note: Mesh coordinates are always in model units
+# The model.to_model_magnitude() method handles unit conversion for UWQuantity,
+# UWexpression, and plain numbers (pass-through for plain numbers)
+
 
 @timing.routine_timer_decorator
 def QuarterAnnulus(
@@ -38,6 +42,15 @@ def QuarterAnnulus(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    # Convert unit-aware quantities to model units
+    # This enables: QuarterAnnulus(radiusOuter=uw.quantity(6370, "km"), ...)
+    # The expected_dimension parameter warns if plain numbers are passed when units are active
+    model = uw.get_default_model()
+    radiusOuter = model.to_model_magnitude(radiusOuter, expected_dimension='[length]')
+    radiusInner = model.to_model_magnitude(radiusInner, expected_dimension='[length]')
+    cellSize = model.to_model_magnitude(cellSize, expected_dimension='[length]')
+    # angle is in degrees, not a length - don't convert
+
     class boundaries(Enum):
         Lower = 1
         Upper = 2
@@ -202,6 +215,18 @@ def Annulus(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    # Convert unit-aware quantities to model units
+    # This enables: Annulus(radiusOuter=uw.quantity(6370, "km"), ...)
+    # The expected_dimension parameter warns if plain numbers are passed when units are active
+    model = uw.get_default_model()
+    radiusOuter = model.to_model_magnitude(radiusOuter, expected_dimension='[length]')
+    radiusInner = model.to_model_magnitude(radiusInner, expected_dimension='[length]')
+    cellSize = model.to_model_magnitude(cellSize, expected_dimension='[length]')
+    if cellSizeOuter is not None:
+        cellSizeOuter = model.to_model_magnitude(cellSizeOuter, expected_dimension='[length]')
+    if cellSizeInner is not None:
+        cellSizeInner = model.to_model_magnitude(cellSizeInner, expected_dimension='[length]')
+
     class boundaries(Enum):
         Lower = 1
         Upper = 2
@@ -426,6 +451,13 @@ def SegmentofAnnulus(
         verbose=True
     )
     """
+    # Convert unit-aware quantities to model units
+    # The expected_dimension parameter warns if plain numbers are passed when units are active
+    model = uw.get_default_model()
+    radiusOuter = model.to_model_magnitude(radiusOuter, expected_dimension='[length]')
+    radiusInner = model.to_model_magnitude(radiusInner, expected_dimension='[length]')
+    cellSize = model.to_model_magnitude(cellSize, expected_dimension='[length]')
+    # angleExtent is in degrees, not a length - don't convert
 
     class boundaries(Enum):
         Lower = 1
@@ -620,6 +652,16 @@ def AnnulusWithSpokes(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    # Convert unit-aware quantities to model units
+    # The expected_dimension parameter warns if plain numbers are passed when units are active
+    model = uw.get_default_model()
+    radiusOuter = model.to_model_magnitude(radiusOuter, expected_dimension='[length]')
+    radiusInner = model.to_model_magnitude(radiusInner, expected_dimension='[length]')
+    cellSizeOuter = model.to_model_magnitude(cellSizeOuter, expected_dimension='[length]')
+    if cellSizeInner is not None:
+        cellSizeInner = model.to_model_magnitude(cellSizeInner, expected_dimension='[length]')
+    # spokes is a count, not a length - don't convert
+
     class boundaries(Enum):
         Lower = 10
         LowerPlus = 11
@@ -874,6 +916,20 @@ def AnnulusInternalBoundary(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    # Convert unit-aware quantities to model units
+    # The expected_dimension parameter warns if plain numbers are passed when units are active
+    model = uw.get_default_model()
+    radiusOuter = model.to_model_magnitude(radiusOuter, expected_dimension='[length]')
+    radiusInternal = model.to_model_magnitude(radiusInternal, expected_dimension='[length]')
+    radiusInner = model.to_model_magnitude(radiusInner, expected_dimension='[length]')
+    cellSize = model.to_model_magnitude(cellSize, expected_dimension='[length]')
+    if cellSize_Outer is not None:
+        cellSize_Outer = model.to_model_magnitude(cellSize_Outer, expected_dimension='[length]')
+    if cellSize_Inner is not None:
+        cellSize_Inner = model.to_model_magnitude(cellSize_Inner, expected_dimension='[length]')
+    if cellSize_Internal is not None:
+        cellSize_Internal = model.to_model_magnitude(cellSize_Internal, expected_dimension='[length]')
+
     class boundaries(Enum):
         Lower = 1
         Internal = 2
@@ -1073,6 +1129,22 @@ def DiscInternalBoundaries(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    # Convert unit-aware quantities to model units
+    # The expected_dimension parameter warns if plain numbers are passed when units are active
+    model = uw.get_default_model()
+    radiusUpper = model.to_model_magnitude(radiusUpper, expected_dimension='[length]')
+    radiusInternal = model.to_model_magnitude(radiusInternal, expected_dimension='[length]')
+    radiusLower = model.to_model_magnitude(radiusLower, expected_dimension='[length]')
+    cellSize = model.to_model_magnitude(cellSize, expected_dimension='[length]')
+    if cellSize_Upper is not None:
+        cellSize_Upper = model.to_model_magnitude(cellSize_Upper, expected_dimension='[length]')
+    if cellSize_Lower is not None:
+        cellSize_Lower = model.to_model_magnitude(cellSize_Lower, expected_dimension='[length]')
+    if cellSize_Internal is not None:
+        cellSize_Internal = model.to_model_magnitude(cellSize_Internal, expected_dimension='[length]')
+    if cellSize_Centre is not None:
+        cellSize_Centre = model.to_model_magnitude(cellSize_Centre, expected_dimension='[length]')
+
     class boundaries(Enum):
         Lower = 1
         Internal = 2

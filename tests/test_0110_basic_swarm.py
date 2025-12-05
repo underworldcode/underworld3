@@ -50,7 +50,8 @@ def test_create_swarmvariable_with_units(setup_data):
     # Test scalar variable with units
     density = swarm.add_variable(name="density", size=1, units="kg/m^3")
     assert density.units is not None
-    assert "kg" in str(density.units)  # Allow for Pint formatting variations
+    # Pint uses full names like "kilogram" instead of abbreviations like "kg"
+    assert "kilogram" in str(density.units) or "kg" in str(density.units)
 
     # Test vector variable with units
     velocity = swarm.add_variable(name="velocity", size=2, units="m/s")

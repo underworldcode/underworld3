@@ -121,8 +121,31 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self.vtype = vtype
 
         # Store unit metadata for variable
-        self._units = units
-        self._units_backend = units_backend
+        # Convert string units to Pint Unit objects for consistency with MeshVariable
+        if units is not None:
+            if isinstance(units, str):
+                # Parse string units to Pint Unit object
+                # uw.units('K') returns a Quantity (1 kelvin), so we extract .units to get the Unit
+                self._units = uw.units(units).units
+            elif hasattr(units, "dimensionality"):
+                # Already a pint.Unit object
+                self._units = units
+            else:
+                # Fallback: store as-is (shouldn't happen)
+                self._units = units
+
+            # Initialize units backend properly
+            from underworld3.utilities.units_mixin import PintBackend
+
+            if units_backend is None or units_backend == "pint":
+                self._units_backend = PintBackend()
+            else:
+                raise ValueError(
+                    f"Unknown units backend: {units_backend}. Only 'pint' is supported."
+                )
+        else:
+            self._units = None
+            self._units_backend = None
 
         # STRICT UNITS MODE CHECK
         # Enforce units-scales contract: variables with units require reference quantities
@@ -265,7 +288,16 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     @units.setter
     def units(self, value):
         """Set the units for this variable."""
-        self._units = value
+        # Convert string units to Pint Unit objects for consistency
+        if value is not None and isinstance(value, str):
+            self._units = uw.units(value).units
+        else:
+            self._units = value
+
+    @property
+    def has_units(self):
+        """Check if this variable has units."""
+        return self._units is not None
 
     def _create_variable_array(self, initial_data=None):
         """

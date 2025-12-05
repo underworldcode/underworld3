@@ -1,9 +1,14 @@
 """
 Test unit conversion methods on composite expressions.
 
-These tests ensure that .to_base_units() and .to_reduced_units()
+These tests ensure that uw.to_base_units() and uw.to_reduced_units()
 work correctly on composite expressions containing UWexpression symbols,
 preventing double-application of conversion factors during evaluation.
+
+Design Note (2025-12):
+- Unit conversion functions are in units.py as the SINGLE SOURCE OF TRUTH
+- Use uw.to_base_units(expr) not expr.to_base_units() for composite expressions
+- Composite expressions (SymPy Pow, Mul, etc.) don't have methods - use uw.* functions
 """
 
 import pytest
@@ -17,16 +22,16 @@ class TestUnitConversionCompositeExpressions:
     """
     Test unit conversion methods on composite expressions.
 
-    CRITICAL: These tests verify that unit conversion methods like
-    .to_base_units() and .to_reduced_units() preserve evaluation results
-    for composite expressions containing UWexpression symbols.
+    CRITICAL: These tests verify that uw.to_base_units() and uw.to_reduced_units()
+    preserve evaluation results for composite expressions containing UWexpression symbols.
 
     The bug: Previously, these methods embedded conversion factors in the
     expression tree, causing double-application during nondimensional
     evaluation cycles.
 
-    The fix: For composite expressions, only display units are changed,
-    not the expression tree itself.
+    The fix: For composite expressions (raw SymPy Pow, Mul, etc.), the base functions
+    return the expression unchanged with a warning - the expression tree preserves
+    units through evaluation. Use uw.get_units() to check units.
     """
 
     def setup_method(self):
@@ -53,18 +58,19 @@ class TestUnitConversionCompositeExpressions:
 
     def test_to_base_units_composite_expression(self):
         """
-        Test .to_base_units() on composite expression with UWexpression symbols.
+        Test uw.to_base_units() on composite expression with UWexpression symbols.
 
         THIS IS THE BUG WE DISCOVERED:
         - sqrt_2_kt = ((2 * kappa_phys * t_now))**0.5
         - Units: megayear^0.5 * meter / second^0.5
         - evaluate(sqrt_2_kt) = 25122.7 m ✅
-        - sqrt_2kt_m = sqrt_2_kt.to_base_units()  # Convert to meters
-        - evaluate(sqrt_2kt_m) was 1.41e11 m ❌ (wrong!)
-        - Should be: 25122.7 m ✅ (same as original)
+        - sqrt_2kt_m = uw.to_base_units(sqrt_2_kt)  # Attempt to convert
+        - For composite SymPy expressions, returns unchanged with warning
+        - evaluate() still works correctly because units are preserved in tree
 
-        The fix: .to_base_units() now only changes display units for
-        composite expressions, preventing double-application of conversion factors.
+        Design (2025-12): For composite SymPy expressions (Pow, Mul, etc.),
+        uw.to_base_units() returns unchanged - the expression tree preserves
+        units through evaluation. Use uw.get_units() to check units.
         """
         # Create composite expression
         kappa_phys = uw.quantity(1e-6, "m**2/s")
@@ -81,28 +87,28 @@ class TestUnitConversionCompositeExpressions:
         result_orig = uw.function.evaluate(sqrt_2_kt, self.mesh.X.coords[60:62])
         val_orig = float(result_orig.flat[0].magnitude if hasattr(result_orig.flat[0], 'magnitude') else result_orig.flat[0])
 
-        # Convert to base units (should simplify to just "meter")
-        with pytest.warns(UserWarning, match="changing display units only"):
-            sqrt_2kt_m = sqrt_2_kt.to_base_units()
+        # Attempt to convert to base units - should warn and return unchanged
+        # (composite SymPy expressions preserve units through evaluation)
+        with pytest.warns(UserWarning, match="Unit conversion on SymPy"):
+            sqrt_2kt_m = uw.to_base_units(sqrt_2_kt)
 
-        # Check units simplified
-        converted_units = uw.get_units(sqrt_2kt_m)
-        assert str(converted_units) == "meter"
+        # Expression is returned unchanged - same object
+        assert sqrt_2kt_m is sqrt_2_kt, "Composite expression should be returned unchanged"
 
-        # Evaluate converted - MUST match original value
+        # Evaluate again - MUST match original value (expression unchanged)
         result_conv = uw.function.evaluate(sqrt_2kt_m, self.mesh.X.coords[60:62])
         val_conv = float(result_conv.flat[0].magnitude if hasattr(result_conv.flat[0], 'magnitude') else result_conv.flat[0])
 
-        # Critical assertion: Values must match
+        # Critical assertion: Values must match (expression was unchanged)
         assert np.allclose(val_orig, val_conv, rtol=1e-6), \
-            f".to_base_units() changed evaluation result! Original: {val_orig:.2f} m, Converted: {val_conv:.2e} m"
+            f"uw.to_base_units() should not change evaluation! Original: {val_orig:.2f} m, After: {val_conv:.2e} m"
 
     def test_to_reduced_units_composite_expression(self):
         """
-        Test .to_reduced_units() on composite expression with UWexpression symbols.
+        Test uw.to_reduced_units() on composite expression with UWexpression symbols.
 
-        Similar to .to_base_units(), but uses Pint's to_reduced_units() for
-        unit simplification by canceling common factors.
+        Similar to uw.to_base_units() - for composite SymPy expressions,
+        returns unchanged with a warning.
         """
         # Create composite expression
         kappa_phys = uw.quantity(1e-6, "m**2/s")
@@ -113,14 +119,16 @@ class TestUnitConversionCompositeExpressions:
         result_orig = uw.function.evaluate(sqrt_2_kt, self.mesh.X.coords[60:62])
         val_orig = float(result_orig.flat[0].magnitude if hasattr(result_orig.flat[0], 'magnitude') else result_orig.flat[0])
 
-        # Reduce units (should simplify)
-        with pytest.warns(UserWarning, match="changing display units only"):
-            sqrt_2kt_reduced = sqrt_2_kt.to_reduced_units()
+        # Attempt to reduce units - should warn and return unchanged
+        with pytest.warns(UserWarning, match="SymPy"):
+            sqrt_2kt_reduced = uw.to_reduced_units(sqrt_2_kt)
 
-        # Check units simplified
+        # Expression is returned unchanged - same object
+        assert sqrt_2kt_reduced is sqrt_2_kt, "Composite expression should be returned unchanged"
+
+        # Units are still the original complex units (no change)
         reduced_units = uw.get_units(sqrt_2kt_reduced)
-        assert "meter" in str(reduced_units)
-        # Should not have complex fractional powers anymore
+        assert "megayear" in str(reduced_units)  # Still has original units
 
         # Evaluate reduced - MUST match original value
         result_reduced = uw.function.evaluate(sqrt_2kt_reduced, self.mesh.X.coords[60:62])
@@ -128,13 +136,13 @@ class TestUnitConversionCompositeExpressions:
 
         # Critical assertion: Values must match
         assert np.allclose(val_orig, val_reduced, rtol=1e-6), \
-            f".to_reduced_units() changed evaluation result! Original: {val_orig:.2f} m, Reduced: {val_reduced:.2e} m"
+            f"uw.to_reduced_units() should not change evaluation! Original: {val_orig:.2f} m, Reduced: {val_reduced:.2e} m"
 
     def test_to_compact_still_works(self):
         """
-        Test that .to_compact() still works correctly.
+        Test that uw.to_compact() works correctly on composite expressions.
 
-        .to_compact() was already working - this test ensures it stays working.
+        For composite SymPy expressions, uw.to_compact() returns unchanged with warning.
         """
         # Create composite expression
         kappa_phys = uw.quantity(1e-6, "m**2/s")
@@ -145,8 +153,12 @@ class TestUnitConversionCompositeExpressions:
         result_orig = uw.function.evaluate(sqrt_2_kt, self.mesh.X.coords[60:62])
         val_orig = float(result_orig.flat[0].magnitude if hasattr(result_orig.flat[0], 'magnitude') else result_orig.flat[0])
 
-        # Compact units (automatic readable selection)
-        sqrt_2kt_compact = sqrt_2_kt.to_compact()
+        # Attempt to compact units - should warn and return unchanged
+        with pytest.warns(UserWarning, match="SymPy"):
+            sqrt_2kt_compact = uw.to_compact(sqrt_2_kt)
+
+        # Expression is returned unchanged - same object
+        assert sqrt_2kt_compact is sqrt_2_kt, "Composite expression should be returned unchanged"
 
         # Evaluate compact - MUST match original value
         result_compact = uw.function.evaluate(sqrt_2kt_compact, self.mesh.X.coords[60:62])
@@ -154,7 +166,7 @@ class TestUnitConversionCompositeExpressions:
 
         # Critical assertion: Values must match
         assert np.allclose(val_orig, val_compact, rtol=1e-6), \
-            f".to_compact() changed evaluation result! Original: {val_orig:.2f} m, Compact: {val_compact:.2e} m"
+            f"uw.to_compact() should not change evaluation! Original: {val_orig:.2f} m, Compact: {val_compact:.2e} m"
 
     def test_simple_expression_still_converts(self):
         """
