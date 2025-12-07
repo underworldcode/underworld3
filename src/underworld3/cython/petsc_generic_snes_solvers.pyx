@@ -381,8 +381,14 @@ class SolverBaseClass(uw_object):
                 bc = (0,)*self.Unknowns.u.shape[1]
                 self.add_natural_bc(bc, "Null_Boundary")
 
+        if verbose:
+            uw.pprint("Build pointwise functions")
         self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
+        if verbose:
+            uw.pprint("Set up spatial discretisation")
         self._setup_discretisation(verbose)
+        if verbose:
+            uw.pprint("Setup solver")
         self._setup_solver(verbose)
 
         self.is_setup = True
@@ -507,6 +513,9 @@ class SolverBaseClass(uw_object):
 
         # ======================================================================
         # Apply non-dimensional scaling to BC values if ND is enabled
+        # IMPORTANT: Only scale numeric values (floats, UWQuantity), NOT symbolic
+        # expressions. Symbolic expressions (like Gamma_N, v_soln.sym) go through
+        # the standard unwrap() pipeline during JIT compilation.
         # ======================================================================
         if uw.is_nondimensional_scaling_active():
             # Get the field variable for this f_id
@@ -519,20 +528,36 @@ class SolverBaseClass(uw_object):
                 # For other field IDs, try to get from Unknowns (future-proofing)
                 pass
 
-            # If we have a field variable with a scaling coefficient, scale the BCs
+            # If we have a field variable with a scaling coefficient, scale numeric BCs
             if field_var is not None and hasattr(field_var, 'scaling_coefficient'):
                 scale = field_var.scaling_coefficient
                 if scale != 1.0 and scale != 0.0:
-                    # Scale BC values: dimensional → ND by dividing by scale
+                    # Scale ONLY numeric values: dimensional → ND by dividing by scale
                     # This converts e.g. T=1000K to T*=1000/1000=1.0 (ND)
+                    # Symbolic expressions are left unchanged - they go through unwrap()
+                    def is_numeric_only(val):
+                        """Check if value is a pure number (no symbols)."""
+                        if val == sympy.oo or val == -sympy.oo:
+                            return False  # Don't scale infinity
+                        if isinstance(val, (int, float)):
+                            return True
+                        if isinstance(val, sympy.Basic):
+                            # Check if it has any free symbols (i.e., is it symbolic?)
+                            # Pure numbers like sympy.Float(1.0) have no free_symbols
+                            return len(val.free_symbols) == 0
+                        return False
+
                     scaled_conds = []
                     for val in conds:
                         if val == sympy.oo or val == -sympy.oo:
                             # Don't scale infinity (unconstrained components)
                             scaled_conds.append(val)
-                        else:
-                            # Scale the value
+                        elif is_numeric_only(val):
+                            # Scale only pure numeric values
                             scaled_conds.append(val / scale)
+                        else:
+                            # Symbolic expression - leave unchanged, will go through unwrap()
+                            scaled_conds.append(val)
                     conds = scaled_conds
 
         sympy_fn = sympy.Matrix(conds).as_immutable()
