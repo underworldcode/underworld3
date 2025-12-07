@@ -232,6 +232,13 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     else:
         pv_mesh = point_cloud.delaunay_3d(alpha=alpha)
 
+    # Propagate metadata from point_cloud to the triangulated mesh
+    # PyVista's delaunay methods return a new object that doesn't preserve custom attributes
+    if hasattr(point_cloud, "coord_array"):
+        pv_mesh.coord_array = point_cloud.coord_array
+    if hasattr(point_cloud, "units"):
+        pv_mesh.units = point_cloud.units
+
     return pv_mesh
 
 
