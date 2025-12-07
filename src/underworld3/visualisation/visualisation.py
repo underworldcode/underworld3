@@ -178,25 +178,26 @@ def meshVariable_to_pv_cloud(meshVar):
     import pyvista as pv
     import underworld3 as uw
 
-    # Use non-dimensional [0-1] coordinates for PyVista (same as mesh_to_pv_mesh)
-    # PyVista only needs coordinates for spatial positioning (visualization)
-    # evaluate() expects non-dimensional coords to query PETSc KDTrees
-    coords_nd = np.asarray(meshVar.coords, dtype=np.double)
+    # Get coordinates from the mesh variable
+    # These may be dimensional (UnitAwareArray with meters) when units are active
+    # The alpha parameter in meshVariable_to_pv_mesh_object is now computed from
+    # these coordinates directly, ensuring scale consistency
+    coords = np.asarray(meshVar.coords, dtype=np.double)
 
-    points = np.zeros((coords_nd.shape[0], 3))
-    points[:, 0] = coords_nd[:, 0]
-    points[:, 1] = coords_nd[:, 1]
+    points = np.zeros((coords.shape[0], 3))
+    points[:, 0] = coords[:, 0]
+    points[:, 1] = coords[:, 1]
 
     if meshVar.mesh.dim == 2:
         points[:, 2] = 0.0
     else:
-        points[:, 2] = coords_nd[:, 2]
+        points[:, 2] = coords[:, 2]
 
     point_cloud = pv.PolyData(points)
 
     # Store units metadata for labeling (same as mesh_to_pv_mesh)
     point_cloud.units = meshVar.mesh.units if meshVar.mesh.units is not None else uw.units.dimensionless
-    # Store original coordinate array for proper evaluation (same as mesh_to_pv_mesh)
+    # Store original coordinate array for proper evaluation
     point_cloud.coord_array = meshVar.coords
 
     return point_cloud
@@ -207,13 +208,24 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     This is redundant if the meshVariable degree is 1 (the original mesh exactly
     represents the data)"""
 
+    import numpy as np
+
     mesh = meshVar.mesh
     dim = mesh.dim
 
-    if alpha is None:
-        alpha = mesh.get_max_radius()
-
     point_cloud = meshVariable_to_pv_cloud(meshVar)
+
+    if alpha is None:
+        # Compute alpha from the point cloud coordinates themselves
+        # This ensures consistency between coordinate scale and alpha parameter
+        # mesh.get_max_radius() returns nondimensional values but coords may be
+        # dimensional when units are active - causing Delaunay to fail
+        points = point_cloud.points
+        coord_range = points.max() - points.min()
+        # Use a fraction of the coordinate range as a reasonable alpha
+        # This approximates the mesh element size
+        n_elements_estimate = max(10, len(points) ** (1.0 / dim))  # rough estimate
+        alpha = coord_range / n_elements_estimate * 2.0  # 2x for safety margin
 
     if dim == 2:
         pv_mesh = point_cloud.delaunay_2d(alpha=alpha)
