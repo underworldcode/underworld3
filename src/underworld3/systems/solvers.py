@@ -692,6 +692,84 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     #     self.is_setup = False
     #     self._continuity_rhs.sym = value
 
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r"""
+        Calculates an appropriate advective timestep for the Stokes solver.
+
+        The Stokes equations are quasi-static (no time derivative ∂v/∂t),
+        so there is no diffusive CFL constraint. The only relevant timescale
+        is the advective one: how long it takes material to cross an element.
+
+        This method computes a per-element timestep:
+            dt_i = h_i / |v_i|
+
+        where h_i is the element radius and v_i is the velocity at the element
+        centroid, then returns the global minimum. This is more accurate than
+        using global max velocity with global min element size, especially for
+        non-uniform meshes with spatially varying velocity.
+
+        Returns:
+            Pint Quantity or float: The advective timestep with physical time units
+            if a model with reference scales is available, otherwise nondimensional.
+        """
+
+        from mpi4py import MPI
+
+        # Evaluate velocity at element centroids (consistent with AdvDiff)
+        vel = uw.function.evaluate(self.u.sym, self.mesh._centroids)
+
+        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(vel, "units") and vel.units is not None:
+            vel = uw.non_dimensionalise(vel)
+        elif hasattr(vel, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            vel = vel.magnitude
+
+        # Ensure vel is a plain numpy array
+        vel = np.asarray(vel)
+
+        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
+        vel = np.squeeze(vel)
+
+        # Handle edge case of single element (ensure 2D)
+        if vel.ndim == 1:
+            vel = vel.reshape(1, -1)
+
+        # Get per-element velocity magnitudes
+        vel_magnitudes = np.linalg.norm(vel, axis=1)
+
+        # Get per-element radii (characteristic element size)
+        element_radii = self.mesh._radii
+
+        # Compute per-element advective timestep: dt_i = h_i / |v_i|
+        # Avoid division by zero for elements with zero velocity
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dt_per_element = np.where(
+                vel_magnitudes > 0,
+                element_radii / vel_magnitudes,
+                np.inf
+            )
+
+        # Get local minimum timestep
+        min_dt_local = np.min(dt_per_element) if len(dt_per_element) > 0 else np.inf
+
+        # Get global minimum timestep (parallel-safe)
+        comm = uw.mpi.comm
+        min_dt_glob = comm.allreduce(min_dt_local, op=MPI.MIN)
+
+        # If all velocities are zero, return infinity
+        if np.isinf(min_dt_glob):
+            return np.inf
+
+        # Dimensionalise to physical time
+        try:
+            return uw.dimensionalise(np.squeeze(min_dt_glob), {'[time]': 1})
+        except Exception:
+            return np.squeeze(min_dt_glob)
+
 
 class SNES_VE_Stokes(SNES_Stokes):
     r"""
@@ -1470,146 +1548,131 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the given
-        mesh and diffusivity configuration. This is an implicit solver
-        so the $\delta_t$ should be interpreted as:
+        Calculates an appropriate timestep for the advection-diffusion solver.
 
-            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+        This is an implicit solver so the $\delta_t$ returned is the minimum of:
 
-            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+            - ${\delta t}_\textrm{diff}$: typical time for the diffusion front to propagate across an element
+            - ${\delta t}_\textrm{adv}$: typical element-crossing time for a fluid parcel
+
+        Returns:
+            Pint Quantity or float: The recommended timestep with physical time units
+            if a model with reference scales is available, otherwise nondimensional.
         """
-
-        # Handle different types of diffusivity parameter
-        from ..function.expressions import UWexpression
-        from ..function.quantities import UWQuantity
-
-        diff_param = self.constitutive_model.Parameters.diffusivity
-
-        if isinstance(diff_param, (UWexpression, UWQuantity)):
-            # UWexpression or UWQuantity - need to get ND value, not physical value!
-            # Check if the parameter has units that need conversion to ND
-            has_units = False
-            if hasattr(diff_param, 'units') and diff_param.units is not None:
-                has_units = True
-            elif hasattr(diff_param, '_has_pint_qty') and diff_param._has_pint_qty:
-                has_units = True
-
-            if has_units:
-                # Parameter has physical units - convert to ND using model scales
-                model = uw.get_default_model()
-                if model and hasattr(model, 'fundamental_scales') and model.fundamental_scales:
-                    # Get diffusivity scale: L^2 / T
-                    L = model.fundamental_scales.get('length')
-                    T = model.fundamental_scales.get('time')
-                    if L is not None and T is not None:
-                        # Compute diffusivity scale
-                        if hasattr(L, 'magnitude'):
-                            L_val = L.magnitude
-                        else:
-                            L_val = float(L)
-                        if hasattr(T, 'magnitude'):
-                            T_val = T.magnitude
-                        else:
-                            T_val = float(T)
-                        diff_scale = L_val**2 / T_val
-
-                        # Get physical diffusivity value
-                        if hasattr(diff_param, '_pint_qty'):
-                            # Convert to base units first
-                            phys_val = float(diff_param._pint_qty.to_base_units().magnitude)
-                        elif hasattr(diff_param, 'magnitude'):
-                            phys_val = float(diff_param.magnitude)
-                        else:
-                            phys_val = float(diff_param.value)
-
-                        # Convert to ND: physical / scale
-                        max_diffusivity = phys_val / diff_scale
-                    else:
-                        # No scales available - use raw value
-                        max_diffusivity = diff_param.magnitude if hasattr(diff_param, 'magnitude') else diff_param.value
-                else:
-                    # No model scales - use raw value
-                    max_diffusivity = diff_param.magnitude if hasattr(diff_param, 'magnitude') else diff_param.value
-            else:
-                # No units - already in ND form
-                if hasattr(diff_param, 'magnitude'):
-                    max_diffusivity = diff_param.magnitude
-                else:
-                    max_diffusivity = diff_param.value
-
-        elif isinstance(diff_param, sympy.Expr):
-            # Pure SymPy expression - needs evaluation
-            if uw.function.fn_is_constant_expr(diff_param):
-                max_diffusivity = uw.function.evaluate(
-                    diff_param,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                # Spatially-varying expression - evaluate over mesh
-                k = uw.function.evaluate(
-                    sympy.sympify(diff_param),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-                max_diffusivity = k.max()
-        else:
-            # Numeric value - use directly
-            max_diffusivity = diff_param
 
         ### required modules
         from mpi4py import MPI
 
-        # Extract numeric value if max_diffusivity is a UWQuantity
-        # (can happen if evaluate() returns unit-aware result)
-        if hasattr(max_diffusivity, 'magnitude'):
-            max_diffusivity_value = float(max_diffusivity.magnitude)
+        # Use the unified .K property from the constitutive model
+        # This provides diffusivity for diffusion models
+        K = self.constitutive_model.K
+
+        # Evaluate the diffusivity (handles constant and spatially-varying cases)
+        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
+            K_sym = K.sym if hasattr(K, 'sym') else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+                diffusivity = diffusivity.max()
         else:
-            max_diffusivity_value = float(max_diffusivity)
+            diffusivity = K
 
-        ## get global max dif value
+        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            diffusivity = diffusivity.magnitude
+
+        # Ensure diffusivity is a plain numpy scalar
+        max_diffusivity = float(np.asarray(diffusivity).max())
+
+        ## get global max diffusivity value
         comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity_value, op=MPI.MAX)
+        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ### get the velocity values
+        ### get the velocity values at element centroids (nondimensional)
         vel = uw.function.evaluate(
             self.V_fn,
             self.mesh._centroids,
         )
 
-        # Extract magnitude if vel is a UWQuantity (unit-aware)
-        if hasattr(vel, "magnitude"):
+        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(vel, "units") and vel.units is not None:
+            vel = uw.non_dimensionalise(vel)
+        elif hasattr(vel, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
             vel = vel.magnitude
 
-        ### get global velocity from velocity field
-        max_magvel = np.linalg.norm(vel, axis=1).max()
-        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+        # Ensure vel is a plain numpy array
+        vel = np.asarray(vel)
 
-        ## get radius
-        min_dx = self.mesh.get_min_radius()
+        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
+        vel = np.squeeze(vel)
 
-        ## estimate dt of adv and diff components
+        # Handle edge case of single element (ensure 2D)
+        if vel.ndim == 1:
+            vel = vel.reshape(1, -1)
 
-        self.dt_adv = 0.0
-        self.dt_diff = 0.0
+        # Get per-element velocity magnitudes
+        vel_magnitudes = np.linalg.norm(vel, axis=1)
 
-        if max_magvel_glob == 0.0:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            self.dt_diff = dt_diff
-            dt_estimate = dt_diff
-        elif diffusivity_glob == 0.0:
-            dt_adv = min_dx / max_magvel_glob
-            self.dt_adv = dt_adv
-            dt_estimate = dt_adv
+        # Get per-element radii (characteristic element size)
+        element_radii = self.mesh._radii
+
+        ## estimate dt of adv and diff components using per-element approach
+        ## dt_adv_i = h_i / |v_i| for advection
+        ## dt_diff_i = h_i^2 / κ for diffusion (using global κ for now)
+
+        # Per-element diffusive timestep (all elements use same diffusivity)
+        if diffusivity_glob > 0:
+            dt_diff_per_element = (element_radii ** 2) / diffusivity_glob
+            min_dt_diff_local = np.min(dt_diff_per_element) if len(dt_diff_per_element) > 0 else np.inf
         else:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            self.dt_diff = dt_diff
-            dt_adv = min_dx / max_magvel_glob
-            self.dt_adv = dt_adv
+            min_dt_diff_local = np.inf
 
-            dt_estimate = min(dt_diff, dt_adv)
+        # Per-element advective timestep
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dt_adv_per_element = np.where(
+                vel_magnitudes > 0,
+                element_radii / vel_magnitudes,
+                np.inf
+            )
+        min_dt_adv_local = np.min(dt_adv_per_element) if len(dt_adv_per_element) > 0 else np.inf
 
-        return _apply_unit_aware_scaling(np.squeeze(dt_estimate), self.V_fn, self.mesh)
+        # Get global minimum timesteps (parallel-safe)
+        min_dt_diff_glob = comm.allreduce(min_dt_diff_local, op=MPI.MIN)
+        min_dt_adv_glob = comm.allreduce(min_dt_adv_local, op=MPI.MIN)
+
+        # Store for user inspection
+        self.dt_adv = min_dt_adv_glob if not np.isinf(min_dt_adv_glob) else 0.0
+        self.dt_diff = min_dt_diff_glob if not np.isinf(min_dt_diff_glob) else 0.0
+
+        # Take overall minimum (respecting infinity for zero velocity/diffusivity cases)
+        dt_estimate = min(min_dt_diff_glob, min_dt_adv_glob)
+
+        # If both are infinite (no velocity and no diffusivity), return infinity
+        if np.isinf(dt_estimate):
+            return np.inf
+
+        # Dimensionalise the result to physical time
+        try:
+            return uw.dimensionalise(np.squeeze(dt_estimate), {'[time]': 1})
+        except Exception:
+            # Fallback: return plain nondimensional number
+            return np.squeeze(dt_estimate)
 
     @timing.routine_timer_decorator
     def solve(
@@ -1890,54 +1953,74 @@ class SNES_Diffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the given
-        mesh and diffusivity configuration. This is an implicit solver
-        so the $\delta_t$ should be interpreted as:
+        Calculates an appropriate timestep for the diffusion solver.
 
-            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+        This solver only has a diffusive component, so the $\delta_t$ returned is:
 
-            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+            - ${\delta t}_\textrm{diff}$: typical time for the diffusion front to propagate across an element
+
+        Returns:
+            Pint Quantity or float: The diffusive timestep with physical time units
+            if a model with reference scales is available, otherwise nondimensional.
         """
-
-        if isinstance(self.constitutive_model.diffusivity.sym, sympy.Expr):
-            if uw.function.fn_is_constant_expr(self.constitutive_model.diffusivity.sym):
-                max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.diffusivity.sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-
-            else:
-                k = uw.function.evaluate(
-                    sympy.sympify(self.constitutive_model.diffusivity.sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-
-                max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.diffusivity.sym
-            max_diffusivity = k
 
         ### required modules
         from mpi4py import MPI
 
-        ## get global max dif value
-        comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+        # Use the unified .K property from the constitutive model
+        # This provides diffusivity for diffusion models
+        K = self.constitutive_model.K
 
-        ## get radius
+        # Evaluate the diffusivity (handles constant and spatially-varying cases)
+        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
+            K_sym = K.sym if hasattr(K, 'sym') else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            diffusivity = diffusivity.magnitude
+
+        # Ensure diffusivity is a plain numpy scalar
+        diffusivity = float(np.asarray(diffusivity).max())
+
+        ## get global max diffusivity value
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+
+        ## get mesh spacing (nondimensional, consistent with diffusivity)
         min_dx = self.mesh.get_min_radius()
 
-        ## estimate dt of adv and diff components
+        ## estimate dt of diff component (all in nondimensional units)
         self.dt_diff = 0.0
 
-        dt_diff = (min_dx**2) / diffusivity_glob
-        self.dt_diff = dt_diff
+        if diffusivity_glob != 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            self.dt_diff = dt_diff
+        else:
+            dt_diff = np.inf
 
         dt_estimate = dt_diff
 
-        return _apply_unit_aware_scaling(np.squeeze(dt_estimate), self.u_Field, self.mesh)
+        # Apply unit-aware scaling if the solver has unit-aware variables
+        return _apply_unit_aware_scaling(np.squeeze(dt_estimate), self.u, self.mesh)
 
     @timing.routine_timer_decorator
     def solve(
@@ -2394,34 +2477,50 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
             - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
 
-        returns: ${\delta t}_\textrm{diff}$, ${\delta t}_\textrm{adv}$
+        The Navier-Stokes equations include momentum diffusion via kinematic viscosity
+        (ν = η/ρ), so the diffusive timestep is computed from this quantity.
 
-
+        returns: (${\delta t}_\textrm{diff}$, ${\delta t}_\textrm{adv}$)
         """
-
-        # cf advection-diffusion. Here the diffusivity is represented by viscosity
-        if isinstance(self.constitutive_model.viscosity, sympy.Expr):
-            if uw.function.fn_is_constant_expr(self.constitutive_model.viscosity):
-                max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.Parameters.viscosity,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                k = uw.function.evaluate(
-                    sympy.sympify(self.constitutive_model.viscosity),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-
-                max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.viscosity / self.rho
-            max_diffusivity = k
 
         ### required modules
         from mpi4py import MPI
 
-        ## get global max dif value
+        # For Navier-Stokes, diffusivity is the kinematic viscosity: ν = η/ρ
+        # Use the unified .K property from the constitutive model (returns viscosity)
+        K = self.constitutive_model.K
+
+        # Evaluate the viscosity (handles constant and spatially-varying cases)
+        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
+            K_sym = K.sym if hasattr(K, 'sym') else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            diffusivity = diffusivity.magnitude
+
+        # Ensure diffusivity is a plain numpy scalar
+        max_diffusivity = float(np.asarray(diffusivity).max())
+
+        ## get global max diffusivity value
         comm = uw.mpi.comm
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
@@ -2432,7 +2531,17 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.mesh.N,
         )
 
-        v_degree = self.u.degree
+        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(vel, "units") and vel.units is not None:
+            vel = uw.non_dimensionalise(vel)
+        elif hasattr(vel, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            vel = vel.magnitude
+
+        # Ensure vel is a plain numpy array
+        vel = np.asarray(vel)
 
         ### get global velocity from velocity field
         max_magvel = np.linalg.norm(vel, axis=1).max()
@@ -2442,17 +2551,14 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         min_dx = self.mesh.get_min_radius()
 
         ## estimate dt of adv and diff components
+        dt_diff = np.inf
+        dt_adv = np.inf
 
-        if max_magvel_glob == 0.0:
-            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
-            dt_estimate = dt_diff
-        elif diffusivity_glob == 0.0:
+        if diffusivity_glob != 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+
+        if max_magvel_glob != 0.0:
             dt_adv = min_dx / max_magvel_glob
-            dt_estimate = dt_adv
-        else:
-            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
-            dt_adv = min_dx / max_magvel_glob
-            dt_estimate = min(dt_diff, dt_adv)
 
         return (
             _apply_unit_aware_scaling(np.squeeze(dt_diff), self.u, self.mesh),

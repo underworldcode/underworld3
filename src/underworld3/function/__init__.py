@@ -125,18 +125,26 @@ def derivative(expression, variable, evaluate=True):
     """
     Obtain symbolic derivatives of any underworld function, correctly handling sub-expressions / constants.
 
-    Note: This function is maintained for backward compatibility. The recommended approach
-    is to use the natural syntax: expression.diff(variable, evaluate=evaluate)
+    UWCoordinates from mesh.X work transparently with this function and with
+    sympy.diff() directly - both approaches now produce identical results:
+
+        x, y = mesh.X
+        result = uw.function.derivative(expr, y)  # This function
+        result = sympy.diff(expr, y)              # Also works (since Dec 2025)
 
     Args:
         expression: The expression to differentiate
-        variable: The variable to differentiate with respect to
+        variable: The variable to differentiate with respect to (UWCoordinate or BaseScalar)
         evaluate (bool): If True, evaluate immediately. If False, return deferred derivative.
 
     Returns:
         The derivative (evaluated SymPy expression or UWDerivativeExpression)
     """
     import sympy
+
+    # Note: Since December 2025, UWCoordinate subclasses BaseScalar with __eq__/__hash__
+    # that match the original N.x/N.y/N.z, so no conversion is needed anymore.
+    # sympy.diff() works directly with UWCoordinates.
 
     if evaluate:
         subbed_expr = fn_unwrap(
@@ -160,8 +168,8 @@ def derivative(expression, variable, evaluate=True):
             import sympy
 
             latex_expr = sympy.latex(expression)
-            latex_diff_variable = sympy.latex(variable)
-            latex = r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_diff_variable
+            latex_var = sympy.latex(variable)
+            latex = r"\partial \left[" + latex_expr + r"\right] / \partial " + latex_var
 
             # Handle vector derivatives
             try:

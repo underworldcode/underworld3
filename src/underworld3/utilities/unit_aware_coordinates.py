@@ -200,10 +200,12 @@ def patch_coordinate_units(mesh):
         for coord in [mesh.N.x, mesh.N.y, mesh.N.z]:
             _patch_coordinate(coord, mesh_units)
 
-        # Also patch the normal vector coordinates if they exist
-        if hasattr(mesh, "_Gamma"):
-            for coord in [mesh._Gamma.x, mesh._Gamma.y, mesh._Gamma.z]:
-                _patch_coordinate(coord, mesh_units)
+        # NOTE: Do NOT patch _Gamma coordinates with length units!
+        # Gamma is a unit normal vector - it is dimensionless by definition.
+        # Applying length units to Gamma causes spurious scaling factors
+        # during nondimensionalization (e.g., 10^12 for expressions with Gamma^2).
+        # If _Gamma needs any units in the future, they should be explicitly
+        # dimensionless (None), not inherited from mesh coordinates.
 
 
 def get_coordinate_units(coord):

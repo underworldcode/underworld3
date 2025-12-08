@@ -14,6 +14,227 @@ expression = lambda *x, **X: underworld3.function.expressions.UWexpression(
 )
 
 
+# =============================================================================
+# UWCoordinate - Cartesian coordinate variable (x, y, z)
+# =============================================================================
+
+from sympy.vector.scalar import BaseScalar
+
+
+class UWCoordinate(BaseScalar):
+    """
+    A Cartesian coordinate variable (x, y, or z).
+
+    This class represents a mesh coordinate that:
+    - Subclasses BaseScalar for full SymPy differentiation compatibility
+    - Is recognizable by type (isinstance check) for unwrap/evaluate logic
+    - Parallels MeshVariable pattern: .sym for symbolic, .data for numeric
+    - Works transparently with sympy.diff() for expressions containing N.x, N.y, N.z
+
+    The key insight is that by subclassing BaseScalar and implementing __eq__/__hash__
+    to match the original N.x/N.y/N.z objects, SymPy's differentiation machinery
+    recognizes UWCoordinate as equivalent to the original BaseScalar.
+
+    Parameters
+    ----------
+    index : int
+        Index in the coordinate system (0, 1, or 2)
+    system : CoordSys3D
+        The SymPy coordinate system (mesh.N)
+    mesh : Mesh, optional
+        Parent mesh object
+    axis_index : int, optional
+        Axis index (0=x, 1=y, 2=z) - same as index but kept for API consistency
+
+    Examples
+    --------
+    >>> x, y = mesh.X  # UWCoordinate objects
+    >>> x.sym          # Returns self (UWCoordinate IS a BaseScalar)
+    >>> x.data         # numpy array of x-coordinates
+    >>> r = sympy.sqrt(x**2 + y**2)  # Works in expressions
+    >>> sympy.diff(v.sym[0], y)      # Works correctly! (key improvement)
+    """
+
+    # Track instances for debugging
+    _coordinate_count = 0
+
+    def __new__(cls, index, system, pretty_str=None, latex_str=None, mesh=None, axis_index=None):
+        # Create as a BaseScalar with the same index and system
+        obj = BaseScalar.__new__(cls, index, system, pretty_str, latex_str)
+        return obj
+
+    def __init__(self, index, system, pretty_str=None, latex_str=None, mesh=None, axis_index=None):
+        # Store UW3-specific attributes
+        self._mesh = mesh
+        self._axis_index = axis_index if axis_index is not None else index
+        self._coord_name = pretty_str or f"x_{index}"
+
+        # Cache the original BaseScalar for equality comparison
+        # This is what makes sympy.diff() work!
+        self._original_base_scalar = system.base_scalars()[index]
+
+        # Track for debugging
+        UWCoordinate._coordinate_count += 1
+        self._instance_id = UWCoordinate._coordinate_count
+
+    def __eq__(self, other):
+        """
+        Equal to the original BaseScalar (N.x, N.y, N.z).
+
+        This is the key to making sympy.diff() work - when SymPy checks if
+        the differentiation variable matches symbols in the expression,
+        this makes UWCoordinate match the original BaseScalar.
+        """
+        if other is self._original_base_scalar:
+            return True
+        if isinstance(other, UWCoordinate) and hasattr(other, '_original_base_scalar'):
+            if other._original_base_scalar is self._original_base_scalar:
+                return True
+        return BaseScalar.__eq__(self, other)
+
+    def __hash__(self):
+        """
+        Hash same as the original BaseScalar.
+
+        This ensures UWCoordinate can be found in sets/dicts that contain
+        the original BaseScalar, which is needed for SymPy's internal operations.
+        """
+        return hash(self._original_base_scalar)
+
+    @property
+    def sym(self):
+        """
+        Symbolic representation for JIT/symbolic operations.
+
+        For UWCoordinate (which IS a BaseScalar), this returns self.
+        This maintains API compatibility with code that accesses .sym
+        """
+        return self._original_base_scalar
+
+    @property
+    def data(self):
+        """
+        Coordinate values from mesh.
+
+        Returns dimensional values if mesh has units, ND otherwise.
+        Mirrors MeshVariable.data pattern.
+
+        Returns
+        -------
+        numpy.ndarray
+            Coordinate values for this axis at all mesh nodes
+        """
+        if self._mesh is None:
+            raise ValueError("UWCoordinate not attached to a mesh")
+        return self._mesh.X.coords[:, self._axis_index]
+
+    @property
+    def mesh(self):
+        """Parent mesh."""
+        return self._mesh
+
+    @property
+    def axis(self):
+        """Axis index (0=x, 1=y, 2=z)."""
+        return self._axis_index
+
+    @property
+    def _base_scalar(self):
+        """Backward compatibility: return the original BaseScalar."""
+        return self._original_base_scalar
+
+    @property
+    def units(self):
+        """
+        Units of this coordinate, delegated from the original BaseScalar.
+
+        The mesh's patch_coordinate_units() sets ._units on mesh.N.x, mesh.N.y, etc.
+        UWCoordinate wraps these, so we delegate to get the units.
+        """
+        return getattr(self._original_base_scalar, '_units', None)
+
+    # NOTE: We intentionally do NOT define _units as a property here.
+    # SymPy's internal machinery (derive_by_array, etc.) does hasattr checks
+    # that can be confused by properties. Instead, get_units() should check
+    # the .units property explicitly, or access _original_base_scalar._units.
+    # The .units property above is sufficient for the public API.
+
+    @property
+    def _ccodestr(self):
+        """
+        Delegate C code string to the original BaseScalar.
+
+        The mesh sets _ccodestr on the original N.x, N.y, N.z objects
+        for JIT code generation (e.g., "petsc_x[0]", "petsc_x[1]").
+        UWCoordinate must expose the same attribute for JIT to work.
+        """
+        return self._original_base_scalar._ccodestr
+
+    @_ccodestr.setter
+    def _ccodestr(self, value):
+        """Allow setting _ccodestr (propagates to original BaseScalar)."""
+        self._original_base_scalar._ccodestr = value
+
+    def _ccode(self, printer, **kwargs):
+        """
+        C code representation for JIT compilation.
+
+        The SymPy CCodePrinter looks for this method on symbols.
+        We delegate to the original BaseScalar's _ccodestr.
+        """
+        return self._ccodestr
+
+    def __repr__(self):
+        return f"{self._coord_name}"
+
+    def _latex(self, printer):
+        """LaTeX representation for SymPy printing."""
+        return r"\mathrm{" + self._coord_name + "}"
+
+
+# =============================================================================
+# Helper function for differentiation with UWCoordinates
+# =============================================================================
+
+def uwdiff(expr, *symbols):
+    """
+    Differentiate an expression with respect to coordinates.
+
+    .. deprecated:: December 2025
+        Since UWCoordinate now subclasses BaseScalar with proper __eq__/__hash__,
+        you can use ``sympy.diff(expr, y)`` directly. This function is kept for
+        backward compatibility but simply delegates to sympy.diff().
+
+    Parameters
+    ----------
+    expr : sympy.Expr
+        The expression to differentiate
+    symbols : UWCoordinate or sympy.Symbol
+        The variables to differentiate with respect to
+
+    Returns
+    -------
+    sympy.Expr
+        The derivative
+
+    Examples
+    --------
+    >>> x, y = mesh.X  # UWCoordinates
+    >>> v = mesh_variable  # MeshVariable
+    >>> # Both now work identically:
+    >>> dv_dy = sympy.diff(v.sym[0], y)  # Preferred
+    >>> dv_dy = uw.uwdiff(v.sym[0], y)   # Backward compatible
+    """
+    import warnings
+    warnings.warn(
+        "uwdiff() is deprecated. Use sympy.diff() directly - "
+        "UWCoordinates now work transparently with SymPy differentiation.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return sympy.diff(expr, *symbols)
+
+
 class CoordinateSystemType(Enum):
     """
     Meshes can have natural coordinate systems which lie on top of the Cartesian
@@ -407,37 +628,75 @@ class CoordinateSystem:
         # "Natural" coordinates like r, theta, z ?
         self.CartesianDM = True
 
-        # This is the default: Cartesian
-        self._N = sympy.Matrix(self.mesh.r).T
-        self._N[0]._latex_form = r"\mathrm{x}"
-        self._N[1]._latex_form = r"\mathrm{y}"
+        # Get the raw BaseScalars from the mesh
+        base_scalars = self.mesh.r  # (N.x, N.y, N.z)
+
+        # === Key Architecture Decision (December 2025): ===
+        #
+        # TWO coordinate representations:
+        #
+        # 1. _N: Raw BaseScalar objects (N.x, N.y, N.z)
+        #    - Used for: jacobian(), derivatives, JIT compilation
+        #    - Required by SymPy's differentiation machinery
+        #    - Access via: CoordinateSystem.N
+        #
+        # 2. _X: UWCoordinate wrapper objects
+        #    - Used for: User-facing expressions like r - inner_radius
+        #    - Recognized by type in unwrap_for_evaluate (NOT nondimensionalized)
+        #    - Access via: CoordinateSystem.X
+        #
+        # This split solves the r_prime bug while preserving jacobian compatibility.
+
+        # _N contains raw BaseScalars for derivatives/JIT
         if self.mesh.cdim == 3:
-            self._N[2]._latex_form = r"\mathrm{z}"
+            self._N = sympy.Matrix([[base_scalars[0], base_scalars[1], base_scalars[2]]])
+        else:
+            self._N = sympy.Matrix([[base_scalars[0], base_scalars[1]]])
 
-        # This is a how we can find our way back to the
-        # originating coordinate system if we only know the base-scalars
+        # Create UWCoordinate objects wrapping the BaseScalars
+        # These go in _X for user-facing access
+        # New signature: UWCoordinate(index, system, pretty_str, latex_str, mesh, axis_index)
+        coord_x = UWCoordinate(0, self.mesh.N, pretty_str="x", latex_str="x", mesh=self.mesh, axis_index=0)
+        coord_y = UWCoordinate(1, self.mesh.N, pretty_str="y", latex_str="y", mesh=self.mesh, axis_index=1)
 
-        self._N[0].CS = self
-        self._N[1].CS = self
         if self.mesh.cdim == 3:
-            self._N[2].CS = self
+            coord_z = UWCoordinate(2, self.mesh.N, pretty_str="z", latex_str="z", mesh=self.mesh, axis_index=2)
+            self._X = sympy.Matrix([[coord_x, coord_y, coord_z]])
+        else:
+            self._X = sympy.Matrix([[coord_x, coord_y]])
 
-        self._R = self._N.copy()
+        # Store CoordinateSystem back-references on UWCoordinates
+        self._X[0].CS = self
+        self._X[1].CS = self
+        if self.mesh.cdim == 3:
+            self._X[2].CS = self
+
+        # Also store on the underlying BaseScalars for legacy compatibility
+        base_scalars[0].CS = self
+        base_scalars[1].CS = self
+        if self.mesh.cdim == 3:
+            base_scalars[2].CS = self
+
+        self._R = self._X.copy()
 
         # We need this to define zeros in the coordinate transforms
         # (since they need to indicate they are coordinate functions even
         # if they are independent of all coordinates)
+        #
+        # IMPORTANT: Use raw BaseScalars (mesh.r) here, NOT UWCoordinates (self._N)!
+        # This is used by lambdify in rbf_evaluate which substitutes N.base_scalars().
+        # If we use UWCoordinates, they won't be substituted by lambdify.
 
         if self.mesh.cdim == 3:
             self.independent_of_N = expression(
                 r"\vec{0}",
-                underworld3.maths.functions.vanishing * self._N[0] * self._N[1] * self._N[2],
+                underworld3.maths.functions.vanishing * base_scalars[0] * base_scalars[1] * base_scalars[2],
                 "independent of N0, N1, N2",
             )
         else:
             self.independent_of_N = expression(
                 r"\vec{0}",
-                underworld3.maths.functions.vanishing * self._N[0] * self._N[1],
+                underworld3.maths.functions.vanishing * base_scalars[0] * base_scalars[1],
                 "independent of N0, N1",
             )
 
@@ -451,10 +710,12 @@ class CoordinateSystem:
 
             self.type = "Cylindrical 2D"
 
-            self._X = self._N.copy()
-            self._x = self._X
+            # _X already contains UWCoordinates, _x is a copy for the "lowercase" alias
+            self._x = self._X.copy()
 
-            x, y = self.N
+            # Use UWCoordinates to build derived coordinates
+            # These will be unwrapped to BaseScalars during evaluation
+            x, y = self.X
             r = expression(R"r", sympy.sqrt(x**2 + y**2), "Radial Coordinate")
 
             t = expression(
@@ -479,11 +740,12 @@ class CoordinateSystem:
         elif system == CoordinateSystemType.CYLINDRICAL3D and self.mesh.dim == 3:
             self.type = "Cylindrical 3D"
 
-            self._X = self._N.copy()
-            self._x = self._X
+            # _X already contains UWCoordinates, _x is a copy for the "lowercase" alias
+            self._x = self._X.copy()
 
             self._r = sympy.Matrix([sympy.symbols(R"r, \theta, z")], real=True)
 
+            # Use UWCoordinates to build derived coordinates
             x, y, z = self.X
             r = sympy.sqrt(x**2 + y**2)
             t = sympy.Piecewise((0, x == 0), (sympy.atan2(y, x), True))
@@ -505,11 +767,12 @@ class CoordinateSystem:
         elif system == CoordinateSystemType.SPHERICAL and self.mesh.dim == 3:
             self.type = "Spherical"
 
-            self._X = self._N.copy()
-            self._x = self._X
+            # _X already contains UWCoordinates, _x is a copy for the "lowercase" alias
+            self._x = self._X.copy()
 
             self._r = sympy.Matrix([sympy.symbols(R"r, \theta, \phi")])
 
+            # Use UWCoordinates to build derived coordinates
             x, y, z = self.X
 
             r = expression(
@@ -602,14 +865,13 @@ class CoordinateSystem:
             if not hasattr(self, "ellipsoid"):
                 self.ellipsoid = ELLIPSOIDS["WGS84"].copy()
 
-            # Cartesian coordinates remain primary
-            self._X = self._N.copy()
-            self._x = self._X
+            # _X already contains UWCoordinates, _x is a copy for the "lowercase" alias
+            self._x = self._X.copy()
 
             # Define symbolic geographic coordinates (λ notation as per user request)
             self._geo = sympy.Matrix([sympy.symbols(R"\lambda_{lon}, \lambda_{lat}, \lambda_d")])
 
-            # Get Cartesian symbols
+            # Use UWCoordinates to build derived coordinates
             x, y, z = self.X
 
             # Spherical coordinates (r, θ, φ) - kept for backward compatibility
@@ -703,8 +965,9 @@ class CoordinateSystem:
         else:  # Cartesian by default
             self.type = f"Cartesian {self.mesh.dim}D"
 
-            self._X = self._N  # .copy()
-            self._x = self._X
+            # For Cartesian, _X already contains UWCoordinates (set above)
+            # _x is a lowercase alias
+            self._x = self._X.copy()
 
             self._xRotN = sympy.eye(self.mesh.dim)
             self._rRotN = sympy.eye(self.mesh.dim)

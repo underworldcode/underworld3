@@ -245,9 +245,16 @@ def _extract_units_info(obj):
 
             # PRIORITY 2: Check for patched _units attribute (coordinate units from patch_coordinate_units)
             # This handles mesh.X[0], mesh.N.x, etc. which have _units directly attached
+            # Also check .units property for UWCoordinate which delegates to original BaseScalar
             if hasattr(obj, '_units') and obj._units is not None:
                 backend = _get_default_backend()
                 return True, obj._units, backend
+            # UWCoordinate has .units property but no ._units attribute (to avoid SymPy interference)
+            if hasattr(obj, 'units') and not hasattr(obj, '_units'):
+                units_val = obj.units
+                if units_val is not None:
+                    backend = _get_default_backend()
+                    return True, units_val, backend
 
             # SymPy units backend removed - use Pint-native approach instead
             # Third try: use compute_expression_units which handles symbolic expressions with dimensional analysis

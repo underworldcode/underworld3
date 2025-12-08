@@ -49,7 +49,170 @@ def simplify_units(units):
 
 
 # ============================================================================
-# Helper Functions for Expression Unwrapping
+# Unified Expression Unwrapping System (2025-12)
+# ============================================================================
+#
+# This unified system replaces the previous multiple paths for unwrapping:
+# - _substitute_all_once / _unwrap_expressions (JIT compilation)
+# - _expand_dimensional_once / _expand_dimensional (user display)
+# - unwrap_for_evaluate (evaluation/lambdify)
+#
+# Key design:
+# - Single tree-walking logic with mode parameter
+# - Mode controls value extraction: 'nondimensional', 'dimensional', 'symbolic'
+# - Uses free_symbols instead of atoms() for more reliable iteration
+# ============================================================================
+
+
+def _unwrap_atom(atom, mode='nondimensional'):
+    """
+    Extract the value from a single atom based on mode.
+
+    Args:
+        atom: UWexpression, UWQuantity, UWCoordinate, or other symbol
+        mode: 'nondimensional' - use .data for ND values (JIT/evaluate)
+              'dimensional' - use .value for display
+              'symbolic' - use .sym for symbolic substitution
+
+    Returns:
+        The unwrapped value (float, sympy.Number, or sympy expression)
+    """
+    import underworld3
+    from underworld3.coordinates import UWCoordinate
+
+    # UWCoordinate: always unwrap to BaseScalar (placeholder for evaluation)
+    if isinstance(atom, UWCoordinate):
+        return atom.sym
+
+    # UWexpression
+    if isinstance(atom, UWexpression):
+        if mode == 'dimensional':
+            # User display: show dimensional value
+            return atom.value if atom.value is not None else atom.sym
+        elif mode == 'nondimensional':
+            # JIT/evaluate: non-dimensionalize if scaling active
+            if atom.has_units and underworld3._is_scaling_active():
+                try:
+                    return float(atom.data)  # ND value
+                except Exception:
+                    pass
+            # Recursively unwrap to get inner expression
+            return atom.sym
+        else:  # symbolic
+            return atom.sym
+
+    # UWQuantity (not wrapped in UWexpression)
+    if isinstance(atom, UWQuantity):
+        if mode == 'nondimensional':
+            import underworld3
+            if underworld3._is_scaling_active() and atom.has_units:
+                try:
+                    return float(atom.data)
+                except Exception:
+                    pass
+            return atom.value if hasattr(atom, 'value') else atom
+        elif mode == 'dimensional':
+            return atom.value if hasattr(atom, 'value') else atom
+        else:
+            return atom
+
+    # Not a UW type - return unchanged
+    return atom
+
+
+def _unwrap_expression_once(expr, mode='nondimensional'):
+    """
+    Single substitution pass over all UW atoms in an expression.
+
+    Uses free_symbols for reliable iteration (avoids issues with atoms()).
+
+    Args:
+        expr: SymPy expression possibly containing UW atoms
+        mode: See _unwrap_atom
+
+    Returns:
+        Expression with UW atoms substituted
+    """
+    from underworld3.coordinates import UWCoordinate
+
+    # Handle non-expression types directly
+    if isinstance(expr, UWQuantity) and not isinstance(expr, UWexpression):
+        return _unwrap_atom(expr, mode)
+
+    if isinstance(expr, UWCoordinate):
+        return _unwrap_atom(expr, mode)
+
+    if isinstance(expr, UWexpression):
+        # Unwrap the UWexpression itself first
+        inner = _unwrap_atom(expr, mode)
+        if inner is not expr:
+            return inner
+
+    if not hasattr(expr, 'free_symbols'):
+        return expr
+
+    # Build substitution dict for all UW atoms
+    substitutions = {}
+    for sym in expr.free_symbols:
+        if isinstance(sym, (UWexpression, UWQuantity, UWCoordinate)):
+            replacement = _unwrap_atom(sym, mode)
+            if replacement is not sym:
+                substitutions[sym] = replacement
+
+    if substitutions:
+        return expr.subs(substitutions)
+    return expr
+
+
+def unwrap_expression(expr, mode='nondimensional', depth=None):
+    """
+    Unified unwrapping of UW expressions.
+
+    This is the single entry point for all expression unwrapping needs.
+
+    Args:
+        expr: Expression to unwrap (UWexpression, SymPy expr, or value)
+        mode: 'nondimensional' - for JIT compilation and evaluation (uses .data)
+              'dimensional' - for user display (uses .value)
+              'symbolic' - just expand .sym structure
+        depth: Maximum expansion depth (None = complete expansion)
+
+    Returns:
+        Pure SymPy expression with all UW atoms expanded
+    """
+    # Extract sym if needed
+    if hasattr(expr, 'sym') and isinstance(expr, UWexpression):
+        working = expr
+    elif isinstance(expr, sympy.Basic):
+        working = expr
+    elif isinstance(expr, UWQuantity):
+        return _unwrap_atom(expr, mode)
+    else:
+        return sympy.sympify(expr)
+
+    # Fixed-point iteration (or depth-limited)
+    if depth is None:
+        result = working
+        result_next = _unwrap_expression_once(result, mode)
+        iteration = 0
+        max_iterations = 100  # Safety limit
+        while result is not result_next and iteration < max_iterations:
+            result = result_next
+            result_next = _unwrap_expression_once(result, mode)
+            iteration += 1
+        return result
+    else:
+        result = working
+        for _ in range(depth):
+            result_next = _unwrap_expression_once(result, mode)
+            if result is result_next:
+                break
+            result = result_next
+        return result
+
+
+# ============================================================================
+# Legacy API - Preserved for backward compatibility
 # ============================================================================
 
 def is_constant_expr(fn):
@@ -115,134 +278,31 @@ def extract_expressions_and_functions(fn):
     return atoms
 
 
-def _substitute_all_once(fn, keep_constants=True, return_self=True):
-    """
-    Single pass substitution of UWexpressions in an expression.
-
-    This handles:
-    - UWQuantity objects: convert to ND values if scaling active
-    - UWexpression atoms: substitute with their wrapped values
-    """
-    import underworld3
-
-    # Handle UWQuantity objects directly (not expressions)
-    if isinstance(fn, UWQuantity) and not isinstance(fn, UWexpression):
-        # If scaling is active and quantity has units, non-dimensionalize it
-        if underworld3._is_scaling_active() and fn.has_units:
-            try:
-                nondim = underworld3.non_dimensionalise(fn)
-                if hasattr(nondim, 'value'):
-                    return sympy.sympify(nondim.value)
-            except Exception:
-                pass
-        # Otherwise return the value
-        return sympy.sympify(fn.value) if hasattr(fn, 'value') else fn
-
-    if keep_constants and return_self and is_constant_expr(fn):
-        if isinstance(fn, UWexpression):
-            return fn.sym
-        else:
-            return fn
-
-    if isinstance(fn, UWexpression):
-        expr = fn.sym
-    else:
-        expr = fn
-
-    for atom in extract_expressions_and_functions(fn):
-        if isinstance(atom, UWexpression):
-            if keep_constants and is_constant_expr(atom):
-                continue
-            else:
-                # Check if scaling is active and atom has units
-                if underworld3._is_scaling_active() and atom.has_units:
-                    # Atom has units - compute non-dimensional value via .data
-                    try:
-                        nd_value = atom.data
-                        expr = expr.subs(atom, nd_value)
-                    except Exception:
-                        # Fallback to .sym
-                        expr = expr.subs(atom, atom.sym)
-                else:
-                    # No scaling or no units - use dimensional value
-                    expr = expr.subs(atom, atom.sym)
-
-    return expr
-
-
-def _substitute_one_expr(fn, sub_expr, keep_constants=True, return_self=True):
-    """Substitute a single expression."""
-    expr = fn
-
-    if keep_constants and return_self and is_constant_expr(fn):
-        if isinstance(fn, UWexpression):
-            return fn.sym
-        else:
-            return fn
-
-    for atom in fn.atoms():
-        if atom is sub_expr:
-            if keep_constants and isinstance(atom.sym, (float, int, Number)):
-                continue
-            else:
-                expr = expr.subs(atom, atom.sym)
-
-    return expr
-
-
 def _unwrap_expressions(fn, keep_constants=True, return_self=True):
     """
     Main unwrapping logic for JIT compilation.
 
-    Handles all expression types uniformly:
-    - UWQuantity constants: use .data for ND value if scaling active
-    - UWexpression atoms: extract value, non-dimensionalize if needed
-    - Variable symbols: leave unchanged (already ND in PETSc)
+    DEPRECATED: Use unwrap_expression(fn, mode='nondimensional') instead.
+    This function is preserved for backward compatibility.
     """
-    import underworld3 as uw
-
-    # Handle UWQuantity: use .data for ND value
-    if isinstance(fn, UWQuantity) and not isinstance(fn, UWexpression):
-        if uw._is_scaling_active() and fn.has_units:
-            # Use .data property which computes ND value
-            return sympy.sympify(fn.data)
-        # No scaling: just use value
-        return sympy.sympify(fn.value) if hasattr(fn, 'value') else fn
-
-    # Fixed-point iteration for expression types
-    expr = fn
-    expr_s = _substitute_all_once(expr, keep_constants, return_self)
-
-    while expr is not expr_s:
-        expr = expr_s
-        expr_s = _substitute_all_once(expr, keep_constants, return_self)
-
-    return expr
+    # Use unified implementation
+    return unwrap_expression(fn, mode='nondimensional')
 
 
 def _unwrap_for_compilation(fn, keep_constants=True, return_self=True):
     """
     INTERNAL ONLY: Unwrap UW expressions to pure SymPy for JIT compilation.
 
-    This function recursively flattens nested UW expressions, applies non-dimensional
-    scaling transformations, and strips ALL metadata including units.
-
-    DO NOT USE THIS IN USER-FACING CODE. Use `expand()` instead for user inspection.
+    DEPRECATED: Use unwrap_expression(fn, mode='nondimensional') instead.
     """
-    import underworld3 as uw
-
     # Handle UWDerivativeExpression specially
     if isinstance(fn, UWDerivativeExpression):
         result = fn.doit()
     elif isinstance(fn, sympy.Matrix):
-        f = lambda x: _unwrap_expressions(
-            x, keep_constants=keep_constants, return_self=return_self
-        )
+        f = lambda x: unwrap_expression(x, mode='nondimensional')
         result = fn.applyfunc(f)
     else:
-        result = _unwrap_expressions(
-            fn, keep_constants=keep_constants, return_self=return_self
-        )
+        result = unwrap_expression(fn, mode='nondimensional')
 
     return result
 
@@ -267,28 +327,7 @@ def expand(expr, depth=None, simplify_result=False):
     Returns:
         Pure SymPy expression with all UW wrappers removed (dimensional values)
     """
-    # Get the SymPy expression
-    if hasattr(expr, 'sym'):
-        sym_expr = expr.sym
-    elif isinstance(expr, sympy.Basic):
-        sym_expr = expr
-    else:
-        sym_expr = sympy.sympify(expr)
-
-    # Expand with depth control
-    if depth is None:
-        # Full expansion - use fixed-point iteration
-        # Use keep_constants=True to show dimensional values
-        expanded = _expand_dimensional(sym_expr)
-    elif depth == 0:
-        expanded = sym_expr
-    else:
-        expanded = sym_expr
-        for _ in range(depth):
-            next_expanded = _expand_dimensional_once(expanded)
-            if next_expanded is expanded:
-                break
-            expanded = next_expanded
+    expanded = unwrap_expression(expr, mode='dimensional', depth=depth)
 
     if simplify_result:
         expanded = sympy.simplify(expanded)
@@ -296,63 +335,44 @@ def expand(expr, depth=None, simplify_result=False):
     return expanded
 
 
-def _expand_dimensional_once(expr):
-    """Single pass expansion using dimensional values (for user display)."""
-    if isinstance(expr, UWexpression):
-        return expr.value if expr.value is not None else expr.sym
-
-    if not hasattr(expr, 'atoms'):
-        return expr
-
-    result = expr
-    for atom in expr.atoms(sympy.Symbol):
-        if isinstance(atom, UWexpression):
-            value = atom.value if atom.value is not None else atom.sym
-            result = result.subs(atom, value)
-
-    return result
-
-
-def _expand_dimensional(expr):
-    """Full expansion using dimensional values."""
-    result = expr
-    result_s = _expand_dimensional_once(result)
-
-    while result is not result_s:
-        result = result_s
-        result_s = _expand_dimensional_once(result)
-
-    return result
-
-
 def unwrap(fn, depth=None, keep_constants=True, return_self=True):
     """
     Expand UW expression to reveal SymPy structure.
 
-    This is an alias for expand() for backward compatibility.
+    Args:
+        fn: Expression to unwrap
+        depth: Maximum expansion depth (None = complete)
+        keep_constants: If False, use nondimensional mode (for JIT)
+        return_self: If False, use nondimensional mode (for JIT)
+
+    Returns:
+        Unwrapped SymPy expression
     """
     if not keep_constants or not return_self:
-        # JIT compilation path
-        if hasattr(fn, 'sym'):
-            sym_expr = fn.sym
-        elif isinstance(fn, sympy.Basic):
-            sym_expr = fn
-        else:
-            sym_expr = sympy.sympify(fn)
-        return _unwrap_expressions(sym_expr, keep_constants=keep_constants, return_self=return_self)
+        # JIT compilation path - use nondimensional mode
+        return unwrap_expression(fn, mode='nondimensional', depth=depth)
 
-    return expand(fn, depth=depth)
+    # Display path - use dimensional mode
+    return unwrap_expression(fn, mode='dimensional', depth=depth)
 
 
 def unwrap_for_evaluate(expr, scaling_active=None):
     """
     Unwrap expression for evaluate/lambdify path with proper unit handling.
 
+    Type-based dispatch (2025-12 UWCoordinate design):
+    - UWCoordinate: unwrap to BaseScalar (placeholder, NO scaling)
+    - UWexpression with units: nondimensionalize via .data
+    - UWexpression without units: recursively unwrap .sym
+    - UWQuantity: nondimensionalize via .data
+    - BaseScalar/MeshVariable.sym: pass through unchanged
+
     Returns:
         tuple: (unwrapped_expr, result_dimensionality)
     """
     import underworld3 as uw
     from underworld3.units import get_units, get_dimensionality
+    from underworld3.coordinates import UWCoordinate
 
     # Step 1: Get expression dimensionality
     # IMPORTANT: For UWexpression, try the wrapper FIRST because it stores units
@@ -384,7 +404,13 @@ def unwrap_for_evaluate(expr, scaling_active=None):
     model = uw.get_default_model()
     should_scale = scaling_active and model.has_units()
 
-    # Step 2: Extract and process expression
+    # Step 2: Handle UWCoordinate directly (placeholder - no scaling)
+    if isinstance(expr, UWCoordinate):
+        # Coordinates are placeholders that take input values at evaluation
+        # Unwrap to BaseScalar for JIT compatibility, don't scale
+        return expr.sym, result_dimensionality
+
+    # Step 3: Extract and process expression
     if isinstance(expr, UWexpression):
         if isinstance(expr.sym, sympy.Expr) and not isinstance(expr.sym, sympy.Number):
             # Wraps a symbolic expression
@@ -408,11 +434,16 @@ def unwrap_for_evaluate(expr, scaling_active=None):
     else:
         sym_expr = expr
 
-    # Step 3: Process composite expressions
+    # Step 4: Process composite expressions - TYPE-BASED DISPATCH
     if isinstance(sym_expr, sympy.Expr):
         substitutions = {}
         for sym in sym_expr.free_symbols:
-            if isinstance(sym, UWexpression):
+            # UWCoordinate: unwrap to BaseScalar, NO scaling
+            if isinstance(sym, UWCoordinate):
+                substitutions[sym] = sym.sym  # The BaseScalar
+
+            # UWexpression: nondimensionalize based on whether it has units
+            elif isinstance(sym, UWexpression):
                 if sym.has_units:
                     if should_scale:
                         substitutions[sym] = float(sym.data)
@@ -420,13 +451,19 @@ def unwrap_for_evaluate(expr, scaling_active=None):
                         substitutions[sym] = float(sym.value)
                 else:
                     # RECURSIVE UNWRAP: When a UWexpression has no units but wraps
-                    # a composite expression (like r - inner_radius), we need to
-                    # recursively unwrap its .sym to nondimensionalize any
-                    # UWexpressions inside it.
-                    #
-                    # Without this, (r - 3000 km) stays as (r - 3000) instead of (r - 3.0)
+                    # a composite expression, recursively unwrap to nondimensionalize
+                    # any UWexpressions inside it.
                     inner_unwrapped, _ = unwrap_for_evaluate(sym.sym, scaling_active=should_scale)
                     substitutions[sym] = inner_unwrapped
+
+            # UWQuantity (not wrapped in UWexpression): nondimensionalize
+            elif isinstance(sym, UWQuantity):
+                if should_scale:
+                    substitutions[sym] = float(sym.data)
+                else:
+                    substitutions[sym] = float(sym.value)
+
+            # BaseScalar, MeshVariable.sym, etc.: pass through unchanged
 
         if substitutions:
             sym_expr = sym_expr.subs(substitutions)

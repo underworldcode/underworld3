@@ -264,6 +264,15 @@ def compute_expression_units(expr):
             if expr.is_Number:
                 return uw.units.dimensionless
 
+            # Check for UWCoordinate (has .units property that delegates to BaseScalar._units)
+            from underworld3.coordinates import UWCoordinate
+            if isinstance(expr, UWCoordinate):
+                coord_units = expr.units
+                if coord_units is not None:
+                    if not hasattr(coord_units, 'dimensionality'):
+                        return uw.units(str(coord_units))
+                    return coord_units
+
             # Check for coordinate symbols (BaseScalar with _units attribute)
             # These carry length units from the mesh coordinate system
             if hasattr(expr, '_units') and expr._units is not None:

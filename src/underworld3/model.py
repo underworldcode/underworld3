@@ -3640,11 +3640,42 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         import numpy as np
         import warnings
+        import sympy
+        from .function.expressions import UWexpression
 
         # Handle tuples/lists recursively (for coordinate inputs)
         if isinstance(quantity, (list, tuple)):
             converted = [self.to_model_magnitude(q, expected_dimension) for q in quantity]
             return type(quantity)(converted)
+
+        # Handle UWexpression objects - use .data property for non-dimensional value
+        if isinstance(quantity, UWexpression):
+            if hasattr(quantity, 'data'):
+                return float(quantity.data)
+            # Fallback: try to evaluate the expression
+            return float(quantity.value) if hasattr(quantity, 'value') else float(quantity)
+
+        # Handle SymPy expressions containing UWexpression atoms
+        # This catches cases like: outer_radius - inner_radius (which returns sympy.Add)
+        if isinstance(quantity, sympy.Basic) and not isinstance(quantity, sympy.Number):
+            # Find all UWexpression atoms and substitute their .data values
+            atoms = quantity.atoms()
+            substitutions = {}
+            for atom in atoms:
+                if isinstance(atom, UWexpression):
+                    if hasattr(atom, 'data'):
+                        substitutions[atom] = atom.data
+                    elif hasattr(atom, 'value'):
+                        substitutions[atom] = atom.value
+
+            if substitutions:
+                # Substitute and evaluate
+                result = quantity.subs(substitutions)
+                try:
+                    return float(result)
+                except (TypeError, ValueError):
+                    # If still can't convert, pass through for further handling
+                    pass
 
         # Gatekeeper: warn if plain number passed when units are active
         if expected_dimension is not None and self.has_units_active():

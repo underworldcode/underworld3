@@ -147,6 +147,7 @@ from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
 from .function import quantity, expression, with_units, expand, unwrap
+from .coordinates import uwdiff  # Differentiation helper for UWCoordinates
 
 # Unit utilities (top-level convenience for user code)
 from .function.unit_conversion import _extract_value
