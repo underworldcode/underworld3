@@ -44,6 +44,10 @@ book:
         - advanced/troubleshooting.qmd
         - advanced/api-patterns.qmd
         
+    - part: "Presentations"
+      chapters:
+        - slides/intro-presentation.qmd
+        
     - part: "Developer Guide"
       chapters:
         - developer/index.qmd
@@ -86,6 +90,9 @@ book:
       - text: "Developer"
         icon: code
         href: developer/index.qmd
+      - text: "Slides"
+        icon: easel
+        href: slides/intro-presentation.qmd
 
 format:
   html:

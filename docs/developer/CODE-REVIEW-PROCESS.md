@@ -1,8 +1,8 @@
 # Underworld3 Code Review Process
 
 **Status**: Active
-**Version**: 1.0
-**Last Updated**: 2025-10-25
+**Version**: 1.1
+**Last Updated**: 2025-12-03
 **Audience**: Developers, Code Reviewers, Project Maintainers
 
 ## Overview
@@ -164,6 +164,36 @@ The code review process serves to:
    - Archive review documentation
    - Update project status if needed
    - Communicate results to team
+
+### Phase 6: Branch Cleanup (IMPORTANT)
+
+**Temporary review branches must be cleaned up after merging.**
+
+1. **Identify temporary branches**: Review branches created during the process
+   - Pattern: `review/[topic-name]` (e.g., `review/units-system-architecture`)
+   - These are **scoped PRs** containing only review-related files
+
+2. **After PR is merged**:
+   ```bash
+   # Delete the remote branch
+   git push origin --delete review/[branch-name]
+
+   # Delete the local branch
+   git branch -d review/[branch-name]
+   ```
+
+3. **Why this matters**:
+   - Temporary branches left active cause confusion about base branches
+   - Other PRs may accidentally target temporary branches instead of the main release branch
+   - Clean branch list makes navigation easier for all contributors
+
+4. **Verification checklist**:
+   - [ ] PR has been merged to target branch
+   - [ ] Remote review branch deleted
+   - [ ] Local review branch deleted
+   - [ ] No other PRs are targeting the deleted branch
+
+**Note**: If using Claude Code or other automated tools to create review PRs, ensure the tool targets the correct base branch (e.g., `uw3-release-candidate` or `main`) and that cleanup is performed after merge.
 
 ## Review Documentation
 
@@ -589,9 +619,13 @@ Maintain index file: `docs/reviews/README.md`
 
 ## Amendment and Versioning
 
-**This document version**: 1.0
+**This document version**: 1.1
 **Effective date**: 2025-10-25
-**Last updated**: 2025-10-25
+**Last updated**: 2025-12-03
+
+### Version History
+- **v1.1** (2025-12-03): Added Phase 6 - Branch Cleanup section to address temporary review branch management
+- **v1.0** (2025-10-25): Initial release
 
 To propose changes to this process:
 1. Create issue in project tracking system
