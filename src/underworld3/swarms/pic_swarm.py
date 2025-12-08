@@ -1238,9 +1238,23 @@ class PICSwarm(Stateful, uw_object):
 
         # first let's extract a max global velocity magnitude
         import math
+        import numpy as np
 
         with self.access():
             vel = uw.function.evaluate(V_fn, self._particle_coordinates.data, evalf=True)
+
+            # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
+            # consistent nondimensional values that match mesh._radii
+            # Note: .magnitude returns physical units, which would be wrong here
+            if hasattr(vel, "units") and vel.units is not None:
+                vel = uw.non_dimensionalise(vel)
+            elif hasattr(vel, "magnitude"):
+                # Plain UWQuantity without units context - use magnitude
+                vel = vel.magnitude
+
+            # Ensure vel is a plain numpy array
+            vel = np.asarray(vel)
+
             try:
                 magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
                 if self.mesh.dim == 3:
