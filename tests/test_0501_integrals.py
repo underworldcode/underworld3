@@ -17,7 +17,11 @@ mesh = UnstructuredSimplexBox(
     cellSize=1.0 / 32.0,
 )
 
+# Get UWCoordinates for user expressions
 x, y = mesh.X
+# Get BaseScalars for differentiation operations
+# (UWCoordinates don't work with sympy.diff for expressions containing BaseScalars)
+N_x, N_y = mesh.CoordinateSystem.N[0], mesh.CoordinateSystem.N[1]
 
 s_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 p_soln = uw.discretisation.MeshVariable("P0", mesh, 1, degree=0)
@@ -70,7 +74,8 @@ def test_integrate_derivative():
     # Direct access - no context manager needed
     s_soln.data[:, 0] = np.sin(np.pi * s_soln.coords[:, 0])
 
-    calculator = uw.maths.Integral(mesh, fn=s_soln.sym.diff(x))
+    # Use N_x (BaseScalar) for differentiation, not x (UWCoordinate)
+    calculator = uw.maths.Integral(mesh, fn=s_soln.sym.diff(N_x))
     value = calculator.evaluate()
 
     assert abs(value) < 0.001
@@ -98,7 +103,8 @@ def test_integrate_swarmvar_deriv_O1():
     # Direct access using public API
     s_values.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 1])
 
-    calculator = uw.maths.Integral(mesh, fn=s_values.sym.diff(y))
+    # Use N_y (BaseScalar) for differentiation, not y (UWCoordinate)
+    calculator = uw.maths.Integral(mesh, fn=s_values.sym.diff(N_y))
     value = calculator.evaluate()
 
     assert abs(value + 2) < 0.001
@@ -124,7 +130,8 @@ def test_integrate_swarmvar_deriv_03():
     # Direct access using public API
     s_values_3.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 1])
 
-    calculator = uw.maths.Integral(mesh, fn=s_values_3.sym.diff(y))
+    # Use N_y (BaseScalar) for differentiation, not y (UWCoordinate)
+    calculator = uw.maths.Integral(mesh, fn=s_values_3.sym.diff(N_y))
     value = calculator.evaluate()
 
     assert abs(value + 2) < 0.001
@@ -152,7 +159,8 @@ def test_integrate_swarmvar_deriv_00():
     # Direct access using public API
     s_values_0.data[:, 0] = np.sin(np.pi * swarm._particle_coordinates.data[:, 1])
 
-    calculator = uw.maths.Integral(mesh, fn=s_values_0.sym.diff(y))
+    # Use N_y (BaseScalar) for differentiation, not y (UWCoordinate)
+    calculator = uw.maths.Integral(mesh, fn=s_values_0.sym.diff(N_y))
     value = calculator.evaluate()
 
     assert abs(value + 2) < 0.0001

@@ -142,13 +142,17 @@ def test_getext_sympy_fns():
 
 
 def test_getext_meshVar():
+    # Use mesh.CoordinateSystem.N for differentiation - these are the raw BaseScalars
+    # that match the Function signatures used by mesh variables.
+    # (mesh.X returns UWCoordinates which are user-facing, not for internal JIT differentiation)
+    N_x, N_y = mesh.CoordinateSystem.N[0], mesh.CoordinateSystem.N[1]
 
     res_fn = sympy.ImmutableDenseMatrix([v.sym[0], w.sym])
     jac_fn = sympy.ImmutableDenseMatrix([x * v.sym[0], y**2])
     bc_fn = sympy.ImmutableDenseMatrix([v.sym[1] * sympy.sin(x), sympy.cos(y)])
     bd_res_fn = sympy.ImmutableDenseMatrix([sympy.log(v.sym[0]), sympy.exp(w.sym)])
     bd_jac_fn = sympy.ImmutableDenseMatrix(
-        [sympy.diff(sympy.log(v.sym[0]), y), sympy.diff(sympy.exp(y * x), y)]
+        [sympy.diff(sympy.log(v.sym[0]), N_y), sympy.diff(sympy.exp(N_y * N_x), N_y)]
     )
 
     with uw.utilities.CaptureStdout(split=True) as captured_setup_solver:

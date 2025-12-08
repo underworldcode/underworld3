@@ -171,7 +171,9 @@ def test_mesh_vector_div(mesh, v1, v2, p):
 
     div_v_explicit = 0.0
 
-    for i, coord in enumerate(mesh.X):
+    # Use mesh.CoordinateSystem.N for differentiation - contains BaseScalars
+    # (mesh.X contains UWCoordinates which are for user expressions, not derivatives)
+    for i, coord in enumerate(mesh.CoordinateSystem.N):
         div_v_explicit += v2.sym.diff(coord)[i]
 
     assert div_v == div_v_explicit
@@ -185,7 +187,8 @@ def test_mesh_vector_div(mesh, v1, v2, p):
 def test_mesh_vector_grad(mesh, v1, v2, p):
     grad_p = mesh.vector.gradient(p.sym)
 
-    for i, coord in enumerate(mesh.X):
+    # Use mesh.CoordinateSystem.N for differentiation - contains BaseScalars
+    for i, coord in enumerate(mesh.CoordinateSystem.N):
         assert grad_p[i] == p.sym[0].diff(coord)
 
     ## This should also be equivalent, if the .fn interface is not broken !
@@ -214,7 +217,8 @@ def test_mesh_vector_curl(mesh, v1, v2, p):
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_jacobian(mesh, v1, v2, p):
     jac_v = mesh.vector.jacobian(v1.sym)
-    jac_v_sym = v1.sym.jacobian(mesh.X)
+    # Use mesh.CoordinateSystem.N for jacobian - contains BaseScalars
+    jac_v_sym = v1.sym.jacobian(mesh.CoordinateSystem.N)
 
     assert jac_v == jac_v_sym
 
