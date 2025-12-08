@@ -1,0 +1,20 @@
+---
+title: "Presentations"
+---
+
+Slide presentations for Underworld3 workshops and tutorials.
+
+These slides are designed to be viewed in a browser and can be navigated with arrow keys.
+
+## Available Presentations
+
+- [Introduction to Underworld3](intro-presentation.qmd) — A comprehensive tutorial covering core concepts, architecture, and the AI-friendly design philosophy.
+
+## Using the Slides
+
+- **Arrow keys**: Navigate between slides
+- **Escape**: Overview mode
+- **S**: Speaker notes (if available)
+- **F**: Fullscreen
+
+Slides can also be opened directly: [Open in new window](../_build/slides/underworld3-intro.html){target="_blank"}

@@ -1,0 +1,129 @@
+/*-- scss:defaults --*/
+
+// Fonts - match the documentation
+@import url("https://indestructibletype.com/fonts/Jost.css");
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap');
+
+// Underworld3 color palette
+$uw3-maroon: #883344;
+$uw3-dark: #2d2d2d;
+$uw3-light: #f8f8f8;
+$uw3-accent: #4a90a4;
+
+// RevealJS variables
+$presentation-heading-font: 'Jost', sans-serif;
+$body-font: 'Jost', sans-serif;
+$code-font: 'Fira Code', monospace;
+
+$presentation-heading-color: $uw3-maroon;
+$body-color: $uw3-dark;
+$link-color: $uw3-maroon;
+
+$presentation-h1-font-size: 2.2em;
+$presentation-h2-font-size: 1.6em;
+$presentation-h3-font-size: 1.3em;
+
+$code-block-font-size: 0.7em;
+
+/*-- scss:rules --*/
+
+// Title slide styling
+.reveal .slide-background-content {
+  background-color: $uw3-light;
+}
+
+.reveal .slides section.title-slide {
+  h1 {
+    color: $uw3-maroon;
+    font-weight: 500;
+  }
+  
+  .subtitle {
+    color: $uw3-dark;
+    font-size: 1.2em;
+  }
+  
+  .author, .date, .institute {
+    color: lighten($uw3-dark, 20%);
+  }
+}
+
+// Section header slides
+.reveal .slides section.section-slide {
+  background-color: $uw3-maroon;
+  
+  h1, h2 {
+    color: white;
+  }
+}
+
+// Code blocks
+.reveal pre {
+  background-color: #f5f5f5;
+  border-left: 4px solid $uw3-maroon;
+  border-radius: 4px;
+  
+  code {
+    font-size: $code-block-font-size;
+    line-height: 1.4;
+  }
+}
+
+// Inline code
+.reveal code {
+  background-color: rgba($uw3-maroon, 0.1);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+// Callout boxes
+.reveal .callout {
+  border-left: 4px solid $uw3-accent;
+  background-color: rgba($uw3-accent, 0.1);
+  padding: 0.5em 1em;
+  margin: 1em 0;
+  border-radius: 4px;
+}
+
+// Mermaid diagrams
+.reveal .mermaid {
+  background-color: white;
+  padding: 1em;
+  border-radius: 4px;
+}
+
+// Footer styling
+.reveal .slide-footer {
+  font-size: 0.6em;
+  color: lighten($uw3-dark, 40%);
+}
+
+// Logo positioning
+.reveal .slide-logo {
+  max-height: 60px !important;
+}
+
+// Lists
+.reveal ul, .reveal ol {
+  margin-left: 1em;
+  
+  li {
+    margin-bottom: 0.3em;
+  }
+}
+
+// Emphasis
+.reveal strong {
+  color: $uw3-maroon;
+}
+
+// Links
+.reveal a {
+  text-decoration: underline;
+  text-decoration-color: rgba($uw3-maroon, 0.3);
+  
+  &:hover {
+    text-decoration-color: $uw3-maroon;
+  }
+}

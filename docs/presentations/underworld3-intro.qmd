@@ -1,0 +1,496 @@
+---
+title: "Introduction to Underworld3"
+subtitle: "Computational Geodynamics with Python"
+author: "Louis Moresi & the Underworld Team"
+date: today
+format:
+  uw3_slides-revealjs:
+    logo: ../media/MansoursNightmare.png
+    self-contained: true
+    footer: |
+      Underworld3 — Computational Geodynamics
+
+title-slide-attributes:
+  data-background-color: "#883344"
+  data-background-opacity: "0.95"
+
+date-format: long
+lang: en
+---
+
+# Why Underworld3? {.section-title data-background-color="#883344"}
+
+## The Geodynamics Landscape
+
+Computational tools for mantle convection, lithospheric dynamics, and crustal deformation:
+
+| Code | Approach | Language |
+|------|----------|----------|
+| ASPECT | Config files + plugins | C++ |
+| CitcomS | Parameter files | C/Fortran |
+| Underworld (1/2) | Python API | C/Python |
+| **Underworld3** | **Symbolic Python** | **Pure Python** |
+
+::: {.aside}
+Each has its niche — UW3 prioritises *composability* and *readability*
+:::
+
+## What Problem Does UW3 Solve?
+
+:::: {.columns-2}
+::: {.column}
+**Traditional approach:**
+
+- Write config files
+- Black-box solvers
+- Hard to modify physics
+- Steep learning curve
+:::
+
+::: {.column}
+**UW3 approach:**
+
+- Write Python
+- Transparent solvers
+- Compose your physics
+- Reads like maths
+:::
+::::
+
+## Design Principles
+
+1. **Python-native** — not Python-wrapped C++
+2. **Symbolic specification** — equations in SymPy
+3. **Composable** — build complex from simple
+4. **Readable** — code that teaches
+
+::: {.highlight-box}
+*The code should be comprehensible to humans and AI alike*
+:::
+
+
+# Architecture {.section-title data-background-color="#883344"}
+
+## The UW3 Stack
+
+```{mermaid}
+%%| fig-width: 10
+flowchart TB
+    subgraph User["User Layer"]
+        A[Python Script / Notebook]
+    end
+    
+    subgraph UW3["Underworld3"]
+        B[Mesh] --> C[Variables]
+        C --> D[Symbolic Expressions]
+        D --> E[Solver Templates]
+    end
+    
+    subgraph Backend["Computational Backend"]
+        F[PETSc]
+        G[MPI Parallelism]
+    end
+    
+    A --> B
+    E --> F
+    F --> G
+```
+
+## Problem Assembly Flow
+
+```{mermaid}
+%%| fig-width: 10
+flowchart LR
+    M[Create Mesh] --> V[Define Variables]
+    V --> S[Symbolic Equations]
+    S --> BC[Boundary Conditions]
+    BC --> SO[Configure Solver]
+    SO --> R[Solve & Analyse]
+```
+
+
+# Core Concepts {.section-title data-background-color="#883344"}
+
+## Meshes
+
+Creating a mesh is straightforward:
+
+```python
+import underworld3 as uw
+
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(-1.0, -1.0),
+    maxCoords=(+1.0, +1.0),
+    cellSize=0.05,
+)
+
+x, y = mesh.CoordinateSystem.X
+```
+
+::: {.aside}
+See Tutorial 1: Meshes
+:::
+
+## Mesh Types
+
+- **Structured**: Regular grids, fast
+- **Unstructured Simplex**: Triangles/tetrahedra, flexible
+- **Annulus/Spherical**: Curved geometries
+- **Geographic**: Real-world coordinates
+
+<!-- TODO: Add mesh visualisation image -->
+
+## Variables
+
+Variables are both *data containers* and *symbolic objects*:
+
+```python
+temperature = uw.discretisation.MeshVariable(
+    varname="T",
+    mesh=mesh,
+    vtype=uw.VarType.SCALAR,
+    varsymbol=r"\cal{T}"
+)
+```
+
+They render beautifully in Jupyter:
+
+$$\cal{T}(\mathbf{x})$$
+
+::: {.aside}
+See Tutorial 2: Variables
+:::
+
+## Symbolic Expressions
+
+Variables compose with SymPy:
+
+```python
+import sympy
+
+# Combine variables symbolically
+flux = -kappa * sympy.diff(temperature.sym, x)
+
+# Inspect the expression
+flux
+```
+
+The equation is *inspectable* before you solve anything.
+
+::: {.aside}
+See Tutorial 3: Symbolic Forms
+:::
+
+
+# Solvers {.section-title data-background-color="#883344"}
+
+## Solver Templates
+
+UW3 provides templates for common PDEs:
+
+```python
+poisson = uw.systems.Poisson(mesh, u_Field=temperature)
+
+# Set diffusivity (can be spatially variable)
+poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+poisson.constitutive_model.Parameters.diffusivity = kappa
+
+# Boundary conditions
+poisson.add_dirichlet_bc(1.0, "Bottom")
+poisson.add_dirichlet_bc(0.0, "Top")
+
+# Solve
+poisson.solve()
+```
+
+::: {.aside}
+See Tutorials 4-5: Poisson Equation
+:::
+
+## Stokes Flow
+
+The classic geodynamics problem:
+
+```python
+stokes = uw.systems.Stokes(
+    mesh, 
+    velocityField=v, 
+    pressureField=p
+)
+
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes.constitutive_model.Parameters.viscosity = eta
+
+stokes.bodyforce = Ra * temperature.sym[0] * gravity
+
+stokes.solve()
+```
+
+::: {.aside}
+See Tutorial 6: Stokes Equation
+:::
+
+## Solver Flow
+
+```{mermaid}
+%%| fig-width: 10
+flowchart TB
+    T[Template: Stokes/Poisson/...] --> C[Constitutive Model]
+    C --> P[Parameters]
+    P --> BC[Boundary Conditions]
+    BC --> S[.solve]
+    S --> PETSc[PETSc KSP/SNES]
+```
+
+
+# Time Evolution {.section-title data-background-color="#883344"}
+
+## Advection-Diffusion
+
+```python
+# Create advection-diffusion system
+adv_diff = uw.systems.AdvDiffusionSLCN(
+    mesh,
+    u_Field=temperature,
+    V_fn=velocity,
+)
+
+# Timestepping loop
+for step in range(nsteps):
+    dt = adv_diff.estimate_dt()
+    adv_diff.solve(timestep=dt)
+```
+
+::: {.aside}
+See Tutorials 7-8: Timestepping
+:::
+
+## Coupled Convection
+
+```{mermaid}
+%%| fig-width: 8
+flowchart TB
+    subgraph Loop["Time Loop"]
+        direction TB
+        S[Solve Stokes] --> A[Advect Temperature]
+        A --> U[Update Properties]
+        U --> S
+    end
+    
+    Init[Initialise] --> Loop
+    Loop --> Out[Output/Analysis]
+```
+
+
+# Materials & Particles {.section-title data-background-color="#883344"}
+
+## Swarm Variables
+
+Track materials with Lagrangian particles:
+
+```python
+swarm = uw.swarm.Swarm(mesh)
+swarm.populate(fill_param=3)
+
+# Material index on particles
+material = uw.swarm.IndexSwarmVariable(
+    "M", swarm, indices=2
+)
+```
+
+::: {.aside}
+See Tutorials 10-11: Particle Swarms
+:::
+
+## Multi-Material Models
+
+```{mermaid}
+%%| fig-width: 9
+flowchart LR
+    subgraph Swarm
+        P1[Particles] --> M[Material Index]
+    end
+    
+    subgraph Mesh
+        M --> V[Viscosity Field]
+        V --> S[Stokes Solver]
+    end
+```
+
+
+# Units & Scaling {.section-title data-background-color="#883344"}
+
+## Physical Units
+
+UW3 tracks dimensions throughout:
+
+```python
+plate_velocity = 5 * uw.units.cm / uw.units.year
+mantle_viscosity = 1e21 * uw.units("Pa*s")
+mantle_depth = 2900 * uw.units("km")
+
+# Convert easily
+plate_velocity.to("m/s")
+```
+
+::: {.aside}
+See Tutorial 12: Units System
+:::
+
+## Non-Dimensional Scaling
+
+For numerical stability, scale to O(1):
+
+```python
+scaling = uw.scaling.Scaling()
+scaling.set_reference(
+    length=2900 * uw.units.km,
+    viscosity=1e21 * uw.units("Pa*s"),
+    temperature=1500 * uw.units.K,
+)
+
+# Rayleigh number emerges naturally
+Ra = scaling.Rayleigh_number
+```
+
+::: {.aside}
+See Tutorials 13-14: Scaling
+:::
+
+
+# AI-Friendly Patterns {.section-title data-background-color="#883344"}
+
+## Why This Matters
+
+Modern development increasingly involves AI assistance:
+
+- Code generation
+- Documentation queries  
+- Debugging help
+- Tutorial creation
+
+::: {.highlight-box}
+Code that is clear to humans is clear to LLMs
+:::
+
+## Design for Readability
+
+**Consistent idioms** across the codebase:
+
+```python
+# Always this pattern for variables
+var = uw.discretisation.MeshVariable(
+    varname="T",        # internal name
+    mesh=mesh,          # parent mesh
+    vtype=uw.VarType.SCALAR,
+    varsymbol=r"\cal{T}"  # LaTeX rendering
+)
+```
+
+## Self-Documenting Structure
+
+- Docstrings with mathematical notation
+- Type hints throughout
+- Consistent naming conventions
+- Examples in every module
+
+## The Four Principles
+
+Our code quality guidelines:
+
+1. **DRY** — Don't Repeat Yourself (after the second occurrence)
+2. **Clean** — Delete dead code immediately
+3. **Leverage** — Use battle-tested packages
+4. **Readable** — Clear comments and naming
+
+
+# BatBot: AI Coding Partner {.section-title data-background-color="#883344"}
+
+## The Vision
+
+A Claude-powered assistant that *understands* UW3:
+
+- Answers API questions accurately
+- Generates working code snippets
+- Explains solver behaviour
+- Helps debug models
+
+## How It Works
+
+```{mermaid}
+%%| fig-width: 9
+flowchart LR
+    U[User Question] --> B[BatBot]
+    B --> D[Documentation]
+    B --> C[Code Examples]  
+    B --> F[FAQ Knowledge]
+    D & C & F --> R[Contextual Response]
+```
+
+## Current Status
+
+- FAQ knowledge base: ✅ In development
+- Documentation integration: ✅ Quarto book
+- Code pattern library: 🔄 Building
+- Interactive assistant: 📋 Planned
+
+
+# Showcase {.section-title data-background-color="#883344"}
+
+## Feature Highlights
+
+1. **Symbolic specification** — inspect equations before solving
+2. **Units system** — catch dimensional errors early
+3. **Mesh flexibility** — geographic to spherical
+4. **Parallel ready** — MPI via PETSc
+
+<!-- TODO: Add showcase images/animations -->
+
+## Example: Thermal Convection
+
+<!-- TODO: Add convection example figure -->
+
+```python
+# Complete convection model in ~50 lines
+# See Tutorial 8 / Tutorial 14
+```
+
+
+# What's Next {.section-title data-background-color="#883344"}
+
+## Roadmap
+
+- Enhanced mesh adaptation
+- Additional constitutive models
+- Improved visualisation tools
+- Extended BatBot capabilities
+
+## Get Involved
+
+:::: {.columns-2}
+::: {.column}
+**Resources:**
+
+- [Documentation](https://underworldcode.github.io/underworld3/)
+- [GitHub](https://github.com/underworldcode/underworld3)
+- [Tutorials on Binder](https://mybinder.org/...)
+:::
+
+::: {.column}
+**Community:**
+
+- GitHub Issues
+- Discussions
+- Workshops (Imperial College, ...)
+:::
+::::
+
+
+# Questions? {.section-title data-background-color="#883344"}
+
+::: {.highlight-box}
+**Underworld3**  
+Computational Geodynamics with Python
+
+[underworldcode.github.io/underworld3](https://underworldcode.github.io/underworld3/)
+:::

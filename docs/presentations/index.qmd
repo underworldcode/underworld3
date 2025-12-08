@@ -1,0 +1,14 @@
+---
+title: "Underworld3 Presentations"
+format:
+  html:
+    toc: true
+---
+
+# Presentations
+
+Slide presentations for Underworld3 tutorials and workshops.
+
+## Available Presentations
+
+- [Introduction to Underworld3](underworld3-intro.html) — Overview, philosophy, and key features
