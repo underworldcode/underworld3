@@ -289,6 +289,11 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         return self._base_var.coords
 
     @property
+    def coords_nd(self):
+        """Non-dimensional coordinates from base variable (for internal KDTree operations)."""
+        return self._base_var.coords_nd
+
+    @property
     def num_components(self) -> int:
         """Number of components."""
         return self._base_var.num_components
