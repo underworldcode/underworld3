@@ -88,7 +88,7 @@ model.set_reference_quantities(
 uw.use_nondimensional_scaling(True)
 
 outer_radius = uw.expression(r"r_o", uw.quantity(6370, "km"), "outer radius")
-inner_radius = uw.expression(r"r_i", uw.quantity(3000, "km"), "inner radius")
+inner_radius = uw.expression(r"r_i", outer_radius * 0.55, "inner radius")
 mantle_thickness = uw.expression(r"d_m", outer_radius.sym - inner_radius.sym, "mantle thickness")
 
 velocity_phys = uw.quantity(1, "cm/year")    # Horizontal velocity
@@ -98,7 +98,7 @@ T_inner = uw.quantity(283, "K")             # Right boundary temperature (hot)
 alpha = uw.expression(r"\alpha", uw.quantity(1e-5, "1/K"), "thermal expansivity")
 kappa = uw.expression(r"\kappa", uw.quantity(1e-6, "m**2/s"), "thermal diffusivity")    
 rho = uw.expression(r"\rho", uw.quantity(3000, "kg/m**3"), "density")    
-eta_0 = uw.expression(r"\eta_0", uw.quantity(1e21, "Pa.s"), "mantle viscosity")    
+eta_0 = uw.expression(r"\eta_0", uw.quantity(7e21, "Pa.s"), "mantle viscosity")    
 gravity = uw.expression(r"g", uw.quantity(10, "m/s**2"), "gravitational acceleration")
 deltaT = uw.expression(r"\Delta T", T_inner - T_outer, "temperature drop")
 
@@ -107,9 +107,12 @@ deltaT = uw.expression(r"\Delta T", T_inner - T_outer, "temperature drop")
 rayleigh_number = gravity * rho * alpha * deltaT * mantle_thickness**3 / (kappa * eta_0)
 
 # %%
+rayleigh_number
+
+# %%
 mantle_thickness = outer_radius - inner_radius
 
-res = 4
+res = 5
 
 meshball = uw.meshing.Annulus(
     radiusOuter=outer_radius,
@@ -124,8 +127,11 @@ r, th = meshball.CoordinateSystem.R
 unit_rvec = meshball.CoordinateSystem.unit_e_0
 
 # Orientation of surface normals
-Gamma_N = meshball.Gamma
-Gamma_N = -unit_rvec
+Gamma_N = meshball.Gamma / sympy.sqrt(meshball.Gamma.dot(meshball.Gamma))
+Gamma_N = unit_rvec
+
+# %%
+Gamma_N
 
 # %%
 uw.function.evaluate(rayleigh_number, meshball.X.coords[0]).squeeze()
@@ -164,17 +170,17 @@ stokes = uw.systems.Stokes(
     pressureField=p_soln,
 )
 
-stokes.bodyforce = -gravity * rho * alpha * t_soln * unit_rvec
+stokes.bodyforce = gravity * rho * alpha * t_soln * unit_rvec
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
-stokes.tolerance = 1.0e-5
+stokes.tolerance = 1.0e-3
 
-stokes.petsc_options.setValue("ksp_monitor", None)
-stokes.petsc_options.setValue("snes_monitor", None)
+# stokes.petsc_options.setValue("ksp_monitor", None)
+# stokes.petsc_options.setValue("snes_monitor", None)
 stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 
-penalty = 10000 * uw.non_dimensionalise(eta_0)
+penalty = 1000000 * uw.non_dimensionalise(eta_0)
 
 stokes.add_natural_bc(penalty * Gamma_N.dot(v_soln) * Gamma_N, "Upper")
 stokes.add_natural_bc(penalty * Gamma_N.dot(v_soln) * Gamma_N, "Lower")
@@ -188,7 +194,7 @@ adv_diff = uw.systems.AdvDiffusion(
     meshball,
     u_Field=t_soln,
     V_fn=v_soln,
-    order=1,
+    order=2,
     verbose=False,
 )
 
@@ -202,8 +208,8 @@ adv_diff.add_dirichlet_bc(T_outer, "Upper")
 
 adv_diff.petsc_options.setValue("snes_rtol", 0.001)
 adv_diff.petsc_options.setValue("ksp_rtol", 0.0001)
-adv_diff.petsc_options.setValue("snes_monitor", None)
-adv_diff.petsc_options.setValue("ksp_monitor", None)
+# adv_diff.petsc_options.setValue("snes_monitor", None)
+# adv_diff.petsc_options.setValue("ksp_monitor", None)
 
 # %% [markdown]
 # ### Initial condition
@@ -239,8 +245,8 @@ t_0.data[...] = t_soln.data[...]
 # %%
 stokes.solve(verbose=False, debug=False, zero_init_guess=True)
 
-# %%
-if uw.mpi.size == 1:
+# %% jupyter={"source_hidden": true}
+if 0 and uw.mpi.size == 1:
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -275,17 +281,12 @@ if uw.mpi.size == 1:
     # pl.show()
 
 # %%
-pl.show()
-
-# %%
-
-# %%
 # Keep the initialisation separate
 # so we can run the loop again in a notebook
 
 max_steps = 25
 timestep = 0
-elapsed_time = 0.0
+elapsed_time = uw.quantity(0, "Myr")
 
 # %%
 adv_diff.view(class_documentation=True)
@@ -303,8 +304,8 @@ adv_diff.solve(timestep=delta_t , zero_init_guess=True)
 for step in range(0, max_steps):
     print(f"Timestep: {timestep}, dt: {delta_t.to("Myr")}, time: {elapsed_time}")
     
-    stokes.solve(zero_init_guess=False)
-    delta_t = 3 * adv_diff.estimate_dt()
+    stokes.solve(zero_init_guess=True)
+    delta_t = 2 * adv_diff.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=False, verbose=False)
 
     timestep += 1
@@ -350,7 +351,7 @@ if uw.mpi.size == 1:
         show_scalar_bar=True,
     )
 
-    pl.add_arrows(pvmesh_v.points, pvmesh_v.point_data["V"], mag=8e15 )
+    pl.add_arrows(pvmesh_v.points, pvmesh_v.point_data["V"], mag=7e15 )
 
 
     pl.export_html("html5/annulus_convection_scaled.html")

@@ -283,10 +283,40 @@ def evaluate_pure_sympy(expr, coords, coord_symbols=None):
         const_val = float(expr.evalf())
         return np.full((n_points, 1, 1), const_val)
 
-    # Determine which symbols correspond to coordinates
-    # Priority: use coord_symbols if provided, otherwise extract from expression
+    # Import UWCoordinate and UWexpression for symbol processing
+    from underworld3.coordinates import UWCoordinate
+    from underworld3.function.expressions import UWexpression, _unwrap_for_compilation
+
+    # =========================================================================
+    # STEP 1: First, unwrap any UWexpressions in the expression
+    # This reveals hidden UWCoordinate symbols inside composite expressions
+    # like r = sqrt(x² + y² + z²) where x, y, z are UWCoordinates
+    # =========================================================================
+
+    # Check if there are any UWexpressions that need unwrapping
+    uw_expr_atoms = [s for s in free_symbols if isinstance(s, UWexpression)]
+    if uw_expr_atoms:
+        # Unwrap UWexpressions to reveal nested coordinates
+        expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
+
+    # =========================================================================
+    # STEP 2: Substitute all UWCoordinate atoms with their underlying BaseScalar
+    # This must happen AFTER unwrapping so we catch ALL UWCoordinates,
+    # including those that were hidden inside UWexpressions
+    # =========================================================================
+
+    uw_coords = list(expr.atoms(UWCoordinate))
+    if uw_coords:
+        coord_subs = {uc: uc._original_base_scalar for uc in uw_coords}
+        expr = expr.subs(coord_subs)
+
+    # =========================================================================
+    # STEP 3: Now extract coord_symbols from the fully processed expression
+    # This happens AFTER unwrapping and substitution so we see ALL coordinates
+    # =========================================================================
+
     if coord_symbols is None:
-        # Extract BaseScalar atoms directly from the expression
+        # Extract BaseScalar atoms from the processed expression
         base_scalars = list(expr.atoms(sympy.vector.scalar.BaseScalar))
 
         if base_scalars:
@@ -317,44 +347,38 @@ def evaluate_pure_sympy(expr, coords, coord_symbols=None):
 
                 coord_symbols = tuple(coord_symbols_list[:n_dims])
             else:
-                # No symbols found - shouldn't happen but handle gracefully
+                # No symbols found - expression might be constant after unwrapping
+                free_after = expr.free_symbols
+                if len(free_after) == 0:
+                    # Became constant after unwrapping
+                    const_val = float(expr.evalf())
+                    return np.full((n_points, 1, 1), const_val)
                 raise ValueError("No coordinate symbols found in expression")
     else:
         # Convert to tuple if needed
         coord_symbols = tuple(coord_symbols) if isinstance(coord_symbols, (list, tuple)) else (coord_symbols,)
 
-    # Check if there are extra symbols (parameters) that need substitution
-    param_symbols = free_symbols - set(coord_symbols)
+    # =========================================================================
+    # STEP 4: Final validation - check for any remaining non-coordinate symbols
+    # =========================================================================
 
-    if param_symbols:
-        # Expression has parameters beyond coordinates
-        # Try to substitute UWexpression symbols automatically
-        import underworld3 as uw
-        from underworld3.function.expressions import UWexpression, _unwrap_for_compilation
+    remaining_symbols = expr.free_symbols - set(coord_symbols)
+    if remaining_symbols:
+        # Check if they're UWexpressions we missed (shouldn't happen after unwrap)
+        non_coord_params = set()
+        for sym in remaining_symbols:
+            if isinstance(sym, UWexpression):
+                # Try to unwrap it
+                expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
+                break
+            elif not isinstance(sym, (sympy.vector.scalar.BaseScalar, UWCoordinate)):
+                non_coord_params.add(sym)
 
-        # BUG FIX (2025-11-27): Use _unwrap_for_compilation which properly handles
-        # non-dimensionalization. The previous approach used sym.sym (dimensional value)
-        # instead of sym.data (non-dimensional value), causing erf() and other functions
-        # to produce incorrect results.
-        #
-        # Example: For erf(theta) where theta involves UWexpressions with units,
-        # we need to substitute with non-dimensional values for correct evaluation.
-
-        # Check if all param_symbols are UWexpressions (we can handle those)
-        non_uw_params = set()
-        for sym in param_symbols:
-            if not isinstance(sym, UWexpression):
-                non_uw_params.add(sym)
-
-        if non_uw_params:
+        if non_coord_params:
             raise ValueError(
-                f"Expression contains symbols beyond coordinates: {non_uw_params}. "
+                f"Expression contains symbols beyond coordinates: {non_coord_params}. "
                 f"Please substitute parameter values before calling evaluate()."
             )
-
-        # Use _unwrap_for_compilation to properly unwrap ALL nested UWexpressions
-        # with correct non-dimensionalization when scaling is active
-        expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
 
     # Get cached lambdified function
     # Use scipy for special functions (erf, gamma, etc.)

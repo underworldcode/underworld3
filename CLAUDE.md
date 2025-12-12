@@ -499,6 +499,64 @@ mesh → swarm → variables (variables must be locked through their container)
    - **Result**: `uw.get_units(mesh.X[0])` now correctly returns coordinate units ✅
    - **Documentation**: See `docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md` for complete technical details
 
+## Technical Notes - Expression Processing (2025-12-11)
+
+### CRITICAL: Unwrap Before Extracting Atoms Pattern
+**Bug Fixed**: `PrintMethodNotImplementedError` when evaluating `mesh.CoordinateSystem.unit_e_0` with `uw.function.evaluate()` on 3D CubedSphere mesh.
+
+**Root Cause**: `evaluate_pure_sympy()` in `pure_sympy_evaluator.py` was extracting coordinate symbols (`coord_symbols`) **before** unwrapping `UWexpressions`. This meant coordinates hidden inside composite expressions like `r = sqrt(x² + y² + z²)` were invisible to the coordinate extraction logic.
+
+**Fix Applied** (lines 278-381 of `pure_sympy_evaluator.py`):
+```python
+# CORRECT ORDER:
+# 1. First unwrap UWexpressions to reveal hidden coordinates
+if any_uwexpressions_in_expression:
+    expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
+# 2. Then substitute UWCoordinates with BaseScalars
+# 3. Then extract coord_symbols from the FULLY PROCESSED expression
+# 4. Finally call lambdify()
+```
+
+**Places Already Safe**:
+- ✅ **JIT Compiler** (`_jitextension.py:116-119`): Unwraps FIRST via `unwrap(fn, ...)`, then analyzes
+- ✅ **`extract_expressions()`**: Recursively descends into UWexpressions
+
+**Places to Check if Similar Issues Arise**:
+- ⚠️ `is_pure_sympy_expression()` (line 22-123): Extracts `free_symbols` without unwrapping (currently causes inefficiency, not incorrectness)
+- ⚠️ `nondimensional.py:465, 479`: Used for unit handling
+
+**Pattern for New Code**:
+Any code that extracts `.atoms()` or `.free_symbols` from user expressions before compilation should follow:
+```python
+# BEFORE extracting atoms/symbols
+if any_uwexpressions_in_expression:
+    expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
+# NOW safe to extract atoms/symbols
+symbols = expr.atoms(...)
+```
+
+**Future Consideration: Centralized `get_atoms()` Function**
+If this pattern is needed in more places, consider adding a utility function to `expressions.py`:
+```python
+def get_atoms(expr, *types, unwrap=True):
+    """
+    Extract atoms from expression, optionally unwrapping UWexpressions first.
+
+    Parameters
+    ----------
+    expr : sympy expression
+        Expression to extract atoms from
+    *types : type
+        Atom types to extract (e.g., sympy.Symbol, sympy.vector.scalar.BaseScalar)
+    unwrap : bool, default=True
+        If True, unwrap UWexpressions before extraction to reveal hidden atoms
+    """
+    if unwrap:
+        expr = unwrap_expression(expr, keep_constants=False, return_self=False)
+    return expr.atoms(*types)
+```
+This would centralize the pattern and provide safe defaults. The `unwrap=False` option preserves the ability to inspect raw UWexpressions when needed.
+
 ## Pending Cleanup (Future Phase)
 🔄 **Remove legacy array interface methods** - When migration is complete:
    - Remove `use_legacy_array()` and `use_enhanced_array()` from SwarmVariable and MeshVariable

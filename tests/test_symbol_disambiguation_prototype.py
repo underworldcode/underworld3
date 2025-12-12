@@ -1,7 +1,7 @@
-"""
+r"""
 Test script for clean symbol disambiguation approach.
 
-This tests whether we can replace the invisible whitespace hack (\hspace{...})
+This tests whether we can replace the invisible whitespace hack (\\hspace{...})
 with SymPy-native mechanisms:
 - For Symbol subclasses: override _hashable_content() to include a unique ID
 - For UndefinedFunction: pass _uw_id as a kwarg (used in __eq__/__hash__)
@@ -157,7 +157,7 @@ class TestUniqueSymbol:
         assert alpha.name == r'\alpha'
 
     def test_latex_clean(self):
-        """LaTeX output should be clean without any \hspace."""
+        r"""LaTeX output should be clean without any \\hspace."""
         alpha1 = UniqueSymbol(r'\alpha')
         alpha2 = UniqueSymbol(r'\alpha')
 
@@ -335,11 +335,14 @@ class TestUniqueFunction:
 # =============================================================================
 
 class TestMultiMeshScenario:
-    """Test the scenario that motivated the disambiguation: solver1.u vs solver2.u"""
+    """Test the scenario that motivated the disambiguation: solver1.u vs solver2.u
 
-    def setup_method(self):
-        """Reset mock mesh counter for each test."""
-        MockMesh._count = 0
+    NOTE: We do NOT reset MockMesh._count between tests because SymPy caches
+    applied functions by their (name, kwargs) signature. Reusing the same
+    _uw_id would cause .func to point to a stale cached class from a previous test.
+    """
+
+    # No setup_method - let IDs increment naturally across tests
 
     def test_two_meshes_same_variable_name(self):
         """Variables with same name on different meshes should be distinct."""
