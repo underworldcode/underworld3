@@ -1,1139 +1,310 @@
-# Underworld3 Data Access Migration
+# Underworld3 AI Assistant Context
 
-> **Note**: This file provides context for AI assistants working on the codebase. Human-readable developer documentation is being migrated to `docs/developer/` in Quarto format. See `docs/developer/subsystems/data-access.qmd` and `docs/developer/subsystems/model-orchestration.qmd` for the current documentation.
+> **Note**: Human-readable developer documentation is in `docs/developer/` (Quarto format).
+> For development history and completed migrations, see @docs/developer/historical-notes.md
+
+---
 
 ## CRITICAL BUILD CONSTRAINTS
 
-### PETSc Directory Location (DO NOT MOVE)
-**WARNING**: The `petsc/` directory in `/Users/lmoresi/+Underworld/underworld-pixi-2/petsc/` MUST NOT be moved or relocated.
-- PETSc is NOT relocatable after compilation
-- The build contains hardcoded paths that cannot be changed
-- Moving the directory will break petsc4py bindings
-- All pixi tasks depend on this fixed location
-- The PETSC_DIR environment variable points to this specific path
-- **Future Plan**: Convert to pixi package installed in underworld3 directory (pending ~1hr build time solution)
+### PETSc Directory (DO NOT MOVE)
+**WARNING**: `/Users/lmoresi/+Underworld/underworld-pixi-2/petsc/` MUST NOT be moved.
+- PETSc is NOT relocatable after compilation (hardcoded paths)
+- Moving breaks petsc4py bindings and all pixi tasks
+- Requires complete rebuild (~1 hour) if relocated
 
-### underworld3-documentation Status
-**Migration in Progress**: The `underworld3-documentation` directory contains legacy documentation being migrated.
-- **Already migrated**: Constitutive models theory documentation
-- **To migrate**: Solver documentation, key example notebooks, benchmarks
-- **See**: `MIGRATION_FROM_UW3_DOCUMENTATION.md` for detailed status
-- **Goal**: Single source of truth in underworld3 repository
+### Rebuild After Source Changes
+**After modifying source files, always run `pixi run underworld-build`!**
+- Underworld3 is installed as a package in the pixi environment
+- Changes go to `.pixi/envs/default/lib/python3.12/site-packages/underworld3/`
+- Verify with `uw.model.__file__`
 
-### CRITICAL REBUILD REQUIREMENT ⚠️
-**After modifying source files, always run `pixi run underworld-build` to see changes!**
-- **Why**: Underworld3 is installed as a package in the pixi environment
-- **Location**: Changes go to `/Users/lmoresi/+Underworld/underworld-pixi-2/.pixi/envs/default/lib/python3.12/site-packages/underworld3/`
-- **Build tasks**: `pixi run underworld-build` rebuilds and reinstalls the package
-- **Verification**: Check `uw.model.__file__` to confirm source location
+### Test Quality Principles
+**New tests must be validated before making code changes to fix them!**
+- Validate test correctness before changing main code
+- If core tests (0000-0599) pass, the system is working correctly
+- Disable problematic new tests, validate core functionality, then fix test structure
 
-### TEST QUALITY AND VALIDATION PRINCIPLES ⚠️
-**CRITICAL**: New tests must be validated before making code changes to fix them!
-- **Validate test correctness**: Ensure new tests are properly structured and test real functionality
-- **Independent verification**: Before changing main code, verify there's actually a problem with the core system
-- **Test isolation**: New regression tests should not drive changes to working core functionality
-- **Core system priority**: If core tests (0000-0599) pass, the system is working correctly
-- **Example failure (2025-10-09)**: test_06*_regression.py tests were incorrectly structured, causing `AttributeError: 'MutableDenseMatrix' object has no attribute 'u'` in constitutive models. Core system was working fine - the new tests had wrong assumptions about API usage.
-- **Resolution approach**: Disable problematic new tests, validate core functionality, then fix test structure rather than changing working code
+### JOSS Paper (FROZEN)
+**Location**: `publications/joss-paper/` - Publication of record, DO NOT modify.
 
-### JOSS Paper - Publication of Record
-**Location**: `publications/joss-paper/` (moved from `docs/joss-paper/`)
-- **Status**: FROZEN - Publication of record, preserve as-is
-- **DO NOT UPDATE**: This directory should not be modified even if code changes significantly
-- **Content**: Journal of Open Source Software publication source (paper.md, paper.pdf, paper.bib)
-- **Useful for documentation**: Contains high-level overview, design rationale, key features explanation
-- **Mining potential**: Executive summaries, architecture descriptions, comparison with other tools
+---
 
-### Design Documents
+## Design Documents Reference
+
 **Location**: `docs/developer/design/`
-- **Purpose**: Architecture plans, design documents, feature roadmaps
-- **Status**: Mix of historical plans and current/future designs
-- **Changelog**: See `docs/developer/CHANGELOG.md` for quarterly-reportable work
 
-#### Feature Plans (Historical - verify against implementation)
-- `parameter_system_plan.md` - Parameter system design (note: current implementation differs)
-- `material_properties_plan.md` - Material properties architecture
-- `mathematical_objects_plan.md` - Mathematical objects design (✅ IMPLEMENTED)
-- `claude_examples_plan.md` - Example usage patterns
-- `units_system_plan.md` - ⚠️ **SUPERSEDED** by `UNITS_SIMPLIFIED_DESIGN_2025-11.md`
-- `MultiMaterial_ConstitutiveModel_Plan.md` - Multi-material constitutive models
+| Document | Status | Purpose |
+|----------|--------|---------|
+| `UNITS_SIMPLIFIED_DESIGN_2025-11.md` | **AUTHORITATIVE** | Current units architecture |
+| `PARALLEL_PRINT_SIMPLIFIED.md` | Implemented | `uw.pprint()` and `selective_ranks()` |
+| `RANK_SELECTION_SPECIFICATION.md` | Implemented | Rank selection syntax |
+| `mathematical_objects_plan.md` | Implemented | Mathematical objects design |
 
-#### Units System (✅ SIMPLIFIED 2025-11)
-- **`UNITS_SIMPLIFIED_DESIGN_2025-11.md`** - **AUTHORITATIVE**: Current units architecture
-  - Gateway pattern: units at boundaries, not during symbolic ops
-  - `UWQuantity`: lightweight Pint-backed numbers
-  - `UWexpression`: preferred user-facing lazy wrapper
-  - Arithmetic closure: operations return unit-preserving types
-  - See this document for implementation requirements
+---
 
-#### Parallel Safety System (✅ IMPLEMENTED 2025-01-24)
-- `PARALLEL_PRINT_SIMPLIFIED.md` - **Main design**: `uw.pprint()` and `selective_ranks()` (✅ **IMPLEMENTED**)
-- `RANK_SELECTION_SPECIFICATION.md` - Comprehensive rank selection syntax (✅ **IMPLEMENTED**)
-- `COLLECTIVE_OPERATIONS_CLASSIFICATION.md` - Classification of collective vs local operations
-- `AUTOMATIC_COLLECTIVE_DETECTION.md` - How to detect collective ops automatically (future enhancement)
-- `CODEBASE_COLLECTIVE_ANALYSIS.md` - Using existing code patterns to identify operations
-- `PARALLEL_SAFETY_ANALYSIS.md` - Analysis of current issues (resolved)
-- `PARALLEL_SAFETY_DESIGN.md` - Early comprehensive design (superseded by simplified version)
-- `RETURN_SUPPRESSION_MECHANISM.md` - Technical details of stdout suppression
-- `PARALLEL_PRINTING_DESIGN.md` - Alternative design approach
+## Units System Principles
 
-**Status**: Core parallel safety system implemented and integrated. Codebase migrated to new patterns. See implementation in `src/underworld3/mpi.py` and documentation in `docs/advanced/parallel-computing.qmd`.
+### String Input, Pint Object Storage
+**Accept strings for convenience, store/return Pint objects internally.**
 
-**Documentation Strategy**: Mine planning documents for important information to consolidate into developer guide (`docs/developer/`), then clean up planning directory to avoid repository clutter. Developer guide should serve dual purpose as implementation reference and code patterns guide.
-
-## Units System Design Principles ⚠️
-
-### CRITICAL: String Input, Pint Object Storage (2025-11-19)
-
-**Principle**: Accept strings for user convenience, but ALWAYS store and return Pint objects internally.
-
-**Why This Matters**:
-- **User API**: Strings are convenient and readable (`"Pa*s"` vs `ureg.pascal * ureg.second`)
-- **Internal Operations**: Pint objects enable dimensional analysis, unit arithmetic, compatibility checking
-- **Type Violations**: Returning strings from `.units` property breaks the units protocol
-
-**Pattern (CORRECT)**:
 ```python
-# 1. User creates quantity with string (convenience)
+# User creates with string (convenience)
 viscosity = uw.quantity(1e21, "Pa*s")
 
-# 2. Internally convert and store as Pint object
-class UWQuantity:
-    def __init__(self, value, units: Optional[str] = None):
-        if units is not None:
-            from ..scaling import units as ureg
-            self._pint_qty = value * ureg.parse_expression(units)  # String → Pint
-            self._has_pint_qty = True
+# Internally stored as Pint object
+# .units returns Pint Unit object (NOT string!)
+viscosity.units  # <Unit('pascal * second')>
 
-# 3. Return Pint objects from properties (NOT strings!)
-    @property
-    def units(self):
-        """Get the units object for this quantity."""
-        if self._has_pint_qty:
-            return self._pint_qty.units  # Pint Unit object
-        return None
-
-# 4. Arithmetic works correctly with Pint objects
-Ra = (rho0 * alpha * g * DeltaT * L**3) / (eta0 * kappa)  # Units combine properly
-```
-
-**Anti-Pattern (WRONG)**:
-```python
-# DON'T return strings from .units property!
-@property
-def units(self) -> str:  # Type hint forces wrong behavior
-    return str(self._pint_qty.units)  # ❌ Converts to string - breaks dimensional analysis!
-
-# This causes errors:
-model.get_scale_for_dimensionality(qty.units)
-# AttributeError: 'str' object has no attribute 'items'
-# Because dimensionality checking expects Pint objects, not strings!
-```
-
-**Historical Bug (2025-11-19)**:
-- Added type annotation `-> str` to UWQuantity.units property
-- Forced string conversion: `return str(self._pint_qty.units)`
-- Broke Rayleigh number calculations and all unit arithmetic
-- Fixed by removing type hint and returning raw Pint object
-
-**Testing Checklist**:
-- ✅ Accept string inputs: `uw.quantity(5, "cm/year")`
-- ✅ Store as Pint internally: `isinstance(qty._pint_qty, pint.Quantity)`
-- ✅ Return Pint from properties: `isinstance(qty.units, pint.Unit)`
-- ✅ Unit arithmetic works: `(qty1 * qty2).units` has correct dimensions
-- ✅ Dimensional analysis works: `model.get_scale_for_dimensionality(qty.units)` doesn't crash
-
-### CRITICAL: Pint Unit vs Quantity Distinction (2025-11-19)
-
-**Principle**: Understand the difference between Pint **Unit** objects and **Quantity** objects.
-
-**The Distinction**:
-```python
-# Pint Quantity = value + units together
-qty = 5 * ureg.meter           # Quantity: has both magnitude and units
-qty.magnitude                  # 5
-qty.units                      # <Unit('meter')>
-qty.to("km")                   # ✅ Can convert (has value)
-qty.to_base_units()            # ✅ Can convert (has value)
-qty.to_reduced_units()         # ✅ Can simplify (has value)
-
-# Pint Unit = just the unit, no value
-unit = ureg.meter              # Unit: just the unit definition
-unit.dimensionality            # ✅ Can check dimensions
-unit.to("km")                  # ❌ AttributeError - no value to convert
-unit.to_base_units()           # ❌ AttributeError - no value to convert
-```
-
-**UWQuantity Architecture**:
-```python
-qty = uw.quantity(2900, "km")
-
-# Public API:
-qty.value          # 2900 (numeric value)
-qty.units          # <Unit('kilometer')> - Pint Unit object (not Quantity!)
-qty.magnitude      # 2900 (alias for .value)
-
-# Conversion methods (work on UWQuantity, not on .units):
-qty.to("m")              # ✅ Returns new UWQuantity
-qty.to_base_units()      # ✅ Returns new UWQuantity
-qty.to_reduced_units()   # ✅ Returns new UWQuantity
-qty.to_compact()         # ✅ Returns new UWQuantity
-
-# WRONG - these fail because .units is a Unit, not a Quantity:
-qty.units.to("m")              # ❌ AttributeError
-qty.units.to_base_units()      # ❌ AttributeError
-qty.units.to_reduced_units()   # ❌ AttributeError
-
-# Internal (not part of public API):
-qty._pint_qty      # Full Pint Quantity object (2900 kilometer)
-qty._pint_qty.to_base_units()  # ✅ Works but uses private API
-```
-
-**Why This Matters**:
-1. **`.units` is for inspection**: Check what units something has, compare compatibility
-2. **Conversion methods on UWQuantity**: Use the full object, not just `.units`
-3. **Error messages are correct**: `AttributeError: 'Unit' object has no attribute 'to_compact'` is expected behavior
-
-**Common Mistakes**:
-```python
-# WRONG
-L = uw.quantity(2900, "km")
-L.units.to_base_units()     # ❌ Unit has no to_base_units method
-
-# CORRECT
-L = uw.quantity(2900, "km")
-L.to_base_units()           # ✅ Returns UWQuantity(2900000, "m")
-```
-
-**Unit Simplification for Dimensionless Quantities**:
-```python
-# Problem: Mixed units create complex expressions
+# Arithmetic works correctly
 Ra = (rho0 * alpha * g * DeltaT * L**3) / (eta0 * kappa)
-# With L in km, this shows: "kg * km³ / m⁴ / Pa / s²"
-# Even though it's dimensionless!
-
-# Solution: Use to_reduced_units() to simplify
-Ra_clean = Ra.to_reduced_units()
-# Shows: "7.1e6 dimensionless" (properly simplified)
-
-# Then extract magnitude for calculations
-Ra_value = float(Ra_clean.magnitude)  # 7100000.0
 ```
 
-**Historical Issue (2025-11-19)**:
-- User tried `L.units.to_compact()` and got AttributeError
-- This is **correct behavior** - Units alone can't be compacted
-- Only full Quantities (value + units) support conversion methods
-
-### CRITICAL: Unit Conversion on Composite Expressions (2025-11-25) ✅ FIXED
-
-**Problem Solved**: `.to_base_units()` and `.to_reduced_units()` were causing evaluation errors on composite expressions.
-
-**Root Cause**:
-- Methods embedded conversion factors in expression tree: `new_expr = expr * 5617615.15`
-- During nondimensional evaluation cycles, factors were **double-applied**
-- Example: `sqrt((kappa * t_now))**0.5` would evaluate to wrong value after conversion
-
-**Fix Applied**:
-- Composite expressions (containing UWexpression symbols): Only change display units, no factor embedding
-- Simple expressions (no symbols): Apply conversion factors as before
-- Issues UserWarning when display-only conversion occurs
-
-**User Guidance**:
+### Unit vs Quantity Distinction
 ```python
-# ✅ RECOMMENDED: Use .to_compact() for unit simplification
-sqrt_expr = ((kappa * t_now))**0.5
-display_expr = sqrt_expr.to_compact()  # Automatic readable units, no warning
+# Pint Quantity = value + units (can convert)
+qty = uw.quantity(2900, "km")
+qty.to("m")              # Returns new UWQuantity
+qty.to_base_units()      # Returns new UWQuantity
 
-# ⚠️ WORKS BUT WARNS: Use .to_base_units() or .to_reduced_units()
-display_expr = sqrt_expr.to_base_units()  # Display units only, with warning
-# UserWarning: "changing display units only..."
-
-# ✅ SIMPLE EXPRESSIONS: Conversion factor applied
-velocity = uw.quantity(5, "km/hour")
-velocity_ms = velocity.to_base_units()  # → 1.38889 m/s (actually converts)
+# Pint Unit = just the unit (cannot convert!)
+qty.units                # <Unit('kilometer')>
+qty.units.to("m")        # AttributeError! Use qty.to("m") instead
 ```
 
-**Verification**: All evaluation bugs fixed ✅
-- `evaluate(expr.to_base_units())` now equals `evaluate(expr)`
-- System is "bulletproof" for evaluation with nondimensional scaling
-- See: `docs/reviews/2025-11/UNITS-EVALUATION-FIXES-2025-11-25.md`
+### Transparent Container Principle
+**UWexpression is a container that derives properties from its contents.**
+- Atomic (UWQuantity): `.units` comes from stored value
+- Composite (SymPy tree): `.units` derived via `get_units(self._sym)`
+- No cached state on composites - eliminates sync issues
 
-### CRITICAL: Transparent Container Principle (2025-11-26)
+---
 
-**Principle**: A container cannot know in advance what it contains. If an object is lazy-evaluated, its properties must also be lazy-evaluated.
+## Parallel Computing Patterns
 
-**The Atomic vs Container Distinction**:
-| Type | Role | What it stores |
-|------|------|----------------|
-| **UWQuantity** | Atomic leaf node | Value + Units (indivisible, this IS the data) |
-| **UWexpression** | Container | Reference to contents only (derives everything) |
+### Key Understanding
+**Underworld3 rarely uses MPI directly - PETSc handles all parallel synchronization.**
 
-**Why This Matters**:
-- **UWexpression is always a container**, whether wrapping:
-  - A UWQuantity (atomic) → derives `.units` from `self._value_with_units.units`
-  - A SymPy tree (composite) → derives `.units` from `get_units(self._sym)`
-- **The container never "owns" units** - it provides access to what's inside
-- **No cached state on composites** - eliminates sync issues between stored and computed values
+- PETSc manages parallelism for mesh operations, solvers, vector updates
+- UW3 API wraps PETSc collective operations correctly
+- Avoid direct mpi4py usage unless absolutely necessary
 
-**Implementation Pattern**:
+### Current Parallel Safety API
+
 ```python
-class UWexpression:
-    @property
-    def units(self):
-        # Always derived, never stored separately
-        if self._value_with_units is not None:
-            return self._value_with_units.units  # From contained atom
-        return get_units(self._sym)  # From contained tree
-
-    def __mul__(self, other):
-        if isinstance(other, UWexpression):
-            # Return raw SymPy product - units derived on demand via get_units()
-            # This preserves lazy evaluation and eliminates sync issues
-            return Symbol.__mul__(self, other)
-```
-
-**Anti-Pattern (WRONG)**:
-```python
-# DON'T store computed units on composite results!
-def __mul__(self, other):
-    if isinstance(other, UWexpression):
-        result = Symbol.__mul__(self, other)
-        result._units = self.units * other.units  # ❌ Creates sync liability
-        return result  # ❌ Also fails: SymPy Mul is immutable!
-```
-
-**Key Insight**: If you design an object to be lazily evaluated, it's inconsistent to eagerly compute and store properties. Caching creates sync liability and violates the laziness contract.
-
-**See**: `docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md` for full architectural details.
-
-## Project Context
-Migrating Underworld3 from access context manager pattern to direct data access using NDArray_With_Callback for backward compatibility.
-
-### Parallel Computing in Underworld3
-**CRITICAL UNDERSTANDING**: Underworld3 rarely uses MPI directly - PETSc handles all parallel synchronization.
-
-**Key Principles:**
-- **PETSc manages parallelism**: All mesh operations, solvers, vector updates are inherently parallel via PETSc
-- **Collective operations**: Many PETSc operations require all processes to participate (collective calls)
-- **UW3 API is parallel-safe**: Use only UW3 wrapper functions which properly wrap PETSc collective operations
-- **MPI usage is minimal**: The main use of `uw.mpi.rank` is for conditional logic (e.g., "only rank 0 prints output")
-- **Avoid direct MPI**: Don't use mpi4py directly unless absolutely necessary - use UW3 API instead
-
-**Writing Parallel-Safe Code:**
-- Use UW3 mesh/variable/solver API - these handle collective operations correctly
-- Be careful about rank-conditional code that might skip collective operations
-- Understand which UW3 operations are collective (most mesh/solver operations)
-- Don't introduce raw MPI barriers or communications unless you understand the PETSc context
-
-**Common Pattern:**
-```python
-# CORRECT - using UW3 API (PETSc handles parallelism)
-mesh.access(var)  # Collective operation via PETSc
-var.data[...] = values
-
-# CORRECT - conditional output only
+# OLD (deprecated) - DANGEROUS if stats() is collective
 if uw.mpi.rank == 0:
-    print("Status message")  # Non-collective, safe
+    print(f"Stats: {var.stats()}")
 
-# INCORRECT - using raw MPI for what PETSc handles
-from mpi4py import MPI
-MPI.COMM_WORLD.barrier()  # Usually unnecessary, PETSc manages this
-```
+# NEW (safe) - All ranks execute, only selected ranks print
+uw.pprint(0, f"Stats: {var.stats()}")
 
-**PARALLEL SAFETY PATTERNS (New - Use These!):**
-```python
-# OLD PATTERN (deprecated)
-if uw.mpi.rank == 0:
-    print(f"Stats: {var.stats()}")  # DANGEROUS if stats() is collective!
-
-# NEW PATTERN (safe) - Use uw.pprint()
-uw.pprint(0, f"Stats: {var.stats()}")  # All ranks execute stats(), only rank 0 prints
-
-# OLD PATTERN (deprecated)
-if uw.mpi.rank == 0:
-    import pyvista as pv
-    plotter = pv.Plotter()
-    # visualization code...
-
-# NEW PATTERN (safe) - Use selective_ranks()
+# For code blocks (visualization, etc.)
 with uw.selective_ranks(0) as should_execute:
     if should_execute:
         import pyvista as pv
         plotter = pv.Plotter()
-        # visualization code...
 ```
 
-**Parallel Safety API (✅ IMPLEMENTED):**
-- **`uw.pprint(ranks, *args, **kwargs)`** - Parallel-safe printing (all ranks evaluate args, selected ranks print)
-- **`uw.selective_ranks(ranks)`** - Context manager for rank-specific execution
-- **Rank selection**: Supports int, slice, list, str patterns ('all', 'first', 'even', etc.), functions, numpy arrays
+**Implementation**: `src/underworld3/mpi.py`
+**Documentation**: `docs/advanced/parallel-computing.qmd`
 
-**See**: 
-- `src/underworld3/mpi.py` - **Implementation** of `pprint()` and `selective_ranks()`
-- `docs/advanced/parallel-computing.qmd` - **User documentation** with comprehensive examples and migration guide
-- `docs/developer/design/PARALLEL_PRINT_SIMPLIFIED.md` - Original design document
-- `docs/developer/design/RANK_SELECTION_SPECIFICATION.md` - Complete rank selection syntax specification
+---
 
-## Architecture Priorities & Module Purposes
+## Architecture Priorities
 
-### Core Design Principles
-1. **Solver Stability is Paramount**: The PETSc-based solvers (Stokes, advection-diffusion, etc.) are the core of the system. They have been carefully optimized, benchmarked, and validated over many years. Any changes must preserve their integrity.
+### Solver Stability is Paramount
+The PETSc-based solvers are carefully optimized and validated. **NO CHANGES without extensive benchmarking.**
 
-2. **Conservative Migration Strategy**:
-   - **User-facing code** (tests, examples): Use new `array` property with automatic sync
-   - **Solver internals**: Keep using `vec` property with direct PETSc access
-   - **Gradual transition**: Only make changes when driven by actual needs, not cleanup
+### Module Boundaries
 
-### Module Purposes & Boundaries
+| Module | Purpose | Access Pattern |
+|--------|---------|----------------|
+| **Solvers** (`petsc_generic_snes_solvers`) | High-performance PETSc solving | Direct `vec` property |
+| **Mesh Variables** | User-facing field data | `array` property (new) |
+| **Swarm Variables** | Particle data with mesh proxies | `data` property |
 
-#### Solvers (`underworld3.cython.petsc_generic_snes_solvers`)
-- **Purpose**: High-performance numerical solving using PETSc
-- **Access Pattern**: Direct PETSc vector access via `vec` property
-- **Change Policy**: NO CHANGES without extensive benchmarking
-- **Why**: These handle matrix assembly, preconditioners, field splitting, BC application, parallel ghost exchanges
+### Conservative Migration Strategy
+- **User-facing code**: Use `array` property with automatic sync
+- **Solver internals**: Keep using `vec` property with direct PETSc access
+- **Gradual transition**: Only change when driven by actual needs
 
-#### Mesh Variables (`discretisation_mesh_variables.py`)
-- **Purpose**: User-facing interface for field data
-- **Access Pattern**: Transitioning to direct `array` property
-- **Key Features**:
-  - `array` property: NDArray_With_Callback for automatic PETSc sync
-  - `vec` property: Preserved for solver compatibility
-  - `_available=True` by default: Ensures solvers always have access
+---
 
-#### Swarm Variables (`swarm.py`)
-- **Purpose**: Particle-based data with mesh proxy variables
-- **Access Pattern**: Direct `data` property with lazy proxy updates
-- **Key Features**:
-  - Lazy evaluation for proxy variables (avoid PETSc conflicts)
-  - Migration control for particle redistribution
-  - RBF interpolation to mesh when needed
+## Data Access Patterns (Current)
 
-### Critical Compatibility Requirements
+### Single Variable Updates
+```python
+# Direct array access (recommended)
+var.array[...] = values
+```
 
-1. **Vector Availability**: Setting `_available=True` by default ensures solvers can access vectors without modification
-2. **Lazy Initialization**: Vectors are created on first access via `_set_vec()`
-3. **Backward Compatibility**: Old `with mesh.access()` patterns still work but are not required
+### Multiple Variable Updates
+```python
+# Batch updates with synchronization
+with uw.synchronised_array_update():
+    var1.array[...] = values1
+    var2.array[...] = values2
+```
 
-## Key Changes Made
+### Array Formats
+- **array**: `(N, a, b)` where scalar=`(N,1,1)`, vector=`(N,1,3)`, tensor=`(N,3,3)`
+- **data**: `(-1, num_components)` flat format for backward compatibility
 
-### 1. Backward Compatible Data Property
-- **Files**: `discretisation_mesh_variables.py`, `swarm.py`
-- **Implementation**: `@property def data(self): return self.array.reshape(-1, self.num_components)` with custom callback
-- **Purpose**: Eliminates need for `with mesh.access(var): var.data[...] = values` pattern
+### Locking Hierarchy
+`mesh → swarm → variables` (variables lock through their container)
 
-### 2. Method Renaming (Completed)
-- `unpack_uw_data_to_petsc` → `unpack_uw_data_from_petsc`
-- `unpack_raw_data_to_petsc` → `unpack_raw_data_from_petsc`
-- **Rationale**: We unpack FROM PETSc, not TO PETSc
+---
 
-### 3. DM Initialization Flag (Completed)
-- **Change**: `_accessed` → `_dm_initialized` 
-- **Files**: `discretisation_mesh.py` (line 546 init, line 1140 setting)
-- **Purpose**: Tracks when PETSc DM has been built, not just access state
-- **Fixed**: DM rebuild triggering when adding new variables
+## Expression Processing
 
-### 4. Dummy Access Manager (Completed)
-- **Implementation**: Uses `NDArray_With_Callback.delay_callbacks_global()`
-- **Files**: `discretisation_mesh.py` (`access()` → `_legacy_access()`)
-- **Purpose**: Enables testing both old and new patterns
+### Unwrap Before Extracting Atoms
+When extracting `.atoms()` or `.free_symbols` from expressions before compilation:
 
-### 5. Update_lvec Fix (Completed)
-- **Location**: `discretisation_mesh.py:1057-1063`
-- **Changes**: 
-  - Removed `with self.access():` context, changed `var.vec` → `var._lvec`
-  - Added vector initialization check: `if var._lvec is None: var._set_vec(available=True)`
-- **Rationale**: Direct PETSc vector access for internal mesh operations eliminates availability check requirement, but must ensure vectors are initialized
-
-## Locking Hierarchy
-mesh → swarm → variables (variables must be locked through their container)
-
-## Array Formats
-- **array**: (N,a,b) where scalar=(N,1,1), vector=(N,1,3), tensor=(N,3,3)  
-- **data**: (-1, num_components) flat format for backward compatibility
-
-## Vestigial Code Identified
-- `Stateful` mixin class and `_increment()` method in `_api_tools.py`
-- Various access-related flags that may no longer be needed
-
-## Recent Progress
-- Fixed recursion error in data property by using direct PETSc access
-- Resolved callback index conflicts between array and data properties
-- Fixed DM initialization flag not being set with direct access
-- Eliminated access context manager requirement in update_lvec() by using direct `_lvec` access
-- Fixed symmetric tensor data property shape issue
-- Implemented Mathematical Objects with complete SymPy integration
-- Implemented elegant `to_model_units()` using Pint dimensional analysis (2025-10-08)
-- **LATEST**: Coordinate units system completed (2025-10-15):
-  - Fixed model synchronization via auto-registration
-  - Enhanced `get_units()` to extract units from SymPy expressions
-  - Coordinates now carry unit information: `uw.get_units(mesh.X[0])` works ✅
-  - See `docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md` for details
-
-## Current Status (Phase 1 Complete)
-✅ Core data property implementation complete
-✅ Method naming corrected  
-✅ DM initialization tracking fixed
-✅ Dummy access manager working
-✅ update_lvec() access requirement eliminated
-✅ Symmetric tensor data property fixed
-✅ Swarm points setter migration bug fixed
-✅ PETSc field access conflicts resolved
-✅ Swarm proxy variable lazy evaluation implemented
-✅ Vector availability issues fixed for solver compatibility
-✅ Most Stokes tests now passing
-✅ Mathematical Objects implementation complete
-✅ Advection-diffusion bug fixed (mesh._stale_lvec flag issue resolved)
-✅ Test suite reorganized by complexity (0000-0199 simple, 0500-0699 intermediate, 1000+ complex)
-✅ **Model auto-registration system implemented** (2025-09-23)
-✅ **Obsolete migration validation test removed** (test_0560_migration_validation.py)
-✅ **Private variables system implemented** (2025-09-30) - `_register=False` parameter for non-persistent variables
-✅ **Units capability tests fixed** (2025-09-30) - 79/81 tests passing, core units functionality working
-✅ **Elegant to_model_units() implementation** (2025-10-08) - Uses Pint dimensional analysis for composite dimensions, returns dimensionless UWQuantity objects
-✅ **Coordinate units system complete** (2025-10-15):
-   - **FIXED**: Model synchronization via auto-registration in `Model.__init__()` and `set_reference_quantities()`
-   - **FIXED**: Coordinate unit detection via enhanced `get_units()` that searches inside SymPy expressions
-   - Implemented `patch_coordinate_units()` to add unit awareness to mesh coordinates (x, y, z)
-   - Created `UnitAwareBaseScalar` subclass for future native unit support
-   - Added `Model.set_as_default()` for explicit control in advanced workflows
-   - **Result**: `uw.get_units(mesh.X[0])` now correctly returns coordinate units ✅
-   - **Documentation**: See `docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md` for complete technical details
-
-## Technical Notes - Expression Processing (2025-12-11)
-
-### CRITICAL: Unwrap Before Extracting Atoms Pattern
-**Bug Fixed**: `PrintMethodNotImplementedError` when evaluating `mesh.CoordinateSystem.unit_e_0` with `uw.function.evaluate()` on 3D CubedSphere mesh.
-
-**Root Cause**: `evaluate_pure_sympy()` in `pure_sympy_evaluator.py` was extracting coordinate symbols (`coord_symbols`) **before** unwrapping `UWexpressions`. This meant coordinates hidden inside composite expressions like `r = sqrt(x² + y² + z²)` were invisible to the coordinate extraction logic.
-
-**Fix Applied** (lines 278-381 of `pure_sympy_evaluator.py`):
 ```python
 # CORRECT ORDER:
 # 1. First unwrap UWexpressions to reveal hidden coordinates
 if any_uwexpressions_in_expression:
     expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
-# 2. Then substitute UWCoordinates with BaseScalars
-# 3. Then extract coord_symbols from the FULLY PROCESSED expression
-# 4. Finally call lambdify()
-```
-
-**Places Already Safe**:
-- ✅ **JIT Compiler** (`_jitextension.py:116-119`): Unwraps FIRST via `unwrap(fn, ...)`, then analyzes
-- ✅ **`extract_expressions()`**: Recursively descends into UWexpressions
-
-**Places to Check if Similar Issues Arise**:
-- ⚠️ `is_pure_sympy_expression()` (line 22-123): Extracts `free_symbols` without unwrapping (currently causes inefficiency, not incorrectness)
-- ⚠️ `nondimensional.py:465, 479`: Used for unit handling
-
-**Pattern for New Code**:
-Any code that extracts `.atoms()` or `.free_symbols` from user expressions before compilation should follow:
-```python
-# BEFORE extracting atoms/symbols
-if any_uwexpressions_in_expression:
-    expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
-# NOW safe to extract atoms/symbols
+# 2. Then extract atoms/symbols from the FULLY PROCESSED expression
 symbols = expr.atoms(...)
 ```
 
-**Future Consideration: Centralized `get_atoms()` Function**
-If this pattern is needed in more places, consider adding a utility function to `expressions.py`:
+**Safe locations**: JIT Compiler (`_jitextension.py`), `extract_expressions()`
+**Check if issues**: `is_pure_sympy_expression()`, `nondimensional.py`
+
+---
+
+## Swarm Concepts
+
+### Migration
+Migration moves particles between processors based on spatial location.
+- Happens automatically when particles move
+- Use `migration_disabled()` context for batch operations
+- Essential for parallel correctness
+
+### Proxy Mesh Variables
+Swarm variables with `proxy_degree > 0` create proxy mesh variables using RBF interpolation.
+- Used for integration and derivative calculations
+- Must be updated when swarm data/positions change
+- Update happens automatically via `swarmVar._update()`
+
+---
+
+## Mathematical Objects
+
+Variables support natural mathematical syntax:
+
 ```python
-def get_atoms(expr, *types, unwrap=True):
-    """
-    Extract atoms from expression, optionally unwrapping UWexpressions first.
+# Direct arithmetic (no .sym needed)
+momentum = density * velocity
+strain_rate = velocity[0].diff(x) + velocity[1].diff(y)
 
-    Parameters
-    ----------
-    expr : sympy expression
-        Expression to extract atoms from
-    *types : type
-        Atom types to extract (e.g., sympy.Symbol, sympy.vector.scalar.BaseScalar)
-    unwrap : bool, default=True
-        If True, unwrap UWexpressions before extraction to reveal hidden atoms
-    """
-    if unwrap:
-        expr = unwrap_expression(expr, keep_constants=False, return_self=False)
-    return expr.atoms(*types)
-```
-This would centralize the pattern and provide safe defaults. The `unwrap=False` option preserves the ability to inspect raw UWexpressions when needed.
-
-## Pending Cleanup (Future Phase)
-🔄 **Remove legacy array interface methods** - When migration is complete:
-   - Remove `use_legacy_array()` and `use_enhanced_array()` from SwarmVariable and MeshVariable
-   - Remove associated tests that validate interface switching:
-     - `test_0530_array_migration.py` - Tests legacy/enhanced interface migration
-     - `test_0550_direct_pack_unpack.py` - Tests both interface modes (partial removal)
-     - ~~`test_0560_migration_validation.py`~~ - ✅ **REMOVED** (2025-09-23) - Obsolete migration scaffolding
-   - Review and potentially remove `test_0540_coordinate_change_locking.py` - May be migration scaffolding
-   - Keep only tests that validate current array interface functionality
-   - Archive migration tests for historical reference
-
-## Test Suite Organization (Latest)
-Tests reorganized by complexity level for better execution order:
-
-**SIMPLE (0000-0199)**: Basic functionality, imports, simple operations
-- test_0100_backward_compatible_data.py (was test_0002_*)
-- test_0110_basic_swarm.py (was test_0002_*)
-- test_0120_data_property_access.py (was test_0002_*)
-- test_0130_field_creation.py (was test_0002_*)
-- test_0140_synchronised_updates.py (was test_0002_*)
-
-**INTERMEDIATE (0500-0699)**: Data structures, transformations, enhanced interfaces
-- test_0500_enhanced_array_structure.py (was test_0002_*)
-- test_0510_enhanced_swarm_array.py (was test_0002_*)
-- test_0520_mathematical_mixin_enhanced.py (was test_0002_*)
-- test_0530_array_migration.py (was unnumbered)
-- test_0540_coordinate_change_locking.py (was unnumbered)
-- test_0550_direct_pack_unpack.py (was unnumbered)
-- ~~test_0560_migration_validation.py~~ (REMOVED - obsolete)
-
-**UNITS AND ENHANCED CAPABILITIES (0700-0799)**: Units system, dimensional analysis, enhanced variables
-- test_0700_units_system.py - Core units system tests (79/81 passing)
-- test_0710_units_utilities.py - Units utility functions and integration tests
-- test_0720_mathematical_mixin_comprehensive.py - Enhanced mathematical operations
-
-**COMPLEX (1000+)**: Physics solvers, time-stepping, coupled systems
-- Poisson solvers (1000-1009)
-- Stokes solvers (1010-1050)
-- Advection-diffusion (1100-1120)
-
-## Test Classification: Integrated Levels + Reliability Tiers (2025-11-15)
-
-### Dual Classification System
-
-Underworld3 uses **two orthogonal dimensions** to classify tests:
-
-1. **Test Levels (Number Prefix)** - Complexity/Scope (existing system from `scripts/test_levels.sh`)
-2. **Reliability Tiers (Letter Markers)** - Trust Level (new system, see `docs/developer/TESTING-RELIABILITY-SYSTEM.md`)
-
-### Test Levels (Pytest Markers) - What Kind of Test
-
-**IMPORTANT**: Number prefixes (0000-9999) are for **organization only**. Actual complexity is marked explicitly.
-
-**Level 1** (`@pytest.mark.level_1`): Quick Core Tests
-- Imports, basic setup, simple operations
-- No solving, minimal computation
-- Runtime: Seconds
-- Examples:
-  - test_0000_imports.py - Basic imports
-  - test_1010_stokes_setup.py - Stokes mesh/variable setup (no solve)
-  - test_1015_stokes_bc_validation.py - Boundary condition checks (no solve)
-
-**Level 2** (`@pytest.mark.level_2`): Intermediate Tests
-- Integration tests, units, regression
-- May involve solving but simple cases
-- Runtime: Minutes
-- Examples:
-  - test_0700_units_system.py - Core units functionality
-  - test_0813_mesh_variable_ordering.py - Regression test
-  - test_1010_stokes_simple_solve.py - Basic Stokes solve (small mesh)
-
-**Level 3** (`@pytest.mark.level_3`): Physics/Solver Tests
-- Complex solvers, time-stepping, benchmarks
-- Full physics validation
-- Runtime: Minutes to hours
-- Examples:
-  - test_1010_stokes_benchmark.py - Stokes solver benchmark
-  - test_1110_advdiff_time_stepping.py - Time-dependent problems
-  - test_1150_coupled_stokes_advdiff.py - Coupled systems
-
-**Number Prefix Organization** (for ordering only):
-- 0000-0499: Core functionality (imports, meshes, data access)
-- 0500-0599: Enhanced arrays and migration
-- 0600-0699: Regression tests
-- 0700-0799: Units system
-- 0800-0899: Unit-aware integration
-- 1000-1099: Poisson/Darcy
-- 1100-1199: Stokes flow
-- 1200+: Advection-diffusion, coupled systems
-
-**Run by level**:
-- `pytest -m level_1` (quick checks, ~1-2 min total)
-- `pytest -m level_2` (intermediate, ~5-10 min total)
-- `pytest -m "level_1 or level_2"` (skip heavy physics)
-- `pixi run underworld-test` (uses number ranges, still works)
-
-### Reliability Tiers (Pytest Markers) - How Much to Trust
-
-**Tier A** (`@pytest.mark.tier_a`): Production-Ready
-- Trusted for Test-Driven Development (TDD) and CI
-- Long-lived (>3 months), consistently passing
-- Failure indicates DEFINITE regression
-- Examples: Core Stokes tests, basic mesh creation, stable units tests
-
-**Tier B** (`@pytest.mark.tier_b`): Validated (Use with Caution)
-- Passed at least once, but not battle-tested
-- New features (<3 months) or recently refactored
-- Failure could be test OR code issue - needs investigation
-- Examples: Recently added units integration, new reduction operations
-
-**Tier C** (`@pytest.mark.tier_c`): Experimental (Development Only)
-- Feature may not be fully implemented
-- Test OR code (or both) may be incorrect
-- Mark with `@pytest.mark.xfail(reason="...")` if expected to fail
-- Examples: Unimplemented features, tests under active development
-
-**Run by tier**: `pytest -m tier_a` (TDD-safe), `pytest -m "tier_a or tier_b"` (full validation)
-
-### Combined Examples: Levels + Tiers
-
-**Example 1**: Core units test
-```python
-@pytest.mark.level_2  # Intermediate - has some complexity
-@pytest.mark.tier_a   # Production-ready - trusted for TDD
-def test_units_conversion():
-    """Test basic unit conversion."""
-    # File: test_0700_units_system.py (number = organization)
+# Full SymPy Matrix API available
+velocity.T              # Transpose
+velocity.dot(other)     # Dot product
+velocity.norm()         # Magnitude
 ```
 
-**Example 2**: Simple Stokes setup (no solving)
-```python
-@pytest.mark.level_1  # Quick - just setup, no computation
-@pytest.mark.tier_a   # Production-ready - stable API
-def test_stokes_mesh_variable_creation():
-    """Test creating Stokes mesh and variables."""
-    # File: test_1010_stokes_basic.py (lives in 1010 but Level 1!)
-```
+**Implementation**: `MathematicalMixin` in `utilities/mathematical_mixin.py`
 
-**Example 3**: Complex Stokes benchmark
-```python
-@pytest.mark.level_3  # Physics - full solver with benchmarking
-@pytest.mark.tier_a   # Production-ready - validated against published results
-def test_stokes_sinking_block_benchmark():
-    """Test Stokes solver against analytical solution."""
-    # File: test_1010_stokes_benchmark.py (1010 + Level 3)
-```
+---
 
-**Example 4**: Experimental units feature
-```python
-@pytest.mark.level_2  # Intermediate complexity
-@pytest.mark.tier_c   # Experimental - feature in development
-@pytest.mark.xfail(reason="Advanced units propagation not yet implemented")
-def test_units_symbolic_propagation():
-    """Test automatic unit propagation through symbolic operations."""
-    # File: test_0850_units_propagation.py
-```
+## Coding Conventions
 
-**Key Insight**: Number prefix ≠ Level marker!
-- `test_1010_stokes_basic.py` could have both Level 1 (setup) AND Level 3 (benchmark) tests
-- Organization by topic (1010 = Stokes), not complexity
+### Avoid Ambiguous 'model'
+Two different "model" concepts exist:
+- `uw.Model`: Serialization/orchestration system
+- Constitutive models: Material behavior (ViscousFlowModel, etc.)
 
-### Integration with Pixi Tasks
-
-```bash
-# === By number range (existing system, still works) ===
-pixi run underworld-test 1      # Run 0000-0499 tests
-pixi run underworld-test 2      # Run 0500-0899 tests
-pixi run underworld-test 3      # Run 1000+ tests
-pixi run underworld-test        # Run all tests
-
-# === By complexity level (new, more flexible) ===
-pytest -m level_1               # Quick tests only (~1-2 min)
-pytest -m level_2               # Intermediate tests (~5-10 min)
-pytest -m level_3               # Physics tests (~10+ min)
-pytest -m "level_1 or level_2"  # Everything except heavy physics
-
-# === By reliability tier (new, for TDD) ===
-pytest -m tier_a                # Production-ready only (TDD-safe)
-pytest -m "tier_a or tier_b"    # Full validation suite
-pytest -m "not tier_c"          # Exclude experimental tests
-
-# === Combined filtering (powerful!) ===
-# Quick validation before commit
-pytest -m "level_1 and tier_a"
-
-# All Stokes tests that are production-ready
-pytest tests/test_1*stokes*.py -m tier_a
-
-# Intermediate tests, exclude experimental
-pytest -m "level_2 and not tier_c"
-
-# Fast TDD cycle: Level 1+2, Tier A only
-pytest -m "(level_1 or level_2) and tier_a" -v
-```
-
-### Current Classification Status (2025-11-15)
-
-**Immediate Actions**:
-1. ✅ **FIXED**: JIT unwrapping bug (test_0818_stokes_nd.py: all 5 tests passing)
-2. 🔄 **IN PROGRESS**: Classify 79 failing units tests into Tiers B or C
-3. 📋 **TODO**: Mark all Tier A tests with `@pytest.mark.tier_a`
-4. 📋 **TODO**: Mark incomplete features as Tier C with `@pytest.mark.xfail`
-
-**Key Documents**:
-- **System Overview**: `docs/developer/TESTING-RELIABILITY-SYSTEM.md`
-- **Current Analysis**: `docs/developer/TEST-CLASSIFICATION-2025-11-15.md`
-- **Test Script**: `scripts/test_levels.sh`
-
-## Symmetric Tensor Fix (Latest)
-**Problem**: For symmetric tensors, `num_components` (6 in 3D) ≠ array components (9 in 3D)
-- `array` shape: `(N, 3, 3)` = 9 components (full tensor)
-- `data` should be: `(N, 6)` = 6 components (packed symmetric format)
-- Previous implementation: `self.array.reshape(-1, self.num_components)` failed
-
-**Solution**: Direct PETSc access in data property
-- Changed data property to access PETSc vector directly: `self.vec.array.reshape(-1, self.num_components)`
-- This gives the correct packed format with proper component count
-- Maintains pack/unpack logic for write operations via callback
-
-## Swarm Migration Understanding
-
-### What Migration Does
-**Migration moves particles between processors** based on their spatial location. When particles move in space (e.g., `swarm.points` is updated), they may now belong to a different processor's spatial domain. Migration:
-- Redistributes particles to the processor that owns their spatial domain
-- Changes local array sizes as particles arrive/leave each processor  
-- Updates all swarm variable arrays to match the new particle distribution
-- Is essential for parallel correctness
-
-### Migration Patterns
-1. **Default behavior**: Migration should happen automatically when particles move
-2. **Deferred migration**: Use `migration_disabled()` context for batch operations:
-   ```python
-   with swarm.migration_disabled():
-       for i in range(n):
-           swarm.points[mask[i]] += deltas[i]
-   # Migration could happen here if context manager supports it
-   ```
-3. **Why defer**: Avoid repeated redistributions during complex multi-step updates
-
-### Current Bug (swarm.points setter) - FIXED
-**Problem**: The swarm.points callback incorrectly wrapped migration in `with self.migration_disabled():`, making migration a no-op. This prevented essential particle redistribution, causing test failures.
-
-**Solution Applied**:
-1. **Fixed callback** (line 1496-1520): Removed `migration_disabled()` wrapper, added check `if not self._migration_disabled:` before migrate()
-2. **Enhanced setter** (line 1545-1551): Added direct PETSc DM field update for immediate consistency
-3. **New context manager**: Added `migration_control(disable=False)` with deferred migration support
-4. **Backward compatibility**: `migration_disabled()` now calls `migration_control(disable=True)`
-
-## Swarm Proxy Variable Understanding
-
-### Critical Insight: Proxy Mesh Variables
-Swarm variables with `proxy_degree > 0` create **proxy mesh variables** that interpolate swarm data using radial basis functions. These proxies are used for:
-- Integration and derivative calculations (integrals work on the mesh proxy, not raw swarm data)
-- Symbolic operations that require continuous field representations
-
-### Proxy Update Requirements
-The proxy mesh variable MUST be updated via `swarmVar._update()` whenever:
-1. **Swarm data changes**: `swarmVar.data[...] = values` (fixed in pack methods)
-2. **Particle positions change**: Migration, advection, manual position updates
-3. **Particle count changes**: Population, deletion, resampling
-4. **Swarm topology changes**: Remeshing, recreation
-
-### Current Implementation
-- ✅ `pack_raw_data_to_petsc()` and `pack_uw_data_to_petsc()` call `_update()`
-- ✅ Migration calls `_update()` for all variables after particle redistribution  
-- ✅ Points setter (`swarm.points = new_pos`) calls migrate + `_update()` for all variables
-- ✅ Advection ends with `migrate()` call (triggers proxy updates)
-- ✅ Add particles methods call `migrate()` (triggers proxy updates)
-
-### Potential Issues Found
-- ⚠️  **`populate()` method** (line 1682): Adds new particles but doesn't call migrate or update proxies
-  - **Impact**: Existing proxy variables may not reflect new particle distribution
-  - **Solution**: Add `migrate()` call or explicit proxy updates at end of populate
-- ⚠️  **Direct DM operations**: Any direct PETSc DM field modifications bypass proxy updates
-- ⚠️  **Swarm recreation**: If swarms are recreated, proxy variables need full rebuild
-
-## Final Implementation Summary
-
-### Key Technical Solutions
-1. **Vector Availability Fix**: Set `_available=True` by default to ensure solver compatibility
-2. **Lazy Vector Initialization**: `vec` property creates vectors on first access if needed
-3. **Swarm Proxy Lazy Evaluation**: Mark proxy as stale on data changes, update only when `sym` property accessed
-4. **PETSc Field Access Protection**: Use proper field registration and avoid nested field access
-
-### Testing Notes
-- Direct data access working: `var.data[...] = values` triggers automatic PETSc sync
-- Both patterns supported: Legacy `with mesh.access(var)` and new direct access
-- Solver integration: Stokes tests pass with preserved PETSc vector access patterns
-- Conservative approach: No solver modifications, only interface compatibility layers
-
-## Mathematical Objects Implementation (Latest)
-
-### Overview
-Successfully implemented natural mathematical notation for variables, enabling direct arithmetic operations without requiring explicit `.sym` access. Variables now work exactly like SymPy matrices in mathematical contexts while preserving computational functionality.
-
-### Key Features Implemented ✅
-1. **Direct Arithmetic Operations**: `var * 2`, `2 * var`, `var + 1`, `-var`, `var / 2`, `var ** 2`
-2. **Component Access**: `velocity[0]` instead of `velocity.sym[0]`
-3. **Complete SymPy Matrix API**: `var.T`, `var.dot()`, `var.norm()`, `var.cross()`, etc.
-4. **JIT Compatibility**: All operations return pure SymPy objects, preserving compilation
-5. **Backward Compatibility**: All existing `.sym` usage continues to work
-6. **Preserved Display**: Variables show computational view by default, not symbolic
-
-### Implementation Architecture
-**MathematicalMixin Class** (`utilities/mathematical_mixin.py`):
-- **`_sympify_()` protocol**: Enables SymPy integration for mathematical operations
-- **Explicit arithmetic methods**: `__add__`, `__mul__`, `__sub__`, `__truediv__`, `__pow__`, `__neg__`
-- **Right-hand operations**: `__radd__`, `__rmul__`, etc. for operations like `2 * var`
-- **`__getitem__()` method**: Component access without `.sym`
-- **`__getattr__() delegation`**: Automatic access to all SymPy Matrix methods
-- **Display control**: `__repr__()` preserves computational view, `sym_repr()` for symbolic
-
-### Integration Points
-**Variable Classes Enhanced**:
-- `_MeshVariable(MathematicalMixin, Stateful, uw_object)` in `discretisation_mesh_variables.py`
-- `SwarmVariable(MathematicalMixin, Stateful, uw_object)` in `swarm.py`
-
-### Critical Technical Insights
-1. **Dual Operation Support Required**: 
-   - `_sympify_()` handles SymPy-initiated operations (`sympy.Symbol * var`)
-   - Explicit methods handle Python-initiated operations (`var * 2`)
-   - Both needed for complete mathematical integration
-
-2. **SymPy API Delegation Success**:
-   - `__getattr__()` automatically delegates to `self.sym` for missing methods
-   - Provides hundreds of SymPy Matrix methods without individual implementation
-   - Future-proof for new SymPy methods, scales automatically
-
-3. **JIT Compatibility Verified**:
-   - `_sympify_()` returns identical SymPy atoms as `.sym` property
-   - JIT compilation unchanged: same Function identification and PETSc mapping
-   - No performance impact, identical expression trees
-
-4. **Display Behavior Balance**:
-   - Users prefer computational view by default (data, mesh info)
-   - Mathematical display available via `sym_repr()` when needed
-   - Jupyter LaTeX rendering for mathematical contexts
-
-### Usage Examples
-```python
-# Before: Required .sym for mathematical operations
-momentum = density * velocity.sym
-strain_rate = velocity.sym[0].diff(x) + velocity.sym[1].diff(y)
-velocity_magnitude = velocity.sym.norm()
-
-# After: Natural mathematical syntax
-momentum = density * velocity              # Direct arithmetic
-strain_rate = velocity[0].diff(x) + velocity[1].diff(y)  # Component access  
-velocity_magnitude = velocity.norm()       # Direct method access
-
-# All SymPy Matrix methods available:
-velocity.T                    # Transpose
-velocity.dot(other)          # Dot product
-velocity.cross(other)        # Cross product  
-velocity.diff(x)             # Differentiation
-velocity.subs(x, 1)          # Substitution
-# And hundreds more...
-```
-
-### Benefits Achieved
-- **Natural Mathematical Expressions**: Code looks like mathematical equations
-- **Complete SymPy Integration**: Full Matrix API automatically available
-- **Zero Breaking Changes**: All existing code continues to work
-- **JIT Compatibility Maintained**: Identical compilation paths and performance
-- **Minimal Implementation**: Simple mixin provides maximum functionality
-- **Future-Proof Design**: Automatically supports new SymPy methods
-
-## Legacy Access Pattern Removal (Phase 2 Complete)
-
-### Successfully Removed Safe Patterns
-✅ **From `swarm.py`:**
-1. KDTree creation: `with self.access(): self._index = uw.kdtree.KDTree(self.data)` (line 2664)
-2. Velocity evaluation: `with self.access(): vel = uw.function.evaluate(...)` (line 2933)
-3. Data display: `with self.swarm.access(): display(self.data)` (line 757)
-4. HDF5 save operations: `with self.swarm.access(self): h5f.create_dataset(...)` (lines 909, 917)
-5. KDTree queries for level sets: `with self.swarm.access(): kd = uw.kdtree.KDTree(...)` (lines 1174, 1214)
-6. RBF interpolation: `with self.swarm.mesh.access(meshVar), self.swarm.access(): meshVar.data[...] = ...` (lines 505, 1220)
-
-✅ **From `discretisation_mesh_variables.py` (previous):**
-7. RBF interpolation data copy: `with self.mesh.access(): D = self.data.copy()` (line 780)
-8. H5 vector loading: `with self.mesh.access(): self.data[...] = ...` (lines 1003-1016)
-9. Swarm RBF to mesh: `with meshVar.mesh.access(meshVar): meshVar.data[...] = Values[...]` (line 455)
-
-### Testing Environment Discovery
-**Critical Learning**: Must use `pixi run -e default python script.py` to execute code
-- **Why**: Pixi manages all dependencies and builds necessary PETSc components
-- **Without pixi**: `ModuleNotFoundError: No module named 'underworld3'`
-- **With pixi**: Full environment with compiled PETSc, MPI, and all dependencies
-
-### Validation Results
-✅ **Field creation test passed**:
-- Variable u: field_id=0 ✓
-- Variable p: field_id=1 ✓  
-- Variable s: field_id=2 ✓
-- Array access: `s.array` ✓
-
-**Test command**: `pixi run -e default python debug_field_test.py`
-**Result**: All legacy access patterns successfully removed without breaking functionality
-
-### Pixi Environment Information
-- **Available environments**: `default`, `dev`
-- **Default environment**: 37 conda dependencies + PyPI packages
-- **Key components**: python, mpich, petsc stack, numpy, scipy, sympy, h5py
-- **Build tasks**: petsc-build, underworld-build, petsc4py-build
-- **Test tasks**: underworld-test, petsc-test
-
-### Pattern Classification (Final)
-**✅ SAFE TO REMOVE - Confirmed Working**:
-- Simple data access for calculations
-- Display/visualization operations  
-- File I/O operations (HDF5 save/load)
-- KDTree construction and queries
-- RBF interpolation with data assignment
-
-**⚠️ PRESERVED - Require Further Analysis**:
-- Solver-adjacent operations in `discretisation_mesh.py`
-- Complex migration and swarm operations
-- Direct PETSc DM field manipulations
-- Any pattern involving `update_lvec()` calls
-
-### Key Technical Insights
-1. **Data Property Success**: Direct `var.data[...] = values` works without access contexts
-2. **Pixi Integration**: All testing must use pixi environments for proper dependency resolution
-3. **Conservative Approach Validated**: Solver interfaces remain untouched and functional
-4. **Callback System Working**: NDArray_With_Callback automatically syncs to PETSc
-
-## Direct Array Access Migration (Phase 3 Complete)
-
-### New User-Friendly Wrapper Function
-Added `uw.synchronised_array_update()` context manager for batch operations:
-```python
-def synchronised_array_update(context_info="user operations"):
-    """
-    Context manager for synchronised array updates across multiple variables.
-    
-    Batches multiple array assignments together and defers PETSc synchronization
-    until the end of the context, ensuring atomic updates and better performance.
-    """
-    return utilities.NDArray_With_Callback.delay_callbacks_global(context_info)
-```
-
-### Migration Patterns Applied
-
-#### Single Variable Updates → Direct `.array` Access
-```python
-# OLD PATTERN
-with mesh.access(var):
-    var.data[...] = values
-
-# NEW PATTERN  
-var.array[...] = values
-```
-
-#### Multiple Variable Updates → `synchronised_array_update`
-```python
-# OLD PATTERN
-with mesh.access(var1, var2, var3):
-    var1.data[...] = values1
-    var2.data[...] = values2
-    var3.data[...] = values3
-
-# NEW PATTERN
-with uw.synchronised_array_update():
-    var1.array[...] = values1
-    var2.array[...] = values2
-    var3.array[...] = values3
-```
-
-### Files Successfully Updated
-
-#### Notebooks (4 files)
-- **`2-Variables.ipynb`**: Multi-variable setup using `synchronised_array_update()`
-- **`5-Solvers-ii-Stokes.ipynb`**: Direct array access for null space removal
-- **`8-Particle_Swarms.ipynb`**: Batch swarm variable initialization
-
-#### Tests (9+ files)
-**Converted to direct `.array` access:**
-- `test_0503_evaluate.py`: Single variable assignments
-- `test_0002_basic_swarm.py`: Shape checking patterns  
-- `test_1100_AdvDiffCartesian.py`: Velocity field initialization
-- `test_0005_IndexSwarmVariable.py`: Material property assignments
-- `test_0003_save_load.py`: Data setup for save/load tests
-
-**Converted to `synchronised_array_update()`:**
-- `test_0503_evaluate2.py`: Multi-variable function evaluation tests
-- `test_0505_rbf_swarm_mesh.py`: Vector component assignments
-- `test_1110_advDiffAnnulus.py`: Temperature and velocity field setup
-
-### Benefits Achieved
-1. **Simplified Syntax**: `uw.synchronised_array_update()` vs verbose utility path
-2. **Clear Intent**: Function name describes exactly what it does
-3. **Better Performance**: Batch operations avoid redundant synchronization
-4. **Parallel Safe**: Includes MPI barriers for proper coordination
-5. **Backward Compatible**: Old `mesh.access()` patterns still work
-
-### User Guidelines
-- **Single variable**: Use direct `var.array[...] = values`
-- **Multiple variables**: Use `with uw.synchronised_array_update():` context
-- **Shape checking/inspection**: Direct access without context manager
-- **Prefer `.array` over `.data`**: Array property is the recommended interface
-
-### Next Phase Approach
-- **Test suite validation**: Ensure all changes work correctly
-- **Advection-diffusion analysis**: Careful examination of time-stepping and particle transport
-- **No solver changes**: Continue preserving benchmarked solver implementations
-- **Surgical fixes only**: Address specific issues without architectural changes
-
-## Model Auto-Registration System (2025-09-23)
-
-### Overview
-Implemented automatic registration of all UW3 objects (meshes, swarms, variables, solvers) with a global default Model for serialization and orchestration support.
-
-### Implementation Details
-
-**Files Modified:**
-1. **`src/underworld3/model.py`**:
-   - Added global `_default_model` singleton pattern
-   - Added `get_default_model()` function to get/create default model
-   - Added `reset_default_model()` function to start fresh
-   - Simplified Model class to use plain dicts instead of complex registries
-
-2. **`src/underworld3/__init__.py`** (line 134):
-   - Imported model functions: `from .model import Model, create_model, get_default_model, reset_default_model`
-
-3. **`src/underworld3/discretisation/discretisation_mesh.py`** (line 627):
-   - Added auto-registration: `uw.get_default_model()._register_mesh(self)`
-   - Removed redundant import (was causing UnboundLocalError)
-
-4. **`src/underworld3/discretisation/discretisation_mesh_variables.py`** (line 406):
-   - Added auto-registration: `uw.get_default_model()._register_variable(self.name, self)`
-   - Removed redundant import
-
-5. **`src/underworld3/swarm.py`**:
-   - Line 208: SwarmVariable auto-registration
-   - Line 1481: Swarm auto-registration
-   - Removed redundant imports
-
-### Key Features
-- **Automatic Registration**: All objects register with default model on creation
-- **Serialization Support**: `model.to_dict()` exports to JSON-serializable format
-- **Simple API**: `uw.get_default_model()` and `uw.reset_default_model()`
-- **No Breaking Changes**: Existing code works without modification
-- **Weak References**: Swarms use WeakValueDictionary to prevent circular refs
-
-### Testing
-- Created `tests/test_model_basic.py` with 4 test cases
-- All tests passing ✅
-- Validates auto-registration, serialization, and model tracking
-
-### Bug Fixes
-- **Fixed UnboundLocalError**: Removed redundant `import underworld3 as uw` statements that shadowed the top-level import
-- **Files affected**: discretisation_mesh.py, discretisation_mesh_variables.py, swarm.py (3 locations)
-
-## Coding Conventions and Best Practices (2025-10-10)
-
-### Variable Naming: Avoid Ambiguous 'model'
-**IMPORTANT**: The variable name `model` is now ambiguous and should be avoided in new code.
-
-**Why**: We have two different "model" concepts in UW3:
-1. **`uw.model`** / **`uw.Model`**: Serialization/orchestration system for managing UW3 objects
-2. **Constitutive models**: Material behavior models (ViscousFlowModel, DiffusionModel, etc.)
-
-**Recommended Patterns**:
 ```python
 # GOOD - Clear and unambiguous
 constitutive_model = stokes.constitutive_model
-diffusion_model = adv_diff.constitutive_model
 orchestration_model = uw.get_default_model()
 
 # AVOID - Ambiguous
-model = stokes.constitutive_model  # Which kind of model?
-model = uw.get_default_model()     # Not clear what this is
+model = stokes.constitutive_model
 ```
 
-**In Tests**: Use descriptive names
-- `constitutive_model` for material models accessed via `solver.constitutive_model`
-- `orchestration_model` or `uw_model` for `uw.Model` instances
-- Add comments when accessing constitutive models: `# Note: Use 'constitutive_model' not 'model' to avoid confusion with uw.model`
+---
 
-**Legacy Code**: Fix variable names opportunistically as we encounter them, not in bulk refactoring
+## Test Classification
+
+### By Complexity Level (pytest markers)
+- `@pytest.mark.level_1`: Quick core tests (seconds)
+- `@pytest.mark.level_2`: Intermediate tests (minutes)
+- `@pytest.mark.level_3`: Physics/solver tests (minutes to hours)
+
+### By Reliability Tier
+- `@pytest.mark.tier_a`: Production-ready (TDD-safe)
+- `@pytest.mark.tier_b`: Validated (use with caution)
+- `@pytest.mark.tier_c`: Experimental (development only)
+
+```bash
+# Quick validation
+pytest -m "level_1 and tier_a"
+
+# Full validation
+pytest -m "tier_a or tier_b"
+```
+
+**Details**: `docs/developer/TESTING-RELIABILITY-SYSTEM.md`
+
+---
+
+## On-Demand Documentation References
+
+When working on specific subsystems, these documents provide detailed guidance.
+Read them when you need deeper context beyond what's in this file.
+
+> **AI Assistant Protocol**: When reading any @ referenced document, explicitly tell
+> the user what you're checking and why. This confirms you're accessing deeper context
+> and prevents redundant prompting. Example: "Let me check the units design doc for this..."
+
+### Units & Scaling
+- @docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md - **Authoritative** units architecture
+- @docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md - Coordinate unit handling
+- @docs/developer/design/WHY_UNITS_NOT_DIMENSIONALITY.md - Design rationale
+
+### Testing
+- @docs/developer/TESTING-RELIABILITY-SYSTEM.md - Test tier classification (A/B/C)
+- @docs/developer/TEST-CLASSIFICATION-2025-11-15.md - Current test status
+
+### Code Style & Patterns
+- @docs/developer/UW3_Style_and_Patterns_Guide.qmd - Development standards
+
+### Architecture & Design
+- @docs/developer/design/ARCHITECTURE_ANALYSIS.md - System structure analysis
+- @docs/developer/design/MATHEMATICAL_MIXIN_DESIGN.md - Mathematical objects internals
+- @docs/developer/design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN.md - Spherical/planetary meshes
+
+### Coordinates & Mesh
+- @docs/developer/design/COORDINATE_MIGRATION_GUIDE.md - Coordinate system changes
+- @docs/developer/design/mesh-geometry-audit.md - Mesh geometry patterns
+
+### Development History
+- @docs/developer/historical-notes.md - Completed migrations, fixed bugs
+
+---
+
+## Quick Reference
+
+### Pixi Commands
+```bash
+pixi run underworld-build    # Rebuild after source changes
+pixi run underworld-test     # Run test suite
+pixi run -e default python   # Run Python in environment
+```
+
+### Key Files
+- `src/underworld3/mpi.py` - Parallel safety implementation
+- `src/underworld3/scaling/` - Units system
+- `utilities/mathematical_mixin.py` - Mathematical objects
+
+### Historical Notes
+For development history, completed migrations, and fixed bugs:
+See @docs/developer/historical-notes.md
+
+---
+
+*Reorganized 2025-12-13: Historical content moved to docs/developer/historical-notes.md*
