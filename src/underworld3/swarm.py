@@ -3069,7 +3069,12 @@ class Swarm(Stateful, uw_object):
         # -1 means no particles have been added yet (PETSc interface change)
         if swarm_size == -1:
             swarm_size = 0
-            npoints = npoints + 1
+            # PETSc < 3.24 has an off-by-one bug in addNPoints when swarm size is initially zero
+            # It allocates N-1 instead of N, so we add +1 to compensate
+            # PETSc 3.24+ fixed this bug, so we use the exact count
+            from petsc4py import PETSc
+            if PETSc.Sys.getVersion() < (3, 24, 0):
+                npoints = npoints + 1
 
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
@@ -3138,7 +3143,12 @@ class Swarm(Stateful, uw_object):
         # -1 means no particles have been added yet
         if swarm_size == -1:
             swarm_size = 0
-            npoints = npoints + 1
+            # PETSc < 3.24 has an off-by-one bug in addNPoints when swarm size is initially zero
+            # It allocates N-1 instead of N, so we add +1 to compensate
+            # PETSc 3.24+ fixed this bug, so we use the exact count
+            from petsc4py import PETSc
+            if PETSc.Sys.getVersion() < (3, 24, 0):
+                npoints = npoints + 1
 
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
@@ -4169,9 +4179,14 @@ class NodalPointSwarm(Swarm):
         nR0 = uw.swarm.SwarmVariable(name, nswarm, 1, dtype=int, _proxy=False)
 
         nswarm.dm.finalizeFieldRegister()
-        nswarm.dm.addNPoints(
-            trackedVariable.coords.shape[0] + 1
-        )  # why + 1 ? That's the number of spots actually allocated
+        # PETSc < 3.24 has an off-by-one bug in addNPoints when swarm size is initially zero
+        # It allocates N-1 instead of N, so we add +1 to compensate
+        # PETSc 3.24+ fixed this bug, so we use the exact count
+        from petsc4py import PETSc
+        npts_to_add = trackedVariable.coords.shape[0]
+        if PETSc.Sys.getVersion() < (3, 24, 0):
+            npts_to_add = npts_to_add + 1
+        nswarm.dm.addNPoints(npts_to_add)
 
         coords = nswarm.dm.getField("DMSwarmPIC_coor").reshape((-1, nswarm.dim))
         ranks = nswarm.dm.getField("DMSwarm_rank").reshape((-1, 1))
