@@ -41,6 +41,18 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before and after each test to prevent pollution."""
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    yield
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+
+
 @pytest.mark.parametrize("resolution", [8, 16])
 def test_stokes_dimensional_vs_nondimensional(resolution):
     """

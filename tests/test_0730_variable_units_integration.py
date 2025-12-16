@@ -73,7 +73,8 @@ class TestVariableUnitsIntegration:
 
         # Test unit storage
         assert density.units is not None
-        assert "kg" in str(density.units)
+        # Pint uses full unit name "kilogram" not abbreviation "kg"
+        assert "kilogram" in str(density.units)
 
         assert velocity.units is not None
         assert "centimeter" in str(velocity.units) or "cm" in str(velocity.units)
@@ -140,11 +141,12 @@ class TestVariableUnitsIntegration:
         temperature = uw.discretisation.MeshVariable("T", self.mesh, 1, units="K")
         velocity = uw.discretisation.MeshVariable("v", self.mesh, 2, units="m/s")
 
-        # Set data
+        # Set data using .data for non-dimensional values
+        # (When units are active, .array requires unit-aware values)
         with uw.synchronised_array_update():
-            temperature.array[:, 0, 0] = 1000
-            velocity.array[:, 0, 0] = 0.01
-            velocity.array[:, 0, 1] = 0.0
+            temperature.data[:, 0] = 1000
+            velocity.data[:, 0] = 0.01
+            velocity.data[:, 1] = 0.0
 
         coords = np.array([[0.5, 0.5]], dtype=np.float64)
 
@@ -220,8 +222,9 @@ class TestVariableUnitsIntegration:
         assert "kelvin" in str(temperature.units)
 
         # Modify data and check units persist
+        # Use .data for non-dimensional values when units are active
         with uw.synchronised_array_update():
-            temperature.array[:, 0, 0] = 298.0  # 25°C in Kelvin
+            temperature.data[:, 0] = 298.0  # 25°C in Kelvin (non-dimensional)
 
         assert temperature.units is not None
         assert "kelvin" in str(temperature.units)

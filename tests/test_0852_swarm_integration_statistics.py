@@ -13,16 +13,31 @@ Key concepts tested:
 
 See docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md for coordinate units context.
 
-STATUS (2025-11-15):
+STATUS (2025-12-15):
 - All tests PASS when run in isolation (7/7 ✓)
-- Failures in full suite run due to test state pollution from earlier tests
 - Tests use CORRECT swarm ordering (variables before populate)
+- Added module-level reset to prevent state pollution from earlier tests
 - Marked as Tier B - validated, needs promotion to Tier A after isolation fixes
 """
 
 import numpy as np
 import pytest
 import underworld3 as uw
+
+
+# Module-level fixture to ensure clean state before running these tests
+@pytest.fixture(scope="module", autouse=True)
+def reset_model_state():
+    """Reset the default model before running this module's tests.
+
+    This prevents state pollution from earlier tests that may have set up
+    units, reference quantities, or other model state that could interfere
+    with the swarm integration tests.
+    """
+    uw.reset_default_model()
+    yield
+    # Cleanup after all tests in module complete
+    uw.reset_default_model()
 
 
 @pytest.mark.level_2  # Intermediate - swarm integration and RBF

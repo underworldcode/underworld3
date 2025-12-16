@@ -540,6 +540,16 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
 
         This enables persistent variable identity across mesh changes.
 
+        Note on Symbol Disambiguation (2025-12-15):
+            This method transfers DATA, not symbolic expressions.
+            The source and target variables have distinct symbolic identities
+            (source_var.sym != self.sym) even if they share the same name.
+
+            For transferring expressions containing coordinates, use explicit
+            substitution: expr.subs({old_mesh.N.x: new_mesh.N.x, ...})
+
+            See: docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md
+
         Args:
             source_var: Source variable to transfer data from
 

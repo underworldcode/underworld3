@@ -109,14 +109,14 @@ class TestScaleFactorPreservation:
         # velocity * t_now = 5 cm/year * 1e6 year = 5e6 cm = 50 km
         # x - x0 - 50km = 100 - 0 - 50 = 50 km
 
-        # Check units are length
+        # Check units are length (dimensionality check, not string check)
+        # Note: Pint doesn't auto-simplify compound units like "cm * Myr / year"
+        # But the dimensionality should still be [length] since Myr/year simplifies
         result_units = uw.get_units(result)
-        assert result_units.dimensionality == uw.scaling.units.meter.dimensionality, \
-            f"Expected length dimensions, got {result_units.dimensionality}"
+        length_dim = uw.scaling.units.meter.dimensionality
 
-        # Check it's not time units (the bug we're preventing)
-        assert 'year' not in str(result_units).lower(), \
-            f"Result should not have time units, got {result_units}"
+        assert result_units.dimensionality == length_dim, \
+            f"Expected length dimensions {length_dim}, got {result_units.dimensionality}"
 
     def test_mixed_metric_imperial_preserves_scale(self):
         """Test: Different unit systems (metric/imperial) preserve scale"""

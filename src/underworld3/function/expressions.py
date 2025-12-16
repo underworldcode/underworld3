@@ -499,6 +499,11 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     - Units are discovered from the wrapped thing when needed
     - Arithmetic returns pure SymPy expressions
 
+    Symbol Disambiguation (2025-12):
+    - Uses _hashable_content() override (like sympy.Dummy) for uniqueness
+    - Clean display names without invisible whitespace hacks
+    - Symbols with same name but different _uw_id are distinct
+
     Parameters
     ----------
     name : str
@@ -528,6 +533,9 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     _expr_names = {}
     _ephemeral_expr_names = {}
 
+    # Slot for unique ID used in _hashable_content (like sympy.Dummy)
+    __slots__ = ('_uw_id',)
+
     def __new__(
         cls,
         name,
@@ -544,36 +552,65 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         if name in UWexpression._expr_names.keys() and _unique_name_generation == False:
             return UWexpression._expr_names[name]
 
-        # Check both dicts
+        # Check both dicts for name collisions
         name_exists_persistent = name in UWexpression._expr_names
-        name_exists_ephemeral = name in UWexpression._ephemeral_expr_names
+        # Check ephemeral dict - need to look for any key starting with this name
+        name_exists_ephemeral = any(k[0] == name for k in UWexpression._ephemeral_expr_names)
 
-        if (name_exists_persistent or name_exists_ephemeral) and _unique_name_generation == True:
-            invisible = rf"\hspace{{ {instance_no/10000}pt }}"
-            unique_name = f"{{ {name} {invisible} }}"
+        # Determine unique ID for disambiguation
+        # When _unique_name_generation=True, ALWAYS use instance_no as _uw_id
+        # This ensures every ephemeral expression is unique
+        # When _unique_name_generation=False, use None (shared identity by name)
+        if _unique_name_generation == True:
+            uw_id = instance_no
         else:
-            unique_name = name
+            uw_id = None
 
-        obj = Symbol.__new__(cls, unique_name)
+        # Create symbol with CLEAN name (no invisible whitespace!)
+        # Use __xnew__ to bypass SymPy's internal cache which doesn't know about _uw_id
+        # This follows the same pattern as sympy.Dummy
+        # Uniqueness is handled by _hashable_content() using _uw_id
+        obj = Symbol.__xnew__(cls, name)
+        obj._uw_id = uw_id
         obj._instance_no = instance_no
-        obj._unique_name = unique_name
+        obj._unique_name = name  # Now always the clean name
         obj._given_name = name
         obj._is_ephemeral = _unique_name_generation
 
         if _unique_name_generation:
+            # Use (name, uw_id) as key for ephemeral storage
+            storage_key = (name, uw_id)
             def cleanup_callback(ref):
-                if unique_name in UWexpression._ephemeral_expr_names:
-                    del UWexpression._ephemeral_expr_names[unique_name]
+                if storage_key in UWexpression._ephemeral_expr_names:
+                    del UWexpression._ephemeral_expr_names[storage_key]
             try:
-                UWexpression._ephemeral_expr_names[unique_name] = weakref.ref(obj, cleanup_callback)
+                UWexpression._ephemeral_expr_names[storage_key] = weakref.ref(obj, cleanup_callback)
             except TypeError:
-                UWexpression._expr_names[unique_name] = obj
+                UWexpression._expr_names[name] = obj
         else:
-            UWexpression._expr_names[unique_name] = obj
+            UWexpression._expr_names[name] = obj
 
         UWexpression._expr_count += 1
 
         return obj
+
+    def _hashable_content(self):
+        """
+        Include _uw_id in hash so symbols with same name but different IDs are distinct.
+
+        This follows the same pattern as sympy.Dummy which uses dummy_index.
+        When _uw_id is None, symbols match by name alone (shared identity).
+        When _uw_id is set, symbols with same name but different IDs are distinct.
+        """
+        base_content = Symbol._hashable_content(self)
+        if self._uw_id is not None:
+            return base_content + (self._uw_id,)
+        return base_content
+
+    def __getnewargs_ex__(self):
+        """Support pickling by including _uw_id in reconstruction args."""
+        # Return args and kwargs needed to reconstruct this symbol
+        return ((self.name,), {'_uw_id': self._uw_id})
 
     def __init__(
         self,
@@ -652,6 +689,41 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
             self._sym = new_value
         else:
             self._sym = sympy.sympify(new_value) if new_value is not None else None
+
+    def copy(self, other):
+        """
+        Copy the symbolic value and metadata from another expression.
+
+        This method updates this expression's content while preserving its identity
+        (same Python id). Used by constitutive model parameter setters to enable
+        lazy evaluation - the expression container stays the same, but its content
+        can be updated.
+
+        Parameters
+        ----------
+        other : UWexpression or UWQuantity or sympy.Basic or number
+            The source to copy from. If UWexpression, copies both ._sym and
+            any unit metadata. Otherwise, updates .sym directly.
+
+        Notes
+        -----
+        This follows the same pattern as ExpressionDescriptor.__set__ in _api_tools.py
+        to ensure consistent behavior for expression updates.
+        """
+        if isinstance(other, UWexpression):
+            # Copy the symbolic value
+            self.sym = other._sym
+
+            # Copy unit metadata for compatibility with older patterns
+            # (though Transparent Container principle derives these from _sym)
+            for attr in ('_pint_qty', '_has_pint_qty', '_dimensionality',
+                         '_custom_units', '_has_custom_units', '_model_registry',
+                         '_model_instance', '_symbolic_with_units'):
+                if hasattr(other, attr):
+                    setattr(self, attr, getattr(other, attr))
+        else:
+            # For UWQuantity, numbers, sympy expressions - use .sym setter
+            self.sym = other
 
     @property
     def value(self):

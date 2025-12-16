@@ -199,7 +199,7 @@ adv_diff = uw.systems.AdvDiffusion(
 )
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
-adv_diff.constitutive_model.Parameters.diffusivity = 1
+adv_diff.constitutive_model.Parameters.diffusivity = kappa
 
 ## Boundary conditions for this solver
 

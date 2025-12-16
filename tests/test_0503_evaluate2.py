@@ -14,6 +14,21 @@ import pytest
 pytestmark = pytest.mark.level_2
 
 
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before each test to prevent pollution from other tests.
+
+    Tests in test_0850_units_propagation set reference quantities which can affect
+    coordinate scaling and evaluation results. This fixture ensures a clean state.
+    """
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    yield
+    # Cleanup after test (optional)
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+
+
 n = 10
 x = np.linspace(0.1, 0.9, n)
 y = np.linspace(0.2, 0.8, n)

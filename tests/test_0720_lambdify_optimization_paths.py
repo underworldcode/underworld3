@@ -32,6 +32,8 @@ from scipy import special
 def setup_mesh():
     """Create a simple mesh for testing."""
     uw.reset_default_model()
+    uw.use_nondimensional_scaling(False)
+    uw.use_strict_units(False)  # Allow units without reference quantities for testing
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(-1.0, 0.0),
         maxCoords=(1.0, 1.0),

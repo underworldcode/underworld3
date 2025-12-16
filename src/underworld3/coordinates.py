@@ -79,27 +79,61 @@ class UWCoordinate(BaseScalar):
 
     def __eq__(self, other):
         """
-        Equal to the original BaseScalar (N.x, N.y, N.z).
+        Equal to the original BaseScalar from the SAME coordinate system.
 
         This is the key to making sympy.diff() work - when SymPy checks if
         the differentiation variable matches symbols in the expression,
         this makes UWCoordinate match the original BaseScalar.
+
+        IMPORTANT: We only match BaseScalars from the SAME mesh's coordinate
+        system using object identity (`is`), not name comparison. This prevents
+        cross-mesh coordinate pollution where coordinates from different meshes
+        would be treated as equal due to having the same name "N.x".
         """
         if other is self._original_base_scalar:
             return True
         if isinstance(other, UWCoordinate) and hasattr(other, '_original_base_scalar'):
             if other._original_base_scalar is self._original_base_scalar:
                 return True
-        return BaseScalar.__eq__(self, other)
+        # DON'T fall back to BaseScalar.__eq__ which compares by name!
+        # This caused cross-mesh coordinate pollution (issue discovered 2025-12-15)
+        return False
 
     def __hash__(self):
         """
-        Hash same as the original BaseScalar.
+        Hash includes coordinate system identity to prevent cross-mesh collisions.
 
-        This ensures UWCoordinate can be found in sets/dicts that contain
-        the original BaseScalar, which is needed for SymPy's internal operations.
+        Different meshes create different coordinate systems (even with the same
+        name "N"), and we need their coordinates to hash differently to prevent
+        SymPy's expression cache from substituting coordinates between meshes.
+
+        We include the coordinate system's id() to make the hash unique per mesh.
         """
-        return hash(self._original_base_scalar)
+        # Include both the BaseScalar's hash AND the coordinate system identity
+        # The coordinate system is stored as _id[1] in BaseScalar
+        coord_system_id = id(self._original_base_scalar._id[1])
+        return hash((hash(self._original_base_scalar), coord_system_id))
+
+    def _numpycode(self, printer):
+        """
+        NumPy code generation for lambdify().
+
+        Returns a unique dummy name that lambdify will map to array columns.
+        Uses the coordinate's internal index to generate a consistent name.
+        """
+        # Use the short coordinate name (x, y, z) based on axis index
+        coord_names = ['_uw_x', '_uw_y', '_uw_z']
+        return coord_names[self._axis_index]
+
+    def _lambdacode(self, printer):
+        """Lambda code generation."""
+        coord_names = ['_uw_x', '_uw_y', '_uw_z']
+        return coord_names[self._axis_index]
+
+    def _pythoncode(self, printer):
+        """Python code generation."""
+        coord_names = ['_uw_x', '_uw_y', '_uw_z']
+        return coord_names[self._axis_index]
 
     @property
     def sym(self):

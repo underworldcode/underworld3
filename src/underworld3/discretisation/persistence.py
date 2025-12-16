@@ -13,6 +13,16 @@ This module is reserved for future implementation of actual persistence features
 For enhanced variables with mathematical operations and units support,
 see discretisation/enhanced_variables.py
 
+Symbol Disambiguation Note (2025-12-15):
+----------------------------------------
+When transferring data or expressions between meshes, be aware that:
+- MeshVariable symbols are mesh-specific (v1.sym != v2.sym even with same name)
+- Coordinate symbols (mesh.N.x, etc.) are also mesh-specific to prevent cache bugs
+- For expression portability, use explicit coordinate substitution:
+    expr_for_mesh2 = expr.subs({mesh1.N.x: mesh2.N.x, mesh1.N.y: mesh2.N.y})
+
+See: docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md
+
 Historical Note:
 -----------------
 This module previously contained EnhancedMeshVariable, but that class

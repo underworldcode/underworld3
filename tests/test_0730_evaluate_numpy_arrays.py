@@ -47,28 +47,30 @@ class TestEvaluateReturnsNumpyArrays:
         # Evaluate at mesh coordinates
         result = uw.function.evaluate(expr, T.coords)
 
-        # Validate result type
-        assert isinstance(result, uw.function.UWQuantity), \
-            "Result should be wrapped in UWQuantity"
+        # Validate result type - evaluate() returns UnitAwareArray (numpy subclass with units)
+        # or plain numpy array, NOT UWQuantity
+        assert isinstance(result, np.ndarray), \
+            f"Result should be numpy array or UnitAwareArray, got {type(result)}"
 
-        # CRITICAL: Result value should be numpy array, not SymPy array
-        assert isinstance(result.value, np.ndarray), \
-            f"Result.value should be numpy array, got {type(result.value)}"
+        # CRITICAL: Result should be numpy array (or UnitAwareArray which inherits from ndarray)
+        result_arr = np.asarray(result)  # Works for both ndarray and UnitAwareArray
+        assert isinstance(result_arr, np.ndarray), \
+            f"Result as array should be numpy array, got {type(result_arr)}"
 
         # Verify it's not a SymPy array type
-        assert not hasattr(result.value.__class__, '__module__') or \
-               'sympy' not in str(result.value.__class__), \
-            f"Result should not be SymPy array type: {result.value.__class__}"
+        assert not hasattr(result_arr.__class__, '__module__') or \
+               'sympy' not in str(result_arr.__class__), \
+            f"Result should not be SymPy array type: {result_arr.__class__}"
 
         # Verify numpy API is available
-        assert hasattr(result.value, 'dtype'), "Should have numpy dtype attribute"
-        assert hasattr(result.value, 'mean'), "Should have numpy mean() method"
-        assert hasattr(result.value, 'std'), "Should have numpy std() method"
+        assert hasattr(result, 'dtype'), "Should have numpy dtype attribute"
+        assert hasattr(result, 'mean'), "Should have numpy mean() method"
+        assert hasattr(result, 'std'), "Should have numpy std() method"
 
         # Verify shape is correct for coordinate evaluation
         n_points = T.coords.shape[0]
-        assert result.value.shape == (n_points, 1, 1), \
-            f"Shape should be (n_points, 1, 1), got {result.value.shape}"
+        assert result.shape == (n_points, 1, 1), \
+            f"Shape should be (n_points, 1, 1), got {result.shape}"
 
     def test_quantity_with_array_preserves_numpy(self):
         """Test that UWQuantity preserves numpy arrays without converting to SymPy."""

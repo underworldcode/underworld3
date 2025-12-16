@@ -29,6 +29,18 @@ import underworld3 as uw
 from underworld3.function.expressions import _unwrap_for_compilation
 
 
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before and after each test to prevent pollution."""
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    yield
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+
+
 def test_global_flag_default_state():
     """Test that global ND scaling flag defaults to False."""
     # Reset to clean state

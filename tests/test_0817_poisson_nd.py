@@ -22,6 +22,18 @@ os.environ["SYMPY_USE_CACHE"] = "no"
 import underworld3 as uw
 
 
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before and after each test to prevent pollution."""
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    yield
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+
+
 @pytest.mark.parametrize("resolution", [0.25, 0.1])
 def test_poisson_dimensional_vs_nondimensional(resolution):
     """

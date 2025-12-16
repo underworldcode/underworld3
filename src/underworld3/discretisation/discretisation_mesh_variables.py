@@ -196,9 +196,11 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.name = name
         self.symbol = symbol
 
-        if mesh.instance_number > 1:
-            invisible = rf"\hspace{{ {mesh.instance_number/10000}pt }}"
-            self.symbol = f"{{ {invisible} {symbol} }}"
+        # Symbol disambiguation is now handled by _uw_id in UnderworldFunction (2025-12)
+        # No need for invisible \hspace{} hack - clean symbols for everyone!
+        # The mesh.instance_number is passed to UnderworldFunction._uw_id which
+        # makes symbols with same name from different meshes distinct via SymPy's
+        # __eq__ and __hash__ for UndefinedFunction kwargs.
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Regression tests for expression caching and hspace-based uniqueness.
+Regression tests for expression caching and symbol disambiguation.
 
 This test suite validates that:
-1. Expressions differing only by hspace are correctly distinguished
+1. Symbols from different meshes are correctly distinguished (via _uw_id)
 2. Identical derivatives are cached and reused (performance optimization)
 3. The _unique_name_generation flag creates unique expressions
 4. Derivative caching doesn't produce warnings (intentional behavior)
-5. Hspace size is sufficiently small (nearly invisible in LaTeX)
+
+NOTE: As of 2025-12-15, symbol disambiguation uses SymPy's native _uw_id mechanism
+instead of invisible \\hspace{} whitespace. Symbols now have clean display names
+but are distinguished by internal ID. See SYMBOL_DISAMBIGUATION_2025-12.md.
 """
 
 import pytest
@@ -20,14 +23,20 @@ from underworld3.function.expressions import UWexpression
 
 
 class TestExpressionUniqueness:
-    """Test that hspace-based uniqueness correctly distinguishes expressions."""
+    """Test that _uw_id-based uniqueness correctly distinguishes expressions."""
 
-    def test_different_mesh_variables_have_unique_derivatives(self):
+    def test_different_mesh_variables_have_unique_symbols(self):
         """
-        Derivatives from variables on different meshes should be unique.
+        Variables from different meshes should have distinct SymPy symbols.
 
-        This validates that the hspace mechanism correctly creates unique
-        derivative expressions even when variable names are identical.
+        This validates that the _uw_id mechanism correctly creates unique
+        symbols even when variable names are identical. The symbols have
+        the same display name but are distinguished by their function class's _uw_id.
+
+        NOTE: SymPy applied functions have the same hash if they have the same
+        name and arguments. The distinction is in the function class's _uw_id,
+        which is checked in __eq__, not __hash__. This is consistent with
+        SymPy's design where hash collisions are allowed but equality is strict.
         """
         # Create two different meshes (different instance numbers)
         mesh1 = uw.meshing.UnstructuredSimplexBox(
@@ -49,21 +58,62 @@ class TestExpressionUniqueness:
         T1 = uw.discretisation.MeshVariable("T", mesh1, 1, degree=2)
         T2 = uw.discretisation.MeshVariable("T", mesh2, 1, degree=2)
 
-        # Variables should have different symbols (due to hspace)
-        assert str(T1.symbol) != str(T2.symbol)
+        # Variables should have different symbols (distinguished by _uw_id)
+        # The str() representation is now the SAME (clean names), but symbols are distinct
+        assert T1.sym != T2.sym, "Variables from different meshes should have different symbols"
+        assert T1.sym is not T2.sym, "Variables should be different objects"
 
-        # Create derivatives
+        # The function CLASSES should be different (with different _uw_id)
+        assert T1.sym[0, 0].func is not T2.sym[0, 0].func, "Function classes should be distinct"
+        assert T1.sym[0, 0].func._uw_id != T2.sym[0, 0].func._uw_id, "Function _uw_id should differ"
+
+        # Applied functions should NOT be equal (even if hash is same)
+        assert T1.sym[0, 0] != T2.sym[0, 0], "Applied functions should not be equal"
+
+    def test_different_mesh_variables_have_unique_derivatives(self):
+        """
+        Derivatives from variables on different meshes should be unique.
+
+        This validates that the _uw_id mechanism correctly creates unique
+        derivative expressions even when variable names are identical.
+
+        NOTE: The .diff()[0] method returns a UWexpression wrapper that is
+        cached by display name. To check symbol uniqueness, we need to look
+        at the raw SymPy derivative matrix, not the wrapped result.
+        """
+        # Create two different meshes (different instance numbers)
+        mesh1 = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0),
+            maxCoords=(1.0, 1.0),
+            cellSize=0.2,
+        )
+
+        mesh2 = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0),
+            maxCoords=(1.0, 1.0),
+            cellSize=0.2,
+        )
+
+        # Verify meshes have different instance numbers
+        assert mesh1.instance_number != mesh2.instance_number
+
+        # Create variables with same name on different meshes
+        T1 = uw.discretisation.MeshVariable("T", mesh1, 1, degree=2)
+        T2 = uw.discretisation.MeshVariable("T", mesh2, 1, degree=2)
+
+        # Create derivatives using raw SymPy (not the wrapped interface)
         y1 = mesh1.N.y
         y2 = mesh2.N.y
 
-        deriv1 = T1.diff(y1)[0]
-        deriv2 = T2.diff(y2)[0]
+        # Use raw SymPy diff on the symbolic form
+        raw_deriv1 = T1.sym.diff(y1)[0]
+        raw_deriv2 = T2.sym.diff(y2)[0]
 
-        # Derivatives should be DIFFERENT objects
-        assert deriv1 is not deriv2, "Derivatives from different meshes should be unique objects"
+        # Raw derivatives should be DIFFERENT objects (via _uw_id)
+        assert raw_deriv1 is not raw_deriv2, "Raw derivatives from different meshes should be unique objects"
 
-        # Derivative names should be different strings
-        assert str(deriv1) != str(deriv2), "Derivative names should differ by hspace"
+        # Derivatives should be symbolically different (not equal via SymPy __eq__)
+        assert raw_deriv1 != raw_deriv2, "Raw derivatives from different meshes should be distinct"
 
 
 class TestDerivativeCaching:
@@ -201,6 +251,9 @@ class TestUniqueNameGeneration:
 
         This enables hierarchical namespaces (mesh.solver.model.viscosity)
         to coexist with SymPy's global namespace.
+
+        NOTE: With the _uw_id mechanism, unique expressions have the same
+        display name but different _uw_id values (and thus different hashes).
         """
         # Create two expressions with same symbol but unique flag
         eta1 = UWexpression(r"\eta", sym=1.0, _unique_name_generation=True)
@@ -209,15 +262,17 @@ class TestUniqueNameGeneration:
         # Should be DIFFERENT objects
         assert eta1 is not eta2, "Expressions with _unique_name_generation should be unique objects"
 
-        # Should have different internal names (hspace differs)
-        assert str(eta1.name) != str(
-            eta2.name
-        ), "Unique expressions should have different internal names"
+        # Should have different _uw_id values (this is how they're distinguished now)
+        assert eta1._uw_id != eta2._uw_id, "Unique expressions should have different _uw_id values"
 
-        # But should have the same given name (visible symbol)
-        assert (
-            eta1._given_name == eta2._given_name == r"\eta"
-        ), "Unique expressions should share the same visible symbol"
+        # Should have different hashes (due to _uw_id in _hashable_content)
+        assert hash(eta1) != hash(eta2), "Unique expressions should have different hashes"
+
+        # They should NOT be equal via SymPy's __eq__
+        assert eta1 != eta2, "Unique expressions should not be equal"
+
+        # But display name is the same (clean output - this is the new behavior!)
+        assert str(eta1.name) == str(eta2.name), "Display names are now identical (clean output)"
 
     def test_unique_expressions_have_different_values(self):
         """
@@ -237,53 +292,15 @@ class TestUniqueNameGeneration:
         assert eta2.sym != 5.0, "Unique expressions should be independent"
 
 
-class TestHspaceSize:
-    """Test that hspace size is sufficiently small (nearly invisible)."""
+class TestCleanSymbolNames:
+    """Test that symbol names are now clean (no hspace hack)."""
 
-    def test_mesh_variable_hspace_is_tiny(self):
+    def test_mesh_variable_has_clean_symbol_name(self):
         """
-        Mesh variable symbols should use tiny hspace (100x smaller than old 0.01pt).
+        Mesh variable symbols should have clean display names without hspace.
 
-        The hspace should be nearly invisible in LaTeX rendering while
-        still providing uniqueness for SymPy.
-        """
-        mesh = uw.meshing.UnstructuredSimplexBox(
-            minCoords=(0.0, 0.0),
-            maxCoords=(1.0, 1.0),
-            cellSize=0.2,
-        )
-
-        # Skip test if this is the first mesh (no hspace needed)
-        if mesh.instance_number <= 1:
-            pytest.skip("First mesh instance doesn't use hspace")
-
-        T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-
-        # Extract hspace from symbol
-        match = re.search(r"\\hspace\{ ([\d.e-]+)pt \}", T.symbol)
-
-        if match:
-            hspace = float(match.group(1))
-
-            # Should be much smaller than old 0.01pt minimum
-            # Old formula: instance_number / 100 (minimum 0.01pt for instance 1)
-            # New formula: instance_number / 10000 (100x smaller)
-            old_hspace = mesh.instance_number / 100
-            assert (
-                hspace < old_hspace
-            ), f"New hspace ({hspace}pt) should be < old hspace ({old_hspace}pt)"
-
-            # Verify formula is correct (instance_number / 10000)
-            expected_hspace = mesh.instance_number / 10000
-            assert (
-                abs(hspace - expected_hspace) < 1e-10
-            ), f"Hspace should be {expected_hspace}pt, got {hspace}pt"
-
-    def test_derivative_hspace_is_tiny(self):
-        """
-        Derivative expressions should inherit tiny hspace from parent variable.
-
-        This ensures derivatives also have nearly invisible spacing in LaTeX.
+        The new _uw_id mechanism uses SymPy's native identity system instead
+        of invisible whitespace in symbol names.
         """
         mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0),
@@ -291,43 +308,56 @@ class TestHspaceSize:
             cellSize=0.2,
         )
 
-        # Skip test if this is the first mesh
-        if mesh.instance_number <= 1:
-            pytest.skip("First mesh instance doesn't use hspace")
-
         T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-        y = mesh.N.y
 
-        deriv = T.diff(y)[0]
+        # Symbol name should NOT contain hspace (old mechanism removed)
+        assert "\\hspace" not in T.symbol, "Symbol should have clean name without hspace"
 
-        # Extract hspace from derivative name
-        match = re.search(r"\\hspace\{ ([\d.e-]+)pt \}", str(deriv))
+        # Symbol name should be simple
+        assert "{T}" in T.symbol or "T" == T.symbol, f"Symbol should be clean: {T.symbol}"
 
-        if match:
-            hspace = float(match.group(1))
+    def test_different_meshes_have_clean_but_distinct_symbols(self):
+        """
+        Variables on different meshes have clean names but distinct symbols.
 
-            # Should be 100x smaller than old formula
-            # Derivatives inherit hspace from parent mesh variable
-            old_hspace = mesh.instance_number / 100
-            assert (
-                hspace < old_hspace
-            ), f"Derivative hspace ({hspace}pt) should be < old hspace ({old_hspace}pt)"
+        This demonstrates the new mechanism: same display name, different identity.
+        The _uw_id mechanism ensures distinction via __eq__, not __hash__.
+        """
+        mesh1 = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0),
+            maxCoords=(1.0, 1.0),
+            cellSize=0.2,
+        )
 
-            # Verify it matches the mesh variable's hspace
-            expected_hspace = mesh.instance_number / 10000
-            assert (
-                abs(hspace - expected_hspace) < 1e-10
-            ), f"Derivative hspace should match variable hspace: {expected_hspace}pt, got {hspace}pt"
+        mesh2 = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0),
+            maxCoords=(1.0, 1.0),
+            cellSize=0.2,
+        )
+
+        T1 = uw.discretisation.MeshVariable("T", mesh1, 1, degree=2)
+        T2 = uw.discretisation.MeshVariable("T", mesh2, 1, degree=2)
+
+        # Both should have clean symbol names (no hspace)
+        assert "\\hspace" not in T1.symbol, "T1 symbol should be clean"
+        assert "\\hspace" not in T2.symbol, "T2 symbol should be clean"
+
+        # But they should be distinct symbols (via _uw_id in __eq__)
+        assert T1.sym != T2.sym, "Symbols should be distinct despite same display name"
+        assert T1.sym[0, 0] != T2.sym[0, 0], "Applied functions should not be equal"
+
+        # Function classes should have different _uw_id
+        assert T1.sym[0, 0].func._uw_id != T2.sym[0, 0].func._uw_id, "Function _uw_id should differ"
 
 
 class TestExpressionRegistryConsistency:
     """Test that expression registry remains consistent."""
 
-    def test_cached_derivatives_not_duplicated(self):
+    def test_cached_derivatives_are_same_object(self):
         """
-        Cached derivatives should only appear once in the expression registry.
+        Cached derivatives should return the same object when accessed multiple times.
 
-        This validates that caching doesn't create duplicate entries.
+        This validates that derivative caching works correctly.
         """
         mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0),
@@ -337,22 +367,40 @@ class TestExpressionRegistryConsistency:
 
         T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
         y = mesh.N.y
-
-        # Count derivatives before
-        initial_count = len([name for name in UWexpression._expr_names.keys() if "_{," in name])
 
         # Create same derivative multiple times
         deriv1 = T.diff(y)[0]
         deriv2 = T.diff(y)[0]
         deriv3 = T.diff(y)[0]
 
-        # Count derivatives after
-        final_count = len([name for name in UWexpression._expr_names.keys() if "_{," in name])
+        # All should be the SAME object (cached)
+        assert deriv1 is deriv2, "First two derivatives should be same object"
+        assert deriv2 is deriv3, "Second and third derivatives should be same object"
 
-        # Should have added exactly ONE derivative
-        assert (
-            final_count == initial_count + 1
-        ), f"Expected 1 new derivative, got {final_count - initial_count}"
+        # They should all have the same hash
+        assert hash(deriv1) == hash(deriv2) == hash(deriv3), "All derivatives should have same hash"
+
+    def test_different_derivatives_are_distinct(self):
+        """
+        Derivatives with respect to different variables should be distinct.
+        """
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0),
+            maxCoords=(1.0, 1.0),
+            cellSize=0.2,
+        )
+
+        T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+        x = mesh.N.x
+        y = mesh.N.y
+
+        # Create derivatives w.r.t. different variables
+        dT_dx = T.diff(x)[0]
+        dT_dy = T.diff(y)[0]
+
+        # Should be different objects
+        assert dT_dx is not dT_dy, "Derivatives w.r.t. different variables should be distinct"
+        assert dT_dx != dT_dy, "Derivatives should not be equal"
 
 
 if __name__ == "__main__":

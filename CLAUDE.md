@@ -277,6 +277,8 @@ Read them when you need deeper context beyond what's in this file.
 - @docs/developer/design/ARCHITECTURE_ANALYSIS.md - System structure analysis
 - @docs/developer/design/MATHEMATICAL_MIXIN_DESIGN.md - Mathematical objects internals
 - @docs/developer/design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN.md - Spherical/planetary meshes
+- @docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md - Multi-mesh symbol identity
+- @docs/developer/TEMPLATE_EXPRESSION_PATTERN.md - Solver template expressions
 
 ### Coordinates & Mesh
 - @docs/developer/design/COORDINATE_MIGRATION_GUIDE.md - Coordinate system changes
@@ -299,7 +301,11 @@ pixi run -e default python   # Run Python in environment
 ### Key Files
 - `src/underworld3/mpi.py` - Parallel safety implementation
 - `src/underworld3/scaling/` - Units system
-- `utilities/mathematical_mixin.py` - Mathematical objects
+- `src/underworld3/utilities/mathematical_mixin.py` - Mathematical objects
+- `src/underworld3/function/expressions.py` - UWexpression (lazy evaluation, symbol disambiguation)
+- `src/underworld3/function/_function.pyx` - UnderworldFunction (mesh variable symbols)
+- `src/underworld3/discretisation/enhanced_variables.py` - EnhancedMeshVariable (units, math ops, persistence)
+- `src/underworld3/discretisation/persistence.py` - Stub for future persistence features
 
 ### Historical Notes
 For development history, completed migrations, and fixed bugs:

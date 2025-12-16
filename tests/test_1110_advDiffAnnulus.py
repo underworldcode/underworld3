@@ -7,6 +7,18 @@ import underworld3 as uw
 import numpy as np
 
 
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before each test to prevent pollution from other tests."""
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    yield
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+
+
 # %%
 def test_adv_diff_annulus():
     """Test advection-diffusion on annulus with rigid body rotation."""

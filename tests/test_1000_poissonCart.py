@@ -19,6 +19,22 @@ import os
 os.environ["SYMPY_USE_CACHE"] = "no"
 
 
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before each test to prevent pollution from other tests.
+
+    Tests in test_0850_units_propagation set reference quantities which can affect
+    solver behavior and cause units enforcement errors.
+    """
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    yield
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+
+
 # Try to import plotting libraries - only show plots if available and in Jupyter
 try:
     import matplotlib.pyplot as plt

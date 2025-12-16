@@ -614,110 +614,53 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         individual instances of the class.
 
         `sympy.oo` (infinity) for default values ensures that sympy.Min simplifies away
-        the conditionals when they are not required
+        the conditionals when they are not required.
+
+        Uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
 
-        def __init__(
-            inner_self,
-            _owning_model,
-        ):
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        shear_viscosity_0 = api_tools.Parameter(
+            R"{\eta}",
+            lambda inner_self: 1,
+            "Shear viscosity",
+            units="Pa*s",
+        )
+
+        shear_viscosity_min = api_tools.Parameter(
+            R"{\eta_{\textrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Shear viscosity, minimum cutoff",
+            units="Pa*s",
+        )
+
+        yield_stress = api_tools.Parameter(
+            R"{\tau_{y}}",
+            lambda inner_self: sympy.oo,
+            "Yield stress (DP)",
+            units="Pa",
+        )
+
+        yield_stress_min = api_tools.Parameter(
+            R"{\tau_{y, \mathrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Yield stress (DP) minimum cutoff",
+            units="Pa",
+        )
+
+        strainrate_inv_II_min = api_tools.Parameter(
+            R"{\dot\varepsilon_{\mathrm{min}}}",
+            lambda inner_self: 0,
+            "Strain rate invariant minimum value",
+            units="1/s",
+        )
+
+        def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
-
-            # Default / placeholder values for constitutive parameters
-
-            inner_self._shear_viscosity_0 = expression(
-                R"{\eta}",
-                1,
-                "Shear viscosity",
-            )
-            inner_self._shear_viscosity_min = expression(
-                R"{\eta_{\textrm{min}}}",
-                -sympy.oo,
-                "Shear viscosity, minimum cutoff",
-            )
-
-            inner_self._yield_stress = expression(
-                R"{\tau_{y}}",
-                sympy.oo,
-                "Yield stress (DP)",
-            )
-            inner_self._yield_stress_min = expression(
-                R"{\tau_{y, \mathrm{min}}}",
-                -sympy.oo,
-                "Yield stress (DP) minimum cutoff ",
-            )
-
-            inner_self._strainrate_inv_II_mi = expression(
-                R"{\dot\varepsilon_{\mathrm{min}}}",
-                0,
-                "Strain rate invariant minimum value ",
-            )
-
-            return
-
-        #
-
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value):
-            expr = validate_parameters(R"\eta_0", value, allow_number=True)
-            inner_self._shear_viscosity_0.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def shear_viscosity_min(inner_self):
-            return inner_self._shear_viscosity_min
-
-        @shear_viscosity_min.setter
-        def shear_viscosity_min(inner_self, value):
-
-            expr = validate_parameters(R"{\eta_{\textrm{min}}}", value, allow_number=True)
-            inner_self._shear_viscosity_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress(inner_self):
-            return inner_self._yield_stress
-
-        @yield_stress.setter
-        def yield_stress(inner_self, value):
-
-            expr = validate_parameters(R"{\tau_\textrm{y}}", value, allow_number=True)
-            inner_self._yield_stress.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress_min(inner_self):
-            return inner_self._yield_stress_min
-
-        @yield_stress_min.setter
-        def yield_stress_min(inner_self, value):
-            expr = validate_parameters(R"{\tau_\textrm{y, min}}", value, allow_number=True)
-            inner_self._yield_stress_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def strainrate_inv_II_min(inner_self):
-            return inner_self._strainrate_inv_II_min
-
-        @strainrate_inv_II_min.setter
-        def strainrate_inv_II_min(inner_self, value):
-            expr = validate_parameters(R"{II(\tau)_{\textrm{min}}}", value, allow_number=True)
-            inner_self._strainrate_inv_II_min.copy(expr)
-            inner_self._reset()
-
-            return
+            # Parameters are now descriptors - no manual initialization needed
 
     @property
     def viscosity(self):
@@ -725,8 +668,8 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # detect if values we need are defined or are placeholder symbols
 
         if inner_self.yield_stress.sym == sympy.oo:
-            self._plastic_eff_viscosity.symbol = inner_self._shear_viscosity_0.symbol
-            self._plastic_eff_viscosity._sym = inner_self._shear_viscosity_0._sym
+            self._plastic_eff_viscosity.symbol = inner_self.shear_viscosity_0.symbol
+            self._plastic_eff_viscosity._sym = inner_self.shear_viscosity_0._sym
             return self._plastic_eff_viscosity
 
         # Don't put conditional behaviour in the constitutive law
@@ -864,7 +807,63 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Basic parameters with Parameter descriptors
+        shear_viscosity_0 = api_tools.Parameter(
+            R"{\eta}",
+            lambda inner_self: 1,
+            "Shear viscosity",
+            units="Pa*s",
+        )
+
+        shear_modulus = api_tools.Parameter(
+            R"{\mu}",
+            lambda inner_self: sympy.oo,
+            "Shear modulus",
+            units="Pa",
+        )
+
+        dt_elastic = api_tools.Parameter(
+            R"{\Delta t_{e}}",
+            lambda inner_self: sympy.oo,
+            "Elastic timestep",
+            units="s",
+        )
+
+        shear_viscosity_min = api_tools.Parameter(
+            R"{\eta_{\textrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Shear viscosity, minimum cutoff",
+            units="Pa*s",
+        )
+
+        yield_stress = api_tools.Parameter(
+            R"{\tau_{y}}",
+            lambda inner_self: sympy.oo,
+            "Yield stress (DP)",
+            units="Pa",
+        )
+
+        yield_stress_min = api_tools.Parameter(
+            R"{\tau_{y, \mathrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Yield stress (DP) minimum cutoff",
+            units="Pa",
+        )
+
+        strainrate_inv_II_min = api_tools.Parameter(
+            R"{\dot\varepsilon_{II,\mathrm{min}}}",
+            lambda inner_self: 0,
+            "Strain rate invariant minimum value",
+            units="1/s",
+        )
 
         def __init__(
             inner_self,
@@ -872,65 +871,17 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         ):
             inner_self._owning_model = _owning_model
 
+            # Internal symbols for stress history (not parameters, internal state)
             strainrate_inv_II = sympy.symbols(
                 r"\left|\dot\epsilon\right|\rightarrow\textrm{not\ defined}"
             )
-
             stress_star = sympy.symbols(r"\sigma^*\rightarrow\textrm{not\ defined}")
-
-            ## These all need to be expressions that can be replaced (for lazy evaluation)
-            ## So do any derived quantities like relaxation time. They will need all
-            ## getters that use expression.copy()
-
             inner_self._stress_star = stress_star
             inner_self._not_yielded = sympy.sympify(1)
 
-            inner_self._shear_viscosity_0 = expression(
-                R"{\eta}",
-                1,
-                "Shear viscosity",
-            )
-
-            inner_self._shear_modulus = expression(
-                R"{\mu}",
-                sympy.oo,
-                "Shear modulus",
-            )
-
-            inner_self._dt_elastic = expression(
-                R"{\Delta t_{e}}",
-                sympy.oo,
-                "Elastic timestep",
-            )
-
-            inner_self._shear_viscosity_min = expression(
-                R"{\eta_{\textrm{min}}}",
-                -sympy.oo,
-                "Shear viscosity, minimum cutoff",
-            )
-
-            inner_self._yield_stress = expression(
-                R"{\tau_{y}}",
-                sympy.oo,
-                "Yield stress (DP)",
-            )
-            inner_self._yield_stress_min = expression(
-                R"{\tau_{y, \mathrm{min}}}",
-                -sympy.oo,
-                "Yield stress (DP) minimum cutoff ",
-            )
-
-            inner_self._strainrate_inv_II_min = expression(
-                R"{\dot\varepsilon_{II,\mathrm{min}}}",
-                0,
-                "Strain rate invariant minimum value ",
-            )
-
-            ## The following expressions are not pure parameters, but
-            ## combinations. We set them up here and they will then
-            ## have @property calls to retrieve / calculate them
-            ## It is useful to have each as a separate expression
-            ## as it is these can be used in many derivations
+            ## The following expressions are containers for derived/computed values.
+            ## They have @property calls to retrieve / calculate them.
+            ## We keep them as expression containers for lazy evaluation.
 
             inner_self._ve_effective_viscosity = expression(
                 R"{\eta_{\mathrm{eff}}}",
@@ -943,95 +894,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 None,
                 "Maxwell relaxation time",
             )
-
-            return
-
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value):
-            expr = validate_parameters(R"\eta", value, allow_number=True)
-            inner_self._shear_viscosity_0.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def shear_modulus(inner_self):
-            return inner_self._shear_modulus
-
-        @shear_modulus.setter
-        def shear_modulus(inner_self, value):
-            expr = validate_parameters(R"\mu", value, allow_number=True)
-            inner_self._shear_modulus.copy(expr)
-            del expr
-            inner_self._reset()
-
-            return
-
-        @property
-        def dt_elastic(inner_self):
-            return inner_self._dt_elastic
-
-        @dt_elastic.setter
-        def dt_elastic(inner_self, value):
-            expr = validate_parameters(R"{\Delta t_e}", value, allow_number=True)
-            inner_self._dt_elastic.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def shear_viscosity_min(inner_self):
-            return inner_self._shear_viscosity_min
-
-        @shear_viscosity_min.setter
-        def shear_viscosity_min(inner_self, value):
-
-            expr = validate_parameters(R"{\eta_{\textrm{min}}}", value, allow_number=True)
-            inner_self._shear_viscosity_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress(inner_self):
-            return inner_self._yield_stress
-
-        @yield_stress.setter
-        def yield_stress(inner_self, value):
-
-            expr = validate_parameters(R"{\tau_\textrm{y}}", value, allow_number=True)
-            inner_self._yield_stress.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress_min(inner_self):
-            return inner_self._yield_stress_min
-
-        @yield_stress_min.setter
-        def yield_stress_min(inner_self, value):
-            expr = validate_parameters(R"{\tau_{\textrm{y, min}}}", value, allow_number=True)
-            inner_self._yield_stress_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def strainrate_inv_II_min(inner_self):
-            return inner_self._strainrate_inv_II_min
-
-        @strainrate_inv_II_min.setter
-        def strainrate_inv_II_min(inner_self, value):
-            expr = validate_parameters(R"{II(\tau)_{\textrm{min}}}", value, allow_number=True)
-            inner_self._strainrate_inv_II_min.copy(expr)
-            inner_self._reset()
-
-            return
 
         ## Derived parameters of the constitutive model (these have no setters)
         ## Note, do not return new expressions, keep the old objects as containers
@@ -1751,10 +1613,10 @@ class DarcyFlowModel(Constitutive_Model):
 
         @s.setter
         def s(inner_self, value: sympy.Matrix):
-            # Wrap matrix in expression then copy
+            # Update expression content in-place to preserve object identity
             # Cannot use validate_parameters() as it doesn't handle matrices
-            s_expr = expression(R"{s}", value, "Gravitational forcing")
-            inner_self._s.copy(s_expr)
+            # UWexpression.sym setter handles sympy.Matrix directly
+            inner_self._s.sym = value
             inner_self._reset()
 
     @property
@@ -1862,62 +1724,41 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        eta_0 = api_tools.Parameter(
+            r"\eta_0",
+            lambda inner_self: 1,
+            "Shear viscosity",
+            units="Pa*s",
+        )
+
+        eta_1 = api_tools.Parameter(
+            r"\eta_1",
+            lambda inner_self: 1,
+            "Second viscosity",
+            units="Pa*s",
+        )
+
+        director = api_tools.Parameter(
+            r"\hat{n}",
+            lambda inner_self: 1,
+            "Director orientation",
+            units=None,  # Dimensionless unit vector
+        )
 
         def __init__(
             inner_self,
             _owning_model,
         ):
             inner_self._owning_model = _owning_model
-
-            inner_self._eta_0 = expression(r"\eta_0", 1, "Shear viscosity")
-            inner_self._eta_1 = expression(r"\eta_1", 1, "Second viscosity")
-            inner_self._director = expression(r"\hat{n}", 1, "Director orientation")
-
-        ## Note the inefficiency below if we change all these values one after the other
-
-        @property
-        def eta_0(inner_self):
-            return inner_self._eta_0
-
-        @eta_0.setter
-        def eta_0(
-            inner_self,
-            value: Union[float, sympy.Function],
-        ):
-            visc_expr = validate_parameters(R"\eta_0", value, default=None, allow_number=True)
-
-            inner_self._eta_0.copy(visc_expr)
-            del visc_expr
-            inner_self._reset()
-
-        @property
-        def eta_1(inner_self):
-            return inner_self._eta_1
-
-        @eta_1.setter
-        def eta_1(
-            inner_self,
-            value: Union[float, sympy.Function],
-        ):
-            visc_expr = validate_parameters(R"\eta_1", value, default=None, allow_number=True)
-
-            inner_self._eta_1.copy(visc_expr)
-            del visc_expr
-            inner_self._reset()
-
-        @property
-        def director(inner_self):
-            return inner_self._director
-
-        @director.setter
-        def director(
-            inner_self,
-            value: Union[sympy.Matrix, sympy.Function, expression],
-        ):
-
-            inner_self._director._sym = value
-            inner_self._reset()
+            # Parameters are now descriptors - no manual initialization needed
 
     ## End of parameters
 
@@ -1926,14 +1767,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters._eta_0
+        return self.Parameters.eta_0
 
     @property
     def K(self):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters._eta_0
+        return self.Parameters.eta_0
 
     @property
     def grad_u(self):

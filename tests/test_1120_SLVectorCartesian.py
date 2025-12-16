@@ -7,6 +7,19 @@ import pytest
 # Physics solver tests - full solver execution
 pytestmark = pytest.mark.level_3
 
+
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before each test to prevent pollution from other tests."""
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    yield
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+
+
 # ### Test Semi-Lagrangian method in advecting vector fields
 # ### Scalar field advection together diffusion tested in a different pytest
 
@@ -25,34 +38,38 @@ x0 = 0.5 * xmax
 y0 = 0.5 * ymax
 
 # ### Set up the mesh
-### Quads
-meshStructuredQuadBox = uw.meshing.StructuredQuadBox(
-    elementRes=(int(res), int(res)),
-    minCoords=(xmin, ymin),
-    maxCoords=(xmax, ymax),
-    qdegree=3,
-)
+# NOTE: Meshes MUST be created inside fixtures or tests, not at module level!
+# Module-level creation happens at import time, before fixtures reset state,
+# which can cause "model has no reference quantities" errors if another test
+# has polluted global state.
 
-unstructured_simplex_box_irregular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=1 / res, regular=False, qdegree=3, refinement=0
-)
-
-unstructured_simplex_box_regular = uw.meshing.UnstructuredSimplexBox(
-    cellSize=1 / res, regular=True, qdegree=3, refinement=0
-)
+def create_mesh(mesh_type):
+    """Factory function to create meshes inside tests for proper isolation."""
+    if mesh_type == "mesh0":
+        return uw.meshing.StructuredQuadBox(
+            elementRes=(int(res), int(res)),
+            minCoords=(xmin, ymin),
+            maxCoords=(xmax, ymax),
+            qdegree=3,
+        )
+    elif mesh_type == "mesh1":
+        return uw.meshing.UnstructuredSimplexBox(
+            cellSize=1 / res, regular=False, qdegree=3, refinement=0
+        )
+    elif mesh_type == "mesh2":
+        return uw.meshing.UnstructuredSimplexBox(
+            cellSize=1 / res, regular=True, qdegree=3, refinement=0
+        )
+    else:
+        raise ValueError(f"Unknown mesh type: {mesh_type}")
 
 
 # %%
-@pytest.mark.parametrize(
-    "mesh",
-    [
-        meshStructuredQuadBox,
-        unstructured_simplex_box_irregular,
-        unstructured_simplex_box_regular,
-    ],
-)
-def test_SLVec_boxmesh(mesh):
+@pytest.mark.parametrize("mesh_type", ["mesh0", "mesh1", "mesh2"])
+def test_SLVec_boxmesh(mesh_type):
     """Test Semi-Lagrangian vector advection with Gaussian pulse."""
+    # Create mesh INSIDE test function to ensure proper isolation
+    mesh = create_mesh(mesh_type)
     print(f"Mesh - Coordinates: {mesh.CoordinateSystem.type}")
 
     # Create mesh vars
@@ -241,6 +258,4 @@ def test_SLVec_boxmesh(mesh):
     del DuDt
 
 
-del meshStructuredQuadBox
-del unstructured_simplex_box_irregular
-del unstructured_simplex_box_regular
+# Meshes are now created inside test functions, no need to delete them here

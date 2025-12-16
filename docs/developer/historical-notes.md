@@ -7,6 +7,7 @@
 ---
 
 ## Table of Contents
+- [Symbol Disambiguation Implementation](#symbol-disambiguation-implementation)
 - [Documentation Migration Status](#documentation-migration-status)
 - [Parallel Safety System Implementation](#parallel-safety-system-implementation)
 - [Units System Bug Fixes](#units-system-bug-fixes)
@@ -15,6 +16,38 @@
 - [Mathematical Objects Implementation](#mathematical-objects-implementation)
 - [Legacy Access Pattern Removal](#legacy-access-pattern-removal)
 - [Model Auto-Registration Implementation](#model-auto-registration-implementation)
+
+---
+
+## Symbol Disambiguation Implementation
+
+### Status: IMPLEMENTED (2025-12-15)
+
+Replaced the invisible whitespace hack (`\hspace{}`) with a clean, SymPy-native mechanism for distinguishing symbols with the same display name from different meshes.
+
+**Problem Solved**: When creating variables on multiple meshes with the same name (`v1 = MeshVariable("v", mesh1)`, `v2 = MeshVariable("v", mesh2)`), SymPy needs to treat them as distinct symbols. Previously, invisible LaTeX whitespace was injected into symbol names to make them unique, causing ugly output and serialization issues.
+
+**Solution**: Use SymPy's native identity mechanisms:
+
+1. **For `UWexpression`**: Override `_hashable_content()` to include `_uw_id`, following `sympy.Dummy` pattern
+2. **For `UnderworldFunction`**: Pass `_uw_id=mesh.instance_number` to `UndefinedFunction()` (SymPy uses kwargs in `__eq__`/`__hash__`)
+
+**Key Technical Detail**: Must use `Symbol.__xnew__()` instead of `Symbol.__new__()` to bypass SymPy's internal symbol cache, which doesn't know about `_uw_id`.
+
+**Files Modified**:
+- `src/underworld3/function/expressions.py` - Added `_hashable_content()` override
+- `src/underworld3/function/_function.pyx` - Added `_uw_id` kwarg to `UndefinedFunction()`
+- `src/underworld3/discretisation/discretisation_mesh_variables.py` - Removed `\hspace{}` hack
+
+**Benefits**:
+- Clean symbol display names (no invisible whitespace)
+- Proper LaTeX rendering
+- Correct serialization/pickling
+- Easier debugging
+- SymPy-native approach
+
+**Design Document**: `docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md`
+**Test File**: `tests/test_symbol_disambiguation_prototype.py`
 
 ---
 

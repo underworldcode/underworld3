@@ -143,7 +143,13 @@ class UnderworldFunction(sympy.Function):
         else: # other types can manage their own component names
             fname = name
 
-        ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), **options)
+        # Create function class with _uw_id for disambiguation (2025-12)
+        # When meshes have instance_number > 1, include it in _uw_id
+        # This makes f1(x,y) from mesh1 distinct from f1(x,y) from mesh2
+        # even if they have the same display name, solving the "funny whitespace" problem
+        mesh = meshvar.mesh
+        uw_id = mesh.instance_number if mesh.instance_number > 1 else None
+        ourcls = sympy.core.function.UndefinedFunction(fname,*args, bases=(UnderworldAppliedFunction,), _uw_id=uw_id, **options)
         # Grab weakref to meshvar.
         import weakref
         ourcls.meshvar   = weakref.ref(meshvar)
@@ -159,7 +165,8 @@ class UnderworldFunction(sympy.Function):
             fname = name + "_{{ {}{},".format(component[0], component[1])
 
         for index, difffname in enumerate((fname+"0}",fname+"1}",fname+"2}")):
-            diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), **options)
+            # Pass _uw_id for derivative functions too (same mesh disambiguation)
+            diffcls = sympy.core.function.UndefinedFunction(difffname, *args, bases=(UnderworldAppliedFunctionDeriv,), _uw_id=uw_id, **options)
             # Grab weakref to var for derivative fn too.
             diffcls.meshvar   = weakref.ref(meshvar)
             diffcls.component = data_loc

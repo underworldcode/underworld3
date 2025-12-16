@@ -82,8 +82,9 @@ def velocity_var(simple_mesh):
 def temperature_with_units(mesh_with_units):
     """Create a temperature variable with units."""
     T = uw.discretisation.MeshVariable("T", mesh_with_units, 1, degree=2, units="K")
-    # Initialize
-    T.array[:, 0, 0] = 300.0
+    # Initialize using .data (non-dimensional assignment) since units are active
+    # When units are active, .array requires unit-aware values; .data takes raw values
+    T.data[:, 0] = 300.0
     return T
 
 
@@ -91,9 +92,10 @@ def temperature_with_units(mesh_with_units):
 def velocity_with_units(mesh_with_units):
     """Create a velocity variable with units."""
     V = uw.discretisation.MeshVariable("V", mesh_with_units, 2, degree=2, units="m/s")
-    # Initialize
-    V.array[:, 0, 0] = 1e-10  # x-component
-    V.array[:, 0, 1] = 2e-10  # y-component
+    # Initialize using .data (non-dimensional assignment) since units are active
+    # When units are active, .array requires unit-aware values; .data takes raw values
+    V.data[:, 0] = 1e-10  # x-component
+    V.data[:, 1] = 2e-10  # y-component
     return V
 
 
@@ -107,9 +109,11 @@ def test_closure_variable_multiply_variable(temperature_with_units, velocity_wit
     # Use variables WITH units to test closure property
     result = temperature_with_units * velocity_with_units[0]
 
-    # Check closure: result should be unit-aware (have units property)
-    assert hasattr(result, "units") or hasattr(result, "_units"), \
-        "Variable * Variable should preserve unit-awareness"
+    # Check closure: units should be discoverable via uw.get_units()
+    # (SymPy expressions don't have .units attribute directly - units are on atoms)
+    result_units = uw.get_units(result)
+    assert result_units is not None, \
+        "Variable * Variable should preserve unit-awareness (via get_units)"
 
 
 def test_units_temperature_times_velocity(temperature_with_units, velocity_with_units):
@@ -442,8 +446,9 @@ def test_closure_unit_aware_array_arithmetic():
     result_mul = length * 2
     assert isinstance(result_mul, UnitAwareArray), \
         "UnitAwareArray * scalar should return UnitAwareArray"
-    assert result_mul.units == "m", \
-        "Scalar multiplication should preserve units"
+    # Compare units properly (Pint Unit object, not string)
+    assert str(result_mul.units) == "meter" or "meter" in str(result_mul.units), \
+        f"Scalar multiplication should preserve units, got: {result_mul.units}"
 
     # Division
     velocity = length / time

@@ -25,6 +25,21 @@ import os
 import underworld3 as uw
 
 
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before each test to prevent pollution from other tests.
+
+    Tests in test_0850_units_propagation set reference quantities which can affect
+    mesh coordinate units and cause backward compatibility assertions to fail.
+    """
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    yield
+    # Cleanup after test
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+
+
 class TestMeshUnitsInterfaceDesign:
     """Test the design of unit-aware mesh coordinate interfaces."""
 
