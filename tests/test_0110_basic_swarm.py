@@ -87,18 +87,27 @@ def test_create_swarmvariable_with_units(setup_data):
 def test_addNPoints(setup_data):
 
     from underworld3 import swarm
+    from petsc4py import PETSc
 
     swarm2 = setup_data
     var = swarm.SwarmVariable(name="test", swarm=swarm2, size=1)
     swarm2.dm.finalizeFieldRegister()
 
-    swarm2.dm.addNPoints(10)  # since swarm is initially empty, will add (10 - 1) points
+    # PETSc < 3.24 has an off-by-one bug: addNPoints(N) adds N-1 when swarm is empty
+    # PETSc 3.24+ fixed this bug: addNPoints(N) correctly adds N points
+    swarm2.dm.addNPoints(10)
     npts = swarm2.local_size
-    assert npts == 9
+    if PETSc.Sys.getVersion() >= (3, 24, 0):
+        assert npts == 10  # Bug fixed in 3.24+
+    else:
+        assert npts == 9   # Bug in older versions
 
-    swarm2.dm.addNPoints(1)  # already has particles, so will add 1 point
+    swarm2.dm.addNPoints(1)  # already has particles, so will add 1 point (correct in all versions)
     npts = swarm2.local_size
-    assert npts == 10
+    if PETSc.Sys.getVersion() >= (3, 24, 0):
+        assert npts == 11
+    else:
+        assert npts == 10
 
 
 def test_particle_position_setter(setup_data):

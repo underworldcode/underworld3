@@ -2787,7 +2787,15 @@ class Swarm(Stateful, uw_object):
         newp_cells = newp_cells0[valid]
 
         self.dm.finalizeFieldRegister()
-        self.dm.addNPoints(newp_coords.shape[0] + 1)
+
+        # PETSc < 3.24 has an off-by-one bug in addNPoints when swarm size is initially zero
+        # It allocates N-1 instead of N, so we add +1 to compensate
+        # PETSc 3.24+ fixed this bug, so we use the exact count
+        from petsc4py import PETSc
+        if PETSc.Sys.getVersion() >= (3, 24, 0):
+            self.dm.addNPoints(newp_coords.shape[0])
+        else:
+            self.dm.addNPoints(newp_coords.shape[0] + 1)
 
         coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
         ranks = self.dm.getField("DMSwarm_rank")
