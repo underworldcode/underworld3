@@ -1,0 +1,160 @@
+# Underworld3 In-Repository Build Configuration
+# This uses conda-forge PETSc for quick installation (~5 min)
+# For adaptive mesh tools (pragmatic, mmg, parmmg), use the 'amr' environment
+
+[workspace]
+name = "underworld3"
+authors = ["Louis Moresi <louis.moresi@anu.edu.au>"]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+version = "0.99.0b"
+
+# ============================================
+# CORE TASKS
+# ============================================
+[tasks]
+# Build underworld3 (compiles Cython extensions)
+build = "pip install . --no-build-isolation"
+clean = "./scripts/clean.sh"
+
+# Testing - pass arguments through to test_levels.sh
+# Usage: pixi run test [LEVELS] [OPTIONS]
+#   pixi run test           # All tests
+#   pixi run test 1         # Level 1 only (quick ~2 min)
+#   pixi run test 2,3       # Levels 2 and 3
+#   pixi run test --help    # Show all options
+test = "./scripts/test_levels.sh"
+test-quick = "./scripts/test_levels.sh 1"
+
+# Code quality
+format = "black src/underworld3 tests --line-length=100"
+type-check = "mypy src/underworld3 --ignore-missing-imports"
+
+# Optional tool installers (keeps base environment minimal)
+install-dev-tools = "pip install pytest-forked pytest-xdist black mypy ipdb"
+install-viz = "pip install pyvista trame ipywidgets trame-vtk trame-vuetify"
+install-geo = "pip install gdal pyproj cartopy geopandas owslib"
+install-docs = "pip install quarto jupyter-ai jupytext"
+
+# ============================================
+# CORE DEPENDENCIES (conda-forge PETSc)
+# ============================================
+[dependencies]
+python = "3.12.*"
+
+# PETSc from conda-forge (no custom build needed!)
+petsc = ">=3.21,<4"
+petsc4py = ">=3.21,<4"
+
+# Build requirements
+cython = ">=3.1,<4"
+numpy = "<2"
+pip = ">=25,<26"
+setuptools = ">=75,<76"
+
+# Compilers (required for Cython extension compilation)
+# conda-forge PETSc/MPI are built with specific compiler toolchains
+compilers = "*"
+
+# Underworld3 runtime dependencies
+sympy = ">=1.13,<2"
+scipy = ">=1.15,<2"
+pint = ">=0.24,<0.25"
+typeguard = ">=4.4,<5"
+xxhash = ">=0.8,<0.9"
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+mpi4py = ">=4,<5"
+
+# Testing (included in base for CI compatibility)
+pytest = ">=8.3,<9"
+pytest-mpi = ">=0.6,<0.7"
+pytest-timeout = ">=2.3,<3"
+pytest-forked = ">=1.6,<2"
+pytest-xdist = ">=3.8,<4"
+
+# Mesh generation
+pykdtree = ">=1.4,<2"
+meshio = ">=5.3,<6"
+
+# Utilities
+requests = "*"
+matplotlib = ">=3.10.8,<4"
+
+[pypi-dependencies]
+gmsh = ">=4.13,<5"
+pygmsh = ">=7.1,<8"
+rich = "*"
+
+# ============================================
+# OPTIONAL FEATURES
+# ============================================
+
+# Visualization tools
+[feature.viz.dependencies]
+pyvista = ">=0.44,<0.45"
+trame = ">=3.8,<4"
+ipywidgets = ">=8.1,<9"
+trame-vuetify = ">=2.8,<3"
+trame-vtk = ">=2.8,<3"
+ipykernel = ">=6.29,<7"
+
+# Geospatial tools
+[feature.geo.dependencies]
+gdal = ">=3.10,<4"
+pyproj = ">=3.7,<4"
+cartopy = ">=0.24,<0.25"
+geopandas = ">=1.0,<2"
+owslib = ">=0.33,<0.34"
+
+# Development tools
+[feature.dev.dependencies]
+black = ">=24,<25"
+mypy = ">=1.8,<2"
+ipdb = ">=0.13,<0.14"
+pytest-forked = ">=1.6,<2"
+pytest-xdist = ">=3.8,<4"
+
+# Documentation
+[feature.docs.dependencies]
+jupyter-ai = ">=2.31,<3"
+jupytext = ">=1.16,<2"
+
+[feature.docs.tasks]
+docs-build = { cmd = "quarto render", cwd = "docs", env = { QUARTO_PYTHON = "python" } }
+
+# Claude development tools
+[feature.claude.dependencies]
+nodejs = ">=18"
+
+[feature.claude.pypi-dependencies]
+anthropic = "*"
+
+[feature.claude.tasks]
+install-claude = "npm install -g @anthropic-ai/claude-code"
+claude = "claude"
+
+# ============================================
+# ENVIRONMENT DEFINITIONS
+# ============================================
+[environments]
+# Default: Minimal for fast install (mybinder.org compatible)
+default = { solve-group = "default" }
+
+# Full: All features except Claude
+full = { features = ["viz", "geo", "dev", "docs"], solve-group = "default" }
+
+# Development: Everything including Claude
+dev = { features = ["viz", "geo", "dev", "docs", "claude"], solve-group = "default" }
+
+# ============================================
+# FUTURE: AMR ENVIRONMENT (Phase 2)
+# ============================================
+# [feature.amr.dependencies]
+# # Custom PETSc with adaptive mesh tools - TBD
+#
+# [feature.amr.activation.env]
+# PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
+# PETSC_ARCH = "petsc-4-uw"
+#
+# [environments]
+# amr = { features = ["amr"], solve-group = "amr" }
