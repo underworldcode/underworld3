@@ -1033,7 +1033,11 @@ class Mesh(Stateful, uw_object):
 
         if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
             self.dm.projectCoordinates(self.petsc_fe)
+        elif PETSc.Sys.getVersion() >= (3, 24, 0):
+            # PETSc 3.24+ added 'localized' parameter (for DG coordinate spaces)
+            self.dm.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
         else:
+            # PETSc 3.21-3.23: older signature without localized parameter
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
         if verbose and uw.mpi.rank == 0:
