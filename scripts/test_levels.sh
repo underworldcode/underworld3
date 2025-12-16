@@ -18,53 +18,57 @@
 #   (empty)= All tests (default)
 #
 # OPTIONS:
-#   --parallel-ranks N     Number of MPI ranks for parallel tests (default: 2)
-#   --full-parallel        Run parallel tests with both 2 and 4 ranks
-#   --no-parallel          Skip parallel tests entirely
-#   --no-isolation         Disable per-file process isolation (faster but may have test pollution)
-#   --verbose              Show verbose test output
-#   --help                 Show this help message
+#   --parallel          Run parallel (MPI) tests with 2 ranks
+#   --parallel-ranks N  Run parallel (MPI) tests with N ranks
+#   --full-parallel     Run parallel tests with both 2 and 4 ranks
+#   --isolation         Enable per-file process isolation (prevents test pollution)
+#   --verbose           Show verbose test output
+#   --help              Show this help message
 #
-# Process Isolation:
-#   By default, tests are run with pytest-xdist using --dist loadfile -n 1.
-#   This runs each test file in a fresh subprocess, preventing test pollution
-#   from global state (Model, units, PETSc contexts). Use --no-isolation to
-#   disable this for faster runs when debugging specific tests.
+# Defaults:
+#   Tests run WITHOUT process isolation and WITHOUT parallel (MPI) tests.
+#   This is the fastest mode for quick feedback during development.
+#
+# Process Isolation (--isolation):
+#   Runs each test file in a fresh subprocess via pytest-xdist (--dist loadfile -n 1).
+#   Prevents test pollution from global state (Model, units, PETSc contexts).
+#   Slower but more reliable for CI and comprehensive testing.
 #
 # Examples:
-#   ./test_levels.sh 1                      # Run only quick tests (isolated)
-#   ./test_levels.sh 3                      # Run only physics tests (isolated)
-#   ./test_levels.sh --no-isolation 1       # Quick tests without isolation (faster)
-#   ./test_levels.sh --parallel-ranks 4 2   # Run Level 2 with 4 ranks
-#   ./test_levels.sh --full-parallel 1,2,3  # All tests, parallel with 2 and 4 ranks
-#   ./test_levels.sh --no-parallel 2        # Level 2 without parallel tests
+#   ./test_levels.sh 1                       # Quick tests, fast mode
+#   ./test_levels.sh --isolation 1,2         # Levels 1+2 with process isolation
+#   ./test_levels.sh --parallel 2            # Level 2 with MPI tests (2 ranks)
+#   ./test_levels.sh --parallel-ranks 4 2    # Level 2 with MPI tests (4 ranks)
+#   ./test_levels.sh --full-parallel         # All tests, parallel with 2 and 4 ranks
 
 set -e  # Exit on any error
 
-# Default values
+# Default values (simple/fast mode)
 PARALLEL_RANKS=2
+RUN_PARALLEL=0      # OFF by default
 FULL_PARALLEL=0
-SKIP_PARALLEL=0
-SKIP_ISOLATION=0
+RUN_ISOLATION=0     # OFF by default
 VERBOSE=""
 
 # Parse options
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --parallel)
+            RUN_PARALLEL=1
+            shift
+            ;;
         --parallel-ranks)
+            RUN_PARALLEL=1
             PARALLEL_RANKS="$2"
             shift 2
             ;;
         --full-parallel)
+            RUN_PARALLEL=1
             FULL_PARALLEL=1
             shift
             ;;
-        --no-parallel)
-            SKIP_PARALLEL=1
-            shift
-            ;;
-        --no-isolation)
-            SKIP_ISOLATION=1
+        --isolation)
+            RUN_ISOLATION=1
             shift
             ;;
         --verbose|-v)
@@ -105,12 +109,19 @@ export UW_NO_USAGE_METRICS=0
 # -n 1: single worker (sequential but isolated per file)
 # --timeout=120: prevent tests from hanging indefinitely (2 min per test max)
 # This prevents test pollution from global state (Model, units, PETSc)
-if [ $SKIP_ISOLATION -eq 0 ]; then
+# Show test configuration
+echo "Configuration:"
+if [ $RUN_ISOLATION -eq 1 ]; then
     ISOLATION_OPTS="--dist loadfile -n 1"
-    echo "🔒 Process isolation enabled (per-file subprocess isolation via pytest-xdist)"
+    echo "  🔒 Process isolation: ON"
 else
     ISOLATION_OPTS=""
-    echo "⚠️  Process isolation disabled (--no-isolation) - tests share global state"
+    echo "  ⚡ Process isolation: OFF (fast mode)"
+fi
+if [ $RUN_PARALLEL -eq 1 ]; then
+    echo "  🔀 Parallel (MPI): ON ($PARALLEL_RANKS ranks)"
+else
+    echo "  🔀 Parallel (MPI): OFF"
 fi
 echo ""
 
@@ -155,38 +166,37 @@ run_level_2() {
         tests/ -m level_2
 
     # Parallel tests for global statistics (requires MPI)
-    if [ $SKIP_PARALLEL -eq 0 ] && command -v mpirun &> /dev/null && command -v pytest &> /dev/null; then
-        echo "=========================================="
-        echo "Running parallel tests (MPI required)"
-        echo "=========================================="
+    if [ $RUN_PARALLEL -eq 1 ]; then
+        if command -v mpirun &> /dev/null && command -v pytest &> /dev/null; then
+            echo "=========================================="
+            echo "Running parallel tests (MPI)"
+            echo "=========================================="
 
-        # Parallel tests with specified number of ranks
-        echo "Testing with $PARALLEL_RANKS MPI ranks..."
-        if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
-            echo "✅ PASSED: Parallel tests ($PARALLEL_RANKS ranks)"
-        else
-            echo "❌ FAILED: Parallel tests ($PARALLEL_RANKS ranks)"
-            status=1
-        fi
-
-        # Optional: Test with 4 ranks if --full-parallel specified
-        if [ $FULL_PARALLEL -eq 1 ]; then
-            echo ""
-            echo "Running extended parallel tests (4 ranks)..."
-            if mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
-                echo "✅ PASSED: Parallel tests (4 ranks)"
+            # Parallel tests with specified number of ranks
+            echo "Testing with $PARALLEL_RANKS MPI ranks..."
+            if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
+                echo "✅ PASSED: Parallel tests ($PARALLEL_RANKS ranks)"
             else
-                echo "❌ FAILED: Parallel tests (4 ranks)"
+                echo "❌ FAILED: Parallel tests ($PARALLEL_RANKS ranks)"
                 status=1
             fi
+
+            # Optional: Test with 4 ranks if --full-parallel specified
+            if [ $FULL_PARALLEL -eq 1 ]; then
+                echo ""
+                echo "Running extended parallel tests (4 ranks)..."
+                if mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
+                    echo "✅ PASSED: Parallel tests (4 ranks)"
+                else
+                    echo "❌ FAILED: Parallel tests (4 ranks)"
+                    status=1
+                fi
+            fi
+            echo ""
+        else
+            echo "⚠️  Parallel tests requested but mpirun or pytest not available"
+            echo ""
         fi
-        echo ""
-    elif [ $SKIP_PARALLEL -eq 1 ]; then
-        echo "⚠️  Skipping parallel tests (--no-parallel specified)"
-        echo ""
-    else
-        echo "⚠️  Skipping parallel tests (mpirun or pytest not available)"
-        echo ""
     fi
 }
 
