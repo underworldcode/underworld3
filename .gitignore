@@ -245,3 +245,4 @@ debug_*.py
 
 # Visualization output files (generated during notebook execution)
 docs/beginner/tutorials/html5/*.html
+petsc-custom/petsc/
