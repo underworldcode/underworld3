@@ -2,28 +2,22 @@
 #
 # Underworld3 environment wrapper
 #
-# This script provides a consistent interface to pixi, allowing users to
-# configure their preferred environment without modifying pixi.toml.
-#
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/.pixi-env"
 PETSC_CUSTOM="$SCRIPT_DIR/petsc-custom/petsc"
 
-# Colors for output (if terminal supports it)
+# Colors (if terminal supports it)
 if [ -t 1 ]; then
     GREEN='\033[0;32m'
     YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'
-    RED='\033[0;31m'
     BOLD='\033[1m'
-    NC='\033[0m' # No Color
+    NC='\033[0m'
 else
-    GREEN='' YELLOW='' BLUE='' RED='' BOLD='' NC=''
+    GREEN='' YELLOW='' BOLD='' NC=''
 fi
 
-# Get current environment (default: runtime)
 get_env() {
     if [ -f "$CONFIG_FILE" ]; then
         cat "$CONFIG_FILE" | tr -d '[:space:]'
@@ -32,127 +26,22 @@ get_env() {
     fi
 }
 
-# Check if custom PETSc is built
 petsc_built() {
     [ -d "$PETSC_CUSTOM/petsc-4-uw/lib" ]
 }
 
-# Check if petsc4py is installed in an environment (fast file check)
-petsc4py_installed() {
-    local env="$1"
-    [ -d "$SCRIPT_DIR/.pixi/envs/$env/lib/python3.12/site-packages/petsc4py" ]
-}
-
-# Check if underworld3 is installed in an environment (fast file check)
-uw3_installed() {
-    local env="$1"
-    [ -d "$SCRIPT_DIR/.pixi/envs/$env/lib/python3.12/site-packages/underworld3" ]
-}
-
-# Show current status
-show_status() {
-    local current_env=$(get_env)
-
-    echo -e "${BOLD}Underworld3 Environment Status${NC}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-
-    # Current environment
-    echo -e "${BOLD}Current environment:${NC} ${GREEN}$current_env${NC}"
-    if [ -f "$CONFIG_FILE" ]; then
-        echo -e "  (configured in .pixi-env)"
-    else
-        echo -e "  (default - no .pixi-env file)"
-    fi
-    echo ""
-
-    # Environment description
-    echo -e "${BOLD}Environment details:${NC}"
-    case "$current_env" in
-        default)
-            echo "  PETSc: conda-forge (pre-built)"
-            echo "  Features: minimal (build & run only)"
-            ;;
-        runtime)
-            echo "  PETSc: conda-forge (pre-built)"
-            echo "  Features: visualization, Jupyter notebooks"
-            ;;
-        dev)
-            echo "  PETSc: conda-forge (pre-built)"
-            echo "  Features: viz, Jupyter, Claude, linting, docs"
-            ;;
-        amr)
-            echo "  PETSc: custom build with AMR tools"
-            echo "  Features: minimal (build & run only)"
-            ;;
-        amr-runtime)
-            echo "  PETSc: custom build with AMR tools"
-            echo "  Features: visualization, Jupyter notebooks"
-            ;;
-        amr-dev)
-            echo "  PETSc: custom build with AMR tools"
-            echo "  Features: viz, Jupyter, Claude, linting, docs"
-            ;;
-        *)
-            echo "  (unknown environment)"
-            ;;
-    esac
-    echo ""
-
-    # AMR PETSc status
-    echo -e "${BOLD}Custom PETSc (AMR):${NC}"
-    if petsc_built; then
-        echo -e "  ${GREEN}✓ Built${NC} at petsc-custom/petsc/"
-        local petsc_version=$(cat "$PETSC_CUSTOM/petsc-4-uw/lib/petsc/conf/petscvariables" 2>/dev/null | grep "PETSC_VERSION=" | cut -d= -f2 || echo "unknown")
-        [ -n "$petsc_version" ] && echo "  Version: $petsc_version"
-    else
-        echo -e "  ${YELLOW}○ Not built${NC}"
-        echo "  Run: ./uw setup   (to configure AMR)"
-        echo "   or: ./uw petsc-build   (if already configured for AMR)"
-    fi
-    echo ""
-
-    # Installation status
-    echo -e "${BOLD}Installation status:${NC}"
-    if uw3_installed "$current_env" 2>/dev/null; then
-        echo -e "  underworld3: ${GREEN}✓ installed${NC}"
-    else
-        echo -e "  underworld3: ${YELLOW}○ not installed${NC} (run: ./uw build)"
-    fi
-
-    # For AMR environments, check petsc4py
-    case "$current_env" in
-        amr|amr-runtime|amr-dev)
-            if petsc4py_installed "$current_env" 2>/dev/null; then
-                echo -e "  petsc4py:    ${GREEN}✓ installed${NC}"
-            else
-                echo -e "  petsc4py:    ${YELLOW}○ not installed${NC} (run: ./uw petsc4py-install)"
-            fi
-            ;;
-    esac
-    echo ""
-
-    echo -e "${BOLD}Quick commands:${NC}"
-    echo "  ./uw build        Build underworld3"
-    echo "  ./uw test-quick   Run quick tests"
-    echo "  ./uw setup        Configure environment"
-    echo "  ./uw --help       Full documentation"
-}
-
 # Interactive setup wizard
 run_setup() {
-    echo -e "${BOLD}Underworld3 Setup Wizard${NC}"
+    echo -e "${BOLD}Underworld3 Setup${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo "This will help you configure your Underworld3 environment."
     echo ""
 
     # Question 1: AMR tools?
     echo -e "${BOLD}Do you need adaptive mesh refinement (AMR) tools?${NC}"
-    echo "  AMR tools include: pragmatic, mmg, parmmg (anisotropic mesh adaptation)"
+    echo "  (pragmatic, mmg, parmmg for anisotropic mesh adaptation)"
     echo ""
-    echo "  [1] No  - Use conda-forge PETSc (quick 5-minute install)"
-    echo "  [2] Yes - Build custom PETSc with AMR tools (~1 hour build)"
+    echo "  [1] No  - conda-forge PETSc (5-minute install)"
+    echo "  [2] Yes - custom PETSc build (~1 hour)"
     echo ""
     read -p "Choice [1]: " amr_choice
     amr_choice=${amr_choice:-1}
@@ -165,9 +54,9 @@ run_setup() {
     # Question 2: Features?
     echo -e "${BOLD}What features do you need?${NC}"
     echo ""
-    echo "  [1] Minimal   - Just build and run underworld3"
-    echo "  [2] Runtime   - Add visualization (pyvista) and Jupyter"
-    echo "  [3] Developer - Add Claude AI, linting tools, documentation"
+    echo "  [1] Minimal   - build and run only"
+    echo "  [2] Runtime   - add visualization + Jupyter"
+    echo "  [3] Developer - add Claude, linting, docs"
     echo ""
     read -p "Choice [2]: " feature_choice
     feature_choice=${feature_choice:-2}
@@ -189,61 +78,46 @@ run_setup() {
     fi
 
     echo ""
-    echo -e "${BOLD}Configuration:${NC}"
-    echo "  Environment: $new_env"
+    echo -e "Environment: ${GREEN}$new_env${NC}"
     echo "$new_env" > "$CONFIG_FILE"
-    echo -e "  ${GREEN}✓ Saved to .pixi-env${NC}"
     echo ""
 
-    # Install environment
-    echo -e "${BOLD}Installing environment...${NC}"
+    # Install
+    echo "Installing dependencies..."
     pixi install -e "$new_env"
     echo ""
 
-    # AMR-specific setup
+    # AMR-specific
     if [ "$use_amr" = true ]; then
         if petsc_built; then
             echo -e "${GREEN}✓ Custom PETSc already built${NC}"
-            echo ""
-            echo "Installing petsc4py into $new_env..."
-            pixi run -e "$new_env" python setup.py install --prefix="" 2>/dev/null || \
-                (cd "$PETSC_CUSTOM/src/binding/petsc4py" && pixi run -e "$new_env" python setup.py install)
+            echo "Installing petsc4py..."
+            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && pixi run -e "$new_env" python setup.py install) 2>/dev/null
         else
             echo -e "${YELLOW}Custom PETSc needs to be built (~1 hour)${NC}"
-            echo ""
             read -p "Build now? [y/N]: " build_now
             if [ "$build_now" = "y" ] || [ "$build_now" = "Y" ]; then
-                echo ""
-                echo "Starting PETSc build... (this takes about 1 hour)"
-                echo "You can monitor progress in another terminal with:"
-                echo "  tail -f petsc-custom/petsc/configure.log"
-                echo ""
                 pixi run -e "$new_env" ./petsc-custom/build-petsc.sh
             else
                 echo ""
-                echo "To build later, run:"
-                echo "  ./uw petsc-build"
+                echo "Build later with: ./uw petsc-build"
+                echo ""
             fi
         fi
     fi
 
     # Build underworld3
     echo ""
-    read -p "Build underworld3 now? [Y/n]: " build_uw
+    read -p "Build underworld3? [Y/n]: " build_uw
     build_uw=${build_uw:-y}
     if [ "$build_uw" = "y" ] || [ "$build_uw" = "Y" ]; then
-        echo ""
         pixi run -e "$new_env" pip install . --no-build-isolation
     fi
 
     echo ""
     echo -e "${GREEN}${BOLD}Setup complete!${NC}"
     echo ""
-    echo "You can now use:"
-    echo "  ./uw build       - Rebuild underworld3"
-    echo "  ./uw test-quick  - Run quick tests"
-    echo "  ./uw jupyter lab - Start Jupyter (if runtime/dev)"
-    echo "  ./uw status      - Check current configuration"
+    echo "Usage:  ./uw build    ./uw test    ./uw jupyter lab"
 }
 
 # Show comprehensive help
@@ -252,148 +126,103 @@ show_help() {
 UNDERWORLD3 ENVIRONMENT WRAPPER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-OVERVIEW
-
-  This wrapper provides a consistent interface to pixi, allowing you to
-  configure your preferred environment once and use it everywhere.
-
-  Your choice is stored in .pixi-env (git-ignored), so it won't conflict
-  with other developers or cause merge issues with pixi.toml.
-
 QUICK START
 
-  First time setup:
-    ./uw setup              Interactive wizard (recommended)
-
-  Daily use:
-    ./uw build              Build underworld3
-    ./uw test               Run all tests
-    ./uw test-quick         Run quick tests (~2 min)
-    ./uw jupyter lab        Start JupyterLab
-    ./uw shell              Enter interactive shell
-    ./uw status             Show current configuration
+  ./uw setup              Configure environment (interactive)
+  ./uw build              Build underworld3
+  ./uw test               Run tests (level 1, ~2 min)
+  ./uw jupyter lab        Start JupyterLab
 
 ENVIRONMENTS
 
   ┌─────────────┬──────────────────┬─────────────────────────────────┐
   │ Environment │ PETSc            │ Features                        │
   ├─────────────┼──────────────────┼─────────────────────────────────┤
-  │ default     │ conda-forge      │ minimal (build & run)           │
+  │ default     │ conda-forge      │ minimal                         │
   │ runtime     │ conda-forge      │ + pyvista, jupyter              │
-  │ dev         │ conda-forge      │ + claude, black, mypy, docs     │
+  │ dev         │ conda-forge      │ + claude, black, mypy           │
   ├─────────────┼──────────────────┼─────────────────────────────────┤
-  │ amr         │ custom (1hr)     │ minimal + AMR tools             │
-  │ amr-runtime │ custom (1hr)     │ + pyvista, jupyter              │
-  │ amr-dev     │ custom (1hr)     │ + claude, black, mypy, docs     │
+  │ amr         │ custom (~1hr)    │ minimal + AMR tools             │
+  │ amr-runtime │ custom (~1hr)    │ + pyvista, jupyter              │
+  │ amr-dev     │ custom (~1hr)    │ + claude, black, mypy           │
   └─────────────┴──────────────────┴─────────────────────────────────┘
 
-  AMR tools: pragmatic, mmg, parmmg (anisotropic mesh adaptation)
+COMMANDS
 
-CONFIGURATION
-
-  Change environment:
-    ./uw set-env runtime        Switch to runtime environment
-    ./uw set-env amr-runtime    Switch to AMR with visualization
-
-  After changing environments:
-    ./uw build                  Rebuild underworld3 for new env
-
-  For AMR environments, if petsc4py is missing:
-    ./uw petsc4py-install       Install petsc4py into current env
-
-AMR SETUP (first time only)
-
-  1. Configure for AMR:
-     ./uw set-env amr
-
-  2. Build custom PETSc (~1 hour):
-     ./uw petsc-build
-
-  3. Switch to runtime features:
-     ./uw set-env amr-runtime
-     ./uw petsc4py-install
-
-  4. Build underworld3:
-     ./uw build
-
-  Or use the wizard which handles all this:
-     ./uw setup
-
-SPECIALIZED TOOLS
-
-  Geographic tools (gdal, cartopy, geopandas):
-    ./uw install-geo            One-time install via pip
-
-COMMANDS REFERENCE
-
-  Status & Configuration:
-    status              Show current environment and installation status
-    setup               Interactive setup wizard
-    set-env NAME        Change environment
-    env                 Print current environment name
+  Setup:
+    setup               Interactive configuration wizard
+    set-env NAME        Change environment directly
 
   Building:
-    build               Build underworld3 (pip install)
+    build               Build underworld3
     clean               Clean build artifacts
-    petsc-build         Build custom PETSc (AMR only, ~1 hour)
-    petsc4py-install    Install petsc4py into current env (AMR only)
+    petsc-build         Build custom PETSc (AMR, ~1 hour)
+    petsc4py-install    Install petsc4py (when switching AMR envs)
 
   Testing:
-    test                Run all tests
-    test-quick          Run level 1 tests only
+    test                Quick tests (level 1)
+    test-all            All test levels
 
   Development:
-    shell               Enter interactive pixi shell
-    jupyter [args]      Run jupyter (e.g., jupyter lab)
-    format              Run black formatter
+    shell               Interactive pixi shell
+    jupyter [args]      Run jupyter
+    format              Run black
     type-check          Run mypy
 
-  Any other command is passed to: pixi run -e $ENV <command>
+  Any command not listed is passed to: pixi run -e $ENV <command>
 
 FILES
 
   .pixi-env             Your environment choice (git-ignored)
   pixi.toml             Environment definitions (versioned)
-  petsc-custom/petsc/   Custom PETSc build (git-ignored, ~5GB)
+  petsc-custom/petsc/   Custom PETSc build (git-ignored)
 
 EOF
 }
 
-# Main entry point
+# Brief welcome + offer setup
+show_welcome() {
+    local current_env=$(get_env)
+
+    echo -e "${BOLD}Underworld3${NC}"
+    echo ""
+    echo -e "Environment: ${GREEN}$current_env${NC}"
+
+    if [ -f "$CONFIG_FILE" ]; then
+        echo ""
+        echo "Commands:  ./uw build    ./uw test    ./uw --help"
+    else
+        echo "(not configured)"
+        echo ""
+        read -p "Run setup? [Y/n]: " do_setup
+        do_setup=${do_setup:-y}
+        if [ "$do_setup" = "y" ] || [ "$do_setup" = "Y" ]; then
+            echo ""
+            run_setup
+        else
+            echo ""
+            echo "Run './uw setup' when ready, or './uw --help' for options."
+        fi
+    fi
+}
+
+# Main
 case "${1:-}" in
-    ""|status)
-        show_status
+    "")
+        show_welcome
         ;;
     setup)
         run_setup
         ;;
-    env|--env)
-        get_env
-        ;;
-    set-env|--set-env)
+    set-env)
         if [ -z "$2" ]; then
             echo "Usage: ./uw set-env <environment>"
-            echo "Available: default, runtime, dev, amr, amr-runtime, amr-dev"
+            echo "Options: default, runtime, dev, amr, amr-runtime, amr-dev"
             exit 1
         fi
         echo "$2" > "$CONFIG_FILE"
-        echo "Environment set to: $2"
-        echo ""
-        echo "Next steps:"
-        case "$2" in
-            amr|amr-runtime|amr-dev)
-                if ! petsc_built; then
-                    echo "  1. ./uw petsc-build     (build custom PETSc, ~1 hour)"
-                    echo "  2. ./uw build           (build underworld3)"
-                else
-                    echo "  1. ./uw petsc4py-install  (if switching AMR envs)"
-                    echo "  2. ./uw build             (build underworld3)"
-                fi
-                ;;
-            *)
-                echo "  ./uw build    (build underworld3)"
-                ;;
-        esac
+        echo "Environment: $2"
+        echo "Run './uw build' to rebuild underworld3"
         ;;
     shell)
         shift

@@ -33,9 +33,9 @@ version = "0.99.0b"
 build = "pip install . --no-build-isolation"
 clean = "./scripts/clean.sh"
 
-# Testing - pass arguments through to test_levels.sh
-test = "./scripts/test_levels.sh"
-test-quick = "./scripts/test_levels.sh 1"
+# Testing
+test = "./scripts/test_levels.sh 1"      # Quick level-1 tests (~2 min)
+test-all = "./scripts/test_levels.sh"    # All test levels
 
 # Code quality
 format = "black src/underworld3 tests --line-length=100"
