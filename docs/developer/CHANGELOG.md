@@ -6,6 +6,20 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2025 Q4 (October – December)
 
+### Symbol Disambiguation (December 2025)
+
+**Clean multi-mesh symbol identity**: Replaced the invisible whitespace hack (`\hspace{}`) with SymPy-native symbol disambiguation using `_uw_id` in `_hashable_content()`. This follows the `sympy.Dummy` pattern.
+
+- Variables on different meshes with same name are now symbolically distinct without display name pollution
+- Clean LaTeX rendering — no more invisible whitespace artifacts
+- Proper serialization/pickling support
+- Coordinate symbols (`mesh.N.x`, etc.) also isolated per-mesh to prevent cache pollution bugs
+
+**Key technical insight**: SymPy's `Symbol.__new__` has an internal cache that runs *before* `_hashable_content()`. Solution: use `Symbol.__xnew__()` to bypass the cache, same as `sympy.Dummy` does.
+
+**Files**: `expressions.py`, `_function.pyx`, `discretisation_mesh_variables.py`
+**Design doc**: `docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md`
+
 ### Units System Overhaul (November 2025)
 
 **Gateway pattern implementation**: Units are now handled at system boundaries (user input/output) rather than propagating through internal symbolic operations. This eliminates unit-related errors during solver execution while preserving dimensional correctness for users.
