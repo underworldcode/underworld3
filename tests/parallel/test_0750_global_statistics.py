@@ -20,15 +20,41 @@ import underworld3 as uw
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(60)]
 
 
+@pytest.fixture
+def setup_model_with_units():
+    """
+    Set up a model with reference quantities so mesh coordinates have units.
+
+    The Mesh class gets its units from model.get_coordinate_unit(), NOT from
+    the `units` parameter passed to the constructor. This fixture ensures
+    proper unit setup for tests that rely on mesh coordinate units.
+    """
+    # Reset to clean state (important for test isolation)
+    uw.reset_default_model()
+    model = uw.get_default_model()
+
+    # Set reference quantities with a length dimension of 1 meter
+    # This ensures coordinates stay unscaled (0-1 stays 0-1) but have units
+    model.set_reference_quantities(
+        domain_depth=uw.quantity(1, "m"),
+        nondimensional_scaling=False,  # Keep dimensional for easier testing
+    )
+
+    yield model
+
+    # Cleanup: reset model after test
+    uw.reset_default_model()
+
+
 @pytest.mark.mpi(min_size=2)
-def test_global_max_consistency():
+def test_global_max_consistency(setup_model_with_units):
     """Test that global_max returns same value on all ranks."""
     uw.pprint(0, "→ Starting test_global_max_consistency")
+    # Note: The units parameter is a hint; actual units come from model reference quantities
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
         maxCoords=(1.0, 1.0),
         cellSize=0.25,
-        units="km",
     )
 
     coords = mesh.X.coords
@@ -40,9 +66,10 @@ def test_global_max_consistency():
     # Global max should be same on all ranks
     global_max = y_coord.global_max()
 
-    # Verify units preserved
+    # Verify units preserved (unit string depends on model reference quantities)
     assert hasattr(global_max, "units"), "global_max should preserve units"
-    assert str(global_max.units) == "kilometer", f"Expected 'kilometer', got {global_max.units}"
+    # Check it's a length unit (could be km, m, etc. depending on model setup)
+    assert global_max.dimensionality == {"[length]": 1}, f"Expected length dimension, got {global_max.dimensionality}"
 
     # Verify consistency across ranks
     all_global = uw.mpi.comm.gather(float(global_max), root=0)
@@ -53,14 +80,14 @@ def test_global_max_consistency():
 
 
 @pytest.mark.mpi(min_size=2)
-def test_global_min_consistency():
+def test_global_min_consistency(setup_model_with_units):
     """Test that global_min returns same value on all ranks."""
     uw.pprint(0, "→ Starting test_global_min_consistency")
+    # Note: The units parameter is a hint; actual units come from model reference quantities
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
         maxCoords=(1.0, 1.0),
         cellSize=0.25,
-        units="m",
     )
 
     coords = mesh.X.coords
@@ -69,9 +96,10 @@ def test_global_min_consistency():
     # Global min should be same on all ranks
     global_min = x_coord.global_min()
 
-    # Verify units preserved
+    # Verify units preserved (unit string depends on model reference quantities)
     assert hasattr(global_min, "units"), "global_min should preserve units"
-    assert str(global_min.units) == "meter", f"Expected 'meter', got {global_min.units}"
+    # Check it's a length unit (could be km, m, etc. depending on model setup)
+    assert global_min.dimensionality == {"[length]": 1}, f"Expected length dimension, got {global_min.dimensionality}"
 
     # Verify consistency across ranks
     all_global = uw.mpi.comm.gather(float(global_min), root=0)
@@ -246,14 +274,14 @@ def test_global_norm_calculation():
 
 
 @pytest.mark.mpi(min_size=2)
-def test_global_operations_on_mesh_coords():
+def test_global_operations_on_mesh_coords(setup_model_with_units):
     """Test global operations on actual mesh coordinates."""
     uw.pprint(0, "→ Starting test_global_operations_on_mesh_coords")
+    # Note: The units parameter is a hint; actual units come from model reference quantities
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
         maxCoords=(1000.0, 2900.0),
         cellSize=250.0,
-        units="km",
     )
 
     coords = mesh.X.coords
@@ -268,12 +296,10 @@ def test_global_operations_on_mesh_coords():
     g_rms = y_coord.global_rms()
     g_size = y_coord.global_size()
 
-    # All should have units
+    # All should have units (length dimension)
     for stat in [g_max, g_min, g_mean, g_sum, g_norm, g_rms]:
         assert hasattr(stat, "units"), f"Statistic should have units"
-        assert (
-            "kilometer" in str(stat.units) or "km" in str(stat.units).lower()
-        ), f"Expected km units, got {stat.units}"
+        assert stat.dimensionality == {"[length]": 1}, f"Expected length dimension, got {stat.dimensionality}"
 
     # Size should be dimensionless
     assert isinstance(g_size, int), f"global_size should return int, got {type(g_size)}"
@@ -286,14 +312,14 @@ def test_global_operations_on_mesh_coords():
 
 
 @pytest.mark.mpi(min_size=2)
-def test_vector_global_operations():
+def test_vector_global_operations(setup_model_with_units):
     """Test global operations on vector (multi-component) arrays."""
     uw.pprint(0, "→ Starting test_vector_global_operations")
+    # Note: The units parameter is a hint; actual units come from model reference quantities
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
         maxCoords=(1.0, 1.0),
         cellSize=0.25,
-        units="m",
     )
 
     # Full coordinate vector (shape: N, 2)

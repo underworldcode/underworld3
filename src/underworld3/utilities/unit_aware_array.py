@@ -11,6 +11,9 @@ Key Features:
 - Seamless integration with existing unit conversion utilities
 - Preservation of callback functionality from NDArray_With_Callback
 - Automatic conversion in mixed-unit operations when appropriate
+- MPI-aware global reduction operations with unit preservation
+  (global_max, global_min, global_sum, global_mean, global_var, global_std,
+   global_norm, global_size, global_rms)
 """
 
 import numpy as np
@@ -36,6 +39,7 @@ class UnitAwareArray(NDArray_With_Callback):
     - Unit compatibility checking for operations
     - Integration with UW3 unit conversion system
     - Preservation of all callback functionality
+    - Unit-preserving global reduction operations (MPI-aware)
 
     Mathematical Representation:
     Given an array A with units [A], operations preserve dimensional consistency:
@@ -66,6 +70,41 @@ class UnitAwareArray(NDArray_With_Callback):
     length.set_callback(on_change)
     length[0] = 5  # Triggers callback
     ```
+
+    Global Reduction Operations (MPI-aware, unit-preserving):
+
+    These methods extend the parent class's global reduction operations to preserve
+    units in the result. Essential for parallel simulations with physical quantities.
+
+    | Method | Returns | Units |
+    |--------|---------|-------|
+    | `global_max()` | UWQuantity | Same as array |
+    | `global_min()` | UWQuantity | Same as array |
+    | `global_sum()` | UWQuantity | Same as array |
+    | `global_mean()` | UWQuantity | Same as array |
+    | `global_size()` | int | N/A (count) |
+    | `global_norm()` | UWQuantity | Same as array |
+    | `global_rms()` | UWQuantity | Same as array |
+    | `global_var()` | UWQuantity | Units squared |
+    | `global_std()` | UWQuantity | Same as array |
+
+    ```python
+    # Example: mesh coordinates with units
+    mesh.units = "kilometer"
+    coords = mesh.X.coords  # UnitAwareArray with units="kilometer"
+
+    # Global reductions preserve units
+    x_max = coords[:, 0].global_max()  # Returns: 100.0 [kilometer]
+    x_min = coords[:, 0].global_min()  # Returns: 0.0 [kilometer]
+    mean_coord = coords.global_mean()  # Returns: UWQuantity in kilometers
+
+    # Variance has squared units
+    variance = coords.global_var()     # Returns: UWQuantity in (kilometer)**2
+    std_dev = coords.global_std()      # Returns: UWQuantity in kilometers
+    ```
+
+    Note: Tensor arrays (ndim > 2) raise NotImplementedError for global reductions.
+    Use component-wise operations or slice the array for tensors.
     """
 
     def __new__(
@@ -644,7 +683,8 @@ class UnitAwareArray(NDArray_With_Callback):
             return self._wrap_result(variance_value, var_units)
 
     # === GLOBAL REDUCTION OPERATIONS (MPI-aware) ===
-    # These operations reduce across all MPI ranks
+    # These operations extend the parent class implementations to add unit preservation.
+    # The parent class (NDArray_With_Callback) handles all MPI logic.
 
     def global_max(self, axis=None, out=None, keepdims=False):
         """
@@ -672,37 +712,6 @@ class UnitAwareArray(NDArray_With_Callback):
         NotImplementedError
             If called on tensor data (ndim > 2)
         """
-        import underworld3 as uw
-        from mpi4py import MPI
-
-        # Handle empty arrays (use -inf as identity for max)
-        # IMPORTANT: Must preserve shape structure for MPI.Allreduce compatibility
-        if self.size == 0:
-            # Create appropriately shaped array of -inf
-            if axis is None and not keepdims:
-                local_max = -np.inf  # Scalar reduction
-            else:
-                # Determine result shape for empty array
-                if axis is None:
-                    result_shape = tuple()
-                elif keepdims:
-                    result_shape = list(self.shape)
-                    if isinstance(axis, int):
-                        result_shape[axis] = 1
-                    else:
-                        for ax in axis:
-                            result_shape[ax] = 1
-                    result_shape = tuple(result_shape)
-                else:
-                    result_shape = tuple(
-                        s
-                        for i, s in enumerate(self.shape)
-                        if i not in (axis if isinstance(axis, tuple) else (axis,))
-                    )
-                local_max = np.full(result_shape, -np.inf)
-        else:
-            local_max = self.max(axis=axis, out=out, keepdims=keepdims)
-
         # Check dimensionality for tensor rejection
         if axis is None and self.ndim > 2:
             raise NotImplementedError(
@@ -711,42 +720,17 @@ class UnitAwareArray(NDArray_With_Callback):
                 "components individually."
             )
 
-        # Scalar result - perform MPI reduction
-        if axis is None and not keepdims:
-            if self.has_units:
-                # Extract magnitude for MPI, then re-wrap with units
-                local_val = (
-                    float(local_max.magnitude)
-                    if hasattr(local_max, "magnitude")
-                    else float(local_max)
-                )
-                global_val = uw.mpi.comm.allreduce(local_val, op=MPI.MAX)
-                return uw.function.quantity(global_val, self._units)
-            else:
-                return uw.mpi.comm.allreduce(float(local_max), op=MPI.MAX)
+        # Delegate MPI reduction to parent class
+        result = super().global_max(axis=axis, out=out, keepdims=keepdims)
 
-        # Array result - component-wise reduction
-        local_arr = np.asarray(
-            local_max.magnitude if hasattr(local_max, "magnitude") else local_max
-        )
-
-        # For vectors, reduce component-wise
-        if local_arr.ndim == 1:
-            global_arr = np.array(
-                [
-                    uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.MAX)
-                    for i in range(len(local_arr))
-                ]
-            )
-        else:
-            # For higher dimensional arrays, use allreduce directly (requires same shape on all ranks)
-            global_arr = np.empty_like(local_arr)
-            uw.mpi.comm.Allreduce(local_arr, global_arr, op=MPI.MAX)
-
-        # Wrap result with units
+        # Wrap result with units if present
         if self.has_units:
-            return self._wrap_result(global_arr, self._units)
-        return global_arr
+            import underworld3 as uw
+            if np.isscalar(result) or (hasattr(result, 'ndim') and result.ndim == 0):
+                return uw.function.quantity(float(result), self._units)
+            else:
+                return self._wrap_result(result, self._units)
+        return result
 
     def global_min(self, axis=None, out=None, keepdims=False):
         """
@@ -774,37 +758,6 @@ class UnitAwareArray(NDArray_With_Callback):
         NotImplementedError
             If called on tensor data (ndim > 2)
         """
-        import underworld3 as uw
-        from mpi4py import MPI
-
-        # Handle empty arrays (use +inf as identity for min)
-        # IMPORTANT: Must preserve shape structure for MPI.Allreduce compatibility
-        if self.size == 0:
-            # Create appropriately shaped array of +inf
-            if axis is None and not keepdims:
-                local_min = np.inf  # Scalar reduction
-            else:
-                # Determine result shape for empty array
-                if axis is None:
-                    result_shape = tuple()
-                elif keepdims:
-                    result_shape = list(self.shape)
-                    if isinstance(axis, int):
-                        result_shape[axis] = 1
-                    else:
-                        for ax in axis:
-                            result_shape[ax] = 1
-                    result_shape = tuple(result_shape)
-                else:
-                    result_shape = tuple(
-                        s
-                        for i, s in enumerate(self.shape)
-                        if i not in (axis if isinstance(axis, tuple) else (axis,))
-                    )
-                local_min = np.full(result_shape, np.inf)
-        else:
-            local_min = self.min(axis=axis, out=out, keepdims=keepdims)
-
         # Check dimensionality for tensor rejection
         if axis is None and self.ndim > 2:
             raise NotImplementedError(
@@ -813,42 +766,17 @@ class UnitAwareArray(NDArray_With_Callback):
                 "components individually."
             )
 
-        # Scalar result - perform MPI reduction
-        if axis is None and not keepdims:
-            if self.has_units:
-                # Extract magnitude for MPI, then re-wrap with units
-                local_val = (
-                    float(local_min.magnitude)
-                    if hasattr(local_min, "magnitude")
-                    else float(local_min)
-                )
-                global_val = uw.mpi.comm.allreduce(local_val, op=MPI.MIN)
-                return uw.function.quantity(global_val, self._units)
-            else:
-                return uw.mpi.comm.allreduce(float(local_min), op=MPI.MIN)
+        # Delegate MPI reduction to parent class
+        result = super().global_min(axis=axis, out=out, keepdims=keepdims)
 
-        # Array result - component-wise reduction
-        local_arr = np.asarray(
-            local_min.magnitude if hasattr(local_min, "magnitude") else local_min
-        )
-
-        # For vectors, reduce component-wise
-        if local_arr.ndim == 1:
-            global_arr = np.array(
-                [
-                    uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.MIN)
-                    for i in range(len(local_arr))
-                ]
-            )
-        else:
-            # For higher dimensional arrays, use allreduce directly
-            global_arr = np.empty_like(local_arr)
-            uw.mpi.comm.Allreduce(local_arr, global_arr, op=MPI.MIN)
-
-        # Wrap result with units
+        # Wrap result with units if present
         if self.has_units:
-            return self._wrap_result(global_arr, self._units)
-        return global_arr
+            import underworld3 as uw
+            if np.isscalar(result) or (hasattr(result, 'ndim') and result.ndim == 0):
+                return uw.function.quantity(float(result), self._units)
+            else:
+                return self._wrap_result(result, self._units)
+        return result
 
     def global_sum(self, axis=None, dtype=None, out=None, keepdims=False):
         """
@@ -878,12 +806,6 @@ class UnitAwareArray(NDArray_With_Callback):
         NotImplementedError
             If called on tensor data (ndim > 2)
         """
-        import underworld3 as uw
-        from mpi4py import MPI
-
-        # Get local sum
-        local_sum = self.sum(axis=axis, dtype=dtype, out=out, keepdims=keepdims)
-
         # Check dimensionality for tensor rejection
         if axis is None and self.ndim > 2:
             raise NotImplementedError(
@@ -892,42 +814,17 @@ class UnitAwareArray(NDArray_With_Callback):
                 "components individually."
             )
 
-        # Scalar result - perform MPI reduction
-        if axis is None and not keepdims:
-            if self.has_units:
-                # Extract magnitude for MPI, then re-wrap with units
-                local_val = (
-                    float(local_sum.magnitude)
-                    if hasattr(local_sum, "magnitude")
-                    else float(local_sum)
-                )
-                global_val = uw.mpi.comm.allreduce(local_val, op=MPI.SUM)
-                return uw.function.quantity(global_val, self._units)
-            else:
-                return uw.mpi.comm.allreduce(float(local_sum), op=MPI.SUM)
+        # Delegate MPI reduction to parent class
+        result = super().global_sum(axis=axis, dtype=dtype, out=out, keepdims=keepdims)
 
-        # Array result - component-wise reduction
-        local_arr = np.asarray(
-            local_sum.magnitude if hasattr(local_sum, "magnitude") else local_sum
-        )
-
-        # For vectors, reduce component-wise
-        if local_arr.ndim == 1:
-            global_arr = np.array(
-                [
-                    uw.mpi.comm.allreduce(float(local_arr[i]), op=MPI.SUM)
-                    for i in range(len(local_arr))
-                ]
-            )
-        else:
-            # For higher dimensional arrays, use allreduce directly
-            global_arr = np.empty_like(local_arr)
-            uw.mpi.comm.Allreduce(local_arr, global_arr, op=MPI.SUM)
-
-        # Wrap result with units
+        # Wrap result with units if present
         if self.has_units:
-            return self._wrap_result(global_arr, self._units)
-        return global_arr
+            import underworld3 as uw
+            if np.isscalar(result) or (hasattr(result, 'ndim') and result.ndim == 0):
+                return uw.function.quantity(float(result), self._units)
+            else:
+                return self._wrap_result(result, self._units)
+        return result
 
     def global_mean(self, axis=None, dtype=None, out=None, keepdims=False):
         """
@@ -957,9 +854,6 @@ class UnitAwareArray(NDArray_With_Callback):
         NotImplementedError
             If called on tensor data (ndim > 2)
         """
-        import underworld3 as uw
-        from mpi4py import MPI
-
         # Check dimensionality for tensor rejection
         if axis is None and self.ndim > 2:
             raise NotImplementedError(
@@ -968,44 +862,17 @@ class UnitAwareArray(NDArray_With_Callback):
                 "components individually."
             )
 
-        # Get local sum and count
-        local_sum = self.sum(axis=axis, dtype=dtype, keepdims=keepdims)
+        # Delegate MPI reduction to parent class
+        result = super().global_mean(axis=axis, dtype=dtype, out=out, keepdims=keepdims)
 
-        if axis is None:
-            local_count = self.size
-        else:
-            # Count elements along reduced axes
-            if isinstance(axis, int):
-                local_count = self.shape[axis]
+        # Wrap result with units if present
+        if self.has_units:
+            import underworld3 as uw
+            if np.isscalar(result) or (hasattr(result, 'ndim') and result.ndim == 0):
+                return uw.function.quantity(float(result), self._units)
             else:
-                local_count = np.prod([self.shape[ax] for ax in axis])
-
-        # Gather global sum and count
-        global_sum = self.global_sum(axis=axis, dtype=dtype, keepdims=keepdims)
-        global_count = uw.mpi.comm.allreduce(local_count, op=MPI.SUM)
-
-        # Compute mean
-        if axis is None and not keepdims:
-            # Scalar result
-            if self.has_units:
-                mean_val = (
-                    float(global_sum.magnitude) / global_count
-                    if hasattr(global_sum, "magnitude")
-                    else float(global_sum) / global_count
-                )
-                return uw.function.quantity(mean_val, self._units)
-            else:
-                return float(global_sum) / global_count
-        else:
-            # Array result
-            global_arr = np.asarray(
-                global_sum.magnitude if hasattr(global_sum, "magnitude") else global_sum
-            )
-            mean_arr = global_arr / global_count
-
-            if self.has_units:
-                return self._wrap_result(mean_arr, self._units)
-            return mean_arr
+                return self._wrap_result(result, self._units)
+        return result
 
     def global_var(self, axis=None, dtype=None, ddof=0, keepdims=False):
         """
@@ -1204,9 +1071,6 @@ class UnitAwareArray(NDArray_With_Callback):
         NotImplementedError
             If called on tensor data (ndim > 2)
         """
-        import underworld3 as uw
-        from mpi4py import MPI
-
         # Check dimensionality for tensor rejection
         if self.ndim > 2:
             raise NotImplementedError(
@@ -1214,25 +1078,14 @@ class UnitAwareArray(NDArray_With_Callback):
                 "Extract components individually or use global_norm() on slices."
             )
 
-        # Default to 2-norm
-        if ord is None or ord == 2:
-            # Compute local sum of squares
-            local_arr = np.asarray(self)
-            local_sq_sum = np.sum(local_arr**2)
+        # Delegate MPI reduction to parent class
+        result = super().global_norm(ord=ord)
 
-            # Global sum of squares
-            global_sq_sum = uw.mpi.comm.allreduce(float(local_sq_sum), op=MPI.SUM)
-
-            # Compute norm
-            norm_val = np.sqrt(global_sq_sum)
-
-            if self.has_units:
-                return uw.function.quantity(norm_val, self._units)
-            return norm_val
-        else:
-            raise NotImplementedError(
-                f"global_norm() only supports ord=None or ord=2 (2-norm), got ord={ord}"
-            )
+        # Wrap result with units if present
+        if self.has_units:
+            import underworld3 as uw
+            return uw.function.quantity(float(result), self._units)
+        return result
 
     def global_size(self):
         """
@@ -1252,16 +1105,8 @@ class UnitAwareArray(NDArray_With_Callback):
         >>> total_points = coords.global_size()  # Sum of N_local across all ranks
         >>> rms = coords.global_norm() / np.sqrt(total_points)
         """
-        import underworld3 as uw
-        from mpi4py import MPI
-
-        # Get local size
-        local_size = self.size
-
-        # Sum across all ranks
-        global_total = uw.mpi.comm.allreduce(local_size, op=MPI.SUM)
-
-        return global_total
+        # Delegate to parent class (no unit handling needed for size)
+        return super().global_size()
 
     def global_rms(self):
         """
@@ -1289,8 +1134,6 @@ class UnitAwareArray(NDArray_With_Callback):
         >>> rms_coord = coords.global_rms()  # Returns UWQuantity in km
         >>> print(f"RMS coordinate: {rms_coord}")
         """
-        import underworld3 as uw
-
         # Check dimensionality for tensor rejection
         if self.ndim > 2:
             raise NotImplementedError(
@@ -1298,17 +1141,14 @@ class UnitAwareArray(NDArray_With_Callback):
                 "Extract components individually or use global_rms() on slices."
             )
 
-        # Get global norm and size
-        norm = self.global_norm()
-        size = self.global_size()
+        # Delegate MPI reduction to parent class
+        result = super().global_rms()
 
-        # Compute RMS
-        rms_val = float(norm.magnitude if hasattr(norm, "magnitude") else norm) / np.sqrt(size)
-
-        # Return with units preserved
+        # Wrap result with units if present
         if self.has_units:
-            return uw.function.quantity(rms_val, self._units)
-        return rms_val
+            import underworld3 as uw
+            return uw.function.quantity(float(result), self._units)
+        return result
 
     # Override arithmetic operations for unit checking
     def __add__(self, other):

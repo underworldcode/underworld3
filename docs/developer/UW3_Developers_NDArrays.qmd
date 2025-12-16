@@ -540,6 +540,115 @@ class GlobalDelayCallbackContext:
             callback()
 ```
 
+# Global Reduction Operations {#sec-global-reductions}
+
+## MPI-Aware Reduction Methods
+
+NDArray_With_Callback provides global reduction operations that work correctly across MPI ranks. These are essential for parallel simulations where data is distributed across processes.
+
+### Available Methods
+
+| Method | Description | Return Type |
+|--------|-------------|-------------|
+| `global_max(axis=None)` | Maximum value across all MPI ranks | scalar or array |
+| `global_min(axis=None)` | Minimum value across all MPI ranks | scalar or array |
+| `global_sum(axis=None)` | Sum across all MPI ranks | scalar or array |
+| `global_mean(axis=None)` | True mean (global sum / global count) | scalar or array |
+| `global_size()` | Total element count across all ranks | int |
+| `global_norm(ord=2)` | 2-norm across all ranks | float |
+| `global_rms()` | Root mean square across all ranks | float |
+
+### Usage Examples
+
+```{python}
+#| eval: false
+
+# In parallel simulations, each rank has a portion of the mesh
+coords = mesh.X.coords  # NDArray_With_Callback
+
+# Find global mesh bounds (across ALL MPI ranks)
+x_min = coords[:, 0].global_min()  # True minimum
+x_max = coords[:, 0].global_max()  # True maximum
+
+# Important: These are DIFFERENT from local operations!
+# np.min(coords[:, 0])  # Only local minimum on this rank
+# coords.global_min()   # Global minimum across ALL ranks
+
+# Compute global statistics
+mean_coord = coords.global_mean()  # True mean (not just local mean!)
+total_points = coords.global_size()  # Total mesh points across all ranks
+
+# Compute global norms for convergence checks
+l2_norm = coords.global_norm()     # Euclidean norm
+rms_value = coords.global_rms()    # Root mean square
+```
+
+::: {.callout-important}
+## Collective Operations
+
+These methods use MPI collective operations (`allreduce`). **All MPI ranks must call these methods together** - they will hang if only some ranks call them.
+
+```{python}
+#| eval: false
+
+# WRONG - Only rank 0 calls global_max
+if uw.mpi.rank == 0:
+    max_val = coords.global_max()  # HANGS! Other ranks waiting
+
+# CORRECT - All ranks participate
+max_val = coords.global_max()  # All ranks call this
+if uw.mpi.rank == 0:
+    print(f"Global max: {max_val}")  # Only rank 0 prints
+```
+:::
+
+## Unit-Aware Global Reductions
+
+UnitAwareArray (a subclass of NDArray_With_Callback) extends these methods to preserve physical units:
+
+```{python}
+#| eval: false
+
+# Mesh with physical units
+mesh.units = "kilometer"
+coords = mesh.X.coords  # UnitAwareArray with units
+
+# Global reductions preserve units
+x_max = coords[:, 0].global_max()  # Returns: 100.0 [kilometer]
+x_min = coords[:, 0].global_min()  # Returns: 0.0 [kilometer]
+mean_coord = coords.global_mean()  # Returns: UWQuantity in kilometers
+
+# Variance has squared units
+variance = coords.global_var()     # Returns: UWQuantity in (kilometer)**2
+std_dev = coords.global_std()      # Returns: UWQuantity in kilometers
+
+# Size is just a count (no units)
+total_size = coords.global_size()  # Returns: int
+```
+
+### Additional Unit-Aware Methods
+
+UnitAwareArray provides two additional methods for statistical analysis:
+
+| Method | Returns | Units |
+|--------|---------|-------|
+| `global_var()` | UWQuantity | Units squared (e.g., km² for km data) |
+| `global_std()` | UWQuantity | Same as array (e.g., km for km data) |
+
+::: {.callout-warning}
+## Tensor Limitation
+
+Global reduction methods raise `NotImplementedError` for tensor arrays (ndim > 2). For tensors, use component-wise operations or slice the array first:
+
+```{python}
+#| eval: false
+
+# For a stress tensor variable
+stress_max = stress.array[:, 0, 0].global_max()  # Max of σ_xx component
+stress_mean = stress.array.mean(axis=0).global_mean()  # Mean by component
+```
+:::
+
 # Future Roadmap {#sec-future}
 
 ## Potential Enhancements
@@ -562,12 +671,14 @@ class GlobalDelayCallbackContext:
 
 - [x] Core NDArray_With_Callback implementation
 - [x] Array property on MeshVariable
-- [x] Array property on SwarmVariable  
+- [x] Array property on SwarmVariable
 - [x] Global synchronised_array_update function
 - [x] Lazy evaluation for swarm proxies
 - [x] Update all notebooks to new patterns
 - [x] Migrate test suite
 - [x] Update Style Guide
+- [x] Global reduction operations (global_max, global_min, global_sum, etc.)
+- [x] Unit-preserving global reductions in UnitAwareArray
 - [ ] Create user migration guide
 - [ ] Add soft deprecation warnings
 - [ ] Performance validation at scale
