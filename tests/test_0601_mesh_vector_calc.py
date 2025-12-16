@@ -12,7 +12,12 @@ import pytest
 
 # All tests in this module are quick core tests
 pytestmark = pytest.mark.level_1
-from IPython.display import display  # since pytest runs pure python
+
+# display() is only for pretty-printing, not required for test logic
+try:
+    from IPython.display import display
+except ImportError:
+    display = lambda x: None  # no-op when IPython unavailable
 
 # Reset model and disable strict units for this test module
 # (Tests unit metadata functionality, not physical correctness)

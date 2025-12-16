@@ -13,7 +13,9 @@ import pytest
 
 # Physics solver tests - full solver execution
 pytestmark = pytest.mark.level_3
-import matplotlib.pyplot as plt
+
+# matplotlib only needed for notebook visualization, not test logic
+# Import is deferred to where it's used (inside `if uw.is_notebook:` blocks)
 
 
 @pytest.fixture(autouse=True)
