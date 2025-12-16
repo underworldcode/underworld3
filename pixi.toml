@@ -132,6 +132,9 @@ petsc-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
 petsc-configure = { cmd = "./build-petsc.sh configure", cwd = "petsc-custom" }
 petsc-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 
+# Install petsc4py into current environment (run after petsc-build if switching envs)
+petsc4py-install = { cmd = "python setup.py install", cwd = "petsc-custom/petsc/src/binding/petsc4py" }
+
 # ============================================
 # RUNTIME FEATURE (for tutorials/examples)
 # ============================================
