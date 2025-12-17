@@ -37,9 +37,44 @@ The `underworld3` module (API) documentation can be found online:
 
 ## Installation Guide
 
-The quickest option is **not to install** anything but try the binder demo above !
+The quickest option is **not to install** anything but try the binder demo above!
 
-If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba`. Create a separate virtual environment and install the code from source. More details on how to do that are in the [Installation Instructions](https://underworldcode.github.io/underworld3/development/docs/beginner/installation.html)
+### Quick Install (recommended)
+
+```bash
+git clone https://github.com/underworldcode/underworld3
+cd underworld3
+./uw setup
+```
+
+The `./uw` wrapper handles everything:
+- Installs [pixi](https://pixi.sh) if needed
+- Guides you through environment selection
+- Installs dependencies and builds underworld3
+
+### Environment Options
+
+| Environment | Description | Install Time |
+|-------------|-------------|--------------|
+| `runtime` | Visualization + Jupyter (recommended) | ~5 min |
+| `default` | Minimal build only | ~5 min |
+| `dev` | + Claude, linting, docs | ~5 min |
+| `amr-*` | Custom PETSc with adaptive mesh tools | ~1 hour |
+
+### Common Commands
+
+```bash
+./uw                  # Show status and available environments
+./uw setup            # (Re)configure environment
+./uw build            # Rebuild after source changes
+./uw test             # Run quick tests
+./uw jupyter lab      # Start JupyterLab
+./uw --help           # Full documentation
+```
+
+### Alternative: Manual Installation
+
+For more control, see the [Installation Instructions](https://underworldcode.github.io/underworld3/development/docs/beginner/installation.html)
 
 ## References and Archives 
 
