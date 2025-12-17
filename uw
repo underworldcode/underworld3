@@ -195,17 +195,16 @@ EOF
 
 # Brief welcome + offer setup
 show_welcome() {
-    local current_env=$(get_env)
-
     echo -e "${BOLD}Underworld3${NC}"
     echo ""
-    echo -e "Environment: ${GREEN}$current_env${NC}"
 
     if [ -f "$CONFIG_FILE" ]; then
+        local current_env=$(get_env)
+        echo -e "Environment: ${GREEN}$current_env${NC}"
         echo ""
         echo "Commands:  ./uw setup    ./uw build    ./uw test    ./uw --help"
     else
-        echo "(not configured)"
+        echo "Environment: (not configured)"
         echo ""
         read -p "Run setup? [Y/n]: " do_setup
         do_setup=${do_setup:-y}
