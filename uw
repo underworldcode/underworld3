@@ -30,8 +30,56 @@ petsc_built() {
     [ -d "$PETSC_CUSTOM/petsc-4-uw/lib" ]
 }
 
+# Check and install pixi if needed
+check_pixi() {
+    if command -v pixi &> /dev/null; then
+        return 0
+    fi
+
+    echo -e "${YELLOW}Pixi package manager not found.${NC}"
+    echo ""
+    echo "Pixi is required to manage Underworld3 dependencies."
+    echo "Install from: https://pixi.sh"
+    echo ""
+    read -p "Install pixi now? [Y/n]: " install_pixi
+    install_pixi=${install_pixi:-y}
+
+    if [ "$install_pixi" = "y" ] || [ "$install_pixi" = "Y" ]; then
+        echo ""
+        echo "Installing pixi..."
+        curl -fsSL https://pixi.sh/install.sh | bash
+
+        # Source shell config to get pixi in PATH
+        if [ -f "$HOME/.bashrc" ]; then
+            source "$HOME/.bashrc" 2>/dev/null || true
+        fi
+        if [ -f "$HOME/.zshrc" ]; then
+            source "$HOME/.zshrc" 2>/dev/null || true
+        fi
+
+        # Check if install succeeded
+        if command -v pixi &> /dev/null; then
+            echo -e "${GREEN}✓ Pixi installed successfully${NC}"
+            echo ""
+            return 0
+        else
+            echo ""
+            echo -e "${YELLOW}Pixi installed but not in PATH.${NC}"
+            echo "Please restart your terminal and run './uw setup' again."
+            exit 0
+        fi
+    else
+        echo ""
+        echo "Install pixi manually from https://pixi.sh then run './uw setup'"
+        exit 1
+    fi
+}
+
 # Interactive setup wizard
 run_setup() {
+    # Ensure pixi is available
+    check_pixi
+
     echo -e "${BOLD}Underworld3 Setup${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
@@ -214,6 +262,22 @@ EOF
 show_welcome() {
     echo -e "${BOLD}Underworld3${NC}"
     echo ""
+
+    # Check for pixi first
+    if ! command -v pixi &> /dev/null; then
+        echo "Environment: (pixi not installed)"
+        echo ""
+        read -p "Run setup to install pixi? [Y/n]: " do_setup
+        do_setup=${do_setup:-y}
+        if [ "$do_setup" = "y" ] || [ "$do_setup" = "Y" ]; then
+            echo ""
+            run_setup
+        else
+            echo ""
+            echo "Install pixi from https://pixi.sh then run './uw setup'"
+        fi
+        return
+    fi
 
     if [ -f "$CONFIG_FILE" ]; then
         local current_env=$(get_env)
