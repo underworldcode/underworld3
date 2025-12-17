@@ -258,6 +258,64 @@ FILES
 EOF
 }
 
+# Check if an environment is installed
+env_installed() {
+    [ -d "$SCRIPT_DIR/.pixi/envs/$1" ]
+}
+
+# Show environment status table
+show_env_status() {
+    local current_env=$(get_env)
+    local has_petsc=$(petsc_built && echo "yes" || echo "no")
+
+    echo "Environments:"
+
+    for env in default runtime dev amr amr-runtime amr-dev; do
+        # Determine marker and status
+        local marker="  "
+        local status_text=""
+        local status_color=""
+
+        if [ "$env" = "$current_env" ]; then
+            marker="${GREEN}●${NC} "
+            if env_installed "$env"; then
+                status_text="active"
+                status_color="$GREEN"
+            else
+                status_text="selected"
+                status_color="$YELLOW"
+            fi
+        elif env_installed "$env"; then
+            status_text="ready"
+        else
+            status_text="─"
+        fi
+
+        # Description
+        local desc=""
+        case "$env" in
+            default)     desc="minimal" ;;
+            runtime)     desc="+ viz, jupyter" ;;
+            dev)         desc="+ claude, linting" ;;
+            amr)         desc="custom PETSc" ;;
+            amr-runtime) desc="custom PETSc + viz" ;;
+            amr-dev)     desc="custom PETSc + dev" ;;
+        esac
+
+        # AMR note if PETSc not built
+        if [[ "$env" == amr* ]] && [ "$has_petsc" = "no" ]; then
+            desc="$desc (needs build)"
+        fi
+
+        # Output with color
+        if [ -n "$status_color" ]; then
+            printf "  %b%-11s  ${status_color}%-8s${NC}  %s\n" "$marker" "$env" "$status_text" "$desc"
+        else
+            printf "  %b%-11s  %-8s  %s\n" "$marker" "$env" "$status_text" "$desc"
+        fi
+    done
+}
+
 # Brief welcome + offer setup
 show_welcome() {
     echo -e "${BOLD}Underworld3${NC}"
@@ -280,8 +338,7 @@ show_welcome() {
     fi
 
     if [ -f "$CONFIG_FILE" ]; then
-        local current_env=$(get_env)
-        echo -e "Environment: ${GREEN}$current_env${NC}"
+        show_env_status
         echo ""
         echo "Commands:  ./uw setup    ./uw build    ./uw test    ./uw --help"
     else
