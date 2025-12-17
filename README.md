@@ -83,13 +83,13 @@ Answer **Yes** only if you need anisotropic mesh adaptation tools (pragmatic, mm
 
 ### Getting Started
 
-After installation, start JupyterLab to explore the tutorials:
+After installation, open the tutorial index in JupyterLab:
 
 ```bash
-./uw jupyter lab
+./uw jupyter lab docs/beginner/tutorials/Notebook_Index.ipynb
 ```
 
-In JupyterLab, navigate to `docs/beginner/tutorials/` and open `Notebook_Index.ipynb` for a guided introduction to underworld3.
+This opens a guided introduction to underworld3 with links to all beginner tutorials.
 
 ### Common Commands
 
