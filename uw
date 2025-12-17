@@ -100,7 +100,7 @@ run_setup() {
                 pixi run -e "$new_env" ./petsc-custom/build-petsc.sh
             else
                 echo ""
-                echo "Build later with: ./uw petsc-build"
+                echo "Build later with: ./uw petsc-local-build"
                 echo ""
             fi
         fi
@@ -156,8 +156,8 @@ COMMANDS
   Building:
     build               Build underworld3
     clean               Clean build artifacts
-    petsc-build         Build custom PETSc (AMR, ~1 hour)
-    petsc4py-install    Install petsc4py (when switching AMR envs)
+    petsc-local-build   Build custom PETSc + petsc4py (AMR, ~1 hour)
+    petsc-local-clean   Remove custom PETSc build
 
   Testing:
     test [opts]         Level 1 tests (~2 min, fast mode)

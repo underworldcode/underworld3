@@ -127,13 +127,10 @@ PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
 PETSC_ARCH = "petsc-4-uw"
 
 [feature.amr.tasks]
-# Build custom PETSc with AMR tools (~1 hour)
-petsc-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
-petsc-configure = { cmd = "./build-petsc.sh configure", cwd = "petsc-custom" }
-petsc-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
-
-# Install petsc4py into current environment (run after petsc-build if switching envs)
-petsc4py-install = { cmd = "python setup.py install", cwd = "petsc-custom/petsc/src/binding/petsc4py" }
+# Build custom PETSc with AMR tools (~1 hour, includes petsc4py)
+# Sub-commands: ./build-petsc.sh [configure|build|petsc4py|clean|help]
+petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
+petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 
 # ============================================
 # RUNTIME FEATURE (for tutorials/examples)
