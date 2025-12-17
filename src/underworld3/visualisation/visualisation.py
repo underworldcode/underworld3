@@ -96,9 +96,9 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         )
 
         pv_mesh = pv.from_meshio(mmesh)
-        pv_mesh.units = mesh_units
+        pv_mesh._units = mesh_units
         # Store original coordinate array for proper evaluation
-        pv_mesh.coord_array = mesh.X.coords
+        pv_mesh._coord_array = mesh.X.coords
 
         return pv_mesh
 
@@ -125,9 +125,9 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         pv_mesh = pv.UnstructuredGrid(cells_array, cells_type, coords_to_pv_coords(mesh_coordinates_nd))
 
         # Store units metadata for labeling
-        pv_mesh.units = mesh.units if mesh.units is not None else uw.units.dimensionless
+        pv_mesh._units = mesh.units if mesh.units is not None else uw.units.dimensionless
         # Store original coordinate array for proper evaluation
-        pv_mesh.coord_array = mesh.X.coords
+        pv_mesh._coord_array = mesh.X.coords
 
         return pv_mesh
 
@@ -196,9 +196,9 @@ def meshVariable_to_pv_cloud(meshVar):
     point_cloud = pv.PolyData(points)
 
     # Store units metadata for labeling (same as mesh_to_pv_mesh)
-    point_cloud.units = meshVar.mesh.units if meshVar.mesh.units is not None else uw.units.dimensionless
+    point_cloud._units = meshVar.mesh.units if meshVar.mesh.units is not None else uw.units.dimensionless
     # Store original coordinate array for proper evaluation
-    point_cloud.coord_array = meshVar.coords
+    point_cloud._coord_array = meshVar.coords
 
     return point_cloud
 
@@ -234,10 +234,10 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
 
     # Propagate metadata from point_cloud to the triangulated mesh
     # PyVista's delaunay methods return a new object that doesn't preserve custom attributes
-    if hasattr(point_cloud, "coord_array"):
-        pv_mesh.coord_array = point_cloud.coord_array
-    if hasattr(point_cloud, "units"):
-        pv_mesh.units = point_cloud.units
+    if hasattr(point_cloud, "_coord_array"):
+        pv_mesh._coord_array = point_cloud._coord_array
+    if hasattr(point_cloud, "_units"):
+        pv_mesh._units = point_cloud._units
 
     return pv_mesh
 
@@ -260,9 +260,9 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 
     # Use stored coordinate array if available (preserves units and dimensional info)
     # Otherwise fall back to pv_mesh.points (non-dimensional [0-1] coordinates)
-    if hasattr(pv_mesh, 'coord_array'):
+    if hasattr(pv_mesh, '_coord_array'):
         # Use the original mesh coordinate array (may be UnitAwareArray)
-        coords = pv_mesh.coord_array[:, 0:dim]
+        coords = pv_mesh._coord_array[:, 0:dim]
     else:
         # Fallback: use PyVista points directly (non-dimensional)
         coords = pv_mesh.points[:, 0:dim]
@@ -296,9 +296,9 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 
     # Use stored coordinate array if available (preserves units and dimensional info)
     # Otherwise fall back to pv_mesh.points (non-dimensional [0-1] coordinates)
-    if hasattr(pv_mesh, 'coord_array'):
+    if hasattr(pv_mesh, '_coord_array'):
         # Use the original mesh coordinate array (may be UnitAwareArray)
-        coords = pv_mesh.coord_array[:, 0:dim]
+        coords = pv_mesh._coord_array[:, 0:dim]
     else:
         # Fallback: use PyVista points directly (non-dimensional)
         coords = pv_mesh.points[:, 0:dim]
