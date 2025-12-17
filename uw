@@ -160,8 +160,21 @@ COMMANDS
     petsc4py-install    Install petsc4py (when switching AMR envs)
 
   Testing:
-    test                Quick tests (level 1)
-    test-all            All test levels
+    test [opts]         Level 1 tests (~2 min, fast mode)
+    test-all [opts]     All test levels (~20 min)
+
+    Options pass through to test script:
+      --isolation       Run each file in subprocess (thorough)
+      --parallel        Include MPI tests (2 ranks)
+      --parallel-ranks N  MPI tests with N ranks
+      1,2,3             Override test levels
+
+    Examples:
+      ./uw test                     Quick level 1, fast mode
+      ./uw test --isolation         Level 1 with process isolation
+      ./uw test --parallel 2        Level 2 with MPI tests
+      ./uw test-all --isolation     All levels, isolated (CI mode)
+      ./uw test --help              Show all test options
 
   Development:
     shell               Interactive pixi shell
