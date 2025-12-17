@@ -117,7 +117,23 @@ run_setup() {
     echo ""
     echo -e "${GREEN}${BOLD}Setup complete!${NC}"
     echo ""
-    echo "Usage:  ./uw build    ./uw test    ./uw jupyter lab"
+    echo "Usage:"
+    echo "  ./uw build          Build underworld3"
+    echo "  ./uw test           Run tests"
+
+    # Only show Jupyter info for runtime environments
+    case "$new_env" in
+        default|amr)
+            echo ""
+            echo "Note: Minimal environment - no Jupyter/visualization."
+            echo "Run './uw setup' again to add these features."
+            ;;
+        *)
+            echo "  ./uw jupyter lab    Start JupyterLab"
+            echo ""
+            echo "For VS Code / IDE Jupyter kernels, set pixi environment to: $new_env"
+            ;;
+    esac
 }
 
 # Show comprehensive help
