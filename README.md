@@ -54,12 +54,32 @@ The `./uw` wrapper handles everything:
 
 ### Environment Options
 
-| Environment | Description | Install Time |
-|-------------|-------------|--------------|
-| `runtime` | Visualization + Jupyter (recommended) | ~5 min |
-| `default` | Minimal build only | ~5 min |
-| `dev` | + Claude, linting, docs | ~5 min |
-| `amr-*` | Custom PETSc with adaptive mesh tools | ~1 hour |
+Underworld3 uses [pixi](https://pixi.sh) to manage dependencies. The setup wizard will ask you two questions to determine which environment to install:
+
+**1. Do you need adaptive mesh refinement (AMR)?**
+
+Most users should answer **No**. This installs PETSc from conda-forge, which takes about 5 minutes.
+
+Answer **Yes** only if you need anisotropic mesh adaptation tools (pragmatic, mmg, parmmg). This builds a custom PETSc from source with these tools enabled, which takes approximately one hour.
+
+**2. What features do you need?**
+
+- **Runtime** (recommended): Includes PyVista for 3D visualization and JupyterLab for running tutorial notebooks. This is what most users want.
+
+- **Minimal**: Only the core dependencies needed to build and run underworld3. Use this for production runs on HPC systems or when you have your own visualization workflow.
+
+- **Developer**: Adds code quality tools (black, mypy), documentation tools, and Claude Code support. Use this if you plan to contribute to underworld3 development.
+
+**Summary of environments:**
+
+| Environment | PETSc Source | Features | Use Case |
+|-------------|--------------|----------|----------|
+| `runtime` | conda-forge | viz, jupyter | Running tutorials and examples |
+| `default` | conda-forge | minimal | HPC production runs |
+| `dev` | conda-forge | viz, jupyter, dev tools | Contributing to underworld3 |
+| `amr-runtime` | custom build | viz, jupyter, AMR | Adaptive mesh research |
+| `amr` | custom build | minimal, AMR | AMR on HPC |
+| `amr-dev` | custom build | all features | AMR development |
 
 ### Common Commands
 
