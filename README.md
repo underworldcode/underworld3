@@ -81,6 +81,16 @@ Answer **Yes** only if you need anisotropic mesh adaptation tools (pragmatic, mm
 | `amr` | custom build | minimal, AMR | AMR on HPC |
 | `amr-dev` | custom build | all features | AMR development |
 
+### Getting Started
+
+After installation, start JupyterLab to explore the tutorials:
+
+```bash
+./uw jupyter lab
+```
+
+In JupyterLab, navigate to `docs/beginner/tutorials/` and open `Notebook_Index.ipynb` for a guided introduction to underworld3.
+
 ### Common Commands
 
 ```bash
