@@ -80,6 +80,9 @@ meshio = ">=5.3,<6"
 # Utilities
 requests = "*"
 matplotlib = ">=3.10,<4"
+
+# Jupyter kernel support (needed for pixi-kernel in all environments)
+ipykernel = ">=6.29,<7"
 pixi-kernel = ">=0.7.1,<0.8"
 
 [pypi-dependencies]
@@ -145,11 +148,9 @@ trame = ">=3.8,<4"
 trame-vuetify = ">=2.8,<3"
 trame-vtk = ">=2.8,<3"
 
-# Jupyter notebooks
-ipykernel = ">=6.29,<7"
+# Jupyter notebooks (ipykernel and pixi-kernel are in base dependencies)
 ipywidgets = ">=8.1,<9"
 jupyterlab = ">=4.3,<5"
-pixi-kernel = ">=0.7,<1"
 
 # ============================================
 # DEV FEATURE (for development)

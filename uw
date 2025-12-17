@@ -121,19 +121,20 @@ run_setup() {
     echo "  ./uw build          Build underworld3"
     echo "  ./uw test           Run tests"
 
-    # Only show Jupyter info for runtime environments
+    # Show Jupyter info
     case "$new_env" in
         default|amr)
             echo ""
-            echo "Note: Minimal environment - no Jupyter/visualization."
-            echo "Run './uw setup' again to add these features."
+            echo "Note: Minimal environment - no JupyterLab/visualization."
+            echo "Notebooks work via IDE kernels (VS Code, etc)."
+            echo "Run './uw setup' again to add JupyterLab."
             ;;
         *)
             echo "  ./uw jupyter lab    Start JupyterLab"
-            echo ""
-            echo "For VS Code / IDE Jupyter kernels, set pixi environment to: $new_env"
             ;;
     esac
+    echo ""
+    echo "For VS Code / IDE Jupyter kernels, set pixi environment to: $new_env"
 }
 
 # Show comprehensive help
