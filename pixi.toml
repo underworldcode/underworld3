@@ -143,7 +143,8 @@ petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 
 [feature.runtime.dependencies]
 # 3D visualization
-pyvista = ">=0.44,<0.45"
+vtk = ">=9.5.2,<10"
+pyvista = ">=0.46,<0.47"
 trame = ">=3.8,<4"
 trame-vuetify = ">=2.8,<3"
 trame-vtk = ">=2.8,<3"
