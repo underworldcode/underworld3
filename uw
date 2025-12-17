@@ -263,32 +263,30 @@ env_installed() {
     [ -d "$SCRIPT_DIR/.pixi/envs/$1" ]
 }
 
+# Check if underworld3 is built in an environment
+uw3_built() {
+    [ -d "$SCRIPT_DIR/.pixi/envs/$1/lib/python3.12/site-packages/underworld3" ]
+}
+
 # Show environment status table
 show_env_status() {
     local current_env=$(get_env)
     local has_petsc=$(petsc_built && echo "yes" || echo "no")
 
-    echo "Environments:"
+    echo "Environments:  (* = selected,  [✓] = uw3 built,  [ ] = needs ./uw build)"
+    echo ""
 
     for env in default runtime dev amr amr-runtime amr-dev; do
-        # Determine marker and status
+        # Selected marker
         local marker="  "
-        local status_text=""
-        local status_color=""
+        [ "$env" = "$current_env" ] && marker="* "
 
-        if [ "$env" = "$current_env" ]; then
-            marker="${GREEN}●${NC} "
-            if env_installed "$env"; then
-                status_text="active"
-                status_color="$GREEN"
-            else
-                status_text="selected"
-                status_color="$YELLOW"
-            fi
-        elif env_installed "$env"; then
-            status_text="ready"
-        else
-            status_text="─"
+        # Build status
+        local build_status="[ ]"
+        if ! env_installed "$env"; then
+            build_status="───"  # Not installed
+        elif uw3_built "$env"; then
+            build_status="[✓]"
         fi
 
         # Description
@@ -304,15 +302,10 @@ show_env_status() {
 
         # AMR note if PETSc not built
         if [[ "$env" == amr* ]] && [ "$has_petsc" = "no" ]; then
-            desc="$desc (needs build)"
+            desc="$desc (petsc not built)"
         fi
 
-        # Output with color
-        if [ -n "$status_color" ]; then
-            printf "  %b%-11s  ${status_color}%-8s${NC}  %s\n" "$marker" "$env" "$status_text" "$desc"
-        else
-            printf "  %b%-11s  %-8s  %s\n" "$marker" "$env" "$status_text" "$desc"
-        fi
+        printf "  %s%-11s  %s  %s\n" "$marker" "$env" "$build_status" "$desc"
     done
 }
 
