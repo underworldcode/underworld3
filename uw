@@ -203,7 +203,7 @@ show_welcome() {
 
     if [ -f "$CONFIG_FILE" ]; then
         echo ""
-        echo "Commands:  ./uw build    ./uw test    ./uw --help"
+        echo "Commands:  ./uw setup    ./uw build    ./uw test    ./uw --help"
     else
         echo "(not configured)"
         echo ""
