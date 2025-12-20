@@ -302,7 +302,7 @@ adv_diff.solve(timestep=delta_t , zero_init_guess=True)
 # Null space ?
 
 for step in range(0, max_steps):
-    print(f"Timestep: {timestep}, dt: {delta_t.to("Myr")}, time: {elapsed_time}")
+    print(f"Timestep: {timestep}, dt: {delta_t.to('Myr')}, time: {elapsed_time}")
     
     stokes.solve(zero_init_guess=True)
     delta_t = 2 * adv_diff.estimate_dt()
@@ -314,7 +314,7 @@ for step in range(0, max_steps):
 
 
 # %%
-0/0
+#0/0 
 
 # %%
 # visualise it
