@@ -247,3 +247,4 @@ debug_*.py
 docs/beginner/tutorials/html5/*.html
 petsc-custom/petsc/
 .pixi-env
+Untitled*.ipynb
