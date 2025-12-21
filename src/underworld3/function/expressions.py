@@ -576,6 +576,7 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         obj._unique_name = name  # Now always the clean name
         obj._given_name = name
         obj._is_ephemeral = _unique_name_generation
+        obj._display_name = name  # Display name (can be changed via rename())
 
         if _unique_name_generation:
             # Use (name, uw_id) as key for ephemeral storage
@@ -611,6 +612,87 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         """Support pickling by including _uw_id in reconstruction args."""
         # Return args and kwargs needed to reconstruct this symbol
         return ((self.name,), {'_uw_id': self._uw_id})
+
+    # =========================================================================
+    # Display Name Management (for customizing LaTeX/string output)
+    # =========================================================================
+
+    def rename(self, new_display_name: str) -> 'UWexpression':
+        """
+        Change the display name of this expression without changing its identity.
+
+        This allows customizing how the expression appears in LaTeX output
+        and string representations while preserving its symbolic identity
+        (hash and equality remain based on the original name and _uw_id).
+
+        Parameters
+        ----------
+        new_display_name : str
+            The new name to use for display purposes (typically LaTeX).
+
+        Returns
+        -------
+        UWexpression
+            Returns self to allow method chaining.
+
+        Examples
+        --------
+        >>> viscosity = uw.expression("eta", 1e21)
+        >>> viscosity.rename(r"\\eta_{\\mathrm{mantle}}")
+        >>> print(viscosity)  # Shows renamed version
+
+        Notes
+        -----
+        The original symbol name (self.name) is preserved for:
+        - SymPy identity (hash, equality)
+        - Pickling/serialization
+        - Expression matching in solvers
+
+        Only the display representation changes via _latex() and _sympystr().
+        """
+        self._display_name = new_display_name
+        return self
+
+    def _latex(self, printer):
+        """
+        Custom LaTeX representation using _display_name.
+
+        This method is called by SymPy's LaTeX printer to get the
+        representation of this symbol. By overriding it, we can
+        control how the expression appears in LaTeX output without
+        changing its symbolic identity.
+
+        Parameters
+        ----------
+        printer : LatexPrinter
+            The SymPy LaTeX printer instance (not used, but required by protocol).
+
+        Returns
+        -------
+        str
+            The LaTeX representation of this expression.
+        """
+        return self._display_name
+
+    def _sympystr(self, printer):
+        """
+        Custom string representation using _display_name.
+
+        This method is called by SymPy's string printer to get the
+        representation of this symbol. Like _latex(), this allows
+        customizing display without affecting identity.
+
+        Parameters
+        ----------
+        printer : StrPrinter
+            The SymPy string printer instance (not used, but required by protocol).
+
+        Returns
+        -------
+        str
+            The string representation of this expression.
+        """
+        return self._display_name
 
     def __init__(
         self,
@@ -1305,15 +1387,20 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         For expressions with units, shows: value [units]
         For expressions with symbolic content, shows: name = symbolic_expr
         For named expressions with simple values, shows: name = value [units]
+
+        Note: Uses _display_name (set via rename()) rather than _given_name
+        so that renamed expressions show their custom names.
         """
         units = self.units
         value = self.value
 
+        # Use _display_name for representation (respects rename())
+        display_name = getattr(self, '_display_name', self.name)
+
         # Check if this is a "named" expression (user-defined name vs auto-generated)
         is_named = (
-            hasattr(self, '_given_name') and
-            self._given_name is not None and
-            not self._given_name.startswith('(')  # Auto-generated names start with (
+            display_name is not None and
+            not display_name.startswith('(')  # Auto-generated names start with (
         )
 
         # Format the value part
@@ -1328,8 +1415,8 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
             value_str = str(value) if value is not None else str(self.name)
 
         # For named expressions, show "name = value"
-        if is_named and self._given_name != value_str:
-            return f"{self._given_name} = {value_str}"
+        if is_named and display_name != value_str:
+            return f"{display_name} = {value_str}"
         else:
             return value_str
 
@@ -1471,6 +1558,40 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         except ImportError:
             # IPython not available - silent fallback
             pass
+
+    def _object_viewer(self):
+        """
+        Display expression details for solver .view() "Where:" section.
+
+        Shows the expression name, its symbolic value, and description.
+        Called by solver _object_viewer when expanding expression definitions.
+        """
+        from IPython.display import display, Latex, Markdown
+
+        # Build LaTeX representation: symbol = value
+        name_latex = self._given_name if hasattr(self, '_given_name') else self.name
+
+        # Get the symbolic value
+        sym_value = self._sym
+
+        if sym_value is not None:
+            # Format the value
+            if hasattr(sym_value, '_repr_latex_'):
+                value_latex = sym_value._repr_latex_()
+                # Strip $ signs if present (we'll add our own)
+                if value_latex.startswith('$') and value_latex.endswith('$'):
+                    value_latex = value_latex[1:-1]
+            else:
+                value_latex = sympy.latex(sym_value)
+
+            # Display: name = value (description)
+            desc = self._description if self._description != "No description provided" else ""
+            if desc:
+                display(Latex(f"$\\quad {name_latex} = {value_latex}$ \\quad ({desc})"))
+            else:
+                display(Latex(f"$\\quad {name_latex} = {value_latex}$"))
+        else:
+            display(Latex(f"$\\quad {name_latex}$ (undefined)"))
 
 
 # ============================================================================

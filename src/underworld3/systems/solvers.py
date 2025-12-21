@@ -441,65 +441,103 @@ class SNES_Darcy(SNES_Scalar):
 
 class SNES_Stokes(SNES_Stokes_SaddlePt):
     r"""
-    # Stokes Equation Solver
+    Stokes equation solver for incompressible viscous flow.
 
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
     (or near-incompressibility) constraint.
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[
-                    \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
-    $$
+    The momentum equation is:
 
-    $$
-    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
-    $$
+    .. math::
 
-    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
-      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
+        -\nabla \cdot \left[ \boldsymbol{\tau} - p \mathbf{I} \right] = \mathbf{f}
 
-    $$
-        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
-    $$
+    with the incompressibility constraint:
 
-    The constraint equation, $\mathbf{h}_p = 0$ gives incompressible flow by default but can be set
-    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
+    .. math::
 
-    ## Properties
+        \nabla \cdot \mathbf{u} = 0
 
-      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint parameter $\mathbf{p}$
+    The flux term is a deviatoric stress (:math:`\boldsymbol{\tau}`) related to velocity
+    gradients (:math:`\nabla \mathbf{u}`) through a viscosity tensor :math:`\eta`, and a
+    volumetric (pressure) part :math:`p`:
 
-      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
+    .. math::
 
-      - $\mathbf f$ is a volumetric source term (i.e. body forces)
-      and is set by providing the `bodyforce` property.
+        \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
 
-      - An Augmented Lagrangian approach to application of the incompressibility
-    constraint is to penalise incompressibility in the Stokes equation by adding
-    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
-    (this is in addition to the constraint equation, unlike in the classical penalty method).
-    This is activated by setting the `penalty` property to a non-zero floating point value which adds
-    the term in the `sympy` expression.
+    The constraint equation gives incompressible flow by default but can be set
+    to any function of the unknown :math:`\mathbf{u}` and :math:`\nabla \cdot \mathbf{u}`.
 
-      - A preconditioner is usually required for the saddle point system and this is provided
-    through the `saddle_preconditioner` property. The default choice is $1 / \eta$ for a scalar viscosity function.
+    Parameters
+    ----------
+    mesh : uw.discretisation.Mesh
+        The computational mesh.
+    velocityField : uw.discretisation.MeshVariable, optional
+        Pre-existing velocity field. If None, one is created automatically.
+    pressureField : uw.discretisation.MeshVariable, optional
+        Pre-existing pressure field. If None, one is created automatically.
+    degree : int, optional
+        Polynomial degree for velocity interpolation. Default is 2.
+    p_continuous : bool, optional
+        If True (default), pressure is continuous. Set False for discontinuous pressure.
+    verbose : bool, optional
+        Enable verbose output during solving. Default is False.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Material derivative operator for velocity (used in derived classes).
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Material derivative operator for flux (used in viscoelastic models).
 
-    ## Notes
+    Attributes
+    ----------
+    u : MeshVariable
+        The velocity field (accessed via ``solver.Unknowns.u``).
+    p : MeshVariable
+        The pressure field (accessed via ``solver.Unknowns.p``).
+    bodyforce : UWexpression
+        Volumetric body force vector :math:`\mathbf{f}`.
+    constitutive_model : ConstitutiveModel
+        Viscosity model providing the stress-strain relationship.
+    penalty : UWexpression
+        Augmented Lagrangian penalty parameter :math:`\lambda`.
+    saddle_preconditioner : sympy.Expr
+        Preconditioner for the saddle point system (default: :math:`1/\eta`).
+    constraints : sympy.Matrix
+        Constraint equation(s), default is :math:`\nabla \cdot \mathbf{u}`.
 
-      - For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
-        stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.
+    Notes
+    -----
+    **Viscosity model**: The viscosity tensor :math:`\boldsymbol{\eta}` is provided by
+    setting the ``constitutive_model`` property to one of the ``uw.constitutive_models``
+    classes. It may be constant, spatially varying, non-linear, or anisotropic.
 
-      - The interpolation order of the `pressureField` variable is used to determine the integration order of
-    the mixed finite element method and is usually lower than the order of the `velocityField` variable.
+    **Augmented Lagrangian**: Setting ``penalty`` to a non-zero value adds
+    :math:`\lambda \nabla \cdot \mathbf{u}` to the weak form, improving convergence
+    for incompressible flow (in addition to the constraint equation).
 
-      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
+    **Mixed finite elements**: The pressure field interpolation order determines
+    the integration order of the mixed method and is typically lower than the
+    velocity field order.
 
+    **Viscoelastic models**: For viscoelastic behaviour, the flux term contains
+    stress history tracked on a particle swarm. See :class:`SNES_VE_Stokes`.
+
+    See Also
+    --------
+    SNES_VE_Stokes : Viscoelastic Stokes solver with flux history.
+    SNES_NavierStokes : Navier-Stokes solver with inertial terms.
+    uw.constitutive_models : Available viscosity models.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1), cellSize=0.1)
+    >>> stokes = uw.systems.Stokes(mesh, degree=2)
+    >>> stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel()
+    >>> stokes.constitutive_model.Parameters.viscosity = 1.0
+    >>> stokes.bodyforce = [0, -1]  # gravity
+    >>> stokes.solve()
     """
 
     instances = 0

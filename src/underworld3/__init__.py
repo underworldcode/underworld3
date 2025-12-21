@@ -638,6 +638,24 @@ _libdirs = _OD()
 _incdirs = _OD({_np.get_include(): None})
 
 ## -------------------------------------------------------------
+# DIAGNOSTICS - uw.doctor() for detecting configuration issues
+## -------------------------------------------------------------
+
+from .utilities.diagnostics import doctor, health_check
+
+## -------------------------------------------------------------
+# PARAMETERS - uw.Params() for notebook/CLI configurable parameters
+## -------------------------------------------------------------
+
+from .utilities._params import Params
+
+## -------------------------------------------------------------
+# PAUSE - Interactive pause for notebook development
+## -------------------------------------------------------------
+
+from .utilities._interrupt import UW_Pause, pause, is_notebook
+
+## -------------------------------------------------------------
 
 # pdoc3 over-rides. pdoc3 has a strange path-traversal algorithm
 # that seems to have trouble finding modules if we move this

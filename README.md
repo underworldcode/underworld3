@@ -99,8 +99,24 @@ This opens a guided introduction to underworld3 with links to all beginner tutor
 ./uw build            # Rebuild after source changes
 ./uw test             # Run quick tests
 ./uw jupyter lab      # Start JupyterLab
+./uw doctor           # Diagnose configuration issues
 ./uw --help           # Full documentation
 ```
+
+### Troubleshooting
+
+If you encounter build errors or import failures, run diagnostics:
+
+```bash
+./uw doctor
+```
+
+This checks your environment configuration and provides specific fixes for common issues like:
+- Missing dependencies (PETSc, petsc4py)
+- Library version mismatches
+- Environment configuration problems
+
+The `./uw build` command automatically handles dependency chains—if you're missing petsc4py in an AMR environment, it will build it for you before compiling underworld3.
 
 ### Alternative: Manual Installation
 

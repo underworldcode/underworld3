@@ -1,37 +1,64 @@
+# ---
+# jupyter:
+#   jupytext:
+#     formats: py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
 # %% [markdown]
 """
-# 🎓 Convection Disc InternalHeat
+# Convection in a Disc with Internal Heating
 
-**PHYSICS:** convection  
-**DIFFICULTY:** advanced  
-**MIGRATED:** From underworld3-documentation/Notebooks
+**PHYSICS:** convection
+**DIFFICULTY:** advanced
 
 ## Description
-This example has been migrated from the original UW3 documentation.
-Additional documentation and parameter annotations will be added.
 
-## Migration Notes
-- Original complexity preserved
-- Parameters to be extracted and annotated
-- Claude hints to be added in future update
+Thermal convection in a disc (2D annulus with zero inner radius) driven by
+internal heating. Supports both free-slip and no-slip boundary conditions
+on the outer boundary. Uses an annulus mesh with spokes for improved
+element quality.
+
+## Key Concepts
+
+- **Internal heating**: Volumetric heat source driving convection
+- **Disc geometry**: AnnulusWithSpokes mesh with r_inner = 0
+- **Boundary conditions**: Free-slip via penalty or no-slip
+- **Temperature-dependent viscosity**: Frank-Kamenetskii rheology
+- **Flux-limited diffusivity**: Stabilization for steep gradients
+- **Restart capability**: Continue from previous checkpoint
+
+## Mathematical Formulation
+
+Governing equations:
+$$\\nabla \\cdot \\mathbf{u} = 0$$
+$$-\\nabla p + \\nabla \\cdot (\\eta \\nabla \\mathbf{u}) + Ra T \\hat{r} = 0$$
+$$\\frac{\\partial T}{\\partial t} + \\mathbf{u} \\cdot \\nabla T = \\kappa \\nabla^2 T + H$$
+
+## Parameters
+
+- `uw_resolution`: Mesh cell size
+- `uw_free_slip`: Use free-slip (True) or no-slip (False) on outer boundary
+- `uw_delta_eta`: Viscosity contrast
+- `uw_max_steps`: Maximum time steps
+- `uw_restart_step`: Restart from checkpoint (0 = fresh start)
 """
 
 # %% [markdown]
 """
-## Original Code
-The following is the migrated code with minimal modifications.
+## Setup and Parameters
 """
 
 # %%
-# # Convection in a disc with internal heating and rigid or free boundaries
-#
-#
-
-# to fix trame issue
 import nest_asyncio
 nest_asyncio.apply()
-
-# +
 
 import underworld3 as uw
 from underworld3.systems import Stokes
@@ -44,78 +71,119 @@ import sympy
 import petsc4py
 from petsc4py import PETSc
 
-# +
-## Command line parameters use -uw_resolution 0.1, for example
+# %% [markdown]
+"""
+## Configurable Parameters
 
-res = uw.options.getReal("resolution", default=0.1)
-Free_Slip = uw.options.getBool("free_slip", default=True)
-restart_step = uw.options.getInt("restart_step", default=0)
-max_steps = uw.options.getInt("max_steps", default=1)
-delta_eta = uw.options.getReal("delta_eta", default=1000.0)
+Override from command line:
+```bash
+python Ex_Convection_Disc_InternalHeat.py -uw_resolution 0.05
+python Ex_Convection_Disc_InternalHeat.py -uw_free_slip 0
+python Ex_Convection_Disc_InternalHeat.py -uw_max_steps 500
+python Ex_Convection_Disc_InternalHeat.py -uw_delta_eta 100
+```
+"""
 
+# %%
+params = uw.Params(
+    uw_resolution = 0.1,          # Mesh cell size
+    uw_free_slip = 1,             # Free-slip BC (1=True, 0=False)
+    uw_restart_step = 0,          # Restart from step (0 = fresh start)
+    uw_max_steps = 1,             # Maximum time steps
+    uw_delta_eta = 1000.0,        # Viscosity contrast
+    uw_rayleigh = 1.0e7,          # Rayleigh number
+    uw_h_int = 1.0,               # Internal heating rate
+)
+
+# Convert to boolean
+Free_Slip = bool(params.uw_free_slip)
 viz = True
-
-# -
 
 uw.options.view()
 
-# +
-Rayleigh = 1.0e7
-H_int = 1.0
+# %% [markdown]
+"""
+## Physical Parameters
+"""
+
+# %%
+Rayleigh = params.uw_rayleigh
+H_int = params.uw_h_int
 k = 1.0
-resI = res * 3
+resI = params.uw_resolution * 3
 r_o = 1.0
 r_i = 0.0
 
-
-# For now, assume restart is from same location !
-expt_name = f"Disc_Ra1e7_H1_deleta_{delta_eta}"
+# Output directory
+expt_name = f"Disc_Ra1e7_H1_deleta_{params.uw_delta_eta}"
 output_dir = "output"
 
-os.makedirs(output_dir, exist_ok=True  )
+os.makedirs(output_dir, exist_ok=True)
 
-# -
+# %% [markdown]
+"""
+## Mesh Generation
 
-meshball = uw.meshing.AnnulusWithSpokes(radiusOuter=r_o, radiusInner=r_i,
-                                            cellSizeOuter=res,
-                                            cellSizeInner=resI,
-                                           qdegree=3)
+AnnulusWithSpokes provides good element quality near the center.
+"""
 
+# %%
+meshball = uw.meshing.AnnulusWithSpokes(
+    radiusOuter=r_o,
+    radiusInner=r_i,
+    cellSizeOuter=params.uw_resolution,
+    cellSizeInner=resI,
+    qdegree=3,
+)
 
 meshball.dm.view()
 
-# +
+# %% [markdown]
+"""
+## Coordinate System
+"""
 
-radius_fn = sympy.sqrt(meshball.X.dot(meshball.X)) # normalise by r_o if required
+# %%
+radius_fn = sympy.sqrt(meshball.X.dot(meshball.X))
 unit_rvec = meshball.X / radius_fn
 gravity_fn = radius_fn
-
-# Some useful coordinate stuff
 
 x = meshball.N.x
 y = meshball.N.y
 
-r = sympy.sqrt(x**2 + y**2)  # cf radius_fn which is 0->1
+r = sympy.sqrt(x**2 + y**2)
 th = sympy.atan2(y + 1.0e-5, x + 1.0e-5)
 
-# -
+# %% [markdown]
+"""
+## Visualization of Mesh
+"""
 
-
-# check the mesh if in a notebook / serial
+# %%
 if viz and uw.mpi.size == 1:
-    
     import pyvista as pv
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
 
     pl = pv.Plotter(window_size=(750, 750))
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+    pl.add_mesh(
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        use_transparency=False,
+        opacity=0.5,
+    )
 
     pl.show()
 
+# %% [markdown]
+"""
+## Variables
+"""
 
-
+# %%
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
 t_soln = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
@@ -123,125 +191,143 @@ t_0 = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 r_mesh = uw.discretisation.MeshVariable("r", meshball, 1, degree=1)
 kappa = uw.discretisation.MeshVariable("kappa", meshball, 1, degree=3, varsymbol=r"\kappa")
 
-# +
-## F-K viscosity function
+# %% [markdown]
+"""
+## Viscosity Function
 
-C = sympy.log(delta_eta)
-viscosity_fn = delta_eta * sympy.exp(-C * 0)
+Frank-Kamenetskii temperature-dependent viscosity.
+"""
 
+# %%
+C = sympy.log(params.uw_delta_eta)
+viscosity_fn = params.uw_delta_eta * sympy.exp(-C * 0)
 
-# +
-# Create Stokes object
+# %% [markdown]
+"""
+## Stokes Solver
+"""
 
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, 
-                verbose=False)
+# %%
+stokes = Stokes(
+    meshball,
+    velocityField=v_soln,
+    pressureField=p_soln,
+    verbose=False,
+)
 
-# Constant viscosity
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 
-# Set solve options here (or remove default values
 stokes.tolerance = 1.0e-6
-# stokes.petsc_options.delValue("ksp_monitor")
 
 stokes.petsc_options.setValue("ksp_monitor", None)
 stokes.petsc_options.setValue("snes_monitor", None)
 
-# Velocity boundary conditions
-
-if Free_Slip:    
-    GammaN = meshball.Gamma  # boundary_normals["Upper"].value
-    # bc = sympy.Piecewise((1.0, r > 0.99 * r_o), (0.0, True))
-    stokes.add_natural_bc(
-        1.0e6 * GammaN.dot(v_soln.sym) * GammaN.T, "Upper"
-    )
-
+# Boundary conditions
+if Free_Slip:
+    GammaN = meshball.Gamma
+    stokes.add_natural_bc(1.0e6 * GammaN.dot(v_soln.sym) * GammaN.T, "Upper")
 else:
     stokes.add_dirichlet_bc((0.0, 0.0), "Upper")
 
-# -
+# %% [markdown]
+"""
+## Advection-Diffusion Solver
 
+With flux-limited diffusivity for steep temperature gradients.
+"""
 
-meshball.Gamma
-
-# +
-# Create adv_diff object
-
+# %%
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshball,
     u_Field=t_soln,
     V_fn=v_soln,
     verbose=False,
-    order=2)
+    order=2,
+)
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 
-## Flux limiting diffusivity (stabilizing term)
-
+# Flux limiting diffusivity (stabilizing term)
 Tgrad = meshball.vector.gradient(t_soln.sym)
 Tslope = sympy.sqrt(Tgrad.dot(Tgrad))
 Tslope_max = 25
 
-k_lim = (Tslope/Tslope_max) 
+k_lim = Tslope / Tslope_max
 k_eff = k * sympy.Max(1, k_lim)
 
 adv_diff.constitutive_model.Parameters.diffusivity = k
 adv_diff.f = H_int
 
+# %% [markdown]
+"""
+## Diffusivity Projection
+"""
 
-
-# +
-## Projection to compute the diffusivity
-
+# %%
 calculate_diffusivity = uw.systems.Projection(meshball, u_Field=kappa)
 calculate_diffusivity.uw_function = k_eff
 
+# %% [markdown]
+"""
+## Initial Conditions
+"""
 
-# +
-# Define T boundary conditions via a sympy function
-
-import sympy
-
+# %%
 abs_r = sympy.sqrt(meshball.rvec.dot(meshball.rvec))
-init_t = 0.25 + 0.25 * sympy.sin(7.0 * th) * sympy.sin(np.pi * (r - r_i) / (r_o - r_i)) + 0.0 * (r_o - r) / (r_o - r_i)
+init_t = (
+    0.25
+    + 0.25 * sympy.sin(7.0 * th) * sympy.sin(np.pi * (r - r_i) / (r_o - r_i))
+    + 0.0 * (r_o - r) / (r_o - r_i)
+)
 
 adv_diff.add_dirichlet_bc(0.0, "Upper")
 
 with meshball.access(t_0, t_soln):
     t_0.data[...] = uw.function.evalf(init_t, t_0.coords).reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
-# +
-# If restart, then pull T from there
 
-if restart_step != 0:
-    t_soln.read_timestep(expt_name, "T", restart_step, outputPath=output_dir, verbose=True)
+# %% [markdown]
+"""
+## Restart from Checkpoint
+"""
 
-# -
+# %%
+if params.uw_restart_step != 0:
+    print(f"Reading step {params.uw_restart_step}")
+    t_soln.read_timestep(
+        expt_name, "T", int(params.uw_restart_step), outputPath=output_dir, verbose=True
+    )
 
+# %%
 with meshball.access(r_mesh):
     r_mesh.data[:, 0] = uw.function.evalf(r, meshball.data)
 
+# %% [markdown]
+"""
+## Initial Solve
+"""
+
+# %%
 stokes.bodyforce = unit_rvec * gravity_fn * Rayleigh * t_soln.fn
 stokes.solve(verbose=False)
 
-
-
-# +
-# Check the diffusion part of the solve converges
-
+# %%
+# Test diffusion solve
 dt = 0.00001
 adv_diff.solve(timestep=dt)
 adv_diff.constitutive_model.Parameters.diffusivity = k_eff
 adv_diff.solve(timestep=dt, zero_init_guess=False)
 
-# -
-
 calculate_diffusivity.solve()
 
-# +
-# check the mesh if in a notebook / serial
-if viz and uw.mpi.size == 1:
+# %% [markdown]
+"""
+## Visualization of Initial State
+"""
 
+# %%
+if viz and uw.mpi.size == 1:
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -254,113 +340,118 @@ if viz and uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(750, 750))
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
-
     pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", 
-        show_edges=True, scalars="T", 
-        use_transparency=False, opacity=1.0,
-        # clim=[0,1])
+        pvmesh,
+        cmap="coolwarm",
+        edge_color="Black",
+        show_edges=True,
+        scalars="T",
+        use_transparency=False,
+        opacity=1.0,
+    )
 
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.01)
-    # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
-
-    # pl.add_points(pdata)
 
     pl.show(cpos="xy")
-    
+
+
+# %% [markdown]
+"""
+## Visualization Function
+"""
+
+# %%
 def plot_T_mesh(filename):
-
     if viz and uw.mpi.size == 1:
-
         import pyvista as pv
         import underworld3.visualisation as vis
 
         pvmesh = vis.mesh_to_pv_mesh(meshball)
         pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
-    
+
         points = vis.meshVariable_to_pv_cloud(t_soln)
         points.point_data["T"] = vis.scalar_fn_to_pv_points(points, t_soln.sym)
         point_cloud = pv.PolyData(points)
-    
+
         velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
         velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
 
         pl = pv.Plotter(window_size=(750, 750))
 
-
         pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=50 / Rayleigh)
-        pl.add_mesh(pvmesh, cmap="coolwarm", 
-                    show_edges=True,
-                    scalars="T", opacity=0.75)
+        pl.add_mesh(pvmesh, cmap="coolwarm", show_edges=True, scalars="T", opacity=0.75)
 
-        pl.add_points(point_cloud, cmap="coolwarm", 
-                      render_points_as_spheres=False, 
-                      # clim=[0,1],
-                      point_size=10, opacity=0.66)
+        pl.add_points(
+            point_cloud,
+            cmap="coolwarm",
+            render_points_as_spheres=False,
+            point_size=10,
+            opacity=0.66,
+        )
 
-
-        # pl.remove_scalar_bar("T")
         pl.remove_scalar_bar("mag")
 
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
-        # pl.show()
-# -
+        pl.screenshot(
+            filename="{}.png".format(filename),
+            window_size=(1280, 1280),
+            return_img=False,
+        )
 
-ts = restart_step
+        pv.close_all()
 
-# +
-# Convection model / update in time
 
+# %% [markdown]
+"""
+## Time Evolution
+"""
+
+# %%
+ts = int(params.uw_restart_step)
 delta_t = 5.0e-5
 
-for step in range(0, max_steps ): #
-
+for step in range(0, int(params.uw_max_steps)):
     stokes.solve(verbose=False, zero_init_guess=False)
 
     calculate_diffusivity.solve()
 
-    if step%10 == 0:
+    if step % 10 == 0:
         delta_t = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
-        
-    adv_diff.solve(timestep=delta_t, zero_init_guess=False )
 
-    # stats, dt (all collective) print if rank 0, then loop
+    adv_diff.solve(timestep=delta_t, zero_init_guess=False)
+
+    # Statistics
     tstats = t_soln.stats()
     Tgrad_stats = kappa.stats()
-    dt_estimate =  adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
+    dt_estimate = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
 
-    uw.pprint("Timestep {}, dt {} ({})".format(ts, delta_t, dt_estimate), flush=True)
-        # print(tstats)
-        # print("-----")
-        # print(Tgrad_stats)
-        # print("=====\n")
-
-        # print(tstats_star)
+    uw.pprint(f"Timestep {ts}, dt {delta_t:.2e} ({dt_estimate:.2e})", flush=True)
 
     if ts % 10 == 0:
-        plot_T_mesh(filename="output/{}_step_{}".format(expt_name, ts))
+        plot_T_mesh(filename=f"output/{expt_name}_step_{ts}")
 
         meshball.write_timestep(
-                expt_name,
-                meshUpdates=True,
-                meshVars=[p_soln, v_soln, t_soln],
-                outputPath=output_dir,
-                index=ts)
+            expt_name,
+            meshUpdates=True,
+            meshVars=[p_soln, v_soln, t_soln],
+            outputPath=output_dir,
+            index=ts,
+        )
 
     ts += 1
 
-# -
+# %% [markdown]
+"""
+## Final Visualization
+"""
 
-
+# %%
 if viz and uw.mpi.size == 1:
-
     import pyvista as pv
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
-    
+
     points = vis.meshVariable_to_pv_cloud(t_soln)
     points.point_data["T"] = vis.scalar_fn_to_pv_points(points, t_soln.sym)
     point_cloud = pv.PolyData(points)
@@ -371,16 +462,18 @@ if viz and uw.mpi.size == 1:
     pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.01, opacity=0.75)
-    # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    pl.add_points(point_cloud, cmap="coolwarm", 
-                  render_points_as_spheres=True, 
-                  point_size=7.5, opacity=0.25)
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=True,
+        point_size=7.5,
+        opacity=0.25,
+    )
 
     pl.add_mesh(pvmesh, cmap="coolwarm", scalars="T", opacity=0.75)
 
     pl.show(cpos="xy")
 
-
-
-
+# %%
+print(f"Disc convection example complete: {ts} steps")

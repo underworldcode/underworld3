@@ -1,186 +1,179 @@
-# %% [markdown]
-"""
-# 🎓 viscousFingering
-
-**PHYSICS:** porous_flow  
-**DIFFICULTY:** advanced  
-**MIGRATED:** From underworld3-documentation/Notebooks
-
-## Description
-This example has been migrated from the original UW3 documentation.
-Additional documentation and parameter annotations will be added.
-
-## Migration Notes
-- Original complexity preserved
-- Parameters to be extracted and annotated
-- Claude hints to be added in future update
-"""
-
-# %% [markdown]
-"""
-## Original Code
-The following is the migrated code with minimal modifications.
-"""
-
-# %%
 # ---
 # jupyter:
 #   jupytext:
-#     formats: py:light
+#     formats: py:percent
 #     text_representation:
 #       extension: .py
-#       format_name: light
-#       format_version: '1.5'
-#       jupytext_version: 1.16.1
+#       format_name: percent
+#       format_version: '1.3'
 #   kernelspec:
-#     display_name: Python 3 (ipykernel)
+#     display_name: Python 3
 #     language: python
 #     name: python3
 # ---
 
-# ## Viscous fingering model
-#
-# Based on Darcy flow and advection-diffusion of two fluids with varying viscosity.
-# From Simpson, 2017, and from Homsy, 1987, fingering patterns develop under certain conditions.
-#
-# ### Darcy model (quasi-static)
-#
-# The Darcy equation for the steady-state pressure field can be written
-#
-# $$\nabla \cdot \left( \boldsymbol\kappa \nabla p - \boldsymbol{s} \right) = 0$$
-#
-# #### Darcy velocity:
-#
-# The model from Homsy (1987) generally assumes $\nabla \cdot \mathbf{u} = 0$ which is equivalent to the Darcy flow equation with $\boldsymbol{s}=0$
-# and using
-#
-# $$\mathbf{u} = - \frac{k}{\mu_c}\nabla p$$
-#
-#
-# #### viscosity:
-# $$\mu_c = \left( \frac{c}{\mu_o^{{1}/{4}}} +  \frac{1-c}{\mu_s^{{1}/{4}}} \right)^{-4}$$
-#
-# #### Advection-diffusion of material:
-#
-# $$\varphi \frac{\partial c}{\partial t} + \varphi (\mathbf{u} \cdot \nabla) c= \nabla(\kappa\nabla c)$$
-#
-# If the diffusion coefficient is small, then it is often more appropriate to assume pure transport
-#
-# $$\varphi \frac{D c}{D t} = \nabla(\kappa\nabla c) \approx 0$$
-#
-# ##### Model physical parameters:
-#
-# | parameter | symbol  | value  | units  |   |
-# |---|---|---|---|---|
-# | x |  | $$10$$  | $$m$$  |   |
-# | y  |  | $$10$$  | $$m$$  |   |
-# | permeability  | $$k$$ | $$10^{-13}$$  | $$m^2$$  |   |
-# | porosity  | $$\varphi$$ | $$0.1$$ |   |   |
-# | diffusivity  | $$\kappa$$  | $$10^{-9}$$  | $$m^2 s^{-1}$$  |   |
-# | viscosity (solvent)  | $$\mu{_s}$$ | $$1.33{\cdot}10^{-4}$$  | $$Pa s$$  |   |
-# | viscosity (oil)  | $$\mu{_o}$$ | $$20\eta_s$$  | $$Pa s$$  |   |
-# | pressure  | $$p$$  | $$10^{5}$$  | $$Pa$$  |   |
-#
-#
-# ## References
-#
-# Homsy, G. M. (1987). Viscous Fingering in Porous Media. Annual Review of Fluid Mechanics, 19(1), 271–311. https://doi.org/10.1146/annurev.fl.19.010187.001415
-#
-# [Guy Simpson - Practical Finite Element Modeling in Earth Science using Matlab (2017)](https://www.wiley.com/en-au/Practical+Finite+Element+Modeling+in+Earth+Science+using+Matlab-p-9781119248620)
-#
-#
-#
+# %% [markdown]
+"""
+# Viscous Fingering in Porous Media
 
-# to fix trame issue
+**PHYSICS:** porous_flow
+**DIFFICULTY:** advanced
+
+## Description
+
+Viscous fingering instability in porous media flow. When a less viscous
+fluid displaces a more viscous fluid, the interface becomes unstable
+and develops finger-like patterns.
+
+Based on Darcy flow with advection of two fluids with varying viscosity.
+
+## Key Concepts
+
+- **Darcy flow**: Pressure-driven flow through porous media
+- **Mobility ratio**: Ratio of viscosities controls instability
+- **Swarm advection**: Tracking material interface with particles
+
+## Physical Parameters
+
+| Parameter | Symbol | Value | Units |
+|-----------|--------|-------|-------|
+| Domain size | x,y | 10 | m |
+| Permeability | k | 1e-13 | m^2 |
+| Porosity | phi | 0.1 | - |
+| Diffusivity | kappa | 1e-9 | m^2/s |
+| Viscosity (solvent) | mu_s | 1.33e-4 | Pa s |
+| Viscosity (oil) | mu_o | 20*mu_s | Pa s |
+
+## References
+
+- Homsy, G.M. (1987). Viscous Fingering in Porous Media. Ann. Rev. Fluid Mech.
+- Simpson (2017). Practical Finite Element Modeling in Earth Science using Matlab
+
+## Parameters
+
+- `uw_n_elements`: Number of mesh elements per side
+- `uw_n_steps`: Number of time steps
+- `uw_viscosity_ratio`: mu_oil / mu_solvent ratio
+"""
+
+# %% [markdown]
+"""
+## Setup and Parameters
+"""
+
+# %%
 import nest_asyncio
 nest_asyncio.apply()
 
-# +
-from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
 import sympy
-
-# from scipy.interpolate import griddata, interp1d
-
 import matplotlib.pyplot as plt
-
 import os
 
-options = PETSc.Options()
+# %% [markdown]
+"""
+## Configurable Parameters
 
-# +
+Override from command line:
+```bash
+python Ex_viscousFingering.py -uw_n_elements 50
+python Ex_viscousFingering.py -uw_viscosity_ratio 30
+```
+"""
+
+# %%
+params = uw.Params(
+    uw_n_elements = 25,           # Elements per side
+    uw_n_steps = 20,              # Number of time steps
+    uw_viscosity_ratio = 20.0,    # mu_oil / mu_solvent
+    uw_porosity = 0.1,            # Porosity
+    uw_permeability = 1.0e-13,    # Permeability (m^2)
+    uw_diffusivity = 1.0e-9,      # Diffusivity (m^2/s)
+)
+
+# Output directory
 outputDir = "./output/viscousFingering_example/"
-
 if uw.mpi.rank == 0:
-    ### create folder if required
     os.makedirs(outputDir, exist_ok=True)
 
-# +
-# import unit registry to make it easy to convert between units
-u = uw.scaling.units
+# %% [markdown]
+"""
+## Unit Scaling
+"""
 
-### make scaling easier
+# %%
+u = uw.scaling.units
 ndim, nd = uw.scaling.non_dimensionalise, uw.scaling.non_dimensionalise
 dim = uw.scaling.dimensionalise
 
-refLength = 10  ### length and height of box in meters
-g = 9.81
-eta = 1.33e-4
-kappa = 1e-9  ### m^2/s
-perm = 1e-13  ### m^2
-porosity = 0.1
-T_0 = 273.15
-T_1 = 1573.15
-dT = T_1 - T_0
-rho0 = 1e3
-
+# Physical parameters
+refLength = 10  # Domain size in meters
+eta = 1.33e-4   # Solvent viscosity (Pa s)
+kappa = params.uw_diffusivity
+perm = params.uw_permeability
+porosity = params.uw_porosity
 
 refTime = perm / kappa
 refViscosity = eta * u.pascal * u.second
 
-KL = refLength * u.meter
 KL = 1.0 * u.millimetre
-KT = dT * u.kelvin
-Kt = refTime * u.seconds
+KT = 1300 * u.kelvin
 Kt = 0.01 * u.year
 KM = refViscosity * KL * Kt
 
-### create unit registry
 scaling_coefficients = uw.scaling.get_coefficients()
 scaling_coefficients["[length]"] = KL
 scaling_coefficients["[time]"] = Kt
 scaling_coefficients["[mass]"] = KM
 scaling_coefficients["[temperature]"] = KT
-scaling_coefficients
 
-# +
+# %% [markdown]
+"""
+## Mesh Generation
+"""
+
+# %%
 minX, maxX = 0, nd(10 * u.meter)
 minY, maxY = 0, nd(10 * u.meter)
 
-elements = 25
+elements = params.uw_n_elements
 
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=maxY / elements, qdegree=5
+    minCoords=(minX, minY),
+    maxCoords=(maxX, maxY),
+    cellSize=maxY / elements,
+    qdegree=5,
 )
 
+# Visualization mesh (finer)
 vizmesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.5 * maxY / elements, qdegree=1
+    minCoords=(minX, minY),
+    maxCoords=(maxX, maxY),
+    cellSize=0.5 * maxY / elements,
+    qdegree=1,
 )
 
+# %% [markdown]
+"""
+## Variables
+"""
+
+# %%
 p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)
 v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 mat = uw.discretisation.MeshVariable("mat", mesh, 1, degree=3, continuous=True)
 
-# x and y coordinates
 x = mesh.N.x
 y = mesh.N.y
 
+# %% [markdown]
+"""
+## Mesh Visualization
+"""
 
-# +
-
+# %%
 if uw.mpi.size == 1:
-    
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -193,34 +186,28 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        use_transparency=False)
+        use_transparency=False,
+    )
 
     pl.show(cpos="xy")
 
-# +
-# Create Darcy Solver
+# %% [markdown]
+"""
+## Darcy Solver Setup
+"""
 
+# %%
 darcy = uw.systems.SteadyStateDarcy(mesh, h_Field=p_soln, v_Field=v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
-darcy.petsc_options[
-    "snes_rtol"
-] = 1.0e-6  # Needs to be smaller than the contrast in properties
+darcy.petsc_options["snes_rtol"] = 1.0e-6
 darcy.constitutive_model = uw.constitutive_models.DiffusionModel
-# -
 
+# %% [markdown]
+"""
+## Swarm for Material Tracking
+"""
 
-darcy
-
-#
-# $$
-# \color{Green}{\mathbf{f}_{0}}  -
-# \nabla \cdot
-#         \color{Blue}{{\mathbf{f}_{1}}} =
-#         \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{f}_{s}}}
-# $$
-#
-
-# +
+# %%
 swarm = uw.swarm.Swarm(mesh=mesh, recycle_rate=5)
 
 material = swarm.add_variable(name="M", size=1, proxy_degree=mat.degree)
@@ -228,25 +215,35 @@ conc = swarm.add_variable(name="C", size=1, proxy_degree=mat.degree)
 
 swarm.populate(fill_param=4)
 
-# +
+# %% [markdown]
+"""
+## Advection-Diffusion Solver
+"""
+
+# %%
 adv_diff = uw.systems.AdvDiffusionSLCN(
-    mesh=mesh, u_Field=mat, V_fn=v_soln, #DuDt=conc.sym[0]
+    mesh=mesh,
+    u_Field=mat,
+    V_fn=v_soln,
 )
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
-# -
 
-# ### Random material distribution along the interface
+# %% [markdown]
+"""
+## Initial Material Distribution
 
-# +
+Random perturbation along the interface to trigger instability.
+"""
+
+# %%
 np.random.seed(100)
-
-### on the mesh
 
 with mesh.access(mat):
     x0 = nd(2.5 * u.meter)
     dx = max(mesh.get_min_radius(), nd(0.1 * u.meter))
 
+    # Perturbations at interface
     fluctuation = nd(0.01 * u.meter) * np.cos(
         mat.coords[:, 1] / nd(0.5 * u.meter) * np.pi
     )
@@ -258,22 +255,23 @@ with mesh.access(mat):
     mat.data[...] = 0
     mat.data[mat.coords[:, 0] + fluctuation < x0] = 1
 
-# ### on the swarm
-
+# Initialize swarm material
 with swarm.access(material):
-    # material.data[:,0] = mat.rbf_interpolate(new_coords=material.swarm.data, nnn=1)[:,0]
     material.data[:, 0] = uw.function.evalf(mat.sym, swarm._particle_coordinates.data)
 
-# -
+# %% [markdown]
+"""
+## Visualization of Initial Material
+"""
+
+# %%
 if uw.mpi.size == 1:
-    
     import pyvista as pv
     import underworld3.visualisation as vis
-    
+
     pvmesh = vis.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["mat"] = vis.scalar_fn_to_pv_points(pvmesh, mat.sym)
 
-    
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
@@ -282,83 +280,83 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter(window_size=(750, 750))
 
-    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False)
-
     pl.add_points(
         point_cloud,
         cmap="coolwarm",
         render_points_as_spheres=True,
         point_size=10,
-        opacity=0.33)
+        opacity=0.33,
+    )
 
     pl.show(cpos="xy")
 
+# %% [markdown]
+"""
+## Viscosity Model
 
+Quarter-power mixing rule for viscosity:
+$$\\mu_c = \\left( \\frac{c}{\\mu_o^{1/4}} + \\frac{1-c}{\\mu_s^{1/4}} \\right)^{-4}$$
+"""
+
+# %%
 eta_s = nd(1.33e-4 * u.pascal * u.second)
-eta_o = 20 * eta_s
+eta_o = params.uw_viscosity_ratio * eta_s
 
-# +
-### use the mesh var to map composition to viscosity
-## eta_fn = (mat.sym[0]/eta_s**0.25+(1-mat.sym[0])/eta_o**0.25)**(-4)
+# Quarter-power mixing rule
+eta_fn = (material.sym[0] / eta_s**0.25 + (1 - material.sym[0]) / eta_o**0.25) ** (-4)
 
-### use the swarm var to map composition to viscosity
-eta_fn = (material.sym[0] / eta_s**0.25 + (1 - material.sym[0]) / eta_o**0.25) ** (
-    -4
-)
+# %% [markdown]
+"""
+## Material Properties
+"""
 
-
-# +
+# %%
 nd_perm = nd(perm * u.meter**2)
 
 diffusivity_fn = nd_perm / eta_fn
 
 darcy.constitutive_model.Parameters.diffusivity = diffusivity_fn
-# -
-
-# #### Darcy velocity:
-# $$ u = - \frac{k}{\mu_c}\nabla p$$
-
 adv_diff.constitutive_model.Parameters.diffusivity = nd(1e-9 * u.meter**2 / u.second)
 
-# +
+# %% [markdown]
+"""
+## Boundary Conditions
+"""
+
+# %%
 p0_nd = nd(0.1e6 * u.pascal)
-# p_dx = p0_nd * (1 - mesh.X[0])
 
-# with mesh.access(p_soln):
-#     p_soln.data[:,0] = uw.function.evaluate(p_dx, p_soln.coords, mesh.N)
-
-# +
-## Make sure additional terms are set to zero
+# Darcy solver BCs
 darcy.f = 0.0
 darcy.s = sympy.Matrix([0, 0]).T
 
-### set up boundary conditions for the Darcy solver
 darcy.add_dirichlet_bc(p0_nd, "Left")
 darcy.add_dirichlet_bc(0.0, "Right")
 
-### set up boundary conditions for the adv diffusion solver
+# Advection-diffusion BCs
 adv_diff.add_dirichlet_bc(1.0, "Left")
 adv_diff.add_dirichlet_bc(0.0, "Right")
 
-# Zero pressure gradient at sides / base (implied bc)
+# %% [markdown]
+"""
+## Initial Solve
+"""
 
-# darcy._v_projector.petsc_options["snes_rtol"] = 1.0e-6
-# darcy._v_projector.smoothing = 1e24
-# darcy._v_projector.add_dirichlet_bc(0.0, "Left", 0)
-# darcy._v_projector.add_dirichlet_bc(0.0, "Right", 0)
-# -
+# %%
 darcy.solve()
 
 time = 0
 step = 0
 
+# %% [markdown]
+"""
+## Time Evolution
+"""
 
-# +
+# %%
 finish_time = 0.01 * u.year
 
-# while time < nd(finish_time):
-
-for iteration in range(0, 20):
+for iteration in range(0, params.uw_n_steps):
     if uw.mpi.rank == 0:
         print(f"\n\nstep: {step}, time: {dim(time, u.year)}")
 
@@ -368,33 +366,23 @@ for iteration in range(0, 20):
             meshUpdates=False,
             meshVars=[p_soln, v_soln, mat],
             outputPath=outputDir,
-            index=step)
+            index=step,
+        )
 
-    ### get the Darcy velocity from the darcy solve
+    # Solve Darcy flow
     darcy.solve(zero_init_guess=True)
 
     dt = ndim(0.0002 * u.year)
 
-    ### do the advection-diffusion
-    # adv_diff.solve(timestep=dt)
-
-    ### update swarm / swarm variables
-    # with swarm.access(material):
-    # material.data[:,0] = mat.rbf_interpolate(new_coords=material.swarm.data, nnn=1)[:,0]
-    # material.data[:,0] = uw.function.evaluate(mat.sym, swarm._particle_coordinates.data)
-
-    ### advect the swarm
+    # Advect swarm (only in x-direction, vertical velocity negligible)
     swarm.advection(
-        V_fn=v_soln.sym
-        * sympy.Matrix.diag(1 / porosity, 1 / sympy.sympify(1000000000)),
+        V_fn=v_soln.sym * sympy.Matrix.diag(1 / porosity, 1 / sympy.sympify(1000000000)),
         delta_t=dt,
         order=2,
-        evalf=True)
+        evalf=True,
+    )
 
-    # with mesh.access(v_soln):
-    #     ## Divide by the porosity to get the actual velocity
-    #     v_soln.data[:,] *= porosity
-
+    # Compute Vrms
     I = uw.maths.Integral(mesh, sympy.sqrt(v_soln.sym.dot(v_soln.sym)))
     Vrms = I.evaluate()
     I.fn = 1.0
@@ -409,33 +397,44 @@ for iteration in range(0, 20):
     if time > nd(finish_time):
         break
 
+# %% [markdown]
+"""
+## Final Visualization
+"""
 
-# -
-
+# %%
 if uw.mpi.size == 1:
-    
     import pyvista as pv
     import underworld3.visualisation as vis
-
 
     pvmesh = vis.mesh_to_pv_mesh(vizmesh)
     pvmesh.point_data["mat"] = vis.scalar_fn_to_pv_points(pvmesh, material.sym)
     pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
-    
+
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)/vis.vector_fn_to_pv_points(velocity_points, v_soln.sym).max()
-    
+    velocity_points.point_data["V"] = (
+        vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+        / vis.vector_fn_to_pv_points(velocity_points, v_soln.sym).max()
+    )
+
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
     with swarm.access(material):
         point_cloud.point_data["M"] = material.data.copy()
 
-
     pl = pv.Plotter(window_size=(750, 750))
 
-    pl.add_mesh(pvmesh, style="surface", cmap="coolwarm", edge_color="Grey", scalars="P",
-                show_edges=False, use_transparency=False, opacity=1)
+    pl.add_mesh(
+        pvmesh,
+        style="surface",
+        cmap="coolwarm",
+        edge_color="Grey",
+        scalars="P",
+        show_edges=False,
+        use_transparency=False,
+        opacity=1,
+    )
 
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=1250, opacity=1)
 
@@ -444,8 +443,10 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         render_points_as_spheres=False,
         point_size=2,
-        opacity=0.66)
+        opacity=0.66,
+    )
 
     pl.show(cpos="xy")
 
+# %%
 mat.stats()

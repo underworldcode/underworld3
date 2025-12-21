@@ -107,7 +107,19 @@ class Constitutive_Model(uw_object):
     _class_instance_counts = {}
 
     @timing.routine_timer_decorator
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
+        """
+        Initialize a constitutive model.
+
+        Parameters
+        ----------
+        unknowns : UnknownSet
+            The solver's unknowns (velocity, pressure, etc.)
+        material_name : str, optional
+            A distinguishing name for this material's symbols.
+            If provided, symbols will be subscripted: η → η_{name}
+            Useful when bundling multiple models in MultiMaterialModel.
+        """
         # Define / identify the various properties in the class but leave
         # the implementation to child classes. The constitutive tensor is
         # defined as a template here, but should be instantiated via class
@@ -115,6 +127,9 @@ class Constitutive_Model(uw_object):
 
         # We provide a function that converts gradients / gradient history terms
         # into the relevant flux term.
+
+        # Store material name for symbol disambiguation
+        self._material_name = material_name
 
         # Track instance numbers for automatic symbol uniqueness
         Constitutive_Model._global_instance_count += 1
@@ -159,8 +174,13 @@ class Constitutive_Model(uw_object):
         """
         Create a unique symbol name for constitutive model parameters.
 
-        Parameters:
-        -----------
+        Symbol naming priority:
+        1. If material_name is set: η → η_{material_name}
+        2. Else if multiple instances of same class: η → η^{(n)}
+        3. Else: use base symbol as-is
+
+        Parameters
+        ----------
         base_symbol : str
             The base LaTeX symbol name (e.g., r"\\eta", r"\\kappa")
         value : float or expression
@@ -168,17 +188,20 @@ class Constitutive_Model(uw_object):
         description : str
             Description of the parameter
 
-        Returns:
-        --------
+        Returns
+        -------
         UWexpression
             Expression with unique symbol name
         """
-        if self._class_instance_number == 0:
-            # First instance of this class uses clean symbol
-            symbol_name = base_symbol
-        else:
-            # Subsequent instances get superscript (1-based for display)
+        # Priority 1: User-specified material name (subscript notation)
+        if self._material_name is not None:
+            symbol_name = rf"{{{base_symbol}}}_{{\mathrm{{{self._material_name}}}}}"
+        # Priority 2: Multiple instances of same class (superscript notation)
+        elif self._class_instance_number > 0:
             symbol_name = rf"{{{base_symbol}}}^{{({self._class_instance_number})}}"
+        # Priority 3: First/only instance - clean symbol
+        else:
+            symbol_name = base_symbol
 
         return expression(symbol_name, value, description)
 
@@ -401,14 +424,14 @@ class ViscousFlowModel(Constitutive_Model):
     # tau = viscous_model.flux(gradient_matrix)
     # ```
 
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
         # All this needs to do is define the
         # viscosity property and init the parent(s)
         # In this case, nothing seems to be needed.
         # The viscosity is completely defined
         # in terms of the Parameters
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         # self._viscosity = expression(
         #     R"{\eta_0}",
@@ -588,13 +611,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
     ---
     """
 
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
         # All this needs to do is define the
         # non-paramter properties that we want to
         # use in other expressions and init the parent(s)
         #
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         self._strainrate_inv_II = expression(
             r"\dot\varepsilon_{II}",
@@ -761,11 +784,14 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     """
 
-    def __init__(self, unknowns, order=1):
+    def __init__(self, unknowns, order=1, material_name: str = None):
 
         ## We just need to add the expressions for the stress history terms in here.\
         ## They are properties to hold expressions that are persistent for this instance
         ## (i.e. we only update the value, not the object)
+
+        # Store material_name before creating expressions (needed by create_unique_symbol)
+        self._material_name = material_name
 
         # This may not be defined at initialisation time, set to None until used
         self._stress_star = expression(
@@ -799,7 +825,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         self._reset()
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         return
 
@@ -1705,14 +1731,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
     ---
     """
 
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
         # All this needs to do is define the
         # viscosity property and init the parent(s)
         # In this case, nothing seems to be needed.
         # The viscosity is completely defined
         # in terms of the Parameters
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         # self._viscosity = expression(
         #     R"{\eta_0}",
@@ -1894,7 +1920,8 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         # CRITICAL: Share solver's unknowns with all constituent models
         self._setup_shared_unknowns(constitutive_models, unknowns)
 
-        super().__init__(unknowns)
+        # Composite model doesn't have its own material_name - constituents do
+        super().__init__(unknowns, material_name=None)
 
     def _setup_shared_unknowns(self, constitutive_models, unknowns):
         """

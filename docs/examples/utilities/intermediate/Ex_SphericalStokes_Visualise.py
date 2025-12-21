@@ -1,31 +1,64 @@
+# ---
+# jupyter:
+#   jupytext:
+#     formats: py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
 # %% [markdown]
 """
-# 🔬 SphericalStokes Visualise
+# Spherical Stokes Visualization
 
-**PHYSICS:** utilities  
-**DIFFICULTY:** intermediate  
-**MIGRATED:** From underworld3-documentation/Notebooks
+**PHYSICS:** utilities
+**DIFFICULTY:** intermediate
 
 ## Description
-This example has been migrated from the original UW3 documentation.
-Additional documentation and parameter annotations will be added.
 
-## Migration Notes
-- Original complexity preserved
-- Parameters to be extracted and annotated
-- Claude hints to be added in future update
+Visualization utility for loading and displaying spherical Stokes model
+checkpoint data. Loads velocity and temperature fields from HDF5 checkpoints
+and renders with PyVista including streamlines and particle swarms.
+
+## Key Concepts
+
+- **Checkpoint loading**: Reading mesh variables and swarm data from HDF5
+- **PyVista visualization**: 3D rendering with clipping, streamlines
+- **Spherical shell rendering**: Clipping sphere to expose interior
+
+## Parameters
+
+- `uw_resolution`: Mesh cell size (default: 0.1)
+- `uw_radius_o`: Outer shell radius (default: 1.0)
+- `uw_radius_i`: Inner shell radius (default: 0.05)
+- `uw_checkpoint_dir`: Directory containing checkpoint files
+- `uw_checkpoint_base`: Base filename for checkpoints
+- `uw_step`: Timestep to visualize (default: 210)
+
+## Usage
+
+```bash
+python Ex_SphericalStokes_Visualise.py -uw_checkpoint_dir /path/to/data -uw_step 100
+```
+
+## Notes
+
+This is a visualization utility that requires pre-existing checkpoint files.
+Adjust the checkpoint_dir and checkpoint_base parameters to match your data.
 """
 
 # %% [markdown]
 """
-## Original Code
-The following is the migrated code with minimal modifications.
+## Setup and Parameters
 """
 
 # %%
-# ## Visualise spherical stokes model (velocity, particles etc)
-
-# to fix trame issue
+# Fix trame async issue
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -33,49 +66,74 @@ import petsc4py
 import underworld3 as uw
 import numpy as np
 
-# ls -tr /Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr
+# %% [markdown]
+"""
+## Configurable Parameters
 
-# +
-checkpoint_dir = "/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr"
-checkpoint_base = f"free_slip_sphere"
-# basename = f"/Users/lmoresi/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic0_QTemp_mr/free_slip_sphere.h5"
+Override from command line:
+```bash
+python Ex_SphericalStokes_Visualise.py -uw_resolution 0.05
+python Ex_SphericalStokes_Visualise.py -uw_checkpoint_dir /path/to/checkpoints
+```
+"""
 
-step = 210
+# %%
+params = uw.Params(
+    uw_resolution = 0.1,                          # Mesh cell size
+    uw_radius_o = 1.0,                            # Outer radius
+    uw_radius_i = 0.05,                           # Inner radius
+    uw_step = 210,                                # Timestep to visualize
+    uw_checkpoint_dir = "./output",               # Checkpoint directory
+    uw_checkpoint_base = "free_slip_sphere",      # Checkpoint base filename
+)
 
-res = uw.options.getReal("resolution", default=0.1)
-r_o = uw.options.getReal("radius_o", default=1.0)
-r_i = uw.options.getReal("radius_i", default=0.05)
+res = params.uw_resolution
+r_o = params.uw_radius_o
+r_i = params.uw_radius_i
+step = int(params.uw_step)
+checkpoint_dir = str(params.uw_checkpoint_dir)
+checkpoint_base = str(params.uw_checkpoint_base)
 
+# %% [markdown]
+"""
+## Create Mesh and Variables
+"""
 
-
-# +
-# # ls -ltr ~/+Simulations/InnerCore/outputs_free_slip_fk1e-2_ViscGrad0_iic100_QTemp_mr | tail
-
-# +
+# %%
 meshball = uw.meshing.SphericalShell(
     radiusInner=r_i,
     radiusOuter=r_o,
     cellSize=res,
-    qdegree=2)
+    qdegree=2,
+)
 
 swarm = uw.swarm.Swarm(mesh=meshball)
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 t_soln = uw.discretisation.MeshVariable(r"\Delta T", meshball, 1, degree=2)
 
-# -
+# %% [markdown]
+"""
+## Load Checkpoint Data
+"""
 
-print(f"Read swarm data", flush=True)
-swarm.load(f"{basename}.passive_swarm.{step}.h5")
+# %%
+print(f"Loading checkpoint from {checkpoint_dir}/{checkpoint_base}, step {step}", flush=True)
 
+# Load swarm data
+swarm_file = f"{checkpoint_dir}/{checkpoint_base}.passive_swarm.{step}.h5"
+print(f"Loading swarm from: {swarm_file}", flush=True)
+swarm.load(swarm_file)
+
+# Load mesh variables
 v_soln.read_timestep(checkpoint_base, "u", 0, outputPath=checkpoint_dir)
 t_soln.read_timestep(checkpoint_base, "deltaT", 0, outputPath=checkpoint_dir)
 
+# %% [markdown]
+"""
+## Visualization
+"""
 
-# +
-# v_soln.read_timestep
-# t_soln.read_from_vertex_checkpoint(f"{basename}.DeltaT.0.h5", "DeltaT")
-
-# +
+# %%
 import mpi4py
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
@@ -89,43 +147,33 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-    
-    # point sources at cell centres
+
+    # Point sources at cell centres for streamlines
     skip = 250
     points = np.zeros((meshball._centroids[::skip].shape[0], 3))
     points[:, 0] = meshball._centroids[::skip, 0]
     points[:, 1] = meshball._centroids[::skip, 1]
-    points[:, 2] = meshball._centroids[::skip, 1]
+    points[:, 2] = meshball._centroids[::skip, 2]  # Fixed: was incorrectly using y coordinate
     point_cloud = pv.PolyData(points)
 
     pvstream = pvmesh.streamlines_from_source(
         point_cloud,
         vectors="V",
         integration_direction="both",
-        # max_time=2.0)
+        max_time=2.0,
+    )
 
     with swarm.access():
         points = swarm.data.copy()
-        r2 = points[:,0]**2 + points[:,1]**2 + points[:,2]**2 
-        point_cloud = pv.PolyData(points[r2<0.98**2])
-        # point_cloud.point_data["strain"] = strain.data[:,0]
+        r2 = points[:, 0] ** 2 + points[:, 1] ** 2 + points[:, 2] ** 2
+        point_cloud = pv.PolyData(points[r2 < 0.98**2])
 
     sphere = pv.Sphere(radius=0.85, center=(0.0, 0.0, 0.0))
     clipped = pvmesh.clip_surface(sphere)
-    
-    # clipped = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=(0.1, 0, 1), invert=True)
 
     pl = pv.Plotter(window_size=[1000, 1000])
-    # pl.add_axes()
-    
-    pl.camera_position = [(2.1,-4.0,0.0), (0.0,0.0,0.0), (0.0,0.0,1.0)]
-    # pl.camera.
-    # pl.camera.azimuth = -65
-    # pl.camera.distance = 10.0
-    
-    #    pl.camera_position = [(0.00036144256591796875, -0.00045242905616760254, 6.692800318757354),
-    # (0.00036144256591796875, -0.00045242905616760254, 0.00010478496551513672),
-    # (0.0, 1.0, 0.0)]
+
+    pl.camera_position = [(2.1, -4.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
 
     pl.add_mesh(
         clipped,
@@ -134,18 +182,14 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         show_edges=False,
         scalars="T",
         use_transparency=False,
-        opacity=1.0)
+        opacity=1.0,
+    )
 
     pl.add_mesh(pvstream, opacity=0.4)
-    pl.add_mesh(pvmesh, "Black", "wireframe",  opacity=0.1)
- 
-    # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T",
-    #               use_transparency=False, opacity=1.0)
-    
+    pl.add_mesh(pvmesh, "Black", "wireframe", opacity=0.1)
+
     pl.add_points(point_cloud, color="White", point_size=3.0, opacity=0.25)
 
-    # pl.add_arrows(arrow_loc, arrow_length, mag=20)
-    
     pl.remove_scalar_bar("T")
     try:
         pl.remove_scalar_bar("mag")
@@ -159,17 +203,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         pl.remove_scalar_bar("V")
     except KeyError:
         pass
-       
-        
-    # pl.remove_scalar_bar("V")
 
-    pl.screenshot(filename="sphere_iic0.png", window_size=(1000, 1000), return_img=False)
-    # OR
+    pl.screenshot(filename="sphere_visualization.png", window_size=(1000, 1000), return_img=False)
     pl.show()
 
-# + language="sh"
-#
-# open sphere_iic0.png
-# -
-
-
+# %%
+print(f"Visualization complete for step {step}")

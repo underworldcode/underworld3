@@ -6,12 +6,34 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.6
+#       jupytext_version: 1.18.1
 #   kernelspec:
 #     display_name: Python (Pixi)
 #     language: python
 #     name: pixi-kernel-python3
 # ---
+
+# %% [markdown]
+# # Notebook 14: Time-Dependent Advection-Diffusion with units
+# This notebook introduces time-dependent problems in Underworld3 through the advection-diffusion equation. We'll test the numerical solution against analytical solutions for the advection and diffusion of temperature steps.
+#
+# ## Key Concepts
+#
+# Time-stepping - Explicit time integration for advection-diffusion
+# CFL condition - Stability constraints on time step size
+# Analytical validation - Comparing with known solutions
+# Advection vs Diffusion - Understanding the balance between transport mechanisms
+#
+#
+# ## The Advection-Diffusion Equation
+#
+# We solve:
+# $$\frac{\partial T}{\partial t} + \mathbf{u} \cdot \nabla T = \kappa \nabla^2 T$$
+#
+# where:
+# - $T$ is temperature (or any scalar field)
+# - $\mathbf{u}$ is the velocity field
+# - $\kappa$ is the diffusivity
 
 # %%
 import numpy as np
@@ -20,7 +42,9 @@ import scipy
 import underworld3 as uw
 import matplotlib.pyplot as plt
 
-# Step 1: Create Model FIRST
+
+# %%
+# Step 1: Create Model (this should be done first)
 model = uw.Model()
 
 # Step 2: Define the unit system
@@ -110,7 +134,7 @@ display(theta)
 with uw.synchronised_array_update():
     v.array[:,0,1] = uw.quantity(0, "cm/yr")
     v.array[:,0,0] = velocity.sym
-    
+
 
 # %%
 # Just a reminder !

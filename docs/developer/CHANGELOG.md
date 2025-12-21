@@ -17,6 +17,11 @@ This log tracks significant development work at a conceptual level, suitable for
 
 **Key technical insight**: SymPy's `Symbol.__new__` has an internal cache that runs *before* `_hashable_content()`. Solution: use `Symbol.__xnew__()` to bypass the cache, same as `sympy.Dummy` does.
 
+**Expression rename capability**: Added `UWexpression.rename()` method to customize display names without changing symbolic identity. Uses SymPy's custom printing protocol (`_latex()`, `_sympystr()`) to separate display from identity. Useful for multi-material models where parameters need distinct LaTeX labels:
+```python
+viscosity.rename(r"\eta_{\mathrm{mantle}}")  # Custom LaTeX display
+```
+
 **Files**: `expressions.py`, `_function.pyx`, `discretisation_mesh_variables.py`
 **Design doc**: `docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md`
 

@@ -18,6 +18,19 @@ else
     GREEN='' YELLOW='' BOLD='' NC=''
 fi
 
+# Find pixi - check PATH first, then ~/.pixi/bin/ (where installer puts it)
+find_pixi() {
+    if command -v pixi &> /dev/null; then
+        echo "pixi"
+    elif [ -x "$HOME/.pixi/bin/pixi" ]; then
+        echo "$HOME/.pixi/bin/pixi"
+    else
+        echo ""
+    fi
+}
+
+PIXI=$(find_pixi)
+
 get_env() {
     if [ -f "$CONFIG_FILE" ]; then
         cat "$CONFIG_FILE" | tr -d '[:space:]'
@@ -30,9 +43,215 @@ petsc_built() {
     [ -d "$PETSC_CUSTOM/petsc-4-uw/lib" ]
 }
 
+petsc4py_installed() {
+    local env="$1"
+    $PIXI run -e "$env" python -c "import petsc4py" 2>/dev/null
+}
+
+uw3_importable() {
+    local env="$1"
+    $PIXI run -e "$env" python -c "import underworld3" 2>/dev/null
+}
+
+is_amr_env() {
+    local env="$1"
+    [[ "$env" == amr* ]]
+}
+
+# Smart build with dependency chain handling
+run_build() {
+    local env=$(get_env)
+
+    echo -e "${BOLD}Building underworld3${NC} (environment: $env)"
+    echo ""
+
+    # AMR environments need custom PETSc + petsc4py first
+    if is_amr_env "$env"; then
+        # Step 1: Check/build custom PETSc
+        if ! petsc_built; then
+            echo -e "${YELLOW}AMR environment requires custom PETSc (not yet built)${NC}"
+            echo ""
+            echo "Custom PETSc includes adaptive mesh tools (pragmatic, mmg, parmmg)"
+            echo "Build time: ~1 hour on Apple Silicon"
+            echo ""
+            read -p "Build custom PETSc now? [Y/n]: " build_petsc
+            build_petsc=${build_petsc:-y}
+            if [ "$build_petsc" = "y" ] || [ "$build_petsc" = "Y" ]; then
+                echo ""
+                $PIXI run -e "$env" ./petsc-custom/build-petsc.sh
+                if [ $? -ne 0 ]; then
+                    echo -e "${YELLOW}PETSc build failed. Check errors above.${NC}"
+                    exit 1
+                fi
+            else
+                echo ""
+                echo "Cannot build underworld3 without PETSc."
+                echo "Run './uw petsc-local-build' when ready, then './uw build'"
+                exit 1
+            fi
+        else
+            echo -e "  ${GREEN}✓${NC} Custom PETSc already built"
+        fi
+
+        # Step 2: Check/build petsc4py
+        if ! petsc4py_installed "$env"; then
+            echo "  Installing petsc4py for $env..."
+            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && \
+             $PIXI run -e "$env" pip install . --no-build-isolation) || {
+                echo -e "${YELLOW}petsc4py build failed${NC}"
+                exit 1
+            }
+            echo -e "  ${GREEN}✓${NC} petsc4py installed"
+        else
+            echo -e "  ${GREEN}✓${NC} petsc4py already installed"
+        fi
+    else
+        # Non-AMR: conda-forge petsc4py should be there from pixi install
+        if ! petsc4py_installed "$env"; then
+            echo -e "${YELLOW}petsc4py not found. Running pixi install...${NC}"
+            $PIXI install -e "$env"
+        fi
+    fi
+
+    # Step 3: Build underworld3
+    echo "  Building underworld3..."
+    $PIXI run -e "$env" pip install . --no-build-isolation || {
+        echo -e "${YELLOW}underworld3 build failed${NC}"
+        exit 1
+    }
+
+    echo ""
+    echo -e "${GREEN}${BOLD}Build complete!${NC}"
+    echo ""
+    echo "Next: ./uw test    (run tests)"
+    echo "      ./uw doctor  (check configuration)"
+}
+
+# Standalone diagnostics (works even if underworld3 not built)
+run_doctor() {
+    local env=$(get_env)
+    local errors=0
+    local warnings=0
+
+    echo ""
+    echo "============================================================"
+    echo "  Underworld3 Diagnostics"
+    echo "============================================================"
+    echo ""
+    echo "Environment: $env"
+    echo ""
+
+    # Check 1: Pixi environment installed?
+    echo -n "  Checking pixi environment... "
+    if env_installed "$env"; then
+        echo -e "${GREEN}[OK]${NC} $env installed"
+    else
+        echo -e "${YELLOW}[ERROR]${NC} $env not installed"
+        echo "      Fix: pixi install -e $env"
+        ((errors++))
+    fi
+
+    # Check 2: For AMR, is custom PETSc built?
+    if is_amr_env "$env"; then
+        echo -n "  Checking custom PETSc... "
+        if petsc_built; then
+            echo -e "${GREEN}[OK]${NC} Custom PETSc built"
+        else
+            echo -e "${YELLOW}[ERROR]${NC} Custom PETSc not built"
+            echo "      Fix: ./uw petsc-local-build  (takes ~1 hour)"
+            ((errors++))
+        fi
+
+        # Check 3: petsc4py installed?
+        echo -n "  Checking petsc4py... "
+        if petsc4py_installed "$env"; then
+            echo -e "${GREEN}[OK]${NC} petsc4py available"
+        else
+            echo -e "${YELLOW}[ERROR]${NC} petsc4py not installed"
+            if petsc_built; then
+                echo "      Fix: ./uw build  (will install petsc4py)"
+            else
+                echo "      Fix: Build PETSc first, then ./uw build"
+            fi
+            ((errors++))
+        fi
+    else
+        # Non-AMR: check conda-forge petsc4py
+        echo -n "  Checking petsc4py... "
+        if petsc4py_installed "$env"; then
+            echo -e "${GREEN}[OK]${NC} petsc4py available"
+        else
+            echo -e "${YELLOW}[ERROR]${NC} petsc4py not found"
+            echo "      Fix: pixi install -e $env"
+            ((errors++))
+        fi
+    fi
+
+    # Check 4: underworld3 importable?
+    echo -n "  Checking underworld3... "
+    local import_error=""
+    import_error=$($PIXI run -e "$env" python -c "import underworld3" 2>&1)
+    local import_status=$?
+
+    if [ $import_status -eq 0 ]; then
+        echo -e "${GREEN}[OK]${NC} underworld3 importable"
+
+        # If importable, run Python diagnostics for deeper checks
+        echo ""
+        echo "  Running detailed diagnostics..."
+        $PIXI run -e "$env" python -c "import underworld3 as uw; uw.doctor()" 2>&1 | sed 's/^/  /'
+    else
+        echo -e "${YELLOW}[ERROR]${NC} underworld3 not importable"
+
+        # Check for specific PETSc library mismatch error
+        if echo "$import_error" | grep -q "libpetsc"; then
+            echo ""
+            echo -e "      ${YELLOW}PETSc library version mismatch detected!${NC}"
+            echo ""
+            # Extract the library name from error
+            local lib_name=$(echo "$import_error" | grep -o "libpetsc[^']*" | head -1)
+            if [ -n "$lib_name" ]; then
+                echo "      Extension was built against: $lib_name"
+            fi
+            # Get current PETSc version
+            local petsc_ver=$($PIXI run -e "$env" python -c "from petsc4py import PETSc; v=PETSc.Sys.getVersion(); print(f'{v[0]}.{v[1]}.{v[2]}')" 2>/dev/null)
+            if [ -n "$petsc_ver" ]; then
+                echo "      Current petsc4py version:    $petsc_ver"
+            fi
+            echo ""
+            echo "      This happens when PETSc is updated but underworld3"
+            echo "      wasn't rebuilt. The extension is linked to the old library."
+            echo ""
+            echo -e "      ${BOLD}Fix:${NC}"
+            echo "        pip uninstall underworld3"
+            echo "        rm -rf build/"
+            echo "        ./uw build"
+            echo ""
+        else
+            echo "      Fix: ./uw build"
+            # Show first few lines of error for debugging
+            echo ""
+            echo "      Import error:"
+            echo "$import_error" | head -5 | sed 's/^/        /'
+        fi
+        ((errors++))
+    fi
+
+    echo ""
+    echo "------------------------------------------------------------"
+    if [ $errors -gt 0 ]; then
+        echo -e "  ${YELLOW}[FAIL]${NC} $errors error(s) found - see fixes above"
+        echo ""
+        echo "  Quick fix: ./uw build  (handles dependency chain)"
+    else
+        echo -e "  ${GREEN}[OK]${NC} All checks passed"
+    fi
+    echo "------------------------------------------------------------"
+}
+
 # Check and install pixi if needed
 check_pixi() {
-    if command -v pixi &> /dev/null; then
+    if [ -n "$PIXI" ]; then
         return 0
     fi
 
@@ -49,24 +268,18 @@ check_pixi() {
         echo "Installing pixi..."
         curl -fsSL https://pixi.sh/install.sh | bash
 
-        # Source shell config to get pixi in PATH
-        if [ -f "$HOME/.bashrc" ]; then
-            source "$HOME/.bashrc" 2>/dev/null || true
-        fi
-        if [ -f "$HOME/.zshrc" ]; then
-            source "$HOME/.zshrc" 2>/dev/null || true
-        fi
+        # Update PIXI variable to find newly installed pixi
+        PIXI=$(find_pixi)
 
-        # Check if install succeeded
-        if command -v pixi &> /dev/null; then
+        if [ -n "$PIXI" ]; then
             echo -e "${GREEN}✓ Pixi installed successfully${NC}"
             echo ""
             return 0
         else
             echo ""
-            echo -e "${YELLOW}Pixi installed but not in PATH.${NC}"
-            echo "Please restart your terminal and run './uw setup' again."
-            exit 0
+            echo -e "${YELLOW}Pixi installation failed.${NC}"
+            echo "Please install manually from https://pixi.sh"
+            exit 1
         fi
     else
         echo ""
@@ -132,7 +345,7 @@ run_setup() {
 
     # Install
     echo "Installing dependencies..."
-    pixi install -e "$new_env"
+    $PIXI install -e "$new_env"
     echo ""
 
     # AMR-specific
@@ -140,12 +353,12 @@ run_setup() {
         if petsc_built; then
             echo -e "${GREEN}✓ Custom PETSc already built${NC}"
             echo "Installing petsc4py..."
-            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && pixi run -e "$new_env" python setup.py install) 2>/dev/null
+            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && $PIXI run -e "$new_env" python setup.py install) 2>/dev/null
         else
             echo -e "${YELLOW}Custom PETSc needs to be built (~1 hour)${NC}"
             read -p "Build now? [y/N]: " build_now
             if [ "$build_now" = "y" ] || [ "$build_now" = "Y" ]; then
-                pixi run -e "$new_env" ./petsc-custom/build-petsc.sh
+                $PIXI run -e "$new_env" ./petsc-custom/build-petsc.sh
             else
                 echo ""
                 echo "Build later with: ./uw petsc-local-build"
@@ -159,7 +372,7 @@ run_setup() {
     read -p "Build underworld3? [Y/n]: " build_uw
     build_uw=${build_uw:-y}
     if [ "$build_uw" = "y" ] || [ "$build_uw" = "Y" ]; then
-        pixi run -e "$new_env" pip install . --no-build-isolation
+        $PIXI run -e "$new_env" pip install . --no-build-isolation
     fi
 
     echo ""
@@ -247,6 +460,9 @@ COMMANDS
     format              Run black
     type-check          Run mypy
 
+  Diagnostics:
+    doctor              Check for configuration issues (PETSc mismatch, etc.)
+
   Any command not listed is passed to: pixi run -e $ENV <command>
 
 FILES
@@ -315,7 +531,7 @@ show_welcome() {
     echo ""
 
     # Check for pixi first
-    if ! command -v pixi &> /dev/null; then
+    if [ -z "$PIXI" ]; then
         echo "Environment: (pixi not installed)"
         echo ""
         read -p "Run setup to install pixi? [Y/n]: " do_setup
@@ -333,7 +549,7 @@ show_welcome() {
     if [ -f "$CONFIG_FILE" ]; then
         show_env_status
         echo ""
-        echo "Commands:  ./uw setup    ./uw build    ./uw test    ./uw --help"
+        echo "Commands:  ./uw setup   ./uw build   ./uw test   ./uw doctor   ./uw --help"
     else
         echo "Environment: (not configured)"
         echo ""
@@ -369,16 +585,22 @@ case "${1:-}" in
         ;;
     shell)
         shift
-        exec pixi shell -e "$(get_env)" "$@"
+        exec $PIXI shell -e "$(get_env)" "$@"
         ;;
     jupyter)
         shift
-        exec pixi run -e "$(get_env)" jupyter "$@"
+        exec $PIXI run -e "$(get_env)" jupyter "$@"
+        ;;
+    build)
+        run_build
+        ;;
+    doctor)
+        run_doctor
         ;;
     --help|-h|help)
         show_help
         ;;
     *)
-        exec pixi run -e "$(get_env)" "$@"
+        exec $PIXI run -e "$(get_env)" "$@"
         ;;
 esac

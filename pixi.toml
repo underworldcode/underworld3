@@ -96,6 +96,7 @@ rich = "*"
 # Quick install (~5 min), no AMR tools
 
 [feature.conda-petsc.dependencies]
+# PETSc 3.24 compatible - requires clean rebuild after version changes
 petsc = ">=3.21,<4"
 petsc4py = ">=3.21,<4"
 h5py = { version = ">=3.12,<4", build = "*mpich*" }

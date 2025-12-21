@@ -482,21 +482,27 @@ class uw_object:
         from IPython.display import Latex, Markdown, display
         from textwrap import dedent
         import inspect
+        from .docstring_utils import render_docstring, in_jupyter
 
         ## Docstring (static / class documentation)
 
         if inspect.isclass(self_or_cls):
-
-            docstring = dedent(self_or_cls.__doc__)
-            # docstring = docstring.replace("$", "$").replace("$", "$")
-            display(Markdown(docstring))
+            docstring = self_or_cls.__doc__
+            rendered = render_docstring(docstring, target="auto")
+            if in_jupyter():
+                display(Markdown(rendered))
+            else:
+                print(rendered)
 
         else:
-            display(
-                Markdown(
-                    f"**Class**: {self_or_cls.__class__}",
+            if in_jupyter():
+                display(
+                    Markdown(
+                        f"**Class**: {self_or_cls.__class__}",
+                    )
                 )
-            )
+            else:
+                print(f"Class: {self_or_cls.__class__}")
             self_or_cls._object_viewer()
 
         return
@@ -507,25 +513,34 @@ class uw_object:
     @class_or_instance_method
     def view(self_or_cls, class_documentation=False):
         from IPython.display import Latex, Markdown, display
-        from textwrap import dedent
         import inspect
+        from .docstring_utils import render_docstring, in_jupyter
 
         ## Docstring (static / class documentation)
 
         if inspect.isclass(self_or_cls) or class_documentation == True:
-
-            docstring = dedent(self_or_cls.__doc__)
-            display(Markdown(docstring))
+            docstring = self_or_cls.__doc__
+            rendered = render_docstring(docstring, target="auto")
+            if in_jupyter():
+                display(Markdown(rendered))
+            else:
+                print(rendered)
 
             if class_documentation:
-                display(Markdown("---"))
+                if in_jupyter():
+                    display(Markdown("---"))
+                else:
+                    print("---")
 
         if not inspect.isclass(self_or_cls):
-            display(
-                Markdown(
-                    f"**Class**: {self_or_cls.__class__}",
-                ),
-            )
+            if in_jupyter():
+                display(
+                    Markdown(
+                        f"**Class**: {self_or_cls.__class__}",
+                    ),
+                )
+            else:
+                print(f"Class: {self_or_cls.__class__}")
 
             self_or_cls._object_viewer()
 

@@ -54,7 +54,7 @@
 #
 #
 
-# %%
+# %% editable=true slideshow={"slide_type": ""}
 #|  echo: false  # Hide in html version
 
 # This is required to fix pyvista
@@ -69,6 +69,9 @@ nest_asyncio.apply()
 import numpy as np
 import sympy
 import underworld3 as uw
+
+# %%
+uw.__file__
 
 # %%
 # Step 1: Create Model FIRST
@@ -362,31 +365,6 @@ if uw.mpi.size == 1:
 from IPython.display import IFrame
 
 IFrame(src="html5/annulus_convection_scaled.html", width=500, height=400)
-
-# %%
-# Visualize initial condition
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots(figsize=(12, 4))
-
-radial_points = uw.function.evaluate(r, t_soln.coords).squeeze().magnitude
-
-T_0 = uw.function.evaluate(t_0, t_soln.coords).squeeze().magnitude
-T_1 =  uw.function.evaluate(t_soln, t_soln.coords).squeeze().magnitude
-
-
-ax.scatter(radial_points, T_0  , 1, 'green', linewidth=2, label=f'Initial value)')
-ax.scatter(radial_points, T_1 , 1, 'blue', linewidth=2, label=f'Numerical (t={elapsed_time})')
-
-# ax.axvline(x=x0_at_start/1000, color='purple', linestyle='--', 
-#            alpha=0.6, linewidth=2, label=f'Step center at {x0_at_start/1000:.0f} km')
-#ax.set_xlim(1e6, 2e6)
-ax.set_xlabel('x (m)')
-ax.set_ylabel('Temperature (K)')
-ax.set_title(f'Initial Temperature and Profile at t = {elapsed_time}')
-ax.grid(True, alpha=0.3)
-ax.legend()
-plt.show()
 
 # %% [markdown]
 # ## Exercise - Null space

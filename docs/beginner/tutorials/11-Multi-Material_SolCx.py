@@ -6,11 +6,11 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.6
+#       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: Python (Pixi)
+#     display_name: Python 3 (ipykernel)
 #     language: python
-#     name: pixi-kernel-python3
+#     name: python3
 # ---
 
 # %% [markdown]
@@ -31,9 +31,9 @@
 # - Simple setup suitable for quickstart examples
 #
 # **Physical Setup:**
-# - Two materials: low viscosity (η=1) and high viscosity (η=1e6)
+# - Two materials: low viscosity ($\eta=1$) and high viscosity ($\eta=10^6$)
 # - Material boundary at x = 0.5
-# - SolCx harmonic forcing: f_y = -cos(πx)sin(2πy)
+# - SolCx harmonic forcing: $f_y = -\cos(\pi x) \sin(2\pi y)$
 # - Free slip boundary conditions
 #
 # ## Mathematical Foundation
@@ -56,6 +56,9 @@ import underworld3 as uw
 from underworld3.systems import Stokes
 import numpy as np
 import sympy
+
+# %%
+uw.doctor()
 
 # %% [markdown]
 # ## Mesh and Variables Setup
@@ -85,8 +88,6 @@ print(f"Mesh created with {mesh.X.coords.shape[0]} nodes")
 v = uw.discretisation.MeshVariable("V", mesh, vtype=uw.VarType.VECTOR, degree=2, varsymbol=r"{v}")
 p = uw.discretisation.MeshVariable("P", mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=False, varsymbol=r"{p}")
 
-print(f"Velocity variable: {v.num_components} components, degree {v.degree}")
-print(f"Pressure variable: {p.num_components} components, degree {p.degree}")
 
 # %% [markdown]
 # ## Material Setup with Index Swarm
@@ -104,7 +105,7 @@ swarm.populate(fill_param=3)
 print(f"Swarm created with {swarm.data.shape[0]} particles")
 
 # %%
-# Assign materials based on x-coordinate (same as original SolCx)
+# Assign materials based on x-coordinate 
 x_c = 0.5
 
 material_indices = np.where(swarm.data[:, 0] > x_c, 1, 0)
@@ -125,14 +126,19 @@ stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False
 # Create individual constitutive models for each material
 # Material 0: Low viscosity (η = 1.0)
 viscous_material_0 = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns)
+viscous_material_0.Parameters.shear_viscosity_0.rename(r"\eta_{\mathrm{w}}")
 viscous_material_0.Parameters.shear_viscosity_0 = 1.0
 
 # Material 1: High viscosity (η = 1.0e6)  
 viscous_material_1 = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns)
 viscous_material_1.Parameters.shear_viscosity_0 = 1.0e6
+viscous_material_1.Parameters.shear_viscosity_0.rename(r"\eta_{\mathrm{s}}")
 
 print(f"Material 0 viscosity: {viscous_material_0.Parameters.shear_viscosity_0.sym}")
 print(f"Material 1 viscosity: {viscous_material_1.Parameters.shear_viscosity_0.sym}")
+
+# %%
+viscous_material_0.Parameters.shear_viscosity_0
 
 # %%
 # Create multi-material constitutive model
@@ -147,8 +153,6 @@ stokes.constitutive_model = multi_material_model
 
 print("Multi-material constitutive model created successfully")
 multi_material_model.flux
-
-# %%
 
 # %% [markdown]
 # ## Boundary Conditions and Forcing
@@ -174,6 +178,10 @@ stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 print("Free slip boundary conditions applied")
 
 # %%
+stokes.view()
+
+# %%
+uw.pause("Stokes setup complete", explanation="Run next cell to continue with plasticity")
 
 # %%
 # Solver settings
@@ -196,7 +204,7 @@ print("Boundary conditions and solver options configured")
 
 # %%
 print("Solving multi-material Stokes problem...")
-stokes.solve()
+stokes.solve(verbose=False)
 print("✅ Multi-material solve completed successfully!")
 
 # Compute some diagnostics
@@ -279,7 +287,7 @@ print(f"Relative pressure error: {rel_pres_error:.6e}")
 if rel_vel_error < 1e-10 and rel_pres_error < 1e-10:
     print("✅ VALIDATION PASSED: Multi-material model matches piecewise viscosity!")
 else:
-    print("⚠️  Large differences detected - this may indicate an issue")
+    print("⚠️  Large differences detected - take a look at the solution to see if it is OK !")
 
 # %% [markdown]
 # ## Visualization
@@ -345,36 +353,20 @@ else:
 #
 # This demonstration successfully shows:
 #
-# 1. **✅ Multi-material constitutive model works correctly**
+# 1. **Multi-material constitutive model works correctly**
 #    - Proper flux averaging using level-set functions
 #    - Seamless integration with Stokes solver
 #    - Maintains solver-authoritative stress history architecture
 #
-# 2. **✅ Accurate reproduction of SolCx benchmark**  
-#    - Results match piecewise viscosity approach to machine precision
-#    - Demonstrates mathematical correctness of level-set averaging
-#    - Validates implementation against known analytical benchmark
+# 2. **Accurate reproduction of SolCx benchmark**  
+#    - Results are similar to the piecewise viscosity but differences exist due to different representation
+#    - Demonstrates the effectiveness and the limitations of this approach
 #
-# 3. **✅ Simple, extensible framework**
+# 3. **Simple, extensible approach**
 #    - Easy to set up additional materials
 #    - Clear separation between material properties and solver
-#    - Ready for quickstart examples and tutorials
 #
-# **Key Insights:**
-# - IndexSwarmVariable provides smooth level-set transitions between materials
-# - Multi-material flux averaging preserves physical accuracy
-# - Performance comparable to single-material approach
-# - Architecture supports complex material combinations (elastic, plastic, etc.)
 #
-# **Next Steps:**
-# - Extend to viscoelastic and viscoplastic multi-material combinations
-# - Add temperature-dependent material properties
-# - Explore dynamic material evolution during simulation
-
-# %%
-print("\nMulti-Material SolCx Demonstration Complete!")
-print(f"Solution validated with relative error: {max(rel_vel_error, rel_pres_error):.2e}")
-print("Ready for integration into quickstart examples!")
 
 # %% [markdown]
 # ## Exercise 9.1
