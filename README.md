@@ -100,6 +100,8 @@ This opens a guided introduction to underworld3 with links to all beginner tutor
 ./uw test             # Run quick tests
 ./uw jupyter lab      # Start JupyterLab
 ./uw doctor           # Diagnose configuration issues
+./uw status           # Check for updates on GitHub
+./uw update           # Pull latest changes and rebuild
 ./uw --help           # Full documentation
 ```
 
