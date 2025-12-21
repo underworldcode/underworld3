@@ -9,7 +9,13 @@ Welcome to Underworld3! This section provides everything you need to start build
 ## Learning Path
 
 ### 1. Installation
-Get Underworld3 running on your system.
+Get Underworld3 running on your system in about 5 minutes:
+
+```bash
+git clone https://github.com/underworldcode/underworld3
+cd underworld3
+./uw setup
+```
 
 [→ Installation Guide](installation.qmd){.btn .btn-primary}
 

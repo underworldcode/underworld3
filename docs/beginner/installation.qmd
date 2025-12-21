@@ -1,6 +1,6 @@
 ---
 title: "Installation Guide"
-subtitle: "Hints and Tips"
+subtitle: "Get Underworld3 running on your system"
 authors:
 - name: Underworld Team
 
@@ -8,97 +8,163 @@ exports:
 - format: html
 ---
 
-## Source code build using mamba
+## Quick Install (Recommended)
 
-We recommend that you use a `conda` / `mamba` virtual environment to build `underworld3` whenever you want to install on a personal workstation or laptop (linux or macOS).The [`mamba` documentation](https://mamba.readthedocs.io/en/latest/index.html) will help you get started if you are not familiar with the philososphy and practice of this package management system.
-
-The `underworld3` build / run-time dependencies can be installed using
+The fastest way to get started is with the `./uw` wrapper script:
 
 ```bash
-    (base) % git clone -b development --single-branch https://github.com/underworldcode/underworld3 /path/to/underworld3
-    (base) % cd /path/to/underworld3
-    (base) % mamba env create -n uw3 -f environment.yml
-    (base) % mamba activate uw3
-
-    (uw3) % scripts/compile.sh
+git clone https://github.com/underworldcode/underworld3
+cd underworld3
+./uw setup
 ```
 
-## Source code build using mamba and existing PETSc
+The setup wizard will:
 
-If you have an exisiting build of `PETSc` that you need to use, the following
-instructions work well. We create the environment as before but remove the pre-
-installed `PETSc` and `petsc4py`.
+1. Install [pixi](https://pixi.sh) if needed (a fast, modern package manager)
+2. Ask two simple questions to configure your environment
+3. Install all dependencies and build underworld3
+
+**That's it!** The whole process takes about 5 minutes.
+
+### Environment Options
+
+The setup wizard asks two questions:
+
+**1. Do you need adaptive mesh refinement (AMR)?**
+
+Most users should answer **No**. This installs PETSc from conda-forge (~5 minutes).
+
+Answer **Yes** only if you need anisotropic mesh adaptation tools (pragmatic, mmg, parmmg). This builds a custom PETSc from source (~1 hour).
+
+**2. What features do you need?**
+
+| Choice | Includes | Best for |
+|--------|----------|----------|
+| **Runtime** (default) | PyVista visualization, JupyterLab | Most users, tutorials |
+| **Minimal** | Core dependencies only | HPC production, CI |
+| **Developer** | + black, mypy, Claude Code | Contributing to underworld3 |
+
+### Common Commands
+
+After installation, use `./uw` for everything:
 
 ```bash
-    (base) % git clone -b development --single-branch https://github.com/underworldcode/underworld3 /path/to/underworld3
-    (base) % cd /path/to/underworld3
-    (base) % mamba env create -n uw3p -f environment.yml
-    (base) % mamba activate uw3p
-
-    (uw3p) % mamba remove petsc4py
-    (uw3p) % mamba remove petsc
+./uw                  # Show status and available environments
+./uw jupyter lab      # Start JupyterLab
+./uw test             # Run quick validation tests
+./uw build            # Rebuild after source changes
+./uw doctor           # Diagnose configuration issues
+./uw status           # Check for updates on GitHub
+./uw update           # Pull latest changes and rebuild
+./uw --help           # Full command reference
 ```
 
-Next set up PETSc as you like it and build it using the tools
-within the current mamba virtual environment. Set the `PETSC_ARCH`
-environment variable to the name of this virtual environment to keep things
-from becoming muddled. See [PETSc Installation]() for details on
-how to configure and build what you need.
+### Staying Up to Date
+
+Check for updates without disrupting your work:
 
 ```bash
-
-    (uw3p) % export PETSC_DIR=/path/to/petsc
-    (uw3p) % export PETSC_ARCH="uw3p"
-    (uw3p) % git clone -b release https://gitlab.com/petsc/petsc.git $PETSC_DIR
-    (uw3p) % cd $PETSC_DIR
-    (uw3p) % # Configure & Build step
+./uw status           # See what's new on GitHub
+./uw update           # Pull and rebuild when ready
 ```
-Next we `pip install` the petsc4py that we just built into the mamba virtual environment. This
-ensures that `petsc4py` is available and also that its internal configuration points to the `PETSc` installation we just created. This way we don't need to manage environment variables to point to the build that corresponds to a given virtual environment.
+
+### Troubleshooting
+
+If something isn't working, run diagnostics:
 
 ```bash
-    (uw3p) % mamba install cmake
-    (uw3p) % cd $PETSC_DIR/src/binding/petsc4py
-    (uw3p) % pip install .
+./uw doctor
 ```
 
-Building `underworld3` against this version of `PETSc` should be identical to the mamba version.
+This checks your environment and provides specific fixes for common issues like PETSc version mismatches or missing dependencies.
+
+---
+
+## Alternative: Docker Container
+
+For Windows users (without WSL) or quick trials without installation:
 
 ```bash
-    (uw3p) % cd /path/to/underworld3
-    (uw3p) % scripts/compile.sh
+docker pull underworldcode/underworld3:latest
+docker run -it -p 8888:8888 underworldcode/underworld3:latest
 ```
 
-#### Did it work ?
+This launches JupyterLab with underworld3 pre-installed.
 
-First run the tests:
+As the code is in active development, containers may lag behind the latest changes. Check the [GitHub releases](https://github.com/underworldcode/underworld3/releases) for available container versions.
+
+---
+
+## HPC Builds
+
+Underworld3 is designed for high performance computing. The symbolic layer is lightweight and doesn't adversely affect launch time or execution performance.
+
+### Using pixi on HPC
+
+If your cluster allows user-space package managers, the `./uw` approach works well:
 
 ```bash
-    (uw3p) % cd /path/to/underworld3
-    (uw3p) % source scripts/test.sh
+git clone https://github.com/underworldcode/underworld3
+cd underworld3
+./uw setup    # Choose "Minimal" for production runs
 ```
 
-If you have problems, contact us via the `underworl3` [GitHub issue tracker](https://github.com/underworldcode/underworld3/issues)
+### Using System PETSc
 
-#### To uninstall `underworld3`
+If your HPC provides a PETSc module, you can build against it. Requirements:
+
+- PETSc 3.21 or higher
+- petsc4py matching your PETSc version
+- Python 3.10+
 
 ```bash
-  (uw3) % pip uninstall underworld3
+module load petsc/3.21   # (example - check your system)
+
+git clone https://github.com/underworldcode/underworld3
+cd underworld3
+pip install . --no-build-isolation
 ```
 
-And to clean the source directory if applicable
+### Getting Help
+
+HPC environments vary widely. Contact us through the [GitHub issue tracker](https://github.com/underworldcode/underworld3/issues) for assistance with specific systems. Include:
+
+- System name and architecture
+- Available PETSc/module versions
+- Any error messages
+
+---
+
+## Verification
+
+After installation, verify everything works:
 
 ```bash
-  (uw3) % cd /path/to/underworld3
-  (uw3) % ./scripts/clean.sh
+./uw test
 ```
 
-## Docker container
+This runs a quick suite of validation tests (~2 minutes). For more thorough testing:
 
-Windows users, if you don't want to create a linux partition, you can use our containers with `docker` or `podman`. As the code is still in active development, we are not always able to provide containers for each change to the development branch. We ask that you reach out to us on our [GitHub issue tracker](https://github.com/underworldcode/underworld3/issues) to ask for information (use the "question" label).
+```bash
+./uw test-all --isolation   # Full test suite, isolated processes
+```
 
-## HPC builds
+## Uninstalling
 
-`Underworld3` is inherently parallel and designed for use in high performance computing environments. The symbolic layer is relatively lightweight and should not adversely affect launch time (drawing down libraries from disk) or execution time (very few calculations are done in python itself).
+To remove underworld3 from the current environment:
 
-In the HPC environment you may find it difficult to control the software stack. You will need to ensure that you can build against PETSc 3.21 or higher, since important functionality that we need is only available from that release onwards. We are happy to provide assistance with builds on specific machines and ask that you contact us through the [GitHub issue tracker](https://github.com/underworldcode/underworld3/issues) so that other people are able to browse the issues and their fixes.
+```bash
+pip uninstall underworld3
+```
+
+To clean build artifacts:
+
+```bash
+rm -rf build/ src/underworld3/*.c src/underworld3/*.so
+```
+
+To completely remove the pixi environment:
+
+```bash
+rm -rf .pixi/
+```

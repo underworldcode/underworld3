@@ -34,17 +34,21 @@ The [Underworld Community](https://github.com/underworld-community) organisation
 
 ### Parallel Execution
 
-`Underworld3` is inherently parallel and designed for high performance computing. The symbolic layer is a relatively thin veneer that sits on top of the `PETSc` machinery. A script that has been developed in `jupyter` should be transferrable to an HPC environment with no changes (except that inherently serial operations such as visualisation and model reduction are best left to postprocessing / co-processing).
+`Underworld3` is inherently parallel and designed for high performance computing. The symbolic layer is a relatively thin veneer that sits on top of the `PETSc` machinery. A script developed in Jupyter should transfer to an HPC environment with no changes (except that inherently serial operations such as visualization are best left to post-processing).
 
-We recommend installing `jupytext` which allows either a seamless two-way conversion (or pairing) between the `ipynb` format and an annotated python script, or the ability to work entirely with annoted python scripts and not use `ipynb` at all. The python form does not store the output of notebook cells but there are advantages to this when scripts are under version control.
-
-Almost all of our notebook examples are annotated python for this reason.An exception is the collection of notebooks in this quick-start guide because we want to show you the rendered output in the static web pages.
+We recommend using `jupytext` which provides seamless two-way conversion between `.ipynb` and annotated Python scripts. The Python form doesn't store cell outputs, which is advantageous for version control. Almost all of our notebook examples use this format.
 
 ```bash
-    mpirun -np 1024 python3 Modelling_Script.py -uw_resolution 96
+mpirun -np 1024 python3 Modelling_Script.py -uw_resolution 96
 ```
 
-The main difference between the notebook development environment and HPC is the lack of interactivity, particularly in sending parameters to the script at launch time. Typically, we expect the HPC version to be running at much higher resolution, or for many more timesteps than the development notebook. We use the `PETSc` command line parsing machinery to generate notebooks that also can ingest run-time parameters from a script (as above).
+Or using the `./uw` wrapper for local parallel runs:
+
+```bash
+./uw mpirun -np 4 python3 Modelling_Script.py
+```
+
+The main difference between notebook development and HPC is interactivity—particularly sending parameters at launch time. We use PETSc's command line parsing so notebooks can ingest runtime parameters when run as scripts.
 
 #### Parallel scaling / performance
 
