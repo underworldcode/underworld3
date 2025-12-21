@@ -73,6 +73,19 @@ viscosity.rename(r"\eta_{\mathrm{mantle}}")  # Custom LaTeX display
   - Tier B: Validated but recent, use with caution
   - Tier C: Experimental, development only
 
+### Build System & Developer Experience (December 2025)
+
+**`./uw` wrapper script**: Unified command-line interface for all underworld3 operations. Replaces fragmented pixi/mamba instructions with a single entry point.
+
+- `./uw setup` — Interactive wizard installs pixi, configures environment, builds underworld3
+- `./uw build` — Smart rebuild with automatic dependency chain handling
+- `./uw test` / `./uw test-all` — Tiered test execution
+- `./uw doctor` — Diagnoses configuration issues (PETSc mismatches, missing deps)
+- `./uw status` — Check for updates on GitHub without pulling
+- `./uw update` — Pull latest changes and rebuild
+
+**Documentation overhaul**: Rewrote installation docs to focus on `./uw` workflow. The 3-line install now appears on the landing page. Removed outdated mamba/conda instructions; Docker and system PETSc kept as alternatives for specific use cases.
+
 ### Documentation & Planning (November 2025)
 
 - Reorganised `planning/` → `docs/developer/design/` to distinguish from strategic planning
