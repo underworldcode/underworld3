@@ -410,6 +410,8 @@ QUICK START
   ./uw build              Build underworld3
   ./uw test               Run tests (level 1, ~2 min)
   ./uw jupyter lab        Start JupyterLab
+  ./uw status             Check for updates on GitHub
+  ./uw update             Pull latest and rebuild
 
 ENVIRONMENTS
 
@@ -462,6 +464,8 @@ COMMANDS
 
   Diagnostics:
     doctor              Check for configuration issues (PETSc mismatch, etc.)
+    status              Check for updates on GitHub (without pulling)
+    update              Pull latest changes and rebuild
 
   Any command not listed is passed to: pixi run -e $ENV <command>
 
@@ -472,6 +476,125 @@ FILES
   petsc-custom/petsc/   Custom PETSc build (git-ignored)
 
 EOF
+}
+
+# Check for updates on remote (without pulling)
+check_for_updates() {
+    local quiet="${1:-false}"
+
+    # Check if this is a git repo
+    if [ ! -d "$SCRIPT_DIR/.git" ]; then
+        [ "$quiet" = "false" ] && echo "Not a git repository"
+        return 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    # Get current branch
+    local branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ -z "$branch" ]; then
+        [ "$quiet" = "false" ] && echo "Could not determine current branch"
+        return 1
+    fi
+
+    # Fetch updates from remote (just metadata, no merge)
+    if [ "$quiet" = "false" ]; then
+        echo "Checking for updates on branch: $branch"
+        echo ""
+    fi
+
+    git fetch origin "$branch" --quiet 2>/dev/null
+
+    # Count commits behind/ahead
+    local behind=$(git rev-list --count HEAD..origin/"$branch" 2>/dev/null || echo "0")
+    local ahead=$(git rev-list --count origin/"$branch"..HEAD 2>/dev/null || echo "0")
+
+    if [ "$quiet" = "true" ]; then
+        # Return status for quiet mode
+        [ "$behind" -gt 0 ] && return 0 || return 1
+    fi
+
+    # Show status
+    if [ "$behind" -eq 0 ] && [ "$ahead" -eq 0 ]; then
+        echo -e "  ${GREEN}✓${NC} Up to date with origin/$branch"
+    else
+        if [ "$behind" -gt 0 ]; then
+            echo -e "  ${YELLOW}↓${NC} $behind commit(s) behind origin/$branch"
+            echo ""
+            echo "  Recent changes on remote:"
+            git log --oneline HEAD..origin/"$branch" | head -5 | sed 's/^/    /'
+            local total_behind=$(git rev-list --count HEAD..origin/"$branch")
+            [ "$total_behind" -gt 5 ] && echo "    ... and $((total_behind - 5)) more"
+        fi
+        if [ "$ahead" -gt 0 ]; then
+            echo -e "  ${GREEN}↑${NC} $ahead commit(s) ahead of origin/$branch"
+        fi
+        echo ""
+        if [ "$behind" -gt 0 ]; then
+            echo "  Run './uw update' to pull changes and rebuild"
+        fi
+    fi
+
+    # Check for local modifications
+    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+        echo ""
+        echo -e "  ${YELLOW}!${NC} You have uncommitted local changes"
+    fi
+
+    return 0
+}
+
+# Pull updates and rebuild
+run_update() {
+    cd "$SCRIPT_DIR"
+
+    # Check if this is a git repo
+    if [ ! -d "$SCRIPT_DIR/.git" ]; then
+        echo "Not a git repository"
+        exit 1
+    fi
+
+    local branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    echo -e "${BOLD}Updating Underworld3${NC} (branch: $branch)"
+    echo ""
+
+    # Check for local changes
+    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+        echo -e "${YELLOW}You have uncommitted local changes:${NC}"
+        git status --short
+        echo ""
+        read -p "Stash changes and continue? [y/N]: " stash_choice
+        if [ "$stash_choice" = "y" ] || [ "$stash_choice" = "Y" ]; then
+            git stash push -m "uw update: auto-stash $(date +%Y-%m-%d_%H:%M)"
+            echo ""
+        else
+            echo "Commit or stash your changes first, then run './uw update'"
+            exit 1
+        fi
+    fi
+
+    # Pull updates
+    echo "Pulling from origin/$branch..."
+    if git pull origin "$branch"; then
+        echo ""
+        echo -e "${GREEN}✓${NC} Pull successful"
+        echo ""
+
+        # Rebuild
+        read -p "Rebuild underworld3? [Y/n]: " rebuild_choice
+        rebuild_choice=${rebuild_choice:-y}
+        if [ "$rebuild_choice" = "y" ] || [ "$rebuild_choice" = "Y" ]; then
+            echo ""
+            run_build
+        else
+            echo ""
+            echo "Run './uw build' when ready to rebuild"
+        fi
+    else
+        echo ""
+        echo -e "${YELLOW}Pull failed - check errors above${NC}"
+        exit 1
+    fi
 }
 
 # Check if an environment is installed
@@ -596,6 +719,12 @@ case "${1:-}" in
         ;;
     doctor)
         run_doctor
+        ;;
+    status)
+        check_for_updates
+        ;;
+    update)
+        run_update
         ;;
     --help|-h|help)
         show_help
