@@ -1,3 +1,32 @@
+r"""
+Adaptive mesh refinement (AMR) utilities.
+
+This module provides mesh adaptation capabilities for Underworld3, enabling
+dynamic refinement and coarsening based on solution features or error
+estimates. AMR is particularly useful for problems with localized features
+such as boundary layers, shear zones, or phase boundaries.
+
+Key Functions
+-------------
+mesh_adapt_meshVar : function
+    Adapt mesh based on a mesh variable field (e.g., refine where
+    gradients are steep).
+
+Notes
+-----
+The boundary label stacking utilities handle the constraint that PETSc's
+adaptive meshing interpolates only one boundary label at a time. The
+stacking approach combines multiple gmsh-generated boundary labels into
+a single composite label for adaptation, then unstacks them afterward.
+
+This module requires PETSc to be compiled with adaptive mesh support
+(pragmatic, mmg, or parmmg).
+
+See Also
+--------
+underworld3.discretisation : Mesh classes that can be adapted.
+underworld3.meshing : Mesh generation utilities.
+"""
 from typing import Optional, Tuple
 from enum import Enum
 
@@ -14,13 +43,6 @@ from underworld3.coordinates import CoordinateSystemType
 import underworld3.timing as timing
 
 import sympy
-
-
-# Utilities for mesh adaptation etc
-
-# The boundary stacking is to get around the fact that, at present, the
-# adaptive meshing will only interpolate one boundary label. We are using the
-# gmsh workflow that generates multiple labels (with one value).
 
 
 def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):

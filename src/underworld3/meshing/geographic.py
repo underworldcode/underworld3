@@ -25,9 +25,6 @@ import underworld3.cython.petsc_discretisation
 import sympy
 
 
-# Functions moved from meshing_legacy.py:
-
-
 @timing.routine_timer_decorator
 def RegionalSphericalBox(
     radiusOuter: float = 1.0,
@@ -46,7 +43,95 @@ def RegionalSphericalBox(
     gmsh_verbosity=0,
     verbose=False,
 ):
-    """One section of the cube-sphere mesh - currently there is no choice of the lateral extent"""
+r"""
+    Create a regional spherical box mesh (cubed-sphere section).
+
+    Generates a 3D structured mesh for a regional section of a spherical shell,
+    using a cubed-sphere projection. The domain is defined by corner coordinates
+    in degrees (longitude, latitude) and radial bounds.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.0
+        Outer radius of the spherical shell.
+    radiusInner : float, default=0.547
+        Inner radius of the spherical shell.
+    SWcorner : list of float, default=[-45, -45]
+        Southwest corner as [longitude, latitude] in degrees.
+    NEcorner : list of float, default=[+45, +45]
+        Northeast corner as [longitude, latitude] in degrees.
+    numElementsLon : int, default=5
+        Number of elements in the longitude direction.
+    numElementsLat : int, default=5
+        Number of elements in the latitude direction.
+    numElementsDepth : int, default=5
+        Number of elements in the radial (depth) direction.
+    degree : int, default=1
+        Polynomial degree of finite elements.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    simplex : bool, default=False
+        If True, use tetrahedral elements; if False, use hexahedral.
+    filename : str, optional
+        Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels to apply.
+    coarsening : int, optional
+        Number of coarsening levels to apply.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 3D mesh with boundaries:
+
+        - ``Lower``: Inner surface at :math:`r = r_{inner}`
+        - ``Upper``: Outer surface at :math:`r = r_{outer}`
+        - ``North``: Northern boundary at :math:`\phi = \phi_{max}`
+        - ``South``: Southern boundary at :math:`\phi = \phi_{min}`
+        - ``East``: Eastern boundary at :math:`\lambda = \lambda_{max}`
+        - ``West``: Western boundary at :math:`\lambda = \lambda_{min}`
+
+        The mesh uses a SPHERICAL coordinate system and includes a refinement
+        callback that snaps boundary nodes to true spherical geometry.
+
+    See Also
+    --------
+    CubedSphere : Full cubed-sphere mesh.
+    RegionalGeographicBox : Geographic mesh with ellipsoidal geometry.
+    SphericalShell : Unstructured spherical shell.
+
+    Examples
+    --------
+    Create a regional mesh for the Australian region:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.RegionalSphericalBox(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.9,
+    ...     SWcorner=[110, -45],
+    ...     NEcorner=[155, -10],
+    ...     numElementsLon=10,
+    ...     numElementsLat=8,
+    ...     numElementsDepth=5
+    ... )
+
+    Notes
+    -----
+    This mesh uses a cubed-sphere projection, which provides more uniform
+    element sizes than a latitude-longitude grid. The structured mesh is
+    suitable for regional mantle convection models where boundary-aligned
+    elements are beneficial.
+
+    The coordinate system provides unit vectors via ``mesh.CoordinateSystem``:
+
+    - ``unit_e_0``: radial direction :math:`(r)`
+    - ``unit_e_1``: colatitude direction :math:`(\theta)`
+    - ``unit_e_2``: longitude direction :math:`(\phi)`
+    """
 
     class boundaries(Enum):
         Lower = 1

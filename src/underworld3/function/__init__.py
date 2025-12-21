@@ -1,3 +1,34 @@
+r"""
+Symbolic function evaluation and expression handling.
+
+This module provides the infrastructure for evaluating symbolic expressions
+on meshes and swarms. It bridges SymPy symbolic mathematics with PETSc
+numerical evaluation.
+
+Key Components
+--------------
+expression : class
+    User-facing symbolic expression wrapper (UWexpression).
+evaluate : function
+    Evaluate expressions at mesh/swarm points.
+global_evaluate : function
+    Parallel-safe evaluation gathering results across MPI ranks.
+UnderworldFunction : class
+    Core function evaluation machinery.
+
+Unit Conversion
+---------------
+convert_quantity_units, make_dimensionless, add_units
+    Utilities for handling physical units in expressions.
+
+The function module integrates with pint for optional unit-aware
+computations when the mesh has an associated unit registry.
+
+See Also
+--------
+underworld3.discretisation : Mesh and variable classes.
+underworld3.swarm : Particle swarm evaluation targets.
+"""
 from . import analytic
 
 # Import the _function module to expose it in the namespace (needed by expressions.py)

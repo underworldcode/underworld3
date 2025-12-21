@@ -16,49 +16,50 @@ from underworld3.systems.solvers import expression
 
 class SNES_MyEquation(SNES_Scalar):
     r"""
-    This class provides functionality for a discrete representation
-    of [Your Equation Name Here].
+    Template solver for scalar PDEs.
 
+    Provides a discrete representation of a general scalar equation.
     The governing equation is:
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} +
-    \color{Blue}{\underbrace{\Bigl[ \nabla \cdot \mathbf{F}(u, \nabla u) \Bigr]}_{\text{Flux Term}}} =
-    \color{Maroon}{\underbrace{\Bigl[ f(\mathbf{x}, t, u) \Bigr] }_{\text{Source Term}}}
-    $$
 
-    Where:
-    - $u$ is the unknown scalar field
-    - $\mathbf{F}(u, \nabla u)$ is the flux term (typically involving diffusion, advection, etc.)
-    - $f(\mathbf{x}, t, u)$ is the source/sink term
+    .. math::
 
-    ## Properties
+        \underbrace{\frac{\partial u}{\partial t}}_{\dot{u}}
+        + \underbrace{\nabla \cdot \mathbf{F}(u, \nabla u)}_{\text{Flux}}
+        = \underbrace{f(\mathbf{x}, t, u)}_{\text{Source}}
 
-    - The unknown is $u$ (scalar field)
-    - The constitutive model relates flux to gradients: $\mathbf{F} = -\kappa \nabla u$
-    - Material properties are provided through the `constitutive_model` property
-    - Source terms are specified through the `f` property
+    where:
 
-    ## Key Features
-
-    - Supports time-dependent problems
-    - Handles nonlinear constitutive relationships
-    - Provides automatic timestep estimation
-    - Compatible with various boundary conditions
+    - :math:`u` is the unknown scalar field
+    - :math:`\mathbf{F}(u, \nabla u)` is the flux term (diffusion, advection, etc.)
+    - :math:`f(\mathbf{x}, t, u)` is the source/sink term
 
     Parameters
     ----------
-    mesh : uw.discretisation.Mesh
-        The computational mesh
-    u_Field : uw.discretisation.MeshVariable, optional
-        The solution field. If None, will be created automatically
-    degree : int, optional
-        Polynomial degree for the finite element basis (default: 2)
-    verbose : bool, optional
-        Enable verbose output (default: False)
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        The solution field. Created automatically if None.
+    degree : int, default=2
+        Polynomial degree for the finite element basis.
+    verbose : bool, default=False
+        Enable verbose output.
     DuDt : DDt object, optional
-        Time derivative discretization method
+        Time derivative discretization method for solution.
     DFDt : DDt object, optional
-        Flux time derivative discretization method
+        Time derivative discretization method for flux.
+
+    Attributes
+    ----------
+    u : MeshVariable
+        The scalar unknown :math:`u`.
+    f : sympy.Expr
+        Source/sink term.
+
+    Notes
+    -----
+    - The constitutive model relates flux to gradients: :math:`\mathbf{F} = -\kappa \nabla u`
+    - Material properties are provided through the ``constitutive_model`` property
+    - Supports time-dependent problems and nonlinear constitutive relationships
 
     Examples
     --------
@@ -133,8 +134,8 @@ class SNES_MyEquation(SNES_Scalar):
 
     @property
     def F0(self):
-        """
-        Pointwise source/sink term: $f_0(u)$.
+        r"""
+        Pointwise source/sink term :math:`f_0(u)`.
 
         This represents the volumetric source term in the weak form.
         """
@@ -148,8 +149,8 @@ class SNES_MyEquation(SNES_Scalar):
 
     @property
     def F1(self):
-        """
-        Flux term: $\mathbf{F}_1(u, \nabla u)$.
+        r"""
+        Flux term :math:`\mathbf{F}_1(u, \nabla u)`.
 
         This represents the flux that appears in the divergence term.
         """
@@ -307,16 +308,28 @@ class SNES_MyEquation(SNES_Scalar):
 # Alternative template for vector equations
 class SNES_MyVectorEquation(SNES_Vector):
     r"""
-    Template for vector-valued PDE solver.
+    Template solver for vector-valued PDEs.
 
-    Governing equation:
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u}}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} +
-    \color{Blue}{\underbrace{\Bigl[ \nabla \cdot \mathbf{F}(\mathbf{u}, \nabla \mathbf{u}) \Bigr]}_{\text{Flux}}} =
-    \color{Maroon}{\underbrace{\Bigl[ \mathbf{f}(\mathbf{x}, t, \mathbf{u}) \Bigr] }_{\text{Source}}}
-    $$
+    Provides a discrete representation of a general vector equation:
 
-    Where $\mathbf{u}$ is a vector field.
+    .. math::
+
+        \underbrace{\frac{\partial \mathbf{u}}{\partial t}}_{\dot{\mathbf{u}}}
+        + \underbrace{\nabla \cdot \mathbf{F}(\mathbf{u}, \nabla \mathbf{u})}_{\text{Flux}}
+        = \underbrace{\mathbf{f}(\mathbf{x}, t, \mathbf{u})}_{\text{Source}}
+
+    where :math:`\mathbf{u}` is a vector field.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        The solution vector field. Created automatically if None.
+    degree : int, default=2
+        Polynomial degree for the finite element basis.
+    verbose : bool, default=False
+        Enable verbose output.
     """
 
     instances = 0

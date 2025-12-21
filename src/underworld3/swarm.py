@@ -1,3 +1,30 @@
+r"""
+Particle swarm management for Lagrangian tracking.
+
+This module provides particle swarm (point cloud) data structures for
+tracking material properties through deformation. Swarms enable Lagrangian
+representations of material history, composition, and other quantities
+that move with the flow.
+
+Key Components
+--------------
+SwarmType : enum
+    PETSc swarm type specification (BASIC or PIC).
+SwarmVariable : class
+    Variable storing values at particle locations with mesh-based proxy
+    for use in symbolic expressions.
+IndexSwarmVariable : class
+    Integer-valued swarm variable for material indexing.
+
+The swarm module integrates with PETSc's DMSwarm for parallel particle
+management and provides automatic population, advection, and repopulation
+capabilities.
+
+See Also
+--------
+underworld3.discretisation : Mesh discretisation classes.
+underworld3.systems.ddt : Time derivative schemes using swarms.
+"""
 from posixpath import pardir
 import petsc4py.PETSc as PETSc
 
@@ -23,6 +50,21 @@ from enum import Enum
 
 # We can grab this type from the PETSc module
 class SwarmType(Enum):
+    """
+    PETSc swarm type specification.
+
+    Determines how particles are managed by PETSc's DMSwarm infrastructure.
+
+    Attributes
+    ----------
+    DMSWARM_BASIC : int
+        Basic point cloud without mesh association.
+    DMSWARM_PIC : int
+        Particle-in-cell mode with automatic mesh cell tracking.
+        Particles are migrated between MPI ranks as they move across
+        cell boundaries.
+    """
+
     DMSWARM_BASIC = 0
     DMSWARM_PIC = 1
 
@@ -38,32 +80,71 @@ from underworld3.utilities.dimensionality_mixin import DimensionalityMixin
 
 
 class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object):
-    """
-    The SwarmVariable class generates a variable supported by a point cloud or 'swarm' and the
-    underlying meshVariable representation that makes it possible to construct expressions that
-    depend on the values of the swarmVariable.
+    r"""
+    Variable supported by a particle swarm (point cloud).
 
-    To set / read nodal values, use the numpy interface via the 'data' property.
+    A SwarmVariable stores values at discrete particle locations and provides
+    a mesh-based proxy representation for use in symbolic expressions. This
+    enables Lagrangian tracking of material properties through deformation.
 
     Parameters
     ----------
-    varname :
-        A textual name for this variable.
-    swarm :
-        The supporting underworld swarm.
-    size :
-        The shape of a Matrix variable type.
-    vtype :
-        Semi-Optional. The underworld variable type for this variable.
-    proxy_degree :
-        The polynomial degree for this variable.
-    proxy_continuous :
-        The polynomial degree for this variable.
-    varsymbol:
-        A symbolic form for printing etc (sympy / latex)
-    rebuild_on_cycle:
-        For cyclic swarm variables — True is the best choice for continuous fields
+    name : str
+        Identifier for this variable (must be unique within the swarm).
+    swarm : Swarm
+        The supporting particle swarm.
+    size : int or tuple, optional
+        Shape specification: int for vectors, tuple for matrices.
+        If None, inferred from ``vtype``.
+    vtype : VarType, optional
+        Variable type (SCALAR, VECTOR, TENSOR, SYM_TENSOR, MATRIX).
+        If None, inferred from ``size``.
+    dtype : type, default=float
+        Data type for storage (float or int).
+    proxy_degree : int, default=1
+        Polynomial degree for the mesh proxy variable.
+    proxy_continuous : bool, default=True
+        Whether the proxy uses continuous (True) or discontinuous (False)
+        interpolation.
+    varsymbol : str, optional
+        LaTeX symbol for display. Defaults to ``name``.
+    rebuild_on_cycle : bool, default=True
+        If True, rebuild the proxy when particles cycle through periodic
+        boundaries. Recommended for continuous fields.
+    units : str or pint.Unit, optional
+        Physical units for this variable (e.g., 'kelvin', 'Pa').
+        Requires reference quantities to be set on the model.
 
+    Attributes
+    ----------
+    data : numpy.ndarray
+        Direct access to variable values at particle locations.
+    sym : sympy.Matrix
+        Symbolic representation for use in expressions.
+
+    See Also
+    --------
+    MeshVariable : Variable supported by mesh nodes.
+    Swarm : Container for particle locations.
+
+    Examples
+    --------
+    Create a temperature field on a swarm:
+
+    >>> swarm = uw.swarm.Swarm(mesh)
+    >>> T = swarm.add_variable("T", size=1, vtype=uw.VarType.SCALAR)
+    >>> T.data[:] = 1600.0  # Set initial temperature
+
+    Create a velocity field:
+
+    >>> v = swarm.add_variable("v", size=mesh.dim, vtype=uw.VarType.VECTOR)
+
+    Notes
+    -----
+    SwarmVariables are essential for tracking material properties that
+    advect with the flow. The mesh proxy enables their use in finite
+    element formulations while particle storage preserves Lagrangian
+    history.
     """
 
     @timing.routine_timer_decorator
@@ -1785,9 +1866,41 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
 class IndexSwarmVariable(SwarmVariable):
     """
-    The IndexSwarmVariable is a class for managing material point
-    behaviour. The material index variable is rendered into a
-    collection of masks each representing the extent of one material
+    Integer-valued swarm variable for material tracking.
+
+    IndexSwarmVariable stores integer indices at particle locations, typically
+    used for tracking distinct material types. It automatically generates
+    symbolic mask expressions for each material index, enabling material-
+    dependent properties in constitutive models.
+
+    Parameters
+    ----------
+    name : str
+        Variable name for identification and I/O.
+    swarm : Swarm
+        Parent swarm object.
+    indices : int
+        Number of distinct material indices (default 1).
+    proxy_degree : int
+        Polynomial degree for mesh projection (default 1).
+    proxy_continuous : bool
+        Whether mesh proxy is continuous (default True).
+
+    Attributes
+    ----------
+    sym : list of sympy.Expr
+        Symbolic mask expressions for each material index.
+
+    Examples
+    --------
+    >>> material = IndexSwarmVariable("M", swarm, indices=3)
+    >>> material.data[:] = 0  # Set all particles to material 0
+    >>> # Use sym[i] as multiplier for material i properties
+    >>> viscosity = material.sym[0] * 1e20 + material.sym[1] * 1e21
+
+    See Also
+    --------
+    SwarmVariable : Base class for particle-supported variables.
     """
 
     @timing.routine_timer_decorator

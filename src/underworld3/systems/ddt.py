@@ -1,3 +1,37 @@
+r"""
+Time derivative approximations for transient problems.
+
+This module provides classes for computing time derivatives using various
+numerical schemes. These are used within solvers to discretize the time
+dimension of PDEs.
+
+Classes
+-------
+Symbolic
+    Pure symbolic time derivative (stores history for multi-step methods).
+Eulerian
+    Mesh-based time derivative with projection for field updates.
+SemiLagrangian
+    Particle-based advection with mesh projection for Lagrangian tracking.
+Lagrangian
+    Full Lagrangian (particle-following) time derivative on swarms.
+Lagrangian_Swarm
+    Specialized Lagrangian derivative for swarm-based tracking.
+
+Notes
+-----
+The choice of time derivative scheme affects accuracy, stability, and
+computational cost:
+
+- **Eulerian**: Fixed grid, simple but may have numerical diffusion
+- **Semi-Lagrangian**: Good for advection-dominated problems
+- **Lagrangian**: Tracks material properties without diffusion
+
+See Also
+--------
+underworld3.systems.solvers : PDE solvers using these time derivatives.
+"""
+
 import sympy
 from sympy import sympify
 import numpy as np
@@ -15,18 +49,19 @@ from petsc4py import PETSc
 
 class Symbolic(uw_object):
     r"""
-    Symbolic History Manager:
+    Symbolic history manager for time derivative approximations.
 
-    This class manages the update of a variable ψ across timesteps.
-    The history operator stores ψ over several timesteps (given by 'order')
-    so that it can compute backward differentiation (BDF) or Adams–Moulton expressions.
+    Manages the update of a variable :math:`\psi` across timesteps. The history
+    operator stores :math:`\psi` over several timesteps (given by ``order``) so
+    that it can compute backward differentiation (BDF) or Adams-Moulton expressions.
 
-    The history operator is defined as follows:
-    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
-    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
-    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    The history operator is defined as:
 
+    .. math::
 
+        \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
+        \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
+        \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
     """
 
     @timing.routine_timer_decorator
@@ -176,11 +211,16 @@ class Symbolic(uw_object):
 
 
 class Eulerian(uw_object):
-    r"""Eulerian  (mesh based) History Manager:
-    This manages the update of a variable, $\psi$ on the mesh across timesteps.
-    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
-    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
-    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    r"""
+    Eulerian (mesh-based) history manager.
+
+    Manages the update of a variable :math:`\psi` on the mesh across timesteps:
+
+    .. math::
+
+        \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
+        \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
+        \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
     """
 
     @timing.routine_timer_decorator
@@ -398,7 +438,7 @@ class Eulerian(uw_object):
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order
@@ -449,12 +489,16 @@ class Eulerian(uw_object):
 
 class SemiLagrangian(uw_object):
     r"""
-    # Nodal-Swarm  Semi-Lagrangian History Manager:
+    Semi-Lagrangian history manager using nodal swarm.
 
-    This manages the semi-Lagrangian update of a Mesh Variable, $\psi$, on the mesh across timesteps.
-    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
-    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
-    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    Manages the semi-Lagrangian update of a mesh variable :math:`\psi`
+    across timesteps:
+
+    .. math::
+
+        \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
+        \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
+        \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
     """
 
     @timing.routine_timer_decorator
@@ -977,7 +1021,7 @@ class SemiLagrangian(uw_object):
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order
@@ -1036,15 +1080,19 @@ class SemiLagrangian(uw_object):
 
 
 class Lagrangian(uw_object):
-    r"""Swarm-based Lagrangian History Manager:
+    r"""
+    Swarm-based Lagrangian history manager.
 
-    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    Manages the update of a Lagrangian variable :math:`\psi` on the swarm
+    across timesteps:
 
-    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+    .. math::
 
-    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+        \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}
 
-    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+        \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots
+
+        \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}
     """
 
     instances = (
@@ -1176,7 +1224,7 @@ class Lagrangian(uw_object):
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order
@@ -1227,14 +1275,19 @@ class Lagrangian(uw_object):
 
 
 class Lagrangian_Swarm(uw_object):
-    r"""Swarm-based Lagrangian History Manager:
-    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    r"""
+    Swarm-based Lagrangian history manager (user-provided swarm).
 
-    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+    Manages the update of a Lagrangian variable :math:`\psi` on a user-supplied
+    swarm across timesteps:
 
-    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+    .. math::
 
-    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+        \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}
+
+        \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots
+
+        \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}
     """
 
     instances = (
@@ -1376,7 +1429,7 @@ class Lagrangian_Swarm(uw_object):
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order

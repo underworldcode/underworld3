@@ -1,5 +1,43 @@
-# A collection of utilities for the uw3 system
+r"""
+Utility functions and infrastructure for Underworld3.
 
+This module provides supporting utilities including I/O helpers,
+geometry tools, array callbacks, and mathematical mixins.
+
+I/O Utilities
+-------------
+Xdmf, generateXdmf, generate_uw_Xdmf
+    XDMF file generation for ParaView visualization.
+swarm_h5, swarm_xdmf
+    Swarm data I/O in HDF5 and XDMF formats.
+read_medit_ascii, create_dmplex_from_medit
+    Import meshes from Medit format.
+
+Geometry Tools
+--------------
+Various geometric helper functions for mesh operations.
+
+Development Utilities
+---------------------
+CaptureStdout
+    Context manager for capturing stdout.
+h5_scan
+    HDF5 file inspection.
+mem_footprint
+    Memory usage tracking.
+auditor, postHog
+    Analytics and debugging tools.
+
+Notes
+-----
+The units_mixin exports are DEPRECATED. Use the units system in
+:mod:`underworld3.function.unit_conversion` instead.
+
+See Also
+--------
+underworld3.function : Expression evaluation with unit support.
+underworld3.discretisation : Mesh I/O functions.
+"""
 from . import _api_tools
 
 
@@ -26,15 +64,15 @@ from .geometry_tools import *
 from .nd_array_callback import NDArray_With_Callback
 from .mathematical_mixin import MathematicalMixin
 
-# DEPRECATED: Units mixin system - preserved for historical reference only
-# These imports will trigger DeprecationWarning
-# DO NOT USE - see enhanced_variables.py for active units implementation
+# DEPRECATED AND SCHEDULED FOR REMOVAL
+# These units_mixin imports are not used and will be removed in a future version.
+# DO NOT USE - see underworld3.function.unit_conversion for the active units system.
 from .units_mixin import (
-    UnitAwareMixin,           # DEPRECATED
-    UnitAwareMathematicalMixin,  # DEPRECATED
-    UnitsBackend,             # DEPRECATED
-    PintBackend,              # DEPRECATED
-    make_units_aware,         # DEPRECATED
+    UnitAwareMixin,           # DEPRECATED - REMOVE
+    UnitAwareMathematicalMixin,  # DEPRECATED - REMOVE
+    UnitsBackend,             # DEPRECATED - REMOVE
+    PintBackend,              # DEPRECATED - REMOVE
+    make_units_aware,         # DEPRECATED - REMOVE
 )
 
 from .unit_aware_array import (

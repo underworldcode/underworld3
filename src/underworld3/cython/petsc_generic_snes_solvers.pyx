@@ -808,21 +808,24 @@ class SolverBaseClass(uw_object):
 
 class SNES_Scalar(SolverBaseClass):
     r"""
-    # Underworld / PETSc General Scalar Equation Solver
+    General scalar equation solver using PETSc SNES.
 
-    The `SNES_Scalar` solver class provides functionality for solving the scalar conservation problem in the unknown $u$:
+    Solves the scalar conservation problem for unknown :math:`u`:
 
-    $$
-    \nabla \cdot \color{Blue}{\mathrm{F}(u, \nabla u, \dot{u}, \nabla\dot{u})} -
-    \color{Green}{\mathrm{f} (u, \nabla u, \dot{u}, \nabla\dot{u})} = 0
-    $$
+    .. math::
 
-    where $\mathrm{f}$ is a source term for $u$, $\mathrm{F}$ is a flux term that relates the rate of change of $u$ to the gradients $\nabla u$, and $\dot{\mathrm{u}}$ is the Lagrangian time-derivative of $u$.
+        \nabla \cdot \mathbf{F}(u, \nabla u, \dot{u}, \nabla\dot{u})
+        - f(u, \nabla u, \dot{u}, \nabla\dot{u}) = 0
 
-    $u$ is a scalar `underworld` `meshVariable` and $\mathrm{f}$, $\mathrm{F}$ are arbitrary sympy expressions of the coodinate variables of the mesh.
+    where :math:`f` is a source term, :math:`\mathbf{F}` is a flux term relating
+    :math:`u` to its gradients :math:`\nabla u`, and :math:`\dot{u}` is the
+    Lagrangian time derivative.
 
-    This class is used as a base layer for building solvers which translate from the common
-    physical conservation laws into this general mathematical form.
+    The unknown :math:`u` is a scalar mesh variable, and :math:`f`, :math:`\mathbf{F}`
+    are arbitrary sympy expressions of mesh coordinate variables.
+
+    This class is the base layer for building solvers that translate physical
+    conservation laws into this general mathematical form.
     """
 
     @timing.routine_timer_decorator
@@ -1398,25 +1401,26 @@ class SNES_Scalar(SolverBaseClass):
 
 class SNES_Vector(SolverBaseClass):
     r"""
-    # Underworld / PETSc General Vector Equation Solver
+    General vector equation solver using PETSc SNES.
 
-    The `SNES_Vector` solver class provides functionality for solving the vector conservation problem in the unknown $\mathbf{u}$:
+    Solves the vector conservation problem for unknown :math:`\mathbf{u}`:
 
-    $$
-    \nabla \cdot \color{Blue}{\mathbf{F}(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}u})} -
-    \color{Green}{\mathbf{f} (\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}u})} = 0
-    $$
+    .. math::
 
-    where $\mathbf{f}$ is a source term for $u$, $\mathbf{F}$ is a flux term that relates
-    the rate of change of $\mathbf{u}$ to the gradients $\nabla \mathbf{u}$, and $\dot{\mathbf{u}}$
-    is the Lagrangian time-derivative of $\mathbf{u}$.
+        \nabla \cdot \mathbf{F}(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}},
+        \nabla\dot{\mathbf{u}}) - \mathbf{f}(\mathbf{u}, \nabla \mathbf{u},
+        \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) = 0
 
-    $\mathbf{u}$ is a vector `underworld` `meshVariable` and $\mathbf{f}$, $\mathbf{F}$
-    are arbitrary sympy expressions of the coodinate variables of the mesh and may include other
-    `meshVariable` and `swarmVariable` objects.
+    where :math:`\mathbf{f}` is a source term, :math:`\mathbf{F}` is a flux term
+    relating :math:`\mathbf{u}` to its gradients :math:`\nabla \mathbf{u}`, and
+    :math:`\dot{\mathbf{u}}` is the Lagrangian time derivative.
 
-    This class is used as a base layer for building solvers which translate from the common
-    physical conservation laws into this general mathematical form.
+    The unknown :math:`\mathbf{u}` is a vector mesh variable, and :math:`\mathbf{f}`,
+    :math:`\mathbf{F}` are arbitrary sympy expressions that may include mesh
+    coordinates and other mesh/swarm variables.
+
+    This class is the base layer for building solvers that translate physical
+    conservation laws into this general mathematical form.
     """
 
     @timing.routine_timer_decorator
@@ -2088,31 +2092,33 @@ class SNES_Vector(SolverBaseClass):
 
 class SNES_Stokes_SaddlePt(SolverBaseClass):
     r"""
-    # Underworld / PETSc General Saddle Point Equation Solver
+    Saddle point equation solver for constrained problems using PETSc SNES.
 
-    The `SNES_Stokes_SaddlePt` solver class provides functionality for solving the *constrained* vector
-    conservation problem in the unknown $\mathbf{u}$ with the constraint parameter $\mathrm{p}$:
+    Solves the constrained vector conservation problem for unknown :math:`\mathbf{u}`
+    with constraint parameter :math:`p`:
 
-    $$
-    \nabla \cdot \color{Blue}{\mathbf{F}(\mathbf{u}, \mathrm{p}, \nabla \mathbf{u}, \nabla \mathbf{p}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} -
-    \color{Green}{\mathbf{f} (\mathbf{u}, \mathrm{p}, \nabla \mathbf{u}, \nabla \mathbf{p}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} = 0
-    $$
+    .. math::
 
-    $$
-    \mathrm{f}_p {(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} = 0
-    $$
+        \nabla \cdot \mathbf{F}(\mathbf{u}, p, \nabla \mathbf{u}, \nabla p,
+        \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) - \mathbf{f}(\mathbf{u}, p,
+        \nabla \mathbf{u}, \nabla p, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) = 0
 
-    where $\mathbf{f}$ is a source term for $u$, $\mathbf{F}$ is a flux term that relates
-    the rate of change of $\mathbf{u}$ to the gradients $\nabla \mathbf{u}$, and $\dot{\mathbf{u}}$
-    is the Lagrangian time-derivative of $\mathbf{u}$. $\mathrm{f}_p$ is the expression of the constraints
-    on $\mathbf{u}$ enforced by the parameter $\mathrm{p}$.
+    .. math::
 
-    $\mathbf{u}$ is a vector `underworld` `meshVariable` and $\mathbf{f}$, $\mathbf{F}$ and $\mathrm{F}_p$
-    are arbitrary sympy expressions of the coodinate variables of the mesh and may include other
-    `meshVariable` and `swarmVariable` objects. $\mathrm{p}$ is a scalar `underworld` `meshVariable`.
+        f_p(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) = 0
 
-    This class is used as a base layer for building solvers which translate from the common
-    physical conservation laws into this general mathematical form.
+    where :math:`\mathbf{f}` is a source term, :math:`\mathbf{F}` is a flux term
+    relating :math:`\mathbf{u}` to its gradients, :math:`\dot{\mathbf{u}}` is
+    the Lagrangian time derivative, and :math:`f_p` expresses the constraints
+    on :math:`\mathbf{u}` enforced by parameter :math:`p`.
+
+    The unknown :math:`\mathbf{u}` is a vector mesh variable and :math:`p` is a
+    scalar mesh variable. The terms :math:`\mathbf{f}`, :math:`\mathbf{F}`, and
+    :math:`f_p` are arbitrary sympy expressions that may include mesh coordinates
+    and other mesh/swarm variables.
+
+    This class is the base layer for building solvers that translate physical
+    conservation laws into this general mathematical form.
     """
 
     class _Unknowns(SolverBaseClass._Unknowns):

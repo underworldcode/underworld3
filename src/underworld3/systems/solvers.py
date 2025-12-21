@@ -1,3 +1,52 @@
+r"""
+PDE solvers for Underworld3.
+
+This module provides finite element solvers for common PDEs in geodynamics
+and computational mechanics. All solvers use PETSc's SNES (Scalable Nonlinear
+Equation Solvers) framework.
+
+Scalar Equations
+----------------
+SNES_Poisson
+    Poisson/diffusion equation: :math:`\nabla \cdot (k \nabla T) = f`
+SNES_Darcy
+    Darcy flow: pressure-driven flow through porous media
+
+Vector Equations
+----------------
+SNES_Stokes
+    Stokes flow: :math:`\nabla \cdot \boldsymbol{\tau} - \nabla p = f`
+SNES_VE_Stokes
+    Viscoelastic Stokes with stress history
+SNES_Stokes_SaddlePt
+    Stokes with saddle-point preconditioner
+
+Transport Equations
+-------------------
+SNES_AdvectionDiffusion
+    Scalar advection-diffusion with Lagrangian tracking
+
+Notes
+-----
+Solvers support unit-aware calculations when reference quantities are
+set on the model. Physical units are preserved through the solve process
+and timestep estimates are returned with appropriate time units.
+
+See Also
+--------
+underworld3.systems.ddt : Time derivative schemes for transient problems.
+underworld3.constitutive_models : Material constitutive laws.
+
+Examples
+--------
+Set up a Stokes solver:
+
+>>> stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+>>> stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+>>> stokes.viscosity = 1e21
+>>> stokes.solve()
+"""
+
 import sympy
 from sympy import sympify
 import numpy as np
@@ -104,29 +153,27 @@ from .ddt import Symbolic as Symbolic_DDt
 
 class SNES_Poisson(SNES_Scalar):
     r"""
-    # Poisson Equation Solver
+    Poisson equation solver.
 
-    This class provides functionality for a discrete representation
-    of the Poisson equation
+    Provides a discrete representation of the Poisson equation:
 
-    $$
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates the flux to gradients in the unknown $u$
+        \nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
 
-    ## Properties
+    where :math:`\mathbf{F} = \boldsymbol{\kappa} \nabla u` relates the flux to
+    gradients in the unknown :math:`u`.
 
-      - The unknown is $u$
-
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
-
-      - $f$ is a volumetric source term
+    Attributes
+    ----------
+    u : MeshVariable
+        The unknown scalar field.
+    constitutive_model : DiffusionModel
+        Provides the diffusivity tensor :math:`\kappa`. Set to one of the
+        scalar ``uw.constitutive_models`` classes. Can be constant, spatially
+        varying, non-linear, or anisotropic.
+    f : sympy.Expr
+        Volumetric source term.
     """
 
     @timing.routine_timer_decorator
@@ -252,46 +299,66 @@ class SNES_Poisson(SNES_Scalar):
 
 class SNES_Darcy(SNES_Scalar):
     r"""
-    # Darcy Flow Equation Solver
+    Darcy flow equation solver for groundwater problems.
 
-    This class provides functionality for a discrete representation
-    of the Groundwater flow equations
+    Provides a discrete representation of the groundwater flow equations:
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h  - \boldsymbol{s}\Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The flux term, $\mathbf{F}$ relates the effective velocity to pressure gradients
+        \underbrace{S_s \frac{\partial h}{\partial t}}_{\dot{u}}
+        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \nabla h
+        - \boldsymbol{s} \right]}_{\mathbf{F}}
+        = \underbrace{W}_{h}
 
-    $$
-    \boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)
-    $$
+    The flux term :math:`\mathbf{F}` relates the effective velocity to
+    pressure gradients:
 
-    The time-dependent term $\dot{\mathbf{f}}$ is not implemented in this version.
+    .. math::
 
-    ## Properties
+        \boldsymbol{v} = \boldsymbol{\kappa} \nabla h - \boldsymbol{s}
 
-      - The unknown is $h$, the hydraulic head
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    h_Field : MeshVariable, optional
+        Mesh variable for hydraulic head. Created automatically if not provided.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity. Created automatically if not provided.
+    degree : int, default=2
+        Polynomial degree for the finite element discretization.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
 
-      - The permeability tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
+    Attributes
+    ----------
+    h : MeshVariable
+        The hydraulic head unknown.
+    v : MeshVariable
+        The Darcy velocity field.
+    s : sympy.Expr
+        Source term for pressure gradients (e.g., :math:`\rho g`).
+    Ss : sympy.Expr
+        Specific storage coefficient.
 
-      - Volumetric sources for the pressure gradient are supplied through
-        the $s$ property [e.g. $s = \rho g$ ]
+    Notes
+    -----
+    - The unknown is :math:`h`, the hydraulic head
+    - The permeability tensor :math:`\kappa` is set via the ``constitutive_model``
+      property using one of the ``uw.constitutive_models`` classes
+    - :math:`W` is a pressure source term
+    - :math:`S_s` is the specific storage coefficient
+    - The time-dependent term :math:`\dot{f}` is not implemented in this version
+    - The solver returns both the primary field and the Darcy flux (mean-flow velocity)
 
-      - $W$ is a pressure source term
-
-      - $S_s$ is the specific storage coefficient
-
-    ## Notes
-
-      - The solver returns the primary field and also the Darcy flux term (the mean-flow velocity)
-
+    See Also
+    --------
+    SNES_Poisson : Related diffusion-only solver.
+    uw.constitutive_models.DarcyFlowModel : Constitutive model for Darcy flow.
     """
 
     @timing.routine_timer_decorator
@@ -811,68 +878,84 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
 class SNES_VE_Stokes(SNES_Stokes):
     r"""
-    # ViscoElastic Stokes Equation Solver
+    Viscoelastic Stokes equation solver.
 
-    This class provides functionality for a discrete representation
-    of the Stokes flow equations assuming an incompressibility
-    (or near-incompressibility) constraint and with a flux history
-    term included to allow for viscoelastic modelling.
+    Provides a discrete representation of the Stokes flow equations with
+    incompressibility (or near-incompressibility) constraint and a flux
+    history term for viscoelastic modelling. Inherits from :class:`SNES_Stokes`.
 
-    All other functionality is inherited from SNES_Stokes
+    Momentum equation:
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[
-                    \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    $$
-    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
-    $$
+        -\nabla \cdot \underbrace{\left[ \boldsymbol{\tau} - p \mathbf{I}
+        \right]}_{\mathbf{F}} = \underbrace{\mathbf{f}}_{\mathbf{h}}
 
-    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
-      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
+    Continuity equation:
 
-    $$
-        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
-    $$
+    .. math::
 
-    The constraint equation, $\mathbf{h}_p = 0$ is incompressible flow by default but can be set
-    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
+        \underbrace{\nabla \cdot \mathbf{u}}_{\mathbf{h}_p} = 0
 
-    ## Properties
+    The flux term is a deviatoric stress :math:`\boldsymbol{\tau}` related
+    to velocity gradients :math:`\nabla \mathbf{u}` through a viscosity
+    tensor :math:`\eta`, plus a volumetric (pressure) part :math:`p`:
 
-      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$
+    .. math::
 
-      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
+        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}
+        \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
 
-      - $\mathbf f$ is a volumetric source term (i.e. body forces)
-      and is set by providing the `bodyforce` property.
+    The constraint equation :math:`\mathbf{h}_p = 0` is incompressible flow
+    by default but can be set to any function of :math:`\mathbf{u}` and
+    :math:`\nabla \cdot \mathbf{u}`.
 
-      - An Augmented Lagrangian approach to application of the incompressibility
-    constraint is to penalise incompressibility in the Stokes equation by adding
-    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
-    (this is in addition to the constraint equation, unlike in the classical penalty method).
-    This is activated by setting the `penalty` property to a non-zero floating point value which adds
-    the term in the `sympy` expression.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    velocityField : MeshVariable, optional
+        Mesh variable for velocity. Created automatically if not provided.
+    pressureField : MeshVariable, optional
+        Mesh variable for pressure. Created automatically if not provided.
+    degree : int, default=2
+        Polynomial degree for velocity elements.
+    order : int, default=2
+        Order parameter (typically same as degree).
+    p_continuous : bool, default=True
+        If False, use discontinuous pressure elements.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator (may be used in child classes).
 
-      - A preconditioner is usually required for the saddle point system and this is provided
-    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+    Attributes
+    ----------
+    u : MeshVariable
+        Velocity field unknown :math:`\mathbf{u}`.
+    p : MeshVariable
+        Pressure field unknown :math:`p`.
+    bodyforce : sympy.Expr
+        Body force term :math:`\mathbf{f}`.
+    penalty : float
+        Augmented Lagrangian penalty parameter :math:`\lambda`.
+    saddle_preconditioner : sympy.Expr
+        Preconditioner for saddle point system (default: :math:`1/\eta`).
 
-    ## Notes
+    Notes
+    -----
+    - The viscosity tensor :math:`\boldsymbol{\eta}` is set via the
+      ``constitutive_model`` property
+    - For viscoelastic problems, the flux term contains stress history
+      tracked on a particle swarm
+    - Augmented Lagrangian approach adds :math:`\lambda \nabla \cdot \mathbf{u}`
+      to penalize incompressibility
+    - Pressure element order determines mixed FEM integration order
 
-      - For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
-        stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.
-
-      - The interpolation order of the `pressureField` variable is used to determine the integration order of
-    the mixed finite element method and is usually lower than the order of the `velocityField` variable.
-
-      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
-
+    See Also
+    --------
+    SNES_Stokes : Base Stokes solver.
+    uw.constitutive_models.ViscoElasticPlasticFlowModel : Constitutive model for VE flow.
     """
 
     instances = 0
@@ -999,24 +1082,52 @@ class SNES_VE_Stokes(SNES_Stokes):
 
 class SNES_Projection(SNES_Scalar):
     r"""
-    # Projection Solver
+    Scalar projection solver for mapping functions to mesh variables.
 
-    Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
-    $u$ is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
-    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
-    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
-    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
-    evaluated within that context.
+    Solves :math:`u = \tilde{f}` where :math:`\tilde{f}` is a function that
+    can be evaluated within an element and :math:`u` is a mesh variable with
+    associated shape functions.
 
-    The projection implemented by creating a solver for this problem
+    Typically used to obtain a continuous representation of a function not
+    well-defined at mesh nodes (e.g., derivatives or flux components). More
+    broadly, it is a projection from one basis to another.
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{h}}} = 0
-    $$
+    The projection is implemented by solving:
 
-    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    .. math::
+
+        -\nabla \cdot \underbrace{\left[ \alpha \nabla u \right]}_{\mathbf{F}}
+        - \underbrace{\left[ u - \tilde{f} \right]}_{\mathbf{h}} = 0
+
+    The term :math:`\mathbf{F}` provides optional smoothing regularization.
+    Setting :math:`\alpha = 0` gives a pure L2 projection.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Target mesh variable for the projection.
+    scalar_Field : MeshVariable, optional
+        Alternative name for the target field.
+    degree : int, default=2
+        Polynomial degree for the finite element space.
+    solver_name : str, optional
+        Name for the solver instance.
+    verbose : bool, default=False
+        Enable verbose output.
+
+    Attributes
+    ----------
+    uw_function : sympy.Expr
+        The function :math:`\tilde{f}` to project.
+    smoothing : float
+        The regularization parameter :math:`\alpha`.
+
+    See Also
+    --------
+    SNES_Vector_Projection : Vector field projection.
+    SNES_Tensor_Projection : Tensor field projection.
     """
 
     @timing.routine_timer_decorator
@@ -1090,24 +1201,48 @@ class SNES_Projection(SNES_Scalar):
 
 class SNES_Vector_Projection(SNES_Vector):
     r"""
-    # Projection Solver (Vector Variable)
+    Vector projection solver for mapping vector functions to mesh variables.
 
-    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
-    $\mathbf{u}$ is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
-    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
-    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
-    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
-    evaluated within that context.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
+    is a vector function that can be evaluated within an element and
+    :math:`\mathbf{u}` is a vector mesh variable with associated shape functions.
 
-    The projection is implemented by creating a solver for this problem
+    Typically used to obtain a continuous representation of a vector function
+    not well-defined at mesh nodes (e.g., gradient or flux vectors).
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
-    $$
+    The projection is implemented by solving:
 
-    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    .. math::
+
+        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
+        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
+        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
+
+    The term :math:`\mathbf{F}` provides optional smoothing regularization.
+    Setting :math:`\alpha = 0` gives a pure L2 projection.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Target vector mesh variable for the projection.
+    degree : int, default=2
+        Polynomial degree for the finite element space.
+    verbose : bool, default=False
+        Enable verbose output.
+
+    Attributes
+    ----------
+    uw_function : sympy.Matrix
+        The vector function :math:`\tilde{\mathbf{f}}` to project.
+    smoothing : float
+        The regularization parameter :math:`\alpha`.
+
+    See Also
+    --------
+    SNES_Projection : Scalar field projection.
+    SNES_Tensor_Projection : Tensor field projection.
     """
 
     @timing.routine_timer_decorator
@@ -1204,27 +1339,48 @@ class SNES_Vector_Projection(SNES_Vector):
 
 class SNES_Tensor_Projection(SNES_Projection):
     r"""
-    # Projection Solver (Tensor Variable)
+    Tensor projection solver for mapping tensor functions to mesh variables.
 
-    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
-    $\mathbf{u}$ is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
-    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
-    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
-    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
-    evaluated within that context.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
+    is a tensor-valued function that can be evaluated within an element and
+    :math:`\mathbf{u}` is a tensor mesh variable with associated shape functions.
 
-    The projection implemented by creating a solver for this problem
+    Typically used to obtain a continuous representation of a tensor function
+    not well-defined at mesh nodes (e.g., stress or strain tensors).
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
-    $$
+    The projection is implemented by solving:
 
-    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    .. math::
 
-    Note: this is currently implemented component-wise as we do not have a native solver for tensor unknowns.
+        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
+        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
+        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
 
+    The term :math:`\mathbf{F}` provides optional smoothing regularization.
+    Setting :math:`\alpha = 0` gives a pure L2 projection.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    tensor_Field : MeshVariable, optional
+        Target tensor mesh variable for the projection.
+    scalar_Field : MeshVariable, optional
+        Scalar work variable used internally.
+    degree : int, default=2
+        Polynomial degree for the finite element space.
+    verbose : bool, default=False
+        Enable verbose output.
+
+    Notes
+    -----
+    Currently implemented component-wise as there is no native solver
+    for tensor unknowns.
+
+    See Also
+    --------
+    SNES_Projection : Scalar field projection.
+    SNES_Vector_Projection : Vector field projection.
     """
 
     @timing.routine_timer_decorator
@@ -1328,44 +1484,67 @@ class SNES_Tensor_Projection(SNES_Projection):
 
 class SNES_AdvectionDiffusion(SNES_Scalar):
     r"""
-    # Advection-Diffusion Equation Solver (Scalar Variable)
+    Advection-diffusion equation solver using semi-Lagrangian Crank-Nicolson.
 
-    This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
-    which is described in Spiegelman & Katz, (2006).
+    Implements the characteristics-based method described in Spiegelman & Katz (2006):
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
+        \underbrace{\frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla
+        \right) u}_{\dot{u}} - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa}
+        \nabla u \right]}_{\mathbf{F}} = \underbrace{f}_{\mathbf{h}}
 
-    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
-    the points which later arrive at the nodal points of the mesh. This is achieved using a "hidden"
-    swarm variable which is advected backwards from the nodal points automatically during the `solve` phase.
+    The flux term :math:`\mathbf{F}` relates diffusive fluxes to gradients in
+    :math:`u`. Advective fluxes along the velocity field :math:`\mathbf{v}` are
+    handled in the :math:`\dot{u}` term.
 
-    ## Properties
+    The time derivative :math:`\dot{u}` involves upstream sampling to find
+    :math:`u^*`, the value of :math:`u` at points which later arrive at mesh
+    nodes. This is achieved using a hidden swarm variable advected backwards
+    from nodal points automatically during solve.
 
-      - The unknown is $u$.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable
+        Mesh variable for the transported scalar.
+    V_fn : MeshVariable or sympy.Basic
+        Velocity field for advection.
+    order : int, default=1
+        Time integration order (1 or 2).
+    restore_points_func : callable, optional
+        Function to restore particles to valid domain.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for the unknown.
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for the flux.
 
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it's not.
+    Attributes
+    ----------
+    u : MeshVariable
+        The scalar unknown.
+    f : sympy.Expr
+        Volumetric source term.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
+    Notes
+    -----
+    - The diffusivity :math:`\kappa` is set via the ``constitutive_model`` property
+    - Sources :math:`f` can be any sympy expression involving mesh/swarm variables
 
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
+    References
+    ----------
+    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson
+    algorithm for the numerical solution of advection-diffusion problems.
+    *Geochemistry, Geophysics, Geosystems*, 7(4).
+    https://doi.org/10.1029/2005GC001073
 
-    ## References
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-
+    See Also
+    --------
+    SNES_Diffusion : Pure diffusion solver without advection.
+    SNES_Navier_Stokes : Full momentum advection-diffusion.
     """
 
     def _object_viewer(self):
@@ -1586,16 +1765,19 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the advection-diffusion solver.
+        Estimate an appropriate timestep for the advection-diffusion solver.
 
-        This is an implicit solver so the $\delta_t$ returned is the minimum of:
+        This is an implicit solver so the returned :math:`\delta t` is the
+        minimum of:
 
-            - ${\delta t}_\textrm{diff}$: typical time for the diffusion front to propagate across an element
-            - ${\delta t}_\textrm{adv}$: typical element-crossing time for a fluid parcel
+        - :math:`\delta t_{\textrm{diff}}`: typical time for diffusion across an element
+        - :math:`\delta t_{\textrm{adv}}`: typical element-crossing time for a fluid parcel
 
-        Returns:
-            Pint Quantity or float: The recommended timestep with physical time units
-            if a model with reference scales is available, otherwise nondimensional.
+        Returns
+        -------
+        pint.Quantity or float
+            The recommended timestep with physical time units if a model
+            with reference scales is available, otherwise nondimensional.
         """
 
         ### required modules
@@ -1772,31 +1954,54 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
 class SNES_Diffusion(SNES_Scalar):
     r"""
-    # Diffusion Equation Solver (Scalar Variable)
+    Diffusion equation solver using mesh-based finite elements.
 
-    This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.
+    Solves the scalar diffusion equation:
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$.
+        \underbrace{\frac{\partial u}{\partial t}}_{\dot{f}}
+        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \nabla u
+        \right]}_{\mathbf{F}} = \underbrace{f}_{h}
 
-    ## Properties
+    The flux term :math:`\mathbf{F}` relates diffusive fluxes to gradients
+    in the unknown :math:`u`.
 
-      - The unknown is $u$.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable
+        Mesh variable for the diffusing scalar.
+    order : int, default=1
+        Time integration order.
+    theta : float, default=0.0
+        Time integration parameter (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+    evalf : bool, default=False
+        Numerically evaluate symbolic expressions during setup.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
+        Time derivative operator for the unknown.
+    DFDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
+        Time derivative operator for the flux.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
+    Attributes
+    ----------
+    u : MeshVariable
+        The scalar unknown.
+    f : sympy.Expr
+        Volumetric source term.
 
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
+    Notes
+    -----
+    - The diffusivity :math:`\kappa` is set via the ``constitutive_model`` property
+    - Sources :math:`f` can be any sympy expression involving mesh/swarm variables
 
+    See Also
+    --------
+    SNES_AdvectionDiffusion : Adds advection transport.
+    SNES_Poisson : Steady-state diffusion (no time derivative).
     """
 
     def _object_viewer(self):
@@ -1991,15 +2196,18 @@ class SNES_Diffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the diffusion solver.
+        Estimate an appropriate timestep for the diffusion solver.
 
-        This solver only has a diffusive component, so the $\delta_t$ returned is:
+        This solver only has a diffusive component, so the returned
+        :math:`\delta t` is:
 
-            - ${\delta t}_\textrm{diff}$: typical time for the diffusion front to propagate across an element
+        - :math:`\delta t_{\textrm{diff}}`: typical time for diffusion across an element
 
-        Returns:
-            Pint Quantity or float: The diffusive timestep with physical time units
-            if a model with reference scales is available, otherwise nondimensional.
+        Returns
+        -------
+        pint.Quantity or float
+            The diffusive timestep with physical time units if a model
+            with reference scales is available, otherwise nondimensional.
         """
 
         ### required modules
@@ -2122,54 +2330,79 @@ class SNES_Diffusion(SNES_Scalar):
 # This one is already updated to work with the Lagrange D_Dt
 class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     r"""
-    # Navier-Stokes Equation Solver
+    Navier-Stokes equation solver with momentum advection.
 
-    This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
-    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
-    distributed sampling of upstream values taken from an arbitrary swarm variable.
+    Provides a solver for the Navier-Stokes (vector advection-diffusion) equation
+    similar to the Semi-Lagrange Crank-Nicolson method (Spiegelman & Katz, 2006)
+    but using distributed upstream sampling from a swarm variable.
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} +
-                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{u}}}} -
-        \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
-                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
+        \underbrace{\frac{\partial \mathbf{u}}{\partial t}
+        + \left( \mathbf{u} \cdot \nabla \right) \mathbf{u}}_{\dot{\mathbf{u}}}
+        - \nabla \cdot \underbrace{\left[ \frac{\boldsymbol{\eta}}{2}
+        \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+        - p \mathbf{I} \right]}_{\mathbf{F}} = \underbrace{\mathbf{f}}_{\mathbf{h}}
 
-    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
-    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
-    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
-    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing $u^{ * }$
+    The flux term :math:`\mathbf{F}` relates viscous stresses to velocity gradients.
+    Advective momentum transport is handled in the :math:`\dot{\mathbf{u}}` term.
 
-    ## Properties
+    The time derivative :math:`\dot{\mathbf{u}}` involves upstream sampling to find
+    :math:`\mathbf{u}^*`, representing velocity at the start of the timestep. This is
+    achieved using a swarm variable that carries history information along flow paths.
 
-      - The unknown is $u$.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    velocityField : MeshVariable
+        Mesh variable for velocity.
+    pressureField : MeshVariable
+        Mesh variable for pressure.
+    rho : float or sympy.Expr
+        Fluid density.
+    order : int, default=1
+        Time integration order.
+    theta : float, default=0.5
+        Time integration parameter.
+    p_continuous : bool, default=True
+        If False, use discontinuous pressure elements.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for velocity.
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for stress.
 
-      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
-        variable updated.
+    Attributes
+    ----------
+    u : MeshVariable
+        Velocity field unknown.
+    p : MeshVariable
+        Pressure field unknown.
+    rho : sympy.Expr
+        Fluid density.
+    bodyforce : sympy.Expr
+        Body force term :math:`\mathbf{f}`.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
+    Notes
+    -----
+    - The viscosity :math:`\eta` is set via the ``constitutive_model`` property
+    - High-order shape functions (cubic or higher) are recommended for accurate
+      history term interpolation
+    - The user must supply and update the swarm variable representing :math:`\mathbf{u}^*`
 
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
+    References
+    ----------
+    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson
+    algorithm for the numerical solution of advection-diffusion problems.
+    *Geochemistry, Geophysics, Geosystems*, 7(4).
+    https://doi.org/10.1029/2005GC001073
 
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## References
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
+    See Also
+    --------
+    SNES_Stokes : Steady-state Stokes flow (no inertia).
+    SNES_AdvectionDiffusion : Scalar advection-diffusion.
     """
 
     def _object_viewer(self):
@@ -2508,17 +2741,22 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the given
-        mesh and viscosity configuration. This is an implicit solver
-        so the $\delta_t$ should be interpreted as:
+        Estimate an appropriate timestep for the Navier-Stokes solver.
 
-            - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+        This is an implicit solver, so the returned :math:`\delta t` should
+        be interpreted as:
 
-        The Navier-Stokes equations include momentum diffusion via kinematic viscosity
-        (ν = η/ρ), so the diffusive timestep is computed from this quantity.
+        - :math:`\delta t_{\textrm{diff}}`: typical time for vorticity diffusion across an element
+        - :math:`\delta t_{\textrm{adv}}`: typical element-crossing time for a fluid parcel
 
-        returns: (${\delta t}_\textrm{diff}$, ${\delta t}_\textrm{adv}$)
+        The Navier-Stokes equations include momentum diffusion via kinematic
+        viscosity :math:`\nu = \eta/\rho`, so the diffusive timestep is computed
+        from this quantity.
+
+        Returns
+        -------
+        tuple
+            (:math:`\delta t_{\textrm{diff}}`, :math:`\delta t_{\textrm{adv}}`)
         """
 
         ### required modules

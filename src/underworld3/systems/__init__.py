@@ -1,5 +1,39 @@
-# Underworld systems includes solvers and constitutive equations
+r"""
+PDE solver systems for Underworld3.
 
+This module provides finite element solvers for partial differential equations
+commonly encountered in geodynamics and continuum mechanics. All solvers use
+PETSc's SNES (Scalable Nonlinear Equations Solvers) infrastructure.
+
+Available Solvers
+-----------------
+Poisson : class
+    Steady-state scalar Poisson equation.
+SteadyStateDarcy : class
+    Groundwater flow (Darcy equation).
+Stokes : class
+    Incompressible viscous flow (Stokes equations).
+VE_Stokes : class
+    Viscoelastic Stokes solver with stress history.
+Projection : class
+    L2 projection of fields onto mesh variables.
+AdvDiffusion : class
+    Advection-diffusion with semi-Lagrangian transport.
+NavierStokes : class
+    Navier-Stokes equations with inertia.
+Diffusion : class
+    Pure diffusion (no advection).
+
+Time Derivative Schemes
+-----------------------
+Lagrangian_DDt, SemiLagragian_DDt, Eulerian_DDt
+    Time derivative approximations for transient problems.
+
+See Also
+--------
+underworld3.constitutive_models : Material rheology definitions.
+underworld3.discretisation : Mesh and variable classes.
+"""
 from underworld3.cython.generic_solvers import (
     SNES_Scalar,
     SNES_Vector,

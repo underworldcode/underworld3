@@ -43,34 +43,112 @@ def UnstructuredSimplexBox(
     units=None,
     verbose=False,
 ):
-    """
-    Generates a 2 or 3-dimensional box mesh.
+    r"""
+    Create an unstructured simplex mesh on a rectangular box domain.
+
+    Generates a triangular (2D) or tetrahedral (3D) mesh using Gmsh,
+    with named boundary labels for applying boundary conditions.
 
     Parameters
     ----------
-    minCoord:
-        Tuple specifying minimum mesh location. Can be:
-        - Plain numbers (interpreted as model units)
-        - UWQuantity objects (automatically converted to model units)
-    maxCoord:
-        Tuple specifying maximum mesh location. Can be:
-        - Plain numbers (interpreted as model units)
-        - UWQuantity objects (automatically converted to model units)
-    cellSize:
-        Mesh element size. Can be:
-        - Plain number (interpreted as model units)
-        - UWQuantity object (automatically converted to model units)
-    units:
-        DEPRECATED. Mesh coordinates are always in model reference units.
-        This parameter is ignored for input conversion.
+    minCoords : tuple of float
+        Minimum corner coordinates ``(x_min, y_min)`` for 2D or
+        ``(x_min, y_min, z_min)`` for 3D. Supports plain numbers
+        (model units) or UWQuantity objects (auto-converted).
+    maxCoords : tuple of float
+        Maximum corner coordinates ``(x_max, y_max)`` for 2D or
+        ``(x_max, y_max, z_max)`` for 3D. Supports plain numbers
+        or UWQuantity objects.
+    cellSize : float
+        Target mesh element size. Controls mesh density; smaller
+        values produce finer meshes with more elements.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+        Use ``degree=1`` for linear elements, ``degree=2`` for quadratic.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration. Should typically
+        be at least ``2 * degree`` for accuracy.
+    regular : bool, default=False
+        If True, use transfinite meshing for a more structured layout.
+        Currently only works for 2D meshes.
+    filename : str, optional
+        Path to save the mesh file. If None, generates a unique name
+        in the ``.meshes/`` directory based on mesh parameters.
+    refinement : int, optional
+        Number of uniform refinement levels to apply after mesh
+        generation. Each level approximately quadruples element count.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level. 0 is silent, higher values
+        produce more diagnostic output.
+    units : str, optional
+        **Deprecated**. Mesh coordinates are always in model reference
+        units. This parameter is retained for backward compatibility.
+    verbose : bool, default=False
+        If True, print additional diagnostic information during
+        mesh construction.
+
+    Returns
+    -------
+    Mesh
+        An Underworld mesh object with the following boundaries defined:
+
+        **2D boundaries** (accessible via ``mesh.boundaries``):
+
+        - ``Bottom``: :math:`y = y_{min}` edge
+        - ``Top``: :math:`y = y_{max}` edge
+        - ``Right``: :math:`x = x_{max}` edge
+        - ``Left``: :math:`x = x_{min}` edge
+
+        **3D boundaries**:
+
+        - ``Bottom``: :math:`z = z_{min}` face
+        - ``Top``: :math:`z = z_{max}` face
+        - ``Right``: :math:`x = x_{max}` face
+        - ``Left``: :math:`x = x_{min}` face
+        - ``Front``: :math:`y = y_{min}` face
+        - ``Back``: :math:`y = y_{max}` face
+
+    See Also
+    --------
+    StructuredQuadBox : For quadrilateral/hexahedral meshes.
+    BoxInternalBoundary : For box meshes with an internal interface.
+
+    Examples
+    --------
+    Create a 2D unit square mesh:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.UnstructuredSimplexBox(
+    ...     minCoords=(0.0, 0.0),
+    ...     maxCoords=(1.0, 1.0),
+    ...     cellSize=0.1
+    ... )
+    >>> mesh.dim
+    2
+
+    Create a 3D box with finer resolution:
+
+    >>> mesh3d = uw.meshing.UnstructuredSimplexBox(
+    ...     minCoords=(0.0, 0.0, 0.0),
+    ...     maxCoords=(2.0, 1.0, 1.0),
+    ...     cellSize=0.05,
+    ...     degree=2
+    ... )
+
+    Access boundary labels for boundary conditions:
+
+    >>> mesh.boundaries.Bottom
+    <boundaries_2D.Bottom: 11>
 
     Notes
     -----
-    Mesh coordinates are ALWAYS in model reference units (from model.set_reference_quantities()).
-    If you pass UWQuantity objects with physical units, they are automatically converted
-    to model units using model.to_model_magnitude().
+    Mesh coordinates are always in model reference units (set via
+    ``model.set_reference_quantities()``). If UWQuantity objects with
+    physical units are passed, they are automatically converted using
+    ``model.to_model_magnitude()``.
 
-    regular option works in 2D but not (currently) in 3D
+    The ``regular=True`` option produces a more structured mesh layout
+    but currently only works for 2D meshes.
 
     """
 
@@ -310,28 +388,106 @@ def BoxInternalBoundary(
     units=None,
     verbose=False,
 ):
-    """
-    Generates a 2 or 3-dimensional box mesh with internal boundary.
+    r"""
+    Create a box mesh with an internal horizontal boundary.
+
+    Generates a 2D or 3D mesh with an embedded internal boundary surface,
+    useful for problems with material interfaces, phase boundaries, or
+    layered domains that require flux calculations across the interface.
 
     Parameters
     ----------
-    elementRes:
-        Tuple specifying number of elements in each axis direction.
-    zelementRes:
-        Tuple specifying number of elements in the vertical axis direction (half top part and bottom part).
-    cellSize : float, optional
-        The target size for the mesh elements. This controls the density of the unstructuredSimplexBox mesh.
-    minCoord:
-        Optional. Tuple specifying minimum mesh location.
-    maxCoord:
-        Optional. Tuple specifying maximum mesh location.
-    zintCoord:
-        float specifying internal boundary location.
-    simplex: bool, optional
-        If True, build structuredQuadBox; if not, build unstructuredSimplexBox. Default is False.
-    units:
-        Optional. Coordinate units (e.g., "km", "m", "cm"). If provided,
-        mesh.points and mesh.data will return unit-aware arrays.
+    elementRes : tuple of int, default=(8, 8, 8)
+        Number of elements in each direction ``(nx, ny)`` for 2D or
+        ``(nx, ny, nz)`` for 3D. Used when ``simplex=False`` (structured).
+    zelementRes : tuple of int, default=(4, 4)
+        Number of elements ``(n_below, n_above)`` in the vertical direction
+        below and above the internal boundary. Allows different resolution
+        in each layer.
+    cellSize : float, default=0.1
+        Target element size for unstructured meshing (``simplex=True``).
+        Ignored for structured meshes.
+    minCoords : tuple of float, default=(0, 0, 0)
+        Minimum corner coordinates. Length determines dimensionality:
+        2-tuple for 2D, 3-tuple for 3D.
+    maxCoords : tuple of float, default=(1, 1, 1)
+        Maximum corner coordinates.
+    zintCoord : float, default=0.5
+        Vertical coordinate of the internal boundary surface.
+        In 2D this is the y-coordinate; in 3D the z-coordinate.
+    simplex : bool, default=False
+        If False, create a structured quadrilateral/hexahedral mesh.
+        If True, create an unstructured triangular/tetrahedral mesh.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file. If None, auto-generates in ``.meshes/``.
+    refinement : int, optional
+        Number of uniform refinement levels to apply.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    units : str, optional
+        Coordinate units for unit-aware arrays.
+    verbose : bool, default=False
+        Print diagnostic information during mesh construction.
+
+    Returns
+    -------
+    Mesh
+        An Underworld mesh object with boundaries including an internal
+        interface:
+
+        **2D boundaries**:
+
+        - ``Bottom``: :math:`y = y_{min}` edge
+        - ``Top``: :math:`y = y_{max}` edge
+        - ``Right``: :math:`x = x_{max}` edge
+        - ``Left``: :math:`x = x_{min}` edge
+        - ``Internal``: :math:`y = z_{int}` interface
+
+        **3D boundaries**:
+
+        - ``Bottom``: :math:`z = z_{min}` face
+        - ``Top``: :math:`z = z_{max}` face
+        - ``Right``: :math:`x = x_{max}` face
+        - ``Left``: :math:`x = x_{min}` face
+        - ``Front``: :math:`y = y_{min}` face
+        - ``Back``: :math:`y = y_{max}` face
+        - ``Internal``: :math:`z = z_{int}` interface
+
+    See Also
+    --------
+    UnstructuredSimplexBox : Box mesh without internal boundary.
+    AnnulusInternalBoundary : Annular mesh with internal boundary.
+
+    Examples
+    --------
+    Create a 2D layered domain with an interface at y=0.5:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.BoxInternalBoundary(
+    ...     minCoords=(0.0, 0.0),
+    ...     maxCoords=(1.0, 1.0),
+    ...     zintCoord=0.5,
+    ...     elementRes=(16, 16),
+    ...     zelementRes=(8, 8)
+    ... )
+
+    Access the internal boundary for flux calculations:
+
+    >>> mesh.boundaries.Internal
+    <boundaries_2D.Internal: 15>
+
+    Notes
+    -----
+    The internal boundary is useful for:
+
+    - Calculating heat flux across a thermal boundary layer
+    - Tracking mass flux between mantle and crust
+    - Applying different material properties in each layer
+
     """
 
     class boundaries_2D(Enum):
@@ -766,30 +922,99 @@ def StructuredQuadBox(
     units=None,
     verbose=False,
 ):
-    """
-    Generates a 2 or 3-dimensional box mesh.
+    r"""
+    Create a structured quadrilateral or hexahedral box mesh.
+
+    Generates a mesh with regular rectangular (2D) or brick (3D) elements
+    using transfinite meshing. Provides precise control over element count
+    in each direction.
 
     Parameters
     ----------
-    elementRes:
-        Tuple specifying number of elements in each axis direction.
-    minCoord:
-        Optional. Tuple specifying minimum mesh location. Can be:
-        - Plain numbers (interpreted as model units)
-        - UWQuantity objects (automatically converted to model units)
-    maxCoord:
-        Optional. Tuple specifying maximum mesh location. Can be:
-        - Plain numbers (interpreted as model units)
-        - UWQuantity objects (automatically converted to model units)
-    units:
-        DEPRECATED. Mesh coordinates are always in model reference units.
-        This parameter is ignored for input conversion.
+    elementRes : tuple of int, default=(16, 16)
+        Number of elements in each direction. Use ``(nx, ny)`` for 2D
+        or ``(nx, ny, nz)`` for 3D. This tuple also determines the
+        mesh dimensionality.
+    minCoords : tuple of float, optional
+        Minimum corner coordinates. Defaults to ``(0.0, 0.0)`` for 2D
+        or ``(0.0, 0.0, 0.0)`` for 3D based on ``elementRes`` length.
+        Supports plain numbers or UWQuantity objects.
+    maxCoords : tuple of float, optional
+        Maximum corner coordinates. Defaults to ``(1.0, 1.0)`` for 2D
+        or ``(1.0, 1.0, 1.0)`` for 3D. Supports UWQuantity objects.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+        Use ``degree=1`` for bilinear/trilinear elements,
+        ``degree=2`` for biquadratic/triquadratic.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file. If None, auto-generates in ``.meshes/``.
+    refinement : int, optional
+        Number of uniform refinement levels to apply.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    units : str, optional
+        **Deprecated**. Mesh coordinates are always in model reference units.
+    verbose : bool, default=False
+        Print diagnostic information during mesh construction.
+
+    Returns
+    -------
+    Mesh
+        An Underworld mesh object with structured elements and boundaries:
+
+        **2D boundaries** (same as UnstructuredSimplexBox):
+
+        - ``Bottom``: :math:`y = y_{min}` edge
+        - ``Top``: :math:`y = y_{max}` edge
+        - ``Right``: :math:`x = x_{max}` edge
+        - ``Left``: :math:`x = x_{min}` edge
+
+        **3D boundaries**:
+
+        - ``Bottom``: :math:`z = z_{min}` face
+        - ``Top``: :math:`z = z_{max}` face
+        - ``Right``: :math:`x = x_{max}` face
+        - ``Left``: :math:`x = x_{min}` face
+        - ``Front``: :math:`y = y_{min}` face
+        - ``Back``: :math:`y = y_{max}` face
+
+    See Also
+    --------
+    UnstructuredSimplexBox : For triangular/tetrahedral meshes.
+    BoxInternalBoundary : For box meshes with an internal interface.
+
+    Examples
+    --------
+    Create a 2D structured mesh with 32x32 elements:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.StructuredQuadBox(
+    ...     elementRes=(32, 32),
+    ...     minCoords=(0.0, 0.0),
+    ...     maxCoords=(1.0, 1.0)
+    ... )
+
+    Create a 3D mesh (note the 3-element tuple):
+
+    >>> mesh3d = uw.meshing.StructuredQuadBox(
+    ...     elementRes=(16, 16, 8),
+    ...     maxCoords=(2.0, 2.0, 1.0)
+    ... )
 
     Notes
     -----
-    Mesh coordinates are ALWAYS in model reference units (from model.set_reference_quantities()).
-    If you pass UWQuantity objects with physical units, they are automatically converted
-    to model units using model.to_model_magnitude().
+    Structured meshes have predictable element layouts which can be
+    advantageous for:
+
+    - Consistent interpolation behaviour
+    - Benchmark problems with known analytical solutions
+    - Simpler mesh-to-mesh comparisons in convergence studies
+
+    The mesh dimensionality is determined by the length of ``elementRes``:
+    2-tuple creates a 2D mesh, 3-tuple creates a 3D mesh.
+
     """
     if minCoords == None:
         minCoords = len(elementRes) * (0.0,)

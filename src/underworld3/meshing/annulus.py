@@ -42,6 +42,77 @@ def QuarterAnnulus(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    r"""
+    Create a quarter-annulus (wedge) mesh in 2D.
+
+    Generates a pie-slice shaped mesh bounded by inner and outer circular
+    arcs and two radial edges. Provides :math:`(r, \theta)` coordinates
+    for convenient representation of radial problems.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.0
+        Outer radius of the annulus. Supports UWQuantity objects for
+        automatic unit conversion.
+    radiusInner : float, default=0.547
+        Inner radius of the annulus. Set to 0 for a disc sector
+        extending to the centre.
+    angle : float, default=45
+        Angular extent of the wedge in degrees. The wedge spans from
+        ``-angle`` to ``+angle`` (total sweep = 2 * angle).
+    cellSize : float, default=0.1
+        Target mesh element size.
+    centre : bool, default=False
+        If True and ``radiusInner=0``, mark the centre point as a
+        boundary for applying point constraints.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 2D mesh with boundaries:
+
+        - ``Lower``: Inner arc at :math:`r = r_{inner}`
+        - ``Upper``: Outer arc at :math:`r = r_{outer}`
+        - ``Left``: Left radial edge
+        - ``Right``: Right radial edge
+        - ``Centre``: Centre point (if :math:`r_{inner} = 0`)
+
+    See Also
+    --------
+    Annulus : Full 360-degree annulus.
+    SegmentofAnnulus : Partial annulus with arbitrary angle.
+
+    Examples
+    --------
+    Create a quarter-disc (no inner hole):
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.QuarterAnnulus(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.0,
+    ...     angle=45,
+    ...     cellSize=0.05
+    ... )
+
+    Notes
+    -----
+    The mesh coordinate system provides unit vectors via
+    ``mesh.CoordinateSystem``:
+
+    - ``unit_e_0``: radial direction :math:`(r)`
+    - ``unit_e_1``: tangential direction :math:`(\theta)`
+
+    """
     # Convert unit-aware quantities to model units
     # This enables: QuarterAnnulus(radiusOuter=uw.quantity(6370, "km"), ...)
     # The expected_dimension parameter warns if plain numbers are passed when units are active
@@ -215,6 +286,102 @@ def Annulus(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    r"""
+    Create a full 2D annulus mesh.
+
+    Generates a ring-shaped mesh (or disc if ``radiusInner=0``) using
+    triangular elements. Provides :math:`(r, \theta)` coordinates with
+    radial boundary normal directions.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.0
+        Outer radius of the annulus. Supports UWQuantity objects.
+    radiusInner : float, default=0.547
+        Inner radius of the annulus. Set to 0 for a full disc.
+    cellSize : float, default=0.1
+        Default target mesh element size.
+    cellSizeOuter : float, optional
+        Element size at the outer boundary. Defaults to ``cellSize``.
+    cellSizeInner : float, optional
+        Element size at the inner boundary. Defaults to ``cellSize``.
+        Use different sizes to create graded meshes.
+    centre : bool, default=False
+        If True and ``radiusInner=0``, mark the centre point as a
+        boundary for applying point constraints.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels to apply. Each level
+        approximately quadruples element count.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 2D mesh with boundaries:
+
+        - ``Lower``: Inner boundary at :math:`r = r_{inner}`
+        - ``Upper``: Outer boundary at :math:`r = r_{outer}`
+        - ``Centre``: Centre point (if :math:`r_{inner} = 0`)
+
+        The mesh includes a refinement callback that snaps boundary
+        nodes back to true circular geometry after refinement.
+
+    See Also
+    --------
+    QuarterAnnulus : Partial annulus with radial edges.
+    AnnulusInternalBoundary : Annulus with an internal interface.
+    SphericalShell : 3D equivalent for spherical geometries.
+
+    Examples
+    --------
+    Create a standard annulus for mantle convection:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.Annulus(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.547,
+    ...     cellSize=0.05
+    ... )
+
+    Create a graded mesh (finer at inner boundary):
+
+    >>> mesh = uw.meshing.Annulus(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.5,
+    ...     cellSizeOuter=0.1,
+    ...     cellSizeInner=0.02
+    ... )
+
+    Notes
+    -----
+    The inner radius default of 0.547 corresponds approximately to the
+    Earth's core-mantle boundary radius ratio (3480/6371).
+
+    The mesh coordinate system provides unit vectors via
+    ``mesh.CoordinateSystem``:
+
+    - ``unit_e_0``: radial direction :math:`(r)`
+    - ``unit_e_1``: tangential direction :math:`(\theta)`
+
+    For free-slip boundary conditions on vector problems (e.g., Stokes),
+    use a penalty on the normal velocity component::
+
+        Gamma_N = mesh.Gamma  # discrete normal, or
+        Gamma_N = mesh.CoordinateSystem.unit_e_0  # analytic radial
+        stokes.add_natural_bc(
+            penalty * Gamma_N.dot(v_soln.sym) * Gamma_N, "Upper"
+        )
+
+    """
     # Convert unit-aware quantities to model units
     # This enables: Annulus(radiusOuter=uw.quantity(6370, "km"), ...)
     # The expected_dimension parameter warns if plain numbers are passed when units are active
@@ -652,6 +819,75 @@ def AnnulusWithSpokes(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    """
+    Create an annulus mesh divided into sectors by radial spokes.
+
+    Generates a ring-shaped mesh with radial internal boundaries (spokes)
+    that divide the annulus into equal angular sectors. Useful for problems
+    requiring sector-wise analysis or periodic boundary conditions.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.0
+        Outer radius of the annulus.
+    radiusInner : float, default=0.547
+        Inner radius of the annulus.
+    cellSizeOuter : float, default=0.1
+        Element size at the outer boundary.
+    cellSizeInner : float, optional
+        Element size at the inner boundary. Defaults to ``cellSizeOuter``.
+    centre : bool, default=False
+        Mark the centre point as a boundary (if radiusInner=0).
+    spokes : int, default=3
+        Number of radial spokes dividing the annulus. Creates ``spokes``
+        equal angular sectors.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels to apply.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 2D mesh with boundaries:
+
+        - ``Lower``: Inner boundary at :math:`r = r_{inner}`
+        - ``LowerPlus``: Inner boundary + spokes (for BCs)
+        - ``Upper``: Outer boundary at :math:`r = r_{outer}`
+        - ``UpperPlus``: Outer boundary + spokes (for BCs)
+        - ``Spokes``: Radial spoke boundaries
+
+    See Also
+    --------
+    Annulus : Standard annulus without spokes.
+
+    Examples
+    --------
+    Create a 6-sector annulus:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.AnnulusWithSpokes(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.5,
+    ...     spokes=6,
+    ...     cellSizeOuter=0.05
+    ... )
+
+    Notes
+    -----
+    The ``LowerPlus`` and ``UpperPlus`` boundaries are composite labels
+    that include both the curved boundaries and the spoke edges, useful
+    for applying no-slip conditions that include radial walls.
+
+    """
     # Convert unit-aware quantities to model units
     # The expected_dimension parameter warns if plain numbers are passed when units are active
     model = uw.get_default_model()
@@ -916,6 +1152,77 @@ def AnnulusInternalBoundary(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    """
+    Create an annulus mesh with a circular internal boundary.
+
+    Generates an annular mesh with an embedded internal boundary at a
+    specified radius, useful for tracking flux across interfaces or
+    defining different material layers.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.5
+        Outer radius of the annulus.
+    radiusInternal : float, default=1.0
+        Radius of the internal boundary surface.
+    radiusInner : float, default=0.547
+        Inner radius of the annulus.
+    cellSize : float, default=0.1
+        Default target mesh element size.
+    cellSize_Outer : float, optional
+        Element size at the outer boundary.
+    cellSize_Inner : float, optional
+        Element size at the inner boundary.
+    cellSize_Internal : float, optional
+        Element size at the internal boundary.
+    centre : bool, default=False
+        Mark the centre point as a boundary (if radiusInner=0).
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 2D mesh with boundaries:
+
+        - ``Lower``: Inner boundary at :math:`r = r_{inner}`
+        - ``Internal``: Internal boundary at :math:`r = r_{internal}`
+        - ``Upper``: Outer boundary at :math:`r = r_{outer}`
+        - ``Centre``: Centre point (if radiusInner=0)
+
+    See Also
+    --------
+    Annulus : Annulus without internal boundary.
+    BoxInternalBoundary : Cartesian box with internal boundary.
+    SphericalShellInternalBoundary : 3D spherical equivalent.
+
+    Examples
+    --------
+    Create an annulus with an internal tracking surface:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.AnnulusInternalBoundary(
+    ...     radiusOuter=1.0,
+    ...     radiusInternal=0.7,
+    ...     radiusInner=0.5,
+    ...     cellSize=0.03
+    ... )
+
+    Notes
+    -----
+    The internal boundary is useful for calculating radial heat or
+    mass flux across a specified radius (e.g., core-mantle boundary,
+    thermal boundary layer).
+
+    """
     # Convert unit-aware quantities to model units
     # The expected_dimension parameter warns if plain numbers are passed when units are active
     model = uw.get_default_model()
@@ -1129,6 +1436,75 @@ def DiscInternalBoundaries(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    """
+    Create a disc mesh with multiple concentric internal boundaries.
+
+    Generates a full disc (extending to centre) with two embedded
+    circular internal boundaries at specified radii. Useful for
+    multi-layer problems or tracking flux across multiple interfaces.
+
+    Parameters
+    ----------
+    radiusUpper : float, default=1.5
+        Outer radius of the disc.
+    radiusInternal : float, default=1.0
+        Radius of the middle internal boundary.
+    radiusLower : float, default=0.547
+        Radius of the inner internal boundary.
+    cellSize : float, default=0.1
+        Default target mesh element size.
+    cellSize_Upper : float, optional
+        Element size at the outer boundary.
+    cellSize_Lower : float, optional
+        Element size at the lower internal boundary.
+    cellSize_Internal : float, optional
+        Element size at the middle internal boundary.
+    cellSize_Centre : float, optional
+        Element size at the disc centre.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 2D mesh with boundaries:
+
+        - ``Lower``: Inner internal boundary at :math:`r = r_{lower}`
+        - ``Internal``: Middle internal boundary at :math:`r = r_{internal}`
+        - ``Upper``: Outer boundary at :math:`r = r_{upper}`
+        - ``Centre``: Centre point
+
+    See Also
+    --------
+    AnnulusInternalBoundary : Annulus with one internal boundary.
+
+    Examples
+    --------
+    Create a disc with two tracking surfaces:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.DiscInternalBoundaries(
+    ...     radiusUpper=1.0,
+    ...     radiusInternal=0.7,
+    ...     radiusLower=0.4,
+    ...     cellSize=0.03
+    ... )
+
+    Notes
+    -----
+    Unlike AnnulusInternalBoundary, this mesh extends to the centre
+    (no inner hole). All internal boundaries are embedded as mesh
+    edges, allowing flux integration across each interface.
+
+    """
     # Convert unit-aware quantities to model units
     # The expected_dimension parameter warns if plain numbers are passed when units are active
     model = uw.get_default_model()

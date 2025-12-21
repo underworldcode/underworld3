@@ -1,3 +1,30 @@
+r"""
+Coordinate system definitions and coordinate variable types.
+
+This module provides coordinate system infrastructure for Underworld3,
+enabling both Cartesian and curvilinear (cylindrical, spherical) coordinate
+systems with proper differential geometry support.
+
+Key Components
+--------------
+CoordinateSystemType : enum
+    Available coordinate system types (Cartesian, Cylindrical, Spherical).
+UWCoordinate : class
+    A SymPy-compatible coordinate variable (x, y, z) that integrates
+    with mesh evaluation and differentiation.
+CoordinateSystem : class
+    Factory for creating coordinate systems with proper vector calculus
+    operators (gradient, divergence, curl) in the chosen geometry.
+
+The coordinate infrastructure ensures that symbolic expressions using
+mesh coordinates integrate seamlessly with SymPy's differentiation
+machinery while providing efficient numerical evaluation.
+
+See Also
+--------
+underworld3.maths.vector_calculus : Vector calculus in curvilinear systems.
+underworld3.discretisation : Mesh classes using coordinate systems.
+"""
 from typing import Optional, Tuple
 from enum import Enum
 
@@ -271,8 +298,32 @@ def uwdiff(expr, *symbols):
 
 class CoordinateSystemType(Enum):
     """
-    Meshes can have natural coordinate systems which lie on top of the Cartesian
-    coordinate system that we use for constructing the solvers (usually)
+    Coordinate system types for mesh geometry.
+
+    Meshes can have natural coordinate systems that overlay the Cartesian
+    coordinate system used internally for solver assembly. The coordinate
+    system type determines how vector calculus operators (gradient, divergence,
+    curl) are computed.
+
+    Attributes
+    ----------
+    CARTESIAN : int
+        Standard Cartesian coordinates (x, y, z).
+    CYLINDRICAL2D : int
+        2D cylindrical/polar coordinates (r, theta).
+    POLAR : int
+        Alias for CYLINDRICAL2D.
+    CYLINDRICAL3D : int
+        3D cylindrical coordinates (r, theta, z).
+    SPHERICAL : int
+        Spherical coordinates (r, theta, phi).
+    GEOGRAPHIC : int
+        Ellipsoidal geographic coordinates (lon, lat, depth) for
+        Earth and planetary modeling.
+
+    See Also
+    --------
+    underworld3.maths.vector_calculus : Operators for each coordinate system.
     """
 
     CARTESIAN = 0

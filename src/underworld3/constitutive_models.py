@@ -1,4 +1,34 @@
-## This file has constitutive models that can be plugged into the SNES solvers
+r"""
+Constitutive models for Underworld3 solvers.
+
+This module provides constitutive relationships that define how material
+properties (viscosity, diffusivity, etc.) relate fluxes to gradients of
+unknowns. These models are plugged into SNES solvers to complete the
+governing equations.
+
+Classes
+-------
+Constitutive_Model
+    Base class for all constitutive models.
+ViscousFlowModel
+    Isotropic viscous flow with scalar or tensor viscosity.
+ViscoPlasticFlowModel
+    Viscous flow with yield stress (plastic behavior).
+ViscoElasticPlasticFlowModel
+    Combined viscous, elastic, and plastic rheology.
+DiffusionModel
+    Scalar diffusion (heat, chemical species).
+DarcyFlowModel
+    Porous media flow (Darcy's law).
+TransverseIsotropicFlowModel
+    Anisotropic viscosity with directional weakness.
+MultiMaterialConstitutiveModel
+    Level-set weighted composite of multiple materials.
+
+See Also
+--------
+underworld3.systems.solvers : Solvers that use these constitutive models.
+"""
 
 from typing_extensions import Self
 import sympy
@@ -72,33 +102,40 @@ def validate_parameters(symbol, input, default=None, allow_number=True, allow_ex
 
 class Constitutive_Model(uw_object):
     r"""
-    Constititutive laws relate gradients in the unknowns to fluxes of quantities
-    (for example, heat fluxes are related to temperature gradients through a thermal conductivity)
-    The `Constitutive_Model` class is a base class for building `underworld` constitutive laws
+    Base class for constitutive laws relating gradients to fluxes.
 
-    In a scalar problem, the relationship is
+    Constitutive laws relate gradients in the unknowns to fluxes of quantities
+    (for example, heat fluxes are related to temperature gradients through a
+    thermal conductivity). This class is a base class for building Underworld
+    constitutive laws.
 
-    $$
-    q_i = k_{ij} \frac{\partial T}{\partial x_j}
-    $$
+    In a scalar problem, the relationship is:
 
-    and the constitutive parameters describe $ k_{ij}$. The template assumes $ k_{ij} = \delta_{ij} $
+    .. math::
 
-    In a vector problem (such as the Stokes problem), the relationship is
+        q_i = k_{ij} \frac{\partial T}{\partial x_j}
 
-    $$
-    t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
-    $$
+    and the constitutive parameters describe :math:`k_{ij}`. The template
+    assumes :math:`k_{ij} = \delta_{ij}`.
 
-    but is usually written to eliminate the anti-symmetric part of the displacement or velocity gradients (for example):
+    In a vector problem (such as the Stokes problem), the relationship is:
 
-    $$
-    t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
-    $$
+    .. math::
 
-    and the constitutive parameters describe $c_{ijkl}$. The template assumes
-    $ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} \right) $ which is the
-    4th rank identity tensor accounting for symmetry in the flux and the gradient terms.
+        t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
+
+    but is usually written to eliminate the anti-symmetric part of the
+    displacement or velocity gradients:
+
+    .. math::
+
+        t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
+
+    and the constitutive parameters describe :math:`c_{ijkl}`. The template
+    assumes :math:`k_{ij} = \frac{1}{2}(\delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk})`
+    which is the 4th rank identity tensor accounting for symmetry in the flux
+    and the gradient terms.
     """
 
     # Class-level instance counter for automatic symbol uniqueness across all constitutive models
@@ -393,19 +430,23 @@ class Constitutive_Model(uw_object):
 
 class ViscousFlowModel(Constitutive_Model):
     r"""
-    ### Viscous Flow Model
+    Viscous flow constitutive model.
 
-    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
+    .. math::
 
-    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
+        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
 
-    The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.
+    where :math:`\eta` is the viscosity, a scalar constant, SymPy function,
+    Underworld mesh variable, or any valid combination. This results in an
+    isotropic (but not necessarily homogeneous or linear) relationship between
+    :math:`\tau` and the velocity gradients.
 
+    You can also supply :math:`\eta_{IJ}`, the Mandel form of the constitutive
+    tensor, or :math:`\eta_{ijkl}`, the rank-4 tensor.
 
+    The Mandel constitutive matrix is available in ``viscous_model.C`` and the
+    rank-4 tensor form is in ``viscous_model.c``.
     """
 
     #     ```python
@@ -588,24 +629,32 @@ class ViscousFlowModel(Constitutive_Model):
 
 class ViscoPlasticFlowModel(ViscousFlowModel):
     r"""
+    Viscoplastic flow constitutive model with yield stress.
 
-    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
+    .. math::
 
-    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
+        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
 
-    In a viscoplastic model, this viscosity is actually defined to cap the value of the overall stress at a value known as the *yield stress*.
-    In this constitutive law, we are assuming that the yield stress is a scalar limit on the 2nd invariant of the stress. A general, anisotropic
-    model needs to define the yield surface carefully and only a sub-set of possible cases is available in `Underworld`
+    where :math:`\eta` is the viscosity, a scalar constant, SymPy function,
+    Underworld mesh variable, or any valid combination. This results in an
+    isotropic (but not necessarily homogeneous or linear) relationship between
+    :math:`\tau` and the velocity gradients.
 
-    This constitutive model is a convenience function that simplifies the code at run-time but can be reproduced easily by using the appropriate
-    `sympy` functions in the standard viscous constitutive model. **If you see `not~yet~defined` in the definition of the effective viscosity, this means
-    that you have not yet defined all the required functions. The behaviour is to default to the standard viscous constitutive law if yield terms are
-    not specified.
+    In a viscoplastic model, this viscosity is defined to cap the value of the
+    overall stress at a value known as the *yield stress*. In this constitutive
+    law, we assume that the yield stress is a scalar limit on the 2nd invariant
+    of the stress. A general, anisotropic model needs to define the yield surface
+    carefully and only a subset of possible cases is available in Underworld.
 
-    The Mandel constitutive matrix is available in `viscoplastic_model.C` and the rank 4 tensor form is
+    This constitutive model is a convenience function that simplifies the code
+    at run-time but can be reproduced by using the appropriate SymPy functions
+    in the standard viscous constitutive model. **If you see** ``not~yet~defined``
+    **in the definition of the effective viscosity, this means you have not yet
+    defined all the required functions.** The behaviour is to default to the
+    standard viscous constitutive law if yield terms are not specified.
+
+    The Mandel constitutive matrix is available in ``viscoplastic_model.C`` and the rank-4 tensor form is
     in `viscoplastic_model.c`.  Apply the constitutive model using:
 
     ---
@@ -767,17 +816,20 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     r"""
+    Viscoelastic-plastic flow constitutive model.
 
-    ### Formulation
+    The stress (flux term) is given by:
 
-    The stress (flux term) is given by
+    .. math::
 
-    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
+        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
 
-    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
+    where :math:`\eta` is the viscosity, a scalar constant, SymPy function,
+    Underworld mesh variable, or any valid combination. This results in an
+    isotropic (but not necessarily homogeneous or linear) relationship between
+    :math:`\tau` and the velocity gradients. You can also supply :math:`\eta_{IJ}`,
+    the Mandel form of the constitutive tensor, or :math:`\eta_{ijkl}`, the rank-4 tensor.
 
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
     in `viscous_model.c`.  Apply the constitutive model using:
@@ -1338,24 +1390,23 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
 class DiffusionModel(Constitutive_Model):
     r"""
-    ```python
-    class DiffusionModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    diffusion_model = DiffusionModel(dim)
-    diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
-    scalar_solver.constititutive_model = diffusion_model
-    ```
-    $$q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}$$
+    Diffusion (Fourier/Fick) constitutive model.
 
-    where $\kappa$ is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. Access the constitutive model using:
+    .. math::
 
-    ```python
-    flux = diffusion_model.flux(gradient_matrix)
-    ```
-    ---
+        q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}
+
+    where :math:`\kappa` is a diffusivity, a scalar constant, SymPy function,
+    Underworld mesh variable, or any valid combination.
+
+    Examples
+    --------
+    >>> diffusion_model = DiffusionModel(dim)
+    >>> diffusion_model.material_properties = diffusion_model.Parameters(
+    ...     diffusivity=diffusivity_fn
+    ... )
+    >>> scalar_solver.constitutive_model = diffusion_model
+    >>> flux = diffusion_model.flux(gradient_matrix)
     """
 
     class _Parameters:
@@ -1572,26 +1623,24 @@ class GenericFluxModel(Constitutive_Model):
 
 class DarcyFlowModel(Constitutive_Model):
     r"""
-    ```python
-    class DarcyFlowModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    diffusion_model = DiffusionModel(dim)
-    diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
-    scalar_solver.constititutive_model = diffusion_model
-    ```
-    $$q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)$$
+    Darcy flow constitutive model for porous media.
 
-    where $\kappa$ is the permeability, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. $s$ is the body force 'source' of pressure gradients.
+    .. math::
 
-    Access the constitutive model using:
+        q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s \right)
 
-    ```python
-    flux = darcy_flow_model.flux
-    ```
-    ---
+    where :math:`\kappa` is the permeability, a scalar constant, SymPy function,
+    Underworld mesh variable, or any valid combination. :math:`s` is the body
+    force 'source' of pressure gradients.
+
+    Examples
+    --------
+    >>> darcy_model = DarcyFlowModel(dim)
+    >>> darcy_model.material_properties = darcy_model.Parameters(
+    ...     permeability=permeability_fn
+    ... )
+    >>> scalar_solver.constitutive_model = darcy_model
+    >>> flux = darcy_model.flux
     """
 
     class _Parameters:
@@ -1701,33 +1750,37 @@ class DarcyFlowModel(Constitutive_Model):
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):
     r"""
-    ```python
-    class TransverseIsotropicFlowModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    viscous_model = TransverseIsotropicFlowModel(dim)
-    viscous_model.material_properties = viscous_model.Parameters(eta_0=viscosity_fn,
-                                                                eta_1=weak_viscosity_fn,
-                                                                director=orientation_vector_fn)
-    solver.constititutive_model = viscous_model
-    ```
-    $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
+    Transversely isotropic (anisotropic) viscous flow model.
 
-    where $\eta$ is the viscosity tensor defined as:
+    .. math::
 
-    $$ \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
-        n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right] $$
+        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
 
-    and $ \hat{\mathbf{n}} \equiv \left\{ n_i \right\} $ is the unit vector
-    defining the local orientation of the weak plane (a.k.a. the director).
+    where :math:`\eta` is the viscosity tensor defined as:
 
-    The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.  Apply the constitutive model using:
+    .. math::
 
-    ```python
-    tau = viscous_model.flux(gradient_matrix)
-    ```
+        \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
+        n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk}
+        + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right]
+
+    and :math:`\hat{\mathbf{n}} \equiv \{n_i\}` is the unit vector defining
+    the local orientation of the weak plane (a.k.a. the director).
+
+    The Mandel constitutive matrix is available in ``viscous_model.C`` and the
+    rank-4 tensor form is in ``viscous_model.c``.
+
+    Examples
+    --------
+    >>> viscous_model = TransverseIsotropicFlowModel(dim)
+    >>> viscous_model.material_properties = viscous_model.Parameters(
+    ...     eta_0=viscosity_fn,
+    ...     eta_1=weak_viscosity_fn,
+    ...     director=orientation_vector_fn
+    ... )
+    >>> solver.constitutive_model = viscous_model
+    >>> tau = viscous_model.flux(gradient_matrix)
     ---
     """
 
@@ -1874,10 +1927,15 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
     Multi-material constitutive model using level-set weighted flux averaging.
 
     Mathematical Foundation:
-    $\mathbf{f}_{\text{composite}}(\mathbf{x}) = \sum_{i=1}^{N} \phi_i(\mathbf{x}) \cdot \mathbf{f}_i(\mathbf{x})$
+
+    .. math::
+
+        \mathbf{f}_{\text{composite}}(\mathbf{x}) = \sum_{i=1}^{N}
+        \phi_i(\mathbf{x}) \cdot \mathbf{f}_i(\mathbf{x})
 
     Critical Architecture:
-    - Solver owns Unknowns (including $D\mathbf{F}/Dt$ stress history)
+
+    - Solver owns Unknowns (including :math:`D\mathbf{F}/Dt` stress history)
     - All constituent models share solver's Unknowns
     - Composite flux becomes stress history for all materials
     """
@@ -1889,15 +1947,16 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         constitutive_models: list,
         normalize_levelsets: bool = False,
     ):
-        """
-        Parameters:
-        -----------
+        r"""
+        Parameters
+        ----------
         unknowns : UnknownSet
-            The solver's authoritative unknowns ($\\mathbf{u}$, $D\\mathbf{F}/Dt$, $D\\mathbf{u}/Dt$)
+            The solver's authoritative unknowns (:math:`\mathbf{u}`,
+            :math:`D\mathbf{F}/Dt`, :math:`D\mathbf{u}/Dt`).
         material_swarmVariable : IndexSwarmVariable
-            Index variable tracking material distribution on particles
-        constitutive_models : List[Constitutive_Model]
-            Pre-configured constitutive models for each material
+            Index variable tracking material distribution on particles.
+        constitutive_models : list of Constitutive_Model
+            Pre-configured constitutive models for each material.
         normalize_levelsets : bool, optional
             Whether to normalize level-set functions to enforce partition of unity.
             Set to True if IndexSwarmVariable does not maintain partition of unity.
@@ -1929,7 +1988,7 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
         This is critical for proper stress history management.
         """
         for i, model in enumerate(constitutive_models):
-            # Share solver's unknowns - this gives access to composite $D\mathbf{F}/Dt$ history
+            # Share solver's unknowns - this gives access to composite D(F)/Dt history
             model.Unknowns = unknowns
 
             # Validation: Ensure sharing worked correctly
@@ -1939,7 +1998,7 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             if hasattr(model, "_stress_star"):
                 assert hasattr(
                     unknowns, "DFDt"
-                ), f"Model {i} needs stress history but $D\\mathbf{{F}}/Dt$ not available"
+                ), f"Model {i} needs stress history but DFDt not available"
 
     def _validate_model_compatibility(self, models: list) -> bool:
         """
@@ -1971,12 +2030,12 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
 
     @property
     def flux(self):
-        """
+        r"""
         Compute level-set weighted average of constituent model fluxes.
 
         CRITICAL: This composite flux becomes the stress history that
         all constituent models (including elastic ones) will read via
-        $D\\mathbf{F}/Dt.\\psi^*[0]$ in the next time step.
+        ``DFDt.psi_star[0]`` in the next time step.
         """
         # Get reference flux shape from first model
         reference_flux = self._constitutive_models[0].flux

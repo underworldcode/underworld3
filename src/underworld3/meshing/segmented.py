@@ -26,9 +26,6 @@ import underworld3.cython.petsc_discretisation
 import sympy
 
 
-# Functions moved from meshing_legacy.py:
-
-
 @timing.routine_timer_decorator
 def SegmentedSphericalSurface2D(
     radius: float = 1.0,
@@ -40,6 +37,61 @@ def SegmentedSphericalSurface2D(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    r"""
+    Create a 2D spherical surface mesh using orange-peel segmentation.
+
+    Generates a mesh on the surface of a sphere by dividing it into
+    longitudinal segments (like an orange peel), with coordinates
+    converted to :math:`(\lambda, \phi)` (longitude, latitude).
+
+    Parameters
+    ----------
+    radius : float, default=1.0
+        Radius of the sphere.
+    cellSize : float, default=0.05
+        Target mesh element size.
+    numSegments : int, default=6
+        Number of longitudinal segments (orange-peel divisions).
+    degree : int, default=1
+        Polynomial degree of finite elements.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 2D surface mesh with point boundaries:
+
+        - ``NPole``: North pole point
+        - ``SPole``: South pole point
+        - ``Poles``: Both poles combined
+
+        Uses SPHERE_SURFACE_NATIVE coordinate system with
+        :math:`(\lambda, \phi)` coordinates.
+
+    See Also
+    --------
+    SegmentedSphericalShell : 3D segmented spherical shell.
+    SphericalShell : Standard unstructured spherical shell.
+
+    Warnings
+    --------
+    This mesh uses PETSc periodicity features that may be unreliable.
+    Consider using alternative mesh types for production work.
+
+    Notes
+    -----
+    The mesh is constructed by creating curved triangular segments from
+    pole to pole, then converting the Cartesian coordinates to longitude-
+    latitude representation. Periodicity is set up to handle the :math:`\pm\pi`
+    longitude wrap-around.
+    """
     num_segments = numSegments
     meshRes = cellSize
 
@@ -196,6 +248,78 @@ def SegmentedSphericalShell(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    r"""
+    Create a 3D spherical shell mesh using orange-peel segmentation.
+
+    Generates a spherical shell mesh by dividing the sphere into
+    longitudinal wedge segments, similar to an orange peel. Each segment
+    is a 3D wedge extending from the inner to outer radius.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.0
+        Outer radius of the shell.
+    radiusInner : float, default=0.547
+        Inner radius of the shell.
+    cellSize : float, default=0.1
+        Target mesh element size.
+    numSegments : int, default=6
+        Number of longitudinal segments.
+    degree : int, default=1
+        Polynomial degree of finite elements.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels to apply.
+    coordinatesNative : bool, default=False
+        If True, use native :math:`(r, \theta, \phi)` coordinates
+        with periodicity in :math:`\phi`. If False, use Cartesian
+        coordinates with spherical coordinate system overlay.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 3D mesh with boundaries:
+
+        - ``Lower``: Inner surface at :math:`r = r_{inner}`
+        - ``LowerPlus``: Inner surface + slice boundaries
+        - ``Upper``: Outer surface at :math:`r = r_{outer}`
+        - ``UpperPlus``: Outer surface + slice boundaries
+        - ``Slices``: Radial slice boundaries between segments
+
+        The mesh provides boundary normals for free-slip conditions
+        on the radial boundaries.
+
+    See Also
+    --------
+    SegmentedSphericalBall : Solid ball version (no inner boundary).
+    SphericalShell : Standard unstructured spherical shell.
+    CubedSphere : Alternative structured spherical mesh.
+
+    Warnings
+    --------
+    When ``coordinatesNative=True``, this mesh uses PETSc periodicity
+    features that may be unreliable. Consider using ``coordinatesNative=False``
+    or alternative mesh types for production work.
+
+    Notes
+    -----
+    The ``LowerPlus`` and ``UpperPlus`` boundaries combine the radial
+    surfaces with the slice boundaries, useful for applying no-slip
+    conditions that include the radial walls.
+
+    The coordinate system provides unit vectors via ``mesh.CoordinateSystem``:
+
+    - ``unit_e_0``: radial direction :math:`(r)`
+    - ``unit_e_1``: colatitude direction :math:`(\theta)`
+    - ``unit_e_2``: longitude direction :math:`(\phi)`
+    """
     class boundaries(Enum):
         Lower = 20
         LowerPlus = 21
@@ -569,6 +693,75 @@ def SegmentedSphericalBall(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    r"""
+    Create a 3D solid spherical ball mesh using orange-peel segmentation.
+
+    Generates a solid sphere mesh (no inner cavity) by dividing it into
+    longitudinal wedge segments extending from the centre to the surface.
+
+    Parameters
+    ----------
+    radius : float, default=1.0
+        Radius of the sphere.
+    cellSize : float, default=0.1
+        Target mesh element size.
+    numSegments : int, default=6
+        Number of longitudinal segments.
+    degree : int, default=1
+        Polynomial degree of finite elements.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels to apply.
+    coordinatesNative : bool, default=False
+        If True, use native :math:`(r, \theta, \phi)` coordinates
+        with periodicity in :math:`\phi`. If False, use Cartesian
+        coordinates with spherical coordinate system overlay.
+    verbosity : int, default=0
+        Deprecated. Use ``verbose`` instead.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 3D mesh with boundaries:
+
+        - ``Upper``: Outer surface at :math:`r = radius`
+        - ``UpperPlus``: Outer surface + slice boundaries
+        - ``Centre``: Central point
+        - ``Slices``: Radial slice boundaries between segments
+
+        The mesh provides boundary normals for free-slip conditions
+        on the outer surface.
+
+    See Also
+    --------
+    SegmentedSphericalShell : Shell version with inner boundary.
+    SphericalShell : Standard unstructured spherical shell.
+
+    Warnings
+    --------
+    When ``coordinatesNative=True``, this mesh uses PETSc periodicity
+    features that may be unreliable. Consider using ``coordinatesNative=False``
+    or alternative mesh types for production work.
+
+    Notes
+    -----
+    This mesh is useful for modelling solid bodies (e.g., planetary cores,
+    asteroids) where elements must extend to the centre. The segmented
+    approach avoids the pole singularity issues of latitude-longitude grids.
+
+    The coordinate system provides unit vectors via ``mesh.CoordinateSystem``:
+
+    - ``unit_e_0``: radial direction :math:`(r)`
+    - ``unit_e_1``: colatitude direction :math:`(\theta)`
+    - ``unit_e_2``: longitude direction :math:`(\phi)`
+    """
     class boundaries(Enum):
         Upper = 30
         UpperPlus = 31

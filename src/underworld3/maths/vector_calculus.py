@@ -1,3 +1,27 @@
+r"""
+Vector calculus operators for different coordinate systems.
+
+This module provides differential operators (gradient, divergence, curl)
+that correctly handle different coordinate systems. The operators are
+attached to mesh objects and operate on symbolic expressions.
+
+Classes
+-------
+mesh_vector_calculus
+    Cartesian coordinate operators.
+mesh_vector_calculus_cylindrical
+    Cylindrical :math:`(r, \theta, z)` coordinate operators.
+mesh_vector_calculus_spherical
+    Spherical :math:`(r, \theta, \phi)` coordinate operators.
+mesh_vector_calculus_spherical_surface2D_lonlat
+    Operators for 2D spherical surface in :math:`(\lambda, \phi)` coordinates.
+
+See Also
+--------
+underworld3.maths.tensors : Tensor notation conversions.
+underworld3.coordinates : Coordinate system definitions.
+"""
+
 import underworld3
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 import underworld3.timing as timing
@@ -5,14 +29,57 @@ import sympy
 
 
 class mesh_vector_calculus:
-    """Vector calculus on uw row matrices
-    - this class is designed to augment the functionality of a mesh"""
+    r"""
+    Vector calculus operators for Cartesian meshes.
+
+    Provides gradient, divergence, curl, and strain tensor operations
+    using SymPy's vector calculus module. Operates on row matrices
+    representing vector fields.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The mesh object providing the coordinate system.
+
+    Attributes
+    ----------
+    mesh : Mesh
+        Reference to the parent mesh.
+    dim : int
+        Spatial dimension (2 or 3).
+
+    Methods
+    -------
+    gradient(scalar)
+        Compute :math:`\nabla \phi`.
+    divergence(vector)
+        Compute :math:`\nabla \cdot \mathbf{v}`.
+    curl(vector)
+        Compute :math:`\nabla \times \mathbf{v}`.
+    strain_tensor(vector)
+        Compute symmetric gradient (strain rate tensor).
+    """
 
     def __init__(self, mesh):
         self.mesh = mesh
         self.dim = self.mesh.dim
 
     def cross(self, vector1, vector2):
+        r"""
+        Cross product of two vector fields.
+
+        Parameters
+        ----------
+        vector1 : sympy.Matrix
+            First vector as row matrix.
+        vector2 : sympy.Matrix
+            Second vector as row matrix.
+
+        Returns
+        -------
+        sympy.Matrix
+            Cross product :math:`\mathbf{a} \times \mathbf{b}` as row matrix.
+        """
         a = self.to_vector(vector1)
         b = self.to_vector(vector2)
 
@@ -23,10 +90,18 @@ class mesh_vector_calculus:
 
     def curl(self, matrix):
         r"""
-        $ \nabla \times \mathbf{v} $
+        Curl of a vector field: :math:`\nabla \times \mathbf{v}`.
 
-        Returns the curl of a 3D vector field or the out-of-plane
-        component of a 2D vector field
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix.
+
+        Returns
+        -------
+        sympy.Matrix or sympy.Expr
+            In 3D: curl vector as row matrix.
+            In 2D: scalar (out-of-plane component, i.e., vorticity).
         """
 
         vector = self.to_vector(matrix)
@@ -40,7 +115,17 @@ class mesh_vector_calculus:
 
     def divergence(self, matrix):
         r"""
-        $ \nabla \cdot \mathbf{v} $
+        Divergence of a vector field: :math:`\nabla \cdot \mathbf{v}`.
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix.
+
+        Returns
+        -------
+        sympy.Expr
+            Scalar divergence.
         """
         vector = self.to_vector(matrix)
         scalar_div = sympy.vector.divergence(vector)
@@ -48,9 +133,18 @@ class mesh_vector_calculus:
 
     def gradient(self, scalar):
         r"""
-        $\nabla \phi$
-        """
+        Gradient of a scalar field: :math:`\nabla \phi`.
 
+        Parameters
+        ----------
+        scalar : sympy.Expr or sympy.Matrix
+            Scalar field. If (1,1) matrix, extracts the scalar.
+
+        Returns
+        -------
+        sympy.Matrix
+            Gradient vector as row matrix.
+        """
         if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
             scalar = scalar[0, 0]
 
@@ -58,11 +152,27 @@ class mesh_vector_calculus:
         return self.to_matrix(vector_gradient)
 
     def strain_tensor(self, vector):
-        """
-        Components of the infinitessimal strain or strain-rate tensor where the
-        vector that is provided is displacement or velocity respectively
-        """
+        r"""
+        Symmetric gradient (strain or strain-rate tensor).
 
+        Computes the infinitesimal strain tensor from displacement,
+        or strain-rate tensor from velocity:
+
+        .. math::
+
+            \varepsilon_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+
+        Parameters
+        ----------
+        vector : sympy.Matrix or sympy.vector.Vector
+            Displacement or velocity field.
+
+        Returns
+        -------
+        sympy.Matrix
+            Symmetric (dim x dim) strain tensor.
+        """
         # Coerce vector to sympy.Matrix form
         matrix = self.to_matrix(vector)
 
@@ -72,6 +182,19 @@ class mesh_vector_calculus:
         return E
 
     def to_vector(self, matrix):
+        r"""
+        Convert row matrix to SymPy vector form.
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix or sympy.vector.Vector
+            Vector as row or column matrix.
+
+        Returns
+        -------
+        sympy.vector.Vector
+            Vector in the mesh's coordinate system basis.
+        """
         if isinstance(matrix, sympy.vector.Vector):
             return matrix  # No need to convert
 
@@ -91,8 +214,19 @@ class mesh_vector_calculus:
         return vector
 
     def to_matrix(self, vector):
-        # Almost there ...
+        r"""
+        Convert SymPy vector to row matrix form.
 
+        Parameters
+        ----------
+        vector : sympy.vector.Vector or sympy.Matrix
+            Vector to convert.
+
+        Returns
+        -------
+        sympy.Matrix
+            Row matrix (1 x dim) representation.
+        """
         if isinstance(vector, sympy.Matrix) and vector.shape == (1, self.dim):
             return vector
 
@@ -111,8 +245,19 @@ class mesh_vector_calculus:
         return matrix
 
     def jacobian(self, matrix):
-        """Jacobian of a quantity (scalar, vector, matrix) wrt the natural mesh coordinates"""
+        r"""
+        Jacobian matrix of a field with respect to mesh coordinates.
 
+        Parameters
+        ----------
+        matrix : sympy.Matrix or sympy.vector.Vector
+            Scalar, vector, or matrix field.
+
+        Returns
+        -------
+        sympy.Matrix
+            Jacobian matrix of partial derivatives.
+        """
         if isinstance(matrix, sympy.vector.Vector):
             matrix_form = self.to_matrix(matrix)
         else:
@@ -124,9 +269,22 @@ class mesh_vector_calculus:
 
 
 class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
-    """
-    mesh_vector_calculus module for div, grad, curl etc that apply in
-    native cylindrical coordinates
+    r"""
+    Vector calculus operators for cylindrical coordinates.
+
+    Provides gradient, divergence, curl operations in cylindrical
+    :math:`(r, \theta, z)` coordinates, accounting for the metric terms
+    that arise from coordinate curvature.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        Mesh with cylindrical coordinate system.
+
+    Warnings
+    --------
+    Native cylindrical coordinate meshes are deprecated. This class
+    issues a warning when used with non-native coordinate types.
     """
 
     def __init__(self, mesh):
@@ -142,9 +300,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
         super().__init__(mesh)
 
     def divergence(self, matrix):
-        r"""
-        $ \nabla \cdot \mathbf{v} $
-        """
+        r"""Compute :math:`\nabla \cdot \mathbf{v}`."""
 
         r = self.mesh.CoordinateSystem.N[0]
         t = self.mesh.CoordinateSystem.N[1]
@@ -162,9 +318,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
         return div_V
 
     def gradient(self, scalar):
-        r"""
-        $\nabla \phi$
-        """
+        r"""Compute :math:`\nabla \phi`."""
 
         if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
             scalar = scalar[0, 0]
@@ -185,9 +339,7 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
         return grad_S
 
     def curl(self, matrix):
-        r"""
-        $\nabla \phi$
-        """
+        r"""Compute :math:`\nabla \times \mathbf{v}` in cylindrical coordinates."""
 
         r = self.mesh.CoordinateSystem.N[0]
         t = self.mesh.CoordinateSystem.N[1]
@@ -401,9 +553,7 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         super().__init__(mesh)
 
     def divergence(self, matrix):
-        r"""
-        $ \nabla \cdot \mathbf{v} $
-        """
+        r"""Compute :math:`\nabla \cdot \mathbf{v}`."""
 
         r = self.mesh.CoordinateSystem.N[0]
         t = self.mesh.CoordinateSystem.N[1]
@@ -429,9 +579,7 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         return div_V
 
     def gradient(self, scalar):
-        r"""
-        $\nabla \phi$
-        """
+        r"""Compute :math:`\nabla \phi`."""
 
         if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
             scalar = scalar[0, 0]
@@ -455,9 +603,7 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         return grad_S
 
     def curl(self, matrix):
-        r"""
-        $\nabla \times \phi$ in spherical
-        """
+        r"""Compute :math:`\nabla \times \mathbf{v}` in spherical coordinates."""
 
         r = self.mesh.CoordinateSystem.N[0]
         l1 = self.mesh.CoordinateSystem.N[1]
@@ -536,9 +682,7 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
         super().__init__(mesh)
 
     def divergence(self, matrix):
-        r"""
-        $ \nabla \cdot \mathbf{v} $
-        """
+        r"""Compute :math:`\nabla \cdot \mathbf{v}`."""
 
         r = sympy.sympify(1)
         l1 = self.mesh.CoordinateSystem.N[0]
@@ -560,9 +704,7 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
         return div_V
 
     def gradient(self, scalar):
-        r"""
-        $\nabla \phi$
-        """
+        r"""Compute :math:`\nabla \phi`."""
 
         if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
             scalar = scalar[0, 0]
@@ -583,9 +725,7 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
 
     ## WIP - no R component or derivatives ... what does this mean ?
     def curl(self, matrix):
-        r"""
-        $\nabla \times \phi$ in spherical
-        """
+        r"""Compute :math:`\nabla \times \mathbf{v}` in spherical coordinates."""
 
         r = sympy.sympify(1)
         l1 = self.mesh.CoordinateSystem.N[0]

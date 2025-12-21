@@ -188,11 +188,19 @@ def global_evaluate_nd(   expr,
             ):
 
     """
-    Evaluate a given expression at a list of coordinates - parallel-safe version
+    Internal: Parallel-safe expression evaluation (Cython implementation).
+
+    This is the low-level Cython implementation for MPI-parallel evaluation.
+    Users should typically use :func:`underworld3.function.global_evaluate`
+    which provides automatic unit handling and a cleaner interface.
 
     Note it is not efficient to call this function to evaluate an expression at
     a single coordinate. Instead the user should provide a numpy array of all
     coordinates requiring evaluation.
+
+    See Also
+    --------
+    underworld3.function.global_evaluate : User-facing parallel evaluation.
 
     Parameters
     ----------
@@ -343,11 +351,19 @@ def evaluate_nd(   expr,
                 data_layout=None,
                 check_extrapolated=False):
     """
-    Evaluate a given expression at a list of coordinates.
+    Internal: Evaluate expression at coordinates (Cython implementation).
+
+    This is the low-level Cython implementation. Users should typically use
+    :func:`underworld3.function.evaluate` which provides automatic unit
+    handling and a cleaner interface.
 
     Note it is not efficient to call this function to evaluate an expression at
     a single coordinate. Instead the user should provide a numpy array of all
     coordinates requiring evaluation.
+
+    See Also
+    --------
+    underworld3.function.evaluate : User-facing function with unit support.
 
     Parameters
     ----------

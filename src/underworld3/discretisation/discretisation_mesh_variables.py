@@ -1,3 +1,29 @@
+r"""
+Mesh variable implementations for finite element discretization.
+
+This module provides the core variable classes that store field values
+on finite element meshes. Variables can be scalar, vector, or tensor
+valued and support:
+
+- Continuous (nodal) and discontinuous (elemental) representations
+- Symbolic expressions via SymPy integration
+- Unit-aware calculations when reference quantities are set
+- Parallel I/O for checkpointing and visualization
+
+Classes
+-------
+_BaseMeshVariable
+    Internal base class with core variable functionality.
+MeshVariable
+    User-facing mesh variable with full symbolic support.
+
+See Also
+--------
+underworld3.swarm.SwarmVariable : Particle-based variable.
+underworld3.discretisation.Mesh : Supporting mesh object.
+underworld3.discretisation.enhanced_variables : Enhanced variable wrappers.
+"""
+
 from typing import Optional, Tuple, Union
 from enum import Enum
 

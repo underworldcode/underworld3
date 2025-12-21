@@ -38,6 +38,96 @@ def SphericalShell(
     gmsh_verbosity=0,
     verbose=False,
 ):
+    r"""
+    Create a 3D spherical shell mesh.
+
+    Generates a tetrahedral mesh on a full spherical shell (or solid
+    sphere if ``radiusInner=0``) using Gmsh's OpenCASCADE geometry
+    kernel. Provides :math:`(r, \theta, \phi)` coordinates for
+    convenient representation of radial problems.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.0
+        Outer radius of the spherical shell.
+    radiusInner : float, default=0.547
+        Inner radius of the spherical shell. Set to 0 for a solid
+        sphere extending to the centre.
+    cellSize : float, default=0.1
+        Target mesh element size.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    filename : str, optional
+        Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels to apply. Each level
+        approximately octruples element count.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 3D mesh with boundaries:
+
+        - ``Lower``: Inner surface at :math:`r = r_{inner}`
+        - ``Upper``: Outer surface at :math:`r = r_{outer}`
+        - ``Centre``: Centre point (if radiusInner=0)
+
+        The mesh includes a refinement callback that snaps boundary
+        nodes back to true spherical geometry after refinement.
+
+    See Also
+    --------
+    Annulus : 2D equivalent.
+    SphericalShellInternalBoundary : Spherical shell with internal surface.
+    CubedSphere : Structured spherical shell mesh.
+
+    Examples
+    --------
+    Create a spherical shell for mantle convection:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.SphericalShell(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.547,
+    ...     cellSize=0.1
+    ... )
+
+    Create a solid sphere:
+
+    >>> mesh = uw.meshing.SphericalShell(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.0,
+    ...     cellSize=0.1
+    ... )
+
+    Notes
+    -----
+    The inner radius default of 0.547 corresponds approximately to the
+    Earth's core-mantle boundary radius ratio (3480/6371).
+
+    The mesh coordinate system provides unit vectors via
+    ``mesh.CoordinateSystem``:
+
+    - ``unit_e_0``: radial direction :math:`(r)`
+    - ``unit_e_1``: colatitude direction :math:`(\theta)`
+    - ``unit_e_2``: longitude direction :math:`(\phi)`
+
+    For free-slip boundary conditions on vector problems (e.g., Stokes),
+    use a penalty on the normal velocity component::
+
+        Gamma_N = mesh.Gamma  # discrete normal, or
+        Gamma_N = mesh.CoordinateSystem.unit_e_0  # analytic radial
+        stokes.add_natural_bc(
+            penalty * Gamma_N.dot(v_soln.sym) * Gamma_N, "Upper"
+        )
+
+    """
     class boundaries(Enum):
         Lower = 11
         Upper = 12
@@ -692,8 +782,77 @@ def CubedSphere(
     gmsh_verbosity=0,
     verbose=False,
 ):
-    """Cubed Sphere mesh in hexahedra (which can be left uncombined to produce a simplex-based mesh
-    The number of elements is the edge of each cube"""
+    r"""
+    Create a cubed-sphere mesh with structured elements.
+
+    Generates a spherical shell mesh using the cubed-sphere projection,
+    which maps six cube faces onto the sphere. Produces hexahedral
+    elements (or tetrahedra if ``simplex=True``) with uniform resolution.
+
+    Parameters
+    ----------
+    radiusOuter : float, default=1.0
+        Outer radius of the spherical shell.
+    radiusInner : float, default=0.547
+        Inner radius of the spherical shell.
+    numElements : int, default=5
+        Number of elements along each edge of each cube face. Total
+        elements approximately ``6 * numElements^2`` per radial layer.
+    degree : int, default=1
+        Polynomial degree of finite element basis functions.
+    qdegree : int, default=2
+        Quadrature degree for numerical integration.
+    simplex : bool, default=False
+        If False, use hexahedral elements. If True, subdivide into
+        tetrahedra (simplex elements).
+    filename : str, optional
+        Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels to apply.
+    gmsh_verbosity : int, default=0
+        Gmsh output verbosity level.
+    verbose : bool, default=False
+        Print diagnostic information.
+
+    Returns
+    -------
+    Mesh
+        A 3D mesh with boundaries:
+
+        - ``Lower``: Inner surface at :math:`r = r_{inner}`
+        - ``Upper``: Outer surface at :math:`r = r_{outer}`
+
+    See Also
+    --------
+    SphericalShell : Unstructured tetrahedral spherical mesh.
+    SegmentofSphere : Partial spherical shell.
+
+    Examples
+    --------
+    Create a cubed-sphere mesh with 10 elements per edge:
+
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.CubedSphere(
+    ...     radiusOuter=1.0,
+    ...     radiusInner=0.55,
+    ...     numElements=10
+    ... )
+
+    Notes
+    -----
+    The cubed-sphere projection avoids polar singularities present in
+    latitude-longitude grids, providing quasi-uniform element sizes
+    across the sphere. This is particularly advantageous for global
+    geodynamics simulations.
+
+    The mesh coordinate system provides unit vectors via
+    ``mesh.CoordinateSystem``:
+
+    - ``unit_e_0``: radial direction :math:`(r)`
+    - ``unit_e_1``: colatitude direction :math:`(\theta)`
+    - ``unit_e_2``: longitude direction :math:`(\phi)`
+
+    """
 
     class boundaries(Enum):
         Lower = 1

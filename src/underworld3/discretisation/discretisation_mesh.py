@@ -148,7 +148,58 @@ def _from_plexh5(
 
 class Mesh(Stateful, uw_object):
     r"""
-    Mesh class for uw - documentation needed
+    Unstructured mesh with PETSc DMPlex backend.
+
+    The Mesh class provides the spatial discretisation for finite element
+    computations. It wraps PETSc's DMPlex for unstructured mesh management,
+    supporting various cell types (triangles, quadrilaterals, tetrahedra,
+    hexahedra) and coordinate systems.
+
+    Parameters
+    ----------
+    plex_or_meshfile : PETSc.DMPlex or str
+        Either a PETSc DMPlex object or path to a mesh file (gmsh, exodus).
+    degree : int, optional
+        Polynomial degree for the coordinate field (default 1).
+    simplex : bool, optional
+        True for simplicial elements (triangles/tets), False for quads/hexes.
+    coordinate_system_type : CoordinateSystemType, optional
+        Coordinate system for vector calculus (Cartesian, cylindrical, etc.).
+    qdegree : int, optional
+        Quadrature degree for numerical integration (default 2).
+    boundaries : list of NamedTuple, optional
+        Boundary region definitions with names and values.
+    boundary_normals : dict, optional
+        Outward normal vectors for each boundary.
+    units : str or pint.Unit, optional
+        Physical units for mesh coordinates.
+    verbose : bool, optional
+        Print mesh construction information.
+
+    Attributes
+    ----------
+    N : sympy.vector.CoordSys3D
+        SymPy coordinate system for symbolic expressions.
+    X : UWCoordinate tuple
+        Coordinate variables (x, y, z) for use in expressions.
+    dim : int
+        Spatial dimension of the mesh.
+    dm : PETSc.DMPlex
+        Underlying PETSc distributed mesh object.
+
+    Examples
+    --------
+    Meshes are typically created via the meshing module::
+
+        >>> mesh = uw.meshing.UnstructuredSimplexBox(
+        ...     minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.1
+        ... )
+        >>> T = mesh.add_variable("T", vtype=uw.VarType.SCALAR)
+
+    See Also
+    --------
+    underworld3.meshing : Mesh generation utilities.
+    underworld3.discretisation.MeshVariable : Field variables on meshes.
     """
 
     mesh_instances = 0
