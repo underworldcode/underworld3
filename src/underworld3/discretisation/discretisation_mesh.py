@@ -833,6 +833,25 @@ class Mesh(Stateful, uw_object):
                 else:
                     uw.pprint(f"Length scale: 1.0 (no scaling)\n")
 
+            # Display coordinate system information
+            coord_sys = self.CoordinateSystem
+            coord_type = coord_sys.coordinate_type
+            uw.pprint(f"Coordinate system: {coord_type.name}\n")
+
+            # Show available coordinate accessors
+            accessors = ["mesh.X.coords (Cartesian)"]  # Always available
+            if coord_sys._spherical_accessor is not None:
+                if self.dim == 2:
+                    accessors.append("mesh.X.spherical (r, θ)")
+                else:
+                    accessors.append("mesh.X.spherical (r, θ, φ)")
+            if coord_sys._geo_accessor is not None:
+                accessors.append("mesh.X.geo (lon, lat, depth)")
+
+            uw.pprint(f"Coordinate access:\n")
+            for acc in accessors:
+                uw.pprint(f"  • {acc}\n")
+
             # Only if notebook and serial
             if uw.is_notebook and uw.mpi.size == 1:
                 uw.visualisation.plot_mesh(self, window_size=(600, 400))
@@ -1558,10 +1577,9 @@ class Mesh(Stateful, uw_object):
             else:
                 coord_values = value
 
-            # Convert to model units if needed
+            # Convert to non-dimensional units if needed
             if units_active and mesh_has_units:
-                # Use model's conversion if available
-                coord_values = model.to_model_magnitude(value)
+                coord_values = uw.scaling.non_dimensionalise(value)
         else:
             coord_values = value
 

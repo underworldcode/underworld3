@@ -170,11 +170,19 @@ def non_dimensionalise(dimValue):
     if isinstance(dimValue, (int, float)):
         return dimValue
 
+    # Check if it's a UWQuantity - extract the underlying Pint quantity
+    if hasattr(dimValue, '_pint_qty'):
+        if dimValue._pint_qty is not None:
+            dimValue = dimValue._pint_qty
+        else:
+            # UWQuantity without units - return the raw value
+            return dimValue.value if hasattr(dimValue, 'value') else dimValue
+
     # Check for pint Quantity that's already unitless
     try:
         val = dimValue.unitless
         if val:
-            return dimValue
+            return dimValue.magnitude if hasattr(dimValue, 'magnitude') else dimValue
     except AttributeError:
         # Not a pint Quantity, check if it's something else we should return as-is
         # If we can't determine it has units, assume it's already non-dimensional
@@ -203,12 +211,12 @@ def non_dimensionalise(dimValue):
 
     check(length, time, mass, temperature, substance)
 
-    # Get dimensionality
-    dlength = dimValue.dimensionality["[length]"]
-    dtime = dimValue.dimensionality["[time]"]
-    dmass = dimValue.dimensionality["[mass]"]
-    dtemp = dimValue.dimensionality["[temperature]"]
-    dsubstance = dimValue.dimensionality["[substance]"]
+    # Get dimensionality (use .get() for dimensions that may be absent)
+    dlength = dimValue.dimensionality.get("[length]", 0)
+    dtime = dimValue.dimensionality.get("[time]", 0)
+    dmass = dimValue.dimensionality.get("[mass]", 0)
+    dtemp = dimValue.dimensionality.get("[temperature]", 0)
+    dsubstance = dimValue.dimensionality.get("[substance]", 0)
     factor = (
         length ** (-dlength)
         * time ** (-dtime)

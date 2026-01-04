@@ -215,18 +215,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Fallback: store as-is (shouldn't happen)
                 self._units = units
 
-            # Initialize units backend properly
-            from underworld3.utilities.units_mixin import PintBackend
-
-            if units_backend is None or units_backend == "pint":
-                self._units_backend = PintBackend()
-            else:
+            # units_backend parameter is deprecated - Pint is the only supported backend
+            if units_backend is not None and units_backend != "pint":
                 raise ValueError(
                     f"Unknown units backend: {units_backend}. Only 'pint' is supported."
                 )
         else:
             self._units = None
-            self._units_backend = None
 
         # STRICT UNITS MODE CHECK
         # Enforce units-scales contract: variables with units require reference quantities
@@ -1771,11 +1766,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                         "variable_dimensionality": (
                             str(self.dimensionality) if hasattr(self, "dimensionality") else None
                         ),
-                        "units_backend": (
-                            type(self._units_backend).__name__
-                            if hasattr(self, "_units_backend")
-                            else None
-                        ),
+                        "units_backend": "pint" if self.has_units else None,
                         "proxy_degree": self._proxy_degree,
                         "num_components": self.num_components,
                         "variable_name": self.name,
@@ -2708,10 +2699,8 @@ class Swarm(Stateful, uw_object):
         """
         import underworld3 as uw
 
-        model = uw.get_default_model()
-
-        # Convert physical → model units
-        model_coords = model.to_model_magnitude(value)
+        # Convert physical → non-dimensional units
+        model_coords = uw.scaling.non_dimensionalise(value)
 
         # Set internal coordinates
         self._particle_coordinates.data[...] = model_coords
@@ -3951,8 +3940,7 @@ class Swarm(Stateful, uw_object):
         # This ensures consistent arithmetic: velocity is in model units, so time must be too
         import underworld3 as uw
 
-        model = uw.get_default_model()
-        delta_t_model = model.to_model_magnitude(delta_t)
+        delta_t_model = uw.scaling.non_dimensionalise(delta_t)
 
         dt_limit = self.estimate_dt(V_fn)
 

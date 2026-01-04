@@ -25,8 +25,8 @@ import underworld3.cython.petsc_discretisation
 
 import sympy
 
-# Note: Mesh coordinates are always in model units
-# The model.to_model_magnitude() method handles unit conversion
+# Note: Mesh coordinates are always in non-dimensional (scaled) units
+# The uw.scaling.non_dimensionalise() function handles unit conversion
 
 
 @timing.routine_timer_decorator
@@ -142,10 +142,10 @@ def UnstructuredSimplexBox(
 
     Notes
     -----
-    Mesh coordinates are always in model reference units (set via
-    ``model.set_reference_quantities()``). If UWQuantity objects with
+    Mesh coordinates are always in non-dimensional (scaled) units (set via
+    ``uw.scaling.get_coefficients()``). If UWQuantity objects with
     physical units are passed, they are automatically converted using
-    ``model.to_model_magnitude()``.
+    ``uw.scaling.non_dimensionalise()``.
 
     The ``regular=True`` option produces a more structured mesh layout
     but currently only works for 2D meshes.
@@ -182,25 +182,10 @@ def UnstructuredSimplexBox(
         Front = sympy.Matrix([0, 1, 0])
         Back = sympy.Matrix([0, 1, 0])
 
-    # Convert coordinates to model units (handles UWQuantity objects)
-    # Mesh coordinates are ALWAYS in model reference units
-    model = uw.get_default_model()
-
-    # Detect units from UWQuantity inputs (if not explicitly specified)
-    if units is None:
-        # Try to detect units from maxCoords (most likely to have units)
-        if hasattr(maxCoords, "__iter__"):
-            for coord in maxCoords:
-                if hasattr(coord, "units"):  # UWQuantity
-                    units = str(coord.units)
-                    break
-                elif hasattr(coord, "_pint_qty"):  # Direct Pint Quantity
-                    units = str(coord._pint_qty.units)
-                    break
-
-    minCoords = model.to_model_magnitude(minCoords)
-    maxCoords = model.to_model_magnitude(maxCoords)
-    cellSize = model.to_model_magnitude(cellSize)
+    # Convert coordinates to non-dimensional units (handles UWQuantity objects)
+    minCoords = tuple(uw.scaling.non_dimensionalise(c) for c in minCoords)
+    maxCoords = tuple(uw.scaling.non_dimensionalise(c) for c in maxCoords)
+    cellSize = uw.scaling.non_dimensionalise(cellSize)
 
     dim = len(minCoords)
     if dim == 2:
@@ -1055,10 +1040,7 @@ def StructuredQuadBox(
         Front = sympy.Matrix([0, 1, 0])
         Back = sympy.Matrix([0, 1, 0])
 
-    # Convert coordinates to model units (handles UWQuantity objects)
-    # Mesh coordinates are ALWAYS in model reference units
-    model = uw.get_default_model()
-
+    # Convert coordinates to non-dimensional units (handles UWQuantity objects)
     # Detect units from UWQuantity inputs (if not explicitly specified)
     if units is None:
         # Try to detect units from maxCoords (most likely to have units)
@@ -1072,9 +1054,9 @@ def StructuredQuadBox(
                     break
 
     if minCoords is not None:
-        minCoords = model.to_model_magnitude(minCoords)
+        minCoords = tuple(uw.scaling.non_dimensionalise(c) for c in minCoords)
     if maxCoords is not None:
-        maxCoords = model.to_model_magnitude(maxCoords)
+        maxCoords = tuple(uw.scaling.non_dimensionalise(c) for c in maxCoords)
 
     dim = len(minCoords)
     if dim == 2:
