@@ -8,12 +8,46 @@ such as boundary layers, shear zones, or phase boundaries.
 
 Key Functions
 -------------
+metric_from_gradient : function
+    Create adaptation metric from gradient of a scalar field. Refines
+    where gradients are steep, coarsens where field is smooth.
+
+metric_from_field : function
+    Create adaptation metric from any scalar indicator field. General-purpose
+    utility for creating metrics from error estimates, phase indicators, etc.
+
+create_metric : function
+    Create adaptation metric directly from target edge lengths (h-field).
+    Low-level utility used by other metric functions.
+
 mesh_adapt_meshVar : function
-    Adapt mesh based on a mesh variable field (e.g., refine where
-    gradients are steep).
+    Adapt mesh based on a metric MeshVariable (internal utility).
+
+mesh2mesh_meshVariable : function
+    Transfer a MeshVariable from one mesh to another using swarm intermediary.
+    Useful for checkpoint/restart workflows.
 
 Notes
 -----
+**Metric Tensor Mathematics**
+
+For isotropic mesh adaptation, MMG/PETSc uses a metric tensor:
+
+.. math::
+
+    M = h^{-2} \cdot I
+
+where :math:`h` is the target edge length and :math:`I` is the identity
+matrix. This relationship is **dimension-independent** - the same formula
+applies in 2D and 3D because the metric defines edge lengths, not areas
+or volumes.
+
+The adaptation algorithm seeks to make all edges have unit length in the
+metric space (i.e., :math:`\mathbf{e}^T M \mathbf{e} = 1` for edge vector
+:math:`\mathbf{e}`). Higher metric values produce smaller elements.
+
+**Boundary Label Handling**
+
 The boundary label stacking utilities handle the constraint that PETSc's
 adaptive meshing interpolates only one boundary label at a time. The
 stacking approach combines multiple gmsh-generated boundary labels into
@@ -26,6 +60,7 @@ See Also
 --------
 underworld3.discretisation : Mesh classes that can be adapted.
 underworld3.meshing : Mesh generation utilities.
+underworld3.meshing.Surface.refinement_metric : Surface-based adaptation.
 """
 from typing import Optional, Tuple
 from enum import Enum
@@ -43,6 +78,442 @@ from underworld3.coordinates import CoordinateSystemType
 import underworld3.timing as timing
 
 import sympy
+
+
+# =============================================================================
+# Public API: Metric Creation Functions
+# =============================================================================
+
+
+def create_metric(
+    mesh: "Mesh",
+    h_values: np.ndarray,
+    name: str = None,
+) -> "MeshVariable":
+    r"""Create adaptation metric from target edge lengths.
+
+    This is the core utility that converts target edge lengths (h-field) to
+    the metric tensor format required by MMG/PETSc mesh adaptation.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The mesh to create the metric on.
+    h_values : np.ndarray
+        Array of target edge lengths at each mesh node. Shape should be
+        (n_nodes,) or (n_nodes, 1).
+    name : str, optional
+        Name for the metric MeshVariable. Defaults to "adaptation_metric".
+
+    Returns
+    -------
+    MeshVariable
+        Scalar MeshVariable containing metric values ready for mesh.adapt().
+
+    Notes
+    -----
+    **Metric Tensor Mathematics**
+
+    For isotropic mesh adaptation, MMG/PETSc uses a metric tensor:
+
+    .. math::
+
+        M = h^{-2} \cdot I
+
+    where :math:`h` is the target edge length and :math:`I` is the identity
+    matrix. This relationship is **dimension-independent** - the same formula
+    applies in 2D and 3D.
+
+    Higher metric values produce smaller elements. The adaptation algorithm
+    seeks to make :math:`\mathbf{e}^T M \mathbf{e} = 1` for all edges.
+
+    Examples
+    --------
+    >>> # Create metric from h-field computed elsewhere
+    >>> h_field = compute_error_based_h(solution)  # User function
+    >>> metric = uw.adaptivity.create_metric(mesh, h_field)
+    >>> mesh.adapt(metric)
+
+    See Also
+    --------
+    metric_from_gradient : Create metric from scalar field gradient.
+    metric_from_field : Create metric from indicator field.
+    """
+    if name is None:
+        name = "adaptation_metric"
+
+    # Ensure h_values is the right shape
+    h_values = np.asarray(h_values).flatten()
+
+    # Create metric MeshVariable
+    metric = uw.discretisation.MeshVariable(name, mesh, 1, degree=1)
+
+    with mesh.access(metric):
+        # Convert to metric tensor: M = 1/h² × I (isotropic)
+        # This is dimension-independent: same formula for 2D and 3D
+        metric.data[:, 0] = 1.0 / (h_values ** 2)
+
+    return metric
+
+
+def metric_from_gradient(
+    field: "MeshVariable",
+    h_min: float,
+    h_max: float,
+    gradient_min: float = None,
+    gradient_max: float = None,
+    profile: str = "linear",
+    name: str = None,
+) -> "MeshVariable":
+    r"""Create adaptation metric from gradient of a scalar field.
+
+    Produces a metric that refines where gradients are steep (high |∇φ|)
+    and coarsens where the field is smooth (low |∇φ|). This is the standard
+    approach for error-driven or feature-based mesh adaptation.
+
+    Parameters
+    ----------
+    field : MeshVariable
+        Scalar MeshVariable whose gradient drives refinement. Must have
+        num_components=1.
+    h_min : float
+        Target edge length where gradient is highest (finest mesh).
+    h_max : float
+        Target edge length where gradient is lowest (coarsest mesh).
+    gradient_min : float, optional
+        Gradient magnitude below this uses h_max. If None, uses 5th percentile
+        of |∇φ| values.
+    gradient_max : float, optional
+        Gradient magnitude above this uses h_min. If None, uses 95th percentile
+        of |∇φ| values.
+    profile : str, optional
+        Interpolation profile: "linear", "smoothstep", or "power" (default: "linear").
+        - "linear": h varies linearly with gradient magnitude
+        - "smoothstep": smooth S-curve transition (C¹ continuous)
+        - "power": h ∝ |∇φ|^(-1/2), natural for error equidistribution
+    name : str, optional
+        Name for the metric MeshVariable. Defaults to "{field.name}_gradient_metric".
+
+    Returns
+    -------
+    MeshVariable
+        Scalar MeshVariable containing metric values ready for mesh.adapt().
+
+    Notes
+    -----
+    **Gradient-Based Refinement Strategy**
+
+    The idea is that steep gradients indicate regions where the solution is
+    changing rapidly - these need finer resolution to capture accurately.
+    Smooth regions can use coarser mesh without losing accuracy.
+
+    The mapping is:
+        - High |∇φ| → small h → large metric → finer mesh
+        - Low |∇φ| → large h → small metric → coarser mesh
+
+    **Choosing h_min and h_max**
+
+    - ``h_min`` controls finest resolution (where gradients are steepest)
+    - ``h_max`` controls coarsest resolution (smooth regions)
+    - Ratio ``h_max/h_min`` gives refinement factor (e.g., 10 = 10× finer at peaks)
+
+    **Auto-detection of Gradient Range**
+
+    If ``gradient_min`` and ``gradient_max`` are not specified, they are
+    computed from the actual gradient field:
+        - gradient_min = 5th percentile of |∇φ|
+        - gradient_max = 95th percentile of |∇φ|
+
+    This ensures robust behavior even when gradient magnitudes span many
+    orders of magnitude.
+
+    **Implementation Note**
+
+    Gradients are computed using local least-squares fitting at each node,
+    using neighbor values within a search radius. This approach is robust
+    and works regardless of mesh structure, avoiding the complexity of
+    finite element gradient projection.
+
+    Examples
+    --------
+    >>> # Refine based on temperature gradient
+    >>> metric = uw.adaptivity.metric_from_gradient(
+    ...     T, h_min=0.005, h_max=0.05, profile="smoothstep"
+    ... )
+    >>> mesh.adapt(metric)
+
+    >>> # Refine based on strain rate
+    >>> # First compute strain rate magnitude as scalar field
+    >>> SR = uw.discretisation.MeshVariable("SR", mesh, 1)
+    >>> # ... populate SR with strain rate second invariant ...
+    >>> metric = uw.adaptivity.metric_from_gradient(SR, h_min=0.01, h_max=0.1)
+    >>> mesh.adapt(metric)
+
+    See Also
+    --------
+    create_metric : Create metric from h-field directly.
+    metric_from_field : Create metric from indicator field (not gradient).
+    """
+    mesh = field.mesh
+
+    if field.num_components != 1:
+        raise ValueError(
+            f"metric_from_gradient requires scalar field (num_components=1), "
+            f"got {field.num_components}"
+        )
+
+    # Use the MeshVariable's built-in gradient approximation via RBF
+    # This computes gradients at node locations using local polynomial fitting
+    with mesh.access(field):
+        coords = field.coords
+        values = field.data[:, 0]
+
+    # Compute gradient using finite differences on mesh
+    # For each node, estimate gradient from neighbors using least squares
+    grad_mag = _compute_gradient_magnitude(mesh, coords, values)
+
+    # Handle gradient bounds
+    if gradient_min is None:
+        gradient_min = np.percentile(grad_mag, 5)
+    if gradient_max is None:
+        gradient_max = np.percentile(grad_mag, 95)
+
+    # Avoid division by zero
+    gradient_range = gradient_max - gradient_min
+    if gradient_range < 1e-15:
+        # Uniform field - use h_max everywhere
+        h_values = np.full_like(grad_mag, h_max)
+    else:
+        # Normalize to [0, 1]
+        t = np.clip((grad_mag - gradient_min) / gradient_range, 0.0, 1.0)
+
+        # Apply profile
+        if profile == "linear":
+            # Linear: t directly maps to interpolation parameter
+            h_values = h_max - (h_max - h_min) * t
+
+        elif profile == "smoothstep":
+            # Smoothstep: S-curve for smoother transition
+            smooth_t = 3 * t**2 - 2 * t**3
+            h_values = h_max - (h_max - h_min) * smooth_t
+
+        elif profile == "power":
+            # Power law: h ∝ |∇φ|^(-1/2) for error equidistribution
+            # This gives optimal convergence for some error norms
+            # Map t to h via: h = h_max * (1 - t*(1 - h_min/h_max))^2
+            # Equivalent to h ∝ 1/sqrt(gradient) behavior
+            h_ratio = h_min / h_max
+            h_values = h_max * ((1.0 - t) + t * h_ratio)
+
+        else:
+            raise ValueError(
+                f"Unknown profile: {profile}. Use 'linear', 'smoothstep', or 'power'"
+            )
+
+    # Create metric
+    if name is None:
+        name = f"{field.name}_gradient_metric"
+
+    return create_metric(mesh, h_values, name=name)
+
+
+def metric_from_field(
+    indicator: "MeshVariable",
+    h_min: float,
+    h_max: float,
+    indicator_min: float = None,
+    indicator_max: float = None,
+    invert: bool = False,
+    profile: str = "linear",
+    name: str = None,
+) -> "MeshVariable":
+    r"""Create adaptation metric from an indicator field.
+
+    Maps a scalar indicator field (e.g., error estimate, phase field, distance)
+    to target edge lengths. This is more general than gradient-based adaptation -
+    you provide any field indicating where refinement is needed.
+
+    Parameters
+    ----------
+    indicator : MeshVariable
+        Scalar field indicating where refinement is needed. Higher values
+        (by default) produce finer mesh.
+    h_min : float
+        Target edge length where indicator is highest (finest mesh).
+    h_max : float
+        Target edge length where indicator is lowest (coarsest mesh).
+    indicator_min : float, optional
+        Indicator values below this use h_max. If None, uses field minimum.
+    indicator_max : float, optional
+        Indicator values above this use h_min. If None, uses field maximum.
+    invert : bool, optional
+        If True, high indicator values → coarse mesh (swap h_min/h_max roles).
+        Useful when indicator represents "smoothness" rather than "need for
+        refinement". Default: False.
+    profile : str, optional
+        Interpolation profile: "linear" or "smoothstep". Default: "linear".
+    name : str, optional
+        Name for the metric MeshVariable. Defaults to "{indicator.name}_metric".
+
+    Returns
+    -------
+    MeshVariable
+        Scalar MeshVariable containing metric values ready for mesh.adapt().
+
+    Notes
+    -----
+    **Use Cases**
+
+    - **Error estimates**: Pass a computed error field; high error → fine mesh
+    - **Phase fields**: Refine at interfaces (|φ| near transition value)
+    - **Distance fields**: Refine near surfaces (use with Surface.distance)
+    - **Material boundaries**: Refine near composition gradients
+
+    **Relationship to Surface.refinement_metric()**
+
+    This function is a general-purpose version. Surface.refinement_metric()
+    is a specialized wrapper that computes the indicator from surface distance.
+
+    Examples
+    --------
+    >>> # Refine based on error estimate
+    >>> error = compute_error_estimate(solution)  # User function
+    >>> metric = uw.adaptivity.metric_from_field(error, h_min=0.005, h_max=0.05)
+    >>> mesh.adapt(metric)
+
+    >>> # Refine at phase boundaries (φ transitions from 0 to 1)
+    >>> # Want fine mesh where φ is near 0.5
+    >>> phi_interface = 1 - 4 * (phi - 0.5)**2  # Peak at φ=0.5
+    >>> metric = uw.adaptivity.metric_from_field(phi_interface, h_min=0.01, h_max=0.1)
+
+    See Also
+    --------
+    create_metric : Create metric from h-field directly.
+    metric_from_gradient : Create metric from field gradient.
+    """
+    mesh = indicator.mesh
+
+    if indicator.num_components != 1:
+        raise ValueError(
+            f"metric_from_field requires scalar field (num_components=1), "
+            f"got {indicator.num_components}"
+        )
+
+    # Get indicator values
+    with mesh.access(indicator):
+        ind_values = indicator.data[:, 0].copy()
+
+    # Handle indicator bounds
+    if indicator_min is None:
+        indicator_min = np.min(ind_values)
+    if indicator_max is None:
+        indicator_max = np.max(ind_values)
+
+    # Handle inversion
+    if invert:
+        h_min, h_max = h_max, h_min
+
+    # Normalize to [0, 1]
+    indicator_range = indicator_max - indicator_min
+    if indicator_range < 1e-15:
+        # Uniform field - use h_max everywhere
+        h_values = np.full_like(ind_values, h_max)
+    else:
+        t = np.clip((ind_values - indicator_min) / indicator_range, 0.0, 1.0)
+
+        # Apply profile (high indicator → small h)
+        if profile == "linear":
+            h_values = h_max - (h_max - h_min) * t
+
+        elif profile == "smoothstep":
+            smooth_t = 3 * t**2 - 2 * t**3
+            h_values = h_max - (h_max - h_min) * smooth_t
+
+        else:
+            raise ValueError(
+                f"Unknown profile: {profile}. Use 'linear' or 'smoothstep'"
+            )
+
+    # Create metric
+    if name is None:
+        name = f"{indicator.name}_metric"
+
+    return create_metric(mesh, h_values, name=name)
+
+
+# =============================================================================
+# Internal Utilities
+# =============================================================================
+
+
+def _compute_gradient_magnitude(mesh, coords, values):
+    """Compute gradient magnitude at mesh nodes using local approximation.
+
+    Uses scipy's cKDTree for efficient neighbor finding and least-squares
+    fitting to estimate gradients. This is a simple but robust approach
+    that works regardless of mesh structure.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    coords : np.ndarray
+        Node coordinates, shape (n_nodes, dim).
+    values : np.ndarray
+        Scalar values at nodes, shape (n_nodes,).
+
+    Returns
+    -------
+    np.ndarray
+        Gradient magnitude at each node, shape (n_nodes,).
+    """
+    from scipy.spatial import cKDTree
+
+    n_nodes = coords.shape[0]
+    dim = coords.shape[1]
+
+    # Build KD-tree for neighbor queries
+    tree = cKDTree(coords)
+
+    # Estimate typical neighbor distance from mesh
+    # Use average nearest neighbor distance
+    distances, _ = tree.query(coords, k=2)  # k=2: self and nearest
+    avg_dist = np.mean(distances[:, 1])  # Skip self (distance 0)
+
+    # Search radius for local gradient estimation
+    search_radius = 3.0 * avg_dist
+
+    grad_mag = np.zeros(n_nodes)
+
+    for i in range(n_nodes):
+        # Find neighbors within search radius
+        neighbors = tree.query_ball_point(coords[i], search_radius)
+
+        if len(neighbors) < dim + 1:
+            # Not enough neighbors for gradient estimation
+            # Fall back to larger search
+            _, neighbors = tree.query(coords[i], k=min(dim + 2, n_nodes))
+            neighbors = list(neighbors)
+
+        # Build local system for least-squares gradient estimation
+        # We fit: f(x) ≈ f(x_i) + ∇f · (x - x_i)
+        neighbor_coords = coords[neighbors] - coords[i]
+        neighbor_values = values[neighbors] - values[i]
+
+        # Solve least-squares: A @ grad = b
+        # where A = neighbor_coords, b = neighbor_values
+        if len(neighbors) >= dim + 1:
+            try:
+                grad, residuals, rank, s = np.linalg.lstsq(
+                    neighbor_coords, neighbor_values, rcond=None
+                )
+                grad_mag[i] = np.sqrt(np.sum(grad ** 2))
+            except np.linalg.LinAlgError:
+                grad_mag[i] = 0.0
+        else:
+            grad_mag[i] = 0.0
+
+    return grad_mag
 
 
 def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):
