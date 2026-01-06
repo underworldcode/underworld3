@@ -646,9 +646,10 @@ from .utilities.diagnostics import doctor, health_check
 
 ## -------------------------------------------------------------
 # PARAMETERS - uw.Params() for notebook/CLI configurable parameters
+# uw.Param() wrapper for typed parameters with units support
 ## -------------------------------------------------------------
 
-from .utilities._params import Params
+from .utilities._params import Params, Param, ParamType
 
 ## -------------------------------------------------------------
 # PAUSE - Interactive pause for notebook development

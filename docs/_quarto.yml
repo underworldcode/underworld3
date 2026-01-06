@@ -20,6 +20,7 @@ book:
       chapters:
         - beginner/index.qmd
         - beginner/installation.qmd
+        - beginner/parameters.qmd
         - beginner/tutorials/Notebook_Index.ipynb
         - beginner/tutorials/1-Meshes.ipynb
         - beginner/tutorials/2-Variables.ipynb

@@ -9,6 +9,15 @@ from pint import UnitRegistry
 
 u = UnitRegistry()
 
+# NOTE: Angles (degree, radian) remain dimensionless in Pint's default behavior.
+# Adding an [angle] dimension requires deeper Pint customization that's not
+# straightforward with the current API. For Params, this works fine because:
+#   - Param(45.0, units="degree") has expected dimensionality {}
+#   - CLI "45 degree" also has dimensionality {}
+#   - They match, so angle parameters work correctly
+# The limitation is that bare number + angle won't error, but this is a
+# broader Pint issue that would need upstream changes or a custom registry.
+
 
 # Define planetary and geophysical units for Earth, planetary, and stellar sciences
 # These units are commonly needed for geodynamics, planetary science, and astrophysics

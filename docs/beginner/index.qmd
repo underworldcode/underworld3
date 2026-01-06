@@ -24,7 +24,12 @@ Understand the basics and see your first model.
 
 [→ Quick Start Tutorial](quickstart.qmd){.btn .btn-primary}
 
-### 3. Interactive Tutorials
+### 3. Script Parameters
+Configure your models for notebooks and command-line execution.
+
+[→ Parameters Guide](parameters.qmd){.btn .btn-primary}
+
+### 4. Interactive Tutorials
 Work through hands-on notebooks covering all core concepts.
 
 [→ Start Tutorials](tutorials/Notebook_Index.ipynb){.btn .btn-primary}
