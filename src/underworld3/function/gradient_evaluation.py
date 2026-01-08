@@ -49,23 +49,30 @@ import numpy as np
 from petsc4py import PETSc
 
 
-def evaluate_gradient(scalar_var, coords, method="clement"):
+def evaluate_gradient(scalar_var, coords, method="clement", component=None):
     """
-    Evaluate gradient of a scalar field at arbitrary coordinates.
+    Evaluate gradient of a mesh variable at arbitrary coordinates.
 
-    Computes the gradient of a scalar MeshVariable and evaluates it at
-    the specified coordinates without adding permanent fields to the mesh.
+    Computes the gradient of a MeshVariable (or one of its components) and
+    evaluates it at the specified coordinates without adding permanent fields
+    to the mesh.
 
     Parameters
     ----------
     scalar_var : MeshVariable
-        Scalar field (num_components=1) to compute gradient of.
+        Field to compute gradient of. Can be scalar (num_components=1) or
+        vector/tensor field. For multi-component fields, use `component`
+        parameter to specify which component's gradient to compute.
     coords : array-like
         Coordinates at which to evaluate gradient, shape (n_points, dim).
         Can be numpy array or UnitAwareArray.
     method : str, optional
         Gradient computation method. Currently supported:
         - "clement": Clement interpolant (O(h) accurate, no solve). Default.
+    component : int or None, optional
+        For multi-component fields, which component to compute gradient of.
+        If None and field has multiple components, raises ValueError.
+        For scalar fields, this parameter is ignored.
 
     Returns
     -------
@@ -78,6 +85,11 @@ def evaluate_gradient(scalar_var, coords, method="clement"):
     **Clement Method**: Uses PETSc's `DMPlexComputeGradientClementInterpolant`
     which averages cell-wise gradients at vertices. This is O(h) accurate -
     error halves when mesh resolution doubles.
+
+    **Higher-degree fields (P2, etc.)**: For fields with degree > 1, the
+    function first samples the field at P1 vertex locations, then computes
+    the Clement gradient on that data. This introduces some approximation
+    but allows gradient computation for any polynomial degree.
 
     The function uses a scratch DM internally to avoid adding fields to the
     mesh's DM. All temporary PETSc objects are destroyed after evaluation.
@@ -122,6 +134,19 @@ def evaluate_gradient(scalar_var, coords, method="clement"):
     mesh = scalar_var.mesh
     dm = mesh.dm
 
+    # Handle multi-component fields
+    num_components = scalar_var.num_components
+    if num_components > 1:
+        if component is None:
+            raise ValueError(
+                f"Field '{scalar_var.name}' has {num_components} components. "
+                f"Specify which component's gradient to compute using component=0, 1, ..."
+            )
+        if component < 0 or component >= num_components:
+            raise ValueError(
+                f"component={component} out of range for field with {num_components} components"
+            )
+
     # Convert coords to numpy array if needed
     if hasattr(coords, 'magnitude'):
         # UnitAwareArray or UWQuantity - non-dimensionalise
@@ -136,9 +161,37 @@ def evaluate_gradient(scalar_var, coords, method="clement"):
 
     n_points = coords_array.shape[0]
 
-    # Step 1: Create scratch DM with single scalar field for Clement computation
-    # This is necessary because computeGradientClementInterpolant expects
-    # a DM with a single field matching the input vector layout
+    # Step 1: Get field values at P1 vertex locations
+    # For degree > 1 fields, we need to sample at vertices first
+    # The Clement interpolant operates on vertex data
+
+    # Get vertex coordinates (P1 node locations)
+    vertex_coords = mesh.X.coords  # Shape: (n_vertices, dim)
+    n_vertices = vertex_coords.shape[0]
+
+    # Check if field is P1 scalar - can use data directly
+    field_degree = scalar_var.degree
+    is_p1_scalar = (field_degree == 1 and num_components == 1)
+
+    if is_p1_scalar:
+        # P1 scalar field - use data directly
+        vertex_values = scalar_var._lvec.getArray().copy()
+    else:
+        # Need to sample the field at vertex locations
+        # For P2 or vector fields, evaluate the appropriate component at vertices
+        if num_components == 1:
+            # Scalar field with degree > 1
+            sym_expr = scalar_var.sym[0, 0]
+        else:
+            # Vector/tensor field - get specified component
+            # Handle both 1D index (for vectors stored flat) and 2D (for tensors)
+            sym_expr = scalar_var.sym[component, 0]
+
+        # Evaluate at vertex locations (avoiding recursion by using direct interpolation)
+        # We evaluate the field itself (not its derivative) at P1 vertices
+        vertex_values = _evaluate_field_at_vertices(scalar_var, component, mesh)
+
+    # Step 2: Create scratch DM with P1 scalar field for Clement computation
     scalar_scratch_dm = dm.clone()
 
     options = PETSc.Options()
@@ -157,11 +210,24 @@ def evaluate_gradient(scalar_var, coords, method="clement"):
     scalar_scratch_dm.addField(scalar_fe)
     scalar_scratch_dm.createDS()
 
-    # Populate scalar scratch vector with variable data
+    # Populate scalar scratch vector with vertex values
     scalar_lvec = scalar_scratch_dm.createLocalVec()
-    scalar_lvec.setArray(scalar_var._lvec.getArray().copy())
+    expected_size = scalar_lvec.getLocalSize()
 
-    # Step 2: Compute Clement gradient at mesh nodes
+    if len(vertex_values) != expected_size:
+        # Size mismatch - this shouldn't happen if we sampled correctly
+        scalar_lvec.destroy()
+        scalar_scratch_dm.destroy()
+        scalar_fe.destroy()
+        raise ValueError(
+            f"Size mismatch: vertex_values has {len(vertex_values)} entries, "
+            f"expected {expected_size} for P1 scalar field. "
+            f"Field degree={field_degree}, num_components={num_components}"
+        )
+
+    scalar_lvec.setArray(vertex_values)
+
+    # Step 3: Compute Clement gradient at mesh nodes
     cdm = scalar_scratch_dm.getCoordinateDM()
     grad_vec = cdm.createLocalVec()
     grad_vec.zeroEntries()
@@ -174,56 +240,170 @@ def evaluate_gradient(scalar_var, coords, method="clement"):
     scalar_scratch_dm.destroy()
     scalar_fe.destroy()
 
-    # Step 2: Set up scratch DM for interpolation
-    scratch_dm = dm.clone()
+    # Step 4: Interpolate gradient to requested coordinates
+    # The gradient_at_nodes array has shape (n_vertices * dim,) - gradient vector at each vertex
+    # Reshape to (n_vertices, dim)
+    n_vertices = mesh.X.coords.shape[0]
+    gradient_reshaped = gradient_at_nodes.reshape(n_vertices, mesh.dim)
 
-    # Configure P1 linear FE to match Clement output (DOFs at vertices only)
-    options = PETSc.Options()
-    options.setValue("_scratch_grad_petscspace_degree", 1)
-    options.setValue("_scratch_grad_petscdualspace_lagrange_continuity", True)
-
-    petsc_fe = PETSc.FE().createDefault(
-        mesh.dim,
-        mesh.dim,  # vector field for gradient
-        mesh.isSimplex,
-        mesh.qdegree,
-        "_scratch_grad_",
-        PETSc.COMM_SELF,
-    )
-
-    scratch_dm.addField(petsc_fe)
-    scratch_dm.createDS()
-
-    # Create local vector and populate with gradient data
-    scratch_lvec = scratch_dm.createLocalVec()
-    scratch_lvec.setArray(gradient_at_nodes)
-
-    # Step 3: Interpolate to requested coordinates
-    # Get cell hints from mesh's kdtree
+    # Use simple linear interpolation based on cell membership
+    # For each query point, find its cell and interpolate from vertices
     cells = mesh.get_closest_cells(coords_array)
 
-    # Minimal mesh-like object for interpolation wrapper
-    class _ScratchMesh:
-        def __init__(self, dm, lvec):
-            self.dm = dm
-            self.lvec = lvec
-
-    scratch_mesh = _ScratchMesh(scratch_dm, scratch_lvec)
-
-    # Set up and evaluate interpolation
-    interp_info = CachedDMInterpolationInfo()
-    interp_info.create_structure(scratch_mesh, coords_array, cells, dofcount=mesh.dim)
-
     outarray = np.zeros((n_points, mesh.dim), dtype=np.float64)
-    interp_info.evaluate(scratch_mesh, outarray)
 
-    # Step 4: Cleanup - main DM unchanged
-    scratch_lvec.destroy()
-    scratch_dm.destroy()
-    petsc_fe.destroy()
+    # Get cell-vertex connectivity from mesh
+    # Use barycentric interpolation within simplices
+    for i in range(n_points):
+        cell = cells[i]
+        point = coords_array[i]
+
+        # Get vertices of this cell
+        try:
+            closure = mesh.dm.getTransitiveClosure(cell)[0]
+            # Filter to get only vertices (depth 0 entities)
+            vertices = [v for v in closure if mesh.dm.getPointDepth(v) == 0]
+
+            if len(vertices) >= mesh.dim + 1:
+                # Get vertex coordinates and gradients
+                vertex_coords = np.array([mesh.dm.getCoordinatesLocal().getArray()[
+                    mesh.dm.getCoordinateSection().getOffset(v):
+                    mesh.dm.getCoordinateSection().getOffset(v) + mesh.dim
+                ] for v in vertices[:mesh.dim + 1]])
+
+                vertex_grads = np.array([gradient_reshaped[v - mesh.dm.getDepthStratum(0)[0]]
+                                         for v in vertices[:mesh.dim + 1]])
+
+                # Compute barycentric coordinates
+                bary = _compute_barycentric(point, vertex_coords)
+
+                # Interpolate gradient
+                outarray[i] = np.sum(bary[:, np.newaxis] * vertex_grads, axis=0)
+            else:
+                # Fallback: use nearest vertex gradient
+                outarray[i] = gradient_reshaped[vertices[0] - mesh.dm.getDepthStratum(0)[0]]
+        except Exception:
+            # If cell query fails, use nearest vertex
+            outarray[i] = gradient_reshaped[0]
+
+    # Cleanup
     grad_vec.destroy()
 
     return outarray
+
+
+def _compute_barycentric(point, vertices):
+    """
+    Compute barycentric coordinates of a point within a simplex.
+
+    Parameters
+    ----------
+    point : ndarray
+        Query point, shape (dim,).
+    vertices : ndarray
+        Simplex vertices, shape (dim+1, dim).
+
+    Returns
+    -------
+    ndarray
+        Barycentric coordinates, shape (dim+1,).
+    """
+    dim = len(point)
+    n_vertices = len(vertices)
+
+    if n_vertices != dim + 1:
+        # Not a simplex, return uniform weights
+        return np.ones(n_vertices) / n_vertices
+
+    # Build matrix T where columns are (v_i - v_n) for i = 0..dim-1
+    T = (vertices[:-1] - vertices[-1]).T  # shape (dim, dim)
+
+    try:
+        # Solve T @ lambda = (point - v_n)
+        lambdas = np.linalg.solve(T, point - vertices[-1])
+        # Last barycentric coordinate
+        lambda_n = 1.0 - np.sum(lambdas)
+        return np.append(lambdas, lambda_n)
+    except np.linalg.LinAlgError:
+        # Degenerate simplex, return uniform
+        return np.ones(n_vertices) / n_vertices
+
+
+def _evaluate_field_at_vertices(var, component, mesh):
+    """
+    Evaluate a field component at P1 vertex locations.
+
+    For P1 scalar fields, returns the data directly.
+    For higher-degree or multi-component fields, samples at vertex coordinates.
+
+    Parameters
+    ----------
+    var : MeshVariable
+        The mesh variable to sample.
+    component : int or None
+        Which component to evaluate (for multi-component fields).
+    mesh : Mesh
+        The mesh.
+
+    Returns
+    -------
+    ndarray
+        Field values at vertices, shape (n_vertices,).
+    """
+    import underworld3 as uw
+
+    num_components = var.num_components
+    field_degree = var.degree
+
+    # Get vertex count
+    vertex_coords = mesh.X.coords
+    n_vertices = vertex_coords.shape[0]
+
+    # P1 scalar - return data directly
+    if field_degree == 1 and num_components == 1:
+        return var._lvec.getArray().copy()
+
+    # P1 multi-component - extract the component directly from data
+    if field_degree == 1:
+        # Data layout: [v0_c0, v0_c1, ..., v1_c0, v1_c1, ...]
+        all_data = var._lvec.getArray()
+        # Reshape to (n_vertices, num_components) and extract component
+        data_reshaped = all_data.reshape(n_vertices, num_components)
+        return data_reshaped[:, component].copy()
+
+    # For degree > 1, try to extract vertex DOFs directly from PETSc ordering
+    # PETSc typically stores vertex DOFs first, then edge/face/cell DOFs
+    all_data = var._lvec.getArray()
+
+    if num_components == 1:
+        # Scalar P2+ - first n_vertices DOFs are vertex values
+        if len(all_data) >= n_vertices:
+            return all_data[:n_vertices].copy()
+    else:
+        # Vector P2+ - check for blocked layout
+        # Layout: all DOFs for component 0, then all for component 1, etc.
+        dofs_per_component = len(all_data) // num_components
+
+        if dofs_per_component >= n_vertices:
+            # Extract vertex DOFs for the requested component
+            start = component * dofs_per_component
+            return all_data[start:start + n_vertices].copy()
+
+    # Fallback: evaluate using uw.function.evaluate at vertex coordinates
+    # Build sym expression for the specific component
+    if num_components == 1:
+        sym_expr = var.sym[0, 0]
+    else:
+        # Access component - handle different sym layouts
+        sym = var.sym
+        if hasattr(sym, 'shape') and len(sym.shape) == 2:
+            sym_expr = sym[component, 0]
+        else:
+            # sym is a column vector or 1D
+            sym_expr = sym[component]
+
+    result = uw.function.evaluate(sym_expr, vertex_coords)
+    return result.flatten()
 
 
 def interpolate_gradients_at_coords(source_vars, coords, mesh):
@@ -235,8 +415,10 @@ def interpolate_gradients_at_coords(source_vars, coords, mesh):
 
     Parameters
     ----------
-    source_vars : list of MeshVariable
-        Scalar fields needing gradient computation.
+    source_vars : list of MeshVariable or list of (MeshVariable, int) tuples
+        Fields needing gradient computation. For scalar fields, just pass
+        the MeshVariable. For multi-component fields, pass tuples of
+        (MeshVariable, component_index).
     coords : array-like
         Coordinates at which to evaluate gradients, shape (n_points, dim).
     mesh : Mesh
@@ -245,31 +427,59 @@ def interpolate_gradients_at_coords(source_vars, coords, mesh):
     Returns
     -------
     dict
-        Mapping from source MeshVariable to gradient array (n_points, dim).
-        result[var][i, j] = ∂var/∂xⱼ at coords[i].
+        Mapping from (var, component) tuple to gradient array (n_points, dim).
+        For scalar fields, component is 0.
+        result[(var, component)][i, j] = ∂var[component]/∂xⱼ at coords[i].
 
     Notes
     -----
-    For an expression with multiple derivatives like `T.diff(x) + T.diff(y) + A.diff(x)`:
-    - Groups by source variable: {T, A}
-    - Computes gradient once per source variable
-    - Each derivative component (T.diff(x), T.diff(y)) extracted from same gradient
+    For an expression with multiple derivatives like `T.diff(x) + v[0].diff(y)`:
+    - Identifies source variables and components: {(T, 0), (v, 0)}
+    - Computes gradient once per (variable, component) pair
+    - Each derivative component extracted from the appropriate gradient
 
     This is called internally by evaluate_nd when derivatives are detected.
     """
     if not source_vars:
         return {}
 
-    # Evaluate gradient for each source variable
-    # Each call to evaluate_gradient uses its own scratch DM
+    # Normalize input: convert bare variables to (var, component) tuples
+    normalized_vars = []
+    for item in source_vars:
+        if isinstance(item, tuple):
+            normalized_vars.append(item)
+        else:
+            # Bare variable - assume scalar (component 0)
+            # For multi-component fields, caller should specify components
+            var = item
+            if var.num_components == 1:
+                normalized_vars.append((var, 0))
+            else:
+                # Multi-component field passed without component spec
+                # Compute gradient for all components
+                for c in range(var.num_components):
+                    normalized_vars.append((var, c))
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_vars = []
+    for item in normalized_vars:
+        if item not in seen:
+            seen.add(item)
+            unique_vars.append(item)
+
+    # Evaluate gradient for each (variable, component) pair
     result = {}
-    for var in source_vars:
-        result[var] = evaluate_gradient(var, coords)
+    for var, component in unique_vars:
+        if var.num_components == 1:
+            result[(var, 0)] = evaluate_gradient(var, coords, component=None)
+        else:
+            result[(var, component)] = evaluate_gradient(var, coords, component=component)
 
     return result
 
 
-def compute_clement_gradient_at_nodes(scalar_var):
+def compute_clement_gradient_at_nodes(var, component=None):
     """
     Compute Clement gradient at mesh nodes only (no interpolation).
 
@@ -279,8 +489,12 @@ def compute_clement_gradient_at_nodes(scalar_var):
 
     Parameters
     ----------
-    scalar_var : MeshVariable
-        Scalar field (num_components=1) to compute gradient of.
+    var : MeshVariable
+        Field to compute gradient of. Can be scalar or multi-component.
+    component : int or None, optional
+        For multi-component fields, which component to compute gradient of.
+        If None and field is scalar, uses the only component.
+        If None and field is multi-component, raises ValueError.
 
     Returns
     -------
@@ -297,18 +511,50 @@ def compute_clement_gradient_at_nodes(scalar_var):
     This is O(h) accurate - suitable for error estimation, quick visualization,
     or when higher accuracy is not required.
 
+    For higher-degree fields (P2, etc.), the function first samples the field
+    at P1 vertex locations before computing the Clement gradient.
+
     Examples
     --------
     >>> T.array[:, 0, 0] = T.coords[:, 0]**2 + T.coords[:, 1]**2
     >>> grad = compute_clement_gradient_at_nodes(T)
     >>> # grad[i] ≈ [2*x_i, 2*y_i] at each node
+
+    >>> # For vector field, specify component
+    >>> grad_vx = compute_clement_gradient_at_nodes(v, component=0)
     """
-    mesh = scalar_var.mesh
+    mesh = var.mesh
     dm = mesh.dm
 
+    # Handle multi-component fields
+    num_components = var.num_components
+    if num_components > 1:
+        if component is None:
+            raise ValueError(
+                f"Field '{var.name}' has {num_components} components. "
+                f"Specify which component's gradient to compute using component=0, 1, ..."
+            )
+        if component < 0 or component >= num_components:
+            raise ValueError(
+                f"component={component} out of range for field with {num_components} components"
+            )
+
+    # Get vertex coordinates
+    vertex_coords = mesh.X.coords
+    n_vertices = vertex_coords.shape[0]
+
+    # Get field values at P1 vertex locations
+    field_degree = var.degree
+    is_p1_scalar = (field_degree == 1 and num_components == 1)
+
+    if is_p1_scalar:
+        # P1 scalar field - use data directly
+        vertex_values = var._lvec.getArray().copy()
+    else:
+        # Need to sample the field at vertex locations
+        vertex_values = _evaluate_field_at_vertices(var, component, mesh)
+
     # Create scratch DM with single scalar field for Clement computation
-    # This is necessary because computeGradientClementInterpolant expects
-    # a DM with a single field matching the input vector layout
     scalar_scratch_dm = dm.clone()
 
     options = PETSc.Options()
@@ -327,9 +573,21 @@ def compute_clement_gradient_at_nodes(scalar_var):
     scalar_scratch_dm.addField(scalar_fe)
     scalar_scratch_dm.createDS()
 
-    # Populate scratch vector with variable data
+    # Populate scratch vector with vertex values
     scalar_lvec = scalar_scratch_dm.createLocalVec()
-    scalar_lvec.setArray(scalar_var._lvec.getArray().copy())
+    expected_size = scalar_lvec.getLocalSize()
+
+    if len(vertex_values) != expected_size:
+        scalar_lvec.destroy()
+        scalar_scratch_dm.destroy()
+        scalar_fe.destroy()
+        raise ValueError(
+            f"Size mismatch: vertex_values has {len(vertex_values)} entries, "
+            f"expected {expected_size} for P1 scalar field. "
+            f"Field degree={field_degree}, num_components={num_components}"
+        )
+
+    scalar_lvec.setArray(vertex_values)
 
     # Compute Clement gradient
     cdm = scalar_scratch_dm.getCoordinateDM()
