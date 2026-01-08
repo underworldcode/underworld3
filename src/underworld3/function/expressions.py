@@ -1118,10 +1118,22 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         return Symbol.__mul__(self, other)
 
     def __rmul__(self, other):
-        """Right multiplication - handle UWQuantity to preserve units."""
+        """Right multiplication - handle UWQuantity, Matrix, and scalars.
+
+        This is called when `other * self` fails (other.__mul__ returns NotImplemented).
+        In particular, `MutableDenseMatrix * UWexpression` triggers this because
+        SymPy matrices don't understand UWexpression.
+        """
         # Handle UWQuantity - preserve units
         if isinstance(other, UWQuantity):
             return other.__mul__(self)
+
+        # Handle SymPy Matrix types - delegate to forward multiplication
+        # Matrix * scalar works when scalar is on the left, so use self * other
+        # which calls our __mul__ → Symbol.__mul__ → SymPy handles it correctly
+        if isinstance(other, sympy.MatrixBase):
+            # scalar * Matrix is handled by SymPy - returns matrix with scaled elements
+            return self * other
 
         # Scalar multiplication - preserve self's units
         if isinstance(other, (int, float)):
@@ -1625,19 +1637,32 @@ class UWDerivativeExpression(UWexpression):
 
 def mesh_vars_in_expression(expr):
     """
-    Find all mesh variables used in an expression and verify they use the same mesh.
+    Find all mesh variables and derivatives in an expression.
+
+    Traverses the expression tree to find:
+    - Regular mesh variable functions (UnderworldAppliedFunction)
+    - Derivative functions (UnderworldAppliedFunctionDeriv), grouped by source variable
 
     Returns:
-        tuple: (mesh, set of UnderworldAppliedFunction objects)
+        tuple: (mesh, regular_vars, derivative_vars)
+        - mesh: Common mesh for all variables (None if no mesh vars)
+        - regular_vars: set of UnderworldAppliedFunction objects
+        - derivative_vars: dict mapping source MeshVariable -> list of (deriv_expr, diffindex)
+          where diffindex is 0=x, 1=y, 2=z derivative direction
     """
     varfns = set()
+    derivfns = {}  # source_meshvar -> [(deriv_expr, diffindex), ...]
 
     def unpack_var_fns(exp):
+        # Check for derivative functions - collect instead of raising error
         if isinstance(exp, uw.function._function.UnderworldAppliedFunctionDeriv):
-            raise RuntimeError(
-                "Derivative functions are not handled in evaluations, "
-                "a projection should be used first to create a mesh Variable."
-            )
+            source_meshvar = exp.meshvar()
+            diffindex = exp.diffindex
+            if source_meshvar not in derivfns:
+                derivfns[source_meshvar] = []
+            derivfns[source_meshvar].append((exp, diffindex))
+            # Don't recurse into derivative args - they are just coordinates
+            return
 
         isUW = isinstance(exp, uw.function._function.UnderworldAppliedFunction)
         isMatrix = isinstance(exp, sympy.Matrix)
@@ -1651,7 +1676,16 @@ def mesh_vars_in_expression(expr):
                 )
         elif isMatrix:
             for sub_exp in exp:
-                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
+                # Check derivatives FIRST - they inherit from UnderworldAppliedFunction
+                # so must be checked before the parent class
+                if isinstance(sub_exp, uw.function._function.UnderworldAppliedFunctionDeriv):
+                    # Handle derivatives inside matrices
+                    source_meshvar = sub_exp.meshvar()
+                    diffindex = sub_exp.diffindex
+                    if source_meshvar not in derivfns:
+                        derivfns[source_meshvar] = []
+                    derivfns[source_meshvar].append((sub_exp, diffindex))
+                elif isinstance(sub_exp, uw.function._function.UnderworldAppliedFunction):
                     varfns.add(sub_exp)
                 else:
                     for arg in sub_exp.args:
@@ -1664,8 +1698,10 @@ def mesh_vars_in_expression(expr):
 
     unpack_var_fns(expr)
 
-    # Check the same mesh is used for all mesh variables
+    # Check the same mesh is used for all mesh variables (including derivative sources)
     mesh = None
+
+    # Check regular mesh variables
     for varfn in varfns:
         if mesh is None:
             mesh = varfn.meshvar().mesh
@@ -1676,7 +1712,18 @@ def mesh_vars_in_expression(expr):
                     "This is not supported"
                 )
 
-    return mesh, varfns
+    # Check derivative source variables
+    for source_meshvar in derivfns.keys():
+        if mesh is None:
+            mesh = source_meshvar.mesh
+        else:
+            if mesh != source_meshvar.mesh:
+                raise RuntimeError(
+                    "In this expression there are functions defined on different meshes. "
+                    "This is not supported"
+                )
+
+    return mesh, varfns, derivfns
 
 
 # ============================================================================

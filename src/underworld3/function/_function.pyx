@@ -227,7 +227,7 @@ def global_evaluate_nd(   expr,
     # np.asarray() preserves subclass if dtype matches, causing downstream issues
     coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
 
-    mesh, varfns = uw.function.expressions.mesh_vars_in_expression(expr)
+    mesh, varfns, derivfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
     if mesh is None: #  or uw.mpi.size==1:
         return evaluate_nd(
@@ -390,7 +390,7 @@ def evaluate_nd(   expr,
     coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
 
     dim = coords_array.shape[1]
-    mesh, varfns = uw.function.fn_mesh_vars_in_expression(expr)
+    mesh, varfns, derivfns = uw.function.fn_mesh_vars_in_expression(expr)
 
     # coercion - make everything at least a 1x1 matrix for consistent evaluation results
     try:
@@ -401,6 +401,13 @@ def evaluate_nd(   expr,
     # If there are no mesh variables, then we have no need of a mesh to
     # help us to evaluate the expression. The evalf / rbf flag will force rbf_evaluation and
     # does not need mesh information either.
+
+    # Check for derivatives with unsupported evaluation modes
+    if derivfns and (evalf==True or rbf==True):
+        raise RuntimeError(
+            "Derivative expressions cannot be evaluated with evalf=True or rbf=True. "
+            "Use the default PETSc interpolation mode instead."
+        )
 
     if evalf==True or rbf==True or mesh is None:
         in_or_not = np.full((coords_array.shape[0]), False, dtype=bool )
@@ -419,9 +426,18 @@ def evaluate_nd(   expr,
                                     coord_sys,
                                     mesh,
                                     simplify=simplify,
-                                    verbose=verbose, )
+                                    verbose=verbose,
+                                    derivfns=derivfns, )
 
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
+
+        # Check for derivatives with exterior points
+        n_exterior = np.count_nonzero(in_or_not == False)
+        if n_exterior > 0 and derivfns:
+            raise RuntimeError(
+                f"Derivative expressions cannot be evaluated at {n_exterior} points outside the domain. "
+                "Ensure all evaluation coordinates are within the mesh domain."
+            )
 
         if np.count_nonzero(in_or_not == False) > 0:
             evaluation_exterior = rbf_evaluate( expr,
@@ -480,7 +496,8 @@ def petsc_interpolate(   expr,
                 mesh=None,
                 other_arguments=None,
                 simplify=True,
-                verbose=False, ):
+                verbose=False,
+                derivfns=None, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -680,7 +697,7 @@ def petsc_interpolate(   expr,
         cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.double)
 
         if cached_info is not None:
-            # CACHE HIT - Fast path! Just evaluate with cached structure
+            # CACHE HIT - Fast path. Evaluate using cached structure
             mesh.update_lvec()  # Ensure fresh values
             cached_info.evaluate(mesh, outarray)
 
@@ -692,7 +709,7 @@ def petsc_interpolate(   expr,
             # coords is already np.ndarray type (function signature ensures this)
             cells = mesh.get_closest_cells(coords)
 
-            # Create and set up DMInterpolation structure (EXPENSIVE!)
+            # Create and set up DMInterpolation structure (EXPENSIVE)
             try:
                 # coords is already np.ndarray type (function signature ensures this)
                 cached_info.create_structure(mesh, coords, cells, dofcount)
@@ -738,6 +755,23 @@ def petsc_interpolate(   expr,
     for key, vals in interpolant_varfns.items():
         interpolated_var_values = interpolate_vars_on_mesh(vals, coords)
         interpolated_results.update(interpolated_var_values)
+
+    # 2b. Handle derivatives if any (using Clement gradient interpolation)
+    if derivfns:
+        from underworld3.function.gradient_evaluation import interpolate_gradients_at_coords
+
+        # Get list of source variables needing gradients
+        source_vars = list(derivfns.keys())
+
+        # Compute all gradients in one pass
+        gradient_values = interpolate_gradients_at_coords(source_vars, coords, mesh)
+
+        # Add each derivative expression -> gradient component to results
+        for source_var, deriv_list in derivfns.items():
+            grad = gradient_values[source_var]  # shape (n_points, dim)
+            for deriv_expr, diffindex in deriv_list:
+                # grad[:, diffindex] gives ∂f/∂x_i values at all points
+                interpolated_results[deriv_expr] = np.ascontiguousarray(grad[:, diffindex])
 
     # 3. Replace mesh variables in the expression with sympy symbols
     # First generate random string symbols to act as proxies.

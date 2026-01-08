@@ -128,18 +128,18 @@ class UWCoordinate(BaseScalar):
 
     def __hash__(self):
         """
-        Hash includes coordinate system identity to prevent cross-mesh collisions.
+        Hash must match _original_base_scalar's hash for SymPy compatibility.
 
-        Different meshes create different coordinate systems (even with the same
-        name "N"), and we need their coordinates to hash differently to prevent
-        SymPy's expression cache from substituting coordinates between meshes.
+        Since __eq__ returns True when comparing to the original BaseScalar,
+        we MUST return the same hash (Python requirement: a == b → hash(a) == hash(b)).
 
-        We include the coordinate system's id() to make the hash unique per mesh.
+        This is critical for SymPy's differentiation to work correctly -
+        sympy.diff() uses hash-based lookup to find matching symbols.
+
+        Note: Cross-mesh coordinate collision is prevented by __eq__ checking
+        object identity of _original_base_scalar, not by different hashes.
         """
-        # Include both the BaseScalar's hash AND the coordinate system identity
-        # The coordinate system is stored as _id[1] in BaseScalar
-        coord_system_id = id(self._original_base_scalar._id[1])
-        return hash((hash(self._original_base_scalar), coord_system_id))
+        return hash(self._original_base_scalar)
 
     def _numpycode(self, printer):
         """
@@ -489,29 +489,41 @@ def cartesian_to_geographic(x, y, z, a, b, max_iterations=10, tolerance=1e-12):
 
 
 class GeographicCoordinateAccessor:
-    """
-    Accessor for geographic coordinates on ellipsoidal meshes.
+    r"""
+    Geographic coordinates on ellipsoidal (WGS84) meshes.
 
-    Provides intuitive access to longitude, latitude, and depth coordinates,
-    plus basis vectors with multiple naming conventions.
+    This class provides natural coordinate access for geographic meshes,
+    including longitude, latitude, and depth data arrays, symbolic coordinates
+    for equations (:math:`\lambda_{lon}`, :math:`\lambda_{lat}`, :math:`\lambda_d`),
+    and ellipsoidal basis vectors.
 
-    Accessed via: mesh.geo
+    Access via ``mesh.X.geo`` on GEOGRAPHIC meshes. Use ``.view()`` for a
+    complete summary of available properties and methods.
 
-    Examples:
-        # Data arrays (numpy)
-        lon = mesh.geo.lon         # Longitude (degrees East)
-        lat = mesh.geo.lat         # Latitude (degrees North)
-        depth = mesh.geo.depth     # Depth below surface (km)
+    Attributes
+    ----------
+    lon : ndarray
+        Longitude in degrees East (-180 to 180)
+    lat : ndarray
+        Geodetic latitude in degrees North (-90 to 90)
+    depth : ndarray
+        Depth below ellipsoid surface in km (positive downward)
+    coords : ndarray
+        Combined (N, 3) array: [lon, lat, depth]
 
-        # Symbolic (for equations)
-        λ_lon, λ_lat, λ_d = mesh.geo[:]
+    Examples
+    --------
+    >>> geo = mesh.X.geo
+    >>> geo.view()               # Show all available properties
+    >>> geo.coords               # (N, 3) array of [lon, lat, depth]
+    >>> lon, lat, d = geo[:]     # Symbolic coordinates for equations
+    >>> geo.unit_down            # Geodetic normal (into planet)
 
-        # Basis vectors (multiple naming options)
-        mesh.geo.unit_WE           # Primary: West to East
-        mesh.geo.unit_east         # Directional alias
-        mesh.geo.unit_lon          # Coordinate alias
-        mesh.geo.unit_down         # Primary: into planet
-        mesh.geo.unit_depth        # Coordinate alias
+    Notes
+    -----
+    The 'up' direction is the geodetic normal—perpendicular to the ellipsoid
+    surface—NOT the radial direction. At mid-latitudes, these differ by
+    approximately 10-11 arcminutes, which matters for regional models.
     """
 
     def __init__(self, coordinate_system):
@@ -531,6 +543,7 @@ class GeographicCoordinateAccessor:
         self._lat_cache = None
         self._depth_cache = None
         self._cache_valid = False
+        self._nondimensional = False  # Set by _compute_coordinates
 
     def _invalidate_cache(self):
         """Mark coordinate cache as invalid (call when mesh coordinates change)."""
@@ -541,15 +554,29 @@ class GeographicCoordinateAccessor:
         if self._cache_valid:
             return
 
-        # Get Cartesian coordinates
-        coords = self.mesh.CoordinateSystem.coords  # Shape: (N, 3)
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        # Get raw Cartesian coordinates from DM (avoids unit wrapping)
+        # The mesh stores nondimensional coords when units are active
+        dm_coords = self.mesh.dm.getCoordinates().array.reshape(-1, 3)
+        x, y, z = dm_coords[:, 0], dm_coords[:, 1], dm_coords[:, 2]
 
         # Get ellipsoid parameters
-        a = self.cs.ellipsoid["a"]
-        b = self.cs.ellipsoid["b"]
+        # Use nondimensional if available (when mesh created with units)
+        # Otherwise use raw km values
+        ellipsoid = self.cs.ellipsoid
+        if "a_nd" in ellipsoid and "b_nd" in ellipsoid:
+            # Units were active - use nondimensional ellipsoid
+            a = ellipsoid["a_nd"]
+            b = ellipsoid["b_nd"]
+            self._nondimensional = True
+        else:
+            # No units - use km values
+            a = ellipsoid["a"]
+            b = ellipsoid["b"]
+            self._nondimensional = False
 
         # Convert to geographic using our utility function
+        # lon and lat are in degrees (angles - no scaling needed)
+        # depth is in same units as input (nondimensional or km)
         self._lon_cache, self._lat_cache, self._depth_cache = cartesian_to_geographic(x, y, z, a, b)
 
         self._cache_valid = True
@@ -568,9 +595,60 @@ class GeographicCoordinateAccessor:
 
     @property
     def depth(self):
-        """Depth below ellipsoid surface in km (positive downward)."""
+        """
+        Depth below ellipsoid surface (positive downward).
+
+        Returns nondimensional values when units are active, km otherwise.
+        Use with units system for proper dimensional output.
+        """
         self._compute_coordinates()
+
+        # Return with units if available
+        if hasattr(self, "_nondimensional") and self._nondimensional:
+            # Check if units system is active for wrapping
+            import underworld3 as uw
+
+            model = uw.get_default_model()
+            if model is not None and model.has_units():
+                from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+                # Get reference length to dimensionalize
+                L_ref = self.cs.ellipsoid.get("L_ref_km", 1000)  # km
+                # Depth in km = nondimensional * L_ref
+                depth_km = self._depth_cache * L_ref
+                return UnitAwareArray(depth_km, units="km")
+
         return self._depth_cache
+
+    @property
+    def coords(self):
+        """
+        Geographic coordinates as (N, 3) array: [lon, lat, depth].
+
+        Returns mesh node coordinates in geographic form, matching the
+        layout of `mesh.X.coords` but in (longitude, latitude, depth) format.
+
+        Returns
+        -------
+        numpy.ndarray
+            Shape (N, 3) array where columns are:
+            - Column 0: Longitude (degrees East, -180 to 180)
+            - Column 1: Latitude (degrees North, -90 to 90)
+            - Column 2: Depth (km below ellipsoid surface, positive down)
+
+        Examples
+        --------
+        >>> geo_coords = mesh.CoordinateSystem.geo.coords
+        >>> print(f"Node 0: lon={geo_coords[0,0]:.2f}°, lat={geo_coords[0,1]:.2f}°")
+
+        See Also
+        --------
+        mesh.X.coords : Cartesian coordinates (x, y, z)
+        lon, lat, depth : Individual coordinate arrays
+        """
+        import numpy as np
+        self._compute_coordinates()
+        return np.column_stack([self._lon_cache, self._lat_cache, self._depth_cache])
 
     def __getitem__(self, idx):
         """
@@ -645,10 +723,150 @@ class GeographicCoordinateAccessor:
         """Depth direction unit vector (coordinate alias for unit_down)."""
         return self.cs._unit_down
 
+    # === Coordinate Conversion Methods ===
+
+    def to_cartesian(self, lon, lat, depth):
+        """
+        Convert geographic coordinates to Cartesian (x, y, z).
+
+        Uses the mesh's ellipsoid parameters automatically.
+        When units are active, depth should be nondimensional and returns
+        nondimensional Cartesian coordinates.
+
+        Parameters
+        ----------
+        lon : float or array_like
+            Longitude in degrees East (-180 to 180)
+        lat : float or array_like
+            Geodetic latitude in degrees North (-90 to 90)
+        depth : float or array_like
+            Depth below ellipsoid surface (nondimensional if units active, km otherwise)
+
+        Returns
+        -------
+        tuple
+            (x, y, z) coordinates (nondimensional if units active, km otherwise)
+
+        Examples
+        --------
+        >>> # Import external data in geographic coordinates
+        >>> tomo_lon = np.array([136.0, 136.5, 137.0])
+        >>> tomo_lat = np.array([-34.0, -33.5, -33.0])
+        >>> tomo_depth = np.array([10.0, 20.0, 30.0])  # km or nondimensional
+        >>> x, y, z = mesh.geo.to_cartesian(tomo_lon, tomo_lat, tomo_depth)
+        """
+        # Use nondimensional ellipsoid if available
+        ellipsoid = self.cs.ellipsoid
+        if "a_nd" in ellipsoid and "b_nd" in ellipsoid:
+            a = ellipsoid["a_nd"]
+            b = ellipsoid["b_nd"]
+        else:
+            a = ellipsoid["a"]
+            b = ellipsoid["b"]
+        return geographic_to_cartesian(lon, lat, depth, a, b)
+
+    def from_cartesian(self, x, y, z):
+        """
+        Convert Cartesian coordinates to geographic (lon, lat, depth).
+
+        Uses the mesh's ellipsoid parameters automatically.
+        When units are active, coordinates should be nondimensional.
+
+        Parameters
+        ----------
+        x : float or array_like
+            X coordinate (nondimensional if units active, km otherwise)
+        y : float or array_like
+            Y coordinate
+        z : float or array_like
+            Z coordinate
+
+        Returns
+        -------
+        tuple
+            (lon, lat, depth) where:
+            - lon: Longitude in degrees East (-180 to 180)
+            - lat: Geodetic latitude in degrees North (-90 to 90)
+            - depth: Depth (nondimensional if units active, km otherwise)
+
+        Examples
+        --------
+        >>> # Convert mesh points to geographic for comparison with data
+        >>> x, y, z = mesh.data[:, 0], mesh.data[:, 1], mesh.data[:, 2]
+        >>> lon, lat, depth = mesh.geo.from_cartesian(x, y, z)
+        """
+        # Use nondimensional ellipsoid if available
+        ellipsoid = self.cs.ellipsoid
+        if "a_nd" in ellipsoid and "b_nd" in ellipsoid:
+            a = ellipsoid["a_nd"]
+            b = ellipsoid["b_nd"]
+        else:
+            a = ellipsoid["a"]
+            b = ellipsoid["b"]
+        return cartesian_to_geographic(x, y, z, a, b)
+
+    def points_to_cartesian(self, points_geo):
+        """
+        Convert array of geographic points to Cartesian coordinates.
+
+        Convenience method for importing external data.
+
+        Parameters
+        ----------
+        points_geo : array_like
+            Array of shape (N, 3) with columns [lon, lat, depth]
+            - lon: Longitude in degrees East
+            - lat: Geodetic latitude in degrees North
+            - depth: Depth in km below surface
+
+        Returns
+        -------
+        ndarray
+            Array of shape (N, 3) with columns [x, y, z] in km
+
+        Examples
+        --------
+        >>> # Import seismicity catalog
+        >>> eq_llz = np.loadtxt("earthquakes.csv", delimiter=",")  # [lon, lat, depth]
+        >>> eq_xyz = mesh.geo.points_to_cartesian(eq_llz)
+        >>> # Now use with KDTree or swarm.add_particles_with_coordinates()
+        """
+        import numpy as np
+        points_geo = np.asarray(points_geo)
+        lon, lat, depth = points_geo[:, 0], points_geo[:, 1], points_geo[:, 2]
+        x, y, z = self.to_cartesian(lon, lat, depth)
+        return np.column_stack([x, y, z])
+
+    def points_from_cartesian(self, points_xyz):
+        """
+        Convert array of Cartesian points to geographic coordinates.
+
+        Parameters
+        ----------
+        points_xyz : array_like
+            Array of shape (N, 3) with columns [x, y, z] in km
+
+        Returns
+        -------
+        ndarray
+            Array of shape (N, 3) with columns [lon, lat, depth]
+
+        Examples
+        --------
+        >>> # Export mesh coordinates to geographic
+        >>> mesh_xyz = mesh.data  # or mesh.CoordinateSystem.coords
+        >>> mesh_llz = mesh.geo.points_from_cartesian(mesh_xyz)
+        """
+        import numpy as np
+        points_xyz = np.asarray(points_xyz)
+        x, y, z = points_xyz[:, 0], points_xyz[:, 1], points_xyz[:, 2]
+        lon, lat, depth = self.from_cartesian(x, y, z)
+        return np.column_stack([lon, lat, depth])
+
     def __repr__(self):
         """String representation showing available coordinates and basis vectors."""
         return (
-            f"GeographicCoordinateAccessor(\n"
+            f"GeographicCoordinates(\n"
             f"  ellipsoid='{self.cs.ellipsoid.get('description', 'Unknown')}',\n"
             f"  a={self.cs.ellipsoid['a']} km, b={self.cs.ellipsoid['b']} km,\n"
             f"  Coordinates: lon, lat, depth (data arrays)\n"
@@ -659,6 +877,471 @@ class GeographicCoordinateAccessor:
             f"                unit_west, unit_south, unit_up (opposites)\n"
             f")"
         )
+
+    def view(self):
+        r"""
+        Display a formatted summary of available properties and methods.
+
+        This method prints a helpful guide to the geographic coordinate system,
+        showing all available data arrays, symbolic coordinates, unit vectors,
+        and conversion methods.
+        """
+        ellipsoid = self.cs.ellipsoid
+        info = f"""
+Geographic Coordinates (Ellipsoidal)
+====================================
+Ellipsoid: {ellipsoid.get('description', 'Unknown')}
+  Semi-major axis (a): {ellipsoid['a']:.3f} km
+  Semi-minor axis (b): {ellipsoid['b']:.3f} km
+  Flattening: {ellipsoid['f']:.6f}
+
+Data Arrays (numpy):
+  .coords        → (N, 3) array of [lon, lat, depth]
+  .lon           → Longitude (degrees East, -180 to 180)
+  .lat           → Geodetic latitude (degrees North, -90 to 90)
+  .depth         → Depth below ellipsoid surface (km, positive down)
+
+Symbolic Coordinates (for equations):
+  .λ_lon         → Symbolic longitude
+  .λ_lat         → Symbolic latitude
+  .λ_d           → Symbolic depth
+  [:]            → Tuple of (λ_lon, λ_lat, λ_d)
+
+Unit Vectors (symbolic, vary with position):
+  Primary (physical direction):
+    .unit_down     → Into planet (geodetic normal, NOT radial)
+    .unit_SN       → South to North (meridional)
+    .unit_WE       → West to East (azimuthal)
+
+  Directional aliases:
+    .unit_east, .unit_north, .unit_up (= -.unit_down)
+    .unit_west, .unit_south
+
+  Coordinate direction aliases:
+    .unit_lon, .unit_lat, .unit_depth
+
+Conversion Methods:
+  .to_cartesian(lon, lat, depth)    → (x, y, z) in km
+  .from_cartesian(x, y, z)          → (lon, lat, depth)
+  .points_to_cartesian(arr)         → Convert (N,3) array
+  .points_from_cartesian(arr)       → Convert (N,3) array
+
+Rotation Matrix:
+  mesh.CoordinateSystem.geoRotN     → 3×3 matrix
+    Transforms Cartesian vectors to geographic frame:
+    Row 0: geodetic up (NOT radial - accounts for ellipticity)
+    Row 1: north (meridional)
+    Row 2: east (azimuthal)
+
+Notes:
+  - 'Up' is the geodetic normal, perpendicular to the ellipsoid surface
+  - At mid-latitudes, this differs from radial by ~10-11 arcminutes
+  - This matters for regional models at 10-100 km scale
+  - For spherical geometry instead, use RegionalSphericalBox
+"""
+        print(info)
+
+
+class SphericalCoordinateAccessor:
+    r"""
+    Spherical/polar coordinates for spherical and cylindrical meshes.
+
+    This class provides natural coordinate access for spherical (3D) and
+    polar/cylindrical (2D) meshes, including radius, angle data arrays,
+    symbolic coordinates for equations, and basis vectors.
+
+    Access via ``mesh.X.spherical`` on SPHERICAL or CYLINDRICAL2D meshes.
+    Use ``.view()`` for a complete summary of available properties and methods.
+
+    Attributes
+    ----------
+    r : ndarray
+        Radial distance from origin
+    theta : ndarray
+        Angle in radians:
+        - 3D: Colatitude (0 at north pole, π at south pole)
+        - 2D: Polar angle from x-axis (standard θ)
+    phi : ndarray (3D only)
+        Longitude/azimuth in radians (-π to π). Not available for 2D meshes.
+    coords : ndarray
+        Combined array: [r, θ, φ] for 3D, [r, θ] for 2D
+
+    Examples
+    --------
+    >>> sph = mesh.X.spherical
+    >>> sph.view()               # Show all available properties
+    >>> sph.coords               # (N, 3) or (N, 2) coordinate array
+    >>> r, theta = sph[:2]       # Works for both 2D and 3D
+    >>> sph.unit_r               # Radial unit vector (outward)
+
+    Notes
+    -----
+    The coordinate convention follows physics conventions:
+
+    - :math:`r`: Radial distance from origin
+    - :math:`\theta`: Angle (colatitude in 3D, polar angle in 2D)
+    - :math:`\phi`: Longitude/azimuth (3D only)
+
+    For Earth-like applications with geodetic (ellipsoidal) geometry,
+    use a GEOGRAPHIC mesh with ``mesh.X.geo`` instead.
+    """
+
+    def __init__(self, coordinate_system):
+        """
+        Initialize spherical/polar coordinate accessor.
+
+        Parameters
+        ----------
+        coordinate_system : CoordinateSystem
+            The coordinate system object with SPHERICAL or CYLINDRICAL2D type
+        """
+        self.cs = coordinate_system
+        self.mesh = coordinate_system.mesh
+        self._dim = self.mesh.dim  # 2 for polar, 3 for spherical
+
+        # Cache for coordinate arrays
+        self._r_cache = None
+        self._theta_cache = None
+        self._phi_cache = None
+        self._cache_valid = False
+
+    def _invalidate_cache(self):
+        """Mark coordinate cache as invalid (call when mesh coordinates change)."""
+        self._cache_valid = False
+
+    def _compute_coordinates(self):
+        """Compute spherical/polar coordinates from Cartesian mesh coordinates."""
+        if self._cache_valid:
+            return
+
+        import numpy as np
+
+        # Get Cartesian coordinates
+        coords = self.mesh.CoordinateSystem.coords
+
+        if self._dim == 2:
+            # 2D polar: (x, y) → (r, θ)
+            x, y = coords[:, 0], coords[:, 1]
+            self._r_cache = np.sqrt(x**2 + y**2)
+            self._theta_cache = np.arctan2(y, x)
+            self._phi_cache = None
+        else:
+            # 3D spherical: (x, y, z) → (r, θ, φ)
+            x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+            self._r_cache = np.sqrt(x**2 + y**2 + z**2)
+            self._theta_cache = np.arccos(np.clip(z / np.maximum(self._r_cache, 1e-30), -1, 1))
+            self._phi_cache = np.arctan2(y, x)
+
+        self._cache_valid = True
+
+    @property
+    def r(self):
+        """Radial distance from origin."""
+        self._compute_coordinates()
+        return self._r_cache
+
+    @property
+    def theta(self):
+        """Colatitude in radians (0 at north pole, π at south pole)."""
+        self._compute_coordinates()
+        return self._theta_cache
+
+    @property
+    def phi(self):
+        """Longitude/azimuth in radians (-π to π). Only available for 3D meshes."""
+        if self._dim == 2:
+            raise AttributeError(
+                "phi (azimuthal angle) is not available for 2D polar meshes.\n"
+                "2D meshes have only (r, θ) coordinates."
+            )
+        self._compute_coordinates()
+        return self._phi_cache
+
+    @property
+    def coords(self):
+        r"""
+        Spherical/polar coordinates as array.
+
+        Returns mesh node coordinates in spherical/polar form:
+        - 3D: (N, 3) array [r, θ, φ]
+        - 2D: (N, 2) array [r, θ]
+
+        Returns
+        -------
+        numpy.ndarray
+            For 3D (spherical): Shape (N, 3) array where columns are:
+
+            - Column 0: Radius (same units as mesh)
+            - Column 1: Colatitude θ in radians (0 at north pole)
+            - Column 2: Longitude φ in radians (-π to π)
+
+            For 2D (polar): Shape (N, 2) array where columns are:
+
+            - Column 0: Radius (same units as mesh)
+            - Column 1: Polar angle θ in radians
+
+        Examples
+        --------
+        >>> sph_coords = mesh.X.spherical.coords
+        >>> print(f"Node 0: r={sph_coords[0,0]:.3f}, θ={np.degrees(sph_coords[0,1]):.1f}°")
+
+        See Also
+        --------
+        mesh.X.coords : Cartesian coordinates (x, y) or (x, y, z)
+        r, theta, phi : Individual coordinate arrays
+        """
+        import numpy as np
+        self._compute_coordinates()
+        if self._dim == 2:
+            return np.column_stack([self._r_cache, self._theta_cache])
+        else:
+            return np.column_stack([self._r_cache, self._theta_cache, self._phi_cache])
+
+    def __getitem__(self, idx):
+        """
+        Access symbolic spherical/polar coordinates.
+
+        Returns
+        -------
+        tuple or scalar
+            For 3D: r, θ, φ symbolic coordinates
+            For 2D: r, θ symbolic coordinates
+        """
+        if idx == slice(None, None, None):  # mesh.spherical[:]
+            if self._dim == 2:
+                return self.cs.R[0, 0], self.cs.R[0, 1]
+            else:
+                return self.cs.R[0, 0], self.cs.R[0, 1], self.cs.R[0, 2]
+        else:
+            return self.cs.R[0, idx]
+
+    # === Symbolic coordinate access ===
+
+    @property
+    def r_sym(self):
+        """Symbolic radial coordinate."""
+        return self.cs.R[0, 0]
+
+    @property
+    def theta_sym(self):
+        """Symbolic polar/colatitude coordinate."""
+        return self.cs.R[0, 1]
+
+    @property
+    def phi_sym(self):
+        """Symbolic longitude coordinate (3D only)."""
+        if self._dim == 2:
+            raise AttributeError(
+                "phi_sym is not available for 2D polar meshes.\n"
+                "2D meshes have only (r, θ) coordinates."
+            )
+        return self.cs.R[0, 2]
+
+    # === Unit Vectors ===
+
+    @property
+    def unit_r(self):
+        r"""Radial unit vector (outward from origin)."""
+        return self.cs.unit_e_0
+
+    @property
+    def unit_theta(self):
+        r"""Tangential unit vector (direction of increasing θ)."""
+        return self.cs.unit_e_1
+
+    @property
+    def unit_phi(self):
+        r"""Azimuthal unit vector (eastward, direction of increasing φ). 3D only."""
+        if self._dim == 2:
+            raise AttributeError(
+                "unit_phi is not available for 2D polar meshes.\n"
+                "2D meshes have only unit_r and unit_theta."
+            )
+        return self.cs.unit_e_2
+
+    # === Directional aliases ===
+
+    @property
+    def unit_radial(self):
+        """Alias for unit_r."""
+        return self.cs.unit_e_0
+
+    @property
+    def unit_outward(self):
+        """Outward radial unit vector (alias for unit_r)."""
+        return self.cs.unit_e_0
+
+    @property
+    def unit_inward(self):
+        """Inward radial unit vector (opposite of unit_r)."""
+        return -self.cs.unit_e_0
+
+    # === Coordinate conversion methods ===
+
+    def to_cartesian(self, r, theta, phi):
+        """
+        Convert spherical coordinates to Cartesian (x, y, z).
+
+        Parameters
+        ----------
+        r : float or array_like
+            Radial distance
+        theta : float or array_like
+            Colatitude in radians (0 at north pole)
+        phi : float or array_like
+            Longitude in radians
+
+        Returns
+        -------
+        tuple
+            (x, y, z) Cartesian coordinates
+        """
+        import numpy as np
+        r = np.asarray(r)
+        theta = np.asarray(theta)
+        phi = np.asarray(phi)
+
+        x = r * np.sin(theta) * np.cos(phi)
+        y = r * np.sin(theta) * np.sin(phi)
+        z = r * np.cos(theta)
+        return x, y, z
+
+    def from_cartesian(self, x, y, z):
+        """
+        Convert Cartesian coordinates to spherical (r, θ, φ).
+
+        Parameters
+        ----------
+        x : float or array_like
+            X coordinate
+        y : float or array_like
+            Y coordinate
+        z : float or array_like
+            Z coordinate
+
+        Returns
+        -------
+        tuple
+            (r, theta, phi) where:
+
+            - r: Radial distance
+            - theta: Colatitude in radians (0 at north pole)
+            - phi: Longitude in radians (-π to π)
+        """
+        import numpy as np
+        x = np.asarray(x)
+        y = np.asarray(y)
+        z = np.asarray(z)
+
+        r = np.sqrt(x**2 + y**2 + z**2)
+        theta = np.arccos(np.clip(z / np.maximum(r, 1e-30), -1, 1))
+        phi = np.arctan2(y, x)
+        return r, theta, phi
+
+    def points_to_cartesian(self, points_sph):
+        """
+        Convert array of spherical points to Cartesian coordinates.
+
+        Parameters
+        ----------
+        points_sph : array_like
+            Array of shape (N, 3) with columns [r, theta, phi]
+
+        Returns
+        -------
+        ndarray
+            Array of shape (N, 3) with columns [x, y, z]
+        """
+        import numpy as np
+        points_sph = np.asarray(points_sph)
+        r, theta, phi = points_sph[:, 0], points_sph[:, 1], points_sph[:, 2]
+        x, y, z = self.to_cartesian(r, theta, phi)
+        return np.column_stack([x, y, z])
+
+    def points_from_cartesian(self, points_xyz):
+        """
+        Convert array of Cartesian points to spherical coordinates.
+
+        Parameters
+        ----------
+        points_xyz : array_like
+            Array of shape (N, 3) with columns [x, y, z]
+
+        Returns
+        -------
+        ndarray
+            Array of shape (N, 3) with columns [r, theta, phi]
+        """
+        import numpy as np
+        points_xyz = np.asarray(points_xyz)
+        x, y, z = points_xyz[:, 0], points_xyz[:, 1], points_xyz[:, 2]
+        r, theta, phi = self.from_cartesian(x, y, z)
+        return np.column_stack([r, theta, phi])
+
+    def __repr__(self):
+        """String representation showing available coordinates and basis vectors."""
+        return (
+            f"SphericalCoordinates(\n"
+            f"  Coordinates: r, theta, phi (data arrays in radians)\n"
+            f"              r_sym, theta_sym, phi_sym (symbolic)\n"
+            f"  Basis vectors: unit_r, unit_theta, unit_phi\n"
+            f"                unit_radial, unit_outward, unit_inward (aliases)\n"
+            f")"
+        )
+
+    def view(self):
+        r"""
+        Display a formatted summary of available properties and methods.
+
+        This method prints a helpful guide to the spherical coordinate system,
+        showing all available data arrays, symbolic coordinates, unit vectors,
+        and conversion methods.
+        """
+        info = r"""
+Spherical Coordinates
+=====================
+
+Data Arrays (numpy):
+  .coords        → (N, 3) array of [r, θ, φ] (radians)
+  .r             → Radial distance array
+  .theta         → Colatitude array (0 at north pole, π at south)
+  .phi           → Longitude/azimuth array (-π to π)
+
+Symbolic Coordinates (for equations):
+  .r_sym         → Symbolic radius
+  .theta_sym     → Symbolic colatitude (θ)
+  .phi_sym       → Symbolic longitude (φ)
+  [:]            → Tuple of (r_sym, theta_sym, phi_sym)
+
+Unit Vectors (symbolic, vary with position):
+  .unit_r        → Radial (outward from origin)
+  .unit_theta    → Colatitude direction (southward, increasing θ)
+  .unit_phi      → Azimuthal direction (eastward, increasing φ)
+
+  Aliases:
+    .unit_radial   → Same as unit_r
+    .unit_outward  → Same as unit_r
+    .unit_inward   → Opposite of unit_r (-unit_r)
+
+Conversion Methods:
+  .to_cartesian(r, θ, φ)        → (x, y, z)
+  .from_cartesian(x, y, z)      → (r, θ, φ)
+  .points_to_cartesian(arr)     → Convert (N,3) array
+  .points_from_cartesian(arr)   → Convert (N,3) array
+
+Rotation Matrix:
+  mesh.CoordinateSystem.rRotN   → 3×3 matrix
+    Transforms Cartesian vectors to spherical frame:
+    Row 0: radial (outward)
+    Row 1: theta (southward)
+    Row 2: phi (eastward)
+
+Notes:
+  - θ is colatitude (physics convention), not latitude
+  - Convert: latitude = 90° - θ
+  - φ is in radians, use np.degrees() for degrees
+"""
+        print(info)
 
 
 # Maybe break this out into it's own file - this needs to cover, basis vectors,
@@ -1002,48 +1685,88 @@ class CoordinateSystem:
 
             self._geo_coords = sympy.Matrix([[lambda_lon, lambda_lat, lambda_d]])
 
-            # Basis vectors for geographic system
+            # Basis vectors for geographic system (ELLIPSOIDAL)
             # Following user's naming: unit_WE (West to East), unit_SN (South to North), unit_down
+            #
+            # For an ellipsoid x²/a² + y²/a² + z²/b² = 1, the geodetic normal is
+            # perpendicular to the ellipsoid surface, NOT radial.
+            #
+            # This matters at regional scales (10-100 km) where the difference
+            # between geodetic and geocentric latitude (~10 arcmin) is significant.
 
-            # Spherical basis vectors (for reference)
-            r1 = self._r[1]  # theta
-            r2 = self._r[2]  # phi
+            a = sympy.sympify(self.ellipsoid["a"])
+            b = sympy.sympify(self.ellipsoid["b"])
 
+            # Geodetic normal components (gradient of ellipsoid equation)
+            # ∇F = (2x/a², 2y/a², 2z/b²) - we drop the factor of 2 since we normalize
+            nx = x / a**2
+            ny = y / a**2
+            nz = z / b**2
+            n_mag = sympy.sqrt(nx**2 + ny**2 + nz**2)
+
+            # Unit up vector (geodetic normal, outward from ellipsoid surface)
+            unit_up_x = nx / n_mag
+            unit_up_y = ny / n_mag
+            unit_up_z = nz / n_mag
+
+            # Unit east vector (azimuthal, in horizontal plane)
+            # Perpendicular to meridian plane, pointing east
+            # Same as spherical case: (-y, x, 0) / √(x² + y²)
+            rxy = sympy.sqrt(x**2 + y**2)
+            unit_east_x = -y / rxy
+            unit_east_y = x / rxy
+            unit_east_z = self.independent_of_N  # Zero, but symbolic
+
+            # Unit north vector (tangent to meridian, perpendicular to both up and east)
+            # Computed via cross product: north = up × east
+            # This gives the direction along the meridian, pointing north
+            unit_north_x = unit_up_y * unit_east_z - unit_up_z * unit_east_y
+            unit_north_y = unit_up_z * unit_east_x - unit_up_x * unit_east_z
+            unit_north_z = unit_up_x * unit_east_y - unit_up_y * unit_east_x
+
+            # Note: The cross product may not be exactly unit length due to
+            # the symbolic zero handling. We normalize to be safe.
+            north_mag = sympy.sqrt(unit_north_x**2 + unit_north_y**2 + unit_north_z**2)
+            unit_north_x = unit_north_x / north_mag
+            unit_north_y = unit_north_y / north_mag
+            unit_north_z = unit_north_z / north_mag
+
+            # Geographic basis vectors (stored as row vectors)
+            # unit_down: into planet (negative of geodetic normal)
+            self._unit_down = sympy.Matrix([[-unit_up_x, -unit_up_y, -unit_up_z]])
+
+            # unit_SN: South to North (along meridian)
+            self._unit_SN = sympy.Matrix([[unit_north_x, unit_north_y, unit_north_z]])
+
+            # unit_WE: West to East (along latitude circle)
+            self._unit_WE = sympy.Matrix([[unit_east_x, unit_east_y, unit_east_z]])
+
+            # Ellipsoidal rotation matrix: transforms Cartesian vectors to geographic frame
+            # Row 0: up (geodetic normal)
+            # Row 1: north (meridional)
+            # Row 2: east (azimuthal)
+            # This is the equivalent of "xRotR" for geographic coordinates
+            geoRotN = sympy.Matrix(
+                [
+                    [unit_up_x, unit_up_y, unit_up_z],
+                    [unit_north_x, unit_north_y, unit_north_z],
+                    [unit_east_x, unit_east_y, unit_east_z],
+                ]
+            )
+            self._geoRotN = geoRotN
+
+            # For backward compatibility with mesh.R (spherical coords),
+            # also compute the spherical rotation matrix
             rz = sympy.sqrt(x**2 + y**2)
             r_x_rz = sympy.sqrt((x**2 + y**2 + z**2) * (x**2 + y**2))
 
-            # Spherical rotation matrix (same as SPHERICAL case)
             rRotN = sympy.Matrix(
                 [
-                    [
-                        x / r,
-                        y / r,
-                        z / r,
-                    ],
-                    [
-                        (x * z) / r_x_rz,
-                        (y * z) / r_x_rz,
-                        -(x**2 + y**2) / r_x_rz,
-                    ],
-                    [
-                        -y / rz,
-                        +x / rz,
-                        self.independent_of_N,
-                    ],
+                    [x / r, y / r, z / r],
+                    [(x * z) / r_x_rz, (y * z) / r_x_rz, -(x**2 + y**2) / r_x_rz],
+                    [-y / rz, +x / rz, self.independent_of_N],
                 ]
             )
-
-            # Geographic basis vectors (stored separately)
-            # unit_down: radial direction (into planet, positive downward)
-            self._unit_down = -rRotN[0, :]  # Negative of radial outward
-
-            # unit_SN: South to North (meridional direction, positive northward)
-            self._unit_SN = -rRotN[1, :]  # Negative of colatitude direction
-
-            # unit_WE: West to East (azimuthal direction, positive eastward)
-            self._unit_WE = rRotN[2, :]  # Azimuthal direction
-
-            # Use spherical rotation matrix for mesh.R coordinate system
             self._rRotN = rRotN
             self._xRotN = sympy.eye(self.mesh.dim)
 
@@ -1062,11 +1785,20 @@ class CoordinateSystem:
         # to indicate the mesh is unit-aware
         self._apply_units_scaling()
 
-        # Create geographic accessor if this is a GEOGRAPHIC coordinate system
+        # Create coordinate accessors based on coordinate system type
         if system == CoordinateSystemType.GEOGRAPHIC:
             self._geo_accessor = GeographicCoordinateAccessor(self)
+            self._spherical_accessor = None
+        elif system == CoordinateSystemType.SPHERICAL:
+            self._spherical_accessor = SphericalCoordinateAccessor(self)
+            self._geo_accessor = None
+        elif system == CoordinateSystemType.CYLINDRICAL2D:
+            # Polar/cylindrical 2D uses same accessor as spherical (r, θ only)
+            self._spherical_accessor = SphericalCoordinateAccessor(self)
+            self._geo_accessor = None
         else:
             self._geo_accessor = None
+            self._spherical_accessor = None
 
         return
 
@@ -1263,10 +1995,23 @@ class CoordinateSystem:
         This allows CoordinateSystem to be used transparently in SymPy operations
         by forwarding attribute access to _X when the attribute doesn't exist
         on CoordinateSystem itself.
+
+        Note: When properties like 'geo' or 'spherical' raise AttributeError
+        (because the coordinate system doesn't support them), Python falls
+        through to __getattr__. We detect this and re-invoke the property
+        to get the helpful error message.
         """
         # Prevent infinite recursion for _X access
         if name == "_X":
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '_X'")
+
+        # For coordinate accessor properties, re-invoke the property to get
+        # the helpful error message (they raise AttributeError with guidance)
+        if name in ("geo", "spherical"):
+            # Access the property descriptor directly to get its error message
+            prop = type(self).__dict__.get(name)
+            if prop is not None:
+                return prop.__get__(self, type(self))
 
         # Try to get the attribute from the underlying symbolic matrix
         try:
@@ -1344,27 +2089,106 @@ class CoordinateSystem:
 
     @property
     def geo(self):
-        """
-        Geographic coordinate accessor for GEOGRAPHIC coordinate systems.
+        r"""
+        Geographic coordinates for GEOGRAPHIC meshes.
 
-        Returns GeographicCoordinateAccessor for longitude, latitude, depth coordinates
-        and geographic basis vectors.
+        Provides access to longitude, latitude, depth coordinates
+        and geographic basis vectors on ellipsoidal (WGS84) meshes.
 
-        Raises AttributeError if coordinate system is not GEOGRAPHIC.
+        Returns
+        -------
+        GeographicCoordinateAccessor
+            Object with .lon, .lat, .depth, .coords, unit vectors, etc.
+            Use .view() for a complete summary of available properties.
 
-        Examples:
-            lon = mesh.geo.lon         # Longitude data array
-            lat = mesh.geo.lat         # Latitude data array
-            depth = mesh.geo.depth     # Depth data array
-            λ_lon, λ_lat, λ_d = mesh.geo[:]  # Symbolic coordinates
-            unit_east = mesh.geo.unit_east    # East basis vector
+        Raises
+        ------
+        AttributeError
+            If coordinate system is not GEOGRAPHIC. The error message
+            indicates what coordinate system IS available for this mesh.
+
+        Examples
+        --------
+        >>> lon = mesh.X.geo.lon         # Longitude data array
+        >>> geo_coords = mesh.X.geo.coords  # (N, 3) array [lon, lat, depth]
+        >>> mesh.X.geo.view()            # Show all available properties
         """
         if self._geo_accessor is None:
+            # Provide helpful error message indicating what IS available
+            if self._spherical_accessor is not None:
+                hint = (
+                    f"\n\nThis mesh uses SPHERICAL coordinates. Use mesh.X.spherical instead:\n"
+                    f"  mesh.X.spherical.coords  → (r, θ, φ) coordinates\n"
+                    f"  mesh.X.spherical.view()  → See all available properties\n\n"
+                    f"Cartesian coordinates are always available:\n"
+                    f"  mesh.X.coords            → (x, y, z) data array\n"
+                    f"  mesh.X[0], mesh.X[1], mesh.X[2]  → Symbolic x, y, z"
+                )
+            else:
+                hint = (
+                    f"\n\nThis mesh uses CARTESIAN coordinates only.\n\n"
+                    f"Cartesian coordinates are always available:\n"
+                    f"  mesh.X.coords            → (x, y, z) data array\n"
+                    f"  mesh.X[0], mesh.X[1], mesh.X[2]  → Symbolic x, y, z"
+                )
             raise AttributeError(
-                f"Geographic coordinate accessor is only available for GEOGRAPHIC coordinate systems. "
-                f"Current coordinate system type: {self.coordinate_type}"
+                f"Geographic coordinates (.geo) are only available for GEOGRAPHIC meshes.\n"
+                f"Current mesh coordinate system: {self.coordinate_type}"
+                f"{hint}"
             )
         return self._geo_accessor
+
+    @property
+    def spherical(self):
+        r"""
+        Spherical/polar coordinates for SPHERICAL and CYLINDRICAL2D meshes.
+
+        Provides access to radius and angle coordinates, plus basis vectors:
+        - 3D (SPHERICAL): r, θ (colatitude), φ (longitude)
+        - 2D (CYLINDRICAL2D/Annulus): r, θ (polar angle)
+
+        Returns
+        -------
+        SphericalCoordinateAccessor
+            Object with .r, .theta, .coords, unit vectors, etc.
+            For 3D also .phi. Use .view() for a complete summary.
+
+        Raises
+        ------
+        AttributeError
+            If coordinate system is not SPHERICAL or CYLINDRICAL2D.
+            The error message indicates what IS available for this mesh.
+
+        Examples
+        --------
+        >>> r = mesh.X.spherical.r           # Radius data array
+        >>> sph_coords = mesh.X.spherical.coords  # (N, 2) or (N, 3) array
+        >>> mesh.X.spherical.view()          # Show all available properties
+        """
+        if self._spherical_accessor is None:
+            # Provide helpful error message indicating what IS available
+            if self._geo_accessor is not None:
+                hint = (
+                    f"\n\nThis mesh uses GEOGRAPHIC (ellipsoidal) coordinates. Use mesh.X.geo instead:\n"
+                    f"  mesh.X.geo.coords  → (lon, lat, depth) coordinates\n"
+                    f"  mesh.X.geo.view()  → See all available properties\n\n"
+                    f"Cartesian coordinates are always available:\n"
+                    f"  mesh.X.coords            → (x, y, z) data array\n"
+                    f"  mesh.X[0], mesh.X[1], mesh.X[2]  → Symbolic x, y, z"
+                )
+            else:
+                hint = (
+                    f"\n\nThis mesh uses CARTESIAN coordinates only.\n\n"
+                    f"Cartesian coordinates are always available:\n"
+                    f"  mesh.X.coords            → (x, y, z) data array\n"
+                    f"  mesh.X[0], mesh.X[1], mesh.X[2]  → Symbolic x, y, z"
+                )
+            raise AttributeError(
+                f"Spherical coordinates (.spherical) are only available for SPHERICAL meshes.\n"
+                f"Current mesh coordinate system: {self.coordinate_type}"
+                f"{hint}"
+            )
+        return self._spherical_accessor
 
     @property
     def rRotN(self) -> sympy.Matrix:
@@ -1373,6 +2197,40 @@ class CoordinateSystem:
     @property
     def xRotN(self) -> sympy.Matrix:
         return self._xRotN
+
+    @property
+    def geoRotN(self) -> sympy.Matrix:
+        r"""
+        Ellipsoidal rotation matrix for GEOGRAPHIC coordinate systems.
+
+        Transforms Cartesian vectors to the local geographic frame:
+        - Row 0: geodetic up (perpendicular to ellipsoid surface)
+        - Row 1: north (meridional, along ellipsoid surface)
+        - Row 2: east (azimuthal, along ellipsoid surface)
+
+        This is the ellipsoidal equivalent of ``rRotN`` for spherical coordinates.
+        For a sphere (a=b), this reduces to the spherical rotation matrix.
+
+        For an ellipsoid, the geodetic normal differs from the radial direction
+        by up to ~10 arcminutes at mid-latitudes, which is significant for
+        regional models at scales of 10-100 km.
+
+        Returns
+        -------
+        sympy.Matrix
+            3×3 rotation matrix, or None if not GEOGRAPHIC coordinate system.
+
+        Examples
+        --------
+        Transform a Cartesian velocity to geographic components:
+
+        >>> v_cartesian = sympy.Matrix([[vx, vy, vz]])
+        >>> v_geo = mesh.CoordinateSystem.geoRotN * v_cartesian.T
+        >>> v_up, v_north, v_east = v_geo[0], v_geo[1], v_geo[2]
+        """
+        if hasattr(self, "_geoRotN"):
+            return self._geoRotN
+        return None
 
     @property
     def unit_e_0(self) -> sympy.Matrix:

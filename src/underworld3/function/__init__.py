@@ -83,6 +83,13 @@ from .expressions import mesh_vars_in_expression as fn_mesh_vars_in_expression
 # Expose user-facing expand and unwrap functions (without fn_ prefix)
 from .expressions import expand, unwrap
 
+# Gradient evaluation utilities
+from .gradient_evaluation import (
+    evaluate_gradient,
+    compute_clement_gradient_at_nodes,
+    interpolate_gradients_at_coords,
+)
+
 
 def with_units(sympy_expr, name=None, units=None):
     """
