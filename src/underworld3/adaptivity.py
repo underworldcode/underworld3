@@ -229,10 +229,11 @@ def metric_from_gradient(
 
     **Implementation Note**
 
-    Gradients are computed using local least-squares fitting at each node,
-    using neighbor values within a search radius. This approach is robust
-    and works regardless of mesh structure, avoiding the complexity of
-    finite element gradient projection.
+    Gradients are computed using the Clement interpolant via
+    ``uw.function.evaluate(field.sym.diff(x), coords)``. This uses PETSc's
+    ``DMPlexComputeGradientClementInterpolant`` which averages cell-wise
+    gradients at vertices. The result is O(h) accurate and fast (no linear
+    solve required).
 
     Examples
     --------
@@ -262,15 +263,13 @@ def metric_from_gradient(
             f"got {field.num_components}"
         )
 
-    # Use the MeshVariable's built-in gradient approximation via RBF
-    # This computes gradients at node locations using local polynomial fitting
-    with mesh.access(field):
-        coords = field.coords
-        values = field.data[:, 0]
+    # Compute gradient at mesh nodes using Clement interpolant
+    # This uses PETSc's DMPlexComputeGradientClementInterpolant which
+    # averages cell-wise gradients at vertices - O(h) accurate, no solve needed
+    gradient_at_nodes = uw.function.compute_clement_gradient_at_nodes(field)
 
-    # Compute gradient using finite differences on mesh
-    # For each node, estimate gradient from neighbors using least squares
-    grad_mag = _compute_gradient_magnitude(mesh, coords, values)
+    # Compute gradient magnitude
+    grad_mag = np.sqrt(np.sum(gradient_at_nodes ** 2, axis=1))
 
     # Handle gradient bounds
     if gradient_min is None:
@@ -444,76 +443,6 @@ def metric_from_field(
 # =============================================================================
 # Internal Utilities
 # =============================================================================
-
-
-def _compute_gradient_magnitude(mesh, coords, values):
-    """Compute gradient magnitude at mesh nodes using local approximation.
-
-    Uses scipy's cKDTree for efficient neighbor finding and least-squares
-    fitting to estimate gradients. This is a simple but robust approach
-    that works regardless of mesh structure.
-
-    Parameters
-    ----------
-    mesh : Mesh
-        The computational mesh.
-    coords : np.ndarray
-        Node coordinates, shape (n_nodes, dim).
-    values : np.ndarray
-        Scalar values at nodes, shape (n_nodes,).
-
-    Returns
-    -------
-    np.ndarray
-        Gradient magnitude at each node, shape (n_nodes,).
-    """
-    from scipy.spatial import cKDTree
-
-    n_nodes = coords.shape[0]
-    dim = coords.shape[1]
-
-    # Build KD-tree for neighbor queries
-    tree = cKDTree(coords)
-
-    # Estimate typical neighbor distance from mesh
-    # Use average nearest neighbor distance
-    distances, _ = tree.query(coords, k=2)  # k=2: self and nearest
-    avg_dist = np.mean(distances[:, 1])  # Skip self (distance 0)
-
-    # Search radius for local gradient estimation
-    search_radius = 3.0 * avg_dist
-
-    grad_mag = np.zeros(n_nodes)
-
-    for i in range(n_nodes):
-        # Find neighbors within search radius
-        neighbors = tree.query_ball_point(coords[i], search_radius)
-
-        if len(neighbors) < dim + 1:
-            # Not enough neighbors for gradient estimation
-            # Fall back to larger search
-            _, neighbors = tree.query(coords[i], k=min(dim + 2, n_nodes))
-            neighbors = list(neighbors)
-
-        # Build local system for least-squares gradient estimation
-        # We fit: f(x) ≈ f(x_i) + ∇f · (x - x_i)
-        neighbor_coords = coords[neighbors] - coords[i]
-        neighbor_values = values[neighbors] - values[i]
-
-        # Solve least-squares: A @ grad = b
-        # where A = neighbor_coords, b = neighbor_values
-        if len(neighbors) >= dim + 1:
-            try:
-                grad, residuals, rank, s = np.linalg.lstsq(
-                    neighbor_coords, neighbor_values, rcond=None
-                )
-                grad_mag[i] = np.sqrt(np.sum(grad ** 2))
-            except np.linalg.LinAlgError:
-                grad_mag[i] = 0.0
-        else:
-            grad_mag[i] = 0.0
-
-    return grad_mag
 
 
 def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):
