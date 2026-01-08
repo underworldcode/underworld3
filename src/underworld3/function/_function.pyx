@@ -175,6 +175,118 @@ class UnderworldFunction(sympy.Function):
 
         return ourcls
 
+
+# =============================================================================
+# Shared helper functions for evaluation paths
+# =============================================================================
+
+def _collect_mesh_varfns(mesh):
+    """
+    Collect all mesh variable function symbols from a mesh.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The mesh containing variables
+
+    Returns
+    -------
+    set
+        Set of UnderworldAppliedFunction symbols for all mesh variables
+    """
+    varfns = set()
+    if mesh is not None and mesh.vars is not None:
+        for v in mesh.vars.values():
+            for sub in v.sym:
+                varfns.add(sub)
+    return varfns
+
+
+def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, mesh=None):
+    """
+    Substitute interpolated values and evaluate expression via lambdify.
+
+    This is the shared final step for both PETSc and RBF evaluation paths.
+    It replaces mesh variable symbols with placeholder symbols, creates a
+    lambdified function, and evaluates it with the interpolated values.
+
+    Parameters
+    ----------
+    expr : sympy expression
+        Expression to evaluate (already simplified/unwrapped)
+    coords : ndarray
+        Coordinates array, shape (n_points, dim)
+    interpolated_results : dict
+        Mapping from varfn symbols to interpolated value arrays
+    coord_sys : CoordSys3D, optional
+        Coordinate system to use
+    mesh : Mesh, optional
+        Mesh for coordinate system fallback
+
+    Returns
+    -------
+    ndarray
+        Evaluated results, shape (n_points, *expr_shape)
+    """
+    import string
+    import random
+    from sympy import lambdify
+    from sympy.vector import CoordSys3D
+
+    # 1. Replace mesh variables with random symbol placeholders
+    varfns_symbols = {}
+    for varfn in interpolated_results.keys():
+        randstr = ''.join(random.choices(string.ascii_uppercase, k=5))
+        varfns_symbols[varfn] = sympy.Symbol(randstr)
+
+    subbedexpr = expr.subs(varfns_symbols)
+
+    # 2. Set up coordinate system
+    dim = coords.shape[1]
+
+    if coord_sys is not None:
+        N = coord_sys
+    elif mesh is None:
+        N = CoordSys3D("N")
+    else:
+        N = mesh.N
+
+    r = N.base_scalars()[0:dim]
+
+    # 3. Handle vector/dyadic expressions
+    if isinstance(subbedexpr, sympy.vector.Vector):
+        subbedexpr = subbedexpr.to_matrix(N)[0:dim, 0]
+    elif isinstance(subbedexpr, sympy.vector.Dyadic):
+        subbedexpr = subbedexpr.to_matrix(N)[0:dim, 0:dim]
+
+    # 4. Create lambdified function and evaluate
+    lambfn = lambdify((r, varfns_symbols.values()), subbedexpr, docstring_limit=0)
+
+    coords_list = [coords[:, i] for i in range(dim)]
+    results = lambfn(coords_list, interpolated_results.values())
+
+    # 5. Handle result shape
+    try:
+        shape = expr.shape
+    except AttributeError:
+        shape = (1, 1)
+
+    try:
+        results_shape = results.shape
+    except AttributeError:
+        results_shape = (1, 1)
+
+    # Broadcast constant results to span all coordinates
+    if shape == results_shape:
+        results_new = np.zeros((coords.shape[0], *shape))
+        results_new[...] = results
+        results = results_new
+    else:
+        results = np.moveaxis(results, -1, 0)
+
+    return results.reshape(-1, *shape)
+
+
 def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
@@ -695,13 +807,8 @@ def petsc_interpolate(   expr,
     # Create dictionary which creates a per mesh list of vars.
     # Usually there will only be a single mesh, but this allows for the
     # more general situation.
-    #
 
-    varfns = set()
-    if mesh is not None and mesh.vars is not None:
-        for v in mesh.vars.values():
-            for sub in v.sym:
-                varfns.add(sub)
+    varfns = _collect_mesh_varfns(mesh)
 
     from collections import defaultdict
     interpolant_varfns = defaultdict(lambda : [])
@@ -870,72 +977,8 @@ def petsc_interpolate(   expr,
                 # grad[:, diffindex] gives ∂f/∂x_i values at all points
                 interpolated_results[deriv_expr] = np.ascontiguousarray(grad[:, diffindex])
 
-    # 3. Replace mesh variables in the expression with sympy symbols
-    # First generate random string symbols to act as proxies.
-    import string
-    import random
-    varfns_symbols = {}
-    for varfn in interpolated_results.keys():
-        randstr = ''.join(random.choices(string.ascii_uppercase, k = 5))
-        varfns_symbols[varfn] = sympy.Symbol(randstr)
-
-    # subs variable fns in expression for symbols
-    subbedexpr = expr.subs(varfns_symbols)
-
-    # 4. Generate sympy lambdified expression
-    from sympy import lambdify
-    from sympy.vector import CoordSys3D
-    dim = coords.shape[1]
-
-    ## Careful - if we change the names of the base-scalars for the mesh, this will need to be kept in sync
-
-    if coord_sys is not None:
-        N = coord_sys
-    elif mesh is None:
-        N = CoordSys3D(f"N")
-    else:
-        N = mesh.N
-
-    r = N.base_scalars()[0:dim]
-
-    # This likely never applies any more
-    if isinstance(subbedexpr, sympy.vector.Vector):
-        subbedexpr = subbedexpr.to_matrix(N)[0:dim,0]
-    elif isinstance(subbedexpr, sympy.vector.Dyadic):
-        subbedexpr = subbedexpr.to_matrix(N)[0:dim,0:dim]
-
-    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, docstring_limit=0 )
-    # Leave out modules. This is equivalent to SYMPY_DECIDE and can then include scipy if available
-
-    # 5. Eval generated lambda expression
-    coords_list = [ coords[:,i] for i in range(dim) ]
-
-    results = lambfn( coords_list, interpolated_results.values() )
-
-    try:
-        shape = expr.shape
-    except AttributeError:
-        shape = (1,1)
-        expr = sympy.Matrix(((expr,)))
-
-    try:
-        results_shape = results.shape
-    except AttributeError:
-        results_shape = (1,1)
-
-    # If passed a constant / constant matrix, then the result will not span the coordinates
-    # and we'll need to broadcast the information explicitly
-
-    if shape == results_shape:
-        results_new = np.zeros((coords.shape[0], *shape))
-        results_new[...] = results
-        results = results_new
-    else:
-        results = np.moveaxis(results, -1, 0)
-    # 6. Return results
-    #
-
-    return results.reshape(-1, *shape)
+    # 3. Symbol substitution, lambdify, and evaluate (shared with rbf_evaluate)
+    return _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys, mesh)
 
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that
@@ -1043,86 +1086,19 @@ def rbf_evaluate(  expr,
             pass
 
 
-    # 2. Evaluate all mesh variables - there is no real
-    # computational benefit in interpolating a subset.
-    #
+    # 2. Collect and evaluate all mesh variables via RBF interpolation
+    varfns = _collect_mesh_varfns(mesh)
 
-    varfns = set()
-    if mesh is not None and mesh.vars is not None:
-        for v in mesh.vars.values():
-            for sub in v.sym:
-                varfns.add(sub)
-
-    # Get map of all variable functions (no cache)
     interpolated_results = {}
     for varfn in varfns:
         parent, component = uw.discretisation.meshVariable_lookup_by_symbol(mesh, varfn)
-        values = parent.rbf_interpolate(coords, nnn=mesh.dim+1)[:,component]
+        values = parent.rbf_interpolate(coords, nnn=mesh.dim+1)[:, component]
         interpolated_results[varfn] = values
         if verbose:
             print(f"{varfn} = {parent.name}[{component}]")
 
-    # 3. Replace mesh variables in the expression with sympy symbols
-    # First generate random string symbols to act as proxies.
-
-    import string
-    import random
-    varfns_symbols = {}
-    for varfn in interpolated_results.keys():
-        randstr = ''.join(random.choices(string.ascii_uppercase, k = 5))
-        varfns_symbols[varfn] = sympy.Symbol(randstr)
-    # subs variable fns in expression for symbols
-    subbedexpr = expr.subs(varfns_symbols)
-
-    # 4. Generate sympy lambdified expression
-    from sympy import lambdify
-    from sympy.vector import CoordSys3D
-    dim = coords.shape[1]
-
-    ## Careful - if we change the names of the base-scalars for the mesh, this will need to be kept in sync
-
-    if coord_sys is not None:
-        N = coord_sys
-    elif mesh is None:
-        from sympy.vector import CoordSys3D
-        N = CoordSys3D(f"N")
-    else:
-        N = mesh.N
-
-    r = N.base_scalars()[0:dim]
-    lambfn = lambdify( (r, varfns_symbols.values()), subbedexpr, docstring_limit=0 )
-
-    # 5. Eval generated lambda expression
-    coords_list = [ coords[:,i] for i in range(dim) ]
-    results = lambfn( coords_list, interpolated_results.values())
-
-    # Check shape of original expression
-
-    try:
-        shape = expr.shape
-    except AttributeError:
-        shape = (1,1)
-        expr = sympy.Matrix(((expr,)))
-
-    try:
-        results_shape = results.shape
-    except AttributeError:
-        results_shape = (1,)
-
-    # If passed a constant / constant matrix, then the result will not span the coordinates
-    # and we'll need to broadcast the information explicitly
-
-    if shape == results_shape:
-        results_new = np.zeros((coords.shape[0], *shape))
-        results_new[...] = results
-        results = results_new
-
-    else:
-        results = np.moveaxis(results, -1, 0)
-
-    # 6. Return results
-
-    return results
+    # 3. Symbol substitution, lambdify, and evaluate (shared with petsc_interpolate)
+    return _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys, mesh)
 
 
 # Go ahead and substitute for the timed version.
