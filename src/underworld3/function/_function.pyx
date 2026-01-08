@@ -349,7 +349,10 @@ def evaluate_nd(   expr,
                 evalf=False,
                 rbf=False,
                 data_layout=None,
-                check_extrapolated=False):
+                check_extrapolated=False,
+                gradient_method="interpolant",
+                force_l2=False,
+                smoothing=1e-6):
     """
     Internal: Evaluate expression at coordinates (Cython implementation).
 
@@ -427,7 +430,10 @@ def evaluate_nd(   expr,
                                     mesh,
                                     simplify=simplify,
                                     verbose=verbose,
-                                    derivfns=derivfns, )
+                                    derivfns=derivfns,
+                                    gradient_method=gradient_method,
+                                    force_l2=force_l2,
+                                    smoothing=smoothing, )
 
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
@@ -490,6 +496,74 @@ def evaluate_nd(   expr,
         else:
             return evaluation_1d
 
+
+def _evaluate_via_projection(expr, coords, mesh, smoothing=1e-6):
+    """
+    Evaluate expression by projecting to mesh variable, then interpolating.
+
+    This is the O(h²) accurate path for expressions with derivatives.
+    The expression is projected to a work variable (cached on mesh),
+    then interpolated to the requested coordinates.
+
+    Parameters
+    ----------
+    expr : sympy expression
+        Expression to evaluate (may contain derivatives)
+    coords : ndarray
+        Coordinates to evaluate at, shape (n_points, dim)
+    mesh : Mesh
+        The mesh for projection
+    smoothing : float
+        Projection smoothing parameter (dimensionless), default 1e-6
+
+    Returns
+    -------
+    ndarray
+        Expression values at coordinates
+    """
+    import underworld3 as uw
+
+    # Handle matrix expressions element by element
+    if hasattr(expr, 'shape') and expr.shape != (1, 1):
+        rows, cols = expr.shape
+        n_points = coords.shape[0]
+        result = np.empty((n_points, rows, cols), dtype=np.double)
+
+        for i in range(rows):
+            for j in range(cols):
+                scalar_expr = expr[i, j]
+                result[:, i, j] = _evaluate_via_projection(
+                    scalar_expr, coords, mesh, smoothing
+                ).flatten()
+
+        return result
+
+    # Scalar expression - project and interpolate
+    # Get or create work variable (cached on mesh for reuse)
+    if not hasattr(mesh, '_eval_work_var'):
+        mesh._eval_work_var = uw.discretisation.MeshVariable(
+            "_eval_work", mesh, num_components=1, degree=1
+        )
+        mesh._eval_projector = uw.systems.Projection(
+            mesh, mesh._eval_work_var
+        )
+        mesh._eval_projector.petsc_options["snes_rtol"] = 1e-6
+
+    work_var = mesh._eval_work_var
+    projector = mesh._eval_projector
+
+    # Project expression to work variable
+    projector.uw_function = expr
+    projector.smoothing = smoothing
+    projector.solve(zero_init_guess=False)
+
+    # Interpolate from work variable to coordinates
+    # Use direct evaluation (no derivatives, so existing path works)
+    result = uw.function.evaluate(work_var.sym[0, 0], coords)
+
+    return result
+
+
 def petsc_interpolate(   expr,
                 np.ndarray coords=None,
                 coord_sys=None,
@@ -497,7 +571,10 @@ def petsc_interpolate(   expr,
                 other_arguments=None,
                 simplify=True,
                 verbose=False,
-                derivfns=None, ):
+                derivfns=None,
+                gradient_method="interpolant",
+                force_l2=False,
+                smoothing=1e-6, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -588,6 +665,14 @@ def petsc_interpolate(   expr,
 
     if simplify:
         expr = sympy.simplify(expr)
+
+    # PROJECTION PATH: Use L2 projection for expressions with derivatives or when force_l2=True
+    # This provides O(h²) accuracy for derivatives vs O(h) for Clement interpolation
+    use_projection = force_l2 or (derivfns and gradient_method == "projection")
+
+    if use_projection and mesh is not None:
+        # Project entire expression to work variable, then interpolate
+        return _evaluate_via_projection(expr, coords, mesh, smoothing=smoothing)
 
     if verbose and uw.mpi.rank==0:
         print(f"Expression to be evaluated: {expr}")
@@ -768,7 +853,19 @@ def petsc_interpolate(   expr,
 
         # Add each derivative expression -> gradient component to results
         for source_var, deriv_list in derivfns.items():
-            grad = gradient_values[source_var]  # shape (n_points, dim)
+            # gradient_values is keyed by (var, component) tuples
+            # For scalar fields, component is 0
+            if source_var.num_components == 1:
+                grad = gradient_values[(source_var, 0)]  # shape (n_points, dim)
+            else:
+                # For multi-component fields, gradient is computed per component
+                # This case should already be handled by the gradient function
+                grad = gradient_values.get((source_var, 0), None)
+                if grad is None:
+                    raise RuntimeError(
+                        f"Gradient for multi-component field {source_var.name} not found. "
+                        "Multi-component derivative evaluation requires component specification."
+                    )
             for deriv_expr, diffindex in deriv_list:
                 # grad[:, diffindex] gives ∂f/∂x_i values at all points
                 interpolated_results[deriv_expr] = np.ascontiguousarray(grad[:, diffindex])

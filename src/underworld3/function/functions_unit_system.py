@@ -41,6 +41,9 @@ def evaluate(
     rbf=False,
     data_layout=None,
     check_extrapolated=False,
+    gradient_method="interpolant",
+    force_l2=False,
+    smoothing=1e-6,
 ):
     """
     Evaluate expression at coordinates with automatic unit handling.
@@ -76,6 +79,19 @@ def evaluate(
         Data layout specification (default: None)
     check_extrapolated : bool, optional
         Check for extrapolated values (default: False)
+    gradient_method : str, optional
+        Method for gradient computation when derivatives are present:
+        - "interpolant": Clement interpolant (O(h) accurate, fast, no solve)
+        - "projection": L2 projection (O(h²) accurate, requires solve)
+        Default: "interpolant"
+    force_l2 : bool, optional
+        Force L2 projection path even for non-derivative expressions.
+        Useful for expressions that benefit from projection smoothing.
+        Default: False
+    smoothing : float, optional
+        Smoothing parameter for L2 projection (dimensionless).
+        Only used when projection path is active (derivatives or force_l2=True).
+        Default: 1e-6
 
     Returns
     -------
@@ -271,6 +287,9 @@ def evaluate(
         rbf=rbf,
         data_layout=data_layout,
         check_extrapolated=check_extrapolated,
+        gradient_method=gradient_method,
+        force_l2=force_l2,
+        smoothing=smoothing,
     )
 
     # Step 4: Unpack extrapolation flag if needed
