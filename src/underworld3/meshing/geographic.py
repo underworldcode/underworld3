@@ -43,7 +43,7 @@ def RegionalSphericalBox(
     gmsh_verbosity=0,
     verbose=False,
 ):
-r"""
+    r"""
     Create a regional spherical box mesh (cubed-sphere section).
 
     Generates a 3D structured mesh for a regional section of a spherical shell,
@@ -529,6 +529,34 @@ def RegionalGeographicBox(
     - Right-handed coordinate system: WE × SN = down
     """
     from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
+    from underworld3.units import (
+        require_units_if_active,
+        convert_angle_to_degrees,
+        has_units,
+    )
+
+    # Check if units system is active
+    model = uw.get_default_model()
+    units_active = model is not None and model.has_units()
+
+    # Process input parameters with unit awareness
+    # Angles: accept quantities or raw (degrees)
+    lon_min = convert_angle_to_degrees(lon_range[0], "lon_min")
+    lon_max = convert_angle_to_degrees(lon_range[1], "lon_max")
+    lat_min = convert_angle_to_degrees(lat_range[0], "lat_min")
+    lat_max = convert_angle_to_degrees(lat_range[1], "lat_max")
+
+    # Depths: require quantities when units active
+    depth_min_nd = require_units_if_active(
+        depth_range[0], "depth_min",
+        expected_dimensionality="[length]",
+        default_unit="km"
+    )
+    depth_max_nd = require_units_if_active(
+        depth_range[1], "depth_max",
+        expected_dimensionality="[length]",
+        default_unit="km"
+    )
 
     # Parse ellipsoid parameter
     if ellipsoid is True or ellipsoid == "WGS84":
@@ -558,23 +586,62 @@ def RegionalGeographicBox(
             "Use str name, (a, b) tuple, True for WGS84, or False for sphere."
         )
 
-    a = ellipsoid_dict["a"]
-    b = ellipsoid_dict["b"]
+    # Get ellipsoid parameters (in km)
+    a_km = ellipsoid_dict["a"]
+    b_km = ellipsoid_dict["b"]
 
-    # Unpack ranges and element counts
-    lon_min, lon_max = lon_range
-    lat_min, lat_max = lat_range
-    depth_min, depth_max = depth_range
+    # Nondimensionalize ellipsoid if units active
+    if units_active:
+        # Get reference length in km
+        ref_length = model.get_fundamental_scales().get("length")
+        if ref_length is not None:
+            # Convert reference length to km
+            if hasattr(ref_length, "to"):
+                L_ref_km = float(ref_length.to("km").magnitude)
+            elif hasattr(ref_length, "magnitude"):
+                # Assume it's in base SI (meters)
+                L_ref_km = float(ref_length.magnitude) / 1000.0
+            else:
+                L_ref_km = float(ref_length) / 1000.0
+
+            # Nondimensional ellipsoid parameters
+            a_nd = a_km / L_ref_km
+            b_nd = b_km / L_ref_km
+
+            # Store both in ellipsoid dict
+            ellipsoid_dict["a_nd"] = a_nd
+            ellipsoid_dict["b_nd"] = b_nd
+            ellipsoid_dict["L_ref_km"] = L_ref_km
+
+            # Use nondimensional values for mesh generation
+            a = a_nd
+            b = b_nd
+            depth_min = depth_min_nd
+            depth_max = depth_max_nd
+        else:
+            # No reference length available - use km
+            a = a_km
+            b = b_km
+            depth_min = depth_min_nd
+            depth_max = depth_max_nd
+    else:
+        # No units - use km directly
+        a = a_km
+        b = b_km
+        depth_min = depth_min_nd
+        depth_max = depth_max_nd
+
+    # Unpack element counts (angles already processed above)
     numLon, numLat, numDepth = numElements
 
     # Validate inputs
     if not (-180 <= lon_min < lon_max <= 360):
-        raise ValueError(f"Invalid longitude range: {lon_range}. Must be in [-180, 360].")
+        raise ValueError(f"Invalid longitude range: ({lon_min}, {lon_max}). Must be in [-180, 360].")
     if not (-90 <= lat_min < lat_max <= 90):
-        raise ValueError(f"Invalid latitude range: {lat_range}. Must be in [-90, 90].")
+        raise ValueError(f"Invalid latitude range: ({lat_min}, {lat_max}). Must be in [-90, 90].")
     if not (0 <= depth_min < depth_max):
         raise ValueError(
-            f"Invalid depth range: {depth_range}. Must be positive with depth_min < depth_max."
+            f"Invalid depth range: ({depth_min}, {depth_max}). Must be positive with depth_min < depth_max."
         )
 
     # Define boundary enum

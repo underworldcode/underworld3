@@ -39,6 +39,15 @@ from .segmented import (
     SegmentedSphericalBall,
 )
 
+from .surfaces import (
+    Surface,
+    SurfaceVariable,
+    SurfaceCollection,
+    # Backward compatibility aliases
+    FaultSurface,
+    FaultCollection,
+)
+
 # Make all functions available at module level for backward compatibility
 __all__ = [
     # Cartesian meshes
@@ -64,4 +73,11 @@ __all__ = [
     "SegmentedSphericalSurface2D",
     "SegmentedSphericalShell",
     "SegmentedSphericalBall",
+    # Surfaces (general embedded surfaces)
+    "Surface",
+    "SurfaceVariable",
+    "SurfaceCollection",
+    # Backward compatibility aliases
+    "FaultSurface",
+    "FaultCollection",
 ]
