@@ -13,7 +13,7 @@
 #     name: pixi-kernel-python3
 # ---
 
-# %% [markdown]
+# %% [markdown] editable=true slideshow={"slide_type": ""}
 # # Notebook 14: Time-Dependent Advection-Diffusion with units
 # This notebook introduces time-dependent problems in Underworld3 through the advection-diffusion equation. We'll test the numerical solution against analytical solutions for the advection and diffusion of temperature steps.
 #

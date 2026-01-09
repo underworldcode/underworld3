@@ -180,7 +180,7 @@ print("Free slip boundary conditions applied")
 # %%
 stokes.view()
 
-# %%
+# %% editable=true slideshow={"slide_type": ""}
 uw.pause("Stokes setup complete", explanation="Run next cell to continue with plasticity")
 
 # %%
