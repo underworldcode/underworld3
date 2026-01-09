@@ -1,0 +1,5 @@
+#!/bin/bash
+# Activate pixi environment before Jupyter starts
+export PATH="$HOME/.pixi/bin:$PATH"
+eval "$(pixi shell-hook -e runtime)"
+exec "$@"
