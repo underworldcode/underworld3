@@ -423,21 +423,54 @@ def _createext(
         else:
             fn = sympy.Matrix([fn])
 
+        # === JIT VALIDATION GATEWAY ===
+        # Check for symbols that cannot be converted to C code.
+        # Expected symbols (coordinates) have _ccodestr attribute set.
+        # Unexpected symbols indicate malformed expressions from user code.
+        free_syms = fn.free_symbols
+        unconvertible_symbols = []
+        for sym in free_syms:
+            # Check if this symbol can be converted to C code
+            if not hasattr(sym, '_ccodestr'):
+                unconvertible_symbols.append(sym)
+
+        if unconvertible_symbols:
+            # Build a helpful error message
+            sym_details = []
+            for sym in unconvertible_symbols:
+                detail = f"  - {sym} (type: {type(sym).__name__})"
+                if hasattr(sym, 'units'):
+                    detail += f" [has units: {sym.units}]"
+                if hasattr(sym, 'value'):
+                    detail += f" [value: {sym.value}]"
+                sym_details.append(detail)
+
+            raise RuntimeError(
+                f"\n{'='*70}\n"
+                f"JIT COMPILATION ERROR: Expression contains unconvertible symbols\n"
+                f"{'='*70}\n\n"
+                f"The following symbols could not be converted to C code:\n"
+                + "\n".join(sym_details) + "\n\n"
+                f"This usually means:\n"
+                f"  1. A UWexpression or UWQuantity was not properly expanded\n"
+                f"  2. An arithmetic operation failed (e.g., Matrix * UWexpression)\n"
+                f"  3. A symbolic function is missing from the expression tree\n\n"
+                f"Expression index: {index}\n"
+                f"Original expression: {fn_original}\n"
+                f"After unwrap: {fn}\n\n"
+                f"TIP: Check that all expression operations (*, /, +, -) produce\n"
+                f"valid SymPy expressions. For example, ensure scalar * Matrix\n"
+                f"and not Matrix * scalar when using UWexpression objects.\n"
+                f"{'='*70}"
+            )
+
         if verbose:
             print("Processing JIT {:4d} / {}".format(index, fn))
-            # Enhanced debugging output
-            free_syms = fn.free_symbols
+            # Enhanced debugging output for remaining (valid) free symbols
             if free_syms:
-                print("  WARNING: Free symbols remaining after unwrap:")
+                print("  Free symbols (all convertible):")
                 for sym in free_syms:
-                    print(f"    - {sym} (type: {type(sym).__name__}, repr: {repr(sym)})")
-                    # Check if it's a UWexpression with units
-                    if hasattr(sym, 'units'):
-                        print(f"      has .units = {sym.units}")
-                    if hasattr(sym, 'magnitude'):
-                        print(f"      has .magnitude = {sym.magnitude}")
-                print(f"  Original expression before unwrap: {fn_original}")
-                print(f"  After unwrap: {fn}")
+                    print(f"    - {sym} (type: {type(sym).__name__}, _ccodestr: {getattr(sym, '_ccodestr', 'N/A')})")
 
         out = sympy.MatrixSymbol("out", *fn.shape)
         eqn = ("eqn_" + str(index), printer.doprint(fn, out))

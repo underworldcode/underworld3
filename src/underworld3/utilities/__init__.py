@@ -30,8 +30,8 @@ auditor, postHog
 
 Notes
 -----
-The units_mixin exports are DEPRECATED. Use the units system in
-:mod:`underworld3.function.unit_conversion` instead.
+Units are handled by the enhanced variable system.
+See :mod:`underworld3.discretisation.enhanced_variables` for details.
 
 See Also
 --------
@@ -64,16 +64,7 @@ from .geometry_tools import *
 from .nd_array_callback import NDArray_With_Callback
 from .mathematical_mixin import MathematicalMixin
 
-# DEPRECATED AND SCHEDULED FOR REMOVAL
-# These units_mixin imports are not used and will be removed in a future version.
-# DO NOT USE - see underworld3.function.unit_conversion for the active units system.
-from .units_mixin import (
-    UnitAwareMixin,           # DEPRECATED - REMOVE
-    UnitAwareMathematicalMixin,  # DEPRECATED - REMOVE
-    UnitsBackend,             # DEPRECATED - REMOVE
-    PintBackend,              # DEPRECATED - REMOVE
-    make_units_aware,         # DEPRECATED - REMOVE
-)
+# Note: units_mixin module was removed - units handled by enhanced_variables
 
 from .unit_aware_array import (
     UnitAwareArray,

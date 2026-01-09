@@ -178,6 +178,41 @@ class NDArray_With_Callback(np.ndarray):
             self._update_connectivity()
     ```
 
+    ### Backend Abstraction Pattern
+
+    The callback mechanism enables **backend-agnostic data storage**. Different storage
+    backends (PETSc, pyvista, HDF5, etc.) can be wrapped with the same interface by
+    providing different callbacks:
+
+    ```python
+    # Example 1: PETSc backend (for MeshVariable)
+    def petsc_sync_callback(array, info):
+        '''Sync numpy array to PETSc Vec.'''
+        self._petsc_vec.setArray(array)
+        self._petsc_vec.assemble()
+
+    mesh_var.data = NDArray_With_Callback(
+        self._petsc_vec.getArray(),
+        callback=petsc_sync_callback,
+        owner=self,
+    )
+
+    # Example 2: pyvista backend (for SurfaceVariable)
+    def pyvista_sync_callback(array, info):
+        '''Sync numpy array to pyvista point_data.'''
+        self.surface._pv_mesh.point_data[self.name] = np.asarray(array)
+        self._proxy_stale = True  # Mark derived data as stale
+
+    surface_var.data = NDArray_With_Callback(
+        self._pv_mesh.point_data[name],
+        callback=pyvista_sync_callback,
+        owner=self,
+    )
+    ```
+
+    This pattern allows `UnitAwareArray` (which extends this class) to work with
+    any storage backend without modification - only the callback changes.
+
     ### Delayed Callback Context
     ```python
     # Batch multiple operations
