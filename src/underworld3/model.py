@@ -1725,14 +1725,8 @@ class Model(PintNativeModelMixin, BaseModel):
 
             warnings.warn(conflict_msg, UserWarning, stacklevel=2)
 
-        # Import units backend for dimensional analysis
-        try:
-            from .scaling import units as u
-        except ImportError:
-            from .utilities.units_mixin import PintBackend
-
-            backend = PintBackend()
-            u = backend.registry
+        # Import units (Pint) for dimensional analysis
+        from .scaling import units as u
 
         scalings = {}
         derived_info = {}  # Track how each scaling was derived
@@ -2821,14 +2815,8 @@ class Model(PintNativeModelMixin, BaseModel):
             - 'resolutions': list of suggested resolutions
             - 'redundant_quantities': list of quantity names that could be removed
         """
-        # Import units for dimensional analysis
-        try:
-            from .scaling import units as u
-        except ImportError:
-            from .utilities.units_mixin import PintBackend
-
-            backend = PintBackend()
-            u = backend.registry
+        # Import units (Pint) for dimensional analysis
+        from .scaling import units as u
 
         conflicts = []
         resolutions = []

@@ -272,18 +272,13 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Fallback: store as-is (shouldn't happen)
                 self._units = units
 
-            # Initialize units backend properly
-            from underworld3.utilities.units_mixin import PintBackend
-
-            if units_backend is None or units_backend == "pint":
-                self._units_backend = PintBackend()
-            else:
+            # units_backend parameter is deprecated - Pint is the only supported backend
+            if units_backend is not None and units_backend != "pint":
                 raise ValueError(
                     f"Unknown units backend: {units_backend}. Only 'pint' is supported."
                 )
         else:
             self._units = None
-            self._units_backend = None
 
         # Component and shape handling
         if vtype == uw.VarType.SCALAR:
@@ -449,10 +444,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         """Get the dimensionality of this variable."""
         if not self.has_units:
             return None
-        if self._units_backend is None:
+        # Use Pint directly to get dimensionality
+        from underworld3.scaling import units as ureg
+        try:
+            quantity = 1.0 * ureg(self._units) if isinstance(self._units, str) else 1.0 * self._units
+            return quantity.dimensionality
+        except Exception:
             return None
-        quantity = self._units_backend.create_quantity(1.0, self._units)
-        return self._units_backend.get_dimensionality(quantity)
 
     def _create_variable_array(self, initial_data=None):
         """
@@ -975,11 +973,7 @@ class _BaseMeshVariable(Stateful, uw_object):
                     "dimensionality": (
                         str(self.dimensionality) if hasattr(self, "dimensionality") else None
                     ),
-                    "units_backend": (
-                        type(self._units_backend).__name__
-                        if hasattr(self, "_units_backend")
-                        else None
-                    ),
+                    "units_backend": "pint" if self.has_units else None,
                     "num_components": self.num_components,
                     "variable_type": str(self.vtype),
                     "variable_name": self.name,
@@ -1068,11 +1062,7 @@ class _BaseMeshVariable(Stateful, uw_object):
                     "dimensionality": (
                         str(self.dimensionality) if hasattr(self, "dimensionality") else None
                     ),
-                    "units_backend": (
-                        type(self._units_backend).__name__
-                        if hasattr(self, "_units_backend")
-                        else None
-                    ),
+                    "units_backend": "pint" if self.has_units else None,
                     "coordinate_units": (
                         str(self.mesh.coordinate_units)
                         if hasattr(self.mesh, "coordinate_units")
@@ -1413,6 +1403,88 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._gvec.zeroEntries()
 
         self._available = available
+
+    def _replace_from_adapted_mesh(self, temp_var, adapted_mesh):
+        """
+        Replace internal storage after mesh adaptation.
+
+        Called by mesh.adapt() to update this variable's internal PETSc
+        structures after the mesh's discretization has changed. The data
+        has already been interpolated to temp_var; this method copies that
+        data into this variable's updated storage.
+
+        Parameters
+        ----------
+        temp_var : MeshVariable
+            A temporary variable on the adapted mesh containing the
+            interpolated data for this variable.
+        adapted_mesh : Mesh
+            The mesh object (same object, but with updated internal DM).
+
+        Notes
+        -----
+        This is an internal method called by mesh.adapt(). Users should
+        not need to call this directly.
+
+        After this method returns, all user references to this variable
+        remain valid and contain the interpolated data on the adapted mesh.
+        """
+        # Destroy old PETSc vectors
+        if self._lvec is not None:
+            self._lvec.destroy()
+            self._lvec = None
+        if self._gvec is not None:
+            self._gvec.destroy()
+            self._gvec = None
+
+        # The mesh reference is still valid (same object, updated internals)
+        # But we need to find/create our field on the new DM
+
+        # Check if our field exists on the new DM
+        dm = adapted_mesh.dm
+        found_field_id = None
+        for i in range(dm.getNumFields()):
+            field, _ = dm.getField(i)
+            if field.getName() == self.clean_name:
+                found_field_id = i
+                break
+
+        if found_field_id is None:
+            # Need to add field to new DM (this happens if adapt() didn't pre-create variables)
+            options = PETSc.Options()
+            name0 = "VAR"
+            options.setValue(f"{name0}_petscspace_degree", self.degree)
+            options.setValue(f"{name0}_petscdualspace_lagrange_continuity", self.continuous)
+            options.setValue(f"{name0}_petscdualspace_lagrange_node_endpoints", False)
+
+            dim = dm.getDimension()
+            petsc_fe = PETSc.FE().createDefault(
+                dim,
+                self.num_components,
+                adapted_mesh.isSimplex,
+                adapted_mesh.qdegree,
+                name0 + "_",
+                PETSc.COMM_SELF,
+            )
+
+            self.field_id = dm.getNumFields()
+            dm.addField(petsc_fe)
+            field, _ = dm.getField(self.field_id)
+            field.setName(self.clean_name)
+            dm.createDS()
+        else:
+            self.field_id = found_field_id
+
+        # Create new vectors on the updated DM
+        self._set_vec(available=True)
+
+        # Copy data from temporary variable
+        if temp_var._lvec is not None:
+            self._lvec.array[...] = temp_var._lvec.array[...]
+
+        # Invalidate any cached data views
+        self._data_cache = None
+        self._array_cache = None
 
     def __del__(self):
         if self._lvec:

@@ -1871,18 +1871,30 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         d = self.dim
         dv = uw.maths.tensor.idxmap[d][0]
 
-        eta_0 = self.Parameters.eta_0
-        eta_1 = self.Parameters.eta_1
+        # Use .sym to get sympy expressions from Parameters
+        eta_0 = self.Parameters.eta_0.sym
+        eta_1 = self.Parameters.eta_1.sym
         n = self.Parameters.director.sym
 
         Delta = eta_0 - eta_1
-        lambda_mat = 2 * uw.maths.tensor.rank4_identity(d) * eta_0
+
+        # Use element-wise construction (same pattern as ViscousFlowModel).
+        # UWexpression has __getitem__ from MathematicalMixin, making it appear
+        # "Iterable" to SymPy's array multiplication operator, which rejects it.
+        # Element-wise construction avoids this by creating Mul objects that
+        # don't have __getitem__.
+        identity = uw.maths.tensor.rank4_identity(d)
+        lambda_mat = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
 
         for i in range(d):
             for j in range(d):
                 for k in range(d):
                     for l in range(d):
-                        lambda_mat[i, j, k, l] -= (
+                        # Build isotropic part element-wise
+                        base_val = 2 * identity[i, j, k, l] * eta_0
+
+                        # Anisotropic correction term
+                        aniso_correction = (
                             2
                             * Delta
                             * (
@@ -1896,6 +1908,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
                                 - 2 * n[i] * n[j] * n[k] * n[l]
                             )
                         )
+
+                        val = base_val - aniso_correction
+
+                        # Wrap if needed to avoid Iterable check during assignment
+                        if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                            val = sympy.Mul(sympy.S.One, val, evaluate=False)
+
+                        lambda_mat[i, j, k, l] = val
 
         lambda_mat = sympy.simplify(uw.maths.tensor.rank4_to_mandel(lambda_mat, d))
 

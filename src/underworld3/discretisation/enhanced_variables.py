@@ -326,11 +326,6 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         return self._base_var.has_units
 
     @property
-    def _units_backend(self):
-        """Units backend (for protocol compatibility)."""
-        return self._base_var._units_backend
-
-    @property
     def dimensionality(self):
         """Get dimensionality (delegates to DimensionalityMixin or base variable)."""
         # DimensionalityMixin.dimensionality uses self.units, which now delegates to _base_var
@@ -614,7 +609,7 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         if self.has_units:
             print(f"  Units: {self.units}")
             print(f"  Dimensionality: {self.dimensionality}")
-            print(f"  Units backend: {type(self._units_backend).__name__}")
+            print(f"  Units backend: pint")
         else:
             print(f"  Units: None (dimensionless)")
 
