@@ -162,16 +162,14 @@ Set the interface with cosine perturbation.
 """
 
 # %%
-with swarm.access(material):
-    material.data[...] = 0
+material.data[...] = 0
 
-with swarm.access(material):
-    perturbation = offset + amplitude * np.cos(
-        k * swarm._particle_coordinates.data[:, 0]
-    )
-    material.data[:, 0] = np.where(
-        perturbation > swarm._particle_coordinates.data[:, 1], lightIndex, denseIndex
-    )
+perturbation = offset + amplitude * np.cos(
+    k * swarm._particle_coordinates.data[:, 0]
+)
+material.data[:, 0] = np.where(
+    perturbation > swarm._particle_coordinates.data[:, 1], lightIndex, denseIndex
+)
 
 # %% [markdown]
 """
@@ -267,8 +265,7 @@ if uw.mpi.size == 1 and render:
     spoints = vis.swarm_to_pv_cloud(swarm)
     spoint_cloud = pv.PolyData(spoints)
 
-    with swarm.access():
-        spoint_cloud.point_data["M"] = material.data[...]
+    spoint_cloud.point_data["M"] = material.data[...]
 
     pl = pv.Plotter(window_size=(1000, 750))
 
@@ -329,8 +326,7 @@ def plot_mesh(filename):
         spoints = vis.swarm_to_pv_cloud(swarm)
         spoint_cloud = pv.PolyData(spoints)
 
-        with swarm.access():
-            spoint_cloud.point_data["M"] = material.data[...]
+        spoint_cloud.point_data["M"] = material.data[...]
 
         pl = pv.Plotter()
 

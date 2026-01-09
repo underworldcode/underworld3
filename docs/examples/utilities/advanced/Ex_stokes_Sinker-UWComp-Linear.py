@@ -358,15 +358,14 @@ def uw3_stokesSinker(render=True):
     # [ 0.65, 0.20, 0.06, 2],
     # [ 0.45, 0.20, 0.12, 3] ])
 
-    with swarm.access(material):
-        material.data[...] = materialLightIndex
+    material.data[...] = materialLightIndex
 
-        for i in range(blob.shape[0]):
-            cx, cy, r, m = blob[i, :]
-            inside = (swarm.data[:, 0] - cx) ** 2 + (
-                swarm.data[:, 1] - cy
-            ) ** 2 < r**2
-            material.data[inside] = materialHeavyIndex
+    for i in range(blob.shape[0]):
+        cx, cy, r, m = blob[i, :]
+        inside = (swarm.data[:, 0] - cx) ** 2 + (
+            swarm.data[:, 1] - cy
+        ) ** 2 < r**2
+        material.data[inside] = materialHeavyIndex
 
     tracer = numpy.zeros(shape=(1, 2))
     tracer[:, 0], tracer[:, 1] = x_pos, y_pos
@@ -394,16 +393,14 @@ def uw3_stokesSinker(render=True):
         mesh.vtk("tempMsh.vtk")
         pvmesh = pv.read("tempMsh.vtk")
 
-        with swarm.access():
-            points = numpy.zeros((swarm.data.shape[0], 3))
-            points[:, 0] = swarm.data[:, 0]
-            points[:, 1] = swarm.data[:, 1]
-            points[:, 2] = 0.0
+        points = numpy.zeros((swarm.data.shape[0], 3))
+        points[:, 0] = swarm.data[:, 0]
+        points[:, 1] = swarm.data[:, 1]
+        points[:, 2] = 0.0
 
         point_cloud = pv.PolyData(points)
 
-        with swarm.access():
-            point_cloud.point_data["M"] = material.data.copy()
+        point_cloud.point_data["M"] = material.data.copy()
 
         pl = pv.Plotter(notebook=True)
 
@@ -458,14 +455,12 @@ def uw3_stokesSinker(render=True):
         ### estimate dt
         dt = stokes.estimate_dt()
 
-        with swarm.access():
-            vel_on_particles = uw3.function.evaluate(
-                stokes.u.fn, swarm._particle_coordinates.data
-            )
+        vel_on_particles = uw3.function.evaluate(
+            stokes.u.fn, swarm._particle_coordinates.data
+        )
 
         ### advect swarm
-        with swarm.access(swarm._particle_coordinates):
-            swarm._particle_coordinates.data[:] += dt * vel_on_particles
+        swarm._particle_coordinates.data[:] += dt * vel_on_particles
 
         vel_on_tracer = uw3.function.evaluate(stokes.u.fn, tracer)
         tracer += dt * vel_on_tracer

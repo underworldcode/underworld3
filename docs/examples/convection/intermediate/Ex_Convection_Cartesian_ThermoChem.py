@@ -195,14 +195,13 @@ adv_diff.add_dirichlet_bc(0.0, "Top")
 # Temperature: linear profile with perturbation
 init_t = 0.01 * sympy.sin(5.0 * x) * sympy.sin(np.pi * y) + (1.0 - y)
 
-with meshbox.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
-    t_soln.data[...] = t_0.data[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
+t_soln.data[...] = t_0.data[...]
 
 # %%
 # Material: step function at y=0.25
-with swarm.access(Mat):
-    Mat.data[:, 0] = 0.5 + 0.5 * np.tanh(100.0 * (swarm.data[:, 1] - 0.25))
+Mat.data[:, 0] = 0.5 + 0.5 * np.tanh(100.0 * (swarm.data[:, 1] - 0.25))
 
 projector.uw_function = Mat.sym
 projector.solve()
@@ -275,8 +274,7 @@ def plot_T_mesh(filename):
 
         spoints = vis.swarm_to_pv_cloud(swarm)
         swarm_point_cloud = pv.PolyData(spoints)
-        with swarm.access():
-            swarm_point_cloud.point_data["M"] = Mat.data.copy()
+        swarm_point_cloud.point_data["M"] = Mat.data.copy()
 
         velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
         velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
@@ -353,8 +351,7 @@ if uw.mpi.size == 1:
 
     spoints = vis.swarm_to_pv_cloud(swarm)
     swarm_point_cloud = pv.PolyData(spoints)
-    with swarm.access():
-        swarm_point_cloud.point_data["M"] = Mat.data.copy()
+    swarm_point_cloud.point_data["M"] = Mat.data.copy()
 
     velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)

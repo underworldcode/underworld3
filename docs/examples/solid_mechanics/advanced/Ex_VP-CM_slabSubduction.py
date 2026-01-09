@@ -133,11 +133,10 @@ import numpy as np
 
 np.random.seed(0)
 
-with swarm.access(swarm._particle_coordinates):
-    factor = 0.5 * boxLength / n_els / ppcell
-    swarm._particle_coordinates.data[:] += factor * np.random.rand(
-        *swarm._particle_coordinates.data.shape
-    )
+factor = 0.5 * boxLength / n_els / ppcell
+swarm._particle_coordinates.data[:] += factor * np.random.rand(
+    *swarm._particle_coordinates.data.shape
+)
 
 
 # %% [markdown]
@@ -246,21 +245,21 @@ slabUpper = mpltPath.Path(slabUpperShape)
 # ### Update the material variable of the swarm
 
 # %%
-with swarm.access(swarm._particle_coordinates, material):
-    ### for the symbolic mapping of material properties
-    material.data[:] = upperMantleIndex
-    material.data[
-        swarm._particle_coordinates.data[:, 1] < lowerMantleY
-    ] = lowerMantleIndex
-    material.data[
-        slabLower.contains_points(swarm._particle_coordinates.data[:])
-    ] = lowerSlabIndex
-    material.data[
-        slabCore.contains_points(swarm._particle_coordinates.data[:])
-    ] = coreSlabIndex
-    material.data[
-        slabUpper.contains_points(swarm._particle_coordinates.data[:])
-    ] = upperSlabIndex
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+### for the symbolic mapping of material properties
+material.data[:] = upperMantleIndex
+material.data[
+    swarm._particle_coordinates.data[:, 1] < lowerMantleY
+] = lowerMantleIndex
+material.data[
+    slabLower.contains_points(swarm._particle_coordinates.data[:])
+] = lowerSlabIndex
+material.data[
+    slabCore.contains_points(swarm._particle_coordinates.data[:])
+] = coreSlabIndex
+material.data[
+    slabUpper.contains_points(swarm._particle_coordinates.data[:])
+] = upperSlabIndex
 
 
 # %%
@@ -273,8 +272,7 @@ def plot_mat():
 
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(window_size=(1000, 750))
 

@@ -327,12 +327,12 @@ uw.pause("Variables defined", explanation="Run next cell to continue with Stokes
 """
 
 # %%
-with swarm.access(strain, material), mesh1.access():
-    XX = swarm._particle_coordinates.data[:, 0]
-    YY = swarm._particle_coordinates.data[:, 1]
-    mask = (1.0 - (YY * 2) ** 8) * (1 - (2 * XX / 3) ** 6)
-    material.data[(XX**2 + YY**2 < 0.01), 0] = 1
-    strain.data[:, 0] = 0.0
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+XX = swarm._particle_coordinates.data[:, 0]
+YY = swarm._particle_coordinates.data[:, 1]
+mask = (1.0 - (YY * 2) ** 8) * (1 - (2 * XX / 3) ** 6)
+material.data[(XX**2 + YY**2 < 0.01), 0] = 1
+strain.data[:, 0] = 0.0
 
 # %% [markdown]
 """
@@ -448,10 +448,9 @@ stokes.solve()
 # %%
 sigma_projector.solve()
 
-with mesh1.access():
-    print(f"Stress[0,0] max: {Stress[0, 0].data.max()}")
-    print(f"Stress[1,1] max: {Stress[1, 1].data.max()}")
-    print(f"Stress[0,1] max: {Stress[0, 1].data.max()}")
+print(f"Stress[0,0] max: {Stress[0, 0].data.max()}")
+print(f"Stress[1,1] max: {Stress[1, 1].data.max()}")
+print(f"Stress[0,1] max: {Stress[0, 1].data.max()}")
 
 # %% [markdown]
 """

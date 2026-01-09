@@ -225,14 +225,13 @@ material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2)
 swarm.populate(fill_param=swarmGPC)
 
 # %%
-with swarm.access(material):
-    material.data[...] = materialLightIndex
-    material.data[
-        (swarm.data[:, 0] >= box_xmin)
-        & (swarm.data[:, 0] <= box_xmax)
-        & (swarm.data[:, 1] >= box_ymin)
-        & (swarm.data[:, 1] <= box_ymax)
-    ] = materialHeavyIndex
+material.data[...] = materialLightIndex
+material.data[
+    (swarm.data[:, 0] >= box_xmin)
+    & (swarm.data[:, 0] <= box_xmax)
+    & (swarm.data[:, 1] >= box_ymin)
+    & (swarm.data[:, 1] <= box_ymax)
+] = materialHeavyIndex
 
 
 # %%
@@ -267,8 +266,7 @@ def plot_mat():
     points = vis.swarm_to_pv_cloud(swarm)
 
     point_cloud = pv.PolyData(points)
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(notebook=True)
 
@@ -329,9 +327,8 @@ ySinker = np.zeros(nsteps + 1) * np.nan
 # %%
 def record_tracer(step, time):
     ### Get the position of the sinking ball
-    with passiveSwarm.access(passiveSwarm):
-        if passiveSwarm.dm.getLocalSize() > 0:
-            ymin = passiveSwarm.data[:, 1].min()
+    if passiveSwarm.dm.getLocalSize() > 0:
+        ymin = passiveSwarm.data[:, 1].min()
     ySinker[step] = ymin
     tSinker[step] = time
 

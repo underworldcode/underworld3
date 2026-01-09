@@ -103,14 +103,13 @@ ad.add_dirichlet_bc(0.0, "Top")
 
 init_t = 0.01 * sympy.sin(5.0 * x) * sympy.sin(np.pi * y) + (1.0 - y)
 
-with meshbox.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
-    t_soln.data[...] = t_0.data[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
+t_soln.data[...] = t_0.data[...]
 
-with swarm.access(T1):
-    T1.data[...] = uw.function.evaluate(
-        init_t, swarm._particle_coordinates.data
-    ).reshape(-1, 1)
+T1.data[...] = uw.function.evaluate(
+    init_t, swarm._particle_coordinates.data
+).reshape(-1, 1)
 
 # +
 # Create Stokes object
@@ -196,8 +195,7 @@ def plot_T_mesh(filename):
 
         spoints = vis.swarm_to_pv_cloud(swarm)
         swarm_point_cloud = pv.PolyData(spoints)
-        with swarm.access():
-            swarm_point_cloud.point_data["T1"] = T1.data.copy()
+        swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
         velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
         velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
@@ -254,8 +252,7 @@ for step in range(0, 2): #250
 
     # update swarm / swarm variables
 
-    with swarm.access(T1):
-        T1.data[:, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)
+    T1.data[:, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)
 
     # advect swarm
     swarm.advection(v_soln.fn, delta_t)
@@ -298,12 +295,11 @@ if uw.mpi.size == 1:
 
     spoints = vis.swarm_to_pv_cloud(swarm)
     swarm_point_cloud = pv.PolyData(spoints)
-    with swarm.access():
-        swarm_point_cloud.point_data["T1"] = T1.data.copy()
+    swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
     velocity_points = vis.meshVariable_to_pv_cloud(stokes.u)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, stokes.u.sym)
-    
+
     pl = pv.Plotter(window_size=(750, 750))
 
     pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.00002, opacity=0.75)

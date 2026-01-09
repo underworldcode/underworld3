@@ -309,8 +309,7 @@ swarm.dm.restoreField("M")
 lvec.isset(indexSetW, 0.0)
 lvec.isset(indexSetS, 1.0)
 
-with swarm.access(material):
-    material.data[:, 0] = lvec.array[:]
+material.data[:, 0] = lvec.array[:]
 
 # check the mesh if in a notebook / serial
 
@@ -331,8 +330,7 @@ if True and uw.mpi.size == 1:
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     # pl.add_mesh(
     #     pvmesh,
@@ -548,8 +546,7 @@ if uw.mpi.size == 1:
     points[:, 1] = mesh1._centroids[:, 1]
     point_cloud = pv.PolyData(points)
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(window_size=(1000, 750))
 

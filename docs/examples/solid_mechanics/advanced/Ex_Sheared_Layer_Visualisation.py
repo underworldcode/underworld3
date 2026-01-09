@@ -135,15 +135,14 @@ v_vectors[:, 0:2] = v_soln.rbf_interpolate(pvpoints)
 
 # Points (swarm)
 
-with swarm.access():
-    plot_points = np.where(strain.data > 0.0)
-    strain_data = strain.data.copy()
-    
-    points = np.zeros((swarm.data[plot_points].shape[0], 3))
-    points[:, 0] = swarm.data[plot_points[0],0]
-    points[:, 1] = swarm.data[plot_points[0],1]
-    point_cloud = pv.PolyData(points)
-    point_cloud.point_data["strain"] = strain.data[plot_points]
+plot_points = np.where(strain.data > 0.0)
+strain_data = strain.data.copy()
+
+points = np.zeros((swarm.data[plot_points].shape[0], 3))
+points[:, 0] = swarm.data[plot_points[0],0]
+points[:, 1] = swarm.data[plot_points[0],1]
+point_cloud = pv.PolyData(points)
+point_cloud.point_data["strain"] = strain.data[plot_points]
 
 pl = pv.Plotter(window_size=(500, 500))
 

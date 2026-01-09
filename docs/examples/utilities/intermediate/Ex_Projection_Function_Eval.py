@@ -112,10 +112,10 @@ vector_projection.add_dirichlet_bc(v_fn, "Top", (0, 1))
 vector_projection.add_dirichlet_bc(v_fn, "Bottom", (0, 1))
 # -
 
-with swarm.access(s_values, v_values):
-    s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data, meshbox.N)
-    v_values.data[:, 0] = uw.function.evaluate(v_fn[0], swarm.data, meshbox.N)
-    v_values.data[:, 1] = uw.function.evaluate(v_fn[1], swarm.data, meshbox.N)
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+s_values.data[:, 0] = uw.function.evaluate(s_fn, swarm.data, meshbox.N)
+v_values.data[:, 0] = uw.function.evaluate(v_fn[0], swarm.data, meshbox.N)
+v_values.data[:, 1] = uw.function.evaluate(v_fn[1], swarm.data, meshbox.N)
 
 
 scalar_projection.solve()

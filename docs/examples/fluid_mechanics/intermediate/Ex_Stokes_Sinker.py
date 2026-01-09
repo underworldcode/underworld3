@@ -169,13 +169,12 @@ swarm.populate(fill_param=4)
 # Define the sinker blob
 blob = np.array([[sphereCentre[0], sphereCentre[1], sphereRadius, 1]])
 
-with swarm.access(material):
-    material.data[...] = materialLightIndex
+material.data[...] = materialLightIndex
 
-    for i in range(blob.shape[0]):
-        cx, cy, r, m = blob[i, :]
-        inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
-        material.data[inside] = m
+for i in range(blob.shape[0]):
+    cx, cy, r, m = blob[i, :]
+    inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
+    material.data[inside] = m
 
 # %%
 # Tracer particle for tracking sinker position
@@ -223,8 +222,7 @@ def plot_T_mesh(filename):
     pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     point_cloud = underworld3.visualisation.swarm_to_pv_cloud(swarm)
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl.clear()
     pl.add_mesh(pvmesh, "Black", "wireframe")

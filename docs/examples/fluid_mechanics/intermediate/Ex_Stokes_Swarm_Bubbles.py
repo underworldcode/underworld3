@@ -146,13 +146,12 @@ blobs = np.array(
     ]
 )
 
-with swarm.access(material):
-    material.data[...] = 0  # Background
+material.data[...] = 0  # Background
 
-    for i in range(blobs.shape[0]):
-        cx, cy, r, m = blobs[i, :]
-        inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
-        material.data[inside] = int(m)
+for i in range(blobs.shape[0]):
+    cx, cy, r, m = blobs[i, :]
+    inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
+    material.data[inside] = int(m)
 
 # %% [markdown]
 """
@@ -199,8 +198,7 @@ if uw.mpi.size == 1 and render:
     pvmesh.point_data["rho"] = vis.scalar_fn_to_pv_points(pvmesh, density)
     pvmesh.point_data["visc"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(viscosity))
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(window_size=(1000, 750))
 
@@ -290,8 +288,7 @@ def plot_mesh(filename):
         spoints = vis.swarm_to_pv_cloud(swarm)
         spoint_cloud = pv.PolyData(spoints)
 
-        with swarm.access():
-            spoint_cloud.point_data["M"] = material.data[...]
+        spoint_cloud.point_data["M"] = material.data[...]
 
         pl = pv.Plotter()
 

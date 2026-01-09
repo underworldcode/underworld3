@@ -163,10 +163,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
         max_time=2.0,
     )
 
-    with swarm.access():
-        points = swarm.data.copy()
-        r2 = points[:, 0] ** 2 + points[:, 1] ** 2 + points[:, 2] ** 2
-        point_cloud = pv.PolyData(points[r2 < 0.98**2])
+    points = swarm.data.copy()
+    r2 = points[:, 0] ** 2 + points[:, 1] ** 2 + points[:, 2] ** 2
+    point_cloud = pv.PolyData(points[r2 < 0.98**2])
 
     sphere = pv.Sphere(radius=0.85, center=(0.0, 0.0, 0.0))
     clipped = pvmesh.clip_surface(sphere)

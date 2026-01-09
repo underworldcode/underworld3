@@ -135,9 +135,8 @@ k2 = 1.0e-4
 # darcy.constitutive_model.material_properties = darcy.constitutive_model.Parameters(diffusivity=kFunc)
 # -
 
-with swarm.access(material):
-    material.data[swarm.data[:, 1] >= interfaceY] = 0
-    material.data[swarm.data[:, 1] < interfaceY] = 1
+material.data[swarm.data[:, 1] >= interfaceY] = 0
+material.data[swarm.data[:, 1] < interfaceY] = 1
 
 # +
 mat_k = np.array([k1, k2])
@@ -201,8 +200,7 @@ if uw.mpi.size == 1:
     point_cloud1 = pv.PolyData(points)
     point_cloud1.point_data["K"] = vis.scalar_fn_to_pv_points(point_cloud1, kFn)
 
-    with swarm.access():
-        point_cloud1.point_data["M"] = material.data.copy()
+    point_cloud1.point_data["M"] = material.data.copy()
     
 
     pl = pv.Plotter(window_size=(750, 750))
