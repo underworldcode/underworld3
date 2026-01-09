@@ -5,7 +5,8 @@ import pytest
 # All tests in this module are quick core tests
 pytestmark = pytest.mark.level_1
 
-from underworld3.kdtree import KDTree
+# Use uw.kdtree (ckdtree/nanoflann) not underworld3.kdtree (pykdtree)
+KDTree = uw.kdtree.KDTree
 
 test_single_data = []
 

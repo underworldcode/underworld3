@@ -103,6 +103,8 @@ status=0
 
 # Configure pytest base command
 export UW_NO_USAGE_METRICS=0
+# Disable telemetry during tests to prevent race conditions with kdtree
+export UW_ENABLE_TELEMETRY=0
 
 # Build pytest command with optional isolation
 # --dist loadfile: each test file runs in its own subprocess

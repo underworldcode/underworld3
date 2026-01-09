@@ -348,8 +348,10 @@ stokes.saddle_preconditioner = 1.0 / eta_0_nd
 
 # %%
 V_nd = ndim(V_PLATE)
-stokes.add_dirichlet_bc((V_nd, 0.0), "Top", components=(0, 1))
-stokes.add_dirichlet_bc((-V_nd, 0.0), "Bottom", components=(0, 1))
+stokes.add_dirichlet_bc((V_nd, 0.0), "Top")
+stokes.add_dirichlet_bc((-V_nd, 0.0), "Bottom")
+stokes.add_dirichlet_bc((None, 0.0), "Left")
+stokes.add_dirichlet_bc((None, 0.0), "Right")
 
 # %% [markdown]
 """
@@ -358,7 +360,7 @@ stokes.add_dirichlet_bc((-V_nd, 0.0), "Bottom", components=(0, 1))
 
 # %%
 print("Solving Stokes on adapted mesh...")
-stokes.solve(verbose=False)
+stokes.solve( verbose=False)
 print("Done!")
 
 # %% [markdown]
@@ -372,6 +374,9 @@ sr_projection = uw.systems.Projection(mesh, strain_rate)
 sr_projection.uw_function = stokes.Unknowns.Einv2
 sr_projection.smoothing = 1e-3
 sr_projection.solve()
+
+# %%
+uw.
 
 # %% [markdown]
 """
@@ -407,7 +412,7 @@ if render:
 
     pl = pv.Plotter(window_size=(800, 400))
     pl.add_mesh(pvmesh, scalars="SR", cmap="hot", show_edges=True,
-                edge_color="gray", edge_opacity=0.3, log_scale=False)
+                edge_color="gray", edge_opacity=0.3, log_scale=True)
 
     fp = fault.control_points
     pl.add_mesh(pv.Line((fp[0, 0], fp[0, 1], 0), (fp[1, 0], fp[1, 1], 0)),

@@ -212,6 +212,24 @@ velocity.norm()         # Magnitude
 
 ## Coding Conventions
 
+### Plan File Naming Policy
+**Plan files must have descriptive names that indicate their content.**
+
+```
+# GOOD - Descriptive names
+mesh-adaptation-architecture.md
+gradient-evaluation-p2-fix.md
+units-system-refactor-plan.md
+
+# BAD - Random/whimsical names
+proud-petting-pretzel.md
+happy-dancing-dolphin.md
+```
+
+When creating plan files in `~/.claude/plans/`, use kebab-case names that describe:
+- The feature or subsystem being worked on
+- The type of work (architecture, fix, refactor, feature)
+
 ### Avoid Ambiguous 'model'
 Two different "model" concepts exist:
 - `uw.Model`: Serialization/orchestration system
