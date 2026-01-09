@@ -38,21 +38,19 @@ def evaluate(
     simplify=True,
     verbose=False,
     evalf=False,
-    rbf=False,
+    mode="default",
     data_layout=None,
     check_extrapolated=False,
-    gradient_method="interpolant",
-    force_l2=False,
     smoothing=1e-6,
+    # Expert overrides (override mode settings)
+    rbf=None,
+    force_l2=None,
 ):
     """
     Evaluate expression at coordinates with automatic unit handling.
 
     This function wraps the Cython evaluate_nd implementation to automatically
     handle unit conversions and return unit-aware results.
-
-    When non-dimensional scaling is active (via use_nondimensional_scaling(True)),
-    returns raw non-dimensional results without unit wrapping.
 
     Parameters
     ----------
@@ -72,26 +70,27 @@ def evaluate(
     verbose : bool, optional
         Verbose output (default: False)
     evalf : bool, optional
-        Force numerical evaluation (default: False)
-    rbf : bool, optional
-        Use RBF interpolation (default: False)
+        Force numerical evaluation via sympy evalf (default: False)
+    mode : str, optional
+        Evaluation mode controlling accuracy vs speed tradeoff:
+        - "default": Accurate evaluation. Projection for derivatives (O(h²)),
+          direct calculation otherwise. DMInterpolation inside mesh, RBF outside.
+        - "fast": Quick visualization mode. Clement gradient recovery for
+          derivatives (O(h), no solve), RBF interpolation everywhere.
+        - "projection": Always use L2 projection (even without derivatives),
+          DMInterpolation inside mesh, RBF outside.
+        Default: "default"
     data_layout : callable, optional
         Data layout specification (default: None)
     check_extrapolated : bool, optional
         Check for extrapolated values (default: False)
-    gradient_method : str, optional
-        Method for gradient computation when derivatives are present:
-        - "interpolant": Clement interpolant (O(h) accurate, fast, no solve)
-        - "projection": L2 projection (O(h²) accurate, requires solve)
-        Default: "interpolant"
-    force_l2 : bool, optional
-        Force L2 projection path even for non-derivative expressions.
-        Useful for expressions that benefit from projection smoothing.
-        Default: False
     smoothing : float, optional
         Smoothing parameter for L2 projection (dimensionless).
-        Only used when projection path is active (derivatives or force_l2=True).
-        Default: 1e-6
+        Only used when projection is active. Default: 1e-6
+    rbf : bool, optional
+        Expert override: Force RBF interpolation everywhere. Overrides mode.
+    force_l2 : bool, optional
+        Expert override: Force L2 projection path. Overrides mode.
 
     Returns
     -------
@@ -100,6 +99,19 @@ def evaluate(
         - If expression has units and result is scalar: UWQuantity
         - If expression has units and result is array: UnitAwareArray
         - If expression has no units: plain ndarray (as before)
+
+    Notes
+    -----
+    **Evaluation Modes:**
+
+    | Mode | Derivatives | No Derivatives | Interpolation |
+    |------|-------------|----------------|---------------|
+    | "fast" | Clement (no solve) | Calculation | RBF everywhere |
+    | "default" | Projection (solve) | Calculation | DMInterp + RBF |
+    | "projection" | Projection (solve) | Projection | DMInterp + RBF |
+
+    The `rbf` and `force_l2` parameters are expert overrides that take
+    precedence over the mode setting when explicitly provided.
 
     Examples
     --------
@@ -117,6 +129,25 @@ def evaluate(
     from ..utilities.unit_aware_array import UnitAwareArray
     from .pure_sympy_evaluator import is_pure_sympy_expression, evaluate_pure_sympy
     from .expressions import UWexpression
+
+    # Map mode to internal flags (rbf, force_l2)
+    # Expert overrides take precedence when explicitly provided
+    if rbf is None and force_l2 is None:
+        # Use mode settings
+        if mode == "fast":
+            rbf_flag, force_l2_flag = True, False
+        elif mode == "projection":
+            rbf_flag, force_l2_flag = False, True
+        elif mode == "default":
+            rbf_flag, force_l2_flag = False, False
+        else:
+            raise ValueError(
+                f"Unknown mode: '{mode}'. Use 'default', 'fast', or 'projection'."
+            )
+    else:
+        # Expert overrides - use provided values or defaults
+        rbf_flag = rbf if rbf is not None else False
+        force_l2_flag = force_l2 if force_l2 is not None else False
 
     # Step 1: UNWRAP to canonical form (preprocessing/compiler IR)
     # This converts ALL expressions to a standardized form:
@@ -284,11 +315,10 @@ def evaluate(
         simplify=simplify,
         verbose=verbose,
         evalf=evalf,
-        rbf=rbf,
+        rbf=rbf_flag,
         data_layout=data_layout,
         check_extrapolated=check_extrapolated,
-        gradient_method=gradient_method,
-        force_l2=force_l2,
+        force_l2=force_l2_flag,
         smoothing=smoothing,
     )
 
@@ -343,18 +373,19 @@ def global_evaluate(
     simplify=True,
     verbose=False,
     evalf=False,
-    rbf=False,
+    mode="default",
     data_layout=None,
     check_extrapolated=False,
+    smoothing=1e-6,
+    # Expert overrides (override mode settings)
+    rbf=None,
+    force_l2=None,
 ):
     """
     Global evaluate with automatic unit-aware results.
 
     Similar to evaluate() but performs global evaluation across all processes.
     Returns unit-aware objects when expression has units.
-
-    When non-dimensional scaling is active (via use_nondimensional_scaling(True)),
-    returns raw non-dimensional results without unit wrapping.
 
     Parameters
     ----------
@@ -371,19 +402,37 @@ def global_evaluate(
     verbose : bool, optional
         Verbose output (default: False)
     evalf : bool, optional
-        Force numerical evaluation (default: False)
-    rbf : bool, optional
-        Use RBF interpolation (default: False)
+        Force numerical evaluation via sympy evalf (default: False)
+    mode : str, optional
+        Evaluation mode controlling accuracy vs speed tradeoff:
+        - "default": Accurate evaluation. Projection for derivatives (O(h²)),
+          direct calculation otherwise. DMInterpolation inside mesh, RBF outside.
+        - "fast": Quick visualization mode. Clement gradient recovery for
+          derivatives (O(h), no solve), RBF interpolation everywhere.
+        - "projection": Always use L2 projection (even without derivatives),
+          DMInterpolation inside mesh, RBF outside.
+        Default: "default"
     data_layout : callable, optional
         Data layout specification (default: None)
     check_extrapolated : bool, optional
         Check for extrapolated values (default: False)
+    smoothing : float, optional
+        Smoothing parameter for L2 projection (dimensionless).
+        Only used when projection is active. Default: 1e-6
+    rbf : bool, optional
+        Expert override: Force RBF interpolation everywhere. Overrides mode.
+    force_l2 : bool, optional
+        Expert override: Force L2 projection path. Overrides mode.
 
     Returns
     -------
     UWQuantity, UnitAwareArray, or ndarray
         - If non-dimensional scaling is active: plain ndarray (non-dimensional)
         - Otherwise: result with appropriate unit tracking
+
+    Notes
+    -----
+    See :func:`evaluate` for details on evaluation modes.
     """
     from ._function import global_evaluate_nd as _global_evaluate_nd
     from ..units import get_units
@@ -391,12 +440,31 @@ def global_evaluate(
     from ..utilities.unit_aware_array import UnitAwareArray
     from .pure_sympy_evaluator import is_pure_sympy_expression, evaluate_pure_sympy
 
+    # Map mode to internal flags (rbf, force_l2)
+    # Expert overrides take precedence when explicitly provided
+    if rbf is None and force_l2 is None:
+        # Use mode settings
+        if mode == "fast":
+            rbf_flag, force_l2_flag = True, False
+        elif mode == "projection":
+            rbf_flag, force_l2_flag = False, True
+        elif mode == "default":
+            rbf_flag, force_l2_flag = False, False
+        else:
+            raise ValueError(
+                f"Unknown mode: '{mode}'. Use 'default', 'fast', or 'projection'."
+            )
+    else:
+        # Expert overrides - use provided values or defaults
+        rbf_flag = rbf if rbf is not None else False
+        force_l2_flag = force_l2 if force_l2 is not None else False
+
     # OPTIMIZATION: Check if this is a pure sympy expression (no UW3 variable data)
     # If so, use fast lambdified evaluation instead of full RBF machinery
     # This includes expressions with mesh coordinates (BaseScalar) or pure symbols
     is_pure_sympy, free_symbols, symbol_type = is_pure_sympy_expression(expr)
 
-    if is_pure_sympy and coords is not None and (rbf or evalf):
+    if is_pure_sympy and coords is not None and (rbf_flag or evalf):
         # Pure sympy expression with explicit coords - use optimized path
         # This is the same as evaluate() but for global context
 
@@ -476,9 +544,11 @@ def global_evaluate(
         simplify=simplify,
         verbose=verbose,
         evalf=evalf,
-        rbf=rbf,
+        rbf=rbf_flag,
         data_layout=data_layout,
         check_extrapolated=check_extrapolated,
+        force_l2=force_l2_flag,
+        smoothing=smoothing,
     )
 
     # Step 2: Re-dimensionalize and wrap with units (GATEWAY PRINCIPLE)

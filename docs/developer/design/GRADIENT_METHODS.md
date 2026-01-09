@@ -1,7 +1,7 @@
 # Gradient Evaluation Methods in Underworld3
 
-**Date:** 2026-01-07
-**Status:** Implementation complete
+**Date:** 2026-01-08
+**Status:** Dual method implementation complete
 
 ## Overview
 
@@ -11,17 +11,38 @@ Computing gradients of field variables is fundamental to many geodynamic applica
 - Stress from displacement fields
 - Error estimation for mesh adaptation
 
-This document compares the available gradient evaluation methods in UW3, their accuracy, computational cost, and appropriate use cases.
+This document describes the dual gradient evaluation methods available in UW3, their accuracy, computational cost, and appropriate use cases.
 
 ## Method Comparison
 
-| Method | Accuracy | Cost | Solve Required | Use Case |
-|--------|----------|------|----------------|----------|
-| Clement Interpolant | O(h) | Low | No | Quick estimates, error indicators, post-processing |
-| L2 Projection | O(h²) | Medium | Yes (mass matrix) | High accuracy requirements |
-| Direct Differentiation | Exact at quadrature | N/A | No | Weak form integration (internal) |
+| Method | Name | Accuracy | Cost | Solve Required | Use Case |
+|--------|------|----------|------|----------------|----------|
+| Clement Interpolant | `"interpolant"` | O(h) | Low | No | Quick estimates, error indicators |
+| L2 Projection | `"projection"` | O(h²) | Medium | Yes (cached) | High accuracy, constitutive relations |
+| Direct Differentiation | N/A | Exact at quadrature | N/A | No | Weak form integration (internal) |
 
-## Method 1: Clement Interpolant
+## Unified API
+
+Both methods are accessible through the standard `uw.function.evaluate()` syntax:
+
+```python
+import underworld3 as uw
+
+mesh = uw.meshing.UnstructuredSimplexBox(...)
+x, y = mesh.X
+T = uw.discretisation.MeshVariable("T", mesh, num_components=1, degree=1)
+
+# Default: uses "projection" for PETSc path (O(h²) accurate)
+dTdx = uw.function.evaluate(T.sym.diff(x), coords)
+
+# Explicit interpolant method (O(h) accurate, faster)
+dTdx_fast = uw.function.evaluate(T.sym.diff(x), coords, gradient_method="interpolant")
+
+# Explicit projection method (O(h²) accurate)
+dTdx_accurate = uw.function.evaluate(T.sym.diff(x), coords, gradient_method="projection")
+```
+
+## Method 1: Interpolant (Clement)
 
 ### Theory
 
@@ -35,28 +56,16 @@ This is an O(h) accurate approximation - error halves when mesh resolution doubl
 
 ### Implementation
 
+The interpolant method uses PETSc's `DMPlexComputeGradientClementInterpolant` internally, with a scratch DM to avoid polluting the mesh's field structure.
+
 ```python
-import underworld3 as uw
+# Via unified evaluate() API
+dTdx = uw.function.evaluate(T.sym.diff(x), coords, gradient_method="interpolant")
 
-# Quick evaluation at arbitrary points (recommended)
-grad = uw.function.evaluate_gradient(T, coords)
-
-# Or just get values at mesh nodes
-grad_nodes = uw.function.compute_clement_gradient_at_nodes(T)
+# Or using the direct function
+from underworld3.function.gradient_evaluation import evaluate_gradient
+grad = evaluate_gradient(T, coords, method="interpolant")
 ```
-
-### Convergence
-
-Test function: f(x,y) = x² + y², exact gradient = (2x, 2y)
-
-| Resolution | Max Error | Rate |
-|------------|-----------|------|
-| 8×8        | 1.77e-01  | -    |
-| 16×16      | 8.84e-02  | 1.0  |
-| 32×32      | 4.42e-02  | 1.0  |
-| 64×64      | 2.21e-02  | 1.0  |
-
-**Observation:** Error halves with each resolution doubling → O(h) convergence confirmed.
 
 ### Advantages
 - No linear solve required
@@ -66,10 +75,10 @@ Test function: f(x,y) = x² + y², exact gradient = (2x, 2y)
 
 ### Limitations
 - Only O(h) accurate (first order)
-- Requires scalar input (apply component-wise for vectors)
+- Always produces P1 output regardless of source field degree
 - Less accurate than L2 projection for smooth solutions
 
-## Method 2: L2 Projection
+## Method 2: Projection (L2)
 
 ### Theory
 
@@ -82,89 +91,97 @@ This gives O(h²) accuracy for smooth solutions - error quarters when resolution
 
 ### Implementation
 
+The projection method creates cached gradient variables and projectors on the mesh. Subsequent calls reuse these with warm-started solves (`zero_init_guess=False`).
+
 ```python
-import underworld3 as uw
+# Via unified evaluate() API (default for PETSc path)
+dTdx = uw.function.evaluate(T.sym.diff(x), coords, gradient_method="projection")
 
-# Create gradient variable
-grad_T = uw.discretisation.MeshVariable('grad_T', mesh, mesh.dim)
-
-# Set up projection
-projector = uw.systems.Projection(mesh, grad_T)
-projector.uw_function = T.sym.diff(mesh.X)
-projector.solve()
-
-# Evaluate at points
-result = uw.function.evaluate(grad_T.sym, coords)
+# Caching: projection objects are stored on mesh._gradient_cache
+# Second call reuses the projector with warm start
+dTdx_2 = uw.function.evaluate(T.sym.diff(x), new_coords, gradient_method="projection")
 ```
+
+### Caching Strategy
+
+The projection method automatically caches:
+1. **Gradient MeshVariables**: One per gradient component (dT/dx, dT/dy, etc.)
+2. **Projector objects**: Ready to solve with `zero_init_guess=False` for warm-starting
+
+Cache key: `_grad_proj_{variable_name}_c{component}_d{dim}`
+
+When the source field values change, the projector's symbolic expression still references the correct source, so the next solve produces updated results.
 
 ### Advantages
 - O(h²) accuracy for smooth solutions
 - Optimal in L2 sense
-- Works with any polynomial degree
+- Caching eliminates setup overhead for repeated evaluations
+- Warm-started solves for time-dependent problems
 
 ### Limitations
 - Requires solving linear system (mass matrix)
-- Adds permanent field to mesh DM
-- More setup code required
-- Higher computational cost
+- Creates additional mesh variables (cached on mesh)
+- Higher computational cost than interpolant
 
-## Method 3: Direct Differentiation (Weak Form)
+## Convergence Comparison
 
-### Theory
+Test function: f(x,y) = sin(πx) sin(πy)
 
-Within weak form integration, gradients are evaluated directly at quadrature points using the finite element basis function derivatives:
+| Cell Size | Interpolant | Projection | Ratio |
+|-----------|-------------|------------|-------|
+| 0.200     | 2.48e-01    | 1.25e-01   | 2.0×  |
+| 0.100     | 7.91e-02    | 4.08e-02   | 1.9×  |
+| 0.050     | 1.91e-02    | 7.09e-03   | 2.7×  |
 
-∇f|_q = Σᵢ fᵢ ∇Nᵢ(x_q)
+**Observed Convergence Rates:**
+- Interpolant: O(h^1.9) ≈ O(h²) on regular meshes (superconvergence)
+- Projection: O(h^2.1) ≈ O(h²)
 
-This is exact at quadrature points (no approximation beyond FE interpolation).
-
-### Implementation
-
-This is used internally by solvers. Users access it via symbolic expressions:
-
-```python
-# In constitutive relations
-strain_rate = sympy.derive_by_array(v.sym, mesh.X)
-
-# In weak forms
-stokes.constitutive_model.flux = viscosity * strain_rate
-```
-
-### Use Case
-- Internal to PDE solvers
-- Constitutive model definitions
-- Not for post-processing (use Clement or L2 projection)
+Note: On irregular meshes, the interpolant degrades to O(h) while projection maintains O(h²).
 
 ## Choosing a Method
 
-### Use Clement Interpolant when:
+### Use Interpolant (`"interpolant"`) when:
 - Quick gradient estimates are needed
 - Post-processing or visualization
 - Error estimation for mesh adaptation
 - O(h) accuracy is acceptable
-- Avoiding DM field pollution is important
+- Avoiding solve overhead is important
 
-### Use L2 Projection when:
+### Use Projection (`"projection"`) when:
 - High accuracy is required
-- Gradient field will be reused multiple times
+- Gradient field will be reused multiple times (caching benefits)
 - Smooth solution with O(h²) convergence expected
 - Computational cost is not limiting
 
-### Use Direct Differentiation when:
-- Defining weak forms or constitutive models
-- Gradients are needed at quadrature points only
-- Working within solver framework
+### Default Behavior
+
+When `gradient_method=None`:
+- **PETSc path** (`rbf=False`): defaults to `"projection"` (accurate)
+- **RBF path** (`rbf=True`): derivatives not supported (raises error)
 
 ## API Reference
 
-### `uw.function.evaluate_gradient(scalar_var, coords, method="clement")`
+### `uw.function.evaluate(expr, coords, ..., gradient_method=None)`
 
-Evaluate gradient at arbitrary coordinates without polluting mesh DM.
+Evaluate expression including derivatives at arbitrary coordinates.
+
+**Parameters:**
+- `expr`: SymPy expression, may include `T.sym.diff(x)` terms
+- `coords`: Coordinates array, shape (n_points, dim)
+- `gradient_method`: `"interpolant"`, `"projection"`, or `None` (default)
+
+**Returns:**
+- Evaluated array with appropriate shape
+
+### `uw.function.evaluate_gradient(scalar_var, coords, method="interpolant")`
+
+Direct gradient evaluation without going through the expression system.
 
 **Parameters:**
 - `scalar_var`: Scalar MeshVariable to differentiate
 - `coords`: Coordinates array, shape (n_points, dim)
-- `method`: Gradient method (currently "clement" only)
+- `method`: `"interpolant"` or `"projection"`
 
 **Returns:**
 - Gradient array, shape (n_points, dim)
@@ -181,9 +198,29 @@ Compute Clement gradient at mesh nodes only (no interpolation).
 
 ## Implementation Details
 
-### Scratch DM Approach
+### Expression Detection
 
-The `evaluate_gradient` function uses an ephemeral "scratch DM" to avoid adding permanent fields to the mesh:
+Derivatives are detected via `UnderworldAppliedFunctionDeriv` class:
+- `meshvar`: weakref to source MeshVariable
+- `component`: which component of the variable
+- `diffindex`: derivative direction (0=x, 1=y, 2=z)
+
+In `mesh_vars_in_expression()`, derivative expressions are collected into `derivfns` dict:
+```python
+derivfns[source_meshvar].append((deriv_expr, diffindex))
+```
+
+### Evaluation Pipeline
+
+1. `evaluate()` in `functions_unit_system.py` receives expression
+2. `evaluate_nd()` in `_function.pyx` calls `petsc_interpolate()`
+3. `petsc_interpolate()` detects derivatives and calls `interpolate_gradients_at_coords()`
+4. Gradients are computed (interpolant or projection) and substituted for derivative symbols
+5. Final expression is evaluated via lambdify
+
+### Scratch DM Approach (Interpolant)
+
+The interpolant method uses an ephemeral "scratch DM" to avoid adding permanent fields:
 
 1. Clone mesh DM (gets topology, 0 fields)
 2. Add P1 linear FE field matching Clement output
@@ -191,14 +228,17 @@ The `evaluate_gradient` function uses an ephemeral "scratch DM" to avoid adding 
 4. Interpolate to requested coordinates
 5. Destroy scratch objects
 
-This ensures the main mesh DM is unchanged after the call.
+### Gradient Cache (Projection)
 
-### PETSc Functions Used
+The projection method stores cached objects on `mesh._gradient_cache`:
 
-- `DMPlexComputeGradientClementInterpolant`: Core Clement computation
-- `dm.clone()`: Create scratch DM with topology
-- `PETSc.FE().createDefault()`: Create P1 finite element
-- `DMInterpolation`: Arbitrary point evaluation
+```python
+mesh._gradient_cache[cache_name] = {
+    'projectors': [(proj_var_d0, projector_d0), (proj_var_d1, projector_d1), ...],
+    'source_var': scalar_var,
+    'component': component,
+}
+```
 
 ## References
 
@@ -208,106 +248,8 @@ This ensures the main mesh DM is unchanged after the call.
 
 3. Zienkiewicz, O.C. and Zhu, J.Z. (1992). "The superconvergent patch recovery and a posteriori error estimates". Int. J. Numer. Methods Eng., 33, 1331-1382.
 
-## Integration with `uw.function.evaluate(T.diff(x), coords)`
-
-### Current Behavior
-
-When you call `T.sym.diff(x)`, SymPy creates an `UnderworldAppliedFunctionDeriv` object:
-
-```python
-x, y = mesh.X
-dTdx = T.sym.diff(x)  # Returns UnderworldAppliedFunctionDeriv instance
-```
-
-Currently, `uw.function.evaluate()` raises an error when encountering these:
-
-```
-RuntimeError: Derivative functions are not handled in evaluations,
-a projection should be used first to create a mesh Variable.
-```
-
-This happens in `mesh_vars_in_expression()` at `expressions.py:1648-1652`.
-
-### Proposed Integration
-
-**Key Classes:**
-- `UnderworldAppliedFunction`: Base class for mesh variable symbols
-- `UnderworldAppliedFunctionDeriv`: Subclass for derivatives, with:
-  - `meshvar`: weakref to source MeshVariable
-  - `component`: which component of the variable
-  - `diffindex`: derivative direction (0=x, 1=y, 2=z)
-
-**Integration Point:** `mesh_vars_in_expression()` in `expressions.py`
-
-Instead of raising an error, the function should:
-
-1. **Collect derivative expressions** alongside regular mesh variables
-2. **Group by source variable** - multiple derivatives of same variable share one gradient computation
-3. **Return derivative info** for the evaluation pipeline
-
-**Modified `mesh_vars_in_expression()` signature:**
-```python
-def mesh_vars_in_expression(expr):
-    """
-    Returns:
-        tuple: (mesh, regular_vars, derivative_vars)
-        - regular_vars: set of UnderworldAppliedFunction
-        - derivative_vars: dict mapping source_var -> list of (deriv_expr, diffindex)
-    """
-```
-
-**Evaluation Pipeline Changes:**
-
-In `evaluate_nd()` or `functions_unit_system.py`:
-
-```python
-mesh, regular_vars, derivative_vars = mesh_vars_in_expression(expr)
-
-if derivative_vars:
-    # For each source variable with derivatives needed
-    for source_var, deriv_list in derivative_vars.items():
-        # Compute gradient once per source variable
-        gradient_at_nodes = compute_clement_gradient_at_nodes(source_var)
-
-        # Create scratch DM and interpolate to coords
-        gradient_at_coords = _interpolate_gradient(mesh, gradient_at_nodes, coords)
-
-        # Substitute derivative symbols with interpolated values
-        for deriv_expr, diffindex in deriv_list:
-            # gradient_at_coords[:, diffindex] gives ∂f/∂x_i values
-            expr = expr.subs(deriv_expr, gradient_at_coords[:, diffindex])
-```
-
-### Implementation Complexity
-
-**Moderate complexity** because:
-1. The evaluation pipeline has multiple paths (RBF, DMInterpolation, pure sympy)
-2. Need to handle mixed expressions (derivatives + regular vars)
-3. Must work correctly with unit handling and coordinate transformations
-4. Expression substitution requires care with SymPy's immutability
-
-**Recommended Approach:**
-1. Start with a specialized `evaluate_derivative()` function
-2. Then integrate into main `evaluate()` as an optional path
-3. Keep the error for unsupported cases (second derivatives, etc.)
-
-### Alternative: Direct User API
-
-A simpler intermediate step is the current `evaluate_gradient()`:
-
-```python
-# Instead of: uw.function.evaluate(T.diff(x), coords)  # Fails
-# Use:
-grad = uw.function.evaluate_gradient(T, coords)
-dTdx = grad[:, 0]  # x-derivative
-dTdy = grad[:, 1]  # y-derivative
-```
-
-This is explicit, clear, and already works.
-
 ## Future Work
 
-- Full integration with `uw.function.evaluate(T.diff(x), coords)` syntax
-- Support for vector field gradients (velocity → strain rate)
-- Caching of scratch DM for repeated evaluations
-- Parallel (MPI) support verification
+- Support for vector field gradients (velocity → strain rate tensor)
+- Clear cache method when mesh adapts
+- Parallel (MPI) verification for projection caching

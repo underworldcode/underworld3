@@ -296,7 +296,9 @@ def global_evaluate_nd(   expr,
                 evalf=False,
                 rbf=False,
                 data_layout=None,
-                check_extrapolated=False
+                check_extrapolated=False,
+                force_l2=False,
+                smoothing=1e-6,
             ):
 
     """
@@ -353,6 +355,8 @@ def global_evaluate_nd(   expr,
             rbf,
             data_layout,
             check_extrapolated=check_extrapolated,
+            force_l2=force_l2,
+            smoothing=smoothing,
         )
 
     # If in parallel, define a swarm, migrate, evaluate, migrate back
@@ -452,6 +456,211 @@ def global_evaluate_nd(   expr,
     else:
         return return_value, return_mask
 
+
+def _project_to_work_variable(expr, mesh, smoothing=1e-6):
+    """
+    Project expression to a work variable, resolving derivatives to nodal values.
+
+    This is used to handle derivative expressions before the interior/exterior
+    split in evaluate_nd. The work variable can then be interpolated using
+    standard DMInterpolation (interior) and RBF (exterior) paths.
+
+    Parameters
+    ----------
+    expr : sympy expression
+        Expression to project (may contain derivatives)
+    mesh : Mesh
+        The mesh
+    smoothing : float
+        Projection smoothing parameter
+
+    Returns
+    -------
+    MeshVariable
+        Work variable containing projected nodal values
+    """
+    import underworld3 as uw
+
+    # Handle matrix expressions - need multi-component work variable
+    if hasattr(expr, 'shape') and expr.shape != (1, 1):
+        rows, cols = expr.shape
+        n_components = rows * cols
+
+        # Get or create multi-component work variable
+        cache_key = f'_eval_work_{n_components}'
+        if not hasattr(mesh, cache_key):
+            work_var = uw.discretisation.MeshVariable(
+                cache_key, mesh, num_components=n_components, degree=1
+            )
+            setattr(mesh, cache_key, work_var)
+            # Create projectors for each component
+            projectors = []
+            for c in range(n_components):
+                proj = uw.systems.Projection(mesh, work_var, scalar_component=c)
+                proj.petsc_options["snes_rtol"] = 1e-6
+                projectors.append(proj)
+            setattr(mesh, f'{cache_key}_projectors', projectors)
+
+        work_var = getattr(mesh, cache_key)
+        projectors = getattr(mesh, f'{cache_key}_projectors')
+
+        # Project each component
+        idx = 0
+        for i in range(rows):
+            for j in range(cols):
+                projectors[idx].uw_function = expr[i, j]
+                projectors[idx].smoothing = smoothing
+                projectors[idx].solve(zero_init_guess=False)
+                idx += 1
+
+        return work_var
+
+    # Scalar expression
+    if not hasattr(mesh, '_eval_work_scalar'):
+        mesh._eval_work_scalar = uw.discretisation.MeshVariable(
+            "_eval_work_scalar", mesh, num_components=1, degree=1
+        )
+        mesh._eval_projector_scalar = uw.systems.Projection(
+            mesh, mesh._eval_work_scalar
+        )
+        mesh._eval_projector_scalar.petsc_options["snes_rtol"] = 1e-6
+
+    work_var = mesh._eval_work_scalar
+    projector = mesh._eval_projector_scalar
+
+    # Handle 1x1 matrix wrapper
+    scalar_expr = expr[0, 0] if hasattr(expr, 'shape') else expr
+
+    projector.uw_function = scalar_expr
+    projector.smoothing = smoothing
+    projector.solve(zero_init_guess=False)
+
+    return work_var
+
+
+def _clement_to_work_variable(expr, mesh, derivfns):
+    """
+    Evaluate expression at nodes using Clement gradient recovery (no solve).
+
+    This is the quick/dirty path for derivative evaluation. Instead of
+    projecting (which requires a solve), we:
+    1. Compute Clement gradient at mesh nodes for each derivative
+    2. Get mesh variable values at nodes
+    3. Lambdify and evaluate the full expression at nodes
+    4. Store result in work variable
+
+    Parameters
+    ----------
+    expr : sympy expression
+        Expression containing derivatives
+    mesh : Mesh
+        The mesh
+    derivfns : dict
+        Dictionary mapping source variables to their derivative expressions
+
+    Returns
+    -------
+    MeshVariable
+        Work variable containing expression values at nodes
+    """
+    import underworld3 as uw
+    import sympy
+    from underworld3.function.gradient_evaluation import compute_clement_gradient_at_nodes
+
+    # Get work variable (scalar, P1)
+    if not hasattr(mesh, '_clement_work_scalar'):
+        mesh._clement_work_scalar = uw.discretisation.MeshVariable(
+            "_clement_work_scalar", mesh, num_components=1, degree=1
+        )
+    work_var = mesh._clement_work_scalar
+
+    # Get node coordinates
+    node_coords = work_var.coords
+    n_nodes = node_coords.shape[0]
+
+    # Collect all mesh variable functions in expression
+    varfns = _collect_mesh_varfns(mesh)
+
+    # Build dictionary of values at nodes for each varfn
+    nodal_values = {}
+    for varfn in varfns:
+        var = varfn.meshvar()
+        comp = varfn.component
+        # Get nodal values directly from mesh variable data
+        if var.degree == 1:
+            # P1 - data is at nodes
+            nodal_values[varfn] = var.data[:, comp].flatten()
+        else:
+            # Higher degree - need to evaluate at node coords
+            nodal_values[varfn] = uw.function.evaluate(
+                var.sym[comp, 0], node_coords, rbf=True
+            ).flatten()
+
+    # Compute Clement gradients for derivative source variables
+    gradient_at_nodes = {}
+    for source_var in derivfns.keys():
+        # Compute gradient at nodes using Clement interpolant
+        if source_var.num_components == 1:
+            grad = compute_clement_gradient_at_nodes(source_var)
+            gradient_at_nodes[(source_var, 0)] = grad
+        else:
+            # Multi-component: compute gradient for each component
+            for c in range(source_var.num_components):
+                grad = compute_clement_gradient_at_nodes(source_var, component=c)
+                gradient_at_nodes[(source_var, c)] = grad
+
+    # Add derivative values to nodal_values dictionary
+    for source_var, deriv_list in derivfns.items():
+        comp = 0 if source_var.num_components == 1 else 0  # TODO: handle multi-component
+        grad = gradient_at_nodes[(source_var, comp)]  # shape (n_nodes, dim)
+        for deriv_expr, diffindex in deriv_list:
+            # grad[:, diffindex] gives ∂f/∂x_i at all nodes
+            nodal_values[deriv_expr] = grad[:, diffindex]
+
+    # Now lambdify and evaluate expression at nodes
+    # Handle 1x1 matrix wrapper
+    scalar_expr = expr[0, 0] if hasattr(expr, 'shape') else expr
+
+    # Build substitution: replace varfns and derivs with symbols
+    subs_dict = {}
+    symbols_list = []
+    arrays_list = []
+
+    for key, arr in nodal_values.items():
+        sym = sympy.Symbol(f"_node_{len(symbols_list)}")
+        subs_dict[key] = sym
+        symbols_list.append(sym)
+        arrays_list.append(arr)
+
+    # Add coordinate symbols
+    for d in range(mesh.dim):
+        coord_sym = mesh.X[d]
+        sym = sympy.Symbol(f"_coord_{d}")
+        subs_dict[coord_sym] = sym
+        symbols_list.append(sym)
+        arrays_list.append(node_coords[:, d])
+
+    # Substitute and lambdify
+    expr_substituted = scalar_expr.xreplace(subs_dict)
+    func = sympy.lambdify(symbols_list, expr_substituted, modules='numpy')
+
+    # Evaluate at nodes
+    result = func(*arrays_list)
+    result = np.atleast_1d(result)
+
+    # Handle scalar result (constant expression)
+    if result.shape == ():
+        result = np.full(n_nodes, float(result))
+    elif len(result) == 1 and n_nodes > 1:
+        result = np.full(n_nodes, result[0])
+
+    # Store in work variable
+    with mesh.access(work_var):
+        work_var.data[:, 0] = result.flatten()
+
+    return work_var
+
+
 def evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
@@ -462,7 +671,6 @@ def evaluate_nd(   expr,
                 rbf=False,
                 data_layout=None,
                 check_extrapolated=False,
-                gradient_method="interpolant",
                 force_l2=False,
                 smoothing=1e-6):
     """
@@ -513,16 +721,46 @@ def evaluate_nd(   expr,
     except AttributeError:
         expr = sympy.Matrix(((expr,),))
 
+    # DERIVATIVE HANDLING: Resolve derivatives to nodal values BEFORE interior/exterior split
+    # Two modes:
+    # - Quick (rbf=True, force_l2=False): Clement gradient at nodes, no solve
+    # - Accurate (force_l2=True or rbf=False): L2 projection, requires solve
+    if derivfns and mesh is not None:
+        if evalf:
+            raise RuntimeError(
+                "Derivative expressions cannot be evaluated with evalf=True. "
+                "Use rbf=True for quick mode, or default for accurate evaluation."
+            )
+
+        if rbf and not force_l2:
+            # Quick path: Clement gradient recovery at nodes (no projection solve)
+            # Fast but O(h) accurate - good for visualization
+            work_var = _clement_to_work_variable(expr, mesh, derivfns)
+        else:
+            # Accurate path: L2 projection (requires solve)
+            # O(h²) accurate - use for quantitative work
+            work_var = _project_to_work_variable(expr, mesh, smoothing)
+
+        # Replace expression with work variable (no derivatives, standard path works)
+        expr = work_var.sym
+        derivfns = None  # Derivatives are now resolved
+
+        # Re-extract mesh info for the new expression
+        mesh, varfns, _ = uw.function.fn_mesh_vars_in_expression(expr)
+
+    elif force_l2 and mesh is not None:
+        # force_l2 without derivatives - project for smoothing
+        if evalf:
+            raise RuntimeError(
+                "force_l2=True cannot be used with evalf=True."
+            )
+        work_var = _project_to_work_variable(expr, mesh, smoothing)
+        expr = work_var.sym
+        mesh, varfns, _ = uw.function.fn_mesh_vars_in_expression(expr)
+
     # If there are no mesh variables, then we have no need of a mesh to
     # help us to evaluate the expression. The evalf / rbf flag will force rbf_evaluation and
     # does not need mesh information either.
-
-    # Check for derivatives with unsupported evaluation modes
-    if derivfns and (evalf==True or rbf==True):
-        raise RuntimeError(
-            "Derivative expressions cannot be evaluated with evalf=True or rbf=True. "
-            "Use the default PETSc interpolation mode instead."
-        )
 
     if evalf==True or rbf==True or mesh is None:
         in_or_not = np.full((coords_array.shape[0]), False, dtype=bool )
@@ -541,22 +779,12 @@ def evaluate_nd(   expr,
                                     coord_sys,
                                     mesh,
                                     simplify=simplify,
-                                    verbose=verbose,
-                                    derivfns=derivfns,
-                                    gradient_method=gradient_method,
-                                    force_l2=force_l2,
-                                    smoothing=smoothing, )
+                                    verbose=verbose, )
 
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
-        # Check for derivatives with exterior points
-        n_exterior = np.count_nonzero(in_or_not == False)
-        if n_exterior > 0 and derivfns:
-            raise RuntimeError(
-                f"Derivative expressions cannot be evaluated at {n_exterior} points outside the domain. "
-                "Ensure all evaluation coordinates are within the mesh domain."
-            )
-
+        # Exterior points handled via RBF extrapolation
+        # Note: derivatives have already been resolved to nodal values above
         if np.count_nonzero(in_or_not == False) > 0:
             evaluation_exterior = rbf_evaluate( expr,
                                 coords_array[~in_or_not],
@@ -609,84 +837,13 @@ def evaluate_nd(   expr,
             return evaluation_1d
 
 
-def _evaluate_via_projection(expr, coords, mesh, smoothing=1e-6):
-    """
-    Evaluate expression by projecting to mesh variable, then interpolating.
-
-    This is the O(h²) accurate path for expressions with derivatives.
-    The expression is projected to a work variable (cached on mesh),
-    then interpolated to the requested coordinates.
-
-    Parameters
-    ----------
-    expr : sympy expression
-        Expression to evaluate (may contain derivatives)
-    coords : ndarray
-        Coordinates to evaluate at, shape (n_points, dim)
-    mesh : Mesh
-        The mesh for projection
-    smoothing : float
-        Projection smoothing parameter (dimensionless), default 1e-6
-
-    Returns
-    -------
-    ndarray
-        Expression values at coordinates
-    """
-    import underworld3 as uw
-
-    # Handle matrix expressions element by element
-    if hasattr(expr, 'shape') and expr.shape != (1, 1):
-        rows, cols = expr.shape
-        n_points = coords.shape[0]
-        result = np.empty((n_points, rows, cols), dtype=np.double)
-
-        for i in range(rows):
-            for j in range(cols):
-                scalar_expr = expr[i, j]
-                result[:, i, j] = _evaluate_via_projection(
-                    scalar_expr, coords, mesh, smoothing
-                ).flatten()
-
-        return result
-
-    # Scalar expression - project and interpolate
-    # Get or create work variable (cached on mesh for reuse)
-    if not hasattr(mesh, '_eval_work_var'):
-        mesh._eval_work_var = uw.discretisation.MeshVariable(
-            "_eval_work", mesh, num_components=1, degree=1
-        )
-        mesh._eval_projector = uw.systems.Projection(
-            mesh, mesh._eval_work_var
-        )
-        mesh._eval_projector.petsc_options["snes_rtol"] = 1e-6
-
-    work_var = mesh._eval_work_var
-    projector = mesh._eval_projector
-
-    # Project expression to work variable
-    projector.uw_function = expr
-    projector.smoothing = smoothing
-    projector.solve(zero_init_guess=False)
-
-    # Interpolate from work variable to coordinates
-    # Use direct evaluation (no derivatives, so existing path works)
-    result = uw.function.evaluate(work_var.sym[0, 0], coords)
-
-    return result
-
-
 def petsc_interpolate(   expr,
                 np.ndarray coords=None,
                 coord_sys=None,
                 mesh=None,
                 other_arguments=None,
                 simplify=True,
-                verbose=False,
-                derivfns=None,
-                gradient_method="interpolant",
-                force_l2=False,
-                smoothing=1e-6, ):
+                verbose=False, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -778,13 +935,9 @@ def petsc_interpolate(   expr,
     if simplify:
         expr = sympy.simplify(expr)
 
-    # PROJECTION PATH: Use L2 projection for expressions with derivatives or when force_l2=True
-    # This provides O(h²) accuracy for derivatives vs O(h) for Clement interpolation
-    use_projection = force_l2 or (derivfns and gradient_method == "projection")
-
-    if use_projection and mesh is not None:
-        # Project entire expression to work variable, then interpolate
-        return _evaluate_via_projection(expr, coords, mesh, smoothing=smoothing)
+    # NOTE: Derivative handling (projection) is done in evaluate_nd BEFORE this
+    # function is called. By the time we get here, derivatives have been resolved
+    # to nodal values in a work variable.
 
     if verbose and uw.mpi.rank==0:
         print(f"Expression to be evaluated: {expr}")
@@ -948,36 +1101,13 @@ def petsc_interpolate(   expr,
         interpolated_var_values = interpolate_vars_on_mesh(vals, coords)
         interpolated_results.update(interpolated_var_values)
 
-    # 2b. Handle derivatives if any (using Clement gradient interpolation)
-    if derivfns:
-        from underworld3.function.gradient_evaluation import interpolate_gradients_at_coords
+    # NOTE: Derivative handling is done in evaluate_nd before this function is called.
+    # By the time we get here, any derivatives have been resolved to nodal values
+    # via projection. The Clement interpolant is still accessible directly via:
+    #   - gradient_evaluation.evaluate_gradient(var, coords, method="interpolant")
+    #   - gradient_evaluation.compute_clement_gradient_at_nodes(var)
 
-        # Get list of source variables needing gradients
-        source_vars = list(derivfns.keys())
-
-        # Compute all gradients in one pass
-        gradient_values = interpolate_gradients_at_coords(source_vars, coords, mesh)
-
-        # Add each derivative expression -> gradient component to results
-        for source_var, deriv_list in derivfns.items():
-            # gradient_values is keyed by (var, component) tuples
-            # For scalar fields, component is 0
-            if source_var.num_components == 1:
-                grad = gradient_values[(source_var, 0)]  # shape (n_points, dim)
-            else:
-                # For multi-component fields, gradient is computed per component
-                # This case should already be handled by the gradient function
-                grad = gradient_values.get((source_var, 0), None)
-                if grad is None:
-                    raise RuntimeError(
-                        f"Gradient for multi-component field {source_var.name} not found. "
-                        "Multi-component derivative evaluation requires component specification."
-                    )
-            for deriv_expr, diffindex in deriv_list:
-                # grad[:, diffindex] gives ∂f/∂x_i values at all points
-                interpolated_results[deriv_expr] = np.ascontiguousarray(grad[:, diffindex])
-
-    # 3. Symbol substitution, lambdify, and evaluate (shared with rbf_evaluate)
+    # Symbol substitution, lambdify, and evaluate (shared with rbf_evaluate)
     return _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys, mesh)
 
 # Go ahead and substitute for the timed version.

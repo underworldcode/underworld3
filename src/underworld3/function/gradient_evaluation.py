@@ -2,60 +2,55 @@
 Gradient evaluation at arbitrary coordinates.
 
 This module provides functions for evaluating gradients of mesh variables
-at arbitrary coordinates without requiring explicit gradient projection solves.
+at arbitrary coordinates, with two methods offering different accuracy/cost tradeoffs.
 
 Methods
 -------
-The primary method uses PETSc's Clement interpolant for gradient recovery:
+Two gradient evaluation methods are available:
 
-1. **Clement Interpolation**: Computes L2 projection of cellwise gradients onto
-   continuous P1 (linear) space by averaging cell gradients at shared vertices.
+1. **Interpolant (Clement)**: Fast gradient recovery via vertex averaging.
 
    - Accuracy: O(h) - first order convergence
    - Cost: No linear solve required, just local averaging
+   - Best for: Quick estimates, RBF evaluation, error indicators
    - Reference: Clément, P. (1975). "Approximation by finite element functions
      using local regularization". RAIRO Analyse numérique, 9(R-2), 77-84.
 
-For higher accuracy gradient evaluation, use explicit projection:
-
-2. **L2 Projection**: Solve a mass matrix system for optimal L2 gradient.
+2. **Projection (L2)**: Solve a mass matrix system for optimal L2 gradient.
 
    - Accuracy: O(h²) for smooth solutions
-   - Cost: Requires solving linear system
-   - Use: `uw.systems.Projection` with gradient expression
+   - Cost: Requires solving linear system (cached for repeated calls)
+   - Best for: High accuracy requirements, PETSc evaluation path
 
 Comparison
 ----------
-| Method    | Accuracy | Cost        | Use Case                          |
-|-----------|----------|-------------|-----------------------------------|
-| Clement   | O(h)     | No solve    | Quick estimates, error indicators |
-| L2 Proj   | O(h²)    | Linear solve| High accuracy requirements        |
+| Method       | Name          | Accuracy | Cost         | Use Case                |
+|--------------|---------------|----------|--------------|-------------------------|
+| Interpolant  | "interpolant" | O(h)     | No solve     | Quick estimates, RBF    |
+| Projection   | "projection"  | O(h²)    | Linear solve | High accuracy, PETSc    |
 
-Implementation Notes
---------------------
-The evaluate_gradient function uses a "scratch DM" approach to avoid polluting
-the main mesh's DM with temporary fields:
+Default Routing
+---------------
+When called via `uw.function.evaluate()`:
+- `rbf=True` (RBF path): defaults to "interpolant" (fast)
+- `rbf=False` (PETSc path): defaults to "projection" (accurate)
 
-1. Clone mesh DM (gets topology, 0 fields)
-2. Add P1 linear FE field matching Clement output layout
-3. Populate with Clement gradient data
-4. Interpolate to requested coordinates using DMInterpolation
-5. Destroy scratch objects - main DM unchanged
-
-This allows ephemeral gradient evaluation without side effects on the mesh.
+Caching
+-------
+The projection method caches gradient variables on the mesh to avoid repeated
+setup costs. Subsequent solves use `zero_init_guess=False` for warm-starting.
 """
 
 import numpy as np
 from petsc4py import PETSc
 
 
-def evaluate_gradient(scalar_var, coords, method="clement", component=None):
+def evaluate_gradient(scalar_var, coords, method="interpolant", component=None):
     """
     Evaluate gradient of a mesh variable at arbitrary coordinates.
 
     Computes the gradient of a MeshVariable (or one of its components) and
-    evaluates it at the specified coordinates without adding permanent fields
-    to the mesh.
+    evaluates it at the specified coordinates.
 
     Parameters
     ----------
@@ -67,8 +62,9 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
         Coordinates at which to evaluate gradient, shape (n_points, dim).
         Can be numpy array or UnitAwareArray.
     method : str, optional
-        Gradient computation method. Currently supported:
-        - "clement": Clement interpolant (O(h) accurate, no solve). Default.
+        Gradient computation method:
+        - "interpolant": Clement interpolant (O(h) accurate, no solve). Default.
+        - "projection": L2 projection (O(h²) accurate, requires solve).
     component : int or None, optional
         For multi-component fields, which component to compute gradient of.
         If None and field has multiple components, raises ValueError.
@@ -82,26 +78,15 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
 
     Notes
     -----
-    **Clement Method**: Uses PETSc's `DMPlexComputeGradientClementInterpolant`
-    which averages cell-wise gradients at vertices. This is O(h) accurate -
-    error halves when mesh resolution doubles.
+    **Interpolant (Clement) Method**: Uses PETSc's
+    `DMPlexComputeGradientClementInterpolant` which averages cell-wise gradients
+    at vertices. This is O(h) accurate - error halves when mesh resolution doubles.
+    Fast but limited to first-order accuracy.
 
-    **Higher-degree fields (P2, etc.)**: For fields with degree > 1, the
-    function first samples the field at P1 vertex locations, then computes
-    the Clement gradient on that data. This introduces some approximation
-    but allows gradient computation for any polynomial degree.
-
-    The function uses a scratch DM internally to avoid adding fields to the
-    mesh's DM. All temporary PETSc objects are destroyed after evaluation.
-
-    For O(h²) accuracy, use explicit L2 projection instead:
-
-    ```python
-    grad_proj = uw.systems.Projection(mesh, grad_var)
-    grad_proj.uw_function = scalar_var.sym.diff(mesh.X)
-    grad_proj.solve()
-    result = uw.function.evaluate(grad_var.sym, coords)
-    ```
+    **Projection (L2) Method**: Solves a mass matrix system to find the optimal
+    L2 projection of the gradient onto the finite element space. This is O(h²)
+    accurate for smooth solutions. The projection is cached on the mesh for
+    repeated calls, using the previous solution as initial guess.
 
     Examples
     --------
@@ -109,27 +94,56 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
     >>> T = uw.discretisation.MeshVariable('T', mesh, 1)
     >>> T.array[:, 0, 0] = T.coords[:, 0]**2  # T = x²
     >>>
-    >>> # Evaluate gradient at center
-    >>> coords = np.array([[0.5, 0.5]])
-    >>> grad = evaluate_gradient(T, coords)
-    >>> # grad ≈ [[1.0, 0.0]]  (∂T/∂x = 2x = 1 at x=0.5)
+    >>> # Fast gradient (O(h))
+    >>> grad_fast = evaluate_gradient(T, coords, method="interpolant")
+    >>>
+    >>> # Accurate gradient (O(h²))
+    >>> grad_accurate = evaluate_gradient(T, coords, method="projection")
 
     See Also
     --------
-    uw.systems.Projection : For O(h²) accurate gradient via L2 projection
+    uw.systems.Projection : Direct L2 projection for explicit control
     uw.function.evaluate : General function evaluation
 
     References
     ----------
     .. [1] Clément, P. (1975). "Approximation by finite element functions
        using local regularization". RAIRO Analyse numérique, 9(R-2), 77-84.
-    .. [2] PETSc DMPlexComputeGradientClementInterpolant in plexfem.c
+    """
+    if method == "interpolant":
+        return _evaluate_gradient_interpolant(scalar_var, coords, component)
+    elif method == "projection":
+        return _evaluate_gradient_projection(scalar_var, coords, component)
+    else:
+        raise ValueError(
+            f"Unknown gradient method: '{method}'. "
+            f"Use 'interpolant' (fast, O(h)) or 'projection' (accurate, O(h²))"
+        )
+
+
+def _evaluate_gradient_interpolant(scalar_var, coords, component=None):
+    """
+    Evaluate gradient via Clement interpolant (fast, O(h) accurate).
+
+    Uses PETSc's DMPlexComputeGradientClementInterpolant which averages
+    cell-wise gradients at vertices. A scratch DM is used internally to
+    avoid polluting the mesh's DM.
+
+    Parameters
+    ----------
+    scalar_var : MeshVariable
+        Field to compute gradient of.
+    coords : array-like
+        Coordinates at which to evaluate gradient.
+    component : int or None
+        For multi-component fields, which component.
+
+    Returns
+    -------
+    ndarray
+        Gradient values, shape (n_points, dim).
     """
     import underworld3 as uw
-    from underworld3.function._dminterp_wrapper import CachedDMInterpolationInfo
-
-    if method != "clement":
-        raise ValueError(f"Unknown gradient method: {method}. Supported: 'clement'")
 
     mesh = scalar_var.mesh
     dm = mesh.dm
@@ -149,24 +163,18 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
 
     # Convert coords to numpy array if needed
     if hasattr(coords, 'magnitude'):
-        # UnitAwareArray or UWQuantity - non-dimensionalise
         coords_nd = uw.scaling.non_dimensionalise(coords)
         coords_array = np.asarray(coords_nd, dtype=np.float64)
     else:
         coords_array = np.asarray(coords, dtype=np.float64)
 
-    # Ensure 2D
     if coords_array.ndim == 1:
         coords_array = coords_array.reshape(1, -1)
 
     n_points = coords_array.shape[0]
 
-    # Step 1: Get field values at P1 vertex locations
-    # For degree > 1 fields, we need to sample at vertices first
-    # The Clement interpolant operates on vertex data
-
     # Get vertex coordinates (P1 node locations)
-    vertex_coords = mesh.X.coords  # Shape: (n_vertices, dim)
+    vertex_coords = mesh.X.coords
     n_vertices = vertex_coords.shape[0]
 
     # Check if field is P1 scalar - can use data directly
@@ -174,24 +182,11 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
     is_p1_scalar = (field_degree == 1 and num_components == 1)
 
     if is_p1_scalar:
-        # P1 scalar field - use data directly
         vertex_values = scalar_var._lvec.getArray().copy()
     else:
-        # Need to sample the field at vertex locations
-        # For P2 or vector fields, evaluate the appropriate component at vertices
-        if num_components == 1:
-            # Scalar field with degree > 1
-            sym_expr = scalar_var.sym[0, 0]
-        else:
-            # Vector/tensor field - get specified component
-            # Handle both 1D index (for vectors stored flat) and 2D (for tensors)
-            sym_expr = scalar_var.sym[component, 0]
-
-        # Evaluate at vertex locations (avoiding recursion by using direct interpolation)
-        # We evaluate the field itself (not its derivative) at P1 vertices
         vertex_values = _evaluate_field_at_vertices(scalar_var, component, mesh)
 
-    # Step 2: Create scratch DM with P1 scalar field for Clement computation
+    # Create scratch DM with P1 scalar field for Clement computation
     scalar_scratch_dm = dm.clone()
 
     options = PETSc.Options()
@@ -200,7 +195,7 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
 
     scalar_fe = PETSc.FE().createDefault(
         mesh.dim,
-        1,  # scalar field
+        1,
         mesh.isSimplex,
         mesh.qdegree,
         "_scratch_scalar_",
@@ -210,12 +205,10 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
     scalar_scratch_dm.addField(scalar_fe)
     scalar_scratch_dm.createDS()
 
-    # Populate scalar scratch vector with vertex values
     scalar_lvec = scalar_scratch_dm.createLocalVec()
     expected_size = scalar_lvec.getLocalSize()
 
     if len(vertex_values) != expected_size:
-        # Size mismatch - this shouldn't happen if we sampled correctly
         scalar_lvec.destroy()
         scalar_scratch_dm.destroy()
         scalar_fe.destroy()
@@ -227,7 +220,7 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
 
     scalar_lvec.setArray(vertex_values)
 
-    # Step 3: Compute Clement gradient at mesh nodes
+    # Compute Clement gradient at mesh nodes
     cdm = scalar_scratch_dm.getCoordinateDM()
     grad_vec = cdm.createLocalVec()
     grad_vec.zeroEntries()
@@ -235,38 +228,28 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
     result = scalar_scratch_dm.computeGradientClementInterpolant(scalar_lvec, grad_vec)
     gradient_at_nodes = result.getArray().copy()
 
-    # Cleanup scalar scratch objects
+    # Cleanup scratch objects
     scalar_lvec.destroy()
     scalar_scratch_dm.destroy()
     scalar_fe.destroy()
 
-    # Step 4: Interpolate gradient to requested coordinates
-    # The gradient_at_nodes array has shape (n_vertices * dim,) - gradient vector at each vertex
-    # Reshape to (n_vertices, dim)
+    # Interpolate gradient to requested coordinates
     n_vertices = mesh.X.coords.shape[0]
     gradient_reshaped = gradient_at_nodes.reshape(n_vertices, mesh.dim)
 
-    # Use simple linear interpolation based on cell membership
-    # For each query point, find its cell and interpolate from vertices
     cells = mesh.get_closest_cells(coords_array)
-
     outarray = np.zeros((n_points, mesh.dim), dtype=np.float64)
 
-    # Get cell-vertex connectivity from mesh
-    # Use barycentric interpolation within simplices
     for i in range(n_points):
         cell = cells[i]
         point = coords_array[i]
 
-        # Get vertices of this cell
         try:
             closure = mesh.dm.getTransitiveClosure(cell)[0]
-            # Filter to get only vertices (depth 0 entities)
             vertices = [v for v in closure if mesh.dm.getPointDepth(v) == 0]
 
             if len(vertices) >= mesh.dim + 1:
-                # Get vertex coordinates and gradients
-                vertex_coords = np.array([mesh.dm.getCoordinatesLocal().getArray()[
+                vertex_coords_cell = np.array([mesh.dm.getCoordinatesLocal().getArray()[
                     mesh.dm.getCoordinateSection().getOffset(v):
                     mesh.dm.getCoordinateSection().getOffset(v) + mesh.dim
                 ] for v in vertices[:mesh.dim + 1]])
@@ -274,22 +257,123 @@ def evaluate_gradient(scalar_var, coords, method="clement", component=None):
                 vertex_grads = np.array([gradient_reshaped[v - mesh.dm.getDepthStratum(0)[0]]
                                          for v in vertices[:mesh.dim + 1]])
 
-                # Compute barycentric coordinates
-                bary = _compute_barycentric(point, vertex_coords)
-
-                # Interpolate gradient
+                bary = _compute_barycentric(point, vertex_coords_cell)
                 outarray[i] = np.sum(bary[:, np.newaxis] * vertex_grads, axis=0)
             else:
-                # Fallback: use nearest vertex gradient
                 outarray[i] = gradient_reshaped[vertices[0] - mesh.dm.getDepthStratum(0)[0]]
         except Exception:
-            # If cell query fails, use nearest vertex
             outarray[i] = gradient_reshaped[0]
 
-    # Cleanup
     grad_vec.destroy()
-
     return outarray
+
+
+def _evaluate_gradient_projection(scalar_var, coords, component=None):
+    """
+    Evaluate gradient via L2 projection (accurate, O(h²)).
+
+    Creates a cached gradient MeshVariable and projector on the mesh.
+    Subsequent calls reuse the cached objects and warm-start the solve
+    from the previous solution.
+
+    Parameters
+    ----------
+    scalar_var : MeshVariable
+        Field to compute gradient of.
+    coords : array-like
+        Coordinates at which to evaluate gradient.
+    component : int or None
+        For multi-component fields, which component.
+
+    Returns
+    -------
+    ndarray
+        Gradient values, shape (n_points, dim).
+    """
+    import underworld3 as uw
+
+    mesh = scalar_var.mesh
+    dim = mesh.dim
+
+    # Handle multi-component fields
+    num_components = scalar_var.num_components
+    if num_components > 1:
+        if component is None:
+            raise ValueError(
+                f"Field '{scalar_var.name}' has {num_components} components. "
+                f"Specify which component's gradient to compute using component=0, 1, ..."
+            )
+        if component < 0 or component >= num_components:
+            raise ValueError(
+                f"component={component} out of range for field with {num_components} components"
+            )
+
+    # Convert coords to numpy array if needed
+    if hasattr(coords, 'magnitude'):
+        coords_nd = uw.scaling.non_dimensionalise(coords)
+        coords_array = np.asarray(coords_nd, dtype=np.float64)
+    else:
+        coords_array = np.asarray(coords, dtype=np.float64)
+
+    if coords_array.ndim == 1:
+        coords_array = coords_array.reshape(1, -1)
+
+    n_points = coords_array.shape[0]
+
+    # Cache key based on variable and component
+    comp_suffix = f"_c{component}" if component is not None else ""
+    cache_name = f"_grad_proj_{scalar_var.name}{comp_suffix}"
+
+    # Initialize gradient cache on mesh if not present
+    if not hasattr(mesh, '_gradient_cache'):
+        mesh._gradient_cache = {}
+
+    # Get or create cached projectors for each gradient component
+    if cache_name not in mesh._gradient_cache:
+        # Determine degree for gradient variable
+        # For P1 source, gradient is P0 (constant per cell) but we project to P1
+        # For higher order, use degree-1 but at least 1
+        grad_degree = max(1, scalar_var.degree - 1)
+
+        # Build symbolic expression for the source field component
+        if num_components == 1:
+            source_sym = scalar_var.sym[0, 0]
+        else:
+            source_sym = scalar_var.sym[component, 0]
+
+        # Create projector for each spatial dimension
+        projectors = []
+        for d in range(dim):
+            # Create gradient component variable
+            proj_var = uw.discretisation.MeshVariable(
+                f"{cache_name}_d{d}", mesh, num_components=1, degree=grad_degree
+            )
+
+            # Create projector
+            projector = uw.systems.Projection(mesh, proj_var)
+            projector.uw_function = source_sym.diff(mesh.X[d])
+            projector.smoothing = 0.0
+
+            projectors.append((proj_var, projector))
+
+        mesh._gradient_cache[cache_name] = {
+            'projectors': projectors,
+            'source_var': scalar_var,
+            'component': component,
+        }
+
+    cache = mesh._gradient_cache[cache_name]
+
+    # Solve projections (warm-start from previous solution)
+    for proj_var, projector in cache['projectors']:
+        projector.solve(zero_init_guess=False)
+
+    # Evaluate gradient components at coordinates
+    result = np.zeros((n_points, dim), dtype=np.float64)
+    for d, (proj_var, _) in enumerate(cache['projectors']):
+        result[:, d] = uw.function.evaluate(proj_var.sym, coords_array).flatten()
+
+    return result
 
 
 def _compute_barycentric(point, vertices):
@@ -406,11 +490,11 @@ def _evaluate_field_at_vertices(var, component, mesh):
     return result.flatten()
 
 
-def interpolate_gradients_at_coords(source_vars, coords, mesh):
+def interpolate_gradients_at_coords(source_vars, coords, mesh, method="interpolant"):
     """
-    Compute Clement gradients for multiple source variables and interpolate.
+    Compute gradients for multiple source variables and interpolate.
 
-    Computes gradients for each source variable using the Clement interpolant
+    Computes gradients for each source variable using the specified method
     and evaluates at the specified coordinates.
 
     Parameters
@@ -423,6 +507,10 @@ def interpolate_gradients_at_coords(source_vars, coords, mesh):
         Coordinates at which to evaluate gradients, shape (n_points, dim).
     mesh : Mesh
         The mesh containing the variables.
+    method : str, optional
+        Gradient computation method:
+        - "interpolant": Clement interpolant (O(h) accurate, no solve). Default.
+        - "projection": L2 projection (O(h²) accurate, requires solve).
 
     Returns
     -------
@@ -472,9 +560,9 @@ def interpolate_gradients_at_coords(source_vars, coords, mesh):
     result = {}
     for var, component in unique_vars:
         if var.num_components == 1:
-            result[(var, 0)] = evaluate_gradient(var, coords, component=None)
+            result[(var, 0)] = evaluate_gradient(var, coords, method=method, component=None)
         else:
-            result[(var, component)] = evaluate_gradient(var, coords, component=component)
+            result[(var, component)] = evaluate_gradient(var, coords, method=method, component=component)
 
     return result
 
