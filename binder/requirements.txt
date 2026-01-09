@@ -1,2 +1,0 @@
-# Minimal bootstrap for mybinder.org
-# The real environment is installed via pixi in postBuild
