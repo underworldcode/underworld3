@@ -727,13 +727,6 @@ class UnitAwareDerivativeMatrix:
         return self.units is not None
 
     @property
-    def _units_backend(self):
-        """Get the units backend (for protocol compatibility with get_units)."""
-        # Import here to avoid circular dependency
-        from underworld3.units import _get_default_backend
-        return _get_default_backend()
-
-    @property
     def units(self):
         """Get the units of this derivative matrix, accounting for derivatives."""
         if self._cached_units is None:
@@ -787,10 +780,13 @@ class UnitAwareDerivativeMatrix:
         """Get the dimensionality of this derivative matrix."""
         if not self.has_units:
             return None
-        if self._units_backend is None:
+        # Use Pint directly to get dimensionality
+        from underworld3.scaling import units as ureg
+        try:
+            quantity = 1.0 * ureg(self.units) if isinstance(self.units, str) else 1.0 * self.units
+            return quantity.dimensionality
+        except Exception:
             return None
-        quantity = self._units_backend.create_quantity(1.0, self.units)
-        return self._units_backend.get_dimensionality(quantity)
 
     def to(self, target_units: str):
         """

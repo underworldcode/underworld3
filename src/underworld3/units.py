@@ -40,14 +40,57 @@ class NoUnitsError(UnitsError):
     pass
 
 
-def _get_default_backend():
-    """Get the default units backend."""
-    try:
-        from .utilities.units_mixin import PintBackend
+def _get_ureg():
+    """Get the Pint unit registry."""
+    from .scaling import units as ureg
+    return ureg
 
-        return PintBackend()
-    except ImportError:
-        raise ImportError("Pint is required for units support. Install with: pip install pint")
+
+class _PintHelper:
+    """
+    Simple helper for Pint operations.
+
+    This replaces the deprecated PintBackend class with direct Pint usage.
+    Provides a minimal interface for the few places that need backend-like operations.
+    """
+
+    def __init__(self):
+        self.ureg = _get_ureg()
+
+    def create_quantity(self, value, units):
+        """Create a Pint quantity."""
+        if isinstance(units, str):
+            return value * self.ureg(units)
+        return value * units
+
+    def get_units(self, quantity):
+        """Get units from a Pint quantity."""
+        return quantity.units
+
+    def check_dimensionality(self, q1, q2):
+        """Check if two quantities have compatible dimensionality."""
+        return q1.dimensionality == q2.dimensionality
+
+    def get_dimensionality(self, quantity):
+        """Get dimensionality of a quantity."""
+        return quantity.dimensionality
+
+
+# Singleton instance for efficiency
+_pint_helper = None
+
+def _get_pint_helper():
+    """Get the Pint helper (lazy singleton)."""
+    global _pint_helper
+    if _pint_helper is None:
+        _pint_helper = _PintHelper()
+    return _pint_helper
+
+
+# Backward compatibility alias (will be removed)
+def _get_default_backend():
+    """DEPRECATED: Use _get_pint_helper() instead."""
+    return _get_pint_helper()
 
 
 def _extract_units_info(obj):
@@ -107,7 +150,7 @@ def _extract_units_info(obj):
 
                     # Compute derivative units: var_units / coord_units
                     if var_units and coord_units:
-                        backend = _get_default_backend()
+                        backend = _get_pint_helper()
                         # Parse as Pint units and compute derivative
                         var_qty = backend.create_quantity(1.0, var_units)
                         coord_qty = backend.create_quantity(1.0, coord_units)
@@ -116,7 +159,7 @@ def _extract_units_info(obj):
                         return True, derivative_units, backend
                     elif var_units:
                         # No coord units - just return var units
-                        backend = _get_default_backend()
+                        backend = _get_pint_helper()
                         return True, var_units, backend
                 except Exception:
                     # Fall through to other checks if derivative units computation fails
@@ -124,14 +167,14 @@ def _extract_units_info(obj):
     except ImportError:
         pass
 
-    # PRIORITY 1: Check for UWexpression (has has_units and units but NOT _units_backend)
+    # PRIORITY 1: Check for UWexpression (has has_units, units, and sym)
     # TRANSPARENT CONTAINER PRINCIPLE (2025-11-26): UWexpression is a container that
     # derives units from its contents. It doesn't store units itself when wrapping
     # a composite SymPy expression, so we must check .sym to discover units.
     if hasattr(obj, "has_units") and hasattr(obj, "units") and hasattr(obj, "sym"):
         # First check if the object directly reports units (atomic case)
         if obj.has_units and obj.units is not None:
-            backend = _get_default_backend()
+            backend = _get_pint_helper()
             return True, obj.units, backend
 
         # For composite expressions, check the .sym property
@@ -148,16 +191,23 @@ def _extract_units_info(obj):
             pass
         return False, None, None
 
-    # PRIORITY 2: Check if it's a unit-aware object with full protocol (variables, quantities)
-    # All unit-aware objects implement the protocol: has_units, units, _units_backend
-    if hasattr(obj, "has_units") and hasattr(obj, "units") and hasattr(obj, "_units_backend"):
-        if obj.has_units:
-            return True, obj.units, obj._units_backend
+    # PRIORITY 2: Check for unit-aware objects (MeshVariable, SwarmVariable, UWQuantity, etc.)
+    # These have has_units property/method and units attribute
+    if hasattr(obj, "has_units") and hasattr(obj, "units"):
+        if obj.has_units and obj.units is not None:
+            units = obj.units
+            # Convert string units to Pint Unit object for consistency
+            if isinstance(units, str):
+                try:
+                    from underworld3.scaling import units as ureg
+                    units = ureg.parse_expression(units).units
+                except Exception:
+                    pass
+            return True, units, _get_pint_helper()
         else:
             return False, None, None
 
-    # PRIORITY 2.5: Objects with .units property but not full protocol (e.g., SwarmVariable)
-    # These store units as strings but may not have has_units or _units_backend properly set
+    # PRIORITY 2.5: Objects with .units property but no has_units (fallback)
     if hasattr(obj, "units") and obj.units is not None:
         units = obj.units
         # Convert string units to Pint Unit object for consistency
@@ -165,14 +215,14 @@ def _extract_units_info(obj):
             try:
                 from underworld3.scaling import units as ureg
                 pint_units = ureg.parse_expression(units).units
-                backend = _get_default_backend()
+                backend = _get_pint_helper()
                 return True, pint_units, backend
             except Exception:
                 # If parsing fails, return None
                 pass
         else:
             # Already a Pint Unit object
-            backend = _get_default_backend()
+            backend = _get_pint_helper()
             return True, units, backend
 
     # Check if it's a Pint quantity
@@ -180,7 +230,7 @@ def _extract_units_info(obj):
         import pint
 
         if isinstance(obj, pint.Quantity):
-            backend = _get_default_backend()
+            backend = _get_pint_helper()
             return True, backend.get_units(obj), backend
     except ImportError:
         pass
@@ -228,7 +278,7 @@ def _extract_units_info(obj):
 
                     # Compute derivative units: var_units / coord_units
                     if var_units and coord_units:
-                        backend = _get_default_backend()
+                        backend = _get_pint_helper()
                         # Parse as Pint units and compute derivative
                         var_qty = backend.create_quantity(1.0, var_units)
                         coord_qty = backend.create_quantity(1.0, coord_units)
@@ -237,7 +287,7 @@ def _extract_units_info(obj):
                         return True, derivative_units, backend
                     elif var_units:
                         # No coord units - just return var units
-                        backend = _get_default_backend()
+                        backend = _get_pint_helper()
                         return True, var_units, backend
                 except Exception:
                     # Fall through to other checks if derivative units computation fails
@@ -247,13 +297,13 @@ def _extract_units_info(obj):
             # This handles mesh.X[0], mesh.N.x, etc. which have _units directly attached
             # Also check .units property for UWCoordinate which delegates to original BaseScalar
             if hasattr(obj, '_units') and obj._units is not None:
-                backend = _get_default_backend()
+                backend = _get_pint_helper()
                 return True, obj._units, backend
             # UWCoordinate has .units property but no ._units attribute (to avoid SymPy interference)
             if hasattr(obj, 'units') and not hasattr(obj, '_units'):
                 units_val = obj.units
                 if units_val is not None:
-                    backend = _get_default_backend()
+                    backend = _get_pint_helper()
                     return True, units_val, backend
 
             # SymPy units backend removed - use Pint-native approach instead
@@ -262,7 +312,7 @@ def _extract_units_info(obj):
 
             units_result = compute_expression_units(obj)
             if units_result is not None:
-                backend = _get_default_backend()
+                backend = _get_pint_helper()
                 # compute_expression_units returns pint.Unit objects - keep as Pint object
                 return True, units_result, backend
 
@@ -335,7 +385,7 @@ def _extract_units_from_sympy_expression(expr):
                             symbol_matches = type(symbol.func) == type(variable.sym[0].func)
 
                         if symbol_matches and variable.has_units:
-                            unit_info_list.append((variable.units, variable._units_backend))
+                            unit_info_list.append((variable.units, _get_pint_helper()))
                             break  # Found the variable, no need to continue
 
         if not unit_info_list:
@@ -1078,17 +1128,11 @@ def create_quantity(value, units: Union[str, Any], backend: Optional[str] = None
         >>> velocity_qty = create_quantity([1.0, 2.0], "m/s")
         >>> pressure_qty = create_quantity(101325, "Pa")
     """
-    if backend is None:
-        units_backend = _get_default_backend()
-    else:
-        if backend.lower() == "pint":
-            from .utilities.units_mixin import PintBackend
+    # backend parameter is deprecated - Pint is the only supported backend
+    if backend is not None and backend.lower() != "pint":
+        raise ValueError(f"Unknown backend: {backend}. Only 'pint' is supported.")
 
-            units_backend = PintBackend()
-        else:
-            raise ValueError(f"Unknown backend: {backend}. Only 'pint' is supported.")
-
-    return units_backend.create_quantity(value, units)
+    return _get_pint_helper().create_quantity(value, units)
 
 
 def convert_units(quantity, target_units: Union[str, Any]) -> Any:
@@ -1798,3 +1842,152 @@ def enforce_units_consistency(*expressions) -> None:
 # Natural Pint arithmetic now works directly:
 #   gradT_units = temperature.units / mesh.units
 # This returns a pint.Unit object that can be used directly
+
+
+def require_units_if_active(
+    value,
+    name: str,
+    expected_dimensionality: str = None,
+    default_unit: str = None,
+) -> float:
+    """
+    Validate input and return nondimensional value when units are active.
+
+    This is a gatekeeper function for mesh creation and similar contexts where:
+    - When Model with units is active: inputs MUST have units (enforces explicitness)
+    - When no units active: raw numbers are accepted
+
+    This prevents ambiguity in dimensional problems where a raw number like `400`
+    could mean meters, kilometers, or a nondimensional value.
+
+    Args:
+        value: Input value (quantity, expression, or raw number)
+        name: Parameter name for error messages (e.g., "depth_max")
+        expected_dimensionality: Expected dimensionality string (e.g., "[length]")
+            If provided, validates the input has correct dimensionality.
+        default_unit: Default unit to assume for raw values when units not active.
+            Only used for documentation in error messages.
+
+    Returns:
+        float: Nondimensional value (divided by appropriate reference scale)
+
+    Raises:
+        ValueError: If units are active but value has no units
+        DimensionalityError: If value has wrong dimensionality
+
+    Examples:
+        >>> # With units active - requires quantity
+        >>> model = uw.Model()
+        >>> model.set_reference_quantities(length=uw.quantity(1000, "km"), ...)
+        >>> depth = require_units_if_active(
+        ...     uw.quantity(400, "km"),
+        ...     "depth_max",
+        ...     expected_dimensionality="[length]"
+        ... )
+        >>> depth  # Returns 0.4 (400 km / 1000 km reference)
+
+        >>> # Without units - raw numbers accepted
+        >>> depth = require_units_if_active(400, "depth_max")
+        >>> depth  # Returns 400 (unchanged)
+
+        >>> # Error case - units active but raw number provided
+        >>> model.set_reference_quantities(...)
+        >>> require_units_if_active(400, "depth_max")  # Raises ValueError
+    """
+    import underworld3 as uw
+
+    model = uw.get_default_model()
+    units_active = model is not None and model.has_units()
+
+    # Check if value has units
+    value_has_units = has_units(value)
+
+    if units_active:
+        # Units are active - require units on input
+        if not value_has_units:
+            unit_hint = f" (e.g., uw.quantity({value}, '{default_unit}'))" if default_unit else ""
+            raise ValueError(
+                f"'{name}' must have units when Model is active.\n"
+                f"Got raw value: {value}\n"
+                f"Use uw.quantity() to specify units{unit_hint}.\n"
+                f"\n"
+                f"When units are active, explicit units prevent ambiguity:\n"
+                f"  - Is {value} in meters, kilometers, or nondimensional?\n"
+                f"  - The units system needs to know to scale correctly."
+            )
+
+        # Validate dimensionality if specified
+        if expected_dimensionality is not None:
+            assert_dimensionality(
+                value,
+                expected_dimensionality,
+                value_name=name,
+                allow_dimensionless=False,
+                strict=True,
+            )
+
+        # Return nondimensional value
+        return non_dimensionalise(value, model)
+
+    else:
+        # No units active - accept raw numbers or extract from quantities
+        if value_has_units:
+            # Has units but system not active - extract magnitude
+            if hasattr(value, "magnitude"):
+                return float(value.magnitude)
+            elif hasattr(value, "value"):
+                return float(value.value)
+            else:
+                return float(value)
+        else:
+            # Raw number - return as-is
+            return float(value)
+
+
+def convert_angle_to_degrees(value, name: str = "angle") -> float:
+    """
+    Convert an angle value to degrees.
+
+    Accepts:
+    - Raw numbers: assumed to be degrees
+    - Quantities with degree units: extracted as degrees
+    - Quantities with radian units: converted to degrees
+
+    Args:
+        value: Angle value (quantity or raw number)
+        name: Parameter name for error messages
+
+    Returns:
+        float: Angle in degrees
+
+    Examples:
+        >>> convert_angle_to_degrees(45)  # Raw number → 45 degrees
+        >>> convert_angle_to_degrees(uw.quantity(45, "degree"))  # → 45
+        >>> convert_angle_to_degrees(uw.quantity(np.pi/4, "radian"))  # → 45
+    """
+    if not has_units(value):
+        # Raw number - assume degrees (conventional for geographic)
+        return float(value)
+
+    # Has units - convert to degrees
+    if hasattr(value, "to"):
+        # pint-style quantity
+        try:
+            return float(value.to("degree").magnitude)
+        except Exception:
+            pass
+
+    if hasattr(value, "_pint_qty"):
+        # UWQuantity with pint backend
+        try:
+            return float(value._pint_qty.to("degree").magnitude)
+        except Exception:
+            pass
+
+    if hasattr(value, "magnitude"):
+        # Fallback - assume it's already in degrees
+        return float(value.magnitude)
+    elif hasattr(value, "value"):
+        return float(value.value)
+
+    return float(value)

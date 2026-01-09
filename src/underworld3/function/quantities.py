@@ -96,9 +96,6 @@ class UWQuantity:
         self._nd_value_cache = None
         self._nd_value_valid = False
 
-        # Units backend for protocol compatibility (units.py uses this)
-        self._units_backend = "pint"
-
     @classmethod
     def _from_pint(cls, pint_qty, model_registry=None):
         """

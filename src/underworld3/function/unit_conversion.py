@@ -393,7 +393,7 @@ def get_mesh_coordinate_units(mesh_or_expr):
     # Try to extract mesh from expression
     if not hasattr(mesh_or_expr, "CoordinateSystem"):
         try:
-            mesh, _ = uw.function.expressions.mesh_vars_in_expression(mesh_or_expr)
+            mesh, _, _ = uw.function.expressions.mesh_vars_in_expression(mesh_or_expr)
             if mesh is None:
                 return None
             mesh_or_expr = mesh

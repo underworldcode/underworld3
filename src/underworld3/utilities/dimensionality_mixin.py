@@ -42,16 +42,14 @@ class DimensionalityMixin:
             # Try to get from Pint if using UWQuantity
             if hasattr(self, "_pint_qty"):
                 return str(self._pint_qty.dimensionality)
-            # Try from units backend
-            elif hasattr(self, "_units_backend") and self._units_backend:
-                try:
-                    from underworld3.scaling import units
-
-                    qty = units.Quantity(1.0, self.units)
-                    return str(qty.dimensionality)
-                except:
-                    pass
-            # For simple string units
+            # Use Pint directly to get dimensionality
+            try:
+                from underworld3.scaling import units as ureg
+                qty = 1.0 * ureg(self.units) if isinstance(self.units, str) else 1.0 * self.units
+                return str(qty.dimensionality)
+            except Exception:
+                pass
+            # For simple string units (fallback)
             return f"[{self.units}]"
         return None  # Dimensionless
 

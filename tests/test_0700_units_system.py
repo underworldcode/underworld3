@@ -1,148 +1,23 @@
 #!/usr/bin/env python3
 """
-Comprehensive unit tests for the Underworld3 units system.
+Unit tests for the Underworld3 units system.
 
 This test suite validates:
-- UnitAwareMixin functionality
-- Backend implementations (Pint/SymPy)
-- Enhanced variable classes
+- Enhanced variable classes with units
 - Mathematical operations with units
-- Dimensional analysis and compatibility
 - Integration with existing UW3 functionality
-
-STATUS (2025-11-15):
-- 18/21 tests passing
-- 3 tests failing (units_arithmetic_validation, create_enhanced_swarm_variable, geophysical_modeling_example)
-- Marked passing tests as Tier A (production-ready for TDD)
-- Failing tests marked as Tier C (experimental)
 """
 
 import pytest
-
-# Units system tests - intermediate complexity
-pytestmark = pytest.mark.level_2
 import numpy as np
-import sys
-import os
-
-# Add src to path for testing
-# REMOVED: sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import underworld3 as uw
-from underworld3.utilities import UnitAwareMixin, PintBackend, make_units_aware
 
 # Module-level markers for all tests
 pytestmark = [
     pytest.mark.level_2,  # Intermediate - units system
     pytest.mark.tier_a,   # Production-ready - core units functionality
 ]
-
-
-class TestUnitsBackends:
-    """Test units backend implementations."""
-
-    def setup_method(self):
-        """Reset model state before each test."""
-        uw.reset_default_model()
-        uw.use_nondimensional_scaling(False)
-        uw.use_strict_units(False)  # Allow units without reference quantities for testing
-
-    def test_pint_backend_basic(self):
-        """Test basic Pint backend functionality."""
-        backend = PintBackend()
-
-        # Test quantity creation
-        velocity = backend.create_quantity(1.0, "m/s")
-        assert backend.get_magnitude(velocity) == 1.0
-        assert str(backend.get_units(velocity)) == "meter / second"
-
-        # Test dimensionality
-        dimensionality = backend.get_dimensionality(velocity)
-        assert dimensionality["[length]"] == 1
-        assert dimensionality["[time]"] == -1
-
-    def test_pint_backend_compatibility(self):
-        """Test Pint backend compatibility checking."""
-        backend = PintBackend()
-
-        velocity1 = backend.create_quantity(1.0, "m/s")
-        velocity2 = backend.create_quantity(2.0, "km/h")  # Different but compatible
-        pressure = backend.create_quantity(100000, "Pa")
-
-        # Compatible units
-        assert backend.check_dimensionality(velocity1, velocity2)
-
-        # Incompatible units
-        assert not backend.check_dimensionality(velocity1, pressure)
-
-
-class TestUnitAwareMixin:
-    """Test the core UnitAwareMixin functionality."""
-
-    class MockVariable(UnitAwareMixin):
-        """Mock variable for testing."""
-
-        def __init__(self, name, data=None, **kwargs):
-            self.name = name
-            self.data = data if data is not None else [1.0, 2.0, 3.0]
-            super().__init__(**kwargs)
-
-    def test_unitaware_mixin_without_units(self):
-        """Test UnitAwareMixin without units specified."""
-        var = self.MockVariable("test")
-
-        assert not var.has_units
-        assert var.units is None
-        assert var.dimensionality is None
-        assert var.non_dimensional_value() == var.data
-
-    def test_unitaware_mixin_with_pint_units(self):
-        """Test UnitAwareMixin with Pint units."""
-        var = self.MockVariable("test", units="m/s")
-
-        assert var.has_units
-        assert str(var.units) == "meter / second"
-        assert var.dimensionality["[length]"] == 1
-        assert var.dimensionality["[time]"] == -1
-
-    def test_units_compatibility_checking(self):
-        """Test units compatibility checking."""
-        var1 = self.MockVariable("var1", units="m/s")
-        var2 = self.MockVariable("var2", units="km/h")  # Compatible
-        var3 = self.MockVariable("var3", units="Pa")  # Incompatible
-        var4 = self.MockVariable("var4")  # No units
-
-        # Same units
-        assert var1.check_units_compatibility(var1)
-
-        # Compatible units (different but same dimensionality)
-        assert var1.check_units_compatibility(var2)
-
-        # Incompatible units
-        assert not var1.check_units_compatibility(var3)
-
-        # One with units, one without
-        assert not var1.check_units_compatibility(var4)
-
-        # Both without units
-        assert var4.check_units_compatibility(self.MockVariable("var5"))
-
-    def test_create_quantity(self):
-        """Test quantity creation from values."""
-        var = self.MockVariable("test", units="m/s")
-
-        quantity = var.create_quantity([1.0, 2.0])
-        assert var._units_backend.get_magnitude(quantity)[0] == 1.0
-        assert var._units_backend.get_magnitude(quantity)[1] == 2.0
-        assert str(var._units_backend.get_units(quantity)) == "meter / second"
-
-    def test_units_repr(self):
-        """Test units representation."""
-        var_with_units = self.MockVariable("test", units="m/s")
-        var_without_units = self.MockVariable("test")
-
-        assert "units: meter / second" in var_with_units.units_repr()
-        assert "no units" in var_without_units.units_repr()
 
 
 class TestEnhancedMeshVariable:
@@ -252,39 +127,6 @@ class TestFactoryFunctions:
         assert str(density.units) == "kilogram / meter ** 3"
         assert density.name == "density"
 
-    @pytest.mark.skip(reason="uw.create_enhanced_swarm_variable API not implemented - use swarm.add_variable() with units parameter")
-    def test_create_enhanced_swarm_variable(self, mesh):
-        """Test swarm variable factory function.
-
-        NOTE: create_enhanced_swarm_variable was planned but not implemented.
-        Use swarm.add_variable("name", 1, units="K") instead.
-        """
-        pass
-
-
-class TestMakeUnitsAware:
-    """Test the make_units_aware factory function."""
-
-    def test_make_units_aware_function(self):
-        """Test making any class units-aware."""
-
-        class SimpleVariable:
-            def __init__(self, name, value):
-                self.name = name
-                self.value = value
-
-        # Make it units-aware
-        UnitAwareSimpleVariable = make_units_aware(SimpleVariable)
-
-        # Test creation with units
-        var = UnitAwareSimpleVariable("test", 42, units="m")
-
-        assert hasattr(var, "has_units")
-        assert var.has_units
-        assert str(var.units) == "meter"
-        assert var.name == "test"
-        assert var.value == 42
-
 
 class TestIntegrationWithExistingCode:
     """Test integration with existing Underworld3 functionality."""
@@ -338,26 +180,6 @@ class TestIntegrationWithExistingCode:
         assert nondim_values.shape == velocity.data.shape
 
 
-class TestErrorHandling:
-    """Test error handling and edge cases."""
-
-    def test_invalid_backend(self):
-        """Test error handling for invalid backend."""
-
-        class MockVar(UnitAwareMixin):
-            def __init__(self, **kwargs):
-                super().__init__(**kwargs)
-
-        with pytest.raises(ValueError, match="Unknown backend"):
-            MockVar(units="m", units_backend="invalid_backend")
-
-    def test_units_without_backend_dependencies(self):
-        """Test behavior when backend dependencies are missing."""
-        # This would test what happens if pint or sympy are not available
-        # For now, we assume they are available in the test environment
-        pass
-
-
 # Integration test that exercises the full system
 class TestFullSystemIntegration:
     """Integration test for the complete units system."""
@@ -388,7 +210,7 @@ class TestFullSystemIntegration:
         assert div_velocity is not None
 
         # Momentum equation terms
-        momentum_density = density * velocity  # kg/(m²⋅year)
+        momentum_density = density * velocity  # kg/(m^2 year)
         assert momentum_density is not None
 
         # Compatible arithmetic

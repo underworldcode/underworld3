@@ -105,6 +105,36 @@ class UnitAwareArray(NDArray_With_Callback):
 
     Note: Tensor arrays (ndim > 2) raise NotImplementedError for global reductions.
     Use component-wise operations or slice the array for tensors.
+
+    Backend Abstraction:
+
+    UnitAwareArray inherits the callback mechanism from NDArray_With_Callback,
+    enabling it to work with **any storage backend** - only the callback changes.
+    This provides a consistent unit-aware interface regardless of underlying storage:
+
+    ```python
+    # MeshVariable: PETSc backend with units
+    def petsc_sync(array, info):
+        self._petsc_vec.setArray(array)
+
+    mesh_var.data = UnitAwareArray(
+        petsc_data, units="m/s",
+        callback=petsc_sync, owner=self,
+    )
+
+    # SurfaceVariable: pyvista backend with units
+    def pyvista_sync(array, info):
+        self._pv_mesh.point_data[name] = np.asarray(array)
+        self._proxy_stale = True
+
+    surface_var.data = UnitAwareArray(
+        pv_data, units="Pa",
+        callback=pyvista_sync, owner=self,
+    )
+    ```
+
+    The same UnitAwareArray class provides consistent `.units`, `.magnitude`, and
+    unit-aware arithmetic for both backends without any code changes.
     """
 
     def __new__(
@@ -149,12 +179,6 @@ class UnitAwareArray(NDArray_With_Callback):
         # Set units if provided
         if units is not None:
             obj._set_units(units)
-            # Initialize units backend for get_dimensionality() support
-            from underworld3.utilities.units_mixin import PintBackend
-
-            obj._units_backend = PintBackend()
-        else:
-            obj._units_backend = None
 
         return obj
 
@@ -171,7 +195,6 @@ class UnitAwareArray(NDArray_With_Callback):
         self._unit_checking = getattr(obj, "_unit_checking", True)
         self._auto_convert = getattr(obj, "_auto_convert", True)
         self._original_units = getattr(obj, "_original_units", None)
-        self._units_backend = getattr(obj, "_units_backend", None)
 
     def _set_units(self, units):
         """
@@ -220,10 +243,13 @@ class UnitAwareArray(NDArray_With_Callback):
         """Get the dimensionality of this array."""
         if not self.has_units:
             return None
-        if self._units_backend is None:
+        # Use Pint directly to get dimensionality
+        from underworld3.scaling import units as ureg
+        try:
+            quantity = 1.0 * ureg(self._units) if isinstance(self._units, str) else 1.0 * self._units
+            return quantity.dimensionality
+        except Exception:
             return None
-        quantity = self._units_backend.create_quantity(1.0, self._units)
-        return self._units_backend.get_dimensionality(quantity)
 
     @property
     def unit_checking(self):
