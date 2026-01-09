@@ -90,11 +90,11 @@ if mesh.sf is None:
 iset = mesh.dm.getVertexNumbering()
 indices = iset.getIndices()
 
-with mesh.access(p,v, index, index1p):
-    p.data[:,0] = p.coords[:,0]
-    v.data[:,:] = v.coords[:,:]
-    index.data[:,0] = indices[:]   
-    index1p.data[:,0] = indices[:]   
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+p.data[:,0] = p.coords[:,0]
+v.data[:,:] = v.coords[:,:]
+index.data[:,0] = indices[:]
+index1p.data[:,0] = indices[:]   
 
 
 

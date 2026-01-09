@@ -270,21 +270,21 @@ v_theta_fn_xy = r_uw * mesh.CoordinateSystem.rRotN.T * sympy.Matrix((0, 1))
 
 # %%
 if analytical:
-    with mesh.access(v_ana, p_ana, rho_ana):
-        if k == 0:
-            v_ana_expr = mesh.CoordinateSystem.rRotN.T * sympy.Matrix([0, v_theta.subs({r: r_uw, theta: th_uw})])
-            p_ana.data[:, 0] = 0
-            rho_ana.data[:, 0] = 0
-        else:
-            v_ana_expr = mesh.CoordinateSystem.rRotN.T * sympy.Matrix([
-                v_r.subs({r: r_uw, theta: th_uw}),
-                v_theta.subs({r: r_uw, theta: th_uw})
-            ])
-            p_ana.data[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), p_ana.coords)
-            rho_ana.data[:, 0] = uw.function.evalf(rho.subs({r: r_uw, theta: th_uw}), rho_ana.coords)
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    if k == 0:
+        v_ana_expr = mesh.CoordinateSystem.rRotN.T * sympy.Matrix([0, v_theta.subs({r: r_uw, theta: th_uw})])
+        p_ana.data[:, 0] = 0
+        rho_ana.data[:, 0] = 0
+    else:
+        v_ana_expr = mesh.CoordinateSystem.rRotN.T * sympy.Matrix([
+            v_r.subs({r: r_uw, theta: th_uw}),
+            v_theta.subs({r: r_uw, theta: th_uw})
+        ])
+        p_ana.data[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), p_ana.coords)
+        rho_ana.data[:, 0] = uw.function.evalf(rho.subs({r: r_uw, theta: th_uw}), rho_ana.coords)
 
-        v_ana.data[:, 0] = uw.function.evalf(v_ana_expr[0], v_ana.coords)
-        v_ana.data[:, 1] = uw.function.evalf(v_ana_expr[1], v_ana.coords)
+    v_ana.data[:, 0] = uw.function.evalf(v_ana_expr[0], v_ana.coords)
+    v_ana.data[:, 1] = uw.function.evalf(v_ana_expr[1], v_ana.coords)
 
 # %% [markdown]
 """
@@ -442,10 +442,10 @@ if timing:
 
 # %%
 if analytical:
-    with mesh.access(v_uw, p_uw, v_err, p_err):
-        v_err.data[:, 0] = v_uw.data[:, 0] - v_ana.data[:, 0]
-        v_err.data[:, 1] = v_uw.data[:, 1] - v_ana.data[:, 1]
-        p_err.data[:, 0] = p_uw.data[:, 0] - p_ana.data[:, 0]
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    v_err.data[:, 0] = v_uw.data[:, 0] - v_ana.data[:, 0]
+    v_err.data[:, 1] = v_uw.data[:, 1] - v_ana.data[:, 1]
+    p_err.data[:, 0] = p_uw.data[:, 0] - p_ana.data[:, 0]
 
 # %% [markdown]
 """
@@ -554,20 +554,19 @@ elif uw.mpi.size == 1 and analytical and visualize:
 
 # %%
 if analytical:
-    with mesh.access(v_err, p_err, p_ana, v_ana):
-        v_err_I = uw.maths.Integral(mesh, v_err.sym.dot(v_err.sym))
-        v_ana_I = uw.maths.Integral(mesh, v_ana.sym.dot(v_ana.sym))
-        v_err_l2 = np.sqrt(v_err_I.evaluate()) / np.sqrt(v_ana_I.evaluate())
-        uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
+    v_err_I = uw.maths.Integral(mesh, v_err.sym.dot(v_err.sym))
+    v_ana_I = uw.maths.Integral(mesh, v_ana.sym.dot(v_ana.sym))
+    v_err_l2 = np.sqrt(v_err_I.evaluate()) / np.sqrt(v_ana_I.evaluate())
+    uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
 
-        if k == 0:
-            uw.pprint('For k=0, analytical pressure integral is zero - L2 norm not meaningful.')
-            p_err_l2 = np.inf
-        else:
-            p_err_I = uw.maths.Integral(mesh, p_err.sym.dot(p_err.sym))
-            p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
-            p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
-            uw.pprint('Relative error in pressure in the L2 norm: ', p_err_l2)
+    if k == 0:
+        uw.pprint('For k=0, analytical pressure integral is zero - L2 norm not meaningful.')
+        p_err_l2 = np.inf
+    else:
+        p_err_I = uw.maths.Integral(mesh, p_err.sym.dot(p_err.sym))
+        p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
+        p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
+        uw.pprint('Relative error in pressure in the L2 norm: ', p_err_l2)
 
 # %% [markdown]
 """
@@ -621,34 +620,33 @@ upper_theta[upper_theta < 0] += 2 * np.pi
 # %%
 # Lower and upper boundary velocities
 if analytical:
-    with mesh.access(v_uw, p_uw):
-        # Pressure arrays
-        p_ana_lower = np.zeros((len(lower_indx), 1))
-        p_ana_upper = np.zeros((len(upper_indx), 1))
-        p_uw_lower = np.zeros((len(lower_indx), 1))
-        p_uw_upper = np.zeros((len(upper_indx), 1))
+    # Pressure arrays
+    p_ana_lower = np.zeros((len(lower_indx), 1))
+    p_ana_upper = np.zeros((len(upper_indx), 1))
+    p_uw_lower = np.zeros((len(lower_indx), 1))
+    p_uw_upper = np.zeros((len(upper_indx), 1))
 
-        if k == 0:
-            p_ana_lower[:, 0] = 0
-            p_ana_upper[:, 0] = 0
-        else:
-            p_ana_lower[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[lower_indx])
-            p_ana_upper[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[upper_indx])
-        p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[lower_indx])
-        p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[upper_indx])
+    if k == 0:
+        p_ana_lower[:, 0] = 0
+        p_ana_upper[:, 0] = 0
+    else:
+        p_ana_lower[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[lower_indx])
+        p_ana_upper[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[upper_indx])
+    p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[lower_indx])
+    p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[upper_indx])
 
-        # Velocity arrays
-        v_ana_lower = np.zeros_like(mesh.X.coords[lower_indx])
-        v_ana_upper = np.zeros_like(mesh.X.coords[upper_indx])
-        v_uw_lower = np.zeros_like(mesh.X.coords[lower_indx])
-        v_uw_upper = np.zeros_like(mesh.X.coords[upper_indx])
+    # Velocity arrays
+    v_ana_lower = np.zeros_like(mesh.X.coords[lower_indx])
+    v_ana_upper = np.zeros_like(mesh.X.coords[upper_indx])
+    v_uw_lower = np.zeros_like(mesh.X.coords[lower_indx])
+    v_uw_upper = np.zeros_like(mesh.X.coords[upper_indx])
 
-        v_ana_lower[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[lower_indx])
-        v_ana_lower[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[lower_indx])
-        v_ana_upper[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[upper_indx])
-        v_ana_upper[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[upper_indx])
-        v_uw_lower = uw.function.evalf(v_uw.sym, mesh.X.coords[lower_indx])
-        v_uw_upper = uw.function.evalf(v_uw.sym, mesh.X.coords[upper_indx])
+    v_ana_lower[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[lower_indx])
+    v_ana_lower[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[lower_indx])
+    v_ana_upper[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[upper_indx])
+    v_ana_upper[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[upper_indx])
+    v_uw_lower = uw.function.evalf(v_uw.sym, mesh.X.coords[lower_indx])
+    v_uw_upper = uw.function.evalf(v_uw.sym, mesh.X.coords[upper_indx])
 
 # Sort arrays for plotting
 sort_lower = lower_theta.argsort()

@@ -135,13 +135,12 @@ swarm.populate(fill_param=10)
 blob = np.array([[sphereCentre[0], sphereCentre[1], sphereRadius, 1]])
 
 
-with swarm.access(material):
-    material.data[...] = materialLightIndex
+material.data[...] = materialLightIndex
 
-    for i in range(blob.shape[0]):
-        cx, cy, r, m = blob[i, :]
-        inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
-        material.data[inside] = m
+for i in range(blob.shape[0]):
+    cx, cy, r, m = blob[i, :]
+    inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
+    material.data[inside] = m
 
 # +
 mat_density = np.array([densityBG, densitySphere])

@@ -53,9 +53,8 @@ t_forcing_fn = 1.0 * (
 
 # -
 
-with swarm.access(gradS):
-    print(f"Swarm coords -> {swarm._particle_coordinates.data.shape}", flush=True)
-    print(f"Swarm data -> {gradS.data.shape}", flush=True)
+print(f"Swarm coords -> {swarm._particle_coordinates.data.shape}", flush=True)
+print(f"Swarm data -> {gradS.data.shape}", flush=True)
 
 
 mesh0.dm.view()
@@ -86,9 +85,8 @@ print(f"{uw.mpi.rank} - Refine Hierarchy", flush=True)
 dm2h = mesh0.dm.refineHierarchy(2)
 print(f"{uw.mpi.rank} - Refine Hierarchy / done", flush=True)
 
-with swarm.access(gradS):
-    print(f"Swarm coords -> {swarm._particle_coordinates.data.shape}", flush=True)
-    print(f"Swarm data -> {gradS.data.shape}", flush=True)
+print(f"Swarm coords -> {swarm._particle_coordinates.data.shape}", flush=True)
+print(f"Swarm data -> {gradS.data.shape}", flush=True)
 
 gradient = uw.systems.Projection(mesh0, grad)
 gradient.uw_function = 1.0 + mesh0.vector.gradient(t_forcing_fn**2).dot(
@@ -97,15 +95,12 @@ gradient.uw_function = 1.0 + mesh0.vector.gradient(t_forcing_fn**2).dot(
 gradient.smoothing = 1.0e-2
 gradient.solve()
 
-with mesh0.access():
-    print(grad.data.min(), grad.data.max(), flush=True)
+print(grad.data.min(), grad.data.max(), flush=True)
 
-with mesh0.access(H):
-    H.data[:, 0] = 5 + grad.data[:, 0] * 10
+H.data[:, 0] = 5 + grad.data[:, 0] * 10
 
-with swarm.access(gradS):
-    print(f"Swarm coords -> {swarm._particle_coordinates.data.shape}", flush=True)
-    print(f"Swarm data -> {gradS.data.shape}", flush=True)
+print(f"Swarm coords -> {swarm._particle_coordinates.data.shape}", flush=True)
+print(f"Swarm data -> {gradS.data.shape}", flush=True)
 
 # +
 # with swarm.access(gradS):
@@ -155,8 +150,7 @@ swarm.mesh = meshA
 # +
 # This is how to nterpolate mesh variables
 
-with meshA.access(gradA):
-    gradA.data[:] = grad.rbf_interpolate(meshA.data)
+gradA.data[:] = grad.rbf_interpolate(meshA.data)
 
 # +
 # Any solvers ? they will also need rebuilding
@@ -221,8 +215,7 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
 
 if mpi4py.MPI.COMM_WORLD.size == 1:
-    with meshA.access():
-        pvmeshA.point_data["gradS"] = gradS._meshVar.data.copy()
+    pvmeshA.point_data["gradS"] = gradS._meshVar.data.copy()
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[...] = stokes.u.coords[...]

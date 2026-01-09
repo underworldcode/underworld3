@@ -261,8 +261,7 @@ swarm.dm.restoreField("M")
 lvec.isset(indexSetW, 0.0)
 lvec.isset(indexSetS, 1.0)
 
-with swarm.access(material):
-    material.data[:, 0] = lvec.array[:]
+material.data[:, 0] = lvec.array[:]
 
 # check the mesh if in a notebook / serial
 

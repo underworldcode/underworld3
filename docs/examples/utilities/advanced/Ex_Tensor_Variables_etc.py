@@ -92,15 +92,14 @@ material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4)
 
 swarm.populate(fill_param=5)
 
-with swarm.access(material):
-    material.data[...] = 0
-    for i in range(50):
-        cx, cy, r = np.random.random(3)
-        m = np.random.randint(1, 4)
-        r = 0.025 + r * 0.025
+material.data[...] = 0
+for i in range(50):
+    cx, cy, r = np.random.random(3)
+    m = np.random.randint(1, 4)
+    r = 0.025 + r * 0.025
 
-        inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
-        material.data[inside] = m
+    inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
+    material.data[inside] = m
 
 
 material.sym.diff(meshbox.CoordinateSystem.X)
@@ -142,31 +141,27 @@ pv.global_theme.smooth_shading = True
 meshbox.vtk("tmp_box.vtk")
 pvmesh = pv.read("tmp_box.vtk")
 
-with swarm.access():
-    points = np.zeros((swarm.data.shape[0], 3))
-    points[:, 0] = swarm.data[:, 0]
-    points[:, 1] = swarm.data[:, 1]
-    points[:, 2] = 0.0
+points = np.zeros((swarm.data.shape[0], 3))
+points[:, 0] = swarm.data[:, 0]
+points[:, 1] = swarm.data[:, 1]
+points[:, 2] = 0.0
 
 point_cloud = pv.PolyData(points)
 
-with meshbox.access():
-    pvmesh.point_data["M0"] = uw.function.evaluate(material.sym[0], meshbox.data)
-    pvmesh.point_data["M1"] = uw.function.evaluate(material.sym[1], meshbox.data)
-    pvmesh.point_data["M2"] = uw.function.evaluate(material.sym[2], meshbox.data)
-    pvmesh.point_data["M3"] = uw.function.evaluate(material.sym[3], meshbox.data)
-    pvmesh.point_data["M"] = (
-        1.0 * pvmesh.point_data["M1"]
-        + 2.0 * pvmesh.point_data["M2"]
-        + 3.0 * pvmesh.point_data["M3"]
-    )
+pvmesh.point_data["M0"] = uw.function.evaluate(material.sym[0], meshbox.X.coords)
+pvmesh.point_data["M1"] = uw.function.evaluate(material.sym[1], meshbox.X.coords)
+pvmesh.point_data["M2"] = uw.function.evaluate(material.sym[2], meshbox.X.coords)
+pvmesh.point_data["M3"] = uw.function.evaluate(material.sym[3], meshbox.X.coords)
+pvmesh.point_data["M"] = (
+    1.0 * pvmesh.point_data["M1"]
+    + 2.0 * pvmesh.point_data["M2"]
+    + 3.0 * pvmesh.point_data["M3"]
+)
 
-    pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.data)
-    pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.data)
+pvmesh.point_data["rho"] = uw.function.evaluate(density, meshbox.X.coords)
+pvmesh.point_data["visc"] = uw.function.evaluate(sympy.log(viscosity), meshbox.X.coords)
 
-
-with swarm.access():
-    point_cloud.point_data["M"] = material.data.copy()
+point_cloud.point_data["M"] = material.data.copy()
 
 pl = pv.Plotter(notebook=True)
 
@@ -202,14 +197,13 @@ ad.add_dirichlet_bc(0.0, "Top")
 
 init_t = 0.01 * sympy.sin(5.0 * x) * sympy.sin(np.pi * y) + (1.0 - y)
 
-with meshbox.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
-    t_soln.data[...] = t_0.data[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).reshape(-1, 1)
+t_soln.data[...] = t_0.data[...]
 
-with swarm.access(T1):
-    T1.data[...] = uw.function.evaluate(
-        init_t, swarm._particle_coordinates.data
-    ).reshape(-1, 1)
+T1.data[...] = uw.function.evaluate(
+    init_t, swarm._particle_coordinates.data
+).reshape(-1, 1)
 
 # +
 # Create Stokes object
@@ -264,15 +258,14 @@ if uw.mpi.size == 1 and ad.projection:
 
     pvmesh = meshbox.mesh2pyvista(elementType=vtk.VTK_TRIANGLE)
 
-    with meshbox.access():
-        usol = stokes.u.data.copy()
+    usol = stokes.u.data.copy()
 
     pvmesh.point_data["mT1"] = uw.function.evaluate(
-        ad._u_star_projected.fn, meshbox.data
+        ad._u_star_projected.fn, meshbox.X.coords
     )
-    pvmesh.point_data["T1"] = uw.function.evaluate(T1.fn, meshbox.data)
+    pvmesh.point_data["T1"] = uw.function.evaluate(T1.fn, meshbox.X.coords)
     pvmesh.point_data["dT1"] = uw.function.evaluate(
-        T1.fn - ad._u_star_projected.fn, meshbox.data
+        T1.fn - ad._u_star_projected.fn, meshbox.X.coords
     )
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
@@ -329,23 +322,19 @@ def plot_T_mesh(filename):
 
         point_cloud = pv.PolyData(points)
 
-        with meshbox.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
+        point_cloud.point_data["T"] = t_soln.data.copy()
 
-        with swarm.access():
-            points = np.zeros((swarm.data.shape[0], 3))
-            points[:, 0] = swarm.data[:, 0]
-            points[:, 1] = swarm.data[:, 1]
+        points = np.zeros((swarm.data.shape[0], 3))
+        points[:, 0] = swarm.data[:, 0]
+        points[:, 1] = swarm.data[:, 1]
 
         swarm_point_cloud = pv.PolyData(points)
 
-        with swarm.access():
-            swarm_point_cloud.point_data["T1"] = T1.data.copy()
+        swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
-        with meshbox.access():
-            usol = stokes.u.data.copy()
+        usol = stokes.u.data.copy()
 
-        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
+        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.X.coords)
 
         arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
         arrow_loc[:, 0:2] = stokes.u.coords[...]
@@ -406,8 +395,7 @@ for step in range(0, 250):
 
     # update swarm / swarm variables
 
-    with swarm.access(T1):
-        T1.data[:, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)
+    T1.data[:, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)
 
     # advect swarm
     swarm.advection(v_soln.fn, delta_t)
@@ -463,23 +451,19 @@ if uw.mpi.size == 1:
 
     point_cloud = pv.PolyData(points)
 
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
+    points = np.zeros((swarm.data.shape[0], 3))
+    points[:, 0] = swarm.data[:, 0]
+    points[:, 1] = swarm.data[:, 1]
 
     swarm_point_cloud = pv.PolyData(points)
 
-    with swarm.access():
-        swarm_point_cloud.point_data["T1"] = T1.data.copy()
+    swarm_point_cloud.point_data["T1"] = T1.data.copy()
 
-    with meshbox.access():
-        point_cloud.point_data["T"] = t_soln.data.copy()
+    point_cloud.point_data["T"] = t_soln.data.copy()
 
-    with meshbox.access():
-        usol = stokes.u.data.copy()
+    usol = stokes.u.data.copy()
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
+    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.X.coords)
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[:, 0:2] = stokes.u.coords[...]

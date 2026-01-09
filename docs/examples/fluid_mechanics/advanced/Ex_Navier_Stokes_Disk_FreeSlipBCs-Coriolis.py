@@ -193,12 +193,11 @@ navier_stokes._u_star_projector.F0 = free_slip_penalty_p  # + solid_body_penalty
 navier_stokes.solve(timestep=10.0)
 nodal_vorticity_from_v.solve()
 
-with meshball.access():
-    v_inertial = v_soln.data.copy()
+v_inertial = v_soln.data.copy()
 
-with swarm.access(v_star, remeshed, X_0):
-    v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
-    X_0.data[...] = swarm.data[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+v_star.data[...] = uw.function.evaluate(v_soln.fn, swarm.data)
+X_0.data[...] = swarm.data[...]
 
 # -
 
@@ -278,31 +277,29 @@ for step in range(0, 10):
     dv_fn = v_soln.fn - v_soln_1.fn
     _, _, _, _, _, _, deltaV = meshball.stats(dv_fn.dot(dv_fn))
 
-    with meshball.access(v_soln_1):
-        v_soln_1.data[...] = v_soln.data[...]
+    v_soln_1.data[...] = v_soln.data[...]
 
-    with swarm.access(v_star):
-        v_star.data[...] = (
-            0.5 * uw.function.evaluate(v_soln.fn, swarm.data) + 0.5 * v_star.data[...]
-        )
+    v_star.data[...] = (
+        0.5 * uw.function.evaluate(v_soln.fn, swarm.data) + 0.5 * v_star.data[...]
+    )
 
     swarm.advection(v_soln.fn, delta_t=delta_t, corrector=False)
 
     # Restore a subset of points to start
     offset_idx = step % swarm_loop
 
-    with swarm.access(swarm._particle_coordinates, remeshed):
-        remeshed.data[...] = 0
-        remeshed.data[offset_idx::swarm_loop, :] = 1
-        swarm.data[offset_idx::swarm_loop, :] = X_0.data[offset_idx::swarm_loop, :]
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    remeshed.data[...] = 0
+    remeshed.data[offset_idx::swarm_loop, :] = 1
+    swarm.data[offset_idx::swarm_loop, :] = X_0.data[offset_idx::swarm_loop, :]
 
     # re-calculate v history for remeshed particles
     # Note, they may have moved procs after the access manager closed
     # so we re-index
 
-    with swarm.access(v_star, remeshed):
-        idx = np.where(remeshed.data == 1)[0]
-        v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx])
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    idx = np.where(remeshed.data == 1)[0]
+    v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm.data[idx])
 
     uw.pprint("Timestep {}, dt {}, deltaV {}".format(ts, delta_t, deltaV))
 

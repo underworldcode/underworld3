@@ -133,18 +133,47 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 
 ## Data Access Patterns (Current)
 
+### Access Context Managers NOT Required
+**IMPORTANT**: `mesh.access()` and `swarm.access()` context managers are NOT required for basic data access.
+
+```python
+# DEPRECATED - do not use
+with mesh.access(var):
+    var.data[...] = values
+
+# CURRENT - direct access (recommended)
+var.data[...] = values
+```
+
 ### Single Variable Updates
 ```python
-# Direct array access (recommended)
+# Direct data access - works for both mesh and swarm variables
+var.data[...] = values
+
+# Or using array format (mesh variables)
 var.array[...] = values
 ```
 
 ### Multiple Variable Updates
 ```python
-# Batch updates with synchronization
-with uw.synchronised_array_update():
-    var1.array[...] = values1
-    var2.array[...] = values2
+# For multi-variable updates that need synchronization
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+var1.data[...] = values1
+var2.data[...] = values2
+```
+
+### Coordinate Access
+```python
+# Mesh vertex coordinates
+coords = mesh.X.coords          # CURRENT (recommended)
+# NOT: mesh.data (deprecated)
+
+# Variable DOF coordinates
+coords = var.coords             # For any mesh variable
+
+# Swarm particle coordinates
+coords = swarm.data             # Swarm positions
+coords = swarm._particle_coordinates.data  # Explicit access
 ```
 
 ### Array Formats

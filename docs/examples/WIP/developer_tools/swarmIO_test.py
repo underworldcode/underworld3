@@ -69,19 +69,17 @@ rank      = swarm.add_variable(name="rank", size=2, dtype=PETSc.RealType)
 swarm.populate(2)
 
 # %%
-with swarm.access(rank):
-    rank.data[:] = uw.mpi.rank
+rank.data[:] = uw.mpi.rank
 
 # %% [markdown]
 # #### create a block at the base of the model
 
 # %%
 for i in [material, materialVariable]:
-        with swarm.access(i):
-            i.data[:] = 0
-            i.data[(swarm.data[:,1] <= 0.1) & 
-                  (swarm.data[:,0] >= (((1 - 0) / 2.) - (0.1 / 2.)) ) & 
-                  (swarm.data[:,0] <= (((1 - 0) / 2.) + (0.1 / 2.)) )] = 1
+        i.data[:] = 0
+        i.data[(swarm.data[:,1] <= 0.1) &
+              (swarm.data[:,0] >= (((1 - 0) / 2.) - (0.1 / 2.)) ) &
+              (swarm.data[:,0] <= (((1 - 0) / 2.) + (0.1 / 2.)) )] = 1
 
 
 # %% [markdown]
@@ -100,11 +98,10 @@ swarm_xdmf(fields=fields, fileName='swarm', timestep=0, outputPath=outputPath)
 
 # %%
 for i in [material, materialVariable]:
-        with swarm.access(i):
-            i.data[:] = 0
-            i.data[(swarm.data[:,1] <= 0.25) & 
-                  (swarm.data[:,0] >= (((1 - 0) / 2.) - (0.25 / 2.)) ) & 
-                  (swarm.data[:,0] <= (((1 - 0) / 2.) + (0.25 / 2.)) )] = 1
+        i.data[:] = 0
+        i.data[(swarm.data[:,1] <= 0.25) &
+              (swarm.data[:,0] >= (((1 - 0) / 2.) - (0.25 / 2.)) ) &
+              (swarm.data[:,0] <= (((1 - 0) / 2.) + (0.25 / 2.)) )] = 1
 
 # %% [markdown]
 # Save the swarm fields with the updated material field (but not materialVarible field)

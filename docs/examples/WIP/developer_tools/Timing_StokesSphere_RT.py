@@ -136,14 +136,13 @@ if uw.mpi.rank == 0:
     print(f"Set values on swarm", flush=True)
 
 
-with swarm.access(material):
-    r = np.sqrt(
-        swarm._particle_coordinates.data[:, 0] ** 2
-        + swarm._particle_coordinates.data[:, 1] ** 2
-        + (swarm._particle_coordinates.data[:, 2] - offset) ** 2
-    )
+r = np.sqrt(
+    swarm._particle_coordinates.data[:, 0] ** 2
+    + swarm._particle_coordinates.data[:, 1] ** 2
+    + (swarm._particle_coordinates.data[:, 2] - offset) ** 2
+)
 
-    material.data[:, 0] = r - r_layer
+material.data[:, 0] = r - r_layer
 
 if uw.mpi.rank == 0:
     print(f"Set values on swarm ... done", flush=True)
@@ -201,10 +200,9 @@ stokes.saddle_preconditioner = 1 / viscosity
 
 # -
 
-with mesh.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), mesh.X.coords, mesh.N
-    )  # cf radius_fn which is 0->1
+meshr.data[:, 0] = uw.function.evaluate(
+    sympy.sqrt(x**2 + y**2 + z**2), mesh.X.coords, mesh.N
+)  # cf radius_fn which is 0->1
 
 
 stokes.solve(zero_init_guess=True)

@@ -229,11 +229,9 @@ if uw.mpi.size == 1:
 0 / 0
 
 # +
-with swarmA.access():
-    print(f"{uw.mpi.rank}: {gradSA.data.min()}, {gradSA.data.max()}")
+print(f"{uw.mpi.rank}: {gradSA.data.min()}, {gradSA.data.max()}")
 
-with swarm.access():
-    print(f"{uw.mpi.rank}: {gradS.data.min()}, {gradS.data.max()}")
+print(f"{uw.mpi.rank}: {gradS.data.min()}, {gradS.data.max()}")
 
 
 # +

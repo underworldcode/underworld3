@@ -163,14 +163,13 @@ Level-set based on distance to spherical interface.
 """
 
 # %%
-with swarm.access(material):
-    r = np.sqrt(
-        swarm._particle_coordinates.data[:, 0] ** 2
-        + swarm._particle_coordinates.data[:, 1] ** 2
-        + (swarm._particle_coordinates.data[:, 2] - offset) ** 2
-    )
+r = np.sqrt(
+    swarm._particle_coordinates.data[:, 0] ** 2
+    + swarm._particle_coordinates.data[:, 1] ** 2
+    + (swarm._particle_coordinates.data[:, 2] - offset) ** 2
+)
 
-    material.data[:, 0] = r - r_layer
+material.data[:, 0] = r - r_layer
 
 # %% [markdown]
 """
@@ -192,8 +191,7 @@ Density and viscosity defined by level-set sign.
 density = sympy.Piecewise((0.0, material.sym[0] < 0.0), (1.0, True))
 viscosity = sympy.Piecewise((1.0, material.sym[0] < 0.0), (1.0, True))
 
-with swarm.access():
-    print(f"Material range: {material.data.max():.3f} to {material.data.min():.3f}")
+print(f"Material range: {material.data.max():.3f} to {material.data.min():.3f}")
 
 # %% [markdown]
 """
@@ -286,8 +284,7 @@ if uw.mpi.size == 1 and render:
     spoints = vis.swarm_to_pv_cloud(swarm)
     spoint_cloud = pv.PolyData(spoints)
 
-    with swarm.access():
-        spoint_cloud.point_data["M"] = material.data[...]
+    spoint_cloud.point_data["M"] = material.data[...]
 
     contours = pvmesh.contour(isosurfaces=[0.0], scalars="M")
 
@@ -346,8 +343,7 @@ def plot_mesh(filename):
     spoints = vis.swarm_to_pv_cloud(swarm)
     spoint_cloud = pv.PolyData(spoints)
 
-    with swarm.access():
-        spoint_cloud.point_data["M"] = material.data[...]
+    spoint_cloud.point_data["M"] = material.data[...]
 
     contours = pvmesh.contour(isosurfaces=[0.0], scalars="M")
 

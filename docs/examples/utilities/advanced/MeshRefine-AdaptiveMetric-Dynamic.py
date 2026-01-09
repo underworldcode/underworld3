@@ -94,16 +94,13 @@ grad_fn = 1.0 + (
 # gradient.solve()
 # -
 
-with mesh0.access(grad):
-    grad.data[:, 0] = uw.function.evaluate(grad_fn, mesh0.data, mesh0.N)
+grad.data[:, 0] = uw.function.evaluate(grad_fn, mesh0.X.coords, mesh0.N)
 
 
-with mesh0.access(H):
-    H.data[:, 0] = 10 + grad.data[:, 0] * 80
-    # print(H.data.min())
+H.data[:, 0] = 10 + grad.data[:, 0] * 80
+# print(H.data.min())
 
-with swarm.access(gradS):
-    gradS.data[:] = grad.rbf_interpolate(swarm._particle_coordinates.data)
+gradS.data[:] = grad.rbf_interpolate(swarm._particle_coordinates.data)
 
 
 # +
@@ -134,11 +131,9 @@ gradSA = swarmA.vars["nablaT_s"]
 #
 
 # +
-with swarmA.access():
-    print(f"{uw.mpi.rank}: {gradSA.data.min()}, {gradSA.data.max()}")
+print(f"{uw.mpi.rank}: {gradSA.data.min()}, {gradSA.data.max()}")
 
-with swarm.access():
-    print(f"{uw.mpi.rank}: {gradS.data.min()}, {gradS.data.max()}")
+print(f"{uw.mpi.rank}: {gradS.data.min()}, {gradS.data.max()}")
 
 
 # +
@@ -224,11 +219,9 @@ if mpi4py.MPI.COMM_WORLD.size == 1:
 
 # -
 if mpi4py.MPI.COMM_WORLD.size == 1:
-    with meshA.access():
-        pvmeshA.point_data["gradS"] = gradSA._meshVar.data
+    pvmeshA.point_data["gradS"] = gradSA._meshVar.data
 
-    with meshA.access():
-        pvmeshA.point_data["gradSi"] = gradA.data
+    pvmeshA.point_data["gradSi"] = gradA.data
 
     arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
     arrow_loc[...] = stokes.u.coords[...]

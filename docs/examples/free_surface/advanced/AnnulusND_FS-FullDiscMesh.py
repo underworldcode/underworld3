@@ -100,16 +100,15 @@ viscosity_fn = sympy.Piecewise(
 
 
 # %%
-with mesh.access(R0, R0c,D, Mc):
-    R0.data[:,0] = uw.function.evalf(r, R0.coords)
-    R0c.data[:,0] = uw.function.evalf(r, R0c.coords)
-    D.data[:,0] = uw.function.evalf((r-r_i)/(r_o-r_i), D.coords)
-    Mc.data[:,0] = (D.data[:,0] <= 1) * (D.data[:,0] >= 0)
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+R0.data[:,0] = uw.function.evalf(r, R0.coords)
+R0c.data[:,0] = uw.function.evalf(r, R0c.coords)
+D.data[:,0] = uw.function.evalf((r-r_i)/(r_o-r_i), D.coords)
+Mc.data[:,0] = (D.data[:,0] <= 1) * (D.data[:,0] >= 0)
 
 
-with mesh.access(T):
-    gauss = sympy.exp(-100*(D.sym[0]-0.5)**2)
-    T.data[:,0] = uw.function.evalf( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th)**3) * Mc.sym[0], T.coords  )
+gauss = sympy.exp(-100*(D.sym[0]-0.5)**2)
+T.data[:,0] = uw.function.evalf( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th)**3) * Mc.sym[0], T.coords  )
 
 
 
@@ -183,11 +182,9 @@ if uw.mpi.size == 1:
     pvmesh_t.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh_t, T.sym[0])
     pvmesh_t.point_data["R0"] = vis.scalar_fn_to_pv_points(pvmesh_t, R0c.sym[0])
 
-    with mesh.access():
-        pvmesh.cell_data["R0c"] = R0c.data[...]
+    pvmesh.cell_data["R0c"] = R0c.data[...]
 
-    with mesh.access():
-        pvmesh_t.cell_data["R0c"] = uw.function.evaluate(R0.sym, np.array(pvmesh_t.cell_centers().points[:,0:2]))
+    pvmesh_t.cell_data["R0c"] = uw.function.evaluate(R0.sym, np.array(pvmesh_t.cell_centers().points[:,0:2]))
 
     pvmesh1 = pvmesh.threshold(value=r_o, scalars="R0c", invert=True).threshold(value=r_i, scalars="R0c", invert=False)
 
@@ -298,8 +295,7 @@ def plot_V_mesh(filename):
         import underworld3.visualisation as vis
     
         pvmesh = vis.mesh_to_pv_mesh(mesh)
-        with mesh.access():
-            pvmesh.cell_data["R0c"] = R0c.data[...]
+        pvmesh.cell_data["R0c"] = R0c.data[...]
 
         pvmesh_inner = pvmesh.threshold(value=r_o, scalars="R0c", invert=True).threshold(value=r_i, scalars="R0c", invert=False)
        
@@ -324,8 +320,7 @@ def plot_V_mesh(filename):
         pvmesh_t = vis.meshVariable_to_pv_mesh_object(T, alpha=0.05)
         pvmesh_t.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh_t, T.sym[0])
 
-        with mesh.access():
-            pvmesh_t.cell_data["R0c"] = uw.function.evaluate(R0c.sym, np.array(pvmesh_t.cell_centers().points[:,0:2]))
+        pvmesh_t.cell_data["R0c"] = uw.function.evaluate(R0c.sym, np.array(pvmesh_t.cell_centers().points[:,0:2]))
 
         pvmesh_t_inner = pvmesh_t.threshold(value=r_o, scalars="R0c", invert=True).threshold(value=r_i, scalars="R0c", invert=False)
         
@@ -389,9 +384,8 @@ delta_t.sym = stokes.estimate_dt() / 3
 # %%
 ## Relaxation loop
 
-with mesh.access(T):
-    gauss = sympy.exp(-50*(D.sym[0]-0.5)**2)
-    T.data[:,0] = uw.function.evalf( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th))**3 * Mc.sym[0], T.coords  )
+gauss = sympy.exp(-50*(D.sym[0]-0.5)**2)
+T.data[:,0] = uw.function.evalf( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th))**3 * Mc.sym[0], T.coords  )
 
 
 for step in range(0,10):
@@ -514,8 +508,7 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
-    with mesh.access():
-            pvmesh.cell_data["R0c"] = R0c.data[...]
+    pvmesh.cell_data["R0c"] = R0c.data[...]
 
     pvmesh_inner = pvmesh.threshold(value=r_o, scalars="R0c", invert=True).threshold(value=r_i, scalars="R0c", invert=False)
 
@@ -541,8 +534,7 @@ if uw.mpi.size == 1:
     
     cells = mesh.get_closest_cells(tri_centres)
 
-    with mesh.access():
-        pvmesh_t.cell_data["R0c"] = R0c.data[cells,0]
+    pvmesh_t.cell_data["R0c"] = R0c.data[cells,0]
 
     pvmesh_t_inner = pvmesh_t.threshold(value=r_o, scalars="R0c", invert=True).threshold(value=r_i, scalars="R0c", invert=False)
 

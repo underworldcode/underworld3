@@ -255,8 +255,7 @@ mat.data[...] = 0
 mat.data[mat.coords[:, 0] + fluctuation < x0] = 1
 
 # Initialize swarm material
-with swarm.access(material):
-    material.data[:, 0] = uw.function.evalf(mat.sym, swarm._particle_coordinates.data)
+material.data[:, 0] = uw.function.evalf(mat.sym, swarm._particle_coordinates.data)
 
 # %% [markdown]
 """
@@ -274,8 +273,7 @@ if uw.mpi.size == 1:
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
-    with swarm.access(material):
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(window_size=(750, 750))
 
@@ -419,8 +417,7 @@ if uw.mpi.size == 1:
     points = vis.swarm_to_pv_cloud(swarm)
     point_cloud = pv.PolyData(points)
 
-    with swarm.access(material):
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter(window_size=(750, 750))
 

@@ -365,12 +365,12 @@ phi_uw = sp.Piecewise(
 
 # %%
 if analytical:
-    with mesh.access(v_ana, p_ana, rho_ana):
-        p_ana.data[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw, phi: phi_uw}), p_ana.coords)
-        rho_ana.data[:, 0] = uw.function.evalf(rho.subs({r: r_uw, theta: th_uw, phi: phi_uw}), rho_ana.coords)
-        v_ana.data[:, 0] = uw.function.evalf(v_x.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
-        v_ana.data[:, 1] = uw.function.evalf(v_y.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
-        v_ana.data[:, 2] = uw.function.evalf(v_z.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    p_ana.data[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw, phi: phi_uw}), p_ana.coords)
+    rho_ana.data[:, 0] = uw.function.evalf(rho.subs({r: r_uw, theta: th_uw, phi: phi_uw}), rho_ana.coords)
+    v_ana.data[:, 0] = uw.function.evalf(v_x.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
+    v_ana.data[:, 1] = uw.function.evalf(v_y.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
+    v_ana.data[:, 2] = uw.function.evalf(v_z.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
 
 # %% [markdown]
 """
@@ -562,11 +562,11 @@ if timing:
 
 # %%
 if analytical:
-    with mesh.access(v_uw, p_uw, v_err, p_err):
-        v_err.data[:, 0] = v_uw.data[:, 0] - v_ana.data[:, 0]
-        v_err.data[:, 1] = v_uw.data[:, 1] - v_ana.data[:, 1]
-        v_err.data[:, 2] = v_uw.data[:, 2] - v_ana.data[:, 2]
-        p_err.data[:, 0] = p_uw.data[:, 0] - p_ana.data[:, 0]
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    v_err.data[:, 0] = v_uw.data[:, 0] - v_ana.data[:, 0]
+    v_err.data[:, 1] = v_uw.data[:, 1] - v_ana.data[:, 1]
+    v_err.data[:, 2] = v_uw.data[:, 2] - v_ana.data[:, 2]
+    p_err.data[:, 0] = p_uw.data[:, 0] - p_ana.data[:, 0]
 
 # %% [markdown]
 """
@@ -703,17 +703,16 @@ if uw.mpi.size == 1 and analytical and visualize:
 
 # %%
 if analytical:
-    with mesh.access(v_err, p_err, p_ana, v_ana):
-        v_err_I = uw.maths.Integral(mesh, v_err.sym.dot(v_err.sym))
-        v_ana_I = uw.maths.Integral(mesh, v_ana.sym.dot(v_ana.sym))
-        v_err_l2 = np.sqrt(v_err_I.evaluate()) / np.sqrt(v_ana_I.evaluate())
+    v_err_I = uw.maths.Integral(mesh, v_err.sym.dot(v_err.sym))
+    v_ana_I = uw.maths.Integral(mesh, v_ana.sym.dot(v_ana.sym))
+    v_err_l2 = np.sqrt(v_err_I.evaluate()) / np.sqrt(v_ana_I.evaluate())
 
-        p_err_I = uw.maths.Integral(mesh, p_err.sym.dot(p_err.sym))
-        p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
-        p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
+    p_err_I = uw.maths.Integral(mesh, p_err.sym.dot(p_err.sym))
+    p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
+    p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
 
-        uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
-        print('Relative error in pressure in the L2 norm: ', p_err_l2)
+    uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
+    print('Relative error in pressure in the L2 norm: ', p_err_l2)
 
 # %% [markdown]
 """

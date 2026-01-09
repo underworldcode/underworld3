@@ -276,9 +276,8 @@ if analytical:
 
 # %%
 norm_v = uw.discretisation.MeshVariable("N", mesh, 2, degree=1, varsymbol=r"{\hat{n}}")
-with mesh.access(norm_v):
-    norm_v.data[:, 0] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[0], norm_v.coords)
-    norm_v.data[:, 1] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[1], norm_v.coords)
+norm_v.data[:, 0] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[0], norm_v.coords)
+norm_v.data[:, 1] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[1], norm_v.coords)
 
 # %% [markdown]
 """
@@ -299,22 +298,21 @@ v_theta_fn_xy = r_uw * mesh.CoordinateSystem.rRotN.T * sympy.Matrix((0, 1))
 
 # %%
 if analytical:
-    with mesh.access(v_ana, p_ana):
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    def get_ana_soln(_var, _r_int, _soln_above, _soln_below):
+        """Get analytical solution into mesh variables."""
+        r = uw.function.evalf(r_uw, _var.coords)
+        for i, coord in enumerate(_var.coords):
+            if r[i] > _r_int:
+                _var.data[i] = _soln_above(coord)
+            else:
+                _var.data[i] = _soln_below(coord)
 
-        def get_ana_soln(_var, _r_int, _soln_above, _soln_below):
-            """Get analytical solution into mesh variables."""
-            r = uw.function.evalf(r_uw, _var.coords)
-            for i, coord in enumerate(_var.coords):
-                if r[i] > _r_int:
-                    _var.data[i] = _soln_above(coord)
-                else:
-                    _var.data[i] = _soln_below(coord)
+    # Velocities
+    get_ana_soln(v_ana, r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
 
-        # Velocities
-        get_ana_soln(v_ana, r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
-
-        # Pressure
-        get_ana_soln(p_ana, r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
+    # Pressure
+    get_ana_soln(p_ana, r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
 
 # %% [markdown]
 """
@@ -391,8 +389,7 @@ elif smooth:
 # %%
 # Store density in mesh variable
 if analytical:
-    with mesh.access(rho_ana):
-        rho_ana.data[:] = np.c_[uw.function.evaluate(rho, rho_ana.coords)]
+    rho_ana.data[:] = np.c_[uw.function.evaluate(rho, rho_ana.coords)]
 
 # %%
 clim_rho = [-1, 1]
@@ -488,9 +485,8 @@ norm = I0.evaluate()
 I0.fn = v_theta_fn_xy.dot(v_theta_fn_xy)
 vnorm = I0.evaluate()
 
-with mesh.access(v_uw):
-    dv = uw.function.evaluate(norm * v_theta_fn_xy, v_uw.coords) / vnorm
-    v_uw.data[...] -= dv
+dv = uw.function.evaluate(norm * v_theta_fn_xy, v_uw.coords) / vnorm
+v_uw.data[...] -= dv
 
 # %% [markdown]
 """
@@ -499,22 +495,21 @@ with mesh.access(v_uw):
 
 # %%
 if analytical:
-    with mesh.access(v_uw, p_uw, v_err, p_err):
+    # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+    def get_error(_var_err, _var_uw, _r_int, _soln_above, _soln_below):
+        """Get error in numerical solution."""
+        r = uw.function.evalf(r_uw, _var_err.coords)
+        for i, coord in enumerate(_var_err.coords):
+            if r[i] > _r_int:
+                _var_err.data[i] = _var_uw.data[i] - _soln_above(coord)
+            else:
+                _var_err.data[i] = _var_uw.data[i] - _soln_below(coord)
 
-        def get_error(_var_err, _var_uw, _r_int, _soln_above, _soln_below):
-            """Get error in numerical solution."""
-            r = uw.function.evalf(r_uw, _var_err.coords)
-            for i, coord in enumerate(_var_err.coords):
-                if r[i] > _r_int:
-                    _var_err.data[i] = _var_uw.data[i] - _soln_above(coord)
-                else:
-                    _var_err.data[i] = _var_uw.data[i] - _soln_below(coord)
+    # Error in velocities
+    get_error(v_err, v_uw, r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
 
-        # Error in velocities
-        get_error(v_err, v_uw, r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
-
-        # Error in pressure
-        get_error(p_err, p_uw, r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
+    # Error in pressure
+    get_error(p_err, p_uw, r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
 
 # %% [markdown]
 """
@@ -644,17 +639,16 @@ if uw.mpi.size == 1 and analytical and visualize:
 
 # %%
 if analytical:
-    with mesh.access(v_err, p_err, p_ana, v_ana):
-        v_err_I = uw.maths.Integral(mesh, v_err.sym.dot(v_err.sym))
-        v_ana_I = uw.maths.Integral(mesh, v_ana.sym.dot(v_ana.sym))
-        v_err_l2 = np.sqrt(v_err_I.evaluate()) / np.sqrt(v_ana_I.evaluate())
+    v_err_I = uw.maths.Integral(mesh, v_err.sym.dot(v_err.sym))
+    v_ana_I = uw.maths.Integral(mesh, v_ana.sym.dot(v_ana.sym))
+    v_err_l2 = np.sqrt(v_err_I.evaluate()) / np.sqrt(v_ana_I.evaluate())
 
-        p_err_I = uw.maths.Integral(mesh, p_err.sym.dot(p_err.sym))
-        p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
-        p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
+    p_err_I = uw.maths.Integral(mesh, p_err.sym.dot(p_err.sym))
+    p_ana_I = uw.maths.Integral(mesh, p_ana.sym.dot(p_ana.sym))
+    p_err_l2 = np.sqrt(p_err_I.evaluate()) / np.sqrt(p_ana_I.evaluate())
 
-        uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
-        uw.pprint('Relative error in pressure in the L2 norm: ', p_err_l2)
+    uw.pprint('Relative error in velocity in the L2 norm: ', v_err_l2)
+    uw.pprint('Relative error in pressure in the L2 norm: ', p_err_l2)
 
 # %% [markdown]
 """
@@ -703,40 +697,38 @@ upper_theta[upper_theta < 0] += 2 * np.pi
 # %%
 # Lower and upper boundary values
 if analytical:
-    with mesh.access(v_uw, p_uw):
+    def get_ana_soln_2(_var, _coords, _r_int, _soln_above, _soln_below):
+        """Get analytical solution at given coordinates."""
+        r = uw.function.evalf(r_uw, _coords)
+        for i, coord in enumerate(_coords):
+            if r[i] > _r_int:
+                _var[i] = _soln_above(coord)
+            else:
+                _var[i] = _soln_below(coord)
 
-        def get_ana_soln_2(_var, _coords, _r_int, _soln_above, _soln_below):
-            """Get analytical solution at given coordinates."""
-            r = uw.function.evalf(r_uw, _coords)
-            for i, coord in enumerate(_coords):
-                if r[i] > _r_int:
-                    _var[i] = _soln_above(coord)
-                else:
-                    _var[i] = _soln_below(coord)
+    # Pressure arrays
+    p_ana_lower = np.zeros((len(lower_indx), 1))
+    p_ana_upper = np.zeros((len(upper_indx), 1))
+    p_uw_lower = np.zeros((len(lower_indx), 1))
+    p_uw_upper = np.zeros((len(upper_indx), 1))
 
-        # Pressure arrays
-        p_ana_lower = np.zeros((len(lower_indx), 1))
-        p_ana_upper = np.zeros((len(upper_indx), 1))
-        p_uw_lower = np.zeros((len(lower_indx), 1))
-        p_uw_upper = np.zeros((len(upper_indx), 1))
+    # Pressure analytical and numerical
+    get_ana_soln_2(p_ana_upper, mesh.X.coords[upper_indx], r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
+    get_ana_soln_2(p_ana_lower, mesh.X.coords[lower_indx], r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
+    p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[lower_indx])
+    p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[upper_indx])
 
-        # Pressure analytical and numerical
-        get_ana_soln_2(p_ana_upper, mesh.X.coords[upper_indx], r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
-        get_ana_soln_2(p_ana_lower, mesh.X.coords[lower_indx], r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
-        p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[lower_indx])
-        p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[upper_indx])
+    # Velocity arrays
+    v_ana_lower = np.zeros_like(mesh.X.coords[lower_indx])
+    v_ana_upper = np.zeros_like(mesh.X.coords[upper_indx])
+    v_uw_lower = np.zeros_like(mesh.X.coords[lower_indx])
+    v_uw_upper = np.zeros_like(mesh.X.coords[upper_indx])
 
-        # Velocity arrays
-        v_ana_lower = np.zeros_like(mesh.X.coords[lower_indx])
-        v_ana_upper = np.zeros_like(mesh.X.coords[upper_indx])
-        v_uw_lower = np.zeros_like(mesh.X.coords[lower_indx])
-        v_uw_upper = np.zeros_like(mesh.X.coords[upper_indx])
-
-        # Velocity analytical and numerical
-        get_ana_soln_2(v_ana_upper, mesh.X.coords[upper_indx], r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
-        get_ana_soln_2(v_ana_lower, mesh.X.coords[lower_indx], r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
-        v_uw_lower = uw.function.evalf(v_uw.sym, mesh.X.coords[lower_indx])
-        v_uw_upper = uw.function.evalf(v_uw.sym, mesh.X.coords[upper_indx])
+    # Velocity analytical and numerical
+    get_ana_soln_2(v_ana_upper, mesh.X.coords[upper_indx], r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
+    get_ana_soln_2(v_ana_lower, mesh.X.coords[lower_indx], r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
+    v_uw_lower = uw.function.evalf(v_uw.sym, mesh.X.coords[lower_indx])
+    v_uw_upper = uw.function.evalf(v_uw.sym, mesh.X.coords[upper_indx])
 
 # Sort arrays for plotting
 sort_lower = lower_theta.argsort()

@@ -69,14 +69,11 @@ layer_fn = sympy.Piecewise(
     (0, True)
 )
 
-with mesh.access(M):
-    M.data[:,0] = uw.function.evalf(layer_fn, M.coords)
+M.data[:,0] = uw.function.evalf(layer_fn, M.coords)
 
-with mesh.access(R0):
-    R0.data[:,0] = uw.function.evalf(r, R0.coords)
+R0.data[:,0] = uw.function.evalf(r, R0.coords)
 
-with mesh.access(R0c):
-    R0c.data[:,0] = uw.function.evalf(r, R0c.coords)
+R0c.data[:,0] = uw.function.evalf(r, R0c.coords)
 
 
 
@@ -252,8 +249,7 @@ if uw.mpi.size == 1:
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
-    with mesh.access():
-        pvmesh.cell_data["R0"] = M.data[...]
+    pvmesh.cell_data["R0"] = M.data[...]
 
     pvmesh_inner = pvmesh.threshold(value=1.0, scalars="R0", invert=False)
 

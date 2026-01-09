@@ -70,19 +70,15 @@ mesh0.view()
 # gradient.solve()
 # -
 
-with mesh0.access(grad):
-    grad.data[:, 0] = uw.function.evaluate(grad_fn, mesh0.data, mesh0.N)
+grad.data[:, 0] = uw.function.evaluate(grad_fn, mesh0.data, mesh0.N)
 
 
-with mesh0.access():
-    print(grad.data.min(), grad.data.max(), flush=True)
+print(grad.data.min(), grad.data.max(), flush=True)
 
-with mesh0.access(H):
-    H.data[:, 0] = 10 + grad.data[:, 0] * 80
-    # print(H.data.min())
+H.data[:, 0] = 10 + grad.data[:, 0] * 80
+# print(H.data.min())
 
-with swarm.access(gradS):
-    gradS.data[:] = 0.0  # grad.rbf_interpolate(swarm._particle_coordinates.data)
+gradS.data[:] = 0.0  # grad.rbf_interpolate(swarm._particle_coordinates.data)
 
 
 print("Mesh adaptation ", flush=True)
@@ -207,8 +203,8 @@ gradSA = uw.swarm.SwarmVariable(
 )
 swarmA.populate(fill_param=2)
 
-with swarmA.access(gradSA), swarm.access():
-    gradSA.data[:] = grad.rbf_interpolate(swarmA.data)
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+gradSA.data[:] = grad.rbf_interpolate(swarmA.data)
 
 swarmA.dm.migrate(remove_sent_points=True)
 print("Swarm Migrated", flush=True)
@@ -216,8 +212,7 @@ print("Swarm Migrated", flush=True)
 
 # -
 
-with swarmA.access():
-    print(f"{uw.mpi.rank}: {gradSA.data.min()}, {gradSA.data.min()}")
+print(f"{uw.mpi.rank}: {gradSA.data.min()}, {gradSA.data.min()}")
 
 # +
 swarm0 = uw.swarm.Swarm(mesh=mesh0)
@@ -231,9 +226,9 @@ adds = swarmA.dm.getLocalSize() + 1
 
 swarm0.dm.addNPoints(adds)
 
-with swarm0.access(swarm0._particle_coordinates, gradS0), swarmA.access():
-    swarm0.data[:, :] = swarmA.data[:, :]
-    gradS0.data[:, :] = gradSA.data[:, :]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+swarm0.data[:, :] = swarmA.data[:, :]
+gradS0.data[:, :] = gradSA.data[:, :]
 
 # Be cautious here
 # uw.mpi.barrier()

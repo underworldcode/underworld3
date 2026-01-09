@@ -95,13 +95,13 @@ if mesh.sf is None:
 iset = mesh.dm.getVertexNumbering()
 indices = iset.getIndices()
 
-with mesh.access(p, v, vc, pc, index1p, index1pc):
-    p.data[:, 0] = p.coords[:, 0]
-    v.data[:, :] = v.coords[:, :]
-    vc.data[:, :] = 0.0
-    pc.data[:, 0] = 0.0
-    index1p.data[:, 0] = indices.astype(float)
-    index1pc.data[:, 0] = 0.0
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+p.data[:, 0] = p.coords[:, 0]
+v.data[:, :] = v.coords[:, :]
+vc.data[:, :] = 0.0
+pc.data[:, 0] = 0.0
+index1p.data[:, 0] = indices.astype(float)
+index1pc.data[:, 0] = 0.0
 
 # %%
 # with mesh.access(p,v, vc, pc, iv):
@@ -123,10 +123,10 @@ mesh.write_visualisation_xdmf(
 
 
 # %%
-with mesh.access(vc, pc, index1pc):
-    vc.data[:, :] = 0.0
-    pc.data[:, 0] = 0.0
-    index1pc.data[:, 0] = 0.0
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+vc.data[:, :] = 0.0
+pc.data[:, 0] = 0.0
+index1pc.data[:, 0] = 0.0
 
 pc.load_from_checkpoint(f"test_checkpointing_np1.P.0.h5", data_name="P")
 index1pc.load_from_checkpoint(
@@ -134,12 +134,12 @@ index1pc.load_from_checkpoint(
 )
 
 # %%
-with mesh.access(p, v, vc, pc):
-    if uw.mpi.rank == 0:
-        print(f"P   - {p.data[0:10].T}", flush=True)
-        print(f"Pc  - {pc.data[0:10].T}", flush=True)
-        print(f"Ixc - {index1pc.data[0:10].astype(int).T}", flush=True)
-        print(f"Ix  - {index1p.data[0:10].astype(int).T}", flush=True)
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+if uw.mpi.rank == 0:
+    print(f"P   - {p.data[0:10].T}", flush=True)
+    print(f"Pc  - {pc.data[0:10].T}", flush=True)
+    print(f"Ixc - {index1pc.data[0:10].astype(int).T}", flush=True)
+    print(f"Ix  - {index1p.data[0:10].astype(int).T}", flush=True)
 
 
 # %%
@@ -218,11 +218,11 @@ pc = uw.discretisation.MeshVariable("Pc", mesh, 1, degree=1, continuous=True)
 
 
 # %%
-with mesh.access(p, v, vc, pc):
-    p.data[:, 0] = p.coords[:, 0]
-    v.data[:, :] = v.coords[:, :]
-    vc.data[:, :] = 0.0
-    pc.data[:, 0] = 0.0
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+p.data[:, 0] = p.coords[:, 0]
+v.data[:, :] = v.coords[:, :]
+vc.data[:, :] = 0.0
+pc.data[:, 0] = 0.0
 
 
 # %%
@@ -304,13 +304,11 @@ pc.load_from_checkpoint(f"{expt_name}.P.0.h5", data_name="P")
 
 
 # %%
-with mesh3.access():
-    V3 = v3.data.copy()
-    P3 = p3.data.copy()
+V3 = v3.data.copy()
+P3 = p3.data.copy()
 
-with mesh.access():
-    VC = vc.data.copy()
-    PC = pc.data.copy()
+VC = vc.data.copy()
+PC = pc.data.copy()
 
 # %%
 if uw.mpi.rank == 0:
@@ -377,15 +375,14 @@ if uw.mpi.rank == 0:
 vc.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
 
 # %%
-with mesh.access():
-    # it should be fine to test this proc-by-proc
-    assert (vc.data - v.data).max() < 0.001
-    if uw.mpi.rank == 0:
-        print("Mesh 1 - re-load success", flush=True)
+# it should be fine to test this proc-by-proc
+assert (vc.data - v.data).max() < 0.001
+if uw.mpi.rank == 0:
+    print("Mesh 1 - re-load success", flush=True)
 
-    assert (vc.data - vc.coords).max() < 0.001
-    if uw.mpi.rank == 0:
-        print("Mesh 1 validation success", flush=True)
+assert (vc.data - vc.coords).max() < 0.001
+if uw.mpi.rank == 0:
+    print("Mesh 1 validation success", flush=True)
 
 
 # %%
@@ -410,15 +407,15 @@ v2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
 p2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
 
 
-with mesh.access(), mesh2.access():
-    # it should be fine to test this proc-by-proc
-    assert (v2.data - v.data).max() < 0.001
-    if uw.mpi.rank == 0:
-        print("Mesh 2 re-load success")
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+# it should be fine to test this proc-by-proc
+assert (v2.data - v.data).max() < 0.001
+if uw.mpi.rank == 0:
+    print("Mesh 2 re-load success")
 
-    assert (v2.data - v2.coords).max() < 0.001
-    if uw.mpi.rank == 0:
-        print("Mesh 2 validation success")
+assert (v2.data - v2.coords).max() < 0.001
+if uw.mpi.rank == 0:
+    print("Mesh 2 validation success")
 
 
 # %%
@@ -438,22 +435,22 @@ p3 = uw.discretisation.MeshVariable("P", mesh3, 1, degree=1, continuous=True)
 v3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
 p3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
 
-with mesh3.access(), mesh.access():
-    print(f"i   - {uw.mpi.rank}: ", v3.data[0:7, 0].T)
-    print(f"ii  - {uw.mpi.rank}: ", v3.coords[0:7, 0].T)
-    print(f"iii - {uw.mpi.rank}: ", v.data[0:7, 0].T)
-    # print((v3.data - v3.coords).max())
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+print(f"i   - {uw.mpi.rank}: ", v3.data[0:7, 0].T)
+print(f"ii  - {uw.mpi.rank}: ", v3.coords[0:7, 0].T)
+print(f"iii - {uw.mpi.rank}: ", v.data[0:7, 0].T)
+# print((v3.data - v3.coords).max())
 
 # %%
-with mesh.access(), mesh3.access():
-    assert (v3.data - v3.coords).max() < 0.001
-    if uw.mpi.rank == 0:
-        print("Mesh 3 validation success")
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+assert (v3.data - v3.coords).max() < 0.001
+if uw.mpi.rank == 0:
+    print("Mesh 3 validation success")
 
-    # it should be fine to test this proc-by-proc
-    assert (v3.data - v.data).max() < 0.001
-    if uw.mpi.rank == 0:
-        print("Mesh 3 re-load success")
+# it should be fine to test this proc-by-proc
+assert (v3.data - v.data).max() < 0.001
+if uw.mpi.rank == 0:
+    print("Mesh 3 re-load success")
 
 
 # %%
@@ -559,13 +556,12 @@ swarm.populate(fill_param=5)
 
 blob = np.array([[sphereCentre[0], sphereCentre[1], sphereRadius, 1]])
 
-with swarm.access(material):
-    material.data[...] = materialLightIndex
+material.data[...] = materialLightIndex
 
-    for i in range(blob.shape[0]):
-        cx, cy, r, m = blob[i, :]
-        inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
-        material.data[inside] = m
+for i in range(blob.shape[0]):
+    cx, cy, r, m = blob[i, :]
+    inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
+    material.data[inside] = m
 
 # %%
 mat_density = np.array([densityBG, densitySphere])
@@ -650,9 +646,8 @@ h5.close()
 # %%
 
 # %%
-with mesh.access():
-    print(pc.data[10:20].T)
-    print(p.data[10:20].T)
+print(pc.data[10:20].T)
+print(p.data[10:20].T)
 
 # %%
 
@@ -907,8 +902,7 @@ if uw.mpi.rank == 0:
 # %%
 
 # %%
-with mesh3.access(p3):
-    p3.data[...] = 0.0
+p3.data[...] = 0.0
 
 # %%
 mesh3.dm.setName("uw_mesh_topology")
@@ -954,19 +948,16 @@ if uw.mpi.rank == 0:
 # %%
 ## Check the order is OK
 
-with mesh.access():
-    print(v.data[10:20, :])
-with mesh2.access():
-    print(v2.data[10:20, :])
-with mesh3.access():
-    print(v3.data[10:20, :])
+print(v.data[10:20, :])
+print(v2.data[10:20, :])
+print(v3.data[10:20, :])
 
 
 # %%
-with mesh.access(), mesh2.access():
-    print(v.data[10:20, :] - v2.data[10:20, :])
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+print(v.data[10:20, :] - v2.data[10:20, :])
 
-with mesh.access(), mesh3.access():
-    print(v.data[10:20, :] - v3.data[10:20, :])
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+print(v.data[10:20, :] - v3.data[10:20, :])
 
 # %%
