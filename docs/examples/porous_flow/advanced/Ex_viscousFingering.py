@@ -239,21 +239,20 @@ Random perturbation along the interface to trigger instability.
 # %%
 np.random.seed(100)
 
-with mesh.access(mat):
-    x0 = nd(2.5 * u.meter)
-    dx = max(mesh.get_min_radius(), nd(0.1 * u.meter))
+x0 = nd(2.5 * u.meter)
+dx = max(mesh.get_min_radius(), nd(0.1 * u.meter))
 
-    # Perturbations at interface
-    fluctuation = nd(0.01 * u.meter) * np.cos(
-        mat.coords[:, 1] / nd(0.5 * u.meter) * np.pi
-    )
-    fluctuation += nd(0.01 * u.meter) * np.cos(
-        mat.coords[:, 1] / nd(2.0 * u.meter) * np.pi
-    )
-    fluctuation += nd(0.05 * u.meter) * np.random.random(size=mat.coords.shape[0])
+# Perturbations at interface
+fluctuation = nd(0.01 * u.meter) * np.cos(
+    mat.coords[:, 1] / nd(0.5 * u.meter) * np.pi
+)
+fluctuation += nd(0.01 * u.meter) * np.cos(
+    mat.coords[:, 1] / nd(2.0 * u.meter) * np.pi
+)
+fluctuation += nd(0.05 * u.meter) * np.random.random(size=mat.coords.shape[0])
 
-    mat.data[...] = 0
-    mat.data[mat.coords[:, 0] + fluctuation < x0] = 1
+mat.data[...] = 0
+mat.data[mat.coords[:, 0] + fluctuation < x0] = 1
 
 # Initialize swarm material
 with swarm.access(material):

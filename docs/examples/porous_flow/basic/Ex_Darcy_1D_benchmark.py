@@ -145,9 +145,9 @@ darcy.add_dirichlet_bc(-1.0 * minY * max_pressure, "Bottom")
 # %%
 darcy.solve()
 
-with mesh.access(p_soln_0, v_soln_0):
-    p_soln_0.data[...] = p_soln.data[...]
-    v_soln_0.data[...] = v_soln.data[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+p_soln_0.data[...] = p_soln.data[...]
+v_soln_0.data[...] = v_soln.data[...]
 
 # %% [markdown]
 """

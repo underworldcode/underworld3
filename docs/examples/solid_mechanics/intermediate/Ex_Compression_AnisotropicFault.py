@@ -234,31 +234,30 @@ fault_segment_normals /= np.sqrt(
 # %%
 fault_centroid_index = uw.kdtree.KDTree(fault_segment_centroids)
 
-with mesh.access():
-    point_closest_seg, point_seg_sqdistance, _ = (
-        fault_centroid_index.find_closest_point(fault_dist.coords)
-    )
+point_closest_seg, point_seg_sqdistance, _ = (
+    fault_centroid_index.find_closest_point(fault_dist.coords)
+)
 
 point_seg_c_distance = np.sqrt(point_seg_sqdistance)
 point_closest_fault = fault_segments[point_closest_seg, 4]
 
-with mesh.access(fault_dist, fault_norm):
-    fault_norm.data[...] = fault_segment_normals[point_closest_seg, ...]
-    fault_dist.data[:, 0] = point_seg_c_distance[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+fault_norm.data[...] = fault_segment_normals[point_closest_seg, ...]
+fault_dist.data[:, 0] = point_seg_c_distance[...]
 
-    # True distance ... takes time, so we only do the closest points
+# True distance ... takes time, so we only do the closest points
 
-    # close_points = np.where(fault_dist.data[:, 0] < mesh.get_min_radius() * 8)[0]
-    # close_segments = fault_segments[point_closest_seg[close_points]]
+# close_points = np.where(fault_dist.data[:, 0] < mesh.get_min_radius() * 8)[0]
+# close_segments = fault_segments[point_closest_seg[close_points]]
 
-    # for i in range(close_points.shape[0]):
-    #     pt = close_points[i]
-    #     sg = close_segments[i]
-    #     dt = uw.utilities.distance_pointcloud_linesegment(
-    #         fault_dist.coords[pt].reshape(1, 2), sg[0:2], sg[2:4]
-    #     )[0]
+# for i in range(close_points.shape[0]):
+#     pt = close_points[i]
+#     sg = close_segments[i]
+#     dt = uw.utilities.distance_pointcloud_linesegment(
+#         fault_dist.coords[pt].reshape(1, 2), sg[0:2], sg[2:4]
+#     )[0]
 
-    #     fault_dist.data[pt, 0] = dt
+#     fault_dist.data[pt, 0] = dt
 
 
 # %%

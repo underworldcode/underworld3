@@ -119,8 +119,7 @@ if uw.mpi.size == 1:
 
 
 # %%
-with swarm.access():
-    print(swarm.data.shape)
+print(swarm.data.shape)
 
 # %%
 14*6

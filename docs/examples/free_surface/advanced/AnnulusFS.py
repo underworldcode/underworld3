@@ -332,18 +332,17 @@ mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Lower",0)
 
 _ra, _l1 = init_mesh.CoordinateSystem.xR
 _ra_new, _l1_new = perturbation_init(init_mesh)
-with init_mesh.access(Bmesh):
-    #Bmesh.data[:,0] = uw.function.evaluate(_ra,init_mesh.X.coords)
-    Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.X.coords[botwall])
-    Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.X.coords[topwall])
+#Bmesh.data[:,0] = uw.function.evaluate(_ra,init_mesh.X.coords)
+Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.X.coords[botwall])
+Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.X.coords[topwall])
 mesh_solver.solve()
 
 def update_mesh():
-    with init_mesh.access(Rmesh):
-        new_mesh_coords = init_mesh.X.coords
-        new_mesh_th = uw.function.evaluate(init_mesh.CoordinateSystem.xR[1],init_mesh.X.coords)
-        new_mesh_coords[:,0] = Rmesh.data[:,0]*np.cos(new_mesh_th)
-        new_mesh_coords[:,1] = Rmesh.data[:,0]*np.sin(new_mesh_th)
+    # TODO: Review synchronisation - complex mesh update logic
+    new_mesh_coords = init_mesh.X.coords.copy()
+    new_mesh_th = uw.function.evaluate(init_mesh.CoordinateSystem.xR[1],init_mesh.X.coords)
+    new_mesh_coords[:,0] = Rmesh.data[:,0]*np.cos(new_mesh_th)
+    new_mesh_coords[:,1] = Rmesh.data[:,0]*np.sin(new_mesh_th)
     return new_mesh_coords
 new_mesh_coords = update_mesh()
 mesh._deform_mesh(new_mesh_coords)
@@ -644,18 +643,17 @@ class FreeSurfaceProcessor_Annulus(object):
             # Spline top surface
             f = interp1d(th2, ra2, kind='cubic', fill_value='extrapolate')
 
-            with self.init_mesh.access(self.Bmesh):
-                self.Bmesh.data[self.bot0, 0] = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[0],self.init_mesh.X.coords[self.bot0])
-                self.Bmesh.data[self.top0, 0] = f(th)      
+            self.Bmesh.data[self.bot0, 0] = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[0],self.init_mesh.X.coords[self.bot0])
+            self.Bmesh.data[self.top0, 0] = f(th)      
         uw.mpi.barrier()
         #self.Bmesh.syncronise()
 
     def _update_mesh(self):
-        with self.init_mesh.access():
-            new_mesh_coords = self.init_mesh.X.coords
-            new_mesh_l1 = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[1],self.init_mesh.X.coords)
-            new_mesh_coords[:,0] = self.Rmesh.data[:,0]*np.cos(new_mesh_l1)
-            new_mesh_coords[:,1] = self.Rmesh.data[:,0]*np.sin(new_mesh_l1)
+        # TODO: Review synchronisation - complex mesh update logic
+        new_mesh_coords = self.init_mesh.X.coords.copy()
+        new_mesh_l1 = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[1],self.init_mesh.X.coords)
+        new_mesh_coords[:,0] = self.Rmesh.data[:,0]*np.cos(new_mesh_l1)
+        new_mesh_coords[:,1] = self.Rmesh.data[:,0]*np.sin(new_mesh_l1)
         return new_mesh_coords
     
     def solve(self):
@@ -701,8 +699,7 @@ while time < (max_time+ dt_set):
     if step%save_every ==0:
         if uw.mpi.rank == 0:
             print(f'\nSave data:')
-        with mesh.access(timeField):
-            timeField.data[:,0] = dim(time, u.megayear).m
+        timeField.data[:,0] = dim(time, u.megayear).m
 
         mesh.petsc_save_checkpoint(meshVars=[v, p, timeField], index=step, outputPath=outputPath)
         #swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=outputPath) 

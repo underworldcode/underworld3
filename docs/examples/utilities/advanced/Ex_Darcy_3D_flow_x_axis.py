@@ -159,9 +159,9 @@ plot_P_V(mesh, p_soln, v_soln)
 # -
 
 # # copy soln
-with mesh.access(p_soln_0, v_soln_0):
-    p_soln_0.data[...] = p_soln.data[...]
-    v_soln_0.data[...] = v_soln.data[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+p_soln_0.data[...] = p_soln.data[...]
+v_soln_0.data[...] = v_soln.data[...]
 
 # + editable=true slideshow={"slide_type": ""}
 # now switch on gravity

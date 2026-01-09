@@ -431,8 +431,7 @@ def uw3_stokesSinker(render=True):
         with swarm.access():
             point_cloud.point_data["M"] = material.data.copy()
 
-        with mesh.access():
-            vsol = v.data.copy()
+        vsol = v.data.copy()
 
         arrow_loc = np.zeros((v.coords.shape[0], 3))
         arrow_loc[:, 0:2] = v.coords[...]

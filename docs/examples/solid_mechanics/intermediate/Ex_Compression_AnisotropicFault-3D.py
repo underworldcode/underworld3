@@ -119,26 +119,22 @@ sample_points = pv.PolyData(fault_dist.coords)
 pv_mesh_d = sample_points.compute_implicit_distance(surf2d)
 sample_points.point_data["df"] = pv_mesh_d.point_data["implicit_distance"]
 
-with mesh.access(fault_dist):
-    fault_dist.data[:, 0] = np.abs(sample_points.point_data["df"])
+fault_dist.data[:, 0] = np.abs(sample_points.point_data["df"])
 
 pv_mesh_d = sample_points.compute_implicit_distance(surf2d_1)
 sample_points.point_data["df"] = pv_mesh_d.point_data["implicit_distance"]
 
-with mesh.access(fault_dist):
-    fault_dist.data[:, 0] = np.minimum(np.abs(sample_points.point_data["df"]), fault_dist.data[:, 0])
+fault_dist.data[:, 0] = np.minimum(np.abs(sample_points.point_data["df"]), fault_dist.data[:, 0])
 
 pv_mesh_d = sample_points.compute_implicit_distance(surf2d_2)
 sample_points.point_data["df"] = pv_mesh_d.point_data["implicit_distance"]
 
-with mesh.access(fault_dist):
-    fault_dist.data[:, 0] = np.minimum(np.abs(sample_points.point_data["df"]), fault_dist.data[:, 0])
+fault_dist.data[:, 0] = np.minimum(np.abs(sample_points.point_data["df"]), fault_dist.data[:, 0])
 
 pv_mesh_d = sample_points.compute_implicit_distance(surf2d_3)
 sample_points.point_data["df"] = pv_mesh_d.point_data["implicit_distance"]
 
-with mesh.access(fault_dist):
-    fault_dist.data[:, 0] = np.minimum(np.abs(sample_points.point_data["df"]), fault_dist.data[:, 0])
+fault_dist.data[:, 0] = np.minimum(np.abs(sample_points.point_data["df"]), fault_dist.data[:, 0])
 
 
 # %%
@@ -146,36 +142,32 @@ with mesh.access(fault_dist):
 
 surf2D_tree = uw.kdtree.KDTree(surf2d.points)
 
-with mesh.access(fault_norm):
-    closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
-    dist = np.sqrt(dist_sq)
-    mask = dist < mesh.get_min_radius() * 2.5
-    fault_norm.data[mask] = surf2d.point_data["Normals"][closest_points[mask]]
+closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
+dist = np.sqrt(dist_sq)
+mask = dist < mesh.get_min_radius() * 2.5
+fault_norm.data[mask] = surf2d.point_data["Normals"][closest_points[mask]]
 
 surf2D_tree = uw.kdtree.KDTree(surf2d_1.points)
 
-with mesh.access(fault_norm):
-    closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
-    dist = np.sqrt(dist_sq)
-    mask = dist < mesh.get_min_radius() * 2.5
-    fault_norm.data[mask] = surf2d_1.point_data["Normals"][closest_points[mask]]
+closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
+dist = np.sqrt(dist_sq)
+mask = dist < mesh.get_min_radius() * 2.5
+fault_norm.data[mask] = surf2d_1.point_data["Normals"][closest_points[mask]]
 
 surf2D_tree = uw.kdtree.KDTree(surf2d_2.points)
 
-with mesh.access(fault_norm):
-    closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
-    dist = np.sqrt(dist_sq)
-    mask = dist < mesh.get_min_radius() * 2.5
-    fault_norm.data[mask] = surf2d_2.point_data["Normals"][closest_points[mask]]
+closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
+dist = np.sqrt(dist_sq)
+mask = dist < mesh.get_min_radius() * 2.5
+fault_norm.data[mask] = surf2d_2.point_data["Normals"][closest_points[mask]]
 
 
 surf2D_tree = uw.kdtree.KDTree(surf2d_3.points)
 
-with mesh.access(fault_norm):
-    closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
-    dist = np.sqrt(dist_sq)
-    mask = dist < mesh.get_min_radius() * 2.5
-    fault_norm.data[mask] = surf2d_3.point_data["Normals"][closest_points[mask]]
+closest_points, dist_sq, _ = surf2D_tree.find_closest_point(fault_norm.coords)
+dist = np.sqrt(dist_sq)
+mask = dist < mesh.get_min_radius() * 2.5
+fault_norm.data[mask] = surf2d_3.point_data["Normals"][closest_points[mask]]
 
 
 

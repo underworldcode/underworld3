@@ -161,8 +161,7 @@ import sympy
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.cos(2.0 * mesh.N.y)
 
-with mesh.access(bcs_var):
-    bcs_var.data[:, 0] = uw.function.evaluate(bc, bcs_var.coords)
+bcs_var.data[:, 0] = uw.function.evaluate(bc, bcs_var.coords)
 
 poisson.add_dirichlet_bc(bcs_var.sym[0], "Upper", components=0)
 poisson.add_dirichlet_bc(-1.0, "Centre", components=0)

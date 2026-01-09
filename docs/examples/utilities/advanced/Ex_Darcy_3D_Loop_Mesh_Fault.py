@@ -277,8 +277,7 @@ darcy.add_dirichlet_bc(1.0 * maxX * max_pressure, "Right")
 permeability = uw.discretisation.MeshVariable('K', mesh, 1, degree=0, continuous=False)
 
 # setting a array to store k values
-with mesh.access(permeability):
-    perm_arr = np.zeros_like(permeability.data)
+perm_arr = np.zeros_like(permeability.data)
 
 # +
 # # dealing with vertices
@@ -351,8 +350,7 @@ comm.Barrier()
 # -
 
 # assigning k values to mesh variable
-with mesh.access(permeability):
-    permeability.data[...] = perm_arr
+permeability.data[...] = perm_arr
 
 darcy.constitutive_model.Parameters.permeability = permeability.sym[0]
 
@@ -375,9 +373,9 @@ if uw.mpi.size==1:
     plot_P_V(mesh, p_soln, v_soln)
 
 # # copy soln
-with mesh.access(p_soln_0, v_soln_0):
-    p_soln_0.data[...] = p_soln.data[...]
-    v_soln_0.data[...] = v_soln.data[...]
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+p_soln_0.data[...] = p_soln.data[...]
+v_soln_0.data[...] = v_soln.data[...]
 
 # now switch on gravity
 darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0, -1]).T

@@ -106,9 +106,9 @@ scalar = uw.discretisation.MeshVariable(
 # +
 init_value = 0.25 * sympy.cos(8.0 * sympy.pi * x) * sympy.sin(sympy.pi * y) + (1-y)
 
-with mesh.access(V, phi):
-    V.data[...] = 0.0
-    phi.data[...] = uw.function.evaluate(init_value, phi.coords).reshape(-1, 1)
+# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
+V.data[...] = 0.0
+phi.data[...] = uw.function.evaluate(init_value, phi.coords).reshape(-1, 1)
 
 # -
 

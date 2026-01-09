@@ -234,8 +234,7 @@ stokes.solve(zero_init_guess=True)
 timing.print_table(display_fraction=0.999)
 
 # Save solution with Dirichlet BCs
-with mesh.access(v0):
-    v0.data[...] = v.data[...]
+v0.data[...] = v.data[...]
 
 # %% [markdown]
 """
@@ -259,8 +258,7 @@ timing.start()
 stokes.solve()
 timing.print_table(display_fraction=0.999)
 
-with mesh.access(v1):
-    v1.data[...] = v.data[...]
+v1.data[...] = v.data[...]
 
 # %% [markdown]
 """
@@ -350,10 +348,9 @@ try:
 
     comm = MPI.COMM_WORLD
 
-    with mesh.access(v):
-        num = function.evaluate(v.fn, mesh.X.coords)
-        if comm.rank == 0:
-            print(f"Velocity difference norm: {LA.norm(v.data - vel_soln_analytic):.6e}")
+    num = function.evaluate(v.fn, mesh.X.coords)
+    if comm.rank == 0:
+        print(f"Velocity difference norm: {LA.norm(v.data - vel_soln_analytic):.6e}")
     comm.barrier()
 except ImportError:
     import warnings

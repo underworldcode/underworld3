@@ -762,11 +762,10 @@ R.transpose()
 # above config.  Exclude boundaries from mesh data. 
 
 import numpy as np
-with mesh.access():
-    mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.X.coords)
-    mesh_analytic_soln = uw.function.evaluate(1.0-mesh.N.y, mesh.X.coords)
-    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
-        raise RuntimeError("Unexpected values encountered.")
+mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.X.coords)
+mesh_analytic_soln = uw.function.evaluate(1.0-mesh.N.y, mesh.X.coords)
+if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
+    raise RuntimeError("Unexpected values encountered.")
 
 # %%
 (mesh_analytic_soln - mesh_numerical_soln).max()
@@ -793,10 +792,9 @@ if MPI.COMM_WORLD.size==1:
         
 
 
-    with mesh.access():
-        pvmesh.point_data["T"]  = mesh_analytic_soln
-        pvmesh.point_data["T2"] = mesh_numerical_soln
-        pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"] 
+    pvmesh.point_data["T"]  = mesh_analytic_soln
+    pvmesh.point_data["T2"] = mesh_numerical_soln
+    pvmesh.point_data["DT"] = pvmesh.point_data["T"] - pvmesh.point_data["T2"] 
     
     pl = pv.Plotter()
 

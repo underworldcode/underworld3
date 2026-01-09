@@ -234,11 +234,10 @@ t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
 def get_dt():
     updateFields()
-    with mesh.access(k):
-        ### estimate the timestep based on diffusion only
-        dt = (
-            mesh.get_min_radius() ** 2 / k.data[:, 0].max()
-        )  ### dt = length squared / diffusivity
+    ### estimate the timestep based on diffusion only
+    dt = (
+        mesh.get_min_radius() ** 2 / k.data[:, 0].max()
+    )  ### dt = length squared / diffusivity
 
     # print(f'dt: {dt*time_scale_Myr} Myr')
     print(f"dt: {dt*time_scale_Myr}")

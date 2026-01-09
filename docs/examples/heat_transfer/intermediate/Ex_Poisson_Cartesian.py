@@ -193,8 +193,7 @@ k_variable = sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2))
 
 poisson.constitutive_model.Parameters.diffusivity = k_variable
 
-with mesh.access():
-    orig_soln = poisson.u.data.copy()
+orig_soln = poisson.u.data.copy()
 
 # %%
 poisson.solve(zero_init_guess=True, _force_setup=True)
@@ -202,9 +201,8 @@ poisson.solve(zero_init_guess=True, _force_setup=True)
 print(poisson.Unknowns.u.stats())
 
 # Confirm results changed
-with mesh.access():
-    if np.allclose(poisson.u.data, orig_soln, rtol=0.001):
-        raise RuntimeError("Values did not change with variable diffusivity!")
+if np.allclose(poisson.u.data, orig_soln, rtol=0.001):
+    raise RuntimeError("Values did not change with variable diffusivity!")
 
 # %% [markdown]
 """
@@ -248,9 +246,8 @@ projection.smoothing = 1.0e-4
 
 projection.solve()
 
-with mesh.access():
-    print(f"Phi stats: {phi.stats()}")
-    print(f"dPhi/dy stats: {scalar.stats()}")
+print(f"Phi stats: {phi.stats()}")
+print(f"dPhi/dy stats: {scalar.stats()}")
 
 # %% [markdown]
 """
