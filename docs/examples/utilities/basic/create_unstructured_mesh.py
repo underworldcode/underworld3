@@ -73,9 +73,9 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     qdegree=2
 )
 
-print(f"✓ Created {mesh.data.shape[0]} node unstructured mesh")
+print(f"✓ Created {mesh.X.coords.shape[0]} vertex unstructured mesh")
 print(f"  Target cell size: {CELL_SIZE}")
-print(f"  Actual elements: ~{mesh.data.shape[0] // 3}")
+print(f"  Actual elements: ~{mesh.X.coords.shape[0] // 3}")
 
 # %% [markdown]
 """

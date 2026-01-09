@@ -177,10 +177,9 @@ gradT_projector.solve()
 
 import numpy as np
 
-with mesh.access():
-    mesh_numerical_soln = uw.function.evaluate(t_soln.sym[0], mesh.data)
-    # if not np.allclose(mesh_numerical_soln, -1.0, rtol=0.01):
-    #     raise RuntimeError("Unexpected values encountered.")
+mesh_numerical_soln = uw.function.evaluate(t_soln.sym[0], mesh.X.coords)
+# if not np.allclose(mesh_numerical_soln, -1.0, rtol=0.01):
+#     raise RuntimeError("Unexpected values encountered.")
 
 #
 # Validate

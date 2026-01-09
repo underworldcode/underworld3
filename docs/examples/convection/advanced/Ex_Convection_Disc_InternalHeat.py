@@ -301,7 +301,7 @@ if params.uw_restart_step != 0:
 
 # %%
 with meshball.access(r_mesh):
-    r_mesh.data[:, 0] = uw.function.evalf(r, meshball.data)
+    r_mesh.X.coords[:, 0] = uw.function.evalf(r, meshball.data)
 
 # %% [markdown]
 """

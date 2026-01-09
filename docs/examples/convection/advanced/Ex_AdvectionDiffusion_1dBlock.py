@@ -192,8 +192,7 @@ adv_diff.add_dirichlet_bc(0.0, "Right")
 """
 
 # %%
-with mesh.access(T):
-    T.data[:, 0] = uw.function.evalf(Ts0, T.coords)
+T.data[:, 0] = uw.function.evalf(Ts0, T.coords)
 
 # %% [markdown]
 """

@@ -93,8 +93,8 @@ x, y = mesh.X
 
 h_fn = 1.0 + x * 0.2 / 4 + 0.04 * sympy.cos(2.0 * np.pi * x) * y
 
-new_coords = mesh.data.copy()
-new_coords[:, 1] = uw.function.evaluate(h_fn * y, mesh.data, mesh.N)
+new_coords = mesh.X.coords.copy()
+new_coords[:, 1] = uw.function.evaluate(h_fn * y, mesh.X.coords, mesh.N)
 
 mesh._deform_mesh(new_coords=new_coords)
 

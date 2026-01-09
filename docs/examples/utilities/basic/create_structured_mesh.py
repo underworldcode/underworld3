@@ -65,7 +65,7 @@ mesh = uw.meshing.StructuredQuadBox(
     qdegree=ELEMENT_DEGREE
 )
 
-print(f"✓ Created {mesh.data.shape[0]} node structured mesh")
+print(f"✓ Created {mesh.X.coords.shape[0]} vertex structured mesh")
 print(f"  Elements: {RESOLUTION}×{RESOLUTION}")
 print(f"  Domain: {DOMAIN_SIZE}×{DOMAIN_SIZE}")
 

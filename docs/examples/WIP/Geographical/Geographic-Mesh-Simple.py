@@ -69,8 +69,8 @@ print(f"unit_up shape: {unit_up.shape}")
 
 # %%
 # BEFORE: Manual coordinate conversions everywhere
-# R = uw.function.evalf(cs_mesh.CoordinateSystem.R, cs_mesh.data)
-# for node in range(cs_mesh.data.shape[0]):
+# R = uw.function.evalf(cs_mesh.CoordinateSystem.R, cs_mesh.X.coords)
+# for node in range(cs_mesh.X.coords.shape[0]):
 #     ph1 = R[node, 2]
 #     th1 = R[node, 1]
 #     longitude = 360 * ph1 / (2 * np.pi)
@@ -97,8 +97,8 @@ print(f"\nCreated topography variable: {topo.name}")
 # %%
 # BEFORE: Complicated topography mapping with manual conversions
 # with cs_mesh.access(topo):
-#     R = uw.function.evalf(cs_mesh.CoordinateSystem.R, cs_mesh.data)
-#     for node in range(cs_mesh.data.shape[0]):
+#     R = uw.function.evalf(cs_mesh.CoordinateSystem.R, cs_mesh.X.coords)
+#     for node in range(cs_mesh.X.coords.shape[0]):
 #         ph1 = R[node, 2]
 #         th1 = R[node, 1]
 #         topo.data[node, 0] = ep_topo_value(

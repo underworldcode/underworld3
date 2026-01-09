@@ -51,7 +51,7 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     qdegree=3
 )
 
-print(f"Mesh created with {mesh.data.shape[0]} vertices")
+print(f"Mesh created with {mesh.X.coords.shape[0]} vertices")
 
 # %%
 # Create variable

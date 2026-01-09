@@ -333,15 +333,15 @@ mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Lower",0)
 _ra, _l1 = init_mesh.CoordinateSystem.xR
 _ra_new, _l1_new = perturbation_init(init_mesh)
 with init_mesh.access(Bmesh):
-    #Bmesh.data[:,0] = uw.function.evaluate(_ra,init_mesh.data)
-    Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.data[botwall])
-    Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.data[topwall])
+    #Bmesh.data[:,0] = uw.function.evaluate(_ra,init_mesh.X.coords)
+    Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.X.coords[botwall])
+    Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.X.coords[topwall])
 mesh_solver.solve()
 
 def update_mesh():
     with init_mesh.access(Rmesh):
-        new_mesh_coords = init_mesh.data
-        new_mesh_th = uw.function.evaluate(init_mesh.CoordinateSystem.xR[1],init_mesh.data)
+        new_mesh_coords = init_mesh.X.coords
+        new_mesh_th = uw.function.evaluate(init_mesh.CoordinateSystem.xR[1],init_mesh.X.coords)
         new_mesh_coords[:,0] = Rmesh.data[:,0]*np.cos(new_mesh_th)
         new_mesh_coords[:,1] = Rmesh.data[:,0]*np.sin(new_mesh_th)
     return new_mesh_coords
@@ -401,10 +401,10 @@ if render:
     top_l0 = uw.function.evaluate(mesh0.CoordinateSystem.xR[1],mesh0.data[topwall])
     top_r0 = uw.function.evaluate(mesh0.CoordinateSystem.xR[0],mesh0.data[topwall])
     
-    top_x1 = mesh.data[topwall,0]
-    top_y1 = mesh.data[topwall,1]
-    top_l1 = uw.function.evaluate(mesh.CoordinateSystem.xR[1],mesh.data[topwall])
-    top_r1 = uw.function.evaluate(mesh.CoordinateSystem.xR[0],mesh.data[topwall])
+    top_x1 = mesh.X.coords[topwall,0]
+    top_y1 = mesh.X.coords[topwall,1]
+    top_l1 = uw.function.evaluate(mesh.CoordinateSystem.xR[1],mesh.X.coords[topwall])
+    top_r1 = uw.function.evaluate(mesh.CoordinateSystem.xR[0],mesh.X.coords[topwall])
     
     fname = r"Mesh0Mesh1_xy"
     fig, ax1 = plt.subplots(nrows=1, figsize=(5,5))
@@ -492,7 +492,7 @@ stokes.petsc_options["snes_monitor_short"] = None
 # top = topwall
 # _dt = dt_set
 
-# coords = mesh.data[top]
+# coords = mesh.X.coords[top]
 # x = coords[:,0]
 # y = coords[:,-1]
 # vx = uw.function.evalf(v.sym[0], coords)
@@ -621,7 +621,7 @@ class FreeSurfaceProcessor_Annulus(object):
      
     def _advect_surface(self):
         if self.top.size > 0:
-            coords = self.mesh.data[self.top]
+            coords = self.mesh.X.coords[self.top]
             x = coords[:,0]
             y = coords[:,-1]
             vx = uw.function.evalf(self.v.sym[0], coords)
@@ -645,15 +645,15 @@ class FreeSurfaceProcessor_Annulus(object):
             f = interp1d(th2, ra2, kind='cubic', fill_value='extrapolate')
 
             with self.init_mesh.access(self.Bmesh):
-                self.Bmesh.data[self.bot0, 0] = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[0],self.init_mesh.data[self.bot0])
+                self.Bmesh.data[self.bot0, 0] = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[0],self.init_mesh.X.coords[self.bot0])
                 self.Bmesh.data[self.top0, 0] = f(th)      
         uw.mpi.barrier()
         #self.Bmesh.syncronise()
 
     def _update_mesh(self):
         with self.init_mesh.access():
-            new_mesh_coords = self.init_mesh.data
-            new_mesh_l1 = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[1],self.init_mesh.data)
+            new_mesh_coords = self.init_mesh.X.coords
+            new_mesh_l1 = uw.function.evaluate(self.init_mesh.CoordinateSystem.xR[1],self.init_mesh.X.coords)
             new_mesh_coords[:,0] = self.Rmesh.data[:,0]*np.cos(new_mesh_l1)
             new_mesh_coords[:,1] = self.Rmesh.data[:,0]*np.sin(new_mesh_l1)
         return new_mesh_coords
@@ -737,10 +737,10 @@ while time < (max_time+ dt_set):
 # %%
 
 # %%
-top_x2 = mesh.data[topwall,0]
-top_y2 = mesh.data[topwall,1]
-top_l2 = uw.function.evaluate(mesh.CoordinateSystem.xR[1],mesh.data[topwall])
-top_r2 = uw.function.evaluate(mesh.CoordinateSystem.xR[0],mesh.data[topwall])
+top_x2 = mesh.X.coords[topwall,0]
+top_y2 = mesh.X.coords[topwall,1]
+top_l2 = uw.function.evaluate(mesh.CoordinateSystem.xR[1],mesh.X.coords[topwall])
+top_r2 = uw.function.evaluate(mesh.CoordinateSystem.xR[0],mesh.X.coords[topwall])
 
 ra_sol = top_r2[np.argsort(top_l2)]  
 th_sol = top_l2[np.argsort(top_l2)]  

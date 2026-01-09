@@ -186,7 +186,7 @@ if uw.mpi.size == 1:
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, mesh.data)
+    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, mesh.X.coords)
 
     # clipped_stack = pvmesh.clip(origin=(0.001,0.0,0.0), normal=(1, 0, 0), invert=False)
 

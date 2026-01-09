@@ -142,9 +142,8 @@ A = (t_i - t_o) / (sympy.log(r_i) - math.log(r_o))
 B = t_o - A * sympy.log(r_o)
 sol = A * sympy.log(sympy.sqrt(mesh.N.x**2 + mesh.N.y**2)) + B
 
-with mesh.access():
-    mesh_analytic_soln = uw.function.evaluate(sol, mesh.data, mesh.N)
-    mesh_numerical_soln = uw.function.evaluate(t_soln.fn, mesh.data, mesh.N)
+mesh_analytic_soln = uw.function.evaluate(sol, mesh.X.coords, mesh.N)
+mesh_numerical_soln = uw.function.evaluate(t_soln.fn, mesh.X.coords, mesh.N)
 
 if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
     raise RuntimeError("2D validation failed: numerical solution differs from analytical.")

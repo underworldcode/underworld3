@@ -288,7 +288,7 @@ stokes.bodyforce = sympy.Matrix([0, 0])
 # Compute distance to inclusion
 hw = 1000.0 / res
 with pipemesh.access(r_inc):
-    r_inc.data[:, 0] = uw.function.evalf(r, pipemesh.data, pipemesh.N)
+    r_inc.data[:, 0] = uw.function.evalf(r, pipemesh.X.coords, pipemesh.N)
 
 surface_defn = sympy.exp(-(((r_inc.sym[0] - radius) / radius) ** 2) * hw)
 

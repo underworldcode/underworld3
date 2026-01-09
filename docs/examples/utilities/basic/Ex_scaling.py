@@ -193,9 +193,9 @@ mesh = uw.meshing.StructuredQuadBox(elementRes=(int(res), int(res)), minCoords=(
 
 
 # %%
-dim(mesh.data, u.kilometer)
+dim(mesh.X.coords, u.kilometer)
 
 # %%
-mesh.data
+mesh.X.coords
 
 # %%

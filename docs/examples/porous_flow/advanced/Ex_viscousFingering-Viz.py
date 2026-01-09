@@ -113,10 +113,10 @@ mesh = uw.discretisation.Mesh(f"{base_filename}.mesh.00000.h5")
 
 x,y = mesh.X
 
-minX = mesh.data[:,0].min()
-minY = mesh.data[:,1].min()
-maxX = mesh.data[:,0].max()
-maxY = mesh.data[:,1].max()
+minX = mesh.X.coords[:,0].min()
+minY = mesh.X.coords[:,1].min()
+maxX = mesh.X.coords[:,0].max()
+maxY = mesh.X.coords[:,1].max()
 
 v_soln_ckpt = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
 p_soln_ckpt = uw.discretisation.MeshVariable("P", mesh, 1, degree=2)

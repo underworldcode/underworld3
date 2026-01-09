@@ -76,14 +76,14 @@ if uw.mpi.size == 1:
 
     # with mesh.access():
     #     pvmesh.point_data["Vmag"] = uw.function.evalf(
-    #         sympy.sqrt(v_soln.sym.dot(v_soln.sym)), mesh.data
+    #         sympy.sqrt(v_soln.sym.dot(v_soln.sym)), mesh.X.coords
     #     )
-    #     pvmesh.point_data["P"] = uw.function.evalf(p_soln.fn, mesh.data)
+    #     pvmesh.point_data["P"] = uw.function.evalf(p_soln.fn, mesh.X.coords)
 
 
-    # v_vectors = np.zeros((mesh.data.shape[0], 3))
-    # v_vectors[:, 0] = uw.function.evalf(v_soln[0].sym, mesh.data)
-    # v_vectors[:, 1] = uw.function.evalf(v_soln[1].sym, mesh.data)
+    # v_vectors = np.zeros((mesh.X.coords.shape[0], 3))
+    # v_vectors[:, 0] = uw.function.evalf(v_soln[0].sym, mesh.X.coords)
+    # v_vectors[:, 1] = uw.function.evalf(v_soln[1].sym, mesh.X.coords)
     # pvmesh.point_data["V"] = v_vectors
 
     # arrow_loc = np.zeros((v_soln.coords.shape[0], 3))

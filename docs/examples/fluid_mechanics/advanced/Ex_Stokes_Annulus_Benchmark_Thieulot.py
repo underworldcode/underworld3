@@ -240,15 +240,15 @@ uw.pprint('---------------------------------------------------------------------
 """
 
 # %%
-v_uw = uw.discretisation.MeshVariable(r'{V_u}', mesh, mesh.data.shape[1], degree=vdegree)
+v_uw = uw.discretisation.MeshVariable(r'{V_u}', mesh, mesh.dim, degree=vdegree)
 p_uw = uw.discretisation.MeshVariable(r'{P_u}', mesh, 1, degree=pdegree, continuous=pcont)
 
 if analytical:
-    v_ana = uw.discretisation.MeshVariable(r'{V_a}', mesh, mesh.data.shape[1], degree=vdegree)
+    v_ana = uw.discretisation.MeshVariable(r'{V_a}', mesh, mesh.dim, degree=vdegree)
     p_ana = uw.discretisation.MeshVariable(r'{P_a}', mesh, 1, degree=pdegree, continuous=pcont)
     rho_ana = uw.discretisation.MeshVariable(r'{RHO_a}', mesh, 1, degree=pdegree, continuous=True)
 
-    v_err = uw.discretisation.MeshVariable(r'{V_e}', mesh, mesh.data.shape[1], degree=vdegree)
+    v_err = uw.discretisation.MeshVariable(r'{V_e}', mesh, mesh.dim, degree=vdegree)
     p_err = uw.discretisation.MeshVariable(r'{P_e}', mesh, 1, degree=pdegree, continuous=pcont)
 
 # %% [markdown]
@@ -613,9 +613,9 @@ lower_indx = uw.discretisation.petsc_discretisation.petsc_dm_find_labeled_points
 upper_indx = uw.discretisation.petsc_discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Upper')
 
 # Get theta from x, y
-lower_theta = uw.function.evalf(th_uw, mesh.data[lower_indx])
+lower_theta = uw.function.evalf(th_uw, mesh.X.coords[lower_indx])
 lower_theta[lower_theta < 0] += 2 * np.pi
-upper_theta = uw.function.evalf(th_uw, mesh.data[upper_indx])
+upper_theta = uw.function.evalf(th_uw, mesh.X.coords[upper_indx])
 upper_theta[upper_theta < 0] += 2 * np.pi
 
 # %%
@@ -632,23 +632,23 @@ if analytical:
             p_ana_lower[:, 0] = 0
             p_ana_upper[:, 0] = 0
         else:
-            p_ana_lower[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.data[lower_indx])
-            p_ana_upper[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.data[upper_indx])
-        p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.data[lower_indx])
-        p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.data[upper_indx])
+            p_ana_lower[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[lower_indx])
+            p_ana_upper[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[upper_indx])
+        p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[lower_indx])
+        p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[upper_indx])
 
         # Velocity arrays
-        v_ana_lower = np.zeros_like(mesh.data[lower_indx])
-        v_ana_upper = np.zeros_like(mesh.data[upper_indx])
-        v_uw_lower = np.zeros_like(mesh.data[lower_indx])
-        v_uw_upper = np.zeros_like(mesh.data[upper_indx])
+        v_ana_lower = np.zeros_like(mesh.X.coords[lower_indx])
+        v_ana_upper = np.zeros_like(mesh.X.coords[upper_indx])
+        v_uw_lower = np.zeros_like(mesh.X.coords[lower_indx])
+        v_uw_upper = np.zeros_like(mesh.X.coords[upper_indx])
 
-        v_ana_lower[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.data[lower_indx])
-        v_ana_lower[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.data[lower_indx])
-        v_ana_upper[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.data[upper_indx])
-        v_ana_upper[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.data[upper_indx])
-        v_uw_lower = uw.function.evalf(v_uw.sym, mesh.data[lower_indx])
-        v_uw_upper = uw.function.evalf(v_uw.sym, mesh.data[upper_indx])
+        v_ana_lower[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[lower_indx])
+        v_ana_lower[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[lower_indx])
+        v_ana_upper[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[upper_indx])
+        v_ana_upper[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[upper_indx])
+        v_uw_lower = uw.function.evalf(v_uw.sym, mesh.X.coords[lower_indx])
+        v_uw_upper = uw.function.evalf(v_uw.sym, mesh.X.coords[upper_indx])
 
 # Sort arrays for plotting
 sort_lower = lower_theta.argsort()

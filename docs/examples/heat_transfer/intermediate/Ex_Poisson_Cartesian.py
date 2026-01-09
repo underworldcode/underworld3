@@ -170,15 +170,14 @@ For this configuration, the solution is a linear function: phi = 1 - y
 """
 
 # %%
-with mesh.access():
-    mesh_numerical_soln = uw.function.evalf(poisson.u.fn, mesh.data)
-    mesh_analytic_soln = uw.function.evalf(1.0 - mesh.N.y, mesh.data)
+mesh_numerical_soln = uw.function.evalf(poisson.u.fn, mesh.X.coords)
+mesh_analytic_soln = uw.function.evalf(1.0 - mesh.N.y, mesh.X.coords)
 
-    max_error = np.abs(mesh_analytic_soln - mesh_numerical_soln).max()
-    print(f"Maximum error: {max_error:.2e}")
+max_error = np.abs(mesh_analytic_soln - mesh_numerical_soln).max()
+print(f"Maximum error: {max_error:.2e}")
 
-    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.0001):
-        print("Warning: Numerical solution differs from analytical")
+if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.0001):
+    print("Warning: Numerical solution differs from analytical")
 
 # %% [markdown]
 """

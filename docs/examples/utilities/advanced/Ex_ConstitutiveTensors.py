@@ -763,8 +763,8 @@ R.transpose()
 
 import numpy as np
 with mesh.access():
-    mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.data)
-    mesh_analytic_soln = uw.function.evaluate(1.0-mesh.N.y, mesh.data)
+    mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.X.coords)
+    mesh_analytic_soln = uw.function.evaluate(1.0-mesh.N.y, mesh.X.coords)
     if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.01):
         raise RuntimeError("Unexpected values encountered.")
 

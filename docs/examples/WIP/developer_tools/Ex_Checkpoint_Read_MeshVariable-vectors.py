@@ -305,7 +305,7 @@ with mesh.access():
 # %%
 if uw.mpi.rank == 0:
     print(f"Original =================", flush=True)
-    print(mesh.data[0:10, 0], flush=True)
+    print(mesh.X.coords[0:10, 0], flush=True)
 
 # %%
 if uw.mpi.rank == 0:

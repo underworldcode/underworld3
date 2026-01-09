@@ -203,7 +203,7 @@ stokes.saddle_preconditioner = 1 / viscosity
 
 with mesh.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(
-        sympy.sqrt(x**2 + y**2 + z**2), mesh.data, mesh.N
+        sympy.sqrt(x**2 + y**2 + z**2), mesh.X.coords, mesh.N
     )  # cf radius_fn which is 0->1
 
 

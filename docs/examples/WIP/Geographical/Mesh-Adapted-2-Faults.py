@@ -288,7 +288,7 @@ with meshA.access(fault_distanceA, fault_normalsA):
 upper_points = uw.discretisation.petsc_dm_find_labeled_points_local(
     cs_mesh.dm, "UW_Boundaries", 2
 )
-upper_surface_polydata = pv.PolyData(cs_mesh.data[upper_points])
+upper_surface_polydata = pv.PolyData(cs_mesh.X.coords[upper_points])
 upper_tri_surface = upper_surface_polydata.delaunay_2d(offset=0.01)
 upper_tri_surface.texture_map_to_plane(inplace=True)
 

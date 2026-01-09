@@ -329,7 +329,7 @@ if uw.mpi.size == 1:
 
     pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["V"] = uw.visualisation.vector_fn_to_pv_points(pvmesh, v.sym)
-    pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.data)
+    pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.X.coords)
 
     swarm_points = underworld3.visualisation.swarm_to_pv_cloud(swarm)
     swarm_points.point_data["M"] = uw.visualisation.scalar_fn_to_pv_points(

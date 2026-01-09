@@ -102,8 +102,8 @@ diffuser.solve()
 # %%
 ## Now deform the mesh using this smooth field
 
-displacement = uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.data)
-mesh._deform_mesh(mesh.data + displacement)
+displacement = uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
+mesh._deform_mesh(mesh.X.coords + displacement)
 
 
 # %%
@@ -234,11 +234,11 @@ for step in range(0,100):
     diffuser.solve(zero_init_guess=False)
     
     # delta_t.value = stokes.estimate_dt()
-    displacement = delta_t.value * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.data)
+    displacement = delta_t.value * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
 
     print(f"Displacement - Amplitude: {np.abs(displacement).max()}")
 
-    mesh._deform_mesh(mesh.data + displacement)
+    mesh._deform_mesh(mesh.X.coords + displacement)
     
     stokes.solve(zero_init_guess=False)
 

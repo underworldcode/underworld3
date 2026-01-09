@@ -344,14 +344,14 @@ try:
     import underworld as uw2
 
     solC = uw2.function.analytic.SolC()
-    vel_soln_analytic = solC.fn_velocity.evaluate(mesh.data)
+    vel_soln_analytic = solC.fn_velocity.evaluate(mesh.X.coords)
     from mpi4py import MPI
     from numpy import linalg as LA
 
     comm = MPI.COMM_WORLD
 
     with mesh.access(v):
-        num = function.evaluate(v.fn, mesh.data)
+        num = function.evaluate(v.fn, mesh.X.coords)
         if comm.rank == 0:
             print(f"Velocity difference norm: {LA.norm(v.data - vel_soln_analytic):.6e}")
     comm.barrier()

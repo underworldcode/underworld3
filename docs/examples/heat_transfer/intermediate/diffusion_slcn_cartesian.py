@@ -148,8 +148,9 @@ initial_condition = sp.Piecewise(
 )
 
 # Set initial temperature distribution
+# Use temperature.coords for DOF coordinates (P2 has more points than mesh vertices)
 with uw.function.expression(initial_condition) as initial_temp_fn:
-    temperature.array[:] = uw.function.evaluate(initial_temp_fn, mesh.data)
+    temperature.array[:, 0, 0] = uw.function.evaluate(initial_temp_fn, temperature.coords)
 
 print(f"Initial temperature range: {temperature.array.min():.3f} to {temperature.array.max():.3f}")
 

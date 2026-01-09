@@ -193,11 +193,10 @@ for step in range(0, 50):
 
 
 
-with mesh.access():
-    mesh_numerical_soln = uw.function.evalf(poisson.u.fn, mesh.data)
-    mesh_analytic_soln = uw.function.evalf(1.0 - mesh.N.y, mesh.data)
-    if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.0001):
-        print("Unexpected values encountered.")
+mesh_numerical_soln = uw.function.evalf(poisson.u.fn, mesh.X.coords)
+mesh_analytic_soln = uw.function.evalf(1.0 - mesh.N.y, mesh.X.coords)
+if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.0001):
+    print("Unexpected values encountered.")
 
 
 # Validate

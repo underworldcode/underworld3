@@ -65,8 +65,8 @@ temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 temperature.array[:] = 0.0
 
 print(f"🎉 Welcome to Underworld3!")
-print(f"✓ Created mesh with {mesh.data.shape[0]} nodes")
-print(f"✓ Created temperature field with {temperature.array.shape[0]} DOF")
+print(f"✓ Created mesh with {mesh.X.coords.shape[0]} vertices")
+print(f"✓ Created temperature field with {temperature.coords.shape[0]} DOFs")
 
 # %% [markdown]
 """

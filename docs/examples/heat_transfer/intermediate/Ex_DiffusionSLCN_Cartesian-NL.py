@@ -144,18 +144,19 @@ adv_diff.add_dirichlet_bc(0.5, "Bottom", 0)
 adv_diff.add_dirichlet_bc(0.5, "Top", 0)
 
 
-maxY = mesh.data[:, 1].max()
-minY = mesh.data[:, 1].min()
+# Use variable coords for coordinate bounds and conditions
+y_coords = T.coords[:, 1]
+maxY = y_coords.max()
+minY = y_coords.min()
 
-with mesh.access(T):
-    T.data[...] = tmin
+T.data[...] = tmin
 
-    pipePosition = ((maxY - minY) - pipe_thickness) / 2.0
+pipePosition = ((maxY - minY) - pipe_thickness) / 2.0
 
-    T.data[
-        (mesh.data[:, 1] >= (mesh.data[:, 1].min() + pipePosition))
-        & (mesh.data[:, 1] <= (mesh.data[:, 1].max() - pipePosition))
-    ] = tmax
+T.data[
+    (y_coords >= (minY + pipePosition))
+    & (y_coords <= (maxY - pipePosition))
+] = tmax
 
 
 def plot_fig():
@@ -217,11 +218,11 @@ plot_fig()
 
 ### y coords to sample
 sample_y = np.arange(
-    mesh.data[:, 1].min(), mesh.data[:, 1].max(), mesh.get_min_radius()
+    mesh.X.coords[:, 1].min(), mesh.X.coords[:, 1].max(), mesh.get_min_radius()
 )  ### Vertical profile
 
 ### x coords to sample
-# sample_x = np.repeat(mesh.data[:,0].min(), sample_y.shape[0]) ### LHS wall
+# sample_x = np.repeat(mesh.X.coords[:,0].min(), sample_y.shape[0]) ### LHS wall
 sample_x = np.zeros_like(sample_y)  ### centre of the box
 
 sample_points = np.empty((sample_x.shape[0], 2))

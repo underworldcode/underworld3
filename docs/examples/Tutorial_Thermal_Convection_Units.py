@@ -168,7 +168,7 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     qdegree=2
 )
 
-print(f"Mesh created: {mesh.data.shape[0]} nodes")
+print(f"Mesh created: {mesh.X.coords.shape[0]} nodes")
 print(f"Domain: 0 to {width_model.value:.1f} × 0 to {height_model.value:.1f} (model units)")
 print(f"Cell size: 0.05 model units = {0.05 * domain_width.to('km').magnitude:.0f} km")
 
@@ -333,7 +333,7 @@ for step in range(max_steps):
         # Calculate velocity magnitude
         vel_mag = uw.function.evaluate(
             (velocity[0]**2 + velocity[1]**2)**0.5, 
-            mesh.data
+            mesh.X.coords
         ).max()
 
         # Convert velocity to physical units

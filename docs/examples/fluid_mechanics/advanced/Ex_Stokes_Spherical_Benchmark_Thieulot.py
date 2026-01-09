@@ -334,15 +334,15 @@ uw.pprint('---------------------------------------------------------------------
 """
 
 # %%
-v_uw = uw.discretisation.MeshVariable('V_u', mesh, mesh.data.shape[1], degree=vdegree)
+v_uw = uw.discretisation.MeshVariable('V_u', mesh, mesh.dim, degree=vdegree)
 p_uw = uw.discretisation.MeshVariable('P_u', mesh, 1, degree=pdegree, continuous=pcont)
 
 if analytical:
-    v_ana = uw.discretisation.MeshVariable('V_a', mesh, mesh.data.shape[1], degree=vdegree)
+    v_ana = uw.discretisation.MeshVariable('V_a', mesh, mesh.dim, degree=vdegree)
     p_ana = uw.discretisation.MeshVariable('P_a', mesh, 1, degree=pdegree, continuous=pcont)
     rho_ana = uw.discretisation.MeshVariable('RHO_a', mesh, 1, degree=pdegree, continuous=True)
 
-    v_err = uw.discretisation.MeshVariable('V_e', mesh, mesh.data.shape[1], degree=vdegree)
+    v_err = uw.discretisation.MeshVariable('V_e', mesh, mesh.dim, degree=vdegree)
     p_err = uw.discretisation.MeshVariable('P_e', mesh, 1, degree=pdegree, continuous=pcont)
 
 # %% [markdown]

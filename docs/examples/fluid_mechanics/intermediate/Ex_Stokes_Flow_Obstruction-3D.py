@@ -259,7 +259,7 @@ stokes.penalty = 10
 stokes.bodyforce = sympy.Matrix([0, 0, 0])
 
 with pipemesh.access(r_inc):
-    r_inc.data[:, 0] = uw.function.evalf(r_cyl, pipemesh.data)
+    r_inc.data[:, 0] = uw.function.evalf(r_cyl, pipemesh.X.coords)
 
 # Boundary conditions
 stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "walls")

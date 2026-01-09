@@ -159,20 +159,21 @@ Hot rectangular region in center of domain.
 """
 
 # %%
-maxY = mesh.data[:, 1].max()
-minY = mesh.data[:, 1].min()
+# Use variable coords for coordinate bounds and conditions
+y_coords = T.coords[:, 1]
+maxY = y_coords.max()
+minY = y_coords.min()
 
-with mesh.access(T):
-    T.data[...] = params.uw_t_min
+T.data[...] = params.uw_t_min
 
-    # Center the pipe vertically
-    pipe_position = ((maxY - minY) - params.uw_pipe_thickness) / 2.0
+# Center the pipe vertically
+pipe_position = ((maxY - minY) - params.uw_pipe_thickness) / 2.0
 
-    # Set hot region
-    T.data[
-        (mesh.data[:, 1] >= (minY + pipe_position))
-        & (mesh.data[:, 1] <= (maxY - pipe_position))
-    ] = params.uw_t_max
+# Set hot region
+T.data[
+    (y_coords >= (minY + pipe_position))
+    & (y_coords <= (maxY - pipe_position))
+] = params.uw_t_max
 
 # %% [markdown]
 """
@@ -222,7 +223,7 @@ Numerical 1D diffusion for comparison.
 # %%
 # Sample points for vertical profile
 sample_y = np.arange(
-    mesh.data[:, 1].min(), mesh.data[:, 1].max(), mesh.get_min_radius()
+    mesh.X.coords[:, 1].min(), mesh.X.coords[:, 1].max(), mesh.get_min_radius()
 )
 sample_x = np.zeros_like(sample_y)  # center of box
 

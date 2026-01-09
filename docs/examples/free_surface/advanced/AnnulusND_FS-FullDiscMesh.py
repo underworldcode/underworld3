@@ -151,8 +151,8 @@ g_solver.solve()
 # %%
 ## Now deform the mesh using this smooth field
 
-displacement = uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.data)
-mesh._deform_mesh(mesh.data + displacement)
+displacement = uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
+mesh._deform_mesh(mesh.X.coords + displacement)
 
 
 # %%
@@ -404,11 +404,11 @@ for step in range(0,10):
     g_solver.solve()
 
     delta_t.sym = stokes.estimate_dt() / 3
-    displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.data)
+    displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords)
 
     print(f"ts: {ts} / Displacement - Amplitude: {np.abs(displacement).max()}")
 
-    mesh._deform_mesh(mesh.data + displacement)
+    mesh._deform_mesh(mesh.X.coords + displacement)
     
     stokes.solve(zero_init_guess=False, _force_setup=True)
 
@@ -431,11 +431,11 @@ for step in range(0,10):
 #     g_solver.solve()
 
 #     delta_t.sym = stokes.estimate_dt() / 2
-#     displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.data)
+#     displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords)
 
 #     print(f"ts: {ts} / Displacement - Amplitude: {np.abs(displacement).max()}")
 
-#     mesh._deform_mesh(mesh.data + displacement)
+#     mesh._deform_mesh(mesh.X.coords + displacement)
     
 #     stokes.solve(zero_init_guess=False, _force_setup=True)
 
@@ -461,11 +461,11 @@ for step in range(0,10):
 #     g_solver.solve()
 
 #     delta_t.sym = stokes.estimate_dt() / 2
-#     displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.data)
+#     displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords)
 
 #     print(f"ts: {ts} / Displacement - Amplitude: {np.abs(displacement).max()}")
 
-#     mesh._deform_mesh(mesh.data + displacement)
+#     mesh._deform_mesh(mesh.X.coords + displacement)
     
 #     stokes.solve(zero_init_guess=False, _force_setup=True)
 
@@ -489,11 +489,11 @@ for step in range(0,10):
 #     g_solver.solve()
 
 #     delta_t.sym = stokes.estimate_dt() / 2
-#     displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.data)
+#     displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords)
 
 #     print(f"ts: {ts} / Displacement - Amplitude: {np.abs(displacement).max()}")
 
-#     mesh._deform_mesh(mesh.data + displacement)
+#     mesh._deform_mesh(mesh.X.coords + displacement)
     
 #     stokes.solve(zero_init_guess=False, _force_setup=True)
 

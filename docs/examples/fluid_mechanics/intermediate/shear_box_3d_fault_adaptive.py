@@ -242,8 +242,7 @@ metric = fault.refinement_metric(
     profile="smoothstep",
 )
 
-with mesh.access(metric):
-    print(f"Metric range: h_min={metric.data.min():.4f}, h_max={metric.data.max():.4f}")
+print(f"Metric range: h_min={metric.data.min():.4f}, h_max={metric.data.max():.4f}")
 
 # %% [markdown]
 """

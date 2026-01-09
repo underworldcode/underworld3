@@ -92,7 +92,7 @@ pressure = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
 temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
 # %% [markdown]
-"""
+r"""
 ## Stokes Solver
 
 Buoyancy force from Boussinesq approximation:
@@ -144,10 +144,13 @@ Linear temperature profile with small perturbation to trigger convection.
 """
 
 # %%
-with mesh.access(temperature):
-    temperature.array[:] = 1.0 - mesh.data[:, 1]  # Linear profile
-    # Add small perturbation to trigger convection
-    temperature.array[:] += 0.01 * np.sin(np.pi * mesh.data[:, 0] / params.uw_aspect_ratio)
+# Use temperature.coords to get coordinates at all DOF points (P2 has more than mesh vertices)
+x_dof = temperature.coords[:, 0]
+y_dof = temperature.coords[:, 1]
+
+temperature.array[:, 0, 0] = 1.0 - y_dof  # Linear profile
+# Add small perturbation to trigger convection
+temperature.array[:, 0, 0] += 0.01 * np.sin(np.pi * x_dof / params.uw_aspect_ratio)
 
 # %% [markdown]
 """

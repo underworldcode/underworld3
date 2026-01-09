@@ -56,8 +56,8 @@ if uw.mpi.size == 1:
 
     # pvmesh = vis.mesh_to_pv_mesh(bubblemesh)
     pvmesh = pv.read("tmpManifold.msh")
-    pvmesh.point_data["lon"] = bubblemesh.data[:,0]
-    pvmesh.point_data["lat"] = bubblemesh.data[:,1]
+    pvmesh.point_data["lon"] = bubblemesh.X.coords[:,0]
+    pvmesh.point_data["lat"] = bubblemesh.X.coords[:,1]
     
     pl = pv.Plotter()
 
@@ -163,7 +163,7 @@ if uw.mpi.size == 1:
    
     with bubblemesh.access():
         pvmesh.point_data["nT"] = Tnode.data[:,0]
-        pvmesh.point_data["dT"] = uw.function.evaluate(Tdiff.sym[0], bubblemesh.data)
+        pvmesh.point_data["dT"] = uw.function.evaluate(Tdiff.sym[0], bubblemesh.X.coords)
         pvmesh.point_data["dTc"] = Tdiffc.data[:,0]
 
 # +
