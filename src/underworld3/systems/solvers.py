@@ -152,8 +152,7 @@ from .ddt import Symbolic as Symbolic_DDt
 
 
 class SNES_Poisson(SNES_Scalar):
-    r"""
-    Poisson equation solver.
+    r"""Poisson equation solver.
 
     Provides a discrete representation of the Poisson equation:
 
@@ -163,6 +162,21 @@ class SNES_Poisson(SNES_Scalar):
 
     where :math:`\mathbf{F} = \boldsymbol{\kappa} \nabla u` relates the flux to
     gradients in the unknown :math:`u`.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Pre-existing mesh variable for the solution. If None, one is created.
+    verbose : bool, optional
+        Enable verbose output during solve.
+    degree : int, optional
+        Polynomial degree for the solution field (default: 2).
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for time-dependent problems.
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for the flux.
 
     Attributes
     ----------
@@ -249,6 +263,7 @@ class SNES_Poisson(SNES_Scalar):
 
     @f.setter
     def f(self, value):
+        """Set the source term (handles units and scaling)."""
         self.is_setup = False
 
         # Handle UWQuantity with units - enforce "units everywhere" principle
@@ -310,6 +325,7 @@ class SNES_Poisson(SNES_Scalar):
 
     @property
     def CM_is_setup(self):
+        """Whether the constitutive model is configured for this solver."""
         return self._constitutive_model._solver_is_setup
 
 
@@ -447,24 +463,29 @@ class SNES_Darcy(SNES_Scalar):
 
     @property
     def f(self):
+        """Source term for the Darcy equation."""
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
     @property
     def darcy_flux(self):
+        """Darcy flux velocity computed from pressure gradient."""
         flux = self.constitutive_model.flux.T
         return flux
 
     @property
     def v(self):
+        """Projected Darcy velocity field."""
         return self._v
 
     @v.setter
     def v(self, value):
+        """Set the velocity projection target."""
         self._v_projector.is_setup = False
         self._v = sympify(value)
 
@@ -722,6 +743,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def CM_is_setup(self):
+        """Whether the constitutive model is configured for this solver."""
         return self._constitutive_model._solver_is_setup
 
     @property
@@ -899,6 +921,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @constraints.setter
     def constraints(self, constraints_matrix):
+        """Set the constraint equation (e.g., incompressibility)."""
         self._is_setup = False
         symval = sympify(constraints_matrix)
         self._constraints = symval
@@ -925,6 +948,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @bodyforce.setter
     def bodyforce(self, value):
+        """Set the body force vector (e.g., gravity, buoyancy)."""
         self.is_setup = False
         if isinstance(value, uw.function.expressions.UWexpression):
             self._bodyforce.sym = value.sym
@@ -965,6 +989,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
+        """Set the Schur complement preconditioner."""
         self.is_setup = False
         symval = sympify(value)
         self._saddle_preconditioner = symval
@@ -997,6 +1022,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @penalty.setter
     def penalty(self, value):
+        """Set the augmented Lagrangian penalty parameter."""
         self.is_setup = False
         self._penalty.sym = value
 
@@ -1388,6 +1414,7 @@ class SNES_Projection(SNES_Scalar):
 
     @smoothing.setter
     def smoothing(self, smoothing_factor):
+        """Set the smoothing regularization parameter."""
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
 
@@ -1397,6 +1424,7 @@ class SNES_Projection(SNES_Scalar):
 
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
+        """Set the weighting function for the projection."""
         self.is_setup = False
         self._uw_weighting_function = user_uw_function
 
@@ -1526,6 +1554,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @smoothing.setter
     def smoothing(self, smoothing_factor):
+        """Set the smoothing regularization parameter."""
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
 
@@ -1535,6 +1564,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @penalty.setter
     def penalty(self, value):
+        """Set the divergence penalty parameter."""
         self.is_setup = False
         symval = sympify(value)
         self._penalty = symval
@@ -1545,6 +1575,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
+        """Set the weighting function for the projection."""
         self.is_setup = False
         self._uw_weighting_function = user_uw_function
 
@@ -1682,6 +1713,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @uw_scalar_function.setter
     def uw_scalar_function(self, user_uw_function):
+        """Set the scalar component function for current tensor element."""
         self.is_setup = False
         self._uw_scalar_function = user_uw_function
 
@@ -1916,6 +1948,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @f.setter
     def f(self, value):
+        """Set the volumetric source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
@@ -1975,6 +2008,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @delta_t.setter
     def delta_t(self, value):
+        """Set the timestep (handles unit conversion if provided)."""
         self.is_setup = False
 
         # Handle Pint Quantities with time dimensions
@@ -2393,19 +2427,23 @@ class SNES_Diffusion(SNES_Scalar):
 
     @property
     def f(self):
+        """Source term for the diffusion equation."""
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the volumetric source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
     @property
     def delta_t(self):
+        """Timestep for time integration."""
         return self._delta_t
 
     @delta_t.setter
     def delta_t(self, value):
+        """Set the timestep (handles unit conversion if provided)."""
         self.is_setup = False
 
         # Handle Pint Quantities with time dimensions
@@ -2838,28 +2876,34 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def delta_t(self):
+        """Timestep for time integration."""
         return self._delta_t
 
     @delta_t.setter
     def delta_t(self, value):
+        """Set the timestep value."""
         self.is_setup = False
         self._delta_t.sym = value
 
     @property
     def rho(self):
+        """Fluid density."""
         return self._rho
 
     @rho.setter
     def rho(self, value):
+        """Set the fluid density."""
         self.is_setup = False
         self._rho.sym = value
 
     @property
     def f(self):
+        """Source term for the momentum equation."""
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the volumetric source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
@@ -2875,6 +2919,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def DuDt(self):
+        """Time derivative operator for velocity."""
         return self.Unknowns.DuDt
 
     @DuDt.setter
@@ -2882,48 +2927,58 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self,
         DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
+        """Set the time derivative operator for velocity."""
         self.Unknowns.DuDt = DuDt_value
         self._solver_is_setup = False
 
     @property
     def DFDt(self):
+        """Time derivative operator for stress flux."""
         return self.Unknowns.DFDt
 
     @property
     def constraints(self):
+        """Constraint equation (typically incompressibility)."""
         return self._constraints
 
     @constraints.setter
     def constraints(self, constraints_matrix):
+        """Set the constraint equation."""
         self._is_setup = False
         symval = sympify(constraints_matrix)
         self._constraints = symval
 
     @property
     def bodyforce(self):
+        """Body force vector (e.g., gravity)."""
         return self._bodyforce
 
     @bodyforce.setter
     def bodyforce(self, value):
+        """Set the body force vector."""
         self.is_setup = False
         self._bodyforce = self.mesh.vector.to_matrix(value)
 
     @property
     def saddle_preconditioner(self):
+        """Preconditioner for the Schur complement."""
         return self._saddle_preconditioner
 
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
+        """Set the Schur complement preconditioner."""
         self.is_setup = False
         symval = sympify(value)
         self._saddle_preconditioner = symval
 
     @property
     def penalty(self):
+        """Augmented Lagrangian penalty parameter."""
         return self._penalty
 
     @penalty.setter
     def penalty(self, value):
+        """Set the augmented Lagrangian penalty parameter."""
         self.is_setup = False
         self._penalty.sym = value
 
