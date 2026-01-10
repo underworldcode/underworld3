@@ -2506,7 +2506,7 @@ class Swarm(Stateful, uw_object):
         r"""Particle coordinates (alias for :attr:`points`).
 
         .. deprecated:: 0.99.0
-            Use swarm variable ``.data`` properties instead.
+            Use direct DM field access for particle coordinates.
 
         Returns
         -------

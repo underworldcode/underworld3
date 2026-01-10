@@ -300,7 +300,27 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
         super().__init__(mesh)
 
     def divergence(self, matrix):
-        r"""Compute :math:`\nabla \cdot \mathbf{v}`."""
+        r"""Divergence of a vector field in cylindrical coordinates.
+
+        Computes :math:`\nabla \cdot \mathbf{v}` with the cylindrical
+        metric terms:
+
+        .. math::
+
+            \nabla \cdot \mathbf{v} = \frac{\partial v_r}{\partial r}
+            + \frac{v_r}{r} + \frac{1}{r}\frac{\partial v_\theta}{\partial \theta}
+            + \frac{\partial v_z}{\partial z}
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix :math:`(v_r, v_\theta, v_z)`.
+
+        Returns
+        -------
+        sympy.Expr
+            Scalar divergence.
+        """
 
         r = self.mesh.CoordinateSystem.N[0]
         t = self.mesh.CoordinateSystem.N[1]
@@ -318,7 +338,26 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
         return div_V
 
     def gradient(self, scalar):
-        r"""Compute :math:`\nabla \phi`."""
+        r"""Gradient of a scalar field in cylindrical coordinates.
+
+        Computes :math:`\nabla \phi` with the cylindrical metric:
+
+        .. math::
+
+            \nabla \phi = \frac{\partial \phi}{\partial r}\hat{r}
+            + \frac{1}{r}\frac{\partial \phi}{\partial \theta}\hat{\theta}
+            + \frac{\partial \phi}{\partial z}\hat{z}
+
+        Parameters
+        ----------
+        scalar : sympy.Expr or sympy.Matrix
+            Scalar field. If (1,1) matrix, extracts the scalar.
+
+        Returns
+        -------
+        sympy.Matrix
+            Gradient vector as row matrix.
+        """
 
         if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
             scalar = scalar[0, 0]
@@ -339,7 +378,21 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
         return grad_S
 
     def curl(self, matrix):
-        r"""Compute :math:`\nabla \times \mathbf{v}` in cylindrical coordinates."""
+        r"""Curl of a vector field in cylindrical coordinates.
+
+        Computes :math:`\nabla \times \mathbf{v}` with cylindrical metric terms.
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix :math:`(v_r, v_\theta, v_z)`.
+
+        Returns
+        -------
+        sympy.Matrix or sympy.Expr
+            In 3D: curl vector as row matrix.
+            In 2D: scalar (out-of-plane vorticity component).
+        """
 
         r = self.mesh.CoordinateSystem.N[0]
         t = self.mesh.CoordinateSystem.N[1]
@@ -365,11 +418,20 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
         return curl_V
 
     def strain_tensor(self, vector):
-        """
-        Components of the infinitessimal strain or strain-rate tensor where the
-        vector that is provided is displacement or velocity respectively.
-        In cylindrical geometry, there are additional terms that include
-        the location of each point
+        r"""Strain tensor in cylindrical coordinates.
+
+        Computes the symmetric gradient with cylindrical metric corrections.
+        Additional terms arise from coordinate curvature.
+
+        Parameters
+        ----------
+        vector : sympy.Matrix
+            Displacement or velocity field :math:`(v_r, v_\theta, v_z)`.
+
+        Returns
+        -------
+        sympy.Matrix
+            Symmetric (dim x dim) strain tensor with cylindrical corrections.
         """
 
         # Coerce vector to sympy.Matrix form
@@ -534,10 +596,21 @@ class mesh_vector_calculus_cylindrical(mesh_vector_calculus):
 
 
 class mesh_vector_calculus_spherical(mesh_vector_calculus):
-    r"""
-    mesh_vector_calculus module for div, grad, curl etc that apply in
-    native spherical coordinates r, \theta, \phi in the standard definition
-    (radius, colatitude, longitude)
+    r"""Vector calculus operators for spherical coordinates.
+
+    Provides gradient, divergence, curl operations in spherical
+    :math:`(r, \theta, \phi)` coordinates using the standard physics
+    convention: radius, colatitude (polar angle), and longitude (azimuth).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        Mesh with spherical coordinate system.
+
+    Warnings
+    --------
+    Issues a warning if the mesh coordinate type is not
+    ``SPHERICAL_NATIVE``.
     """
 
     def __init__(self, mesh):
@@ -553,7 +626,20 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         super().__init__(mesh)
 
     def divergence(self, matrix):
-        r"""Compute :math:`\nabla \cdot \mathbf{v}`."""
+        r"""Divergence of a vector field in spherical coordinates.
+
+        Computes :math:`\nabla \cdot \mathbf{v}` with spherical metric terms.
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix :math:`(v_r, v_\theta, v_\phi)`.
+
+        Returns
+        -------
+        sympy.Expr
+            Scalar divergence.
+        """
 
         r = self.mesh.CoordinateSystem.N[0]
         t = self.mesh.CoordinateSystem.N[1]
@@ -579,7 +665,20 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         return div_V
 
     def gradient(self, scalar):
-        r"""Compute :math:`\nabla \phi`."""
+        r"""Gradient of a scalar field in spherical coordinates.
+
+        Computes :math:`\nabla \phi` with spherical metric terms.
+
+        Parameters
+        ----------
+        scalar : sympy.Expr or sympy.Matrix
+            Scalar field. If (1,1) matrix, extracts the scalar.
+
+        Returns
+        -------
+        sympy.Matrix
+            Gradient vector as row matrix :math:`(\partial_r, \partial_\theta/r, \partial_\phi/(r\sin\theta))`.
+        """
 
         if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
             scalar = scalar[0, 0]
@@ -603,7 +702,20 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         return grad_S
 
     def curl(self, matrix):
-        r"""Compute :math:`\nabla \times \mathbf{v}` in spherical coordinates."""
+        r"""Curl of a vector field in spherical coordinates.
+
+        Computes :math:`\nabla \times \mathbf{v}` with spherical metric terms.
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix :math:`(v_r, v_\theta, v_\phi)`.
+
+        Returns
+        -------
+        sympy.Matrix
+            Curl vector as row matrix.
+        """
 
         r = self.mesh.CoordinateSystem.N[0]
         l1 = self.mesh.CoordinateSystem.N[1]
@@ -625,11 +737,20 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
         return curl_V
 
     def strain_tensor(self, vector):
-        """
-        Components of the infinitessimal strain or strain-rate tensor where the
-        vector that is provided is displacement or velocity respectively.
-        In cylindrical geometry, there are additional terms that include
-        the location of each point
+        r"""Strain tensor in spherical coordinates.
+
+        Computes the symmetric gradient with spherical metric corrections
+        for :math:`(r, \theta, \phi)` coordinates.
+
+        Parameters
+        ----------
+        vector : sympy.Matrix
+            Displacement or velocity field :math:`(v_r, v_\theta, v_\phi)`.
+
+        Returns
+        -------
+        sympy.Matrix
+            Symmetric (3 x 3) strain tensor with spherical corrections.
         """
 
         # Coerce vector to sympy.Matrix form
@@ -661,12 +782,26 @@ class mesh_vector_calculus_spherical(mesh_vector_calculus):
 
 
 class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
-    """
-    mesh_vector_calculus module for div, grad, curl etc that apply in
-    native spherical coordinates on the surface of a sphere (r=r_0).
-    NOTE - our choice of coordinates
-    is slightly unusual - (radius) plus longitude and latitude (in radians)
-    for convenience when it comes to working with Earth-Science datasets
+    r"""Vector calculus operators for 2D spherical surface.
+
+    Provides gradient, divergence, curl operations on the surface of a
+    sphere using longitude-latitude :math:`(\lambda, \phi)` coordinates.
+    This convention is convenient for Earth-Science applications.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        Mesh with spherical surface coordinate system.
+
+    Notes
+    -----
+    The radius is fixed at :math:`r = 1` (unit sphere). Use coordinate
+    scaling if physical units are needed.
+
+    Warnings
+    --------
+    Issues a warning if the mesh coordinate type is not
+    ``SPHERE_SURFACE_NATIVE``.
     """
 
     def __init__(self, mesh):
@@ -682,7 +817,20 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
         super().__init__(mesh)
 
     def divergence(self, matrix):
-        r"""Compute :math:`\nabla \cdot \mathbf{v}`."""
+        r"""Divergence of a vector field on a spherical surface.
+
+        Computes :math:`\nabla \cdot \mathbf{v}` with surface metric terms.
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix :math:`(v_\lambda, v_\phi)`.
+
+        Returns
+        -------
+        sympy.Expr
+            Scalar divergence on the surface.
+        """
 
         r = sympy.sympify(1)
         l1 = self.mesh.CoordinateSystem.N[0]
@@ -704,7 +852,20 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
         return div_V
 
     def gradient(self, scalar):
-        r"""Compute :math:`\nabla \phi`."""
+        r"""Gradient of a scalar field on a spherical surface.
+
+        Computes :math:`\nabla \phi` on the unit sphere.
+
+        Parameters
+        ----------
+        scalar : sympy.Expr or sympy.Matrix
+            Scalar field. If (1,1) matrix, extracts the scalar.
+
+        Returns
+        -------
+        sympy.Matrix
+            Gradient vector as row matrix :math:`(\partial_\lambda/\cos\phi, \partial_\phi)`.
+        """
 
         if isinstance(scalar, sympy.Matrix) and scalar.shape == (1, 1):
             scalar = scalar[0, 0]
@@ -723,9 +884,22 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
 
         return grad_S
 
-    ## WIP - no R component or derivatives ... what does this mean ?
     def curl(self, matrix):
-        r"""Compute :math:`\nabla \times \mathbf{v}` in spherical coordinates."""
+        r"""Curl on a spherical surface.
+
+        Computes the scalar vorticity (out-of-surface curl component)
+        on the unit sphere.
+
+        Parameters
+        ----------
+        matrix : sympy.Matrix
+            Vector field as row matrix :math:`(v_\lambda, v_\phi)`.
+
+        Returns
+        -------
+        sympy.Expr
+            Scalar vorticity (radial component of curl).
+        """
 
         r = sympy.sympify(1)
         l1 = self.mesh.CoordinateSystem.N[0]
@@ -743,13 +917,21 @@ class mesh_vector_calculus_spherical_surface2D_lonlat(mesh_vector_calculus):
 
         return curl_V
 
-    ## WIP - no R component or derivatives
     def strain_tensor(self, vector):
-        """
-        Components of the infinitessimal strain or strain-rate tensor where the
-        vector that is provided is displacement or velocity respectively.
-        In cylindrical geometry, there are additional terms that include
-        the location of each point
+        r"""Strain tensor on a spherical surface.
+
+        Computes the symmetric gradient on the unit sphere with
+        surface metric corrections.
+
+        Parameters
+        ----------
+        vector : sympy.Matrix
+            Displacement or velocity field :math:`(v_\lambda, v_\phi)`.
+
+        Returns
+        -------
+        sympy.Matrix
+            Symmetric (2 x 2) strain tensor on the surface.
         """
 
         # Coerce vector to sympy.Matrix form

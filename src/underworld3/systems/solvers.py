@@ -476,16 +476,26 @@ class SNES_Darcy(SNES_Scalar):
         verbose: bool = False,
         _force_setup: bool = False,
     ):
-        """
-        Generates solution to constructed system.
+        r"""Solve the Darcy flow system.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        timestep:
-            value used to evaluate inertial contribution
+        Computes the pressure field and Darcy flux velocity.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, optional
+            If True (default), start from zero initial guess.
+            If False, use current field values as initial guess.
+        timestep : float, optional
+            Timestep value for inertial terms (if applicable).
+        verbose : bool, optional
+            If True, print solver progress information.
+        _force_setup : bool, optional
+            Force re-setup of solver even if already configured.
+
+        Notes
+        -----
+        After solving, the pressure field ``self.u`` and velocity field
+        ``self.v`` contain the solution.
         """
 
         if (not self.is_setup) or _force_setup:
