@@ -607,6 +607,24 @@ class _BaseMeshVariable(Stateful, uw_object):
         return
 
     def clone(self, name, varsymbol):
+        """Create a copy of this variable with new name and symbol.
+
+        Creates a new mesh variable with the same mesh, shape, type,
+        degree, and continuity as this variable, but with a different
+        name and symbolic representation.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new variable.
+        varsymbol : str
+            LaTeX symbol for the new variable.
+
+        Returns
+        -------
+        MeshVariable
+            New mesh variable with copied structure but independent data.
+        """
         newMeshVariable = MeshVariable(
             varname=name,
             mesh=self.mesh,
@@ -885,6 +903,29 @@ class _BaseMeshVariable(Stateful, uw_object):
             return data_array_3d
 
     def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
+        """Interpolate variable data to new coordinates using RBF.
+
+        Uses inverse distance weighting with k-nearest neighbors to
+        interpolate values from mesh nodes to arbitrary coordinates.
+
+        Parameters
+        ----------
+        new_coords : numpy.ndarray
+            Target coordinates of shape ``(n_points, dim)``.
+        meth : int, optional
+            Interpolation method (reserved, currently unused).
+        p : float, optional
+            Power parameter for inverse distance weighting (default: 2).
+        verbose : bool, optional
+            Print progress information.
+        nnn : int, optional
+            Number of nearest neighbors (default: 4 for 3D, 3 for 2D).
+
+        Returns
+        -------
+        numpy.ndarray
+            Interpolated values at new coordinates.
+        """
         # An inverse-distance mapping is quite robust here ... as long
         # as long we take care of the case where some nodes coincide (likely if used mesh2mesh)
 
@@ -2788,25 +2829,63 @@ class _BaseMeshVariable(Stateful, uw_object):
     # that they are tied to the appropriate mesh definition.
 
     def divergence(self):
+        r"""Divergence of this variable: :math:`\nabla \cdot \mathbf{v}`.
+
+        Uses the mesh's coordinate-aware vector calculus operators,
+        which correctly handle cylindrical, spherical, or other
+        non-Cartesian coordinate systems.
+
+        Returns
+        -------
+        sympy.Expr or None
+            Scalar divergence expression, or None if the operation fails.
+        """
         try:
             return self.mesh.vector.divergence(self.sym)
         except:
             return None
 
     def gradient(self):
+        r"""Gradient of this variable: :math:`\nabla u`.
+
+        Uses the mesh's coordinate-aware vector calculus operators.
+
+        Returns
+        -------
+        sympy.Matrix or None
+            Gradient vector as row matrix, or None if the operation fails.
+        """
         try:
             return self.mesh.vector.gradient(self.sym)
         except:
             return None
 
     def curl(self):
+        r"""Curl of this variable: :math:`\nabla \times \mathbf{v}`.
+
+        Uses the mesh's coordinate-aware vector calculus operators.
+
+        Returns
+        -------
+        sympy.Matrix, sympy.Expr, or None
+            Curl vector (3D) or scalar vorticity (2D), or None if fails.
+        """
         try:
             return self.mesh.vector.curl(self.sym)
         except:
             return None
 
     def jacobian(self):
-        ## validate if this is a vector ?
+        r"""Jacobian matrix of this variable.
+
+        Computes partial derivatives with respect to mesh coordinates:
+        :math:`J_{ij} = \partial v_i / \partial x_j`.
+
+        Returns
+        -------
+        sympy.Matrix
+            Jacobian matrix of shape (var_dim, mesh_dim).
+        """
         return self.mesh.vector.jacobian(self.sym)
 
 
