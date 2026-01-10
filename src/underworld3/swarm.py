@@ -1490,12 +1490,37 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
     @property
     def sym(self):
+        r"""Symbolic representation for use in equations.
+
+        Returns the symbolic expression from the proxy mesh variable,
+        which can be used in SymPy expressions for constitutive models,
+        boundary conditions, etc.
+
+        Returns
+        -------
+        sympy.Matrix
+            Symbolic matrix expression.
+
+        Notes
+        -----
+        The proxy is automatically updated if particle data has changed.
+        """
         # Ensure proxy is up to date before returning symbolic representation
         self._update_proxy_if_stale()
         return self._meshVar.sym
 
     @property
     def sym_1d(self):
+        r"""Flattened symbolic representation.
+
+        Returns the symbolic expression as a 1D (column) vector form,
+        useful for Voigt notation in tensor calculations.
+
+        Returns
+        -------
+        sympy.Matrix
+            Flattened symbolic expression.
+        """
         # Ensure proxy is up to date before returning symbolic representation
         self._update_proxy_if_stale()
         return self._meshVar.sym_1d
@@ -2461,12 +2486,33 @@ class Swarm(Stateful, uw_object):
 
     @property
     def local_size(self):
+        r"""Number of particles on this MPI rank.
+
+        Returns
+        -------
+        int
+            Local particle count.
+
+        See Also
+        --------
+        dm.getLocalSize : Underlying PETSc method.
+        """
         return self.dm.getLocalSize()
 
     # We could probably use a global_size property too
 
     @property
     def data(self):
+        r"""Particle coordinates (alias for :attr:`points`).
+
+        .. deprecated:: 0.99.0
+            Use swarm variable ``.data`` properties instead.
+
+        Returns
+        -------
+        numpy.ndarray
+            Particle coordinate array of shape ``(n_particles, dim)``.
+        """
         return self.points
 
     @property
@@ -3681,6 +3727,13 @@ class Swarm(Stateful, uw_object):
 
     @property
     def vars(self):
+        r"""List of SwarmVariables attached to this swarm.
+
+        Returns
+        -------
+        list
+            List of :class:`SwarmVariable` objects defined on this swarm.
+        """
         return self._vars
 
     def _legacy_access(self, *writeable_vars: SwarmVariable):

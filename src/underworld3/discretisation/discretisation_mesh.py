@@ -733,23 +733,45 @@ class Mesh(Stateful, uw_object):
 
     @property
     def dim(self) -> int:
-        """
-        The mesh dimensionality.
+        """Topological dimension of the mesh.
+
+        Returns
+        -------
+        int
+            The mesh dimension (2 for 2D, 3 for 3D).
         """
         return self.dm.getDimension()
 
     @property
     def cdim(self) -> int:
-        """
-        The mesh dimensionality.
+        """Coordinate dimension (embedding space dimension).
+
+        For most meshes, ``cdim == dim``. For surface meshes embedded in 3D
+        (e.g., a 2D spherical shell), ``dim=2`` but ``cdim=3``.
+
+        Returns
+        -------
+        int
+            The coordinate dimension.
         """
         return self.dm.getCoordinateDim()
 
     @property
     def element(self) -> dict:
-        """
-        The element information of the mesh (no mixed meshes in uw3) so this
-        applies to every cell of the `mesh dmplex object`
+        """Element type information for the mesh.
+
+        Contains details about the finite element discretization including
+        cell type, polynomial degree, and quadrature order.
+
+        Returns
+        -------
+        dict
+            Element information dictionary.
+
+        Notes
+        -----
+        UW3 does not support mixed-element meshes; this applies uniformly
+        to all cells.
         """
 
         return self._element
@@ -1397,59 +1419,102 @@ class Mesh(Stateful, uw_object):
 
     @property
     def N(self) -> sympy.vector.CoordSys3D:
-        """
-        The mesh coordinate system.
+        r"""SymPy coordinate system for symbolic calculus.
+
+        The base coordinate system used for gradient, divergence, and
+        curl operations. Access base scalars via ``mesh.N.x``, ``mesh.N.y``,
+        ``mesh.N.z`` and base vectors via ``mesh.N.i``, ``mesh.N.j``, ``mesh.N.k``.
+
+        Returns
+        -------
+        sympy.vector.CoordSys3D
+            The SymPy coordinate system object.
+
+        See Also
+        --------
+        X : Coordinate system with data access.
+        r : Tuple of coordinate scalars.
         """
         return self._N
 
     @property
     def Gamma_N(self) -> sympy.vector.CoordSys3D:
-        """
-        The mesh coordinate system.
+        r"""SymPy coordinate system for boundary/surface coordinates.
+
+        Returns
+        -------
+        sympy.vector.CoordSys3D
+            The boundary coordinate system object.
         """
         return self._Gamma
 
     @property
     def Gamma(self) -> sympy.vector.CoordSys3D:
-        """
-        The mesh coordinate system.
+        r"""Boundary coordinate scalars as a row matrix.
+
+        Returns
+        -------
+        sympy.Matrix
+            Row matrix of boundary coordinate scalars.
         """
         return sympy.Matrix(self._Gamma.base_scalars()[0 : self.cdim]).T
 
     @property
     def X(self):
-        """
-        Coordinate system object with symbolic coordinates and data access.
+        r"""Coordinate system with symbolic coordinates and data access.
 
-        Returns the CoordinateSystem object which provides:
-        - mesh.X[0] - Symbolic x-coordinate function
-        - mesh.X.coords - Coordinate data array (same as mesh.points)
-        - mesh.X.units - Coordinate units (same as mesh.units)
-        - x, y = mesh.X - Unpacking symbolic coordinates
+        The primary interface for mesh coordinates, providing both symbolic
+        expressions for equations and numerical data for evaluation.
 
-        For backward compatibility, the CoordinateSystem behaves like
-        a symbolic matrix for indexing and iteration.
+        Returns
+        -------
+        CoordinateSystem
+            Coordinate system object with:
 
-        Returns:
-            CoordinateSystem: Coordinate system with symbolic and data access
+            - ``mesh.X[0]``, ``mesh.X[1]``: Symbolic coordinate functions
+            - ``mesh.X.coords``: Coordinate data array (vertex positions)
+            - ``mesh.X.units``: Coordinate units
+            - ``x, y = mesh.X``: Unpack symbolic coordinates
+
+        Examples
+        --------
+        >>> x, y = mesh.X  # Symbolic coordinates for equations
+        >>> coords = mesh.X.coords  # Numerical vertex positions
+
+        See Also
+        --------
+        N : SymPy coordinate system for vector calculus.
         """
         return self._CoordinateSystem
 
     @property
     def CoordinateSystem(self) -> CoordinateSystem:
+        r"""Alias for :attr:`X` (the coordinate system object)."""
         return self._CoordinateSystem
 
     @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
-        """
-        The tuple of base scalar objects (N.x,N.y,N.z) for the mesh.
+        r"""Tuple of coordinate scalars :math:`(x, y)` or :math:`(x, y, z)`.
+
+        Returns
+        -------
+        tuple
+            Tuple of SymPy base scalars ``(N.x, N.y[, N.z])``.
+
+        See Also
+        --------
+        rvec : Position vector form.
         """
         return self._N.base_scalars()[0 : self.cdim]
 
     @property
     def rvec(self) -> sympy.vector.Vector:
-        """
-        The r vector, `r = N.x*N.i + N.y*N.j [+ N.z*N.k]`.
+        r"""Position vector :math:`\mathbf{r} = x\hat{i} + y\hat{j} [+ z\hat{k}]`.
+
+        Returns
+        -------
+        sympy.vector.Vector
+            The position vector in the mesh coordinate system.
         """
         N = self.N
 
