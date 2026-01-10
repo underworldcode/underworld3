@@ -232,6 +232,7 @@ class SNES_Poisson(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def poisson_problem_description(self):
+        """Build residual terms for Poisson FEM assembly."""
         # f1 residual term (weighted integration) - scalar function
         self._f0 = self.F0.sym
 
@@ -450,6 +451,7 @@ class SNES_Darcy(SNES_Scalar):
 
     @timing.routine_timer_decorator
     def darcy_problem_description(self):
+        """Build residual terms for Darcy flow FEM assembly."""
         # f1 residual term (weighted integration)
         self._f0 = self.F0.sym
 
@@ -729,7 +731,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     # deprecated
     @timing.routine_timer_decorator
     def stokes_problem_description(self):
-
+        """Build residual terms for Stokes FEM assembly (deprecated)."""
         # f0 residual term
         self._u_f0 = self.F0.sym
 
@@ -1245,7 +1247,7 @@ class SNES_VE_Stokes(SNES_Stokes):
 
     @property
     def delta_t(self):
-
+        """Elastic timestep from the constitutive model."""
         return self.constitutive_model.Parameters.dt_elastic
 
     ## Solver needs to update the stress history terms as well as call the SNES solve:
@@ -1410,6 +1412,7 @@ class SNES_Projection(SNES_Scalar):
 
     @property
     def smoothing(self):
+        """Smoothing regularization parameter for the projection."""
         return self._smoothing
 
     @smoothing.setter
@@ -1420,6 +1423,7 @@ class SNES_Projection(SNES_Scalar):
 
     @property
     def uw_weighting_function(self):
+        """Weighting function applied during projection."""
         return self._uw_weighting_function
 
     @uw_weighting_function.setter
@@ -1527,6 +1531,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
+        """Build residual terms for vector projection FEM assembly."""
         # residual terms - defines the problem:
         # solve for a best fit to the continuous mesh
         # variable given the values in self.function
@@ -1550,6 +1555,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @property
     def smoothing(self):
+        """Smoothing regularization parameter for the projection."""
         return self._smoothing
 
     @smoothing.setter
@@ -1560,6 +1566,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @property
     def penalty(self):
+        """Divergence penalty parameter for incompressibility."""
         return self._penalty
 
     @penalty.setter
@@ -1571,6 +1578,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @property
     def uw_weighting_function(self):
+        """Weighting function applied during projection."""
         return self._uw_weighting_function
 
     @uw_weighting_function.setter
@@ -1650,6 +1658,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @timing.routine_timer_decorator
     def solve(self, verbose=False):
+        """Solve by projecting each tensor component sequentially."""
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
 
@@ -1681,7 +1690,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @property
     def F0(self):
-
+        """Pointwise misfit term for scalar subproblem."""
         f0_val = expression(
             r"f_0 \left( \mathbf{u} \right)",
             (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function,
@@ -1695,7 +1704,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @property
     def F1(self):
-
+        """Pointwise smoothing flux term for scalar subproblem."""
         F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.smoothing * self.mesh.vector.gradient(self.u.sym),
@@ -1709,6 +1718,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @property
     def uw_scalar_function(self):
+        """Current scalar component function being projected."""
         return self._uw_scalar_function
 
     @uw_scalar_function.setter
@@ -1894,7 +1904,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def F0(self):
-
+        """Pointwise source term including time derivative."""
         f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f + self.DuDt.bdf(0) / self.delta_t,
@@ -1908,7 +1918,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def F1(self):
-
+        """Pointwise diffusive flux term (Adams-Moulton integration)."""
         F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.DFDt.adams_moulton_flux(),
@@ -1921,6 +1931,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         return F1_val
 
     def adv_diff_slcn_problem_description(self):
+        """Build residual terms for advection-diffusion FEM assembly."""
         # f0 residual term
         self._f0 = self.F0.sym
 
@@ -2399,7 +2410,7 @@ class SNES_Diffusion(SNES_Scalar):
 
     @property
     def F0(self):
-
+        """Pointwise source term including time derivative."""
         f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
@@ -2413,7 +2424,7 @@ class SNES_Diffusion(SNES_Scalar):
 
     @property
     def F1(self):
-
+        """Pointwise diffusive flux term."""
         F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.DFDt.adams_moulton_flux(),
@@ -2800,7 +2811,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def F0(self):
-
+        """Pointwise momentum source term (body force + inertia)."""
         DuDt = self.Unknowns.DuDt
 
         # I think this should be bdf(1) ... the higher order
@@ -2818,6 +2829,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def F1(self):
+        """Pointwise stress flux term (viscous + pressure)."""
         dim = self.mesh.dim
 
         DFDt = self.Unknowns.DFDt
@@ -2848,7 +2860,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def PF0(self):
-
+        """Pointwise constraint term (continuity equation)."""
         dim = self.mesh.dim
 
         f0 = expression(
@@ -2863,6 +2875,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     ## Deprecate this function
     def navier_stokes_problem_description(self):
+        """Build residual terms for Navier-Stokes FEM assembly (deprecated)."""
         # f0 residual term
         self._u_f0 = self.F0.sym
 
@@ -2909,12 +2922,14 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def div_u(self):
+        """Velocity divergence (trace of strain rate)."""
         E = self.strainrate
         divergence = E.trace()
         return divergence
 
     @property
     def strainrate(self):
+        """Symmetric strain rate tensor from velocity gradients."""
         return sympy.Matrix(self.Unknowns.E)
 
     @property
