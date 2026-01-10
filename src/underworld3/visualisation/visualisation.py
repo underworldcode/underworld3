@@ -1,10 +1,24 @@
-## pyvista helper routines
+"""PyVista visualization helper routines for Underworld3.
+
+This module provides functions to convert Underworld meshes, swarms,
+and variables to PyVista objects for interactive 3D visualization.
+"""
 import os
 import underworld3 as uw
 
 
 def initialise(jupyter_backend):
+    """Initialize PyVista with Underworld-friendly defaults.
 
+    Sets up PyVista global theme with white background, anti-aliasing,
+    and appropriate Jupyter backend.
+
+    Parameters
+    ----------
+    jupyter_backend : str or None
+        Jupyter backend to use ('trame', 'client', 'panel', etc.).
+        If None, auto-detects based on environment.
+    """
     import pyvista as pv
 
     pv.global_theme.background = "white"
@@ -28,7 +42,20 @@ def initialise(jupyter_backend):
 
 
 def mesh_to_pv_mesh(mesh, jupyter_backend=None):
-    """Initialise pyvista engine from existing mesh"""
+    """Convert Underworld mesh to PyVista unstructured grid.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        Underworld mesh to convert.
+    jupyter_backend : str, optional
+        PyVista Jupyter backend to use.
+
+    Returns
+    -------
+    pyvista.UnstructuredGrid
+        PyVista mesh with unit metadata attached.
+    """
 
     # # Required in notebooks
     # import nest_asyncio
@@ -133,8 +160,18 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
 
 
 def coords_to_pv_coords(coords):
-    """For a given set of coords, return a pyvista coordinate vector"""
+    """Convert coordinate array to PyVista-compatible 3D coordinates.
 
+    Parameters
+    ----------
+    coords : numpy.ndarray
+        Coordinate array of shape ``(n, 2)`` or ``(n, 3)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        3D coordinate array of shape ``(n, 3)``.
+    """
     return _vector_to_pv_vector(coords)
 
 
@@ -153,8 +190,18 @@ def _vector_to_pv_vector(vector):
 
 
 def swarm_to_pv_cloud(swarm):
-    """swarm points to pyvista PolyData  object"""
+    """Convert swarm particle positions to PyVista point cloud.
 
+    Parameters
+    ----------
+    swarm : Swarm
+        Underworld swarm object.
+
+    Returns
+    -------
+    pyvista.PolyData
+        Point cloud with particle positions.
+    """
     import numpy as np
     import pyvista as pv
 
@@ -172,7 +219,18 @@ def swarm_to_pv_cloud(swarm):
 
 
 def meshVariable_to_pv_cloud(meshVar):
-    """meshVariable point locations to pyvista PolyData object"""
+    """Convert mesh variable node positions to PyVista point cloud.
+
+    Parameters
+    ----------
+    meshVar : MeshVariable
+        Underworld mesh variable.
+
+    Returns
+    -------
+    pyvista.PolyData
+        Point cloud at mesh variable nodal locations.
+    """
 
     import numpy as np
     import pyvista as pv
@@ -204,10 +262,25 @@ def meshVariable_to_pv_cloud(meshVar):
 
 
 def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
-    """Convert meshvariable to delaunay triangulated pyvista mesh object.
-    This is redundant if the meshVariable degree is 1 (the original mesh exactly
-    represents the data)"""
+    """Convert mesh variable to Delaunay-triangulated PyVista mesh.
 
+    Creates a mesh by triangulating the mesh variable's nodal points.
+    Useful for higher-order elements where the base mesh doesn't
+    capture all data points.
+
+    Parameters
+    ----------
+    meshVar : MeshVariable
+        Underworld mesh variable.
+    alpha : float, optional
+        Alpha parameter for Delaunay triangulation. If None, computed
+        automatically from coordinate range.
+
+    Returns
+    -------
+    pyvista.UnstructuredGrid
+        Triangulated mesh through the variable's nodal points.
+    """
     import numpy as np
 
     mesh = meshVar.mesh
@@ -243,8 +316,24 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
 
 
 def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
-    """evaluate uw scalar function at mesh/cloud points"""
+    """Evaluate Underworld scalar function at PyVista mesh points.
 
+    Parameters
+    ----------
+    pv_mesh : pyvista.DataSet
+        PyVista mesh or point cloud to evaluate at.
+    uw_fn : sympy.Expr
+        Underworld scalar function to evaluate.
+    dim : int, optional
+        Dimensionality (2 or 3). Auto-detected if None.
+    simplify : bool, optional
+        Simplify expression before evaluation (default: True).
+
+    Returns
+    -------
+    numpy.ndarray
+        Scalar values at mesh points.
+    """
     import underworld3 as uw
     import sympy
     import numpy as np
@@ -282,8 +371,24 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
 
 
 def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
-    """evaluate uw vector function at mesh/cloud points"""
+    """Evaluate Underworld vector function at PyVista mesh points.
 
+    Parameters
+    ----------
+    pv_mesh : pyvista.DataSet
+        PyVista mesh or point cloud to evaluate at.
+    uw_fn : sympy.Matrix
+        Underworld vector function to evaluate.
+    dim : int, optional
+        Dimensionality (not used, derived from function shape).
+    simplify : bool, optional
+        Simplify expression before evaluation (default: True).
+
+    Returns
+    -------
+    numpy.ndarray
+        Vector values at mesh points, shape ``(n_points, 3)``.
+    """
     import numpy as np
     import underworld3 as uw
     import sympy
