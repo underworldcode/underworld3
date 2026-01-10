@@ -2065,26 +2065,32 @@ class CoordinateSystem:
 
     @property
     def X(self) -> sympy.Matrix:
+        """Cartesian coordinates as UWCoordinate objects (user-facing symbolic)."""
         return self._X
 
     @property
     def x(self) -> sympy.Matrix:
+        """Alias for natural coordinates (lowercase convention)."""
         return self._x
 
     @property
     def N(self) -> sympy.Matrix:
+        """Raw BaseScalar coordinates for derivatives and JIT compilation."""
         return self._N
 
     @property
     def R(self) -> sympy.Matrix:
+        """Natural (curvilinear) coordinates :math:`(r, \\theta, \\phi)` or geographic."""
         return self._R
 
     @property
     def r(self) -> sympy.Matrix:
+        """Symbolic natural coordinate variables (for mathematical expressions)."""
         return self._r
 
     @property  # alias for backward compat
     def xR(self) -> sympy.Matrix:
+        """Alias for ``R`` (backward compatibility)."""
         return self._R
 
     @property
@@ -2192,10 +2198,16 @@ class CoordinateSystem:
 
     @property
     def rRotN(self) -> sympy.Matrix:
+        r"""Rotation matrix from Cartesian (N) to natural (R) coordinates.
+
+        Transforms vectors from Cartesian basis to the local curvilinear basis.
+        For spherical: rows are :math:`(\hat{r}, \hat{\theta}, \hat{\phi})`.
+        """
         return self._rRotN
 
     @property
     def xRotN(self) -> sympy.Matrix:
+        """Rotation matrix from Cartesian (N) to Cartesian (X) - typically identity."""
         return self._xRotN
 
     @property
@@ -2234,14 +2246,17 @@ class CoordinateSystem:
 
     @property
     def unit_e_0(self) -> sympy.Matrix:
+        r"""First natural basis vector (radial :math:`\hat{r}` for curvilinear)."""
         return self._rRotN[0, :]
 
     @property
     def unit_e_1(self) -> sympy.Matrix:
+        r"""Second natural basis vector (:math:`\hat{\theta}` for curvilinear)."""
         return self._rRotN[1, :]
 
     @property
     def unit_e_2(self) -> sympy.Matrix:
+        r"""Third natural basis vector (:math:`\hat{\phi}` for spherical, None for 2D)."""
         if self.mesh.dim == 3:
             return self._rRotN[2, :]
         else:
@@ -2249,21 +2264,24 @@ class CoordinateSystem:
 
     @property
     def unit_i(self) -> sympy.Matrix:
+        r"""Cartesian unit vector :math:`\hat{i}` (x-direction)."""
         return self._xRotN[0, :]
 
     @property
     def unit_j(self) -> sympy.Matrix:
+        r"""Cartesian unit vector :math:`\hat{j}` (y-direction)."""
         return self._xRotN[1, :]
 
     @property
     def unit_k(self) -> sympy.Matrix:
+        r"""Cartesian unit vector :math:`\hat{k}` (z-direction, None for 2D)."""
         if self.mesh.dim == 3:
             return self._xRotN[2, :]
         else:
             return None
 
-    # Should validate on dim
     def unit_ijk(self, dirn) -> sympy.Matrix:
+        """Return Cartesian unit vector for direction index (0=i, 1=j, 2=k)."""
         if dirn <= self.mesh.dim:
             return self._xRotN[dirn, :]
         else:
