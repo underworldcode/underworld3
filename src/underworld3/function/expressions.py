@@ -29,12 +29,21 @@ from .quantities import UWQuantity
 # ============================================================================
 
 def simplify_units(units):
-    """
-    Simplify combined units to human-readable form.
+    """Simplify combined units to human-readable form.
 
-    For example: megayear * centimeter / year → kilometer (with proper scaling)
+    Converts complex unit expressions (e.g., megayear * centimeter / year)
+    to compact, human-friendly forms (e.g., kilometer) using Pint's
+    :meth:`to_compact` method.
 
-    This uses Pint's to_compact() to choose human-friendly unit prefixes.
+    Parameters
+    ----------
+    units : pint.Unit or None
+        The units to simplify.
+
+    Returns
+    -------
+    pint.Unit or None
+        Simplified units with appropriate prefixes, or None if input is None.
     """
     if units is None:
         return None
@@ -216,18 +225,38 @@ def unwrap_expression(expr, mode='nondimensional', depth=None):
 # ============================================================================
 
 def is_constant_expr(fn):
-    """
-    Check if expression has no mesh variable dependencies.
+    """Check if expression has no mesh variable dependencies.
 
-    An expression is "constant" in the UW sense if it doesn't depend on
-    mesh coordinates or mesh variables.
+    An expression is "constant" in the Underworld sense if it doesn't
+    depend on mesh coordinates, mesh variables, or applied functions.
+
+    Parameters
+    ----------
+    fn : sympy.Expr or UWexpression
+        Expression to check.
+
+    Returns
+    -------
+    bool
+        True if the expression has no spatial dependencies.
     """
     deps = extract_expressions_and_functions(fn)
     return not bool(deps)
 
 
 def extract_expressions(fn):
-    """Extract all UWexpression atoms from a SymPy expression."""
+    """Extract all UWexpression atoms from a SymPy expression.
+
+    Parameters
+    ----------
+    fn : sympy.Expr or UWexpression
+        Expression to search.
+
+    Returns
+    -------
+    set
+        Set of :class:`UWexpression` objects found in the expression tree.
+    """
     import underworld3
 
     if isinstance(fn, underworld3.function.expression):
@@ -251,7 +280,22 @@ def extract_expressions(fn):
 
 
 def extract_expressions_and_functions(fn):
-    """Extract all UWexpression, Function, and BaseScalar atoms."""
+    """Extract all UWexpression, Function, and coordinate atoms.
+
+    Recursively searches an expression tree for Underworld-specific
+    atoms including expressions, applied functions, and coordinate
+    base scalars.
+
+    Parameters
+    ----------
+    fn : sympy.Expr or UWexpression
+        Expression to search.
+
+    Returns
+    -------
+    set
+        Set of UWexpression, Function, and BaseScalar objects.
+    """
     import underworld3
 
     if isinstance(fn, underworld3.function.expression):
@@ -1611,11 +1655,25 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 # ============================================================================
 
 class UWDerivativeExpression(UWexpression):
-    """
-    Expression representing a derivative that can be evaluated lazily.
+    """Expression representing a derivative for lazy evaluation.
 
-    This is a placeholder - the full implementation should be in the old file
-    if needed.
+    A specialized expression that stores a derivative operation and
+    evaluates it only when :meth:`doit` is called.
+
+    Parameters
+    ----------
+    expr : sympy.Basic
+        The expression to differentiate.
+    *args : sympy.Symbol
+        Variables to differentiate with respect to.
+    **kwargs
+        Additional arguments passed to :class:`UWexpression`.
+
+    Examples
+    --------
+    >>> deriv = UWDerivativeExpression(x**2, x)
+    >>> deriv.doit()
+    2*x
     """
 
     def __init__(self, expr, *args, **kwargs):
@@ -1624,7 +1682,13 @@ class UWDerivativeExpression(UWexpression):
         self._args = args
 
     def doit(self):
-        """Evaluate the derivative."""
+        """Evaluate the derivative.
+
+        Returns
+        -------
+        sympy.Basic
+            The result of differentiating the expression.
+        """
         result = self._expr
         for arg in self._args:
             result = result.diff(arg)
