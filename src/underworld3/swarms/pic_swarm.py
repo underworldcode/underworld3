@@ -230,18 +230,51 @@ class PICSwarm(Stateful, uw_object):
 
     @property
     def mesh(self):
+        """The mesh associated with this swarm.
+
+        Returns
+        -------
+        Mesh
+            The computational mesh containing the particles.
+        """
         return self._mesh
 
     @property
     def data(self):
+        """Particle coordinate data array.
+
+        Provides direct read/write access to particle positions.
+
+        Returns
+        -------
+        numpy.ndarray
+            Coordinate array of shape ``(n_particles, dim)``.
+        """
         return self._particle_coordinates.data
 
     @property
     def particle_coordinates(self):
+        """SwarmVariable holding particle coordinates.
+
+        Returns
+        -------
+        SwarmVariable
+            The internal coordinate variable (use ``.data`` for array access).
+        """
         return self._coord_var
 
     @property
     def particle_cellid(self):
+        """SwarmVariable holding particle cell IDs.
+
+        Each particle is associated with a mesh cell for efficient
+        spatial operations.
+
+        Returns
+        -------
+        SwarmVariable
+            Cell ID variable (use ``.data`` for array access).
+        """
         return self._cellid_var
 
     @timing.routine_timer_decorator
@@ -581,6 +614,22 @@ class PICSwarm(Stateful, uw_object):
         index: int,
         outputPath: Optional[str] = "",
     ):
+        """Load particle coordinates from a saved timestep file.
+
+        Reads an HDF5 file containing particle coordinates and adds
+        them to the swarm using :meth:`add_particles_with_coordinates`.
+
+        Parameters
+        ----------
+        base_filename : str
+            Base name for the output files.
+        swarm_id : str
+            Identifier for this swarm in the output.
+        index : int
+            Timestep index to read.
+        outputPath : str, optional
+            Directory containing the output files.
+        """
         output_base_name = os.path.join(outputPath, base_filename)
         swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
 
@@ -602,6 +651,31 @@ class PICSwarm(Stateful, uw_object):
         proxy_degree=2,
         _nn_proxy=False,
     ):
+        """Create a new SwarmVariable attached to this swarm.
+
+        Parameters
+        ----------
+        name : str
+            Name for the variable.
+        size : int, optional
+            Number of components per particle (default: 1 for scalar).
+        dtype : type, optional
+            Data type for the variable (default: float).
+        proxy_degree : int, optional
+            Polynomial degree for mesh proxy variable (default: 2).
+        _nn_proxy : bool, optional
+            Use nearest-neighbor proxy (internal use).
+
+        Returns
+        -------
+        SwarmVariable
+            New variable attached to this swarm.
+
+        Examples
+        --------
+        >>> material = swarm.add_variable("material", size=1, dtype=int)
+        >>> temperature = swarm.add_variable("T", size=1)
+        """
         return SwarmVariable(
             name,
             self,
@@ -787,6 +861,13 @@ class PICSwarm(Stateful, uw_object):
 
     @property
     def vars(self):
+        """Dictionary of SwarmVariables attached to this swarm.
+
+        Returns
+        -------
+        dict
+            Mapping from variable names to :class:`SwarmVariable` objects.
+        """
         return self._vars
 
     def access(self, *writeable_vars: SwarmVariable):
@@ -995,7 +1076,29 @@ class PICSwarm(Stateful, uw_object):
         evalf=False,
         step_limit=True,
     ):
+        """Advect particles using a velocity field.
 
+        Moves particles according to the velocity field using forward
+        Euler integration with automatic substepping based on CFL
+        conditions. Handles particle migration between MPI ranks.
+
+        Parameters
+        ----------
+        V_fn : sympy.Matrix or MeshVariable
+            Velocity field (vector expression).
+        delta_t : float
+            Total time to advect.
+        order : int, optional
+            Integration order (default: 2, not currently used).
+        corrector : bool, optional
+            Apply predictor-corrector scheme (default: False).
+        restore_points_to_domain_func : callable, optional
+            Function to restore particles that leave the domain.
+        evalf : bool, optional
+            Use numerical evaluation (True) or symbolic (False).
+        step_limit : bool, optional
+            Apply CFL-based substepping limit (default: True).
+        """
         dt_limit = self.estimate_dt(V_fn)
 
         if step_limit and dt_limit is not None:
@@ -1380,7 +1483,29 @@ class NodalPointPICSwarm(PICSwarm):
         evalf=False,
         step_limit=True,
     ):
+        """Advect nodal point particles and track back to mesh nodes.
 
+        Extends parent advection with node-tracking logic. After
+        advection, particles are mapped back to their original mesh
+        nodes for semi-Lagrangian interpolation.
+
+        Parameters
+        ----------
+        V_fn : sympy.Matrix or MeshVariable
+            Velocity field (vector expression).
+        delta_t : float
+            Total time to advect.
+        order : int, optional
+            Integration order (default: 2).
+        corrector : bool, optional
+            Apply predictor-corrector scheme (default: False).
+        restore_points_to_domain_func : callable, optional
+            Function to restore particles that leave the domain.
+        evalf : bool, optional
+            Use numerical evaluation (True) or symbolic (False).
+        step_limit : bool, optional
+            Apply CFL-based substepping limit (default: True).
+        """
         with self.access(self._X0):
             self._X0.data[...] = self._nX0.data[...]
 
