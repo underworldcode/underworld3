@@ -2922,14 +2922,19 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def div_u(self):
-        """Velocity divergence (trace of strain rate)."""
+        r"""Velocity divergence: :math:`\nabla \cdot \mathbf{u} = \mathrm{tr}(\dot{\varepsilon})`."""
         E = self.strainrate
         divergence = E.trace()
         return divergence
 
     @property
     def strainrate(self):
-        """Symmetric strain rate tensor from velocity gradients."""
+        r"""Symmetric strain rate tensor (with 1/2 factor).
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+        """
         return sympy.Matrix(self.Unknowns.E)
 
     @property
