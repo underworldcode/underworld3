@@ -58,7 +58,26 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 
 # How do we use the default here if input is required ?
 def validate_parameters(symbol, input, default=None, allow_number=True, allow_expression=True):
+    """Convert input to a UWexpression for use in constitutive models.
 
+    Parameters
+    ----------
+    symbol : str
+        LaTeX symbol for display (e.g., r"\\eta" for viscosity).
+    input : various
+        Value to convert (UWexpression, UWQuantity, float, int, sympy expr).
+    default : optional
+        Default value if input is None.
+    allow_number : bool
+        If True, accept plain numbers (int/float).
+    allow_expression : bool
+        If True, accept raw sympy expressions.
+
+    Returns
+    -------
+    UWexpression or None
+        Wrapped expression, or None if conversion failed.
+    """
     # CRITICAL: Check for UWexpression FIRST, before checking sympy.Basic
     # UWexpression inherits from sympy.Symbol, so it would match the Basic check
     # and cause double-wrapping, losing unit information
@@ -267,6 +286,7 @@ class Constitutive_Model(uw_object):
     # We probably should not be changing this ever ... does this setter even belong here ?
     @Unknowns.setter
     def Unknowns(self, unknowns):
+        """Set the solver unknowns (invalidates setup)."""
         self._Unknowns = unknowns
         self._solver_is_setup = False
         return
@@ -328,12 +348,14 @@ class Constitutive_Model(uw_object):
         self,
         DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
+        """Set the material derivative operator for the unknown."""
         self._DuDt = DuDt_value
         self._solver_is_setup = False
         return
 
     @property
     def DFDt(self):
+        """Material derivative operator for the flux history."""
         return self._DFDt
 
     # Do we want to lock this down ?
@@ -342,6 +364,7 @@ class Constitutive_Model(uw_object):
         self,
         DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
+        """Set the material derivative operator for flux history."""
         self._DFDt = DFDt_value
         self._solver_is_setup = False
         return
@@ -592,14 +615,12 @@ class ViscousFlowModel(Constitutive_Model):
 
     @property
     def flux(self):
+        r"""Viscous stress tensor: :math:`\boldsymbol{\tau} = 2\eta\dot{\varepsilon}`."""
         edot = self.grad_u
         return self._q(edot)
 
     def _q(self, edot):
-        """Computes the effect of the constitutive tensor on the gradients of the unknowns.
-        (always uses the `c` form of the tensor). In general cases, the history of the gradients
-        may be required to evaluate the flux.
-        """
+        """Apply constitutive tensor to strain rate to compute stress."""
 
         if not self._is_setup:
             self._build_c_tensor()
@@ -623,6 +644,12 @@ class ViscousFlowModel(Constitutive_Model):
 
     @property
     def grad_u(self):
+        r"""Symmetric strain rate tensor (with 1/2 factor).
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+        """
         mesh = self.Unknowns.u.mesh
 
         return mesh.vector.strain_tensor(self.Unknowns.u.sym)
@@ -822,6 +849,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
     @property
     def viscosity(self):
+        r"""Effective viscosity with plastic yielding.
+
+        .. math::
+            \eta_{\mathrm{eff}} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
+
+        where :math:`\dot{\varepsilon}_{II}` is the second invariant of strain rate.
+        """
         inner_self = self.Parameters
         # detect if values we need are defined or are placeholder symbols
 
@@ -865,6 +899,14 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         return self._plastic_eff_viscosity
 
     def plastic_correction(self) -> float:
+        r"""Scaling factor to reduce stress to yield surface.
+
+        .. math::
+            f = \frac{\tau_y}{\tau_{II}}
+
+        where :math:`\tau_{II}` is the second invariant of deviatoric stress.
+        Returns 1 if no yield stress is set.
+        """
         parameters = self.Parameters
 
         if parameters.yield_stress == sympy.oo:
@@ -1066,6 +1108,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @property
         def ve_effective_viscosity(inner_self):
+            r"""Visco-elastic effective viscosity: :math:`\eta_{\mathrm{eff}} = \frac{\eta G \Delta t}{\eta + G \Delta t}`."""
             # the dt_elastic defaults to infinity, t_relax to zero,
             # so this should be well behaved in the viscous limit
 
@@ -1105,6 +1148,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @property
         def t_relax(inner_self):
+            r"""Maxwell relaxation time: :math:`t_{\mathrm{relax}} = \eta / G`."""
             # shear modulus defaults to infinity so t_relax goes to zero
             # in the viscous limit
 
@@ -1115,10 +1159,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def order(self):
+        """Time integration order (1 or 2)."""
         return self._order
 
     @order.setter
     def order(self, value):
+        """Set the time integration order."""
         self._order = value
         self._reset()
         return
@@ -1126,6 +1172,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     # The following should have no setters
     @property
     def stress_star(self):
+        r"""Previous timestep stress :math:`\boldsymbol{\sigma}^*` from history."""
         if self.Unknowns.DFDt is not None:
             self._stress_star.sym = self.Unknowns.DFDt.psi_star[0].sym
 
@@ -1133,6 +1180,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def stress_2star(self):
+        r"""Second-order stress history :math:`\boldsymbol{\sigma}^{**}` (for 2nd order integration)."""
         # Check if we have enough information in DFDt to update _stress_star,
         # otherwise it will be defined as zero
 
@@ -1146,7 +1194,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def E_eff(self):
+        r"""Effective strain rate including elastic contribution.
 
+        .. math::
+            \dot{\varepsilon}_{\mathrm{eff}} = \dot{\varepsilon} + \frac{\boldsymbol{\sigma}^*}{2 G \Delta t}
+        """
         E = self.Unknowns.E
 
         if self.Unknowns.DFDt is not None:
@@ -1173,7 +1225,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def E_eff_inv_II(self):
-
+        r"""Second invariant of effective strain rate: :math:`\dot{\varepsilon}_{II} = \sqrt{\frac{1}{2}\dot{\varepsilon}_{ij}\dot{\varepsilon}_{ij}}`."""
         E_eff = self.E_eff.sym
         self._E_eff_inv_II.sym = sympy.sqrt((E_eff**2).trace() / 2)
 
@@ -1181,10 +1233,15 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def K(self):
+        """Effective stiffness parameter (viscosity for visco-elastic-plastic flow)."""
         return self.viscosity
 
     @property
     def viscosity(self):
+        r"""Effective viscosity combining visco-elastic and plastic limits.
+
+        Returns :math:`\min(\eta_{\mathrm{ve}}, \tau_y / 2\dot{\varepsilon}_{II})`.
+        """
         # detect if values we need are defined or are placeholder symbols
 
         ## Do we want this to be an expression of its own ? If so, define above in __init__() and
@@ -1259,6 +1316,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return viscosity_yield
 
     def plastic_correction(self):
+        r"""Scaling factor to reduce stress to yield surface: :math:`f = \tau_y / \tau_{II}`."""
         parameters = self.Parameters
 
         if parameters.yield_stress == sympy.oo:
@@ -1453,6 +1511,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def is_elastic(self):
+        """True if elastic behavior is active (finite dt_elastic and shear_modulus)."""
         # If any of these is not defined, elasticity is switched off
 
         if self.Parameters.dt_elastic.sym is sympy.oo:
@@ -1465,6 +1524,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def is_viscoplastic(self):
+        """True if plastic yielding is active (finite yield_stress)."""
         if self.Parameters.yield_stress == sympy.oo:
             return False
 
@@ -1548,14 +1608,16 @@ class DiffusionModel(Constitutive_Model):
 
     @property
     def K(self):
+        r"""Diffusivity :math:`\kappa` (alias for ``diffusivity``)."""
         return self.Parameters.diffusivity
 
     @property
     def diffusivity(self):
+        r"""Scalar or tensor diffusivity :math:`\kappa`."""
         return self.Parameters.diffusivity
 
     def _build_c_tensor(self):
-        """For this constitutive law, we expect just a diffusivity function"""
+        """Build isotropic diffusivity tensor from scalar."""
 
         d = self.dim
         kappa = self.Parameters.diffusivity
@@ -1595,6 +1657,12 @@ class DiffusionModel(Constitutive_Model):
 
 # AnisotropicDiffusionModel: expects a diffusivity vector and builds a diagonal tensor.
 class AnisotropicDiffusionModel(DiffusionModel):
+    r"""Anisotropic diffusion with direction-dependent diffusivities.
+
+    Defines a diagonal diffusivity tensor :math:`\kappa_{ij} = \text{diag}(\kappa_0, \kappa_1, ...)`
+    for direction-dependent diffusion rates.
+    """
+
     class _Parameters:
         def __init__(inner_self, _owning_model):
             dim = _owning_model.dim
@@ -1614,10 +1682,12 @@ class AnisotropicDiffusionModel(DiffusionModel):
 
         @property
         def diffusivity(inner_self):
+            """Diagonal diffusivity tensor."""
             return inner_self._diffusivity
 
         @diffusivity.setter
         def diffusivity(inner_self, value: sympy.Matrix):
+            """Set diffusivity from a vector of per-direction values."""
             dim = inner_self._owning_model.dim
 
             # Accept shape (dim, 1) or (1, dim)
@@ -1687,10 +1757,12 @@ class GenericFluxModel(Constitutive_Model):
 
         @property
         def flux(inner_self):
+            """User-defined flux expression."""
             return inner_self._flux
 
         @flux.setter
         def flux(inner_self, value: sympy.Matrix):
+            """Set the flux expression (must be a vector of length dim)."""
             dim = inner_self._owning_model.dim
 
             # Accept shape (dim, 1) or (1, dim)
@@ -1714,6 +1786,7 @@ class GenericFluxModel(Constitutive_Model):
 
     @property
     def flux(self):
+        """The user-defined flux expression."""
         # if self._flux is None:
         #     raise RuntimeError("Flux expression has not been set.")
         return self.Parameters.flux
@@ -1815,10 +1888,12 @@ class DarcyFlowModel(Constitutive_Model):
 
         @property
         def s(inner_self):
+            r"""Body force vector (e.g., gravitational source term :math:`\rho \mathbf{g}`)."""
             return inner_self._s
 
         @s.setter
         def s(inner_self, value: sympy.Matrix):
+            """Set the body force vector."""
             # Update expression content in-place to preserve object identity
             # Cannot use validate_parameters() as it doesn't handle matrices
             # UWexpression.sym setter handles sympy.Matrix directly
@@ -1827,6 +1902,7 @@ class DarcyFlowModel(Constitutive_Model):
 
     @property
     def K(self):
+        r"""Permeability :math:`\kappa` [m²] - the primary constitutive parameter."""
         return self.Parameters.permeability
 
     def _build_c_tensor(self):
@@ -1988,6 +2064,12 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
     @property
     def grad_u(self):
+        r"""Symmetric strain rate tensor (with 1/2 factor).
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+        """
         mesh = self.Unknowns.u.mesh
 
         return mesh.vector.strain_tensor(self.Unknowns.u.sym)

@@ -102,10 +102,12 @@ class Symbolic(uw_object):
 
     @property
     def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
         return self._psi_fn
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        """Set the tracked symbolic expression."""
         if not isinstance(new_fn, sympy.Matrix):
             try:
                 new_fn = sympy.Matrix(new_fn)
@@ -126,10 +128,12 @@ class Symbolic(uw_object):
         display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
 
     def update_history_fn(self):
+        r"""Copy current :math:`\psi` to the first history slot ``psi_star[0]``."""
         # Update the first history element with a copy of the current ψ.
         self.psi_star[0] = self.psi_fn.copy()
 
     def initiate_history_fn(self):
+        """Initialize all history slots to the current value of :math:`\psi`."""
         self.update_history_fn()
         # Propagate the initial history to all history steps.
         for i in range(1, self.order):
@@ -141,6 +145,7 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_pre_solve``)."""
         self.update_pre_solve(evalf, verbose)
         return
 
@@ -149,6 +154,7 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Symbolic)."""
         # Default: no action.
         return
 
@@ -157,6 +163,7 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
         if verbose:
             print(f"Updating history for ψ = {self.psi_fn}", flush=True)
 
@@ -190,6 +197,26 @@ class Symbolic(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order: Optional[int] = None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (1-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Matrix
+            Weighted average of :math:`\psi` and history terms.
+
+        Notes
+        -----
+        The Adams-Moulton formulas for order 1-3 are:
+
+        - Order 1: :math:`\theta \psi + (1-\theta) \psi^*`
+        - Order 2: :math:`\frac{5\psi + 8\psi^* - \psi^{**}}{12}`
+        - Order 3: :math:`\frac{9\psi + 19\psi^* - 5\psi^{**} + \psi^{***}}{24}`
+        """
         if order is None:
             order = self.order
         else:
@@ -295,10 +322,12 @@ class Eulerian(uw_object):
 
     @property
     def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
         return self._psi_fn
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        """Set the tracked expression."""
         self._psi_fn = new_fn
         # self._psi_star_projection_solver.uw_function = self.psi_fn
         return
@@ -319,6 +348,7 @@ class Eulerian(uw_object):
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def _setup_projections(self):
+        """Initialize projection solvers for history updates."""
         ### using this to store terms that can't be evaluated (e.g. derivatives)
         # The projection operator for mapping derivative values to the mesh - needs to be different for each variable type, unfortunately ...
         if self.vtype == uw.VarType.SCALAR:
@@ -347,6 +377,7 @@ class Eulerian(uw_object):
         self._psi_star_projection_solver.smoothing = self.smoothing
 
     def update_history_fn(self):
+        r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection."""
         ### update first value in history chain
         ### avoids projecting if function can be evaluated
         try:
@@ -375,6 +406,7 @@ class Eulerian(uw_object):
             # print('projecting data', flush=True)
 
     def initiate_history_fn(self):
+        """Initialize all history slots to the current value of :math:`\psi`."""
         self.update_history_fn()
 
         ### set up all history terms to the initial values
@@ -389,6 +421,7 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_pre_solve``)."""
         self.update_pre_solve(evalf, verbose)
         return
 
@@ -397,6 +430,7 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Eulerian)."""
         return
 
     def update_post_solve(
@@ -404,6 +438,7 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
         # if average_over_dt:
         #     phi = min(1.0, dt / self.dt_physical)
         # else:
@@ -463,6 +498,18 @@ class Eulerian(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (1-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
         else:
@@ -641,10 +688,12 @@ class SemiLagrangian(uw_object):
 
     @property
     def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
         return self._psi_fn
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        """Set the tracked expression."""
         self._psi_fn = new_fn
         self._psi_star_projection_solver.uw_function = self._psi_fn
         return
@@ -663,6 +712,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional = None,
     ):
+        """Update history (alias for ``update_pre_solve``)."""
         self.update_pre_solve(dt, evalf, verbose, dt_physical)
         return
 
@@ -673,6 +723,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
     ):
+        """Post-solve update hook (no-op for SemiLagrangian)."""
         return
 
     def update_pre_solve(
@@ -682,6 +733,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
     ):
+        """Sample upstream values along characteristics before solve."""
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain in preparation for the next timestep
@@ -1046,6 +1098,18 @@ class SemiLagrangian(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (0-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
         else:
@@ -1175,6 +1239,7 @@ class Lagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_post_solve``)."""
         self.update_post_solve(dt, evalf, verbose)
         return
 
@@ -1184,6 +1249,7 @@ class Lagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Lagrangian)."""
         return
 
     def update_post_solve(
@@ -1192,6 +1258,7 @@ class Lagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Shift history chain and advect swarm after solve."""
         for h in range(self.order - 1):
             i = self.order - (h + 1)
 
@@ -1250,6 +1317,18 @@ class Lagrangian(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (0-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
 
@@ -1364,6 +1443,7 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_post_solve``)."""
         self.update_post_solve(dt, evalf, verbose)
         return
 
@@ -1373,6 +1453,7 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Lagrangian_Swarm)."""
         return
 
     def update_post_solve(
@@ -1381,6 +1462,7 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Shift history chain and evaluate current :math:`\psi` on swarm."""
         for h in range(self.order - 1):
             i = self.order - (h + 1)
 
@@ -1457,6 +1539,18 @@ class Lagrangian_Swarm(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (1-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
         else:

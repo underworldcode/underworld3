@@ -1378,6 +1378,26 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         return
 
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
+        """
+        Radial basis function interpolation of particle data to arbitrary points.
+
+        Uses inverse-distance weighting to interpolate particle values
+        to new coordinate locations.
+
+        Parameters
+        ----------
+        new_coords : numpy.ndarray
+            Target coordinates of shape (N, dim) to interpolate to.
+        verbose : bool, default=False
+            Print diagnostic information during interpolation.
+        nnn : int, optional
+            Number of nearest neighbors to use. Defaults to ``mesh.dim + 1``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Interpolated values at the target coordinates.
+        """
         # An inverse-distance mapping is quite robust here ... as long
         # as we take care of the case where some nodes coincide (likely if used with mesh2mesh)
         # We try to eliminate contributions from recently remeshed particles
