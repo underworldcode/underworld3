@@ -202,9 +202,12 @@ Jupyterbook/Notebooks/.DS_Store
 Jupyterbook/Notebooks/Examples-NavierStokes/order_1/NS_test_Re_250_0.06_step_0.png
 Documentation/index.aux
 
-# Claude Code files
+# Claude Code files (track commands, ignore settings)
 CLAUDE.md
-.claude/
+.claude/*
+!.claude/commands/
+.claude/commands/*
+!.claude/commands/*.md
 
 # Prevent future markdown clutter in root (allow essential docs only)
 /*_ANALYSIS.md

@@ -131,57 +131,39 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 
 ---
 
-## Data Access Patterns (Current)
+## Data Access Patterns
 
-### Access Context Managers NOT Required
-**IMPORTANT**: `mesh.access()` and `swarm.access()` context managers are NOT required for basic data access.
+**Authoritative Reference**: @docs/developer/UW3_Style_and_Patterns_Guide.qmd
+**Pattern Checker**: Use `/check-patterns` to scan for deprecated patterns
 
+### Quick Summary
+| Pattern | Status | Use Instead |
+|---------|--------|-------------|
+| `with mesh.access(var):` | **Deprecated** | Direct: `var.data[...]` |
+| `with swarm.access(var):` | **Deprecated** | Direct: `var.data[...]` |
+| `mesh.data` (coordinates) | **Deprecated** | `mesh.X.coords` |
+
+### Current Patterns
 ```python
-# DEPRECATED - do not use
-with mesh.access(var):
-    var.data[...] = values
-
-# CURRENT - direct access (recommended)
+# Single variable - direct access
 var.data[...] = values
+var.array[:, 0, 0] = scalar_values   # Scalar
+var.array[:, 0, :] = vector_values   # Vector
+
+# Multiple variables - batch synchronization
+with uw.synchronised_array_update():
+    var1.data[...] = values1
+    var2.data[...] = values2
+
+# Coordinates
+mesh.X.coords    # Mesh vertex coordinates
+var.coords       # Variable DOF coordinates
+swarm.data       # Swarm particle positions
 ```
 
-### Single Variable Updates
-```python
-# Direct data access - works for both mesh and swarm variables
-var.data[...] = values
-
-# Or using array format (mesh variables)
-var.array[...] = values
-```
-
-### Multiple Variable Updates
-```python
-# For multi-variable updates that need synchronization
-# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
-var1.data[...] = values1
-var2.data[...] = values2
-```
-
-### Coordinate Access
-```python
-# Mesh vertex coordinates
-coords = mesh.X.coords          # CURRENT (recommended)
-# NOT: mesh.data (deprecated)
-
-# Variable DOF coordinates
-coords = var.coords             # For any mesh variable
-
-# Swarm particle coordinates
-coords = swarm.data             # Swarm positions
-coords = swarm._particle_coordinates.data  # Explicit access
-```
-
-### Array Formats
-- **array**: `(N, a, b)` where scalar=`(N,1,1)`, vector=`(N,1,3)`, tensor=`(N,3,3)`
+### Array Shapes
+- **array**: `(N, a, b)` where scalar=`(N,1,1)`, vector=`(N,1,dim)`, tensor=`(N,dim,dim)`
 - **data**: `(-1, num_components)` flat format for backward compatibility
-
-### Locking Hierarchy
-`mesh → swarm → variables` (variables lock through their container)
 
 ---
 
