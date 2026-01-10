@@ -254,6 +254,14 @@ class Constitutive_Model(uw_object):
 
     @property
     def Unknowns(self):
+        r"""Reference to the solver's unknown fields.
+
+        Returns
+        -------
+        Unknowns
+            Container holding the primary unknown field(s) (e.g., velocity,
+            pressure, temperature) that this constitutive model operates on.
+        """
         return self._Unknowns
 
     # We probably should not be changing this ever ... does this setter even belong here ?
@@ -265,22 +273,54 @@ class Constitutive_Model(uw_object):
 
     @property
     def K(self):
-        """The constitutive property for this flow law"""
+        r"""Primary constitutive property (viscosity, diffusivity, etc.).
+
+        Returns
+        -------
+        UWexpression
+            The material property defining the flux-gradient relationship.
+        """
         return self._K
 
-    ## Not sure about setters for these, I suppose it would be a good idea
     @property
     def u(self):
+        r"""The primary unknown field from the solver.
+
+        Returns
+        -------
+        MeshVariable
+            The unknown field (velocity, temperature, etc.).
+        """
         return self.Unknowns.u
 
     @property
     def grad_u(self):
+        r"""Gradient of the unknown field.
+
+        For scalar fields, this is a vector. For vector fields (velocity),
+        this is the velocity gradient tensor :math:`\nabla \mathbf{u}`.
+
+        Returns
+        -------
+        sympy.Matrix
+            Gradient/Jacobian of the unknown field.
+        """
         mesh = self.Unknowns.u.mesh
         # return mesh.vector.gradient(self.Unknowns.u.sym)
         return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
 
     @property
     def DuDt(self):
+        r"""Material derivative operator for the unknown field.
+
+        Used in time-dependent problems to track Lagrangian or
+        semi-Lagrangian derivatives.
+
+        Returns
+        -------
+        SemiLagrangian_DDt or Lagrangian_DDt or None
+            The material derivative operator, or None if not set.
+        """
         return self._DuDt
 
     @DuDt.setter
@@ -430,23 +470,51 @@ class Constitutive_Model(uw_object):
 
 class ViscousFlowModel(Constitutive_Model):
     r"""
-    Viscous flow constitutive model.
+    Viscous flow constitutive model for Stokes-type solvers.
+
+    Defines the relationship between deviatoric stress and strain rate:
 
     .. math::
 
         \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
         + \frac{\partial u_l}{\partial x_k} \right]
 
-    where :math:`\eta` is the viscosity, a scalar constant, SymPy function,
-    Underworld mesh variable, or any valid combination. This results in an
-    isotropic (but not necessarily homogeneous or linear) relationship between
-    :math:`\tau` and the velocity gradients.
+    where :math:`\eta` is the viscosity, which can be a scalar constant, SymPy
+    function, Underworld mesh variable, or any valid combination. This results
+    in an isotropic (but not necessarily homogeneous or linear) relationship
+    between :math:`\tau` and the velocity gradients.
 
-    You can also supply :math:`\eta_{IJ}`, the Mandel form of the constitutive
-    tensor, or :math:`\eta_{ijkl}`, the rank-4 tensor.
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (typically velocity and pressure fields).
+    material_name : str, optional
+        Name identifier for this material (used in multi-material setups).
 
-    The Mandel constitutive matrix is available in ``viscous_model.C`` and the
-    rank-4 tensor form is in ``viscous_model.c``.
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters container. Set ``Parameters.shear_viscosity_0``
+        to define the viscosity.
+    flux : sympy.Matrix
+        The computed deviatoric stress tensor :math:`\boldsymbol{\tau}`.
+    C : sympy.Matrix
+        Mandel form of the constitutive tensor :math:`\eta_{IJ}`.
+    c : sympy.Array
+        Rank-4 tensor form :math:`\eta_{ijkl}`.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> stokes = uw.systems.Stokes(mesh)
+    >>> viscous = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns)
+    >>> viscous.Parameters.shear_viscosity_0 = 1e21  # Pa.s
+    >>> stokes.constitutive_model = viscous
+
+    See Also
+    --------
+    ViscoPlasticFlowModel : Adds yield stress for plastic behavior.
+    ViscoElasticPlasticFlowModel : Adds viscoelastic memory.
     """
 
     #     ```python
@@ -631,33 +699,51 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
     r"""
     Viscoplastic flow constitutive model with yield stress.
 
+    Extends :class:`ViscousFlowModel` with a yield stress that limits the
+    maximum deviatoric stress. When stress would exceed the yield stress,
+    the effective viscosity is reduced to cap the stress.
+
     .. math::
 
-        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
-        + \frac{\partial u_l}{\partial x_k} \right]
+        \tau_{ij} = \eta_\mathrm{eff} \cdot \dot{\varepsilon}_{ij}
 
-    where :math:`\eta` is the viscosity, a scalar constant, SymPy function,
-    Underworld mesh variable, or any valid combination. This results in an
-    isotropic (but not necessarily homogeneous or linear) relationship between
-    :math:`\tau` and the velocity gradients.
+    where the effective viscosity is:
 
-    In a viscoplastic model, this viscosity is defined to cap the value of the
-    overall stress at a value known as the *yield stress*. In this constitutive
-    law, we assume that the yield stress is a scalar limit on the 2nd invariant
-    of the stress. A general, anisotropic model needs to define the yield surface
-    carefully and only a subset of possible cases is available in Underworld.
+    .. math::
 
-    This constitutive model is a convenience function that simplifies the code
-    at run-time but can be reproduced by using the appropriate SymPy functions
-    in the standard viscous constitutive model. **If you see** ``not~yet~defined``
-    **in the definition of the effective viscosity, this means you have not yet
-    defined all the required functions.** The behaviour is to default to the
-    standard viscous constitutive law if yield terms are not specified.
+        \eta_\mathrm{eff} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
 
-    The Mandel constitutive matrix is available in ``viscoplastic_model.C`` and the rank-4 tensor form is
-    in `viscoplastic_model.c`.  Apply the constitutive model using:
+    and :math:`\tau_y` is the yield stress and :math:`\dot{\varepsilon}_{II}`
+    is the second invariant of the strain rate.
 
-    ---
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (typically velocity and pressure fields).
+    material_name : str, optional
+        Name identifier for this material.
+
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters including:
+
+        - ``shear_viscosity_0``: Background viscosity :math:`\eta_0`
+        - ``yield_stress``: Yield stress :math:`\tau_y`
+
+    viscosity : UWexpression
+        The effective (possibly yielded) viscosity.
+
+    Notes
+    -----
+    If yield stress is not defined, this model behaves identically to
+    :class:`ViscousFlowModel`. The message ``not~yet~defined`` in the
+    effective viscosity indicates missing parameters.
+
+    See Also
+    --------
+    ViscousFlowModel : Base viscous model without yielding.
+    ViscoElasticPlasticFlowModel : Adds viscoelastic memory.
     """
 
     def __init__(self, unknowns, material_name: str = None):
@@ -1390,23 +1476,44 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
 class DiffusionModel(Constitutive_Model):
     r"""
-    Diffusion (Fourier/Fick) constitutive model.
+    Diffusion (Fourier/Fick) constitutive model for scalar transport.
+
+    Defines the flux-gradient relationship for scalar diffusion:
 
     .. math::
 
-        q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}
+        q_{i} = \kappa_{ij} \frac{\partial \phi}{\partial x_j}
 
-    where :math:`\kappa` is a diffusivity, a scalar constant, SymPy function,
-    Underworld mesh variable, or any valid combination.
+    For isotropic diffusion, :math:`\kappa_{ij} = \kappa \delta_{ij}`.
+
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (the scalar field being diffused).
+    material_name : str, optional
+        Name identifier for this material.
+
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters container. Set ``Parameters.diffusivity``
+        to define :math:`\kappa`.
+    flux : sympy.Matrix
+        The computed diffusive flux vector.
+    diffusivity : UWexpression
+        Shortcut to ``Parameters.diffusivity``.
+    K : UWexpression
+        Alias for ``diffusivity``.
 
     Examples
     --------
-    >>> diffusion_model = DiffusionModel(dim)
-    >>> diffusion_model.material_properties = diffusion_model.Parameters(
-    ...     diffusivity=diffusivity_fn
-    ... )
-    >>> scalar_solver.constitutive_model = diffusion_model
-    >>> flux = diffusion_model.flux(gradient_matrix)
+    >>> diffusion = uw.constitutive_models.DiffusionModel(poisson.Unknowns)
+    >>> diffusion.Parameters.diffusivity = 1e-6  # m^2/s
+    >>> poisson.constitutive_model = diffusion
+
+    See Also
+    --------
+    AnisotropicDiffusionModel : For direction-dependent diffusivity.
     """
 
     class _Parameters:
@@ -1623,24 +1730,48 @@ class GenericFluxModel(Constitutive_Model):
 
 class DarcyFlowModel(Constitutive_Model):
     r"""
-    Darcy flow constitutive model for porous media.
+    Darcy flow constitutive model for porous media flow.
+
+    Relates the Darcy flux to pressure gradients and body forces:
 
     .. math::
 
-        q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s \right)
+        q_{i} = \kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
 
-    where :math:`\kappa` is the permeability, a scalar constant, SymPy function,
-    Underworld mesh variable, or any valid combination. :math:`s` is the body
-    force 'source' of pressure gradients.
+    where :math:`\kappa` is the permeability (or hydraulic conductivity),
+    :math:`p` is the pressure (or hydraulic head), and :math:`s` is the
+    body force term (e.g., gravity: :math:`s = \rho g`).
+
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (the pressure/head field).
+    material_name : str, optional
+        Name identifier for this material.
+
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters container:
+
+        - ``permeability``: Intrinsic permeability :math:`\kappa` [m²]
+        - ``s``: Body force vector (e.g., gravity term)
+
+    flux : sympy.Matrix
+        The computed Darcy flux vector.
+    permeability : UWexpression
+        Shortcut to ``Parameters.permeability``.
 
     Examples
     --------
-    >>> darcy_model = DarcyFlowModel(dim)
-    >>> darcy_model.material_properties = darcy_model.Parameters(
-    ...     permeability=permeability_fn
-    ... )
-    >>> scalar_solver.constitutive_model = darcy_model
-    >>> flux = darcy_model.flux
+    >>> darcy = uw.constitutive_models.DarcyFlowModel(solver.Unknowns)
+    >>> darcy.Parameters.permeability = 1e-12  # m^2
+    >>> darcy.Parameters.s = [0, -rho * g]  # Gravity in y-direction
+    >>> solver.constitutive_model = darcy
+
+    See Also
+    --------
+    DiffusionModel : For pure diffusion without body forces.
     """
 
     class _Parameters:
