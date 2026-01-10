@@ -67,3 +67,32 @@ For each occurrence found, classify as:
 - Files needing updates grouped by type
 - Priority order (user-facing examples first)
 - Recommended fixes
+
+---
+
+## Docstring Health Checks
+
+### Regenerate Inventory
+```bash
+pixi run -e default python scripts/docstring_sweep.py
+```
+
+### Quick Statistics
+```bash
+# Count items by status in review queue
+grep -c "none" docs/docstrings/review_queue.md || echo "0"
+grep -c "minimal" docs/docstrings/review_queue.md || echo "0"
+grep -c "partial" docs/docstrings/review_queue.md || echo "0"
+grep -c "complete" docs/docstrings/review_queue.md || echo "0"
+```
+
+### Format Inconsistencies
+```bash
+# Find Markdown math in source (should be RST :math: format)
+grep -rn '\$[^$]*\$' src/underworld3/ --include="*.py" | grep -v "test_" | head -20
+```
+
+### Reference
+- Full inventory: `docs/docstrings/review_queue.md` (with NEEDS_* flags)
+- Conversion plan: `docs/plans/docstring-conversion-plan.md`
+- Target format: NumPy/Sphinx with RST math (`:math:`, `.. math::`)

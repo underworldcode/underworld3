@@ -229,6 +229,22 @@ class SNES_Poisson(SNES_Scalar):
 
     @property
     def f(self):
+        r"""Source term for the Poisson equation.
+
+        The source term :math:`f` appears on the right-hand side:
+
+        .. math::
+            \nabla \cdot (\kappa \nabla u) = f
+
+        Returns
+        -------
+        sympy.Matrix
+            Source term expression (scalar, shape ``(1, 1)``).
+
+        See Also
+        --------
+        constitutive_model : Provides the diffusivity :math:`\kappa`.
+        """
         return self._f
 
     @f.setter
@@ -700,43 +716,175 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def strainrate(self):
+        r"""Symmetric strain rate tensor from velocity gradients.
+
+        The strain rate tensor :math:`\dot{\varepsilon}` is computed as:
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+
+        Returns
+        -------
+        sympy.Matrix
+            Symmetric tensor of shape ``(dim, dim)`` where ``dim`` is the
+            mesh dimensionality.
+
+        See Also
+        --------
+        strainrate_1d : Voigt notation (vector) form.
+        stress_deviator : Deviatoric stress computed from strain rate.
+        """
         return sympy.Matrix(self.mesh.vector.strain_tensor(self.Unknowns.u.sym))
 
     @property
     def strainrate_1d(self):
+        r"""Strain rate in Voigt notation (vector form).
+
+        Converts the symmetric strain rate tensor to Voigt notation for
+        use in constitutive model calculations. In 2D, returns a 3-component
+        vector; in 3D, a 6-component vector.
+
+        Returns
+        -------
+        sympy.Matrix
+            Strain rate in Voigt notation.
+
+        See Also
+        --------
+        strainrate : Full tensor form.
+        """
         return uw.maths.tensor.rank2_to_voigt(self.strainrate, self.mesh.dim)
 
     @property
     def strainrate_star_1d(self):
+        r"""Historical strain rate in Voigt notation (for viscoelastic models).
+
+        Used in viscoelastic formulations where the stress depends on
+        both current and historical strain rates.
+
+        Returns
+        -------
+        sympy.Matrix
+            Historical strain rate in Voigt notation.
+
+        See Also
+        --------
+        strainrate_1d : Current strain rate.
+        """
         return uw.maths.tensor.rank2_to_voigt(self.strainrate_star, self.mesh.dim)
 
-    # This should return standard viscous behaviour if strainrate_star is None
     @property
     def stress_deviator(self):
-        return self.constitutive_model.flux  # strainrate, strain-rate history
+        r"""Deviatoric stress tensor from the constitutive model.
+
+        The deviatoric stress :math:`\boldsymbol{\tau}` is the traceless part
+        of the stress tensor, computed by the constitutive model from the
+        strain rate:
+
+        .. math::
+            \boldsymbol{\tau} = \boldsymbol{\eta} : \dot{\boldsymbol{\varepsilon}}
+
+        For a Newtonian fluid: :math:`\boldsymbol{\tau} = 2\eta\dot{\boldsymbol{\varepsilon}}`
+
+        Returns
+        -------
+        sympy.Matrix
+            Deviatoric stress tensor of shape ``(dim, dim)``.
+
+        See Also
+        --------
+        stress : Total stress (deviatoric + pressure).
+        constitutive_model : Provides the viscosity relationship.
+        """
+        return self.constitutive_model.flux
 
     @property
     def stress_deviator_1d(self):
-        return uw.maths.tensor.rank2_to_voigt(self.stress_deviator, self.mesh.dim)  ##
+        r"""Deviatoric stress in Voigt notation.
+
+        Returns
+        -------
+        sympy.Matrix
+            Deviatoric stress in Voigt notation.
+
+        See Also
+        --------
+        stress_deviator : Full tensor form.
+        """
+        return uw.maths.tensor.rank2_to_voigt(self.stress_deviator, self.mesh.dim)
 
     @property
     def stress(self):
+        r"""Total Cauchy stress tensor.
+
+        The total stress combines the deviatoric stress and pressure:
+
+        .. math::
+            \boldsymbol{\sigma} = \boldsymbol{\tau} - p\mathbf{I}
+
+        where :math:`\boldsymbol{\tau}` is the deviatoric stress and
+        :math:`p` is the pressure (positive in compression).
+
+        Returns
+        -------
+        sympy.Matrix
+            Total stress tensor of shape ``(dim, dim)``.
+
+        See Also
+        --------
+        stress_deviator : Deviatoric (traceless) part.
+        """
         return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
 
     @property
     def stress_1d(self):
+        r"""Total stress in Voigt notation.
+
+        Returns
+        -------
+        sympy.Matrix
+            Total stress in Voigt notation.
+
+        See Also
+        --------
+        stress : Full tensor form.
+        """
         return uw.maths.tensor.rank2_to_voigt(self.stress, self.mesh.dim)
 
     @property
     def div_u(self):
-        # E = self.strainrate
-        # divergence = E.trace()
-        # return divergence
+        r"""Velocity divergence.
 
+        For incompressible flow, this should be zero:
+
+        .. math::
+            \nabla \cdot \mathbf{u} = 0
+
+        Returns
+        -------
+        sympy.Expr
+            Scalar divergence expression.
+
+        Notes
+        -----
+        Non-zero divergence indicates compressibility or mass sources/sinks.
+        """
         return self.mesh.vector.divergence(self.Unknowns.u.sym)
 
     @property
     def constraints(self):
+        r"""Constraint equation for the saddle-point system.
+
+        By default, this is the incompressibility constraint
+        :math:`\nabla \cdot \mathbf{u} = 0`. Can be modified for
+        compressible or other constrained formulations.
+
+        Returns
+        -------
+        sympy.Expr
+            Constraint expression.
+        """
         return self._constraints
 
     @constraints.setter
@@ -747,6 +895,22 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def bodyforce(self):
+        r"""Body force vector (source term).
+
+        The volumetric body force :math:`\mathbf{f}` appears on the
+        right-hand side of the momentum equation:
+
+        .. math::
+            -\nabla \cdot \boldsymbol{\sigma} = \mathbf{f}
+
+        Common examples include gravity (:math:`\rho\mathbf{g}`) or
+        buoyancy forces.
+
+        Returns
+        -------
+        UWexpression
+            Body force vector expression.
+        """
         return self._bodyforce
 
     @bodyforce.setter
@@ -771,6 +935,22 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def saddle_preconditioner(self):
+        r"""Preconditioner for the Schur complement in the saddle-point system.
+
+        For the Stokes system, the default preconditioner is :math:`1/\eta`
+        (inverse viscosity), which approximates the Schur complement
+        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T`.
+
+        Returns
+        -------
+        sympy.Expr
+            Preconditioner expression (typically inverse viscosity).
+
+        Notes
+        -----
+        A good preconditioner significantly improves convergence of the
+        iterative solver. For variable viscosity, use the local viscosity.
+        """
         return self._saddle_preconditioner
 
     @saddle_preconditioner.setter
@@ -781,6 +961,28 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def penalty(self):
+        r"""Augmented Lagrangian penalty parameter.
+
+        The penalty :math:`\lambda` adds a term to the weak form that
+        penalizes non-zero divergence:
+
+        .. math::
+            \lambda \int (\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
+
+        This improves convergence for incompressible flow without
+        changing the solution (since :math:`\nabla \cdot \mathbf{u} = 0`
+        at convergence).
+
+        Returns
+        -------
+        UWexpression
+            Penalty parameter (typically a large constant, e.g., ``1e6 * eta``).
+
+        Notes
+        -----
+        Set to zero for standard Stokes without augmentation.
+        Typical values are ``O(10^6)`` times the characteristic viscosity.
+        """
         return self._penalty
 
     @penalty.setter
@@ -1687,6 +1889,19 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def f(self):
+        r"""Source term for the advection-diffusion equation.
+
+        The source :math:`f` appears on the right-hand side:
+
+        .. math::
+            \frac{\partial u}{\partial t} + \mathbf{V} \cdot \nabla u
+            = \nabla \cdot (\kappa \nabla u) + f
+
+        Returns
+        -------
+        sympy.Matrix
+            Source term expression.
+        """
         return self._f
 
     @f.setter
@@ -1696,6 +1911,16 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def V_fn(self):
+        r"""Velocity field for advection.
+
+        The advection velocity :math:`\mathbf{V}` transports the scalar
+        field :math:`u`. Can be a MeshVariable or symbolic expression.
+
+        Returns
+        -------
+        sympy.Matrix
+            Velocity vector expression.
+        """
         return self._V_fn
 
     @V_fn.setter
@@ -1716,6 +1941,26 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def delta_t(self):
+        r"""Timestep for time integration.
+
+        The timestep :math:`\Delta t` controls the temporal discretization.
+        For explicit advection, this should satisfy the CFL condition:
+
+        .. math::
+            \Delta t < \frac{h}{|\mathbf{V}|}
+
+        where :math:`h` is the element size and :math:`|\mathbf{V}|` is the
+        velocity magnitude.
+
+        Returns
+        -------
+        UWexpression
+            Timestep value.
+
+        See Also
+        --------
+        estimate_dt : Computes a stable timestep automatically.
+        """
         return self._delta_t
 
     @delta_t.setter
