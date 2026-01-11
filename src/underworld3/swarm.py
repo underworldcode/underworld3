@@ -1463,16 +1463,41 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     @property
     def data(self):
         """
-        Canonical data storage with PETSc synchronization.
-        Shape: (-1, num_components) - flat format for backward compatibility.
+        Canonical data storage in flat format for internal operations.
 
-        This is the ONLY property that handles PETSc synchronization to avoid conflicts.
-        The .array property uses this as its underlying storage with format conversion.
+        Returns particle data in shape ``(-1, num_components)`` regardless of
+        variable type. Values are always **non-dimensional** (no unit conversion).
+
+        This property handles PETSc synchronization. The ``.array`` property is
+        a view of this with shape conversion.
+
+        When to Use
+        -----------
+        - **Variable-to-variable transfers**: Copying data between swarm variables
+          avoids redundant unit conversions
+        - **Low-level operations**: Direct access to particle data
+        - **Backward compatibility**: Existing code using flat format
+
+        For general user access, prefer ``.array`` which provides a structured shape.
 
         Returns
         -------
         NDArray_With_Callback
-            Array with shape (-1, num_components) with automatic PETSc synchronization
+            Array with shape ``(-1, num_components)`` with automatic PETSc sync.
+
+        Examples
+        --------
+        >>> # Efficient variable-to-variable copy
+        >>> new_material.data[...] = old_material.data[...]
+
+        >>> # Check data shape
+        >>> scalar_var.data.shape  # (n_particles, 1)
+        >>> vector_var.data.shape  # (n_particles, dim)
+
+        See Also
+        --------
+        array : Structured format ``(N, a, b)`` for general access.
+        sym : Symbolic representation for equations.
         """
         # Cache and reuse canonical data object to avoid field access conflicts
         # Use direct __dict__ check to avoid MathematicalMixin recursion
@@ -1485,11 +1510,42 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     @property
     def array(self):
         """
-        Array view of canonical data with automatic format conversion.
-        Shape: (N, a, b) for tensor shape (a, b).
+        Primary interface for reading and writing particle data.
 
-        This property is ALWAYS a view of the canonical .data property.
-        No direct PETSc access - all changes delegate back to canonical storage.
+        Returns a structured array view with shape ``(N, a, b)`` where ``N`` is
+        the number of particles and ``(a, b)`` depends on the variable type:
+
+        - Scalar: ``(N, 1, 1)``
+        - Vector: ``(N, 1, dim)``
+        - Tensor: ``(N, dim, dim)``
+
+        Returns
+        -------
+        NDArray
+            Array view that delegates changes back to canonical storage.
+
+        Examples
+        --------
+        >>> # Scalar field initialization
+        >>> material_property.array[:, 0, 0] = 1e21  # Set viscosity
+
+        >>> # Vector field
+        >>> velocity.array[:, 0, 0] = vx_values  # x-component
+        >>> velocity.array[:, 0, 1] = vy_values  # y-component
+
+        >>> # Reading values
+        >>> max_visc = material_property.array[:, 0, 0].max()
+
+        Notes
+        -----
+        This property is a view of the canonical ``.data`` property with
+        automatic shape conversion. All modifications trigger proxy variable
+        updates for mesh interpolation.
+
+        See Also
+        --------
+        data : Flat format ``(-1, components)`` for variable-to-variable transfers.
+        sym : Symbolic representation for use in equations.
         """
         return self._create_array_view()
 

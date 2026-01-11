@@ -1260,7 +1260,39 @@ class _BaseMeshVariable(Stateful, uw_object):
     @property
     def sym(self) -> sympy.Basic:
         """
-        The handle to the sympy.Matrix view of this variable
+        Symbolic representation for use in equations and expressions.
+
+        Returns the SymPy Matrix representation of this variable, which can
+        be used in constitutive models, boundary conditions, and PDE definitions.
+        The symbolic form is used during equation assembly and JIT compilation.
+
+        Returns
+        -------
+        sympy.Matrix
+            Symbolic matrix with shape depending on variable type:
+            - Scalar: (1, 1)
+            - Vector: (dim, 1)
+            - Tensor: (dim, dim)
+
+        Notes
+        -----
+        - Unit scaling is applied during ``unwrap()``, not when accessing ``.sym``
+        - For arithmetic operations, variables support direct use without ``.sym``
+          (e.g., ``density * velocity`` works directly)
+
+        Examples
+        --------
+        >>> # Use in constitutive model
+        >>> stokes.constitutive_model.viscosity = viscosity.sym[0, 0]
+        >>> # Use in boundary condition
+        >>> solver.add_dirichlet_bc(temperature.sym[0, 0], "Top")
+        >>> # Direct arithmetic (no .sym needed)
+        >>> momentum = density * velocity  # Works directly
+
+        See Also
+        --------
+        sym_1d : Flattened symbolic representation (Voigt notation for tensors).
+        array : Numerical data access with unit handling.
         """
         # Note: Scaling is applied during unwrap(), not here
         return self._sym
@@ -1582,11 +1614,54 @@ class _BaseMeshVariable(Stateful, uw_object):
     @property
     def array(self):
         """
-        Array view of canonical data with automatic format conversion.
-        Shape: (N, a, b) for tensor shape (a, b).
+        Primary interface for reading and writing variable data.
 
-        This property is ALWAYS a view of the canonical .data property.
-        No direct PETSc access - all changes delegate back to canonical storage.
+        Returns a structured array view with shape ``(N, a, b)`` where ``N`` is the
+        number of mesh nodes and ``(a, b)`` depends on the variable type:
+
+        - Scalar: ``(N, 1, 1)``
+        - Vector: ``(N, 1, dim)``
+        - Tensor: ``(N, dim, dim)``
+        - Symmetric tensor: ``(N, dim, dim)`` (symmetric storage)
+
+        When the variable has units, values are automatically converted:
+
+        - **Reading**: Returns values in physical units
+        - **Writing**: Accepts physical units, converts to non-dimensional for storage
+
+        Returns
+        -------
+        NDArray
+            Array view that delegates changes back to canonical storage.
+
+        Examples
+        --------
+        >>> # Scalar field initialization
+        >>> temperature.array[:, 0, 0] = 300.0  # Set all nodes to 300
+
+        >>> # Vector field initialization
+        >>> velocity.array[:, 0, 0] = 1.0  # x-component
+        >>> velocity.array[:, 0, 1] = 0.0  # y-component
+        >>> # Or set entire vector at once
+        >>> velocity.array[:, 0, :] = np.column_stack([vx, vy])
+
+        >>> # Coordinate-based initialization
+        >>> temperature.array[:, 0, 0] = 1000 + 500 * mesh.X.coords[:, 0]
+
+        >>> # Reading values
+        >>> max_temp = temperature.array[:, 0, 0].max()
+
+        Notes
+        -----
+        This property is a view of the canonical ``.data`` property with
+        automatic shape conversion. All modifications are synchronized
+        with PETSc storage.
+
+        See Also
+        --------
+        data : Flat format ``(-1, components)`` for variable-to-variable transfers.
+        sym : Symbolic representation for equations.
+        coords : Spatial coordinates of data points.
         """
         return self._create_array_view()
 
@@ -2252,16 +2327,42 @@ class _BaseMeshVariable(Stateful, uw_object):
     @property
     def data(self):
         """
-        Canonical data storage with PETSc synchronization.
-        Shape: (-1, num_components) - flat format for backward compatibility.
+        Canonical data storage in flat format for internal operations.
 
-        This is the ONLY property that handles PETSc synchronization to avoid conflicts.
-        The .array property uses this as its underlying storage with format conversion.
+        Returns data in shape ``(-1, num_components)`` regardless of variable type.
+        Values are always **non-dimensional** (no unit conversion applied).
+
+        This property is the canonical storage that handles PETSc synchronization.
+        The ``.array`` property is a view of this with shape conversion.
+
+        When to Use
+        -----------
+        - **Variable-to-variable transfers**: Copying data between variables that
+          both operate in non-dimensional space avoids redundant unit conversions
+        - **Low-level PETSc operations**: Direct access to solver data
+        - **Backward compatibility**: Existing code using flat format
+
+        For general user access, prefer ``.array`` which handles units and provides
+        a structured shape.
 
         Returns
         -------
         NDArray_With_Callback
-            Array with shape (-1, num_components) with automatic PETSc synchronization
+            Array with shape ``(-1, num_components)`` with automatic PETSc sync.
+
+        Examples
+        --------
+        >>> # Efficient variable-to-variable copy (no unit conversion)
+        >>> new_temperature.data[...] = old_temperature.data[...]
+
+        >>> # Check data shape
+        >>> scalar_var.data.shape  # (N, 1)
+        >>> vector_var.data.shape  # (N, dim)
+
+        See Also
+        --------
+        array : Structured format ``(N, a, b)`` with automatic unit handling.
+        sym : Symbolic representation for equations.
         """
         # Cache and reuse canonical data object to avoid field access conflicts
         # Use direct __dict__ check to avoid potential attribute access issues
@@ -2760,12 +2861,34 @@ class _BaseMeshVariable(Stateful, uw_object):
     @property
     def coords(self) -> numpy.ndarray:
         """
-        The array of variable vertex coordinates for this variable's DOF locations.
+        Spatial coordinates of this variable's degree-of-freedom locations.
 
-        Returns coordinates for this variable's specific degree-of-freedom locations,
-        which may differ from mesh coordinate variable locations if the degrees differ.
+        Returns coordinates for this variable's specific DOF locations, which may
+        differ from mesh vertex locations if the variable degree differs from the
+        mesh coordinate degree.
 
-        When mesh has reference quantities set, returns unit-aware coordinates in meters.
+        When the mesh has reference quantities set, returns dimensional coordinates
+        in physical units. Otherwise returns non-dimensional model coordinates.
+
+        Returns
+        -------
+        ndarray or UnitAwareArray
+            Coordinates with shape ``(N, dim)`` where ``N`` is the number of DOFs.
+            Returns unit-aware array if mesh has units configured.
+
+        Examples
+        --------
+        >>> # Get DOF coordinates for initialization
+        >>> x_coords = temperature.coords[:, 0]
+        >>> temperature.array[:, 0, 0] = 300 + 100 * x_coords
+
+        >>> # Pass to evaluation functions
+        >>> values = uw.function.evaluate(expression, var.coords)
+
+        See Also
+        --------
+        coords_nd : Non-dimensional coordinates for internal operations.
+        mesh.X.coords : Mesh vertex coordinates (may differ from DOF coords).
         """
         # Get non-dimensional [0-1] model coordinates for this variable's specific DOF locations
         coords_nondim = self.mesh._get_coords_for_var(self)

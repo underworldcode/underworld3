@@ -1873,14 +1873,42 @@ class CoordinateSystem:
     @property
     def coords(self):
         """
-        Coordinate data array in physical units.
+        Mesh vertex coordinates as a numerical array.
 
-        Returns the mesh node coordinates, applying scaling if the mesh has
-        reference quantities set. When mesh.units is specified, returns a
-        UnitAwareArray.
+        Returns the mesh node coordinates in physical units. When the mesh has
+        reference quantities set, coordinates are scaled from internal model
+        units to physical units.
 
-        Returns:
-            numpy.ndarray or UnitAwareArray: Node coordinates
+        This is the primary interface for accessing coordinate data for
+        initialization, visualization, and coordinate-based calculations.
+
+        Returns
+        -------
+        numpy.ndarray or UnitAwareArray
+            Coordinate array with shape ``(N, dim)`` where ``N`` is the number
+            of mesh vertices. Returns UnitAwareArray if mesh has units configured.
+
+        Examples
+        --------
+        >>> # Get all coordinates
+        >>> coords = mesh.X.coords
+        >>> x_values = coords[:, 0]
+        >>> y_values = coords[:, 1]
+
+        >>> # Use for field initialization
+        >>> temperature.array[:, 0, 0] = 300 + 100 * mesh.X.coords[:, 0]
+
+        >>> # Pass to evaluation functions
+        >>> values = uw.function.evaluate(expression, mesh.X.coords)
+
+        >>> # Get bounds
+        >>> x_min, x_max = mesh.X.coords[:, 0].min(), mesh.X.coords[:, 0].max()
+
+        See Also
+        --------
+        units : Coordinate units (e.g., 'kilometer').
+        mesh.points : Alias for mesh.X.coords.
+        var.coords : Variable-specific DOF coordinates (may differ from mesh vertices).
         """
         model_coords = self.mesh._coords
 
@@ -1905,13 +1933,27 @@ class CoordinateSystem:
     @property
     def units(self):
         """
-        Coordinate units.
+        Physical units of the coordinate system.
 
-        Returns the units for the coordinate system. This is the same as mesh.units
-        and indicates what physical units the coordinates are expressed in.
+        Returns the units for coordinates accessed via ``.coords``. This is
+        derived from the mesh's reference quantities and indicates the physical
+        scale of the coordinate data.
 
-        Returns:
-            str or None: Coordinate units (e.g., 'km', 'm', 'degrees')
+        Returns
+        -------
+        str or None
+            Unit string (e.g., 'kilometer', 'meter'), or None if no reference
+            quantities are set.
+
+        Examples
+        --------
+        >>> print(mesh.X.units)  # 'kilometer'
+        >>> coords = mesh.X.coords  # Coordinates in kilometers
+
+        See Also
+        --------
+        coords : Coordinate data array.
+        mesh.units : Same as mesh.X.units.
         """
         return self.mesh.units
 
@@ -2065,7 +2107,42 @@ class CoordinateSystem:
 
     @property
     def X(self) -> sympy.Matrix:
-        """Cartesian coordinates as UWCoordinate objects (user-facing symbolic)."""
+        """
+        Cartesian coordinate system providing symbolic and numerical access.
+
+        This is the primary interface for mesh coordinates, providing both:
+
+        - **Symbolic access**: ``mesh.X[0]``, ``mesh.X[1]`` for use in equations
+        - **Numerical access**: ``mesh.X.coords`` for coordinate data arrays
+
+        Returns
+        -------
+        sympy.Matrix
+            Symbolic coordinate matrix that also supports ``.coords`` for data.
+
+        Examples
+        --------
+        >>> # Symbolic access for equations
+        >>> x, y = mesh.X
+        >>> temperature_expr = 300 + 100 * x
+
+        >>> # Component access
+        >>> x_coord = mesh.X[0]  # Symbolic x-coordinate
+        >>> y_coord = mesh.X[1]  # Symbolic y-coordinate
+
+        >>> # Numerical coordinate data
+        >>> coords = mesh.X.coords  # (N, dim) array of vertex positions
+        >>> x_values = mesh.X.coords[:, 0]
+
+        >>> # Coordinate units (if set)
+        >>> units = mesh.X.units  # e.g., 'kilometer'
+
+        See Also
+        --------
+        R : Natural (curvilinear) coordinates for spherical/cylindrical meshes.
+        geo : Geographic coordinates for regional spherical meshes.
+        N : Raw BaseScalar coordinates for JIT compilation.
+        """
         return self._X
 
     @property
