@@ -2041,6 +2041,22 @@ class IndexSwarmVariable(SwarmVariable):
 
     @property
     def sym_1d(self):
+        """
+        One-dimensional symbolic mask array (alias for :attr:`sym`).
+
+        Returns the same symbolic mask array as :attr:`sym`, provided for API
+        compatibility with other variable types that distinguish between
+        multi-dimensional and flattened representations.
+
+        Returns
+        -------
+        sympy.Matrix
+            Symbolic mask array of shape (indices, 1).
+
+        See Also
+        --------
+        sym : Primary symbolic mask array access.
+        """
         return self._MaskArray
 
     # We can  also add a __getitem__ call to access each mask
@@ -2050,7 +2066,38 @@ class IndexSwarmVariable(SwarmVariable):
 
     def createMask(self, funcsList):
         """
-        This creates a masked sympy function of swarm variables required for Underworld's solvers
+        Create a material-weighted symbolic expression from per-material values.
+
+        This method creates a SymPy expression that combines multiple material
+        properties using the index variable's symbolic masks. The result can be
+        used directly in Underworld's solver equations.
+
+        Parameters
+        ----------
+        funcsList : list or tuple
+            List of values or symbolic expressions, one per material index.
+            Length must equal :attr:`indices`.
+
+        Returns
+        -------
+        sympy.Basic
+            Symbolic expression: ``sum(funcsList[i] * mask[i] for i in indices)``.
+
+        Raises
+        ------
+        RuntimeError
+            If ``funcsList`` is not a list/tuple or has wrong length.
+
+        Examples
+        --------
+        >>> # Define viscosity per material
+        >>> viscosity = material.createMask([1e21, 1e20, 1e22])  # 3 materials
+        >>> # Use in solver
+        >>> stokes.constitutive_model.viscosity = viscosity
+
+        See Also
+        --------
+        visMask : Create visualization mask showing material indices.
         """
 
         if not isinstance(funcsList, (tuple, list)):
@@ -2065,24 +2112,64 @@ class IndexSwarmVariable(SwarmVariable):
 
         return symo
 
-    def viewMask(self, sympy):
+    def viewMask(self, expr):
         """
-        Takes a previously masked sympy function and returns individual sympy objects corresponding to each material
-        """
+        Decompose a masked expression into per-material components.
 
-        """ TODO
-        output = []
-        for i in range( self.indices ):
-            tmp = {}
-            for j in range( self.indices ):
-                if i == j : pass
-                tmp
+        .. note::
+            This method is not yet implemented. Currently returns None.
 
-        return output
+        Takes a symbolic expression created by :meth:`createMask` and extracts
+        the individual material-specific components.
+
+        Parameters
+        ----------
+        expr : sympy.Basic
+            A masked symbolic expression created by :meth:`createMask`.
+
+        Returns
+        -------
+        list or None
+            List of symbolic expressions, one per material index.
+            Currently returns None (not implemented).
+
+        See Also
+        --------
+        createMask : Create a masked expression from per-material values.
         """
+        # TODO: Implement decomposition of masked expressions
+        # output = []
+        # for i in range(self.indices):
+        #     tmp = {}
+        #     for j in range(self.indices):
+        #         if i == j: pass
+        #         tmp
+        # return output
         pass
 
     def visMask(self):
+        """
+        Create a visualization mask showing material indices.
+
+        Returns a symbolic expression where each material region shows its
+        index value (0, 1, 2, ...). Useful for visualization and debugging
+        of material distributions.
+
+        Returns
+        -------
+        sympy.Basic
+            Symbolic expression evaluating to material index at each point.
+
+        Examples
+        --------
+        >>> vis_field = material.visMask()
+        >>> values = uw.function.evaluate(vis_field, swarm.data)
+        >>> # values[i] gives material index at particle i
+
+        See Also
+        --------
+        createMask : Create arbitrary material-weighted expressions.
+        """
         return self.createMask(list(range(self.indices)))
 
     def view(self):
@@ -2816,10 +2903,28 @@ class Swarm(Stateful, uw_object):
 
     @property
     def clip_to_mesh(self):
+        """
+        Whether particles are clipped to remain within mesh boundaries.
+
+        When True (default), particles that move outside the mesh domain
+        during advection or coordinate updates are removed or repositioned
+        to stay within bounds. When False, particles can exist outside the
+        mesh domain.
+
+        Returns
+        -------
+        bool
+            Current clipping state.
+
+        See Also
+        --------
+        dont_clip_to_mesh : Context manager to temporarily disable clipping.
+        """
         return self._clip_to_mesh
 
     @clip_to_mesh.setter
     def clip_to_mesh(self, value):
+        """Set whether particles should be clipped to mesh boundaries."""
         self._clip_to_mesh = bool(value)
 
     def dont_clip_to_mesh(self):
