@@ -209,29 +209,27 @@ class Integral:
 
 class CellWiseIntegral:
     """
-    The `Integral` class constructs the cell wise volume integral
+    Compute volume integrals over each mesh cell individually.
 
-    .. math:: F_{i}  =   \int_V \, f(\mathbf{x}) \, \mathrm{d} V
+    The ``CellWiseIntegral`` class constructs cell-by-cell volume integrals:
 
-    for some scalar function :math:`f` over the mesh domain :math:`V`.
+    .. math:: F_c  =   \\int_{V_c} \\, f(\\mathbf{x}) \\, \\mathrm{d} V
+
+    for some scalar function :math:`f` over each cell volume :math:`V_c`.
+
+    Unlike :class:`Integral` which returns a single scalar over the entire
+    mesh domain, this class returns an array with one value per mesh cell.
 
     Parameters
     ----------
-    mesh :
+    mesh : underworld3.discretisation.Mesh
         The mesh over which integration is performed.
-    fn :
+    fn : float, int, or sympy.Basic
         Function to be integrated.
 
-    Example
-    -------
-    Calculate volume of mesh:
-
-    >>> import underworld3 as uw
-    >>> import numpy as np
-    >>> mesh = uw.discretisation.Box()
-    >>> volumeIntegral = uw.maths.Integral(mesh=mesh, fn=1.)
-    >>> np.allclose( 1., volumeIntegral.evaluate(), rtol=1e-8)
-    True
+    See Also
+    --------
+    Integral : For domain-wide (global) volume integrals.
     """
 
     @timing.routine_timer_decorator
@@ -245,6 +243,20 @@ class CellWiseIntegral:
 
     @timing.routine_timer_decorator
     def evaluate(self) -> float:
+        """
+        Evaluate the cell-wise integral and return results per cell.
+
+        Returns
+        -------
+        ndarray
+            Array of integral values, one per mesh cell.
+
+        Raises
+        ------
+        RuntimeError
+            If the mesh has no variables (PETSc limitation).
+            If the integrand is a Vector or Dyadic (not supported).
+        """
         if len(self.mesh.vars)==0:
             raise RuntimeError("The mesh requires at least a single variable for integration to function correctly.\n"
                                "This is a PETSc limitation.")

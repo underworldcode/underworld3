@@ -84,10 +84,12 @@ cdef class KDTree:
 
     @property
     def n(self):
+        """Number of points in the KD-tree."""
         return self.points.shape[0]
 
     @property
     def ndim(self):
+        """Spatial dimensionality of the KD-tree (2 or 3)."""
         return self.points.shape[1]
 
     def _convert_coords_to_tree_units(self, coords):
@@ -341,7 +343,40 @@ cdef class KDTree:
             p=2,
             verbose = False,
         ):
+        """
+        Interpolate data to target coordinates using inverse distance weighting.
 
+        This is a convenience wrapper around :meth:`rbf_interpolator_local_from_kdtree`.
+        It performs radial basis function (RBF) interpolation using inverse distance
+        weighting to map known data values from the KD-tree points to arbitrary
+        target coordinates.
+
+        Parameters
+        ----------
+        coords : array-like
+            Target coordinates where data will be interpolated.
+            Shape should be ``(n_coords, dim)``.
+        data : ndarray
+            Known data values at KD-tree points.
+            Shape should be ``(n_points,)`` or ``(n_points, n_components)``.
+        nnn : int, optional
+            Number of nearest neighbours to use for interpolation (default 4).
+            If 1, returns raw nearest-neighbour values without distance weighting.
+        p : int, optional
+            Power index for distance weighting: ``weight = 1/distance^p`` (default 2).
+        verbose : bool, optional
+            Print progress messages (default False).
+
+        Returns
+        -------
+        ndarray
+            Interpolated data values at target coordinates.
+
+        See Also
+        --------
+        rbf_interpolator_local_from_kdtree : The underlying implementation.
+        query : Find nearest neighbours without interpolation.
+        """
         return self.rbf_interpolator_local_from_kdtree(
             coords, data, nnn, p, verbose,
         )

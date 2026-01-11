@@ -50,16 +50,40 @@ cdef extern from "petsc.h" nogil:
 
 class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
     """
-    This is largely just a shell class to help us differentiate between UW
-    and native Sympy functions.
+    Applied Underworld function representing a mesh variable evaluated at coordinates.
+
+    This class extends SymPy's AppliedUndef to represent Underworld mesh variables
+    in symbolic expressions. When a mesh variable's symbolic representation (e.g.,
+    ``velocity.sym``) appears in an expression, it is an instance of this class.
+
+    The class provides:
+
+    - Type identification via ``isinstance(obj, UnderworldAppliedFunction)``
+    - Custom derivative handling through :meth:`fdiff`
+    - LaTeX rendering that shows the coordinate system (Cartesian or curvilinear)
+    - Access to the parent mesh variable via the ``meshvar`` weakref on the class
+
+    Notes
+    -----
+    Users typically don't instantiate this class directly. It is created
+    automatically when accessing ``mesh_variable.sym`` or when mesh variables
+    appear in symbolic expressions.
+
+    See Also
+    --------
+    UnderworldFunction : The metaclass that creates these applied function classes.
+    UnderworldAppliedFunctionDeriv : Derivative version of this class.
     """
     def fdiff(self, argindex):
         """
-        We provide an explicit derivative function.
-        This allows us to control the way derivative objects are printed,
-        but in the user interface, but more critically it allows us to
-        patch in code printing implementation for derivatives objects,
-        as utilised in `_jitextension.py`.
+        SymPy protocol: Return derivative with respect to the argindex-th argument.
+
+        This is an internal method called by SymPy's differentiation machinery
+        (e.g., ``sympy.diff(expr, x)``). Users should not call this directly.
+
+        By implementing this method, we control how Underworld mesh variables
+        are differentiated symbolically, and ensure the resulting derivative
+        objects can be compiled by the JIT system in ``_jitextension.py``.
         """
         # Construct and return the required deriv fn.
         return self._diff[argindex-1](*self.args)
@@ -84,10 +108,27 @@ class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
 
 class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
     """
-    This is largely just to help us differentiate between UW
-    and native Sympy functions.
+    First derivative of an Underworld mesh variable function.
+
+    This class represents spatial derivatives of mesh variables (e.g.,
+    :math:`\\partial T / \\partial x`). Instances are created automatically
+    when differentiating mesh variable symbols using ``sympy.diff()``.
+
+    The derivative can be evaluated numerically via the standard evaluation
+    functions, which use either Clement gradient recovery (fast, approximate)
+    or L2 projection (accurate, requires solve).
+
+    Notes
+    -----
+    Second derivatives are not currently supported. Attempting to differentiate
+    an instance of this class will raise a RuntimeError.
+
+    See Also
+    --------
+    UnderworldAppliedFunction : The parent class for undifferentiated functions.
     """
-    def fdiff(self,argindex):
+    def fdiff(self, argindex):
+        """SymPy protocol: Second derivatives are not supported."""
         raise RuntimeError("Second derivatives of Underworld functions are not supported at this time.")
 
 class UnderworldFunction(sympy.Function):
@@ -1237,29 +1278,52 @@ def rbf_evaluate(  expr,
 
 rbf_evaluate = timing.routine_timer_decorator(routine=rbf_evaluate, class_name="Function")
 
-## Not sure these belong with the uw function cython
+## Swarm migration type utilities (PETSc DMSwarm interface)
 
 def dm_swarm_get_migrate_type(swarm):
+    """
+    Get the migration type for a PETSc DMSwarm.
 
-    # cdef DM dm = swarm.dm
-    # cdef PetscErrorCode ierr
-    # cdef DMSwarmMigrateType mtype
+    The migration type controls how particles are transferred between
+    MPI ranks during swarm migration operations.
 
-    # ierr = DMSwarmGetMigrateType(dm.dm, &mtype); CHKERRQ(ierr)
+    Parameters
+    ----------
+    swarm : Swarm
+        The Underworld swarm object.
 
+    Returns
+    -------
+    PETSc.DMSwarm.MigrateType
+        The current migration type setting.
+
+    See Also
+    --------
+    dm_swarm_set_migrate_type : Set the migration type.
+    """
     mtype = _dmswarm_get_migrate_type(swarm.dm)
 
     return mtype
 
-def dm_swarm_set_migrate_type(swarm, mtype:PETsc.DMSwarm.MigrateType):
+def dm_swarm_set_migrate_type(swarm, mtype):
+    """
+    Set the migration type for a PETSc DMSwarm.
 
+    The migration type controls how particles are transferred between
+    MPI ranks during swarm migration operations.
+
+    Parameters
+    ----------
+    swarm : Swarm
+        The Underworld swarm object.
+    mtype : PETSc.DMSwarm.MigrateType
+        The migration type to set.
+
+    See Also
+    --------
+    dm_swarm_get_migrate_type : Get the current migration type.
+    """
     _dmswarm_set_migrate_type(swarm.dm, mtype)
-
-    # cdef DM dm = swarm.dm
-    # cdef PetscErrorCode ierr
-    # cdef DMSwarmMigrateType mig = mtype
-
-    # ierr = DMSwarmSetMigrateType(dm.dm, mig); CHKERRQ(ierr)
 
     return
 

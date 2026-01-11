@@ -52,7 +52,29 @@ class SolverBaseClass(uw_object):
         return
 
     class _Unknowns:
-        """We introduce a class to manage the unknown vectors and history managers for each solver
+        """
+        Manager for solver unknown variables and derived quantities.
+
+        This class manages the primary unknown variable (e.g., velocity, temperature)
+        and provides automatic computation of derived quantities like velocity gradients,
+        strain rates, and vorticity.
+
+        Attributes
+        ----------
+        u : MeshVariable
+            The primary unknown variable being solved for.
+        DuDt : SemiLagrangian_DDt, optional
+            Time derivative manager for advection-diffusion problems.
+        DFDt : SemiLagrangian_DDt, optional
+            Flux time derivative manager for viscoelastic problems.
+        L : sympy.Matrix
+            Velocity gradient tensor :math:`L_{ij} = \\partial u_i / \\partial x_j`.
+        E : sympy.Matrix
+            Strain rate tensor :math:`E = (L + L^T) / 2` (symmetric part of L).
+        W : sympy.Matrix
+            Vorticity tensor :math:`W = (L - L^T) / 2` (antisymmetric part of L).
+        Einv2 : sympy.Expr
+            Second invariant of strain rate :math:`\\sqrt{E_{ij} E_{ij} / 2}`.
         """
 
         def __init__(inner_self, _owning_solver):
@@ -72,6 +94,7 @@ class SolverBaseClass(uw_object):
 
         @property
         def u(inner_self):
+            """Primary unknown variable (MeshVariable) being solved for."""
             return inner_self._u
 
         @u.setter
@@ -93,6 +116,7 @@ class SolverBaseClass(uw_object):
 
         @property
         def DuDt(inner_self):
+            """Time derivative manager for the unknown variable (advection-diffusion)."""
             return inner_self._DuDt
 
         @DuDt.setter
@@ -103,6 +127,7 @@ class SolverBaseClass(uw_object):
 
         @property
         def DFDt(inner_self):
+            """Flux time derivative manager (viscoelastic problems)."""
             return inner_self._DFDt
 
         @DFDt.setter
@@ -113,22 +138,27 @@ class SolverBaseClass(uw_object):
 
         @property
         def E(inner_self):
+            """Strain rate tensor: symmetric part of velocity gradient L."""
             return inner_self._E
 
         @property
         def L(inner_self):
+            """Velocity gradient tensor: :math:`L_{ij} = \\partial u_i / \\partial x_j`."""
             return inner_self._L
 
         @property
         def W(inner_self):
+            """Vorticity tensor: antisymmetric part of velocity gradient L."""
             return inner_self._W
 
         @property
         def Einv2(inner_self):
+            """Second invariant of strain rate tensor."""
             return inner_self._Einv2
 
         @property
         def CoordinateSystem(inner_self):
+            """Coordinate system of the underlying mesh."""
             return inner_self._owning_solver.mesh.CoordinateSystem
 
     def _object_viewer(self):
@@ -575,7 +605,20 @@ class SolverBaseClass(uw_object):
     @timing.routine_timer_decorator
     def add_essential_bc(self, conds, boundary, components=None):
         """
-        see add_condtion() docstring
+        Add an essential (Dirichlet) boundary condition.
+
+        Alias for :meth:`add_dirichlet_bc`. See :meth:`add_condition` for
+        full parameter documentation.
+
+        Parameters
+        ----------
+        conds : array-like, float, or sympy.Matrix
+            Boundary condition values. Use ``None`` or ``sympy.oo`` for
+            unconstrained components.
+        boundary : str
+            Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+        components : array-like or None, optional
+            Deprecated. Use ``None`` in ``conds`` for unconstrained components.
         """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
         return
@@ -583,14 +626,46 @@ class SolverBaseClass(uw_object):
     @timing.routine_timer_decorator
     def add_natural_bc(self, conds, boundary, components=None):
         """
-        see add_condtion() docstring
+        Add a natural (Neumann) boundary condition.
+
+        Natural BCs specify flux or traction at boundaries.
+        See :meth:`add_condition` for full parameter documentation.
+
+        Parameters
+        ----------
+        conds : array-like, float, or sympy.Matrix
+            Boundary condition values (flux/traction).
+        boundary : str
+            Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+        components : array-like or None, optional
+            Deprecated. Use ``None`` in ``conds`` for unconstrained components.
         """
         self.add_condition(0, 'neumann', conds, boundary, components)
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, conds, boundary, components=None):
         """
-        see add_condtion() docstring
+        Add a Dirichlet (essential) boundary condition.
+
+        Dirichlet BCs fix the solution value at boundaries.
+        See :meth:`add_condition` for full parameter documentation.
+
+        Parameters
+        ----------
+        conds : array-like, float, or sympy.Matrix
+            Boundary condition values. Use ``None`` or ``sympy.oo`` for
+            unconstrained components.
+        boundary : str
+            Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+        components : array-like or None, optional
+            Deprecated. Use ``None`` in ``conds`` for unconstrained components.
+
+        Example
+        -------
+        >>> # Fix temperature at top boundary
+        >>> solver.add_dirichlet_bc(300.0, "Top")
+        >>> # Fix x-velocity only (leave y free)
+        >>> stokes.add_dirichlet_bc([0.0, None], "Left")
         """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
 
@@ -604,6 +679,13 @@ class SolverBaseClass(uw_object):
 
     @property
     def u(self):
+        """
+        Primary unknown variable (MeshVariable) being solved for.
+
+        For scalar problems (Poisson, advection-diffusion), this is typically a
+        scalar field like temperature. For vector problems (Stokes), this is
+        typically velocity.
+        """
         return self.Unknowns.u
 
     @u.setter
@@ -613,6 +695,12 @@ class SolverBaseClass(uw_object):
 
     @property
     def DuDt(self):
+        """
+        Time derivative manager for advection-diffusion problems.
+
+        This is a :class:`~underworld3.systems.ddt.SemiLagrangian_DDt` object
+        that handles material derivatives using semi-Lagrangian advection.
+        """
         return self.Unknowns.DuDt
 
     @DuDt.setter
@@ -622,6 +710,12 @@ class SolverBaseClass(uw_object):
 
     @property
     def DFDt(self):
+        """
+        Flux time derivative manager for viscoelastic problems.
+
+        This is a :class:`~underworld3.systems.ddt.SemiLagrangian_DDt` object
+        that handles time evolution of stress/flux fields.
+        """
         return self.Unknowns.DFDt
 
     @DFDt.setter
@@ -632,6 +726,17 @@ class SolverBaseClass(uw_object):
 
     @property
     def constitutive_model(self):
+        """
+        Constitutive model defining the material behavior.
+
+        The constitutive model provides the stress-strain relationship
+        (for Stokes) or diffusivity (for advection-diffusion). Can be set
+        as either a class or an instance.
+
+        See Also
+        --------
+        underworld3.constitutive_models : Available constitutive models.
+        """
         return self._constitutive_model
 
     @constitutive_model.setter
