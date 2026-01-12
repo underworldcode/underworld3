@@ -1019,6 +1019,50 @@ class SNES_Scalar(SolverBaseClass):
 
     This class is the base layer for building solvers that translate physical
     conservation laws into this general mathematical form.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Pre-existing scalar field variable. If None, creates a new variable.
+    degree : int, default=2
+        Polynomial degree for finite element discretization.
+    verbose : bool, default=False
+        Enable verbose solver output (monitors convergence).
+    DuDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for the unknown (advection-diffusion problems).
+    DFDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for flux (viscoelastic problems).
+
+    Attributes
+    ----------
+    u : MeshVariable
+        The scalar unknown being solved for.
+    F0 : UWexpression
+        Source/force term :math:`f`.
+    F1 : UWexpression
+        Flux term :math:`\mathbf{F}`.
+    constitutive_model : Constitutive_Model
+        Material model defining flux-gradient relationship.
+    tolerance : float
+        Solver convergence tolerance.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(16, 16))
+    >>> poisson = uw.systems.Poisson(mesh)
+    >>> poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    >>> poisson.constitutive_model.Parameters.diffusivity = 1.0
+    >>> poisson.f = 1.0  # Source term
+    >>> poisson.add_dirichlet_bc(0.0, "Bottom")
+    >>> poisson.solve()
+
+    See Also
+    --------
+    SNES_Vector : For vector-valued equations.
+    SNES_Stokes_SaddlePt : For coupled velocity-pressure (Stokes) problems.
     """
 
     @timing.routine_timer_decorator
@@ -1672,6 +1716,48 @@ class SNES_Vector(SolverBaseClass):
 
     This class is the base layer for building solvers that translate physical
     conservation laws into this general mathematical form.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Pre-existing vector field variable. If None, creates a new variable.
+    degree : int, default=2
+        Polynomial degree for finite element discretization.
+    verbose : bool, default=False
+        Enable verbose solver output (monitors convergence).
+    DuDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for the unknown.
+    DFDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for flux.
+
+    Attributes
+    ----------
+    u : MeshVariable
+        The vector unknown being solved for.
+    F0 : UWexpression
+        Source/force term :math:`\mathbf{f}`.
+    F1 : UWexpression
+        Flux term :math:`\mathbf{F}`.
+    constitutive_model : Constitutive_Model
+        Material model defining flux-gradient relationship.
+    tolerance : float
+        Solver convergence tolerance.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(16, 16))
+    >>> # Vector projection solver
+    >>> proj = uw.systems.Vector_Projection(mesh)
+    >>> proj.uw_function = some_vector_expression
+    >>> proj.solve()
+
+    See Also
+    --------
+    SNES_Scalar : For scalar-valued equations.
+    SNES_Stokes_SaddlePt : For coupled velocity-pressure (Stokes) problems.
     """
 
     @timing.routine_timer_decorator
@@ -2407,6 +2493,65 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     This class is the base layer for building solvers that translate physical
     conservation laws into this general mathematical form.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    velocityField : MeshVariable, optional
+        Pre-existing velocity field. If None, creates a new variable.
+    pressureField : MeshVariable, optional
+        Pre-existing pressure field. If None, creates a new variable.
+    degree : int, default=2
+        Polynomial degree for velocity (pressure is degree-1).
+    p_continuous : bool, default=True
+        Whether pressure field is continuous (True) or discontinuous (False).
+    verbose : bool, default=False
+        Enable verbose solver output.
+    DuDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for velocity (viscoelastic problems).
+    DFDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for stress (viscoelastic problems).
+
+    Attributes
+    ----------
+    u : MeshVariable
+        Velocity field being solved for.
+    p : MeshVariable
+        Pressure (Lagrange multiplier) field.
+    F0 : UWexpression
+        Body force term :math:`\mathbf{f}`.
+    F1 : UWexpression
+        Stress/flux term :math:`\mathbf{F}`.
+    PF0 : UWexpression
+        Constraint term :math:`f_p` (typically incompressibility).
+    constitutive_model : Constitutive_Model
+        Viscous/viscoelastic material model.
+    tolerance : float
+        Solver convergence tolerance.
+    bodyforce : sympy.Matrix
+        Body force vector (e.g., gravity).
+    penalty : float
+        Penalty parameter for augmented Lagrangian methods.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(32, 32))
+    >>> stokes = uw.systems.Stokes(mesh)
+    >>> stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    >>> stokes.constitutive_model.Parameters.viscosity = 1.0
+    >>> stokes.bodyforce = sympy.Matrix([0, -1])  # Gravity
+    >>> stokes.add_dirichlet_bc([0.0, 0.0], "Bottom")
+    >>> stokes.add_dirichlet_bc([None, 0.0], "Top")
+    >>> stokes.solve()
+    >>> velocity = stokes.u.array[:, 0, :]
+    >>> pressure = stokes.p.array[:, 0, 0]
+
+    See Also
+    --------
+    SNES_Scalar : For scalar-valued equations.
+    SNES_Vector : For vector-valued equations without constraints.
     """
 
     class _Unknowns(SolverBaseClass._Unknowns):
