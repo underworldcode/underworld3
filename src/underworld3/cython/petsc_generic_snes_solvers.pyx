@@ -1011,6 +1011,24 @@ class SNES_Scalar(SolverBaseClass):
 
     @property
     def tolerance(self):
+        """
+        Solver convergence tolerance for SNES and KSP.
+
+        Setting this value automatically configures related PETSc tolerances:
+        - ``snes_rtol``: Set to ``tolerance``
+        - ``ksp_rtol``: Set to ``tolerance * 0.1``
+        - ``ksp_atol``: Set to ``tolerance * 1e-6``
+
+        Returns
+        -------
+        float
+            Current solver tolerance.
+
+        Examples
+        --------
+        >>> solver.tolerance = 1e-6  # Tighter convergence
+        >>> solver.solve()
+        """
         return self._tolerance
 
     @tolerance.setter
@@ -1656,7 +1674,21 @@ class SNES_Vector(SolverBaseClass):
 
     @property
     def tolerance(self):
+        """
+        Solver convergence tolerance for SNES and KSP.
+
+        Setting this value automatically configures related PETSc tolerances:
+        - ``snes_rtol``: Set to ``tolerance``
+        - ``ksp_rtol``: Set to ``tolerance * 0.1``
+        - ``ksp_atol``: Set to ``tolerance * 1e-6``
+
+        Returns
+        -------
+        float
+            Current solver tolerance.
+        """
         return self._tolerance
+
     @tolerance.setter
     def tolerance(self, value):
         self._tolerance = value
@@ -2501,6 +2533,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def tolerance(self):
+        """
+        Solver convergence tolerance for the Stokes saddle-point system.
+
+        Setting this value automatically configures PETSc tolerances for the
+        coupled velocity-pressure solve using Schur complement fieldsplit:
+        - ``snes_rtol``: Set to ``tolerance``
+        - ``ksp_atol``: Set to ``tolerance * 1e-6``
+        - ``fieldsplit_pressure_ksp_rtol``: Set to ``tolerance * 0.1``
+        - ``fieldsplit_velocity_ksp_rtol``: Set to ``tolerance * 0.033``
+
+        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``).
+
+        Returns
+        -------
+        float
+            Current solver tolerance.
+
+        Examples
+        --------
+        >>> stokes.tolerance = 1e-6  # Tighter convergence
+        >>> stokes.solve()
+        """
         return self._tolerance
 
     @tolerance.setter
@@ -2517,6 +2571,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def strategy(self):
+        """
+        Solver strategy controlling preconditioner configuration.
+
+        Currently supports:
+        - ``"default"``: Standard Schur complement fieldsplit with GAMG
+        - ``"robust"``: (Reserved) More robust but slower configuration
+        - ``"fast"``: (Reserved) Faster but less robust configuration
+
+        Setting this property reconfigures the entire preconditioner stack.
+
+        Returns
+        -------
+        str
+            Current strategy name.
+        """
         return self._strategy
 
     @strategy.setter
@@ -2583,6 +2652,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def PF0(self):
+        """
+        Pressure constraint term (incompressibility and other constraints).
+
+        This is the :math:`\\mathbf{h}_0(p)` term in the saddle-point formulation,
+        typically representing the incompressibility constraint
+        :math:`\\nabla \\cdot \\mathbf{u} = 0`.
+
+        Returns
+        -------
+        UWexpression
+            Symbolic expression for the constraint term.
+
+        See Also
+        --------
+        F0 : Velocity force term.
+        F1 : Velocity flux/stress term.
+        """
         return self._PF0
 
     @PF0.setter
@@ -2593,6 +2679,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def p(self):
+        """
+        Pressure solution variable (MeshVariable).
+
+        The pressure field from the Stokes solve, typically a discontinuous
+        field one degree lower than velocity.
+
+        Returns
+        -------
+        MeshVariable
+            Pressure field variable.
+
+        See Also
+        --------
+        u : Velocity solution variable.
+        """
         return self.Unknowns.p
 
     @p.setter
@@ -2602,6 +2703,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def saddle_preconditioner(self):
+        """
+        Custom preconditioner for the pressure Schur complement.
+
+        A symbolic expression used to precondition the pressure solve.
+        If None (default), uses the mass matrix approximation.
+
+        Returns
+        -------
+        sympy expression or None
+            Custom preconditioner expression.
+        """
         return self._saddle_preconditioner
 
     @saddle_preconditioner.setter
