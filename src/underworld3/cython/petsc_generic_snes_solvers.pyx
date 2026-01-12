@@ -1373,14 +1373,54 @@ class SNES_Scalar(SolverBaseClass):
               debug:           bool=False,
               debug_name:      str=None ):
         """
-        Generates solution to constructed system.
+        Solve the system of equations.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u`
-            and `self.p` will be used.
+        Assembles and solves the discretized PDE system using PETSc's SNES
+        (Scalable Nonlinear Equations Solvers) framework. The solution is
+        stored in the solver's unknown variable(s).
+
+        Parameters
+        ----------
+        zero_init_guess : bool, default=True
+            If True, use zero as the initial guess. If False, use the current
+            values in the solution variable(s) as the initial guess, which can
+            improve convergence for time-stepping or continuation methods.
+        _force_setup : bool, default=False
+            Force rebuild of the solver even if already set up. Useful after
+            changing boundary conditions or constitutive parameters.
+        verbose : bool, default=False
+            Print solver progress and timing information.
+        debug : bool, default=False
+            Enable debug output including intermediate residuals.
+        debug_name : str, optional
+            Name prefix for debug output files.
+
+        Returns
+        -------
+        None
+            Solution is stored in ``self.u`` (and ``self.p`` for Stokes).
+
+        Examples
+        --------
+        >>> # Basic solve
+        >>> solver.solve()
+        >>> temperature_values = solver.u.array[:, 0, 0]
+
+        >>> # Time-stepping with previous solution as initial guess
+        >>> for step in range(n_steps):
+        ...     solver.solve(zero_init_guess=False)
+
+        >>> # Check convergence
+        >>> print(f"Converged: {solver.snes.getConvergedReason() > 0}")
+
+        Notes
+        -----
+        This is a **collective operation** - all MPI ranks must call it.
+        The solver automatically handles mesh variable synchronization.
+
+        See Also
+        --------
+        snes : Access to underlying PETSc SNES object for advanced control.
         """
 
         import petsc4py
@@ -2041,14 +2081,37 @@ class SNES_Vector(SolverBaseClass):
               debug_name=None,
                ):
         """
-        Generates solution to constructed system.
+        Solve the vector field system of equations.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u`
-            and `self.p` will be used.
+        Assembles and solves the discretized PDE system for vector unknowns
+        (e.g., velocity in projection problems) using PETSc's SNES framework.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, default=True
+            If True, use zero as the initial guess. If False, use the current
+            values in ``self.u`` as the initial guess.
+        _force_setup : bool, default=False
+            Force rebuild of the solver even if already set up.
+        verbose : bool, default=False
+            Print solver progress and timing information.
+        debug : bool, default=False
+            Enable debug output.
+        debug_name : str, optional
+            Name prefix for debug output files.
+
+        Returns
+        -------
+        None
+            Solution is stored in ``self.u``.
+
+        Notes
+        -----
+        This is a **collective operation** - all MPI ranks must call it.
+
+        See Also
+        --------
+        u : The solution vector field variable.
         """
 
         if _force_setup or not self.constitutive_model._solver_is_setup:
@@ -3202,14 +3265,65 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
               debug_name=None,
               _force_setup: bool =False, ):
         """
-        Generates solution to constructed system.
+        Solve the Stokes system for velocity and pressure.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u`
-            and `self.p` will be used.
+        Assembles and solves the coupled velocity-pressure system using a
+        saddle-point formulation. Handles nonlinear rheologies through
+        Newton or Picard iteration.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, default=True
+            If True, use zero as the initial guess. If False, use current
+            values in ``self.u`` (velocity) and ``self.p`` (pressure) as
+            initial guess. Using False can improve convergence for
+            time-stepping or parameter continuation.
+        picard : int, default=0
+            Number of Picard iterations before switching to Newton.
+            Picard iterations use a simplified Jacobian and can help
+            convergence for strongly nonlinear problems.
+        verbose : bool, default=False
+            Print solver progress and timing information.
+        debug : bool, default=False
+            Enable debug output including residual norms.
+        debug_name : str, optional
+            Name prefix for debug output files.
+        _force_setup : bool, default=False
+            Force rebuild of the solver even if already set up.
+
+        Returns
+        -------
+        None
+            Solution stored in ``self.u`` (velocity) and ``self.p`` (pressure).
+
+        Examples
+        --------
+        >>> # Basic Stokes solve
+        >>> stokes.solve()
+        >>> velocity = stokes.u.array[:, 0, :]
+        >>> pressure = stokes.p.array[:, 0, 0]
+
+        >>> # Nonlinear solve with Picard warmup
+        >>> stokes.solve(picard=3)
+
+        >>> # Time-stepping with previous solution
+        >>> for step in range(n_steps):
+        ...     # Update boundary conditions, material properties...
+        ...     stokes.solve(zero_init_guess=False)
+
+        Notes
+        -----
+        This is a **collective operation** - all MPI ranks must call it.
+
+        For nonlinear viscosity (e.g., power-law, viscoplastic), the solver
+        uses Newton iteration by default. The ``picard`` parameter can help
+        with initial convergence by using simpler Jacobian approximations.
+
+        See Also
+        --------
+        u : Velocity solution variable.
+        p : Pressure solution variable.
+        constitutive_model : Viscosity and stress definitions.
         """
 
         if _force_setup or not self.constitutive_model._solver_is_setup:
