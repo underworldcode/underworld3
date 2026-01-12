@@ -677,10 +677,24 @@ class SolverBaseClass(uw_object):
         >>> normal = stokes.mesh.CoordinateSystem.unit_e_0
         >>> stokes.add_natural_bc(pressure * normal, "Right")
 
+        >>> # Free-slip on arbitrary curved surface (spherical models)
+        >>> # Uses penalty method with surface normal from mesh.Gamma
+        >>> import sympy
+        >>> penalty = 1e5
+        >>> Gamma = mesh.Gamma  # Surface normal vector field
+        >>> Gamma_N = Gamma / sympy.sqrt(Gamma.dot(Gamma))  # Normalize
+        >>> # Penalize normal velocity component, allow tangential slip
+        >>> stokes.add_natural_bc(penalty * Gamma_N.dot(v.sym) * Gamma_N, "Upper")
+
         Notes
         -----
         For Stokes problems, natural BCs represent tractions
         :math:`\\mathbf{t} = \\boldsymbol{\\sigma} \\cdot \\mathbf{n}`.
+
+        The free-slip penalty method is particularly useful for spherical
+        geometries where the normal direction varies along the boundary.
+        The penalty term enforces :math:`\\mathbf{v} \\cdot \\mathbf{n} = 0`
+        weakly while allowing tangential flow.
 
         See Also
         --------
