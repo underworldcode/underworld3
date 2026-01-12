@@ -607,8 +607,8 @@ class SolverBaseClass(uw_object):
         """
         Add an essential (Dirichlet) boundary condition.
 
-        Alias for :meth:`add_dirichlet_bc`. See :meth:`add_condition` for
-        full parameter documentation.
+        Alias for :meth:`add_dirichlet_bc`. Essential BCs constrain the
+        solution to specified values at boundary nodes.
 
         Parameters
         ----------
@@ -617,8 +617,30 @@ class SolverBaseClass(uw_object):
             unconstrained components.
         boundary : str
             Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+            **Case-sensitive**: must match mesh boundary names exactly.
         components : array-like or None, optional
             Deprecated. Use ``None`` in ``conds`` for unconstrained components.
+
+        Examples
+        --------
+        >>> # Scalar field: fix temperature at boundary
+        >>> diffusion.add_essential_bc(300.0, "Top")
+
+        >>> # Vector field: fix both velocity components
+        >>> stokes.add_essential_bc([0.0, 0.0], "Bottom")
+
+        >>> # Vector field: fix x-component only, leave y free
+        >>> stokes.add_essential_bc([0.0, None], "Left")
+
+        >>> # Symbolic expression as boundary condition
+        >>> import sympy
+        >>> x, y = stokes.mesh.X
+        >>> stokes.add_essential_bc([sympy.sin(x), 0.0], "Top")
+
+        See Also
+        --------
+        add_dirichlet_bc : Equivalent method (preferred name).
+        add_natural_bc : For flux/traction boundary conditions.
         """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
         return
@@ -628,17 +650,41 @@ class SolverBaseClass(uw_object):
         """
         Add a natural (Neumann) boundary condition.
 
-        Natural BCs specify flux or traction at boundaries.
-        See :meth:`add_condition` for full parameter documentation.
+        Natural BCs specify flux or traction at boundaries. These are
+        incorporated as surface integrals in the weak form rather than
+        direct constraints on the solution.
 
         Parameters
         ----------
         conds : array-like, float, or sympy.Matrix
-            Boundary condition values (flux/traction).
+            Boundary condition values representing flux (scalar problems)
+            or traction (vector problems).
         boundary : str
             Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+            **Case-sensitive**: must match mesh boundary names exactly.
         components : array-like or None, optional
             Deprecated. Use ``None`` in ``conds`` for unconstrained components.
+
+        Examples
+        --------
+        >>> # Scalar: specify heat flux at boundary (insulated if 0)
+        >>> diffusion.add_natural_bc(0.0, "Left")  # Insulated boundary
+
+        >>> # Scalar: specify inward heat flux
+        >>> diffusion.add_natural_bc(100.0, "Bottom")
+
+        >>> # Vector: apply traction to boundary
+        >>> normal = stokes.mesh.CoordinateSystem.unit_e_0
+        >>> stokes.add_natural_bc(pressure * normal, "Right")
+
+        Notes
+        -----
+        For Stokes problems, natural BCs represent tractions
+        :math:`\\mathbf{t} = \\boldsymbol{\\sigma} \\cdot \\mathbf{n}`.
+
+        See Also
+        --------
+        add_dirichlet_bc : For fixed-value boundary conditions.
         """
         self.add_condition(0, 'neumann', conds, boundary, components)
 
@@ -647,25 +693,53 @@ class SolverBaseClass(uw_object):
         """
         Add a Dirichlet (essential) boundary condition.
 
-        Dirichlet BCs fix the solution value at boundaries.
-        See :meth:`add_condition` for full parameter documentation.
+        Dirichlet BCs fix the solution value at boundary nodes. This is
+        the most common type of boundary condition for prescribing known
+        values (e.g., fixed temperature, no-slip walls).
 
         Parameters
         ----------
         conds : array-like, float, or sympy.Matrix
             Boundary condition values. Use ``None`` or ``sympy.oo`` for
-            unconstrained components.
+            unconstrained components (partial Dirichlet conditions).
         boundary : str
             Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+            **Case-sensitive**: must match mesh boundary names exactly.
         components : array-like or None, optional
             Deprecated. Use ``None`` in ``conds`` for unconstrained components.
 
-        Example
-        -------
-        >>> # Fix temperature at top boundary
-        >>> solver.add_dirichlet_bc(300.0, "Top")
-        >>> # Fix x-velocity only (leave y free)
-        >>> stokes.add_dirichlet_bc([0.0, None], "Left")
+        Examples
+        --------
+        >>> # Scalar problem: fix temperature at boundaries
+        >>> diffusion.add_dirichlet_bc(300.0, "Top")
+        >>> diffusion.add_dirichlet_bc(500.0, "Bottom")
+
+        >>> # Vector problem: no-slip walls (zero velocity)
+        >>> stokes.add_dirichlet_bc([0.0, 0.0], "Top")
+        >>> stokes.add_dirichlet_bc([0.0, 0.0], "Bottom")
+
+        >>> # Free-slip: fix normal component, leave tangential free
+        >>> stokes.add_dirichlet_bc([0.0, None], "Left")   # x=0 at left
+        >>> stokes.add_dirichlet_bc([None, 0.0], "Bottom") # y=0 at bottom
+
+        >>> # Lid-driven cavity: moving top boundary
+        >>> stokes.add_dirichlet_bc([1.0, 0.0], "Top")
+
+        >>> # Symbolic boundary condition
+        >>> x, y = mesh.X
+        >>> T_boundary = 300 + 100 * sympy.sin(x * sympy.pi)
+        >>> diffusion.add_dirichlet_bc(T_boundary, "Top")
+
+        Raises
+        ------
+        KeyError
+            If ``boundary`` name doesn't match any mesh boundary label.
+            Check ``mesh.boundaries.keys()`` for available boundary names.
+
+        See Also
+        --------
+        add_essential_bc : Alias for this method.
+        add_natural_bc : For flux/traction boundary conditions.
         """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
 
