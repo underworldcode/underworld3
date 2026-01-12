@@ -62,6 +62,58 @@ class Symbolic(uw_object):
         \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
         \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
         \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
+
+    This is a purely symbolic history manager that operates on sympy expressions
+    without mesh or swarm storage. It is useful for tracking symbolic expressions
+    through time-stepping algorithms.
+
+    Parameters
+    ----------
+    psi_fn : sympy.Basic
+        The sympy expression to track. Can be scalar or matrix form.
+    theta : float, optional
+        Implicitness parameter for Adams-Moulton order 1 (default ``0.5``).
+        Values: 0 = explicit, 1 = implicit, 0.5 = Crank-Nicolson.
+    varsymbol : str, optional
+        LaTeX symbol for display (default ``r"\\psi"``).
+    verbose : bool, optional
+        Enable verbose output (default ``False``).
+    bcs : list, optional
+        Boundary conditions (default ``[]``).
+    order : int, optional
+        Order of time integration (1-3) (default ``1``).
+    smoothing : float, optional
+        Smoothing parameter (default ``0.0``).
+
+    Attributes
+    ----------
+    psi_fn : sympy.Matrix
+        Current symbolic expression being tracked (always stored as Matrix).
+    psi_star : list
+        History values :math:`\psi^*, \psi^{**}, \ldots` as sympy Matrices.
+    theta : float
+        Implicitness parameter for first-order Adams-Moulton.
+    order : int
+        Order of BDF/Adams-Moulton integration.
+
+    Notes
+    -----
+    The ``Symbolic`` class is the base for understanding BDF and Adams-Moulton
+    formulas without the complexity of mesh or swarm storage. It is primarily
+    useful for:
+
+    - Understanding time-stepping algorithm behavior
+    - Debugging symbolic expressions in time-dependent problems
+    - Prototyping before implementing with mesh/swarm storage
+
+    For actual simulations, use ``Eulerian``, ``SemiLagrangian``, or
+    ``Lagrangian`` which store history on computational meshes or swarms.
+
+    See Also
+    --------
+    Eulerian : Mesh-based history with BDF time-stepping.
+    SemiLagrangian : Nodal-swarm approach for advection-dominated problems.
+    Lagrangian : Swarm-based material tracking.
     """
 
     @timing.routine_timer_decorator
@@ -239,15 +291,57 @@ class Symbolic(uw_object):
 
 class Eulerian(uw_object):
     r"""
-    Eulerian (mesh-based) history manager.
+    Eulerian (mesh-based) history manager for time derivatives.
 
-    Manages the update of a variable :math:`\psi` on the mesh across timesteps:
+    Manages the update of a variable :math:`\psi` on the mesh across timesteps,
+    storing history values on mesh variables for backward differentiation.
 
     .. math::
 
         \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
         \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
         \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    psi_fn : MeshVariable or sympy.Basic
+        The quantity to track. Can be a mesh variable or symbolic expression.
+    vtype : VarType
+        Variable type (SCALAR, VECTOR, etc.) for history storage.
+    degree : int
+        Polynomial degree for history mesh variables.
+    continuous : bool
+        Whether history variables are continuous across element boundaries.
+    evalf : bool, default=False
+        If True, evaluate expressions numerically during updates.
+    theta : float, default=0.5
+        Time-stepping parameter for implicit/explicit blending.
+        theta=0 is fully explicit, theta=1 is fully implicit.
+    varsymbol : str, default=r"u"
+        LaTeX symbol for display.
+    verbose : bool, default=False
+        Enable verbose output during updates.
+    bcs : list, default=[]
+        Boundary conditions to apply to projections.
+    order : int, default=1
+        Number of history timesteps to store (for multi-step methods).
+    smoothing : float, default=0.0
+        Smoothing parameter for projections.
+
+    Attributes
+    ----------
+    psi_fn : sympy.Basic
+        Current symbolic expression being tracked.
+    psi_star : list of MeshVariable
+        History values at previous timesteps.
+
+    See Also
+    --------
+    SemiLagrangian : For advection-dominated problems with nodal swarm.
+    Lagrangian : For full Lagrangian tracking on swarms.
+    Symbolic : For purely symbolic history (no mesh storage).
     """
 
     @timing.routine_timer_decorator
@@ -539,13 +633,71 @@ class SemiLagrangian(uw_object):
     Semi-Lagrangian history manager using nodal swarm.
 
     Manages the semi-Lagrangian update of a mesh variable :math:`\psi`
-    across timesteps:
+    across timesteps. Uses a nodal swarm to track departure points and
+    interpolate values back to the mesh.
 
     .. math::
 
         \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
         \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
         \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
+
+    The semi-Lagrangian method traces characteristics backward in time
+    to find departure points, providing stable advection without CFL
+    restrictions while maintaining accuracy.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    psi_fn : sympy.Function
+        The quantity to advect (typically a mesh variable's symbolic form).
+    V_fn : sympy.Function
+        Velocity field for advection (e.g., ``stokes.u.sym``).
+    vtype : VarType
+        Variable type (SCALAR, VECTOR, SYM_TENSOR, etc.).
+    degree : int
+        Polynomial degree for mesh variable storage.
+    continuous : bool
+        Whether variables are continuous across element boundaries.
+    swarm_degree : int, optional
+        Polynomial degree for swarm interpolation. Defaults to ``degree``.
+    swarm_continuous : bool, optional
+        Continuity for swarm variables. Defaults to ``continuous``.
+    varsymbol : str, optional
+        LaTeX symbol for display.
+    verbose : bool, default=False
+        Enable verbose output during updates.
+    bcs : list, default=[]
+        Boundary conditions for projections.
+    order : int, default=1
+        Number of history timesteps (1 for first-order, 2 for second-order).
+    smoothing : float, default=0.0
+        Smoothing parameter for projections.
+    preserve_moments : bool, default=False
+        Use moment-preserving projection (experimental).
+
+    Attributes
+    ----------
+    psi_fn : sympy.Basic
+        Current symbolic expression being advected.
+    psi_star : list of MeshVariable
+        History values at previous timesteps.
+    V_fn : sympy.Function
+        Velocity field used for advection.
+
+    Notes
+    -----
+    The semi-Lagrangian method is particularly useful for:
+
+    - Advection-dominated problems (high Péclet number)
+    - Problems where CFL stability is restrictive
+    - Viscoelastic stress advection
+
+    See Also
+    --------
+    Eulerian : For fixed-mesh time derivatives without advection.
+    Lagrangian : For full particle-following Lagrangian tracking.
     """
 
     @timing.routine_timer_decorator
@@ -1145,10 +1297,11 @@ class SemiLagrangian(uw_object):
 
 class Lagrangian(uw_object):
     r"""
-    Swarm-based Lagrangian history manager.
+    Swarm-based Lagrangian history manager for material tracking.
 
-    Manages the update of a Lagrangian variable :math:`\psi` on the swarm
-    across timesteps:
+    Manages the update of a Lagrangian variable :math:`\psi` on a swarm
+    across timesteps. Creates and manages its own internal swarm for
+    tracking material properties through the flow.
 
     .. math::
 
@@ -1157,6 +1310,63 @@ class Lagrangian(uw_object):
         \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots
 
         \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}
+
+    The Lagrangian approach follows material points through the flow,
+    avoiding numerical diffusion in advection. History values are stored
+    on swarm variables with proxy mesh variables for solver integration.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    psi_fn : sympy.Function
+        The quantity to track (e.g., stress tensor ``stokes.stress``).
+    V_fn : sympy.Function
+        Velocity field for particle advection.
+    vtype : VarType
+        Variable type (SCALAR, VECTOR, SYM_TENSOR, etc.).
+    degree : int
+        Polynomial degree for proxy mesh variables.
+    continuous : bool
+        Whether proxy variables are continuous across elements.
+    varsymbol : str, default=r"u"
+        LaTeX symbol for display.
+    verbose : bool, default=False
+        Enable verbose output during updates.
+    bcs : list, default=[]
+        Boundary conditions (currently unused for swarm variables).
+    order : int, default=1
+        Number of history timesteps to store.
+    smoothing : float, default=0.0
+        Smoothing parameter for projections.
+    fill_param : int, default=3
+        Fill parameter for swarm population density.
+
+    Attributes
+    ----------
+    swarm : UWSwarm
+        Internal swarm for Lagrangian tracking.
+    psi_fn : sympy.Basic
+        Current symbolic expression being tracked.
+    psi_star : list of SwarmVariable
+        History values stored on the swarm.
+    V_fn : sympy.Function
+        Velocity field for advection.
+
+    Notes
+    -----
+    The Lagrangian method is ideal for:
+
+    - Viscoelastic stress history tracking
+    - Material property advection without diffusion
+    - Tracking compositional fields
+
+    The internal swarm is automatically advected during updates.
+
+    See Also
+    --------
+    SemiLagrangian : Mesh-based semi-Lagrangian with departure points.
+    Lagrangian_Swarm : For user-provided swarms.
     """
 
     instances = (
@@ -1367,6 +1577,68 @@ class Lagrangian_Swarm(uw_object):
         \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots
 
         \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}
+
+    Unlike ``Lagrangian``, this class uses a user-provided swarm rather than
+    creating its own. The swarm should already be populated and configured
+    for tracking material points.
+
+    Parameters
+    ----------
+    swarm : underworld3.swarm.Swarm
+        User-provided swarm for material point tracking.
+    psi_fn : sympy.Function
+        The quantity to track (e.g., stress tensor from a solver).
+    vtype : underworld3.VarType
+        Variable type (SCALAR, VECTOR, SYM_TENSOR, etc.).
+    degree : int
+        Interpolation degree for proxy mesh variables.
+    continuous : bool
+        Whether proxy mesh variables should be continuous.
+    varsymbol : str, optional
+        LaTeX symbol for display (default ``"u"``).
+    verbose : bool, optional
+        Enable verbose output (default ``False``).
+    bcs : list, optional
+        Boundary conditions (currently unused, default ``[]``).
+    order : int, optional
+        Order of time integration (1-3) (default ``1``).
+    smoothing : float, optional
+        Smoothing parameter (default ``0.0``).
+    step_averaging : int, optional
+        Number of steps for history averaging (default ``2``).
+
+    Attributes
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        Reference to the computational mesh (from swarm).
+    swarm : underworld3.swarm.Swarm
+        The user-provided swarm.
+    psi_fn : sympy.Function
+        Symbolic expression for the tracked quantity.
+    order : int
+        Order of BDF integration.
+    step_averaging : int
+        Number of steps for averaging (affects BDF scaling).
+    psi_star : list
+        History values :math:`\psi^*, \psi^{**}, \ldots` as swarm variables.
+
+    Notes
+    -----
+    Key differences from ``Lagrangian`` class:
+
+    - Uses user-provided swarm (not internally created)
+    - Swarm advection is NOT performed (user's responsibility)
+    - Step averaging for smoothing history updates
+    - Suitable when swarm is shared between multiple history managers
+
+    The ``step_averaging`` parameter scales the BDF formula to account for
+    updates that occur over multiple sub-steps within a timestep.
+
+    See Also
+    --------
+    Lagrangian : Creates and manages its own swarm with advection.
+    SemiLagrangian : Nodal-swarm approach for advection-dominated problems.
+    Eulerian : Pure mesh-based history (no particle tracking).
     """
 
     instances = (
