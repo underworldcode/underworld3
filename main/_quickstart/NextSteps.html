@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
 
 <meta charset="utf-8">
-<meta name="generator" content="quarto-1.7.33">
+<meta name="generator" content="quarto-1.8.26">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
@@ -69,14 +69,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="./index.html" rel="prev">
 <script src="site_libs/quarto-html/quarto.js" type="module"></script>
 <script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/axe/axe-check.js" type="module"></script>
 <script src="site_libs/quarto-html/popper.min.js"></script>
 <script src="site_libs/quarto-html/tippy.umd.min.js"></script>
 <script src="site_libs/quarto-html/anchor.min.js"></script>
 <link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
-<link href="site_libs/quarto-html/quarto-syntax-highlighting-ea385d0e468b0dd5ea5bf0780b1290d9.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-587c61ba64f3a5504c4d52d930310e48.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="site_libs/bootstrap/bootstrap-bc08901f24db5c73691816e8e5fc6dd5.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="site_libs/bootstrap/bootstrap-b59b60cd35b8d468ed850b0327c1ebaf.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -119,7 +120,7 @@ const typesetMath = (el) => {
     var macros = [];
     for (var i = 0; i < mathElements.length; i++) {
       var texText = mathElements[i].firstChild;
-      if (mathElements[i].tagName == "SPAN") {
+      if (mathElements[i].tagName == "SPAN" && texText && texText.data) {
         window.katex.render(texText.data, mathElements[i], {
           displayMode: mathElements[i].classList.contains('display'),
           throwOnError: false,
@@ -170,7 +171,8 @@ window.Quarto = {
   <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
     <div class="pt-lg-2 mt-2 text-left sidebar-header sidebar-header-stacked">
       <a href="./index.html" class="sidebar-logo-link">
-      <img src="./media/MansoursNightmare.png" alt="" class="sidebar-logo py-0 d-lg-inline d-none">
+      <img src="./media/MansoursNightmare.png" alt="" class="sidebar-logo light-content py-0 d-lg-inline d-none">
+      <img src="./media/MansoursNightmare.png" alt="" class="sidebar-logo dark-content py-0 d-lg-inline d-none">
       </a>
       </div>
     <div class="sidebar-menu-container"> 
@@ -326,7 +328,7 @@ window.Quarto = {
 <p><code>Underworld3</code> is inherently parallel and designed for high performance computing. The symbolic layer is a relatively thin veneer that sits on top of the <code>PETSc</code> machinery. A script that has been developed in <code>jupyter</code> should be transferrable to an HPC environment with no changes (except that inherently serial operations such as visualisation and model reduction are best left to postprocessing / co-processing).</p>
 <p>We recommend installing <code>jupytext</code> which allows either a seamless two-way conversion (or pairing) between the <code>ipynb</code> format and an annotated python script, or the ability to work entirely with annoted python scripts and not use <code>ipynb</code> at all. The python form does not store the output of notebook cells but there are advantages to this when scripts are under version control.</p>
 <p>Almost all of our notebook examples are annotated python for this reason.An exception is the collection of notebooks in this quick-start guide because we want to show you the rendered output in the static web pages.</p>
-<div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>    <span class="ex">mpirun</span> <span class="at">-np</span> 1024 python3 Modelling_Script.py <span class="at">-uw_resolution</span> 96</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>    <span class="ex">mpirun</span> <span class="at">-np</span> 1024 python3 Modelling_Script.py <span class="at">-uw_resolution</span> 96</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>The main difference between the notebook development environment and HPC is the lack of interactivity, particularly in sending parameters to the script at launch time. Typically, we expect the HPC version to be running at much higher resolution, or for many more timesteps than the development notebook. We use the <code>PETSc</code> command line parsing machinery to generate notebooks that also can ingest run-time parameters from a script (as above).</p>
 <section id="parallel-scaling-performance" class="level4">
 <h4 class="anchored" data-anchor-id="parallel-scaling-performance">Parallel scaling / performance</h4>
@@ -386,7 +388,7 @@ Figure&nbsp;2.1: Strong parallel-scaling tests run on Australia’s peak computi
 </iframe>
 </center>
 <p><em>Live Image: Static mesh adaptation to the slope of a field. The driving buoyancy term is a plume-like upwelling and the slope of this field is shown in colour (red high, blue low). Don’t forget to zoom in !</em></p>
-<div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a></span>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># t is the driving "temperature". We form an isotropic refinement metric from its slope</span></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    refinement_fn <span class="op">=</span> <span class="fl">1.0</span> <span class="op">+</span> sympy.sqrt(</span>
@@ -395,7 +397,7 @@ Figure&nbsp;2.1: Strong parallel-scaling tests run on Australia’s peak computi
 <span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>        <span class="op">+</span> t.diff(z) <span class="op">**</span> <span class="dv">2</span></span>
 <span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    )</span>
 <span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    icoord, meshA <span class="op">=</span> adaptivity.mesh_adapt_meshVar(mesh0, refinement_fn, Metric, redistribute<span class="op">=</span><span class="va">True</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    icoord, meshA <span class="op">=</span> adaptivity.mesh_adapt_meshVar(mesh0, refinement_fn, Metric, redistribute<span class="op">=</span><span class="va">True</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 
 
 </section>
@@ -453,13 +455,14 @@ Figure&nbsp;2.1: Strong parallel-scaling tests run on Australia’s peak computi
       e.clearSelection();
     }
     const getTextToCopy = function(trigger) {
-        const codeEl = trigger.previousElementSibling.cloneNode(true);
-        for (const childEl of codeEl.children) {
-          if (isCodeAnnotation(childEl)) {
-            childEl.remove();
-          }
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
         }
-        return codeEl.innerText;
+      }
+      return codeEl.innerText;
     }
     const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
       text: getTextToCopy
