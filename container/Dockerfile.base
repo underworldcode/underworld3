@@ -1,0 +1,92 @@
+# Base image for Underworld3 binder launches
+# Build: docker build -f container/Dockerfile.base -t ghcr.io/underworldcode/uw3-base:test .
+# Test:  docker run --rm -w /home/jovyan/underworld3 ghcr.io/underworldcode/uw3-base:test \
+#          pixi run -e runtime python -c "import underworld3 as uw; print('OK')"
+
+FROM ubuntu:24.04 AS builder
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal system dependencies for build stage
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user (binder expects jovyan with UID 1000)
+# Ubuntu 24.04 has 'ubuntu' user at UID 1000, so we replace it
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+USER jovyan
+WORKDIR /home/jovyan
+
+# Install pixi
+RUN curl -fsSL https://pixi.sh/install.sh | sh
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+
+# Clone underworld3 to get pixi.toml, install runtime env
+RUN git clone --single-branch --branch uw3-release-candidate \
+    https://github.com/underworldcode/underworld3.git && \
+    cd underworld3 && \
+    pixi install -e runtime && \
+    cd ..
+
+# Build underworld3 into the environment
+RUN cd underworld3 && \
+    pixi run -e runtime build && \
+    cd ..
+
+# Install jupyter kernel
+RUN cd underworld3 && \
+    pixi run -e runtime python -m ipykernel install --user --name=uw3 --display-name="Underworld3" && \
+    cd ..
+
+# =============================================================================
+# Final stage
+# =============================================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime dependencies for gmsh, pyvista, and visualization
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    # OpenGL / Mesa
+    libgl1 \
+    libglu1-mesa \
+    # X11 libraries for gmsh
+    libxft2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxrender1 \
+    libxext6 \
+    libglib2.0-0 \
+    libfreetype6 \
+    # For headless rendering
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create jovyan user (binder standard)
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+
+# Copy everything from builder
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan /home/jovyan
+
+USER jovyan
+WORKDIR /home/jovyan
+
+# Set up environment
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+ENV HOME="/home/jovyan"
+
+# Expose jupyter port
+EXPOSE 8888
+
+# Default command - run from underworld3 dir where pixi.toml lives
+WORKDIR /home/jovyan/underworld3
+CMD ["pixi", "run", "-e", "runtime", "jupyter", "lab", "--ip=0.0.0.0", "--no-browser"]

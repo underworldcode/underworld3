@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Pull latest underworld3 and rebuild (fast ~30s)
+cd /home/jovyan/underworld3
+git pull origin uw3-release-candidate
+pixi run -e runtime build
+
+# Update tutorials
+cp -r docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
+
+# Stay in underworld3 directory for pixi commands
+# Execute the command (jupyter) via pixi
+exec pixi run -e runtime "$@"
