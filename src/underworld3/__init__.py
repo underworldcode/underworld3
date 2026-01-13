@@ -80,10 +80,13 @@ from petsc4py import PETSc
 # unclear if this is the appropriate way see discussion
 # https://gitlab.com/petsc/petsc/-/issues/1066
 
-PETSc.Sys.popErrorHandler()
-
-options = PETSc.Options()
-options["options_left"] = 0
+try:
+    PETSc.Sys.popErrorHandler()
+    options = PETSc.Options()
+    options["options_left"] = 0
+except (TypeError, AttributeError):
+    # Handle Sphinx autodoc mocking - PETSc mock objects don't support these operations
+    pass
 
 try:
     from ._version import __version__

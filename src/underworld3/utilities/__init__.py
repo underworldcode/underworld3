@@ -46,13 +46,21 @@ def _append_petsc_path():
     import sys
     import petsc4py
 
-    conf = petsc4py.get_config()
-    petsc_dir = conf["PETSC_DIR"]
-    if not petsc_dir + "/lib/petsc/bin" in sys.path:
-        sys.path.append(petsc_dir + "/lib/petsc/bin")
+    try:
+        conf = petsc4py.get_config()
+        petsc_dir = conf["PETSC_DIR"]
+        if not petsc_dir + "/lib/petsc/bin" in sys.path:
+            sys.path.append(petsc_dir + "/lib/petsc/bin")
+    except (TypeError, AttributeError):
+        # Handle Sphinx autodoc mocking
+        pass
 
 
-_append_petsc_path()
+try:
+    _append_petsc_path()
+except (TypeError, AttributeError):
+    # Handle Sphinx autodoc mocking
+    pass
 
 from .uw_petsc_gen_xdmf import Xdmf, generateXdmf, generate_uw_Xdmf
 from .uw_swarmIO import swarm_h5, swarm_xdmf
