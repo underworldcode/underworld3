@@ -172,6 +172,7 @@ extensions = [
         "underworld3.function._dminterp_wrapper",
         sources=[
             "src/underworld3/function/_dminterp_wrapper.pyx",
+            "src/underworld3/function/petsc_tools.c",  # Required for DMInterpolationEvaluate_UW
         ],
         extra_compile_args=extra_compile_args,
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],

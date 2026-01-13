@@ -55,9 +55,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
-    # OpenGL / Mesa
+    # OpenGL / Mesa for hardware rendering
     libgl1 \
     libglu1-mesa \
+    # OSMesa for software rendering (headless)
+    libosmesa6 \
+    libglx-mesa0 \
     # X11 libraries for gmsh
     libxft2 \
     libxinerama1 \
@@ -83,6 +86,11 @@ WORKDIR /home/jovyan
 # Set up environment
 ENV PATH="/home/jovyan/.pixi/bin:$PATH"
 ENV HOME="/home/jovyan"
+
+# PyVista/VTK off-screen rendering configuration
+ENV PYVISTA_OFF_SCREEN=true
+ENV PYVISTA_USE_IPYVTK=true
+ENV DISPLAY=:99
 
 # Expose jupyter port
 EXPOSE 8888
