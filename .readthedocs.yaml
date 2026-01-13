@@ -19,4 +19,5 @@ build:
     build:
       html:
         - pixi run -e dev api-docs-build
+        - mkdir -p $READTHEDOCS_OUTPUT/html
         - cp -r docs/api/_build/html/* $READTHEDOCS_OUTPUT/html/
