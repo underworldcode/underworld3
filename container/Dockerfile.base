@@ -87,6 +87,29 @@ ENV HOME="/home/jovyan"
 # Expose jupyter port
 EXPOSE 8888
 
-# Default command - run from underworld3 dir where pixi.toml lives
+# Create start script that updates code before launching
+# This enables binder to always get latest code without rebuilding the image
+RUN cat > /home/jovyan/start <<'SCRIPT'
+#!/bin/bash
+cd /home/jovyan/underworld3
+git pull origin uw3-release-candidate 2>/dev/null || true
+pixi run -e runtime build 2>/dev/null || true
+cp -r docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
+exec pixi run -e runtime "$@"
+SCRIPT
+RUN chmod +x /home/jovyan/start
+
+# Create tutorials directory
+RUN mkdir -p /home/jovyan/Tutorials && \
+    cp -r /home/jovyan/underworld3/docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
+
+# Binder environment variables
+ENV NB_USER=jovyan
+ENV NB_UID=1000
+
+# Default working directory
 WORKDIR /home/jovyan/underworld3
-CMD ["pixi", "run", "-e", "runtime", "jupyter", "lab", "--ip=0.0.0.0", "--no-browser"]
+
+# ENTRYPOINT runs start script, CMD provides default args
+ENTRYPOINT ["/home/jovyan/start"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--no-browser"]
