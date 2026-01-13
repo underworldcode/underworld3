@@ -5,8 +5,8 @@ FROM ghcr.io/underworldcode/uw3-base:2025.01
 
 USER root
 
-# Copy start script
-COPY start /usr/local/bin/start
+# Copy start script (path relative to repo root, not .binder/)
+COPY .binder/start /usr/local/bin/start
 RUN chmod +x /usr/local/bin/start
 
 USER jovyan
