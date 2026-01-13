@@ -169,16 +169,24 @@ ipdb = ">=0.13,<0.14"
 jupyter-ai = ">=2.31,<3"
 jupytext = ">=1.16,<2"
 
+# Sphinx API documentation
+sphinx = "*"
+furo = "*"
+myst-nb = "*"
+
 # Claude Code
 nodejs = ">=18"
 
 [feature.dev.pypi-dependencies]
 anthropic = "*"
+sphinx-math-dollar = "*"
 
 [feature.dev.tasks]
 install-claude = "npm install -g @anthropic-ai/claude-code"
 claude = "claude"
 docs-build = { cmd = "quarto render", cwd = "docs", env = { QUARTO_PYTHON = "python" } }
+api-docs-build = { cmd = "python -m sphinx -b html docs/api docs/api/_build/html", env = { QUARTO_PYTHON = "python" } }
+api-docs-clean = { cmd = "rm -rf docs/api/_build" }
 
 # ============================================
 # ENVIRONMENT DEFINITIONS
