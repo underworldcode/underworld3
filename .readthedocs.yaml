@@ -1,22 +1,27 @@
 # ReadTheDocs configuration for Underworld3 API documentation
-# See https://docs.readthedocs.io/en/stable/config-file/v2.html
+# Uses pixi for conda-forge PETSc environment
+# See https://docs.readthedocs.com/platform/stable/build-customization.html
 
 version: 2
 
-# Build settings
 build:
   os: ubuntu-22.04
   tools:
     python: "3.12"
+  commands:
+    # Install pixi
+    - curl -fsSL https://pixi.sh/install.sh | bash
+    - export PATH="$HOME/.pixi/bin:$PATH"
 
-# Sphinx configuration
-sphinx:
-  configuration: docs/api/conf.py
-  builder: html
-  fail_on_warning: false
+    # Install the dev environment (includes Sphinx and PETSc)
+    - pixi install -e dev
 
-# Python settings - only install Sphinx dependencies (not underworld3)
-# We use autodoc mocking for PETSc/MPI dependencies
-python:
-  install:
-    - requirements: docs/api/requirements.txt
+    # Build underworld3
+    - pixi run -e dev build
+
+    # Build Sphinx documentation
+    - pixi run -e dev api-docs-build
+
+    # Move output to ReadTheDocs expected location
+    - mkdir -p $READTHEDOCS_OUTPUT/html
+    - cp -r docs/api/_build/html/* $READTHEDOCS_OUTPUT/html/
