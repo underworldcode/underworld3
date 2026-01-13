@@ -11,17 +11,12 @@ build:
   commands:
     # Install pixi
     - curl -fsSL https://pixi.sh/install.sh | bash
-    - export PATH="$HOME/.pixi/bin:$PATH"
-
     # Install the dev environment (includes Sphinx and PETSc)
-    - pixi install -e dev
-
+    - $HOME/.pixi/bin/pixi install -e dev
     # Build underworld3
-    - pixi run -e dev build
-
+    - $HOME/.pixi/bin/pixi run -e dev build
     # Build Sphinx documentation
-    - pixi run -e dev api-docs-build
-
+    - $HOME/.pixi/bin/pixi run -e dev api-docs-build
     # Move output to ReadTheDocs expected location
     - mkdir -p $READTHEDOCS_OUTPUT/html
     - cp -r docs/api/_build/html/* $READTHEDOCS_OUTPUT/html/
