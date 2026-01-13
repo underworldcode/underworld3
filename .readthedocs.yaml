@@ -15,11 +15,8 @@ sphinx:
   builder: html
   fail_on_warning: false
 
-# Python settings - install docs dependencies
+# Python settings - only install Sphinx dependencies (not underworld3)
+# We use autodoc mocking for PETSc/MPI dependencies
 python:
   install:
     - requirements: docs/api/requirements.txt
-    - method: pip
-      path: .
-      extra_requirements:
-        - docs
