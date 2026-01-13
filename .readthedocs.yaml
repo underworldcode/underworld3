@@ -1,0 +1,25 @@
+# ReadTheDocs configuration for Underworld3 API documentation
+# See https://docs.readthedocs.io/en/stable/config-file/v2.html
+
+version: 2
+
+# Build settings
+build:
+  os: ubuntu-22.04
+  tools:
+    python: "3.12"
+
+# Sphinx configuration
+sphinx:
+  configuration: docs/api/conf.py
+  builder: html
+  fail_on_warning: false
+
+# Python settings - install docs dependencies
+python:
+  install:
+    - requirements: docs/api/requirements.txt
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs
