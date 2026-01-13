@@ -73,26 +73,6 @@ autodoc_default_options = {
 autodoc_typehints = 'description'
 autodoc_class_signature = 'separated'
 
-# Mock imports for modules that require PETSc/MPI (for ReadTheDocs builds)
-# These modules will appear to import successfully but return empty mock objects
-autodoc_mock_imports = [
-    # Core dependencies that require compilation
-    'petsc4py',
-    'petsc4py.PETSc',
-    'mpi4py',
-    'mpi4py.MPI',
-    'gmsh',
-    'h5py',
-    'pyvista',
-    # Cython-compiled underworld3 modules
-    'underworld3.cython',
-    'underworld3.cython.petsc_discretisation',
-    'underworld3.cython.petsc_generic_snes_solvers',
-    'underworld3.cython.petsc_maths',
-    'underworld3.cython.generic_solvers',
-    'underworld3.kdtree',
-]
-
 # =============================================================================
 # Intersphinx - link to external docs
 # =============================================================================
