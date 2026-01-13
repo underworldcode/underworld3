@@ -57,15 +57,17 @@ class SymbolicProperty:
 
     Examples
     --------
-    class MySolver:
-        # Simple usage - auto-unwraps symbolic objects
-        uw_function = SymbolicProperty()
+    Usage in a solver class::
 
-        # With Matrix wrapping for solver compatibility
-        source_term = SymbolicProperty(matrix_wrap=True)
+        class MySolver:
+            # Simple usage - auto-unwraps symbolic objects
+            uw_function = SymbolicProperty()
 
-        # Disallow None values
-        required_field = SymbolicProperty(allow_none=False)
+            # With Matrix wrapping for solver compatibility
+            source_term = SymbolicProperty(matrix_wrap=True)
+
+            # Disallow None values
+            required_field = SymbolicProperty(allow_none=False)
 
     Notes
     -----
@@ -161,24 +163,26 @@ class ExpressionDescriptor:
 
     Examples
     --------
-    class MySolver:
-        # Parameter (user can change)
-        bodyforce = ExpressionDescriptor(
-            r"\\mathbf{f}",
-            lambda self: sympy.Matrix([[0] * self.mesh.dim]),
-            "Body force",
-            read_only=False,
-            category="parameter"
-        )
+    Define parameter and template expressions in a solver class::
 
-        # Template (read-only, references parameter)
-        F0 = ExpressionDescriptor(
-            r"f_0",
-            lambda self: -self.bodyforce,  # References bodyforce expression!
-            "Force term",
-            read_only=True,
-            category="template"
-        )
+        class MySolver:
+            # Parameter (user can change)
+            bodyforce = ExpressionDescriptor(
+                r"\\mathbf{f}",
+                lambda self: sympy.Matrix([[0] * self.mesh.dim]),
+                "Body force",
+                read_only=False,
+                category="parameter"
+            )
+
+            # Template (read-only, references parameter)
+            F0 = ExpressionDescriptor(
+                r"f_0",
+                lambda self: -self.bodyforce,  # References bodyforce expression!
+                "Force term",
+                read_only=True,
+                category="template"
+            )
 
     Notes
     -----
@@ -209,6 +213,8 @@ class ExpressionDescriptor:
         self.validator = validator
         self.category = category
         self.attr_name = attr_name
+        # Expose description as __doc__ for Sphinx autodoc
+        self.__doc__ = description
 
     def __set_name__(self, owner, name):
         """Called when descriptor is assigned to a class attribute."""
@@ -348,15 +354,18 @@ class Parameter(ExpressionDescriptor):
 
     Examples
     --------
-    class MySolver:
-        bodyforce = Parameter(
-            r"\\mathbf{f}",
-            lambda self: sympy.Matrix([[0] * self.mesh.dim]),
-            "Body force vector"
-        )
+    Define a user-settable parameter::
 
-    # User can change it
-    solver.bodyforce.sym = new_value
+        class MySolver:
+            bodyforce = Parameter(
+                r"\\mathbf{f}",
+                lambda self: sympy.Matrix([[0] * self.mesh.dim]),
+                "Body force vector"
+            )
+
+    Parameters can be modified by the user::
+
+        solver.bodyforce.sym = new_value
     """
 
     def __init__(self, name, value_fn, description, units=None, validator=None, **kwargs):
@@ -384,21 +393,25 @@ class Template(ExpressionDescriptor):
 
     Examples
     --------
-    class MySolver:
-        bodyforce = Parameter(r"\\mathbf{f}", ..., "Body force")
+    Define a template that references a parameter::
 
-        F0 = Template(
-            r"f_0",
-            lambda self: -self.bodyforce,  # References bodyforce expression
-            "Force term"
-        )
+        class MySolver:
+            bodyforce = Parameter(r"\\mathbf{f}", ..., "Body force")
 
-    # Cannot set directly
-    solver.F0.sym = value  # Raises AttributeError
+            F0 = Template(
+                r"f_0",
+                lambda self: -self.bodyforce,  # References bodyforce expression
+                "Force term"
+            )
 
-    # But when parameters change:
-    solver.bodyforce.sym = new_value  # Sets is_setup = False
-    f0 = solver.F0  # Automatically re-evaluates and updates .sym in-place
+    Templates are read-only but auto-update when parameters change::
+
+        # Cannot set directly
+        solver.F0.sym = value  # Raises AttributeError
+
+        # But when parameters change:
+        solver.bodyforce.sym = new_value  # Sets is_setup = False
+        f0 = solver.F0  # Automatically re-evaluates and updates .sym in-place
     """
 
     def __init__(self, name, value_fn, description, **kwargs):

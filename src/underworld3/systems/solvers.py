@@ -217,17 +217,29 @@ class SNES_Poisson(SNES_Scalar):
 
         self._constitutive_model = None
 
-    # Use Template for persistent read-only template expressions
+    # =========================================================================
+    # PETSc Residual Templates
+    # For the Poisson equation: -∇·(k∇u) = f
+    # =========================================================================
+
     F0 = Template(
         r"f_0 \left( \mathbf{u} \right)",
         lambda self: -self.f,
-        "Poisson pointwise force term: f_0(u)",
+        r"""Source term for the Poisson equation (pointwise).
+
+        The $f_0$ term represents the source/sink in the diffusion equation.
+        Set via the ``f`` property (e.g., ``poisson.f = heat_source``).
+        """,
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: sympy.simplify(self.constitutive_model.flux.T),
-        "Poisson pointwise flux term: F_1(u)",
+        r"""Diffusive flux term for the Poisson equation (pointwise).
+
+        The $\mathbf{F}_1$ vector represents the flux $k \nabla u$
+        from the constitutive model, where $k$ is the diffusivity.
+        """,
     )
 
     @timing.routine_timer_decorator
@@ -435,18 +447,29 @@ class SNES_Darcy(SNES_Scalar):
         # If we add smoothing, it should be small
         self._v_projector.smoothing = 1.0e-6
 
-    ## This function is the one we will typically over-ride to build specific solvers.
-    ## This example is a poisson-like problem with isotropic coefficients
+    # =========================================================================
+    # PETSc Residual Templates
+    # For Darcy flow: -∇·(K∇p) = f, with velocity v = -K∇p
+    # =========================================================================
 
-    # Use Template for persistent read-only template expressions
     F0 = Template(
-        r"f_0 \left( \mathbf{u} \right)", lambda self: -self.f, "Darcy pointwise force term: f_0(u)"
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: -self.f,
+        r"""Source term for the Darcy pressure equation (pointwise).
+
+        The $f_0$ term represents fluid sources/sinks.
+        Set via the ``f`` property.
+        """,
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: self.darcy_flux,
-        "Darcy pointwise flux term: F_1(u)",
+        r"""Darcy flux term (pointwise).
+
+        The $\mathbf{F}_1$ vector is the Darcy flux $K \nabla p$,
+        where $K$ is the permeability.
+        """,
     )
 
     @timing.routine_timer_decorator
@@ -702,16 +725,20 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         return
 
-    ## Problem Description:
-    ##  F0 - velocity equation forcing terms
-    ##  F1 - velocity equation flux terms
-    ##  PF0 - pressure / constraint equation forcing terms
+    # =========================================================================
+    # PETSc Residual Templates
+    # These define the weak form terms assembled by PETSc's finite element system.
+    # F0/F1 are velocity equation terms, PF0 is the pressure/continuity equation.
+    # =========================================================================
 
-    # Use Template for persistent read-only template expressions
     F0 = Template(
         r"\mathbf{f}_0\left( \mathbf{u} \right)",
         lambda self: -self.bodyforce.sym,
-        "Stokes pointwise force term: f_0(u)",
+        r"""Velocity equation body force term (pointwise).
+
+        The $\mathbf{f}_0$ term represents external body forces acting on the
+        fluid, typically gravity. This is the negative of the ``bodyforce`` parameter.
+        """,
     )
 
     F1 = Template(
@@ -719,13 +746,23 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         lambda self: sympy.simplify(
             self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
         ),
-        "Stokes pointwise flux term: F_1(u)",
+        r"""Velocity equation flux/stress term (pointwise).
+
+        The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
+        combining deviatoric stress $\boldsymbol{\tau}$, pressure $p$,
+        and penalty term for weak incompressibility.
+        """,
     )
 
     PF0 = Template(
         r"\mathbf{h}_0\left( \mathbf{p} \right)",
         lambda self: sympy.simplify(sympy.Matrix((self.constraints))),
-        "Pointwise force term: h_0(p)",
+        r"""Pressure equation constraint term (continuity).
+
+        The $h_0$ term enforces the incompressibility constraint
+        $\nabla \cdot \mathbf{u} = 0$. Additional constraints can be
+        added via ``add_condition()``.
+        """,
     )
 
     # deprecated
@@ -1000,25 +1037,33 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     def penalty(self):
         r"""Augmented Lagrangian penalty parameter.
 
-        The penalty :math:`\lambda` adds a term to the weak form that
+        The penalty $\lambda$ adds a term to the weak form that
         penalizes non-zero divergence:
 
         .. math::
             \lambda \int (\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
 
         This improves convergence for incompressible flow without
-        changing the solution (since :math:`\nabla \cdot \mathbf{u} = 0`
+        changing the solution (since $\nabla \cdot \mathbf{u} = 0$
         at convergence).
 
         Returns
         -------
         UWexpression
-            Penalty parameter (typically a large constant, e.g., ``1e6 * eta``).
+            Augmented Lagrangian penalty parameter (typically $O(1)$).
 
         Notes
         -----
         Set to zero for standard Stokes without augmentation.
-        Typical values are ``O(10^6)`` times the characteristic viscosity.
+        Unlike classical penalty methods that require very large values,
+        the Augmented Lagrangian approach uses modest penalties of $O(1)$
+        to improve solver convergence.
+
+        References
+        ----------
+        Glowinski, R., & Le Tallec, P. (1989). *Augmented Lagrangian and
+        Operator-Splitting Methods in Nonlinear Mechanics*. SIAM.
+        https://doi.org/10.1137/1.9781611970838
         """
         return self._penalty
 
@@ -1047,9 +1092,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         is the advective one: how long it takes material to cross an element.
 
         This method computes a per-element timestep:
-            dt_i = h_i / |v_i|
 
-        where h_i is the element radius and v_i is the velocity at the element
+        .. math::
+            \delta t_i = h_i / \|\mathbf{v}_i\|
+
+        where $h_i$ is the element radius and $\mathbf{v}_i$ is the velocity at the element
         centroid, then returns the global minimum. This is more accurate than
         using global max velocity with global min element size, especially for
         non-uniform meshes with spatially varying velocity.
@@ -1394,17 +1441,29 @@ class SNES_Projection(SNES_Scalar):
 
         return
 
-    # Use Template for persistent read-only template expressions
+    # =========================================================================
+    # PETSc Residual Templates
+    # L2 projection: minimize ||u - f||^2 with optional smoothing
+    # =========================================================================
+
     F0 = Template(
         r"f_0 \left( \mathbf{u} \right)",
         lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
-        "Scalar Projection pointwise misfit term: f_0(u)",
+        r"""Projection misfit term (pointwise).
+
+        The $f_0$ term measures the weighted difference between the mesh
+        variable and the target function for L2 projection.
+        """,
     )
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: self.smoothing * self.mesh.vector.gradient(self.u.sym),
-        "Scalar projection pointwise smoothing term: F_1(u)",
+        r"""Projection smoothing term (pointwise).
+
+        The $\mathbf{F}_1$ term provides optional regularization via
+        $\alpha \nabla u$, where $\alpha$ is the ``smoothing`` parameter.
+        """,
     )
 
     # Use SymbolicProperty for automatic unwrapping
