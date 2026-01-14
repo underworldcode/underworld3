@@ -107,7 +107,7 @@ cd /home/jovyan/underworld3
 git fetch origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
 git checkout ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
 git pull origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
-pixi run -e runtime build 2>/dev/null || true
+pixi run -e runtime pip install . --no-build-isolation --force-reinstall 2>&1 | tail -5 || true
 cp -r docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
 exec pixi run -e runtime "$@"
 SCRIPT
