@@ -43,6 +43,12 @@ RUN cd underworld3 && \
     pixi run -e runtime python -m ipykernel install --user --name=uw3 --display-name="Underworld3" && \
     cd ..
 
+# Install nbgitpuller for generic binder launches
+# Allows any repo to use this image via URL parameters
+RUN cd underworld3 && \
+    pixi run -e runtime pip install --no-cache-dir nbgitpuller && \
+    cd ..
+
 # =============================================================================
 # CLEANUP STAGE - Remove unnecessary files to reduce image size
 # =============================================================================

@@ -606,6 +606,65 @@ If binder launches fail, check the Jupyter logs for build errors.
 - `.binder/Dockerfile` - Minimal launcher config (must reference specific image SHA)
 - `README.md` - Launch badges and documentation
 
+## Generic Launcher for Any Repository
+
+The launcher supports launching **any repository** with Underworld3 via nbgitpuller. Content repositories need NO special configuration.
+
+### Using the Binder Wizard
+
+Generate launch badges for your repository:
+
+```bash
+# Interactive wizard
+python scripts/binder_wizard.py
+
+# Quick generation
+python scripts/binder_wizard.py username/my-course main tutorials/intro.ipynb
+```
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Content Repository                                │
+│                    (No .binder/ needed!)                             │
+│                                                                      │
+│   your-username/your-course                                         │
+│   └── README.md  ← Just add a launch badge                          │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                │ Badge URL uses nbgitpuller
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    mybinder.org                                      │
+│                                                                      │
+│   1. Uses uw3-launcher repo (cached UW3 image)                      │
+│   2. nbgitpuller clones YOUR repo into workspace                    │
+│   3. Opens JupyterLab with your notebooks                           │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### URL Format
+
+```
+https://mybinder.org/v2/gh/underworldcode/uw3-launcher/main
+  ?urlpath=git-pull
+  ?repo=https://github.com/USER/REPO
+  &branch=main
+  &urlpath=lab/tree/REPO
+```
+
+### Benefits for Content Creators
+
+| Traditional Binder | Generic Launcher |
+|-------------------|------------------|
+| Each repo needs .binder/ | No setup needed |
+| 10-20 min build time | Instant launch |
+| Cache per-repository | Single cached image |
+| Maintain dependencies | Zero maintenance |
+
 ## Future: GitHub Actions Automation
 
 To ensure the launcher repository stays synchronized with base image builds, consider implementing GitHub Actions automation:
