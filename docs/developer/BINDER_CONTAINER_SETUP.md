@@ -97,6 +97,20 @@ The actual Underworld3 codebase:
 4. **Branch Selection**: Different launcher branches pull different underworld3 branches
 5. **Simple Maintenance**: Push code to underworld3; users get latest automatically
 
+## Image Variants
+
+| Tag | Size | Purpose |
+|-----|------|---------|
+| `2025.01-slim` | ~1.4GB | **Recommended** - Optimized for binder launches |
+| `2025.01` | ~8.3GB | Full image with headers/toolchain (for development) |
+
+The slim image removes components not needed at runtime:
+- Git history (`.git` directory)
+- Legacy documentation (`docs_legacy`)
+- C/C++ headers (`include/`)
+- Compiler toolchain (`x86_64-conda-linux-gnu/`)
+- Package metadata (`conda-meta/`)
+
 ## Launch URLs
 
 ### Quick Launch Badges
@@ -126,7 +140,7 @@ Each branch in `uw3-binder-launcher` has a minimal `.binder/Dockerfile`:
 ```dockerfile
 # Binder launcher for Underworld3 - <branch> branch
 # Uses pre-built base image from GHCR
-FROM ghcr.io/underworldcode/uw3-base:2025.01
+FROM ghcr.io/underworldcode/uw3-base:2025.01-slim
 
 # Pull from <branch> branch of underworld3
 ENV UW3_BRANCH=<branch>
@@ -136,7 +150,7 @@ The `UW3_BRANCH` environment variable tells the start script which branch to pul
 
 ## Base Image Contents
 
-The base image (`container/Dockerfile.base`) includes:
+The base image (built from `container/Dockerfile.base.optimized` for slim variant) includes:
 
 ### System Dependencies
 - Ubuntu 24.04
@@ -224,22 +238,22 @@ When dependencies change (new packages, version updates):
 
 1. **Update pixi.toml** with new dependencies
 
-2. **Rebuild base image**:
+2. **Rebuild base image** (use optimized Dockerfile for slim variant):
    ```bash
    docker build --platform linux/amd64 \
-     -f container/Dockerfile.base \
-     -t ghcr.io/underworldcode/uw3-base:YYYY.MM .
+     -f container/Dockerfile.base.optimized \
+     -t ghcr.io/underworldcode/uw3-base:YYYY.MM-slim .
    ```
 
 3. **Test locally**:
    ```bash
-   docker run --rm -p 8888:8888 ghcr.io/underworldcode/uw3-base:YYYY.MM
+   docker run --rm -p 8888:8888 ghcr.io/underworldcode/uw3-base:YYYY.MM-slim
    ```
 
 4. **Push to GHCR**:
    ```bash
    echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
-   docker push ghcr.io/underworldcode/uw3-base:YYYY.MM
+   docker push ghcr.io/underworldcode/uw3-base:YYYY.MM-slim
    ```
 
 5. **Update all launcher branches** with new tag:
@@ -247,8 +261,8 @@ When dependencies change (new packages, version updates):
    cd uw3-binder-launcher
    for branch in main uw3-release-candidate development; do
      git checkout $branch
-     # Edit .binder/Dockerfile with new tag
-     git commit -am "Update to uw3-base:YYYY.MM"
+     # Edit .binder/Dockerfile with new tag (use -slim for binder)
+     git commit -am "Update to uw3-base:YYYY.MM-slim"
      git push origin $branch
    done
    ```
@@ -278,7 +292,7 @@ docker build --platform linux/amd64 -f container/Dockerfile.base ...
 ### Slow launches
 
 If mybinder.org seems slow:
-1. First launch after cache expiry will pull the ~6GB image (takes a few minutes)
+1. First launch after cache expiry will pull the ~1.4GB slim image (much faster than full image)
 2. Subsequent launches should be faster (image cached at node level)
 3. The ~30 second `pixi run build` happens every launch
 
@@ -374,11 +388,11 @@ When Cython or C code changes:
 ```bash
 # Full rebuild (no cache) to ensure all extensions are recompiled
 docker build --platform linux/amd64 --no-cache \
-  -f container/Dockerfile.base \
-  -t ghcr.io/underworldcode/uw3-base:2025.01 .
+  -f container/Dockerfile.base.optimized \
+  -t ghcr.io/underworldcode/uw3-base:2025.01-slim .
 
 # Push to GHCR
-docker push ghcr.io/underworldcode/uw3-base:2025.01
+docker push ghcr.io/underworldcode/uw3-base:2025.01-slim
 ```
 
 The `--no-cache` flag is important to ensure fresh compilation of all Cython extensions.
@@ -396,12 +410,14 @@ If binder launches fail, check the Jupyter logs for build errors.
 
 | Tag | Date | Changes |
 |-----|------|---------|
+| 2025.01-slim | 2025-01-14 | Optimized image (~1.4GB vs 8.3GB): removed .git, headers, toolchain |
 | 2025.01 | 2025-01-13 | Initial release with embedded start script, UW3_BRANCH support |
 
 ## Related Files
 
 ### In underworld3 repository
-- `container/Dockerfile.base` - Base image recipe
+- `container/Dockerfile.base.optimized` - Optimized base image recipe (slim variant)
+- `container/Dockerfile.base` - Full base image recipe (with headers/toolchain)
 - `pixi.toml` - Pixi environment definition
 - `pixi.lock` - Locked dependency versions
 - `setup.py` - Cython extension build (includes petsc_tools.c fix)
