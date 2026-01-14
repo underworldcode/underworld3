@@ -27,12 +27,28 @@
 
 ## Evaluation
 
+### evaluate
+
 ```{eval-rst}
 .. autofunction:: underworld3.function.evaluate
 ```
 
+### global_evaluate
+
+```{eval-rst}
+.. autofunction:: underworld3.function.global_evaluate
+```
+
+### evalf
+
 ```{eval-rst}
 .. autofunction:: underworld3.function.evalf
+```
+
+### evaluate_gradient
+
+```{eval-rst}
+.. autofunction:: underworld3.function.evaluate_gradient
 ```
 
 ## Analytic Functions
