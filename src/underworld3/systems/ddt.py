@@ -185,7 +185,7 @@ class Symbolic(uw_object):
         self.psi_star[0] = self.psi_fn.copy()
 
     def initiate_history_fn(self):
-        """Initialize all history slots to the current value of :math:`\psi`."""
+        r"""Initialize all history slots to the current value of :math:`\psi`."""
         self.update_history_fn()
         # Propagate the initial history to all history steps.
         for i in range(1, self.order):
@@ -215,7 +215,7 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
+        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
         if verbose:
             print(f"Updating history for ψ = {self.psi_fn}", flush=True)
 
@@ -500,7 +500,7 @@ class Eulerian(uw_object):
             # print('projecting data', flush=True)
 
     def initiate_history_fn(self):
-        """Initialize all history slots to the current value of :math:`\psi`."""
+        r"""Initialize all history slots to the current value of :math:`\psi`."""
         self.update_history_fn()
 
         ### set up all history terms to the initial values
@@ -532,7 +532,7 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
+        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
         # if average_over_dt:
         #     phi = min(1.0, dt / self.dt_physical)
         # else:
@@ -1734,7 +1734,7 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Shift history chain and evaluate current :math:`\psi` on swarm."""
+        r"""Shift history chain and evaluate current :math:`\psi` on swarm."""
         for h in range(self.order - 1):
             i = self.order - (h + 1)
 

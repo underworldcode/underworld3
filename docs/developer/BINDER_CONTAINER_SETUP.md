@@ -232,13 +232,52 @@ To add a new underworld3 branch to binder:
 
 4. **Update README** with new launch badge
 
+### Two-Layer Build Architecture (Recommended)
+
+For faster builds and better caching, use the two-layer architecture:
+
+**Layer 1: Dependencies image** (`uw3-deps`) - Rarely changes, caches well
+```bash
+# Build dependencies-only image (do this when pixi.toml changes)
+docker build --platform linux/amd64 \
+  -f container/Dockerfile.deps \
+  -t ghcr.io/underworldcode/uw3-deps:2025.01 .
+
+docker push ghcr.io/underworldcode/uw3-deps:2025.01
+```
+
+**Layer 2: Branch-specific image** (`uw3-base`) - Quick rebuilds for code changes
+```bash
+# Build branch-specific image (do this when code changes)
+docker build --platform linux/amd64 \
+  --build-arg UW3_BRANCH=uw3-release-candidate \
+  --build-arg DEPS_IMAGE=ghcr.io/underworldcode/uw3-deps:2025.01 \
+  -f container/Dockerfile.branch \
+  -t ghcr.io/underworldcode/uw3-base:2025.01-slim .
+
+docker push ghcr.io/underworldcode/uw3-base:2025.01-slim
+```
+
+**Benefits**:
+- Dependencies layer rarely changes → stays cached on binder nodes
+- Branch rebuilds only need to clone code and pip install → much faster
+- Multiple branches can share the same deps image
+
 ### Updating Dependencies (Image Rebuild Required)
 
 When dependencies change (new packages, version updates):
 
 1. **Update pixi.toml** with new dependencies
 
-2. **Rebuild base image** (use optimized Dockerfile for slim variant):
+2. **Rebuild deps image first**:
+   ```bash
+   docker build --platform linux/amd64 \
+     -f container/Dockerfile.deps \
+     -t ghcr.io/underworldcode/uw3-deps:YYYY.MM .
+   docker push ghcr.io/underworldcode/uw3-deps:YYYY.MM
+   ```
+
+3. **Rebuild branch image** (or use single-file Dockerfile.base.optimized):
    ```bash
    docker build --platform linux/amd64 \
      -f container/Dockerfile.base.optimized \
@@ -305,6 +344,23 @@ Tutorial notebooks have been normalized to use `python3`.
 
 If you see `undefined symbol: DMInterpolationEvaluate_UW`, the `_dminterp_wrapper` extension
 is missing `petsc_tools.c`. This has been fixed in `setup.py`.
+
+### JIT Compilation Errors (cc1 not found)
+
+If you see `gcc: fatal error: cannot execute 'cc1': posix_spawnp: No such file or directory`:
+
+The image is missing the `libexec` directory which contains compiler internal binaries.
+Ensure the Dockerfile includes:
+```dockerfile
+COPY --from=builder --chown=jovyan:jovyan \
+  /home/jovyan/underworld3/.pixi/envs/runtime/libexec \
+  /home/jovyan/underworld3/.pixi/envs/runtime/libexec
+```
+
+The JIT compilation requires three directories:
+- `include/` - Header files
+- `x86_64-conda-linux-gnu/` - Compiler toolchain
+- `libexec/` - Internal compiler binaries (cc1, etc.)
 
 ### VTK/Visualization Errors
 
