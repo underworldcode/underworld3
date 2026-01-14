@@ -639,7 +639,7 @@ python scripts/binder_wizard.py username/my-course main tutorials/intro.ipynb
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    mybinder.org                                      │
 │                                                                      │
-│   1. Uses uw3-launcher repo (cached UW3 image)                      │
+│   1. Uses uw3-binder-launcher repo (cached UW3 image)                      │
 │   2. nbgitpuller clones YOUR repo into workspace                    │
 │   3. Opens JupyterLab with your notebooks                           │
 │                                                                      │
@@ -649,7 +649,7 @@ python scripts/binder_wizard.py username/my-course main tutorials/intro.ipynb
 ### URL Format
 
 ```
-https://mybinder.org/v2/gh/underworldcode/uw3-launcher/main
+https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main
   ?urlpath=git-pull
   ?repo=https://github.com/USER/REPO
   &branch=main

@@ -17,8 +17,8 @@ import sys
 from typing import Optional
 
 # Configuration
-DEFAULT_LAUNCHER_REPO = "underworldcode/uw3-launcher"
-DEFAULT_LAUNCHER_BRANCH = "main"
+DEFAULT_LAUNCHER_REPO = "underworldcode/uw3-binder-launcher"
+DEFAULT_LAUNCHER_BRANCH = "uw3-release-candidate"
 
 
 def url_encode(s: str) -> str:
