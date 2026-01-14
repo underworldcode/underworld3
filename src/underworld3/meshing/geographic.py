@@ -524,7 +524,7 @@ def RegionalGeographicBox(
     -----
     - Uses geodetic latitude (GPS/map standard), not geocentric latitude
     - Depth is measured from reference ellipsoid surface, not from center
-    - mesh.R provides spherical coordinates (r, θ, φ) for backward compatibility
+    - mesh.R provides spherical coordinates $(r, \\theta, \\phi)$ for backward compatibility
     - mesh.geo provides geographic coordinates (lon, lat, depth) with ellipsoid geometry
     - Right-handed coordinate system: WE × SN = down
     """

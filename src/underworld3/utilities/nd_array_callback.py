@@ -131,14 +131,12 @@ class NDArray_With_Callback(np.ndarray):
 
     ### change_info Dictionary
 
-    | Key | Type | Description |
-    |-----|------|-------------|
-    | `operation` | `str` | Operation name ('setitem', 'iadd', 'fill', etc.) |
-    | `indices` | `tuple/slice/None` | Location of change (for setitem operations) |
-    | `old_value` | `array-like/None` | Previous values (when available) |
-    | `new_value` | `array-like` | New values being assigned |
-    | `array_shape` | `tuple` | Current shape of the array |
-    | `array_dtype` | `np.dtype` | Data type of the array |
+    - ``operation`` (str): Operation name ('setitem', 'iadd', 'fill', etc.)
+    - ``indices`` (tuple/slice/None): Location of change (for setitem operations)
+    - ``old_value`` (array-like/None): Previous values (when available)
+    - ``new_value`` (array-like): New values being assigned
+    - ``array_shape`` (tuple): Current shape of the array
+    - ``array_dtype`` (np.dtype): Data type of the array
 
     ## Usage Examples
 
@@ -244,15 +242,13 @@ class NDArray_With_Callback(np.ndarray):
     These methods perform reduction operations across all MPI ranks, essential for
     parallel scientific computing where data is distributed across processes.
 
-    | Method | Description |
-    |--------|-------------|
-    | `global_max(axis=None)` | Maximum value across all MPI ranks |
-    | `global_min(axis=None)` | Minimum value across all MPI ranks |
-    | `global_sum(axis=None)` | Sum of all values across all MPI ranks |
-    | `global_mean(axis=None)` | True mean (global sum / global count) |
-    | `global_size()` | Total number of elements across all ranks |
-    | `global_norm(ord=2)` | 2-norm (Euclidean) across all ranks |
-    | `global_rms()` | Root mean square across all ranks |
+    - ``global_max(axis=None)``: Maximum value across all MPI ranks
+    - ``global_min(axis=None)``: Minimum value across all MPI ranks
+    - ``global_sum(axis=None)``: Sum of all values across all MPI ranks
+    - ``global_mean(axis=None)``: True mean (global sum / global count)
+    - ``global_size()``: Total number of elements across all ranks
+    - ``global_norm(ord=2)``: 2-norm (Euclidean) across all ranks
+    - ``global_rms()``: Root mean square across all ranks
 
     ### Usage Example
     ```python

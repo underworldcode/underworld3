@@ -36,3 +36,13 @@
    :members:
    :show-inheritance:
 ```
+
+## Nodal Point Swarm
+
+A swarm type where particles are located at mesh nodes.
+
+```{eval-rst}
+.. autoclass:: underworld3.swarm.NodalPointSwarm
+   :members:
+   :show-inheritance:
+```

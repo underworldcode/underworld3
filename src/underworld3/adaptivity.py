@@ -167,8 +167,8 @@ def metric_from_gradient(
 ) -> "MeshVariable":
     r"""Create adaptation metric from gradient of a scalar field.
 
-    Produces a metric that refines where gradients are steep (high |∇φ|)
-    and coarsens where the field is smooth (low |∇φ|). This is the standard
+    Produces a metric that refines where gradients are steep (high $\lvert\nabla\phi\rvert$)
+    and coarsens where the field is smooth (low $\lvert\nabla\phi\rvert$). This is the standard
     approach for error-driven or feature-based mesh adaptation.
 
     Parameters
@@ -182,15 +182,16 @@ def metric_from_gradient(
         Target edge length where gradient is lowest (coarsest mesh).
     gradient_min : float, optional
         Gradient magnitude below this uses h_max. If None, uses 5th percentile
-        of |∇φ| values.
+        of gradient magnitude values.
     gradient_max : float, optional
         Gradient magnitude above this uses h_min. If None, uses 95th percentile
-        of |∇φ| values.
+        of gradient magnitude values.
     profile : str, optional
         Interpolation profile: "linear", "smoothstep", or "power" (default: "linear").
+
         - "linear": h varies linearly with gradient magnitude
-        - "smoothstep": smooth S-curve transition (C¹ continuous)
-        - "power": h ∝ |∇φ|^(-1/2), natural for error equidistribution
+        - "smoothstep": smooth S-curve transition ($C^1$ continuous)
+        - "power": $h \propto \lvert\nabla\phi\rvert^{-1/2}$, natural for error equidistribution
     name : str, optional
         Name for the metric MeshVariable. Defaults to "{field.name}_gradient_metric".
 
@@ -208,8 +209,9 @@ def metric_from_gradient(
     Smooth regions can use coarser mesh without losing accuracy.
 
     The mapping is:
-        - High |∇φ| → small h → large metric → finer mesh
-        - Low |∇φ| → large h → small metric → coarser mesh
+
+    - High $\lvert\nabla\phi\rvert$ : small h : large metric : finer mesh
+    - Low $\lvert\nabla\phi\rvert$ : large h : small metric : coarser mesh
 
     **Choosing h_min and h_max**
 
@@ -221,8 +223,9 @@ def metric_from_gradient(
 
     If ``gradient_min`` and ``gradient_max`` are not specified, they are
     computed from the actual gradient field:
-        - gradient_min = 5th percentile of |∇φ|
-        - gradient_max = 95th percentile of |∇φ|
+
+    - gradient_min = 5th percentile of $\lvert\nabla\phi\rvert$
+    - gradient_max = 95th percentile of $\lvert\nabla\phi\rvert$
 
     This ensures robust behavior even when gradient magnitudes span many
     orders of magnitude.
@@ -297,10 +300,10 @@ def metric_from_gradient(
             h_values = h_max - (h_max - h_min) * smooth_t
 
         elif profile == "power":
-            # Power law: h ∝ |∇φ|^(-1/2) for error equidistribution
+            # Power law: h proportional to |grad(phi)|^(-1/2) for error equidistribution
             # This gives optimal convergence for some error norms
             # Map t to h via: h = h_max * (1 - t*(1 - h_min/h_max))^2
-            # Equivalent to h ∝ 1/sqrt(gradient) behavior
+            # Equivalent to h proportional to 1/sqrt(gradient) behavior
             h_ratio = h_min / h_max
             h_values = h_max * ((1.0 - t) + t * h_ratio)
 
@@ -346,7 +349,7 @@ def metric_from_field(
     indicator_max : float, optional
         Indicator values above this use h_min. If None, uses field maximum.
     invert : bool, optional
-        If True, high indicator values → coarse mesh (swap h_min/h_max roles).
+        If True, high indicator values give coarse mesh (swap h_min/h_max roles).
         Useful when indicator represents "smoothness" rather than "need for
         refinement". Default: False.
     profile : str, optional
@@ -363,8 +366,8 @@ def metric_from_field(
     -----
     **Use Cases**
 
-    - **Error estimates**: Pass a computed error field; high error → fine mesh
-    - **Phase fields**: Refine at interfaces (|φ| near transition value)
+    - **Error estimates**: Pass a computed error field; high error gives fine mesh
+    - **Phase fields**: Refine at interfaces (field near transition value)
     - **Distance fields**: Refine near surfaces (use with Surface.distance)
     - **Material boundaries**: Refine near composition gradients
 
@@ -380,9 +383,9 @@ def metric_from_field(
     >>> metric = uw.adaptivity.metric_from_field(error, h_min=0.005, h_max=0.05)
     >>> mesh.adapt(metric)
 
-    >>> # Refine at phase boundaries (φ transitions from 0 to 1)
-    >>> # Want fine mesh where φ is near 0.5
-    >>> phi_interface = 1 - 4 * (phi - 0.5)**2  # Peak at φ=0.5
+    >>> # Refine at phase boundaries (phi transitions from 0 to 1)
+    >>> # Want fine mesh where phi is near 0.5
+    >>> phi_interface = 1 - 4 * (phi - 0.5)**2  # Peak at phi=0.5
     >>> metric = uw.adaptivity.metric_from_field(phi_interface, h_min=0.01, h_max=0.1)
 
     See Also

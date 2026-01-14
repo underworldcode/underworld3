@@ -5,6 +5,16 @@
    :no-members:
 ```
 
+## Mesh
+
+The computational mesh class that provides the spatial discretisation for finite element calculations.
+
+```{eval-rst}
+.. autoclass:: underworld3.discretisation.Mesh
+   :members:
+   :show-inheritance:
+```
+
 ## MeshVariable
 
 The primary class for field data on meshes.
@@ -15,22 +25,10 @@ The primary class for field data on meshes.
    :show-inheritance:
 ```
 
-## Swarm
+## Checkpointing
 
-Particle swarms for Lagrangian tracking and material properties.
-
-```{eval-rst}
-.. autoclass:: underworld3.swarm.Swarm
-   :members:
-   :show-inheritance:
-```
-
-## SwarmVariable
-
-Variables defined on particle swarms.
+### checkpoint_xdmf
 
 ```{eval-rst}
-.. autoclass:: underworld3.swarm.SwarmVariable
-   :members:
-   :show-inheritance:
+.. autofunction:: underworld3.discretisation.checkpoint_xdmf
 ```

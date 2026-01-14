@@ -51,3 +51,69 @@
 ```{eval-rst}
 .. autofunction:: underworld3.utilities.mem_footprint
 ```
+
+## Geometry Utilities
+
+Functions for geometric computations useful for mesh and swarm operations.
+
+### Distance Calculations
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.distance_pointcloud_linesegment
+```
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.distance_pointcloud_polyline
+```
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.distance_pointcloud_triangle
+```
+
+### Signed Distance Functions
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.signed_distance_pointcloud_linesegment_2d
+```
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.signed_distance_pointcloud_polyline_2d
+```
+
+### Point-in-Simplex Tests
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.points_in_simplex2D
+```
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.points_in_simplex3D
+```
+
+### Normals
+
+```{eval-rst}
+.. autofunction:: underworld3.utilities.linesegment_normals_2d
+```
+
+## Array Utilities
+
+### UnitAwareArray
+
+Array with attached unit information for dimensional quantities.
+
+```{eval-rst}
+.. autoclass:: underworld3.utilities.UnitAwareArray
+   :members:
+   :show-inheritance:
+```
+
+### NDArray_With_Callback
+
+Array wrapper that triggers callbacks on modification.
+
+```{eval-rst}
+.. autoclass:: underworld3.utilities.NDArray_With_Callback
+   :members:
+   :show-inheritance:
+```

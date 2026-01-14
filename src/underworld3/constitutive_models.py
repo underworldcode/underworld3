@@ -1730,7 +1730,7 @@ class GenericFluxModel(Constitutive_Model):
 
     Example usage:
     ```python
-    grad_phi = sympy.Matrix([sp.Symbol("∂φ/∂x"), sp.Symbol("∂φ/∂y")])
+    grad_phi = sympy.Matrix([sp.Symbol("dphi_dx"), sp.Symbol("dphi_dy")])
     flux_expr = sympy.Matrix([[kappa_11, kappa_12], [kappa_21, kappa_22]]) * grad_phi
 
     model = GenericFluxModel(dim=2)
@@ -2303,13 +2303,13 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
 
     @property
     def K(self):
-        """
+        r"""
         Effective stiffness using level-set weighted harmonic average.
 
         For composite materials, harmonic averaging gives the correct effective
-        stiffness for preconditioning: 1/K_eff = Σ(φᵢ * (1/Kᵢ)) / Σ(φᵢ)
+        stiffness for preconditioning: $1/K_{eff} = \sum(\phi_i / K_i) / \sum(\phi_i)$
         """
-        # Harmonic average: 1/K_eff = Σ(φᵢ * (1/Kᵢ)) / Σ(φᵢ)
+        # Harmonic average: 1/K_eff = sum(phi_i / K_i) / sum(phi_i)
         combined_inv_K = sympy.sympify(0)
 
         if self._normalize_levelsets:

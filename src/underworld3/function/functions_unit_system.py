@@ -104,11 +104,9 @@ def evaluate(
     -----
     **Evaluation Modes:**
 
-    | Mode | Derivatives | No Derivatives | Interpolation |
-    |------|-------------|----------------|---------------|
-    | "fast" | Clement (no solve) | Calculation | RBF everywhere |
-    | "default" | Projection (solve) | Calculation | DMInterp + RBF |
-    | "projection" | Projection (solve) | Projection | DMInterp + RBF |
+    - ``"fast"``: Clement gradient (no solve), direct calculation, RBF everywhere
+    - ``"default"``: Projection for derivatives (solve), direct otherwise, DMInterp + RBF
+    - ``"projection"``: Always use L2 projection (solve), DMInterp + RBF
 
     The `rbf` and `force_l2` parameters are expert overrides that take
     precedence over the mode setting when explicitly provided.

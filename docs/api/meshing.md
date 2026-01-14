@@ -146,3 +146,33 @@ Tools for creating meshes with fault surfaces and internal boundaries.
    :members:
    :show-inheritance:
 ```
+
+## Surfaces
+
+Tools for working with surface meshes and embedded boundaries.
+
+### Surface
+
+```{eval-rst}
+.. autoclass:: underworld3.meshing.Surface
+   :members:
+   :show-inheritance:
+```
+
+### SurfaceCollection
+
+```{eval-rst}
+.. autoclass:: underworld3.meshing.SurfaceCollection
+   :members:
+   :show-inheritance:
+```
+
+### SurfaceVariable
+
+Variables defined on surface meshes.
+
+```{eval-rst}
+.. autoclass:: underworld3.meshing.SurfaceVariable
+   :members:
+   :show-inheritance:
+```

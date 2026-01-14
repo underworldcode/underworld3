@@ -43,10 +43,11 @@ class UnitAwareArray(NDArray_With_Callback):
 
     Mathematical Representation:
     Given an array A with units [A], operations preserve dimensional consistency:
-    - A [m] + B [m] → C [m]  ✓ (compatible units)
-    - A [m] + B [s] → Error   ✗ (incompatible units)
-    - A [m] * B [s] → C [m⋅s] ✓ (unit multiplication)
-    - A [m] * 2     → C [m]   ✓ (scalar multiplication)
+
+    - A [m] + B [m] -> C [m] (compatible units)
+    - A [m] + B [s] -> Error (incompatible units)
+    - A [m] * B [s] -> C [m*s] (unit multiplication)
+    - A [m] * 2 -> C [m] (scalar multiplication)
 
     Usage Examples:
     ```python
@@ -76,17 +77,15 @@ class UnitAwareArray(NDArray_With_Callback):
     These methods extend the parent class's global reduction operations to preserve
     units in the result. Essential for parallel simulations with physical quantities.
 
-    | Method | Returns | Units |
-    |--------|---------|-------|
-    | `global_max()` | UWQuantity | Same as array |
-    | `global_min()` | UWQuantity | Same as array |
-    | `global_sum()` | UWQuantity | Same as array |
-    | `global_mean()` | UWQuantity | Same as array |
-    | `global_size()` | int | N/A (count) |
-    | `global_norm()` | UWQuantity | Same as array |
-    | `global_rms()` | UWQuantity | Same as array |
-    | `global_var()` | UWQuantity | Units squared |
-    | `global_std()` | UWQuantity | Same as array |
+    - ``global_max()`` -> UWQuantity (same units as array)
+    - ``global_min()`` -> UWQuantity (same units as array)
+    - ``global_sum()`` -> UWQuantity (same units as array)
+    - ``global_mean()`` -> UWQuantity (same units as array)
+    - ``global_size()`` -> int (count, no units)
+    - ``global_norm()`` -> UWQuantity (same units as array)
+    - ``global_rms()`` -> UWQuantity (same units as array)
+    - ``global_var()`` -> UWQuantity (units squared)
+    - ``global_std()`` -> UWQuantity (same units as array)
 
     ```python
     # Example: mesh coordinates with units
