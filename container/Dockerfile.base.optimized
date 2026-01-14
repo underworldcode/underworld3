@@ -68,11 +68,11 @@ RUN find /home/jovyan/.pixi -type d -name "tests" -exec rm -rf {} + 2>/dev/null 
     find /home/jovyan/.pixi -name "*.pyc" -delete 2>/dev/null || true && \
     find /home/jovyan/.pixi -name "*.pyo" -delete 2>/dev/null || true
 
-# Remove include directory (headers not needed at runtime) - saves 390MB
-RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/include
+# KEEP include directory - needed for JIT compilation at runtime
+# RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/include
 
-# Remove compiler toolchain (not needed at runtime) - saves 267MB
-RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu
+# KEEP compiler toolchain - needed for JIT compilation at runtime
+# RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu
 
 # Remove man pages - saves 4.5MB
 RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/man
@@ -138,6 +138,12 @@ COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/ru
 # Layer 5: Runtime lib - shared libraries (~400MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib /home/jovyan/underworld3/.pixi/envs/runtime/lib
 
+# Layer 5b: Include headers - needed for JIT compilation (~390MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/include /home/jovyan/underworld3/.pixi/envs/runtime/include
+
+# Layer 5c: Compiler toolchain - needed for JIT compilation (~267MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu
+
 # Layer 6: Underworld3 source code (~100MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/src /home/jovyan/underworld3/src
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/setup.py /home/jovyan/underworld3/setup.py
@@ -161,22 +167,25 @@ ENV PYVISTA_OFF_SCREEN=true
 ENV PYVISTA_USE_IPYVTK=true
 ENV DISPLAY=:99
 
+# Force Mesa software rendering (avoid EGL issues in containers)
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MESA_GL_VERSION_OVERRIDE=3.3
+ENV GALLIUM_DRIVER=llvmpipe
+ENV VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow
+
 # Expose jupyter port
 EXPOSE 8888
 
 # Default branch to pull (can be overridden by launcher Dockerfile)
 ENV UW3_BRANCH=uw3-release-candidate
 
-# Create start script with fast git pull (shallow clone makes this quick)
-# Skip build step - only Python changes will be picked up, not Cython
+# Create minimal start script - launch jupyter directly (no pixi overhead)
+# The environment is pre-built, just need to set PATH and run
 RUN cat > /home/jovyan/start <<'SCRIPT'
 #!/bin/bash
+export PATH="/home/jovyan/underworld3/.pixi/envs/runtime/bin:$PATH"
 cd /home/jovyan/underworld3
-# Fast git pull - shallow clone keeps this under 5 seconds
-git pull --depth 1 origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
-# Copy updated tutorials
-cp -r docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
-exec pixi run -e runtime "$@"
+exec "$@"
 SCRIPT
 RUN chmod +x /home/jovyan/start
 
