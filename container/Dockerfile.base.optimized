@@ -114,8 +114,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN userdel -r ubuntu 2>/dev/null || true && \
     useradd -m -s /bin/bash -u 1000 jovyan
 
-# Copy everything from builder
-COPY --from=builder --chown=jovyan:jovyan /home/jovyan /home/jovyan
+# =============================================================================
+# Split COPY into multiple layers for better binder compatibility
+# (mybinder.org struggles with single layers > 1GB)
+# =============================================================================
+
+# Layer 1: Pixi binary and global cache (~10MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/.pixi /home/jovyan/.pixi
+
+# Layer 2: Jupyter kernel config (~1MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/.local /home/jovyan/.local
+
+# Layer 3: Pixi project config files (~1MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pixi.toml /home/jovyan/underworld3/pixi.toml
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pixi.lock /home/jovyan/underworld3/pixi.lock
+
+# Layer 4: Runtime environment - everything except lib (~100MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/bin /home/jovyan/underworld3/.pixi/envs/runtime/bin
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/share /home/jovyan/underworld3/.pixi/envs/runtime/share
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/ssl /home/jovyan/underworld3/.pixi/envs/runtime/ssl
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/etc /home/jovyan/underworld3/.pixi/envs/runtime/etc
+
+# Layer 5: Runtime lib - shared libraries (~400MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib /home/jovyan/underworld3/.pixi/envs/runtime/lib
+
+# Layer 6: Underworld3 source code (~100MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/src /home/jovyan/underworld3/src
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/setup.py /home/jovyan/underworld3/setup.py
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pyproject.toml /home/jovyan/underworld3/pyproject.toml
+
+# Layer 7: Documentation and tutorials (~50MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/docs /home/jovyan/underworld3/docs
+
+# Layer 8: Git repo for updates (~5MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.git /home/jovyan/underworld3/.git
 
 USER jovyan
 WORKDIR /home/jovyan
