@@ -2,6 +2,7 @@
 
 **Date**: 2025-01-14
 **Status**: Implemented and working
+**Current Image SHA**: `sha256:6d3894260f28dc837a21ce77a94bb1781f4ca12422934be7a4bd34b4a7b1223f`
 
 ## Overview
 
@@ -101,15 +102,95 @@ The actual Underworld3 codebase:
 
 | Tag | Size | Purpose |
 |-----|------|---------|
-| `2025.01-slim` | ~1.4GB | **Recommended** - Optimized for binder launches |
-| `2025.01` | ~8.3GB | Full image with headers/toolchain (for development) |
+| `2025.01-slim` | ~3.4GB | **Recommended** - Optimized for binder launches with JIT support |
+| `2025.01` | ~8.3GB | Full image with all dev tools (for development) |
 
-The slim image removes components not needed at runtime:
-- Git history (`.git` directory)
-- Legacy documentation (`docs_legacy`)
-- C/C++ headers (`include/`)
-- Compiler toolchain (`x86_64-conda-linux-gnu/`)
-- Package metadata (`conda-meta/`)
+The slim image removes components not needed at runtime while **keeping JIT compilation support**:
+- ✅ **Kept**: `include/` - Header files (required for JIT)
+- ✅ **Kept**: `x86_64-conda-linux-gnu/` - Compiler toolchain (required for JIT)
+- ✅ **Kept**: `libexec/` - Internal compiler binaries like cc1 (required for JIT)
+- ❌ **Removed**: Git history (`.git` directory) - uses shallow clone instead
+- ❌ **Removed**: Legacy documentation (`docs_legacy`)
+- ❌ **Removed**: Package metadata (`conda-meta/`)
+- ❌ **Removed**: Test directories in packages
+- ❌ **Removed**: Man pages
+
+## Critical: Layer Size Constraints for mybinder.org
+
+**mybinder.org has an undocumented layer size limit of approximately 1GB**. Layers larger than ~1GB frequently fail to upload with timeouts or broken pipe errors.
+
+### The Problem
+
+The pixi runtime environment contains a ~2.7GB `lib` directory:
+- `python3.12/site-packages/` - ~800MB
+- `libLLVM*.so*`, `libclang*.so*` - ~355MB (LLVM libraries)
+- `libvtk*.so*` - ~300MB (VTK libraries)
+- `libgmsh*.so*`, `libopenblas*.so*`, `libQt*.so*`, `libicu*.so*` - ~400MB
+- GCC, qt6, dri subdirectories - ~200MB
+- Remaining shared libraries - ~700MB
+
+A single `COPY --from=builder lib/ lib/` creates a 2.7GB layer that fails to push.
+
+### The Solution: Split COPY Layers
+
+The `Dockerfile.base.optimized` splits the lib directory into multiple layers:
+
+**Builder stage - Organize files into split directories:**
+```dockerfile
+# Create split directories
+RUN mkdir -p /home/jovyan/lib-split/llvm && \
+    mkdir -p /home/jovyan/lib-split/vtk && \
+    mkdir -p /home/jovyan/lib-split/other-large
+
+# Move LLVM (~355MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libLLVM*.so* libclang*.so* /home/jovyan/lib-split/llvm/ 2>/dev/null || true
+
+# Move VTK (~300MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libvtk*.so* libvisk*.so* /home/jovyan/lib-split/vtk/ 2>/dev/null || true
+
+# Move other large libs (~400MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libgmsh*.so* libopenblas*.so* libopenvino*.so* \
+       libQt*.so* libicu*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true
+```
+
+**Final stage - Copy as separate layers:**
+```dockerfile
+# Layer 5a: Python + subdirs (~800MB)
+COPY --from=builder .../lib/python3.12 .../lib/python3.12
+COPY --from=builder .../lib/gcc .../lib/gcc
+COPY --from=builder .../lib/qt6 .../lib/qt6
+COPY --from=builder .../lib/dri .../lib/dri
+
+# Layer 5b: VTK directories (~140MB)
+COPY --from=builder .../lib/vtk-9.5 .../lib/vtk-9.5
+COPY --from=builder .../lib/openvino-2025.2.0 .../lib/openvino-2025.2.0
+
+# Layer 5c: LLVM libs (~350MB)
+COPY --from=builder /home/jovyan/lib-split/llvm .../lib/
+
+# Layer 5d: VTK libs (~300MB)
+COPY --from=builder /home/jovyan/lib-split/vtk .../lib/
+
+# Layer 5e: Other large libs (~400MB)
+COPY --from=builder /home/jovyan/lib-split/other-large .../lib/
+
+# Layer 5f: Remaining libs (~700MB)
+COPY --from=builder .../lib .../lib
+```
+
+**Result**: All layers are under 800MB, which uploads reliably to GHCR and mybinder.org.
+
+### Verifying Layer Sizes
+
+After building, check layer sizes:
+```bash
+docker history ghcr.io/underworldcode/uw3-base:2025.01-slim --no-trunc
+```
+
+All layers should be under 1GB. If any layer exceeds ~800MB, consider splitting further.
 
 ## Launch URLs
 
@@ -176,6 +257,20 @@ Embedded at `/home/jovyan/start`:
 
 ```bash
 #!/bin/bash
+export PATH="/home/jovyan/underworld3/.pixi/envs/runtime/bin:$PATH"
+cd /home/jovyan/underworld3
+exec "$@"
+```
+
+The script:
+1. Sets up the pixi environment PATH directly (no pixi overhead at startup)
+2. Changes to the underworld3 directory
+3. Executes the passed command (typically jupyter lab)
+
+**Note**: The current slim image uses a simplified start script that doesn't pull code at startup. The code is frozen at image build time. For development/testing branches that need fresh code, a more complex start script can be used:
+
+```bash
+#!/bin/bash
 cd /home/jovyan/underworld3
 git fetch origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
 git checkout ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
@@ -184,13 +279,6 @@ pixi run -e runtime build 2>/dev/null || true
 cp -r docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
 exec pixi run -e runtime "$@"
 ```
-
-The script:
-1. Uses `UW3_BRANCH` env var (defaults to `uw3-release-candidate`)
-2. Fetches, checkouts, and pulls the specified branch
-3. Rebuilds underworld3 (~30 seconds)
-4. Copies tutorials to workspace
-5. Launches jupyter (or whatever command was passed)
 
 ### Binder Configuration
 - User: `jovyan` (UID 1000) - mybinder.org standard
@@ -368,6 +456,40 @@ The base image includes OSMesa for software rendering. Environment variables are
 - `PYVISTA_OFF_SCREEN=true`
 - `PYVISTA_USE_IPYVTK=true`
 - `DISPLAY=:99`
+- `LIBGL_ALWAYS_SOFTWARE=1`
+- `MESA_GL_VERSION_OVERRIDE=3.3`
+- `GALLIUM_DRIVER=llvmpipe`
+- `VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow`
+
+### PyVista 424 Errors on Binder (Trame Configuration)
+
+If PyVista `pl.show()` displays "424 error - We can't seem to find the Binder page you are looking for":
+
+**Problem**: Explicit `server_proxy_prefix` configuration interferes with mybinder.org's proxy setup.
+
+**Solution**: Do NOT set explicit server proxy prefix. Let PyVista/trame auto-detect:
+
+```python
+# CORRECT - let PyVista auto-detect proxy settings
+pv.global_theme.trame.server_proxy_enabled = True
+# Don't set server_proxy_prefix - auto-detection works correctly
+
+# WRONG - explicit prefix breaks on mybinder.org
+pv.global_theme.trame.server_proxy_enabled = True
+pv.global_theme.trame.server_proxy_prefix = "/proxy/"  # DON'T DO THIS
+```
+
+The Underworld3 `uw.visualisation.initialise()` function handles this correctly. If you see 424 errors, check that no code is setting `server_proxy_prefix` explicitly.
+
+### Layer Upload Failures (Broken Pipe / Timeout)
+
+If `docker push` fails with "write tcp: broken pipe" or hangs indefinitely:
+
+**Problem**: One or more layers exceed mybinder.org's ~1GB limit.
+
+**Solution**: Check layer sizes with `docker history` and split any layers over 800MB.
+
+See [Critical: Layer Size Constraints](#critical-layer-size-constraints-for-mybinderorg) for details.
 
 ## Technical Notes
 
@@ -464,10 +586,11 @@ If binder launches fail, check the Jupyter logs for build errors.
 
 ## Version History
 
-| Tag | Date | Changes |
-|-----|------|---------|
-| 2025.01-slim | 2025-01-14 | Optimized image (~1.4GB vs 8.3GB): removed .git, headers, toolchain |
-| 2025.01 | 2025-01-13 | Initial release with embedded start script, UW3_BRANCH support |
+| Tag | Date | SHA | Changes |
+|-----|------|-----|---------|
+| 2025.01-slim | 2025-01-14 | `6d3894260f28...` | Split lib layers for reliable uploads, fixed trame proxy, kept JIT toolchain (~3.4GB) |
+| 2025.01-slim | 2025-01-14 | (superseded) | Initial slim with JIT support but single large lib layer (upload failures) |
+| 2025.01 | 2025-01-13 | — | Initial release with embedded start script, UW3_BRANCH support (~8.3GB) |
 
 ## Related Files
 
@@ -480,5 +603,107 @@ If binder launches fail, check the Jupyter logs for build errors.
 - `docs/beginner/tutorials/` - Tutorial notebooks
 
 ### In uw3-binder-launcher repository
-- `.binder/Dockerfile` - Minimal launcher config
+- `.binder/Dockerfile` - Minimal launcher config (must reference specific image SHA)
 - `README.md` - Launch badges and documentation
+
+## Future: GitHub Actions Automation
+
+To ensure the launcher repository stays synchronized with base image builds, consider implementing GitHub Actions automation:
+
+### Proposed Workflow
+
+```yaml
+# .github/workflows/build-binder-image.yml (in underworld3 repo)
+name: Build Binder Image
+
+on:
+  push:
+    branches: [main, uw3-release-candidate]
+    paths:
+      - 'container/Dockerfile.base.optimized'
+      - 'pixi.toml'
+      - 'pixi.lock'
+      - 'src/**/*.pyx'  # Cython changes require rebuild
+      - 'setup.py'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: container/Dockerfile.base.optimized
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/underworldcode/uw3-base:${{ github.ref_name }}
+            ghcr.io/underworldcode/uw3-base:latest
+
+      - name: Update launcher repository
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.LAUNCHER_PAT }}
+          repository: underworldcode/uw3-binder-launcher
+          event-type: image-updated
+          client-payload: '{"branch": "${{ github.ref_name }}", "sha": "${{ steps.build.outputs.digest }}"}'
+```
+
+### Launcher Update Workflow
+
+```yaml
+# .github/workflows/update-image.yml (in uw3-binder-launcher repo)
+name: Update Image Reference
+
+on:
+  repository_dispatch:
+    types: [image-updated]
+
+jobs:
+  update-dockerfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.branch }}
+
+      - name: Update Dockerfile
+        run: |
+          SHA="${{ github.event.client_payload.sha }}"
+          # Update the SHA reference in Dockerfile
+          sed -i "s/sha256:[a-f0-9]*/sha256:${SHA#sha256:}/" .binder/Dockerfile
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "Update image SHA to ${{ github.event.client_payload.sha }}"
+          git push
+```
+
+### Requirements for Automation
+
+1. **LAUNCHER_PAT**: Personal Access Token with `repo` scope for triggering launcher updates
+2. **GHCR Permissions**: Package must be public or have appropriate access tokens
+3. **Branch Protection**: Consider allowing bot commits to launcher repo
+
+### Benefits of Automation
+
+- **Consistency**: Launcher always references latest working image
+- **Traceability**: Each launcher commit links to specific image SHA
+- **Reliability**: Automated SHA updates prevent manual errors
+- **CI Integration**: Can trigger binder tests after image updates
