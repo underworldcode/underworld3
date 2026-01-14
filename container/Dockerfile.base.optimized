@@ -26,7 +26,7 @@ WORKDIR /home/jovyan
 RUN curl -fsSL https://pixi.sh/install.sh | sh
 ENV PATH="/home/jovyan/.pixi/bin:$PATH"
 
-# Clone underworld3 with shallow clone (saves ~50MB of git history)
+# Clone underworld3 with shallow clone (depth 1 keeps .git small ~5MB vs 356MB)
 RUN git clone --single-branch --branch uw3-release-candidate --depth 1 \
     https://github.com/underworldcode/underworld3.git && \
     cd underworld3 && \
@@ -50,8 +50,8 @@ RUN cd underworld3 && \
 # Clean pixi cache (can be 500MB+)
 RUN pixi clean cache --yes 2>/dev/null || true
 
-# Remove .git directory (start script will re-clone if needed) - saves 356MB
-RUN rm -rf /home/jovyan/underworld3/.git
+# Keep shallow .git (depth 1 is only ~5MB) for fast git pull at startup
+# Don't remove: rm -rf /home/jovyan/underworld3/.git
 
 # Remove docs_legacy - saves 229MB
 RUN rm -rf /home/jovyan/underworld3/docs_legacy
@@ -135,24 +135,14 @@ EXPOSE 8888
 # Default branch to pull (can be overridden by launcher Dockerfile)
 ENV UW3_BRANCH=uw3-release-candidate
 
-# Create start script that updates code before launching
-# This enables binder to always get latest code without rebuilding the image
-# Uses UW3_BRANCH env var to determine which branch to pull
-# Note: Since .git was removed, we need to re-init for git pull to work
+# Create start script with fast git pull (shallow clone makes this quick)
+# Skip build step - only Python changes will be picked up, not Cython
 RUN cat > /home/jovyan/start <<'SCRIPT'
 #!/bin/bash
 cd /home/jovyan/underworld3
-
-# Re-initialize git if .git doesn't exist (removed for image size)
-if [ ! -d ".git" ]; then
-    git init
-    git remote add origin https://github.com/underworldcode/underworld3.git
-fi
-
-git fetch origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
-git checkout ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
-git pull origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
-pixi run -e runtime build 2>&1 | tail -3 || true
+# Fast git pull - shallow clone keeps this under 5 seconds
+git pull --depth 1 origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
+# Copy updated tutorials
 cp -r docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
 exec pixi run -e runtime "$@"
 SCRIPT
