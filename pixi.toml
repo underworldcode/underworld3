@@ -1,0 +1,215 @@
+# Underworld3 In-Repository Build Configuration
+#
+# Two PETSc options:
+# - Default: conda-forge PETSc (~5 min install)
+# - AMR: Custom PETSc with adaptive mesh tools (~1 hour build)
+#
+# Three environment tiers:
+# - default/amr: Minimal - build and run underworld3
+# - runtime/amr-runtime: Run tutorials - adds viz, jupyter
+# - dev/amr-dev: Development - adds claude, linting, etc.
+#
+# Usage:
+#   pixi install                    # Minimal environment
+#   pixi install -e runtime         # For running tutorials
+#   pixi install -e dev             # For development
+#
+#   pixi install -e amr             # AMR minimal (then: pixi run -e amr petsc-build)
+#   pixi install -e amr-runtime     # AMR for tutorials
+#   pixi install -e amr-dev         # AMR for development
+
+[workspace]
+name = "underworld3"
+authors = ["Louis Moresi <louis.moresi@anu.edu.au>"]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+version = "0.99.0b"
+
+# ============================================
+# CORE TASKS
+# ============================================
+[tasks]
+# Build underworld3 (compiles Cython extensions)
+build = "pip install . --no-build-isolation"
+clean = "./scripts/clean.sh"
+
+# Testing
+test = "./scripts/test_levels.sh 1"      # Quick level-1 tests (~2 min)
+test-all = "./scripts/test_levels.sh"    # All test levels
+
+# Code quality
+format = "black src/underworld3 tests --line-length=100"
+type-check = "mypy src/underworld3 --ignore-missing-imports"
+
+# Optional installers for specialized tools (not bundled)
+install-geo = "pip install gdal pyproj cartopy geopandas owslib"
+
+# ============================================
+# BASE DEPENDENCIES (shared by all environments)
+# ============================================
+# NOTE: petsc/petsc4py are in features below, not here
+
+[dependencies]
+python = "3.12.*"
+
+# Build requirements
+cython = ">=3.1,<4"
+numpy = "<2"
+pip = ">=25,<26"
+setuptools = ">=75,<76"
+compilers = "*"
+
+# Underworld3 runtime dependencies
+sympy = ">=1.13,<2"
+scipy = ">=1.15,<2"
+pint = ">=0.24,<0.25"
+typeguard = ">=4.4,<5"
+xxhash = ">=0.8,<0.9"
+
+# Testing (included in base for CI compatibility)
+pytest = ">=8.3,<9"
+pytest-mpi = ">=0.6,<0.7"
+pytest-timeout = ">=2.3,<3"
+pytest-forked = ">=1.6,<2"
+pytest-xdist = ">=3.8,<4"
+
+# Mesh generation
+pykdtree = ">=1.4,<2"
+meshio = ">=5.3,<6"
+
+# Utilities
+requests = "*"
+matplotlib = ">=3.10,<4"
+
+# Jupyter kernel support (needed for pixi-kernel in all environments)
+ipykernel = ">=6.29,<7"
+pixi-kernel = ">=0.7.1,<0.8"
+
+[pypi-dependencies]
+gmsh = ">=4.13,<5"
+pygmsh = ">=7.1,<8"
+rich = "*"
+
+# ============================================
+# CONDA-FORGE PETSC FEATURE
+# ============================================
+# Quick install (~5 min), no AMR tools
+
+[feature.conda-petsc.dependencies]
+# PETSc 3.24 compatible - requires clean rebuild after version changes
+petsc = ">=3.21,<4"
+petsc4py = ">=3.21,<4"
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+mpi4py = ">=4,<5"
+
+# ============================================
+# CUSTOM PETSC FEATURE (AMR)
+# ============================================
+# Build PETSc from source with adaptive mesh tools:
+# - pragmatic: anisotropic mesh adaptation
+# - mmg/parmmg: surface/volume mesh adaptation
+# - slepc: eigenvalue solvers
+# Build time: ~1 hour on Apple Silicon
+
+[feature.amr.dependencies]
+# Build tools for PETSc compilation
+gfortran = ">=14.2,<15"
+cxx-compiler = ">=1.9,<2"
+cmake = ">=3.31,<4"
+make = ">=4.4,<5"
+
+# MPI and HDF5 from conda-forge (PETSc links against these)
+mpich = ">=4.3,<5"
+mpi4py = ">=4,<5"
+hdf5 = { version = ">=1.14,<2", build = "*mpich*" }
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+
+# NOTE: petsc and petsc4py are built from source
+# by petsc-custom/build-petsc.sh
+
+[feature.amr.activation.env]
+PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
+PETSC_ARCH = "petsc-4-uw"
+
+[feature.amr.tasks]
+# Build custom PETSc with AMR tools (~1 hour, includes petsc4py)
+# Sub-commands: ./build-petsc.sh [configure|build|petsc4py|clean|help]
+petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
+petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
+
+# ============================================
+# RUNTIME FEATURE (for tutorials/examples)
+# ============================================
+# Visualization and interactive computing
+
+[feature.runtime.dependencies]
+# 3D visualization
+vtk = ">=9.5.2,<10"
+pyvista = ">=0.46,<0.47"
+trame = ">=3.8,<4"
+trame-vuetify = ">=2.8,<3"
+trame-vtk = ">=2.8,<3"
+
+# Jupyter notebooks (ipykernel and pixi-kernel are in base dependencies)
+ipywidgets = ">=8.1,<9"
+jupyterlab = ">=4.3,<5"
+
+# ============================================
+# DEV FEATURE (for development)
+# ============================================
+# Code quality, documentation, AI assistance
+
+[feature.dev.dependencies]
+# Code quality
+black = ">=24,<25"
+mypy = ">=1.8,<2"
+ipdb = ">=0.13,<0.14"
+
+# Documentation
+jupyter-ai = ">=2.31,<3"
+jupytext = ">=1.16,<2"
+
+# Sphinx API documentation
+sphinx = "*"
+furo = "*"
+myst-nb = "*"
+
+# Claude Code
+nodejs = ">=18"
+
+[feature.dev.pypi-dependencies]
+anthropic = "*"
+sphinx-math-dollar = "*"
+
+[feature.dev.tasks]
+install-claude = "npm install -g @anthropic-ai/claude-code"
+claude = "claude"
+docs-build = { cmd = "quarto render", cwd = "docs", env = { QUARTO_PYTHON = "python" } }
+api-docs-build = { cmd = "python -m sphinx -b html docs/api docs/api/_build/html", env = { QUARTO_PYTHON = "python" } }
+api-docs-clean = { cmd = "rm -rf docs/api/_build" }
+docs-audit = { cmd = "python scripts/docs_audit.py", description = "Audit API documentation coverage" }
+
+# ============================================
+# ENVIRONMENT DEFINITIONS
+# ============================================
+
+[environments]
+# --- Default Track (conda-forge PETSc) ---
+# Minimal: Just build and run underworld3
+default = { features = ["conda-petsc"], solve-group = "default" }
+
+# Runtime: Run tutorials and examples (viz, jupyter)
+runtime = { features = ["conda-petsc", "runtime"], solve-group = "default" }
+
+# Dev: Full development environment
+dev = { features = ["conda-petsc", "runtime", "dev"], solve-group = "default" }
+
+# --- AMR Track (custom PETSc with mesh adaptation) ---
+# AMR Minimal: Build custom PETSc, then underworld3
+amr = { features = ["amr"], solve-group = "amr" }
+
+# AMR Runtime: For tutorials with adaptive mesh
+amr-runtime = { features = ["amr", "runtime"], solve-group = "amr" }
+
+# AMR Dev: Full development with custom PETSc
+amr-dev = { features = ["amr", "runtime", "dev"], solve-group = "amr" }
