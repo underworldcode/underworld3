@@ -339,6 +339,59 @@ The start script pattern allows:
 
 Trade-off: ~30 second startup delay for `pixi run build`
 
+## Limitations and Requirements
+
+### mybinder.org Timeout
+
+mybinder.org expects Jupyter to respond within **30 seconds** of container start. This constrains what can happen in the start script:
+
+- ✅ `git pull` - fast (~2-3 seconds)
+- ✅ `pixi run build` for Python-only changes - fast (~20-30 seconds)
+- ❌ `pip install --force-reinstall` - too slow (rebuilds all Cython extensions, ~2-3 minutes)
+
+### Cython Extension Changes Require Image Rebuild
+
+**Critical**: Changes to Cython extensions (`.pyx` files) or their C dependencies (`petsc_tools.c`, etc.) require a **full image rebuild**. The runtime `pixi run build` cannot reliably rebuild these because:
+
+1. Timestamp detection: pip sees pre-built `.so` files as newer than pulled source files
+2. Timeout constraint: Forcing a full rebuild exceeds the 30-second mybinder timeout
+
+**When to rebuild the base image:**
+- Any changes to `setup.py` (extension definitions)
+- Any changes to `.pyx` files in `src/underworld3/`
+- Any changes to C files (`petsc_tools.c`, `petsc_tools.h`, etc.)
+- Changes to `pixi.toml` dependencies
+
+**What works with runtime pull:**
+- Pure Python code changes (`.py` files)
+- Documentation and notebook updates
+- Test file changes
+
+### Image Rebuild Procedure
+
+When Cython or C code changes:
+
+```bash
+# Full rebuild (no cache) to ensure all extensions are recompiled
+docker build --platform linux/amd64 --no-cache \
+  -f container/Dockerfile.base \
+  -t ghcr.io/underworldcode/uw3-base:2025.01 .
+
+# Push to GHCR
+docker push ghcr.io/underworldcode/uw3-base:2025.01
+```
+
+The `--no-cache` flag is important to ensure fresh compilation of all Cython extensions.
+
+### Start Script Output
+
+The start script shows the last 3 lines of build output for debugging:
+```bash
+pixi run -e runtime build 2>&1 | tail -3 || true
+```
+
+If binder launches fail, check the Jupyter logs for build errors.
+
 ## Version History
 
 | Tag | Date | Changes |
