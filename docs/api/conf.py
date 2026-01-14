@@ -1,11 +1,7 @@
 # Sphinx configuration for Underworld3 API Documentation
 # Uses MyST Markdown for familiar syntax
-
-import os
-import sys
-
-# Add underworld3 source to path
-sys.path.insert(0, os.path.abspath('../../src'))
+# NOTE: underworld3 is installed via 'pixi run build' before docs build
+# Do NOT add source to sys.path - it causes circular import issues
 
 # =============================================================================
 # Project Information
