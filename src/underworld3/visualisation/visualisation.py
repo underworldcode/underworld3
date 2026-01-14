@@ -41,11 +41,11 @@ def initialise(jupyter_backend):
             # Use trame backend for all Jupyter environments
             pv.global_theme.jupyter_backend = "trame"
 
-        # Configure trame server proxy for remote environments
-        # This enables trame to work through jupyter-server-proxy
+        # Configure trame for remote environments (binder, JupyterHub)
+        # Enable server proxy but let PyVista auto-detect the prefix
         if is_remote:
             pv.global_theme.trame.server_proxy_enabled = True
-            pv.global_theme.trame.server_proxy_prefix = "/proxy/"
+            # Don't set prefix - let PyVista/trame auto-detect from environment
 
     except RuntimeError:
         pv.global_theme.jupyter_backend = "panel"
