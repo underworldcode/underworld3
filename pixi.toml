@@ -153,6 +153,7 @@ trame-vtk = ">=2.8,<3"
 # Jupyter notebooks (ipykernel and pixi-kernel are in base dependencies)
 ipywidgets = ">=8.1,<9"
 jupyterlab = ">=4.3,<5"
+jupyter-server-proxy = ">=4,<5"  # Required for trame backend in remote Jupyter
 
 # ============================================
 # DEV FEATURE (for development)

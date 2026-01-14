@@ -27,13 +27,25 @@ def initialise(jupyter_backend):
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
+    # Check if we're in a remote Jupyter environment (binder, JupyterHub, etc.)
+    is_remote = (
+        "BINDER_LAUNCH_HOST" in os.environ
+        or "BINDER_REPO_URL" in os.environ
+        or "JUPYTERHUB_SERVICE_PREFIX" in os.environ
+    )
+
     try:
         if jupyter_backend is not None:
             pv.global_theme.jupyter_backend = jupyter_backend
-        elif "BINDER_LAUNCH_HOST" in os.environ or "BINDER_REPO_URL" in os.environ:
-            pv.global_theme.jupyter_backend = "client"
         else:
+            # Use trame backend for all Jupyter environments
             pv.global_theme.jupyter_backend = "trame"
+
+        # Configure trame server proxy for remote environments
+        # This enables trame to work through jupyter-server-proxy
+        if is_remote:
+            pv.global_theme.trame.server_proxy_enabled = True
+            pv.global_theme.trame.server_proxy_prefix = "/proxy/"
 
     except RuntimeError:
         pv.global_theme.jupyter_backend = "panel"
