@@ -81,6 +81,34 @@ RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/man
 RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/conda-meta
 
 # =============================================================================
+# ORGANIZE lib directory for split copying (avoid >1GB layers)
+# =============================================================================
+# Total lib is ~2.7GB, split into chunks <800MB each
+
+# Create split directories for lib contents
+RUN mkdir -p /home/jovyan/lib-split/llvm && \
+    mkdir -p /home/jovyan/lib-split/vtk && \
+    mkdir -p /home/jovyan/lib-split/other-large && \
+    mkdir -p /home/jovyan/lib-split/remaining
+
+# Move LLVM libraries (~355MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libLLVM*.so* libclang*.so* /home/jovyan/lib-split/llvm/ 2>/dev/null || true
+
+# Move VTK-related libraries (~300MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libvtk*.so* /home/jovyan/lib-split/vtk/ 2>/dev/null || true && \
+    mv libvisk*.so* /home/jovyan/lib-split/vtk/ 2>/dev/null || true
+
+# Move other large libraries: gmsh, openblas, openvino, Qt (~400MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libgmsh*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libopenblas*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libopenvino*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libQt*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libicu*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true
+
+# =============================================================================
 # Final stage
 # =============================================================================
 FROM ubuntu:24.04
@@ -135,27 +163,58 @@ COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/ru
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/ssl /home/jovyan/underworld3/.pixi/envs/runtime/ssl
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/etc /home/jovyan/underworld3/.pixi/envs/runtime/etc
 
-# Layer 5: Runtime lib - shared libraries (~400MB)
+# =============================================================================
+# SPLIT LIB LAYERS - Each <800MB for reliable binder uploads
+# =============================================================================
+
+# Layer 5a: Python site-packages and subdirectories (~800MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12 /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/gcc /home/jovyan/underworld3/.pixi/envs/runtime/lib/gcc
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/qt6 /home/jovyan/underworld3/.pixi/envs/runtime/lib/qt6
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/dri /home/jovyan/underworld3/.pixi/envs/runtime/lib/dri
+
+# Layer 5b: VTK and openvino directories (~140MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/vtk-9.5 /home/jovyan/underworld3/.pixi/envs/runtime/lib/vtk-9.5
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/openvino-2025.2.0 /home/jovyan/underworld3/.pixi/envs/runtime/lib/openvino-2025.2.0
+
+# Layer 5c: LLVM/Clang libraries moved to split dir (~350MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/llvm /home/jovyan/underworld3/.pixi/envs/runtime/lib/
+
+# Layer 5d: VTK shared libraries moved to split dir (~300MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/vtk /home/jovyan/underworld3/.pixi/envs/runtime/lib/
+
+# Layer 5e: Other large libs (gmsh, openblas, Qt, ICU, openvino) (~400MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/other-large /home/jovyan/underworld3/.pixi/envs/runtime/lib/
+
+# Layer 5f: Remaining lib files (~700MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib /home/jovyan/underworld3/.pixi/envs/runtime/lib
 
-# Layer 5b: Include headers - needed for JIT compilation (~390MB)
+# =============================================================================
+# JIT COMPILATION SUPPORT
+# =============================================================================
+
+# Layer 6a: Include headers - needed for JIT compilation (~390MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/include /home/jovyan/underworld3/.pixi/envs/runtime/include
 
-# Layer 5c: Compiler toolchain - needed for JIT compilation (~267MB)
+# Layer 6b: Compiler toolchain - needed for JIT compilation (~267MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu
 
-# Layer 5d: Compiler internal binaries (cc1, etc.) - needed for JIT compilation
+# Layer 6c: Compiler internal binaries (cc1, etc.) - needed for JIT compilation
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/libexec /home/jovyan/underworld3/.pixi/envs/runtime/libexec
 
-# Layer 6: Underworld3 source code (~100MB)
+# =============================================================================
+# UNDERWORLD3 SOURCE AND DOCS
+# =============================================================================
+
+# Layer 7: Underworld3 source code (~100MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/src /home/jovyan/underworld3/src
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/setup.py /home/jovyan/underworld3/setup.py
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pyproject.toml /home/jovyan/underworld3/pyproject.toml
 
-# Layer 7: Documentation and tutorials (~50MB)
+# Layer 8: Documentation and tutorials (~50MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/docs /home/jovyan/underworld3/docs
 
-# Layer 8: Git repo for updates (~5MB)
+# Layer 9: Git repo for updates (~5MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.git /home/jovyan/underworld3/.git
 
 USER jovyan
