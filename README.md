@@ -21,11 +21,9 @@ development branch
 
 ## Documentation
 
-Start with the online [Documentation](https://underworldcode.github.io/underworld3/development/docs/index.html) for a brief overview of the code.
+The full documentation including tutorials, API reference, and developer guides is available at:
 
-The `underworld3` module (API) documentation can be found online:
-  - [stable version](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html)
-  - [development version](https://underworldcode.github.io/underworld3/development_api/underworld3/index.html)
+  - [Documentation](https://underworld3.readthedocs.io/en/latest/) - tutorials, examples, and API reference
 
 
 
