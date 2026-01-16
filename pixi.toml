@@ -84,6 +84,7 @@ matplotlib = ">=3.10,<4"
 # Jupyter kernel support (needed for pixi-kernel in all environments)
 ipykernel = ">=6.29,<7"
 pixi-kernel = ">=0.7.1,<0.8"
+sphinx-design = ">=0.6.1,<0.7"
 
 [pypi-dependencies]
 gmsh = ">=4.13,<5"

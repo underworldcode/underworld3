@@ -1,0 +1,656 @@
+---
+title: "Mathematical Objects in Underworld3"
+subtitle: "Design Philosophy and Implementation"
+author: "Underworld Development Team"
+date: today
+execute:
+  enabled: false
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    theme: cosmo
+  pdf:
+    documentclass: report
+    geometry: margin=1in
+    toc: true
+    number-sections: true
+---
+
+```{note} Document Overview
+This document details the design philosophy and implementation of Underworld3's mathematical object system, which enables natural mathematical syntax for expressing equations and operations.
+
+**Version**: 2.0 - Updated September 2025
+```
+
+# Overview and Philosophy {#sec-overview}
+
+## The Vision: Mathematics Should Look Like Mathematics
+
+Underworld3's mathematical object system is built on a fundamental principle: **code that represents mathematical equations should look like mathematical equations**. Users should be able to write:
+
+```{python}
+#| eval: false
+
+# Natural mathematical syntax
+momentum = density * velocity
+strain_rate = velocity[0].diff(x) + velocity[1].diff(y)  
+divergence = velocity.div()
+pressure_gradient = pressure.grad()
+```
+
+Rather than the verbose, non-intuitive patterns that were required before:
+
+```{python}
+#| eval: false
+
+# Old verbose syntax (still supported for compatibility)
+momentum = density * velocity.sym
+strain_rate = velocity.sym[0].diff(x) + velocity.sym[1].diff(y)
+divergence = uw.function.derivative(velocity.sym[0], x) + uw.function.derivative(velocity.sym[1], y)
+```
+
+## Design Philosophy Pillars
+
+1. **Mathematical Intuition**: Objects behave like their mathematical counterparts
+2. **Progressive Enhancement**: Existing code continues to work unchanged
+3. **Minimal Cognitive Load**: Reduce the mental overhead of switching between domains
+4. **Consistent API**: All mathematical objects work the same way
+5. **Performance Preservation**: No degradation of computational efficiency
+6. **JIT Compatibility**: Seamless integration with the compilation system
+
+# Core Design Principles {#sec-principles}
+
+## Principle 1: Dual Nature - Computational and Mathematical
+
+Every mathematical object in Underworld3 has a **dual nature**:
+
+- **Computational Identity**: Stores and manages numerical data, mesh information, solver state
+- **Mathematical Identity**: Participates in symbolic expressions, derivatives, algebraic operations
+
+```{python}
+#| eval: false
+
+velocity = MeshVariable("velocity", mesh, 2)
+
+# Computational side - data access and manipulation
+velocity.array[...] = values    # Set numerical data
+velocity.mesh                   # Access mesh information
+velocity.solve(...)            # Participate in solver operations
+
+# Mathematical side - symbolic operations  
+dvdx = velocity.diff(x)         # Take derivatives
+momentum = density * velocity   # Arithmetic operations
+v_magnitude = velocity.norm()   # Vector operations
+```
+
+## Principle 2: Transparent SymPy Integration
+
+Mathematical objects should work seamlessly with SymPy without users needing to understand the integration mechanism:
+
+```{python}
+#| eval: false
+
+# These should all work naturally:
+expr1 = 2 * velocity                    # Right multiplication
+expr2 = velocity + pressure.grad()      # Mixed operations
+expr3 = sympy.sin(velocity.norm())      # SymPy functions
+expr4 = velocity.cross(magnetic_field)  # Vector operations
+```
+
+The implementation uses SymPy's **protocol system** (`_sympify_`, `__getattr__`) to achieve this transparency.
+
+## Principle 3: Lazy vs. Eager Evaluation
+
+The system supports both evaluation strategies:
+
+- **Eager evaluation** (default): Operations computed immediately
+- **Lazy evaluation**: Operations deferred until explicitly requested
+
+```{python}
+#| eval: false
+
+# Eager evaluation
+drho_dx = rho.diff(x)                    # Computed immediately
+
+# Lazy evaluation  
+drho_dx_lazy = rho.diff(x, evaluate=False)  # Computation deferred
+result = drho_dx_lazy.doit()             # Evaluate when needed
+```
+
+## Principle 4: Composability and Chaining
+
+Mathematical operations should chain naturally:
+
+```{python}
+#| eval: false
+
+# Natural chaining for complex expressions
+d2u_dx2 = velocity[0].diff(x).diff(x)
+mixed_partial = temperature.diff(x, evaluate=False).diff(y, evaluate=False)
+complex_expr = (density * velocity).diff(x).norm()
+```
+
+# Mathematical Object Hierarchy {#sec-hierarchy}
+
+## Core Classes
+
+```{mermaid}
+graph TD
+    A[uw_object] --> B[UWexpression]
+    A --> C[_MeshVariable]
+    A --> D[SwarmVariable]
+    B --> E[UWDerivativeExpression]
+    C --> F[MeshVariable]
+    G[MathematicalMixin] --> F
+    G --> D
+    
+    style A fill:#e1f5fe
+    style G fill:#f3e5f5
+    style F fill:#e8f5e8
+    style D fill:#e8f5e8
+```
+
+## UWexpression: The Symbol-Value Bridge
+
+`UWexpression` bridges SymPy symbols with computational values:
+
+```{python}
+#| eval: false
+
+class UWexpression(Symbol):
+    def __init__(self, name, sym=None):
+        # Symbol behavior from SymPy
+        self.symbol = name      # SymPy symbol identity
+        self.sym = sym          # Wrapped value/expression
+    
+    def diff(self, *symbols, **kwargs):
+        # Natural derivative syntax
+        if evaluate := kwargs.get('evaluate', True):
+            return sympy.diff(self.sym, *symbols)
+        else:
+            return UWDerivativeExpression(name, self, symbols[0])
+```
+
+```{important}
+**Key insight**: `UWexpression` IS a SymPy Symbol, but with attached computational meaning.
+```
+
+## MathematicalMixin: Universal Mathematical Behavior
+
+The `MathematicalMixin` provides mathematical behavior to any object with a `.sym` property:
+
+```{python}
+#| eval: false
+
+class MathematicalMixin:
+    def _sympify_(self):
+        """SymPy protocol: tell SymPy how to treat this object"""
+        return self.sym
+    
+    def __mul__(self, other):
+        """Enable: var * 2"""
+        return self.sym * other
+    
+    def __rmul__(self, other):
+        """Enable: 2 * var"""  
+        return other * self.sym
+    
+    def __getitem__(self, index):
+        """Enable: velocity[0] for component access"""
+        return self.sym[index]
+    
+    def __getattr__(self, name):
+        """Delegate all SymPy Matrix methods: var.T, var.dot(), etc."""
+        if hasattr(self.sym, name):
+            return getattr(self.sym, name)
+        raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+    
+    def diff(self, *symbols, **kwargs):
+        """Natural derivative syntax for all variables"""
+        return self.sym.diff(*symbols, **kwargs)
+```
+
+## UWDerivativeExpression: Lazy Derivatives
+
+Represents unevaluated derivatives that can be chained and composed:
+
+```{python}
+#| eval: false
+
+class UWDerivativeExpression(UWexpression):
+    def __init__(self, name, expr, diff_variable):
+        self._sym = expr                # Expression being differentiated
+        self._diff_variable = diff_variable  # Variable to differentiate w.r.t.
+    
+    def doit(self):
+        """Evaluate the deferred derivative"""
+        return uw.function.derivative(self._sym, self._diff_variable)
+    
+    def diff(self, *symbols, **kwargs):
+        """Enable chaining: expr.diff(x, evaluate=False).diff(y)"""
+        if kwargs.get('evaluate', True):
+            return self.doit().diff(*symbols)
+        else:
+            return UWDerivativeExpression(name, self, symbols[0])
+```
+
+# Natural Syntax Implementation {#sec-implementation}
+
+## The _sympify_ Protocol
+
+The foundation of natural syntax is SymPy's `_sympify_` protocol:
+
+```{python}
+#| eval: false
+
+def _sympify_(self):
+    """Called automatically when SymPy encounters this object"""
+    return self.sym
+```
+
+**How it works:**
+
+1. User writes: `2 * velocity`
+2. SymPy sees an unknown object and calls `velocity._sympify_()`
+3. Method returns `velocity.sym` (the SymPy representation)
+4. SymPy computes: `2 * velocity.sym`
+5. Result is a pure SymPy expression
+
+## Explicit Arithmetic Methods
+
+For Python-initiated operations, explicit methods are needed:
+
+```{python}
+#| eval: false
+
+# When Python encounters: velocity * 2
+def __mul__(self, other):
+    return self.sym * other
+
+# When Python encounters: 2 * velocity  
+def __rmul__(self, other):
+    return other * self.sym
+```
+
+## SymPy API Delegation
+
+The `__getattr__` method provides automatic access to all SymPy Matrix methods:
+
+```{python}
+#| eval: false
+
+def __getattr__(self, name):
+    if hasattr(self.sym, name):
+        return getattr(self.sym, name)
+    raise AttributeError(...)
+```
+
+This enables:
+- `velocity.T` → `velocity.sym.T`
+- `velocity.dot(other)` → `velocity.sym.dot(other)`
+- `velocity.norm()` → `velocity.sym.norm()`
+- And hundreds of other SymPy methods automatically!
+
+# Derivative System Architecture {#sec-derivatives}
+
+## The Challenge: Symbol vs. Function Derivatives
+
+SymPy has two different derivative mechanisms:
+
+1. **Symbol derivatives**: `diff(symbol, variable)` → returns 0 or 1
+2. **Function derivatives**: `diff(f(x), x)` → returns `f'(x)` 
+
+UWexpressions are Symbols with wrapped values, so we need custom derivative handling.
+
+## Solution: Override diff() Method
+
+```{python}
+#| eval: false
+
+def diff(self, *symbols, **kwargs):
+    evaluate = kwargs.pop('evaluate', True)
+    
+    if not evaluate:
+        # Create deferred derivative object
+        return UWDerivativeExpression(latex_name, self, symbols[0])
+    
+    if self._sym is not None:
+        # Differentiate the wrapped value, not the symbol
+        result = sympy.diff(self._sym, *symbols, **kwargs)
+        
+        # Unwrap any nested UWexpressions in the result
+        for atom in result.atoms():
+            if isinstance(atom, UWexpression):
+                result = result.subs(atom, atom.sym)
+        
+        return result
+    else:
+        # No wrapped value, behave like regular Symbol
+        return super().diff(*symbols, **kwargs)
+```
+
+## Deferred Derivative Chaining
+
+The power of the deferred system comes from chaining:
+
+```{python}
+#| eval: false
+
+# Each call returns a UWDerivativeExpression
+d2f_dx2 = f.diff(x, evaluate=False).diff(x, evaluate=False)
+mixed = f.diff(x, evaluate=False).diff(y, evaluate=False)
+
+# Evaluate only when needed
+result = mixed.doit()  # or uw.unwrap(mixed)
+```
+
+# Usage Patterns and Examples {#sec-usage}
+
+## Pattern 1: Natural Mathematical Expressions
+
+```{python}
+#| eval: false
+
+# Create variables
+velocity = MeshVariable("velocity", mesh, 2)
+pressure = MeshVariable("pressure", mesh, 1)
+density = uw.function.expression(r'\rho', sym=1000)
+
+# Write equations that look like mathematics
+momentum = density * velocity
+kinetic_energy = 0.5 * density * velocity.dot(velocity)
+pressure_gradient = pressure.grad()
+strain_rate_tensor = 0.5 * (velocity.grad() + velocity.grad().T)
+```
+
+## Pattern 2: Component Access and Derivatives
+
+```{python}
+#| eval: false
+
+# Component access without .sym
+u, v = velocity[0], velocity[1]
+
+# Natural derivative syntax
+dudx = u.diff(x)
+dvdy = v.diff(y)
+divergence = dudx + dvdy
+
+# Mixed partials
+d2u_dxdy = u.diff(x).diff(y)
+```
+
+## Pattern 3: Deferred Derivatives for Complex Expressions
+
+```{python}
+#| eval: false
+
+# Build complex derivative expressions without evaluation
+f = uw.function.expression('f', sym=x**4 * sympy.sin(y))
+
+# Deferred gradient
+grad_f = [f.diff(var, evaluate=False) for var in [x, y]]
+
+# Deferred Hessian  
+hess_f = [[g.diff(var, evaluate=False) for var in [x, y]] for g in grad_f]
+
+# Evaluate only when needed
+hess_11 = hess_f[0][0].doit()  # ∂²f/∂x²
+hess_12 = hess_f[0][1].doit()  # ∂²f/∂x∂y
+```
+
+## Pattern 4: Mixed Computational and Mathematical Operations
+
+```{python}
+#| eval: false
+
+# Set computational data
+velocity.array[...] = computed_velocity_field
+
+# Use in mathematical expressions  
+vorticity = velocity[0].diff(y) - velocity[1].diff(x)
+energy_dissipation = strain_rate_tensor.dot(strain_rate_tensor)
+
+# Project mathematical result back to computational domain
+energy_var = MeshVariable("energy", mesh, 1)
+uw.systems.projection.solve(energy_var, energy_dissipation)
+```
+
+## Pattern 5: Constitutive Models
+
+```{python}
+#| eval: false
+
+# Define material properties as expressions
+youngs_modulus = uw.function.expression('E', sym=70e9)
+poissons_ratio = uw.function.expression(r'\nu', sym=0.3)
+
+# Lame parameters using natural syntax
+mu = youngs_modulus / (2 * (1 + poissons_ratio))
+lam = (youngs_modulus * poissons_ratio) / ((1 + poissons_ratio) * (1 - 2*poissons_ratio))
+
+# Stress tensor using displacement gradient
+displacement = MeshVariable("displacement", mesh, 2)
+strain = 0.5 * (displacement.grad() + displacement.grad().T)
+stress = lam * strain.trace() * sympy.eye(2) + 2 * mu * strain
+```
+
+# JIT Compilation Integration {#sec-jit}
+
+## The Challenge: Maintaining Compilation Compatibility
+
+The JIT compilation system needs to:
+1. Identify SymPy Function atoms in expressions
+2. Map them to PETSc vector components
+3. Generate C code with appropriate substitutions
+
+## The Solution: Transparent SymPy Objects
+
+The mathematical object system preserves JIT compatibility by ensuring all operations return pure SymPy objects:
+
+```{python}
+#| eval: false
+
+# User writes natural syntax
+momentum = density * velocity
+
+# System produces pure SymPy expression
+# momentum = density.sym * velocity.sym
+# momentum = 1000 * Matrix([[V_0(x,y,z)], [V_1(x,y,z)]])
+
+# JIT system sees standard SymPy expression with Function atoms
+atoms = momentum.atoms(sympy.Function)  # Finds V_0, V_1
+# Maps to velocity.fn for PETSc substitution
+```
+
+## Expression Unwrapping
+
+The `unwrap()` function resolves nested expressions before compilation:
+
+```{python}
+#| eval: false
+
+# Expression with nested UWexpressions
+complex_expr = alpha * (temperature - T0) * velocity
+
+# unwrap() substitutes all UWexpression.sym values
+unwrapped = unwrap(complex_expr)
+# Result: 2e-5 * (T(x,y,z) - 293) * Matrix([[V_0(x,y,z)], [V_1(x,y,z)]])
+
+# JIT compilation proceeds normally
+compiled = uw.systems.compile(unwrapped)
+```
+
+# Migration from Legacy Patterns {#sec-migration}
+
+## Automatic Migration Patterns
+
+Most legacy code works unchanged:
+
+```{python}
+#| eval: false
+
+# These patterns continue to work
+old_momentum = density * velocity.sym       # Still valid
+old_divergence = velocity.sym[0].diff(x)    # Still valid
+old_derivative = uw.function.derivative(expr, x)  # Still valid
+
+# But can be simplified to
+new_momentum = density * velocity           # Cleaner
+new_divergence = velocity[0].diff(x)        # Cleaner  
+new_derivative = expr.diff(x)               # Cleaner
+```
+
+## Progressive Enhancement Strategy
+
+Teams can adopt the new syntax gradually:
+
+1. **Phase 1**: Use new syntax for new code, leave existing code unchanged
+2. **Phase 2**: Convert simple expressions during regular maintenance
+3. **Phase 3**: Refactor complex expressions when making significant changes
+
+## Common Migration Patterns
+
+| Legacy Pattern | New Pattern | Notes |
+|----------------|-------------|-------|
+| `var.sym` | `var` | In mathematical contexts |
+| `var.sym[i]` | `var[i]` | Component access |
+| `var.sym.diff(x)` | `var.diff(x)` | Derivatives |
+| `var.sym.T` | `var.T` | Matrix operations |
+| `uw.function.derivative(expr, x)` | `expr.diff(x)` | Natural syntax |
+| `uw.function.derivative(expr, x, evaluate=False)` | `expr.diff(x, evaluate=False)` | Deferred derivatives |
+
+# Developer Guidelines {#sec-guidelines}
+
+## When to Use Each Approach
+
+**Use Natural Syntax for:**
+- New mathematical expressions
+- User-facing APIs
+- Educational examples
+- Research code
+
+**Preserve Legacy Syntax for:**
+- Existing working code
+- Performance-critical sections (until tested)
+- Code with complex expression unwrapping
+
+## Best Practices
+
+### 1. Mathematical Contexts
+```{python}
+#| eval: false
+
+# Good
+stress = 2 * mu * strain + lam * strain.trace() * I
+
+# Avoid
+stress = 2 * mu.sym * strain.sym + lam.sym * strain.sym.trace() * I
+```
+
+### 2. Computational Contexts
+```{python}
+#| eval: false
+
+# Good
+velocity.array[...] = values
+mesh_info = velocity.mesh
+
+# Don't mix
+velocity[...] = values  # This is component access, not data access!
+```
+
+### 3. Display Behavior
+```{python}
+#| eval: false
+
+# Default display shows computational information
+velocity  # Shows mesh info, data shape, etc.
+
+# Mathematical display when explicitly requested
+velocity.sym_repr()  # Shows symbolic mathematical form
+velocity.sym         # Direct SymPy object for LaTeX rendering
+```
+
+## Testing Guidelines
+
+Always test both legacy and new syntax:
+
+```{python}
+#| eval: false
+
+def test_mathematical_operations():
+    # Test both syntaxes produce same result
+    legacy_result = density.sym * velocity.sym
+    natural_result = density * velocity
+    assert legacy_result.equals(natural_result)
+    
+    # Test JIT compatibility
+    compiled_legacy = uw.systems.compile(legacy_result)
+    compiled_natural = uw.systems.compile(natural_result)
+    # Should produce identical compiled code
+```
+
+# Future Extensions {#sec-future}
+
+## Planned Enhancements
+
+### 1. Operator Overloading
+```{python}
+#| eval: false
+
+# Future possibilities
+laplacian = velocity @ nabla**2  # Operator syntax
+curl = nabla × velocity          # Cross product notation
+```
+
+### 2. Units Integration
+```{python}
+#| eval: false
+
+# Future with units
+pressure = uw.function.expression('p', sym=101325, units='Pa')
+velocity = MeshVariable("v", mesh, 2, units='m/s')
+momentum = density * velocity  # Automatic unit checking
+```
+
+### 3. Symbolic Coordinates
+```{python}
+#| eval: false
+
+# Future coordinate system integration
+div_v = velocity.div()           # Automatic coordinate system detection
+curl_v = velocity.curl()         # Cylindrical, spherical coordinates
+```
+
+## Extension Points
+
+The system is designed for extensibility:
+
+1. **Custom Mathematical Objects**: Add new objects by implementing MathematicalMixin
+2. **Domain-Specific Operations**: Add methods via inheritance or composition
+3. **Alternative Backends**: Support other symbolic systems beyond SymPy
+4. **Performance Optimizations**: JIT-compile mathematical operations
+
+# Conclusion {#sec-conclusion}
+
+The mathematical object system in Underworld3 represents a fundamental shift toward natural mathematical expression while preserving computational efficiency and backward compatibility. The key achievements are:
+
+1. **Natural Syntax**: Mathematical code that looks like mathematics
+2. **Seamless Integration**: SymPy compatibility without user complexity  
+3. **Flexible Evaluation**: Both eager and lazy derivative computation
+4. **Backward Compatibility**: Existing code continues to work unchanged
+5. **JIT Compatibility**: No performance degradation in compiled code
+6. **Extensible Design**: Foundation for future mathematical enhancements
+
+This design enables Underworld3 to serve both as a powerful computational engine and an intuitive mathematical modeling environment, bridging the gap between mathematical theory and computational implementation.
+
+---
+
+```{tip} Contributing
+For questions, bug reports, or contributions to the mathematical object system, please see the [Contributing Guidelines](contributing.md) or open an issue on the [Underworld3 repository](https://github.com/underworldcode/underworld3).
+```

@@ -1,0 +1,25 @@
+---
+title: "Coordinate Systems"
+---
+
+# Coordinate Systems
+
+```{note} Documentation In Progress
+Coordinate transformation and spatial reference system documentation.
+```
+
+## Overview
+
+Underworld3 supports multiple coordinate systems for geophysical modeling.
+
+## Coordinate Types
+
+- Cartesian coordinates
+- Cylindrical coordinates  
+- Spherical coordinates
+- Custom transformations
+
+## Related Documentation
+
+- Mesh system for geometric implementation
+- Mathematical operations in different coordinate systems
