@@ -1,4 +1,5 @@
-# ReadTheDocs configuration for Underworld3 API documentation
+# ReadTheDocs configuration for Underworld3 Documentation
+# Builds full documentation: tutorials, developer guides, and API reference
 # Uses pixi for conda-forge PETSc environment
 # See https://docs.readthedocs.com/platform/stable/build-customization.html
 
@@ -18,6 +19,6 @@ build:
       - pixi run -e dev build
     build:
       html:
-        - pixi run -e dev api-docs-build
+        - pixi run -e dev docs-build
         - mkdir -p $READTHEDOCS_OUTPUT/html
-        - cp -r docs/api/_build/html/* $READTHEDOCS_OUTPUT/html/
+        - cp -r docs/_build/html/* $READTHEDOCS_OUTPUT/html/
