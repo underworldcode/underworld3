@@ -1,7 +1,7 @@
 # underworld3
 
 <center>
-<img src="docs/user/media/SocialShareS.png", width=80%>
+<img src="docs/media/SocialShareS.png" width="80%">
 </center>
 
 Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the `Underworld3` code.
