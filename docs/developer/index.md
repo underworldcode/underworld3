@@ -19,7 +19,7 @@ Underworld3 is a Python library for computational geodynamics and geophysical mo
 ## Getting Started
 
 ```{tip} Quick Navigation for Developers
-- **New to UW3?** → Start with [Development Setup](development-setup.md)
+- **New to UW3?** → Start with [Development Setup](guides/development-setup.md)
 - **Understanding the codebase?** → Read [Architecture Overview](UW3_Architecture_and_Documentation_Overview.md)
 - **Working with math expressions?** → See [Mathematical Objects](UW3_Developers_MathematicalObjects.md)
 - **Handling data arrays?** → Check [NDArray System](UW3_Developers_NDArrays.md)
@@ -124,11 +124,11 @@ Feature Branch → Development → Testing → Documentation → Code Review →
 
 | Task | Documentation | Quick Link |
 |------|---------------|------------|
-| Set up development environment | [Development Setup](development-setup.md) | Environment configuration |
+| Set up development environment | [Development Setup](guides/development-setup.md) | Environment configuration |
 | Understand data access patterns | [NDArray System](UW3_Developers_NDArrays.md) | `var.array[...] = values` |
 | Write mathematical expressions | [Mathematical Objects](UW3_Developers_MathematicalObjects.md) | `momentum = density * velocity` |
 | Follow coding standards | [Style Guide](UW3_Style_and_Patterns_Guide.md) | Patterns and conventions |
-| Add new functionality | [Contributing](contributing.md) | Development workflow |
+| Add new functionality | [Contributing](guides/contributing.md) | Development workflow |
 | Debug parallel issues | [MPI Parallelism](advanced/mpi-parallelism.md) | Parallel debugging |
 | Optimize performance | [Performance Guide](guidelines/performance-optimization.md) | Profiling and optimization |
 
@@ -163,9 +163,32 @@ This developer documentation covers Underworld3 version 0.99+. It includes both 
 :hidden:
 :caption: Getting Started
 
-development-setup
-contributing
+guides/development-setup
+guides/contributing
 UW3_Style_and_Patterns_Guide
+```
+
+```{toctree}
+:maxdepth: 2
+:hidden:
+:caption: Guides
+
+guides/HOW-TO-WRITE-UW3-SCRIPTS
+guides/CODE-REVIEW-PROCESS
+guides/SPELLING_CONVENTION
+```
+
+```{toctree}
+:maxdepth: 2
+:hidden:
+:caption: Design Documents
+
+design/UNITS_SIMPLIFIED_DESIGN_2025-11
+design/SYMBOL_DISAMBIGUATION_2025-12
+design/ARCHITECTURE_ANALYSIS
+design/MATHEMATICAL_MIXIN_DESIGN
+design/COORDINATE_MIGRATION_GUIDE
+design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN
 ```
 
 ```{toctree}

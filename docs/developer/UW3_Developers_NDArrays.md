@@ -87,8 +87,7 @@ The system maintains two complementary views of the same underlying data, each o
 
 **User Experience Motivation**: The `array` property provides intuitive tensor shapes that match SymPy expectations, making mathematical operations and tensor manipulation natural and readable.
 
-```{python}
-#| eval: false
+```python
 
 # Array property: (N, a, b) format
 # N = number of nodes/particles
@@ -129,8 +128,7 @@ stress_tensor.data[:, 3]       # Direct access to xy component (Voigt notation)
 
 The array property creates an NDArray_With_Callback instance that automatically synchronizes with PETSc when modified:
 
-```{python}
-#| eval: false
+```python
 
 @property
 def array(self):
@@ -161,8 +159,7 @@ def array(self):
 
 The `synchronised_array_update()` function provides a context for batch operations:
 
-```{python}
-#| eval: false
+```python
 
 def synchronised_array_update(context_info="user operations"):
     """
@@ -186,8 +183,7 @@ def synchronised_array_update(context_info="user operations"):
 
 Swarm proxy variables use lazy evaluation to avoid PETSc field conflicts:
 
-```{python}
-#| eval: false
+```python
 
 class SwarmVariable:
     def _update_proxy_if_stale(self):
@@ -207,8 +203,7 @@ class SwarmVariable:
 
 ## Pattern 1: Single Variable Assignment
 
-```{python}
-#| eval: false
+```python
 
 # OLD PATTERN (deprecated)
 with mesh.access(temperature):
@@ -220,8 +215,7 @@ temperature.array[:, 0, 0] = initial_temp
 
 ## Pattern 2: Multiple Variable Updates
 
-```{python}
-#| eval: false
+```python
 
 # OLD PATTERN (deprecated)
 with mesh.access(velocity, pressure, temperature):
@@ -238,8 +232,7 @@ with uw.synchronised_array_update():
 
 ## Pattern 3: Component Updates
 
-```{python}
-#| eval: false
+```python
 
 # OLD PATTERN (deprecated)
 with mesh.access(velocity):
@@ -254,8 +247,7 @@ with uw.synchronised_array_update():
 
 ## Pattern 4: Reading Values
 
-```{python}
-#| eval: false
+```python
 
 # Array property: (N, 1, 1) shape
 array_values = temperature.array[:, 0, 0]  # Shape: (N,)
@@ -292,8 +284,7 @@ vel_full_data = velocity.data[:, :]         # All components: (N, dim)
 ## Common Pitfalls and Solutions
 
 ```{warning} Array Indexing Error
-```{python}
-#| eval: false
+```python
 
 # WRONG - Missing middle index
 scalar.array[:, 0] = values  
@@ -304,8 +295,7 @@ scalar.array[:, 0, 0] = values
 ```
 
 ```{warning} Vector Component Error
-```{python}
-#| eval: false
+```python
 
 # WRONG - Incorrect index position
 vector.array[:, i] = component_values  
@@ -317,8 +307,7 @@ vector.array[:, 0, i] = component_values
 
 ```{tip} Performance Optimization
 Use synchronised updates even for single variables in tight loops:
-```{python}
-#| eval: false
+```python
 
 with uw.synchronised_array_update():
     for step in range(1000):
@@ -331,8 +320,7 @@ with uw.synchronised_array_update():
 
 ## Unit Test Pattern
 
-```{python}
-#| eval: false
+```python
 
 def test_array_access_pattern():
     mesh = uw.meshing.UnstructuredSimplexBox(...)
@@ -350,8 +338,7 @@ def test_array_access_pattern():
 
 ## Integration Test Pattern
 
-```{python}
-#| eval: false
+```python
 
 def test_multi_variable_sync():
     velocity = MeshVariable("v", mesh, 2, vtype=VECTOR)
@@ -378,8 +365,7 @@ def test_multi_variable_sync():
 
 ```{tip} Migrating Your Code
 **If you have code like this:**
-```{python}
-#| eval: false
+```python
 
 with mesh.access(T, v, p):
     T.data[...] = temperature
@@ -389,8 +375,7 @@ with mesh.access(T, v, p):
 ```
 
 **Change it to:**
-```{python}
-#| eval: false
+```python
 
 with uw.synchronised_array_update():
     T.array[:, 0, 0] = temperature
@@ -445,8 +430,7 @@ MPI barriers in `synchronised_array_update()` ensure:
 
 The NDArray_With_Callback system intercepts NumPy operations:
 
-```{python}
-#| eval: false
+```python
 
 def __setitem__(self, key, value):
     # Capture old value for callback info
@@ -470,8 +454,7 @@ def __setitem__(self, key, value):
 
 The pack/unpack methods handle data format conversion between user-friendly shapes and PETSc's internal format:
 
-```{python}
-#| eval: false
+```python
 
 def pack_to_petsc(self):
     """Pack array data to PETSc vector format."""
@@ -505,8 +488,7 @@ def data(self):
 
 The global delay context ensures parallel safety:
 
-```{python}
-#| eval: false
+```python
 
 class GlobalDelayCallbackContext:
     def __enter__(self):
@@ -550,8 +532,7 @@ NDArray_With_Callback provides global reduction operations that work correctly a
 
 ### Usage Examples
 
-```{python}
-#| eval: false
+```python
 
 # In parallel simulations, each rank has a portion of the mesh
 coords = mesh.X.coords  # NDArray_With_Callback
@@ -576,8 +557,7 @@ rms_value = coords.global_rms()    # Root mean square
 ```{important} Collective Operations
 These methods use MPI collective operations (`allreduce`). **All MPI ranks must call these methods together** - they will hang if only some ranks call them.
 
-```{python}
-#| eval: false
+```python
 
 # WRONG - Only rank 0 calls global_max
 if uw.mpi.rank == 0:
@@ -594,8 +574,7 @@ if uw.mpi.rank == 0:
 
 UnitAwareArray (a subclass of NDArray_With_Callback) extends these methods to preserve physical units:
 
-```{python}
-#| eval: false
+```python
 
 # Mesh with physical units
 mesh.units = "kilometer"
@@ -626,8 +605,7 @@ UnitAwareArray provides two additional methods for statistical analysis:
 ```{warning} Tensor Limitation
 Global reduction methods raise `NotImplementedError` for tensor arrays (ndim > 2). For tensors, use component-wise operations or slice the array first:
 
-```{python}
-#| eval: false
+```python
 
 # For a stress tensor variable
 stress_max = stress.array[:, 0, 0].global_max()  # Max of σ_xx component

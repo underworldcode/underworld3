@@ -35,8 +35,7 @@ This guide documents the established patterns, conventions, and architectural de
 
 ## Import Patterns
 
-```{python}
-#| eval: false
+```python
 
 # Utilities are imported and made available
 from underworld3.utilities import NDArray_With_Callback
@@ -66,8 +65,7 @@ with uw.synchronised_array_update():
 
 Properties should return array-like objects that can trigger updates when modified:
 
-```{python}
-#| eval: false
+```python
 
 class Mesh:
     @property
@@ -89,8 +87,7 @@ class Mesh:
 
 ## Property with Getter/Setter Pattern
 
-```{python}
-#| eval: false
+```python
 
 @property
 def clip_to_mesh(self):
@@ -105,8 +102,7 @@ def clip_to_mesh(self, value):
 
 When properties need to behave like arrays but with additional functionality:
 
-```{python}
-#| eval: false
+```python
 
 # Users should access: mesh.data[...] instead of mesh.data
 # Properties return NDArray_With_Callback for transparent numpy compatibility
@@ -118,8 +114,7 @@ When properties need to behave like arrays but with additional functionality:
 
 Use markdown format with mathematics support:
 
-```{python}
-#| eval: false
+```python
 
 class MyClass:
     """
@@ -167,8 +162,7 @@ class MyClass:
 
 For reactive array data that needs to trigger updates:
 
-```{python}
-#| eval: false
+```python
 
 # Constructor pattern (array data first, like numpy)
 arr = NDArray_With_Callback([1, 2, 3])  # Basic usage
@@ -183,8 +177,7 @@ def callback(array: NDArray_With_Callback, change_info: dict) -> None:
 
 ## Array vs Data Property Shapes
 
-```{python}
-#| eval: false
+```python
 
 # Array property: (N, a, b) format - PREFERRED
 scalar.array.shape      # (N, 1, 1)
@@ -204,8 +197,7 @@ vector.array[:, 0, :] = all_components # Full vector
 
 ## Data Access Patterns
 
-```{python}
-#| eval: false
+```python
 
 # Preferred: Direct array access with proper indexing
 temperature.array[:, 0, 0] = temp_values  # Scalar
@@ -220,8 +212,7 @@ swarm.data += displacement                # Swarm positions
 
 ## Coordinate System Transformations
 
-```{python}
-#| eval: false
+```python
 
 # Reference changes throughout codebase
 # OLD: swarm.particle_coordinates
@@ -236,8 +227,7 @@ swarm.data += displacement                # Swarm positions
 
 For most operations, use direct array access without context managers:
 
-```{python}
-#| eval: false
+```python
 
 # Single variable - no context needed
 temperature.array[:, 0, 0] = initial_values
@@ -255,8 +245,7 @@ with uw.synchronised_array_update():
 
 The old pattern still works but is no longer recommended:
 
-```{python}
-#| eval: false
+```python
 
 # OLD - Still works but deprecated
 with mesh.access(var):
@@ -267,8 +256,7 @@ with mesh.access(var):
 
 For batching operations and MPI synchronization:
 
-```{python}
-#| eval: false
+```python
 
 # Single array
 with arr.delay_callback("batch update"):
@@ -286,8 +274,7 @@ with NDArray_With_Callback.delay_callbacks_global("mesh deformation"):
 
 ## Custom Context Managers
 
-```{python}
-#| eval: false
+```python
 
 def dont_clip_to_mesh(self):
     """Context manager that temporarily disables mesh clipping."""
@@ -311,8 +298,7 @@ def dont_clip_to_mesh(self):
 
 ## MPI Integration
 
-```{python}
-#| eval: false
+```python
 
 # Safe MPI import pattern
 try:
@@ -346,8 +332,7 @@ if _has_uw_mpi:
 
 ## Callback Registration Patterns
 
-```{python}
-#| eval: false
+```python
 
 # Multiple callback support
 arr.set_callback(callback)          # Replace existing
@@ -362,8 +347,7 @@ arr.enable_callbacks()              # Re-enable
 
 ## Error Handling in Callbacks
 
-```{python}
-#| eval: false
+```python
 
 for callback in self._callbacks.copy():
     try:
@@ -375,8 +359,7 @@ for callback in self._callbacks.copy():
 
 ## Owner Pattern
 
-```{python}
-#| eval: false
+```python
 
 # Weak reference to owner
 self._owner = weakref.ref(owner) if owner is not None else None
@@ -391,8 +374,7 @@ def owner(self):
 
 ## Test Structure
 
-```{python}
-#| eval: false
+```python
 
 def test_feature_name(setup_data):
     # Arrange
@@ -409,8 +391,7 @@ def test_feature_name(setup_data):
 
 ## Callback Testing
 
-```{python}
-#| eval: false
+```python
 
 def test_callback_triggering():
     execution_log = []

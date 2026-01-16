@@ -142,9 +142,6 @@ exclude_patterns = [
     'docstrings/**',
     # Skip examples (not needed for main docs)
     'examples/**',
-    # Skip developer docs for now (contain raw notes, design docs with markdown issues)
-    # Can be re-enabled once properly cleaned up
-    'developer/**',
 ]
 
 # =============================================================================
