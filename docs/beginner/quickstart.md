@@ -99,7 +99,7 @@ In a more general case, we need to account to horizontal motions. This is more c
 
 ```{raw} html
 <center>
-<iframe src="media/pyvista/ChannelFlow.html" width="600" height="300">
+<iframe src="../pyvista/ChannelFlow.html" width="600" height="300">
 </iframe>
 </center>
 ```
@@ -114,7 +114,7 @@ It is also possible to use the PETSc mesh adaption capabilities, to refine the r
 
 ```{raw} html
 <center>
-<iframe src="media/pyvista/AdaptedSphere.html" width="600" height="500">
+<iframe src="../pyvista/AdaptedSphere.html" width="600" height="500">
 </iframe>
 </center>
 ```

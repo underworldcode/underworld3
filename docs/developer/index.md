@@ -214,6 +214,7 @@ subsystems/constitutive-models
 subsystems/swarm-system
 subsystems/data-access
 subsystems/expressions-functions
+subsystems/containers
 ```
 
 ```{toctree}

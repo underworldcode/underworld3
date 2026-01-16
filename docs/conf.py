@@ -84,6 +84,7 @@ intersphinx_mapping = {
 # =============================================================================
 html_theme = 'furo'
 html_static_path = ['_static']
+html_extra_path = ['media']  # Copy media folder (including pyvista HTML embeds) to build root
 html_title = "Underworld3"
 html_logo = "assets/MansoursNightmare.png"
 
