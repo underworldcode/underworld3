@@ -186,8 +186,8 @@ sphinx-math-dollar = "*"
 [feature.dev.tasks]
 install-claude = "npm install -g @anthropic-ai/claude-code"
 claude = "claude"
-docs-build = { cmd = "quarto render", cwd = "docs", env = { QUARTO_PYTHON = "python" } }
-api-docs-build = { cmd = "python -m sphinx -b html docs/api docs/api/_build/html", env = { QUARTO_PYTHON = "python" } }
+docs-build = { cmd = "python -m sphinx -b html docs docs/_build/html", description = "Build documentation with Sphinx" }
+api-docs-build = { cmd = "python -m sphinx -b html docs/api docs/api/_build/html" }
 api-docs-clean = { cmd = "rm -rf docs/api/_build" }
 docs-audit = { cmd = "python scripts/docs_audit.py", description = "Audit API documentation coverage" }
 

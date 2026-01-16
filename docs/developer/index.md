@@ -174,6 +174,7 @@ UW3_Style_and_Patterns_Guide
 :caption: Guides
 
 guides/HOW-TO-WRITE-UW3-SCRIPTS
+guides/notebook-style-guide
 guides/CODE-REVIEW-PROCESS
 guides/SPELLING_CONVENTION
 ```

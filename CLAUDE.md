@@ -7,12 +7,15 @@
 
 ## Documentation Requests
 
+**IMPORTANT**: All documentation MUST go in `docs/` directory structure - never create loose markdown files elsewhere in the repository.
+
 **When asked to document a feature** (units system, meshing, templates, MeshVariables, mathematical objects, NDArray_with_callback, etc.):
 
 1. **Location**: Add documentation to `docs/developer/` in appropriate subdirectory:
    - `subsystems/` - Core system documentation (meshing, solvers, swarms, etc.)
    - `design/` - Architecture and design decisions
-   - `guidelines/` - Coding patterns and best practices
+   - `guides/` - How-to guides and best practices
+   - **NEVER** create documentation files outside `docs/`
 
 2. **Format**: Use MyST Markdown (`.md` files) compatible with Sphinx:
    - Standard markdown with MyST extensions
@@ -25,13 +28,18 @@
    - Include practical code examples
    - Link to related documentation where appropriate
    - Focus on "why" and "how to use", not just "what"
+   - Follow the notebook style guide for tutorials
 
 4. **Integration**: Link into the documentation system
    - Add to appropriate toctree in parent `index.md`
    - Cross-reference related docs with `:doc:` or relative links
-   - Build and verify: `sphinx-build -b html docs docs/_build/html`
+   - Build and verify: `pixi run docs-build`
 
-**Current status**: The `developer/` directory is excluded from builds pending cleanup of markdown formatting issues. Re-enable in `docs/conf.py` after cleanup.
+**Current status**: Developer documentation builds with Sphinx. Run `pixi run docs-build` to build.
+
+**Style references**:
+- Notebook writing: @docs/developer/guides/notebook-style-guide.md
+- Code patterns: @docs/developer/UW3_Style_and_Patterns_Guide.md
 
 ---
 
