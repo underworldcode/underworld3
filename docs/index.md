@@ -50,6 +50,8 @@ Master parallel computing, optimization, and complex physics for research-grade 
 ```
 
 ```{grid-item-card} Developer Guide
+:link: developer/index
+:link-type: doc
 
 **For contributors**
 
@@ -61,7 +63,7 @@ Understand the architecture, implementation details, and contribute to Underworl
 - Contribute effectively
 
 +++
-*Documentation in progress*
+[Developer Documentation](developer/index.md)
 ```
 
 ````
@@ -166,5 +168,6 @@ Launch interactive tutorials directly in your browser:
 
 beginner/index
 advanced/index
+developer/index
 api/index
 ```
