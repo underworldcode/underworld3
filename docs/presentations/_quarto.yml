@@ -10,7 +10,7 @@ format:
     code-links:
       - text: Open in Binder
         icon: rocket-takeoff
-        href: https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb
+        href: https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/uw3-release-candidate?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb
     other-links:
       - text: Github Repository
         icon: github

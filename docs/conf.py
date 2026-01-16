@@ -85,6 +85,7 @@ intersphinx_mapping = {
 html_theme = 'furo'
 html_static_path = ['_static']
 html_title = "Underworld3"
+html_logo = "assets/MansoursNightmare.png"
 
 html_theme_options = {
     "light_css_variables": {

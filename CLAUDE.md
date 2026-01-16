@@ -7,35 +7,41 @@
 
 ## Documentation Requests
 
-**IMPORTANT**: All documentation MUST go in `docs/` directory structure - never create loose markdown files elsewhere in the repository.
+**⚠️ MANDATORY - READ BEFORE WRITING ANY DOCUMENTATION ⚠️**
 
-**When asked to document a feature** (units system, meshing, templates, MeshVariables, mathematical objects, NDArray_with_callback, etc.):
+- **ALL documentation MUST go in `docs/` directory** - NO exceptions
+- **NEVER create .md files in the repository root, src/, tests/, or anywhere else**
+- **NEVER create planning/design documents outside `docs/developer/design/`**
+- If you're tempted to create a file like `SOME-FEATURE-NOTES.md` in the repo root - **DON'T**. Put it in `docs/developer/` instead.
+- This applies to: design docs, how-to guides, technical notes, implementation plans, reviews, audits - EVERYTHING goes in `docs/`
 
-1. **Location**: Add documentation to `docs/developer/` in appropriate subdirectory:
-   - `subsystems/` - Core system documentation (meshing, solvers, swarms, etc.)
-   - `design/` - Architecture and design decisions
-   - `guides/` - How-to guides and best practices
-   - **NEVER** create documentation files outside `docs/`
+**Where to put documentation:**
 
-2. **Format**: Use MyST Markdown (`.md` files) compatible with Sphinx:
-   - Standard markdown with MyST extensions
-   - Use ```` ```python ```` for code blocks (not `{python}`)
-   - Use `{note}`, `{warning}`, `{tip}` for admonitions
-   - Math: `$inline$` and `$$display$$`
+| Content Type | Location |
+|--------------|----------|
+| System documentation (meshing, solvers, swarms) | `docs/developer/subsystems/` |
+| Architecture and design decisions | `docs/developer/design/` |
+| How-to guides and best practices | `docs/developer/guides/` |
+| User tutorials | `docs/beginner/tutorials/` |
+| Advanced user guides | `docs/advanced/` |
 
-3. **Style**: Concise, helpful, standalone
-   - Self-contained explanations (don't assume reader has context)
-   - Include practical code examples
-   - Link to related documentation where appropriate
-   - Focus on "why" and "how to use", not just "what"
-   - Follow the notebook style guide for tutorials
+**Format** - Use MyST Markdown (`.md` files) compatible with Sphinx:
+- Standard markdown with MyST extensions
+- Use ```` ```python ```` for code blocks (not `{python}`)
+- Use `{note}`, `{warning}`, `{tip}` for admonitions
+- Math: `$inline$` and `$$display$$`
 
-4. **Integration**: Link into the documentation system
-   - Add to appropriate toctree in parent `index.md`
-   - Cross-reference related docs with `:doc:` or relative links
-   - Build and verify: `pixi run docs-build`
+**Style** - Concise, helpful, standalone:
+- Self-contained explanations (don't assume reader has context)
+- Include practical code examples
+- Link to related documentation where appropriate
+- Focus on "why" and "how to use", not just "what"
+- Follow the notebook style guide for tutorials
 
-**Current status**: Developer documentation builds with Sphinx. Run `pixi run docs-build` to build.
+**Integration** - Link into the documentation system:
+- Add to appropriate toctree in parent `index.md`
+- Cross-reference related docs with `:doc:` or relative links
+- Build and verify: `pixi run docs-build`
 
 **Style references**:
 - Notebook writing: @docs/developer/guides/notebook-style-guide.md

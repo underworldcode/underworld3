@@ -8,6 +8,12 @@ title: "Underworld3 Documentation"
 
 Underworld3 is a Python library for computational geodynamics, providing finite element modeling for Earth science research.
 
+```{image} media/SocialShareS.png
+:alt: Underworld3 visualization examples
+:width: 100%
+:align: center
+```
+
 ````{grid} 1 1 2 3
 :gutter: 3
 
@@ -152,7 +158,7 @@ Underworld3 is a Python library for computational geodynamics, built on:
 
 Launch interactive tutorials directly in your browser:
 
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb)
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/uw3-release-candidate?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb)
 
 ```{toctree}
 :maxdepth: 2
