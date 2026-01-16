@@ -1,4 +1,4 @@
-name: Build and Push Binder Image
+name: "GHCR: Binder Base Image"
 
 # Builds the Underworld3 binder-ready Docker image and pushes to GHCR
 # The image is used by mybinder.org via the uw3-binder-launcher repository
