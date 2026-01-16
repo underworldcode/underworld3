@@ -1,7 +1,37 @@
 # Underworld3 AI Assistant Context
 
-> **Note**: Human-readable developer documentation is in `docs/developer/` (Quarto format).
+> **Note**: Human-readable developer documentation is in `docs/developer/` (Sphinx/MyST format).
 > For development history and completed migrations, see @docs/developer/historical-notes.md
+
+---
+
+## Documentation Requests
+
+**When asked to document a feature** (units system, meshing, templates, MeshVariables, mathematical objects, NDArray_with_callback, etc.):
+
+1. **Location**: Add documentation to `docs/developer/` in appropriate subdirectory:
+   - `subsystems/` - Core system documentation (meshing, solvers, swarms, etc.)
+   - `design/` - Architecture and design decisions
+   - `guidelines/` - Coding patterns and best practices
+
+2. **Format**: Use MyST Markdown (`.md` files) compatible with Sphinx:
+   - Standard markdown with MyST extensions
+   - Use ```` ```python ```` for code blocks (not `{python}`)
+   - Use `{note}`, `{warning}`, `{tip}` for admonitions
+   - Math: `$inline$` and `$$display$$`
+
+3. **Style**: Concise, helpful, standalone
+   - Self-contained explanations (don't assume reader has context)
+   - Include practical code examples
+   - Link to related documentation where appropriate
+   - Focus on "why" and "how to use", not just "what"
+
+4. **Integration**: Link into the documentation system
+   - Add to appropriate toctree in parent `index.md`
+   - Cross-reference related docs with `:doc:` or relative links
+   - Build and verify: `sphinx-build -b html docs docs/_build/html`
+
+**Current status**: The `developer/` directory is excluded from builds pending cleanup of markdown formatting issues. Re-enable in `docs/conf.py` after cleanup.
 
 ---
 
