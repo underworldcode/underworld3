@@ -1,17 +1,70 @@
-# Binder Container Files
+# Container Files
 
-This directory contains Dockerfiles for building the **mybinder.org** base image. These are separate from the command-line Docker setup in `docs/developer/container/`.
+This directory contains all Dockerfiles for Underworld3, supporting two use cases:
 
-## Files
+1. **Command-line containers** - For users who want to run UW3 locally without installation
+2. **Binder containers** - For mybinder.org web-based launches
+
+## Command-Line Container (Containerfile)
+
+Lightweight container for local command-line use with Docker or Podman.
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile.base.optimized` | **Primary** - Optimized slim image for binder (~3.4GB) |
-| `Dockerfile.base` | Full image with dev tools (~8.3GB) |
-| `Dockerfile.deps` | Dependencies-only layer (for two-stage builds) |
-| `Dockerfile.branch` | Branch-specific layer (for two-stage builds) |
+| `Containerfile` | Micromamba-based image for local use |
+| `launch-container.sh` | Podman launch script with rootless support |
 
-## Architecture
+### Building
+
+```bash
+# From repository root (requires Docker or Podman)
+podman build . --rm \
+    --format docker \
+    -f ./container/Containerfile \
+    -t underworldcode/underworld3:local
+
+# Or with Docker
+docker build -f container/Containerfile -t underworldcode/underworld3:local .
+```
+
+### Running
+
+```bash
+# Using the launch script (Podman, recommended)
+./container/launch-container.sh
+
+# Or manually with Docker
+docker run -it --rm -p 8888:8888 underworldcode/underworld3:local
+```
+
+The launch script:
+- Maps `$HOME/uw_space` into the container for file transfer
+- Runs Jupyter on port 10000 (http://localhost:10000)
+- Handles rootless Podman UID/GID mapping
+
+### Architecture
+
+At present only amd64 architecture is built, because vtk-osmesa isn't available for arm by default.
+
+Useful links:
+- [Container stacks with Podman](https://jupyter-docker-stacks.readthedocs.io/en/latest/using/running.html#using-the-podman-cli)
+- [Micromamba images](https://micromamba-docker.readthedocs.io/en/latest/quick_start.html#quick-start)
+- [PyVista containers](https://github.com/pyvista/pyvista/tree/main/docker)
+
+---
+
+## Binder Container (Dockerfile.base.optimized)
+
+Full-featured container optimized for mybinder.org launches.
+
+| File | Purpose |
+|------|---------|
+| `Dockerfile.base.optimized` | **Primary** - Optimized slim image (~3.4GB) |
+| `Dockerfile.base` | Full image with dev tools (~8.3GB) |
+| `Dockerfile.deps` | Dependencies-only layer (two-stage builds) |
+| `Dockerfile.branch` | Branch-specific layer (two-stage builds) |
+
+### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -42,7 +95,7 @@ This directory contains Dockerfiles for building the **mybinder.org** base image
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Building Locally
+### Building Locally
 
 ```bash
 # From repository root
@@ -54,11 +107,11 @@ docker build --platform linux/amd64 \
 docker run --rm -p 8888:8888 ghcr.io/underworldcode/uw3-base:test-slim
 ```
 
-## Layer Size Constraints
+### Layer Size Constraints
 
 mybinder.org has an ~1GB layer size limit. The optimized Dockerfile splits the `lib` directory into multiple layers to stay under this limit. See `docs/developer/BINDER_CONTAINER_SETUP.md` for details.
 
-## GitHub Actions
+### GitHub Actions
 
 The `binder-image.yml` workflow automatically builds and pushes images when:
 - `container/Dockerfile.base.optimized` changes
@@ -68,9 +121,21 @@ The `binder-image.yml` workflow automatically builds and pushes images when:
 
 It also triggers the launcher repo to update its image reference.
 
+---
+
+## Comparison
+
+| Aspect | Command-Line | Binder |
+|--------|--------------|--------|
+| **File** | `Containerfile` | `Dockerfile.base.optimized` |
+| **Base** | micromamba | Ubuntu + Pixi |
+| **Size** | ~2GB | ~3.4GB (slim) |
+| **Registry** | DockerHub | GHCR |
+| **Use case** | Local `docker run` | mybinder.org |
+| **Workflow** | `docker-image.yml` | `binder-image.yml` |
+
 ## Related
 
 - **Binder setup docs**: `docs/developer/BINDER_CONTAINER_SETUP.md`
 - **Launcher repo**: https://github.com/underworldcode/uw3-binder-launcher
-- **Command-line Docker**: `docs/developer/container/` (separate from binder)
 - **Badge generator**: `scripts/binder_wizard.py`
