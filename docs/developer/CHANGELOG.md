@@ -4,6 +4,32 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ---
 
+## 2026 Q1 (January – March)
+
+### Binder/Docker CI Automation (January 2026)
+
+**Automated container build pipeline**: Implemented full GitHub Actions automation for Docker image builds and mybinder.org integration.
+
+- **Binder images** (`binder-image.yml`): Builds to GHCR on push to main/uw3-release-candidate/development
+  - Triggers on Dockerfile, pixi.toml, Cython, or setup.py changes
+  - Pushes to `ghcr.io/underworldcode/uw3-base:<branch>-slim`
+  - Cross-repo dispatch updates launcher repository automatically
+
+- **Command-line images** (`docker-image.yml`): Separate workflow for DockerHub (micromamba-based)
+
+- **Launcher auto-update**: `uw3-binder-launcher` receives `repository_dispatch` events and updates its Dockerfile reference automatically
+
+- **Container consolidation**: All container files now in `container/` directory with comprehensive README
+
+**Key infrastructure**:
+- `LAUNCHER_PAT` secret enables cross-repo communication
+- Branch-specific image tags enable testing different versions
+- nbgitpuller allows any repository to use pre-built images
+
+**Documentation**: `docs/developer/subsystems/containers.md` — comprehensive guide covering both binder and command-line container strategies.
+
+---
+
 ## 2025 Q4 (October – December)
 
 ### Symbol Disambiguation (December 2025)
