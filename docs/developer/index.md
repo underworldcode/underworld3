@@ -3,7 +3,7 @@ title: "Underworld3 Developer Documentation"
 subtitle: "Complete Guide to Architecture, Implementation, and Development"
 ---
 
-# Welcome to Underworld3 Developer Documentation
+# Developer Documentation
 
 This comprehensive documentation provides everything you need to understand, contribute to, and extend the Underworld3 computational geodynamics framework.
 

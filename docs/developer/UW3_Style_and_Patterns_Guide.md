@@ -24,7 +24,7 @@ format:
 This guide documents the established patterns, conventions, and architectural decisions for Underworld3 development. It serves as a reference for maintaining consistency across the codebase.
 ```
 
-# Code Organization {#sec-organization}
+# Code Organization
 
 ## Directory Structure
 
@@ -59,7 +59,7 @@ with uw.synchronised_array_update():
 - **Public properties**: No prefix, use descriptive names (e.g., `data`, `clip_to_mesh`)
 - **Context managers**: Use descriptive names (e.g., `delay_callback`, `dont_clip_to_mesh`)
 
-# Property Patterns {#sec-properties}
+# Property Patterns
 
 ## Reactive Data Properties
 
@@ -108,7 +108,7 @@ When properties need to behave like arrays but with additional functionality:
 # Properties return NDArray_With_Callback for transparent numpy compatibility
 ```
 
-# Documentation Style {#sec-documentation}
+# Documentation Style
 
 ## Markdown Docstrings for pdoc/pdoc3
 
@@ -156,7 +156,7 @@ class MyClass:
 - Use tables for parameter documentation
 - Include performance considerations
 
-# Array and Data Management {#sec-arrays}
+# Array and Data Management
 
 ## NDArray_With_Callback Pattern
 
@@ -221,7 +221,7 @@ swarm.data += displacement                # Swarm positions
 # NEW: mesh._deform_mesh
 ```
 
-# Context Managers {#sec-context}
+# Context Managers
 
 ## Direct Array Access Pattern (Preferred)
 
@@ -294,7 +294,7 @@ def dont_clip_to_mesh(self):
     return _ClipToggleContext(self)
 ```
 
-# MPI and Parallel Patterns {#sec-mpi}
+# MPI and Parallel Patterns
 
 ## MPI Integration
 
@@ -328,7 +328,7 @@ if _has_uw_mpi:
 - Implement proper locking for shared resources
 - Use weak references to prevent circular dependencies
 
-# Callback and Event Systems {#sec-callbacks}
+# Callback and Event Systems
 
 ## Callback Registration Patterns
 
@@ -370,7 +370,7 @@ def owner(self):
     return self._owner() if self._owner is not None else None
 ```
 
-# Testing Patterns {#sec-testing}
+# Testing Patterns
 
 ## Test Structure
 
@@ -408,7 +408,7 @@ def test_callback_triggering():
     assert "setitem at 0" in execution_log[0]
 ```
 
-# File and Directory Conventions {#sec-files}
+# File and Directory Conventions
 
 ## New Utility Files
 
@@ -428,7 +428,7 @@ def test_callback_triggering():
 - **Naming**: `test_NNNN_description.py`
 - Use fixtures for setup/teardown
 
-# Performance Considerations {#sec-performance}
+# Performance Considerations
 
 ## Callback Performance
 
@@ -449,7 +449,7 @@ def test_callback_triggering():
 - Minimize barrier frequency
 - Use appropriate synchronization points
 
-# Common Patterns Summary {#sec-summary}
+# Common Patterns Summary
 
 ## Essential Patterns
 

@@ -24,7 +24,7 @@ format:
 This document describes the NDArray_With_Callback system implementation, the migration from legacy access patterns, and guidelines for developers working with Underworld3 data structures.
 ```
 
-# Executive Summary {#sec-summary}
+# Executive Summary
 
 ## The Challenge
 
@@ -49,7 +49,7 @@ This document describes the NDArray_With_Callback system implementation, the mig
 ✅ **Preserved solver stability**: No changes to benchmarked solvers  
 ✅ **Smooth migration path**: Both patterns work during transition
 
-# Architecture Deep Dive {#sec-architecture}
+# Architecture Deep Dive
 
 ## Core Design Principles
 
@@ -122,7 +122,7 @@ stress_tensor.data[:, 0]       # Direct access to xx component
 stress_tensor.data[:, 3]       # Direct access to xy component (Voigt notation)
 ```
 
-# Implementation Details {#sec-implementation}
+# Implementation Details
 
 ## NDArray_With_Callback Factory
 
@@ -199,7 +199,7 @@ class SwarmVariable:
         return self._symbolic_representation
 ```
 
-# Migration Patterns {#sec-migration}
+# Migration Patterns
 
 ## Pattern 1: Single Variable Assignment
 
@@ -266,7 +266,7 @@ vel_x_data = velocity.data[:, 0]            # X-component: (N,)
 vel_full_data = velocity.data[:, :]         # All components: (N, dim)
 ```
 
-# Developer Guidelines {#sec-guidelines}
+# Developer Guidelines
 
 ## When to Use Each Access Method
 
@@ -316,7 +316,7 @@ with uw.synchronised_array_update():
 ```
 ```
 
-# Testing Strategy {#sec-testing}
+# Testing Strategy
 
 ## Unit Test Pattern
 
@@ -352,7 +352,7 @@ def test_multi_variable_sync():
     assert verify_coupling(velocity, pressure)
 ```
 
-# User Communication Strategy {#sec-communication}
+# User Communication Strategy
 
 ## Documentation Updates
 
@@ -394,7 +394,7 @@ with uw.synchronised_array_update():
 - **Phase 4** (v4.0): Consider removing legacy patterns (if community ready)
 ```
 
-# Performance Impact {#sec-performance}
+# Performance Impact
 
 ## Benchmarks
 
@@ -424,7 +424,7 @@ MPI barriers in `synchronised_array_update()` ensure:
 - Callbacks fire in coordinated fashion
 - Clean exit across all ranks
 
-# Technical Deep Dives {#sec-technical}
+# Technical Deep Dives
 
 ## How Callbacks Work
 
@@ -512,7 +512,7 @@ class GlobalDelayCallbackContext:
             callback()
 ```
 
-# Global Reduction Operations {#sec-global-reductions}
+# Global Reduction Operations
 
 ## MPI-Aware Reduction Methods
 
@@ -613,7 +613,7 @@ stress_mean = stress.array.mean(axis=0).global_mean()  # Mean by component
 ```
 ```
 
-# Future Roadmap {#sec-future}
+# Future Roadmap
 
 ## Potential Enhancements
 
@@ -629,7 +629,7 @@ stress_mean = stress.array.mean(axis=0).global_mean()  # Mean by component
 - **JIT compilation**: Numba/JAX acceleration for callbacks
 - **Distributed arrays**: Better support for domain decomposition
 
-# Appendices {#sec-appendices}
+# Appendices
 
 ## A. Complete Migration Checklist
 

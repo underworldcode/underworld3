@@ -13,12 +13,11 @@ exports:
 
 The expressions for our anisotropic tensors are provided in a canonical reference frame which exploits the symmetry of the material to present the most compact form of the constitutive tensors. 
 
-::: {#fig-material-symm} 
+```{figure} https://d32ogoqmya1dw8.cloudfront.net/images/NAGTWorkshops/mineralogy/mineral_physics/table_9.v13.png
+:name: fig-material-symm
 
-![](https://d32ogoqmya1dw8.cloudfront.net/images/NAGTWorkshops/mineralogy/mineral_physics/table_9.v13.png)
-
-Symmetries in constitutive models [(LINK)](https://serc.carleton.edu/NAGTWorkshops/mineralogy/mineral_physics/tensors.html) from Pamela Burnley, University of Nevada Las Vegas and based on @nyePhysicalPropertiesCrystals1984. 
-:::
+Symmetries in constitutive models ([source](https://serc.carleton.edu/NAGTWorkshops/mineralogy/mineral_physics/tensors.html)) from Pamela Burnley, University of Nevada Las Vegas, based on Nye (1984) *Physical Properties of Crystals*.
+```
 
 This [wikipedia article](https://en.wikipedia.org/wiki/Elasticity_tensor) should also be helpful.
 
@@ -56,7 +55,9 @@ First we define the rotation for the transversely isotropic case which depends o
 A rotation matrix for a transversely isotropic medium is defined by specifying the normal of the symmetry plane ($\hat{\mathbf{n}} = \{ n_0, n_1, n_2\} $). 
 The other orientations are arbitrary, so we simply derive them from $\hat{\mathbf{n}}$ - one vector specified to be perpendicular in the horizontal plane and the third vector is then found from their cross product ($\hat{\mathbf{s}}$ and $\hat{\mathbf{t}}$ respectively)
 
-::: {.callout-tip collapse="true" title="Underworld python script"} 
+````{dropdown} Underworld python script
+:icon: light-bulb
+:color: success 
 
 ```python
 import underworld3 as uw
@@ -81,7 +82,7 @@ else:
 
 display(R)
 ```
-:::
+````
 
 $$\cal{R} = \left[\begin{matrix}\frac{n_{1}}{\sqrt{n_{0}^{2} + n_{1}^{2}}} & - \frac{n_{0} n_{2}}{\sqrt{n_{0}^{2} + n_{1}^{2}}} & n_{0}\\- \frac{n_{0}}{\sqrt{n_{0}^{2} + n_{1}^{2}}} & - \frac{n_{1} n_{2}}{\sqrt{n_{0}^{2} + n_{1}^{2}}} & n_{1}\\0 & \frac{n_{0}^{2}}{\sqrt{n_{0}^{2} + n_{1}^{2}}} + \frac{n_{1}^{2}}{\sqrt{n_{0}^{2} + n_{1}^{2}}} & n_{2}\end{matrix}\right]$$
 
@@ -102,7 +103,9 @@ $$C_{I'J'} = \left[\begin{matrix}\frac{2 \eta_{0} \left(n_{0}^{2} n_{2}^{2} + n_
 
 However, $\{n_0, n_1, n_2\}$ are not independent because $\hat{\mathbf{n}}$ is a unit vector. If we add this information and simplify, we recover the isotropic form of $C$
 
-::: {.callout-tip collapse="true" title="Underworld python script"} 
+````{dropdown} Underworld python script
+:icon: light-bulb
+:color: success 
 
 ```python
 
@@ -129,7 +132,7 @@ C_IJm_R_s2 = C_IJm_R_s1.subs(n[0]**2+n[1]**2, 1-n[2]**2).applyfunc(sympy.factor)
 
 display(C_IJm_R_s2.subs(n[0]**2+n[1]**2, 1-n[2]**2).simplify())
 ```
-:::
+````
 
 ## Muhlhaus / Moresi transversely isotropic tensor
 
@@ -149,7 +152,9 @@ $$\left[\begin{matrix}- \frac{4 \Delta\eta n_{0}^{2} \left(n_{0}^{2} n_{2}^{2} +
 and we can easily demonstrate that this collapses back to the isotropic form if $\Delta\eta \leftarrow 0$. We can also show this is equivalent to the alternate expression for the tensor provided in the original papers (an exercise for the reader !!).
 
 
-::: {.callout-tip collapse="true" title="Underworld python script"} 
+````{dropdown} Underworld python script
+:icon: light-bulb
+:color: success 
 
 ```python
 # Muhlhaus definition of C_IJ (mandel form)
@@ -183,7 +188,7 @@ display(C_IJm_MM_R)
 C_IJm_MM_iso = C_IJm_MM_R.subs(delta_eta,0).applyfunc(sympy.factor).subs(n[0]**2+n[1]**2, 1-n[2]**2).simplify()
 display(C_IJm_MM_iso)
 ```
-:::
+````
 
 ## Han & Wahr, 1997 (full transverse isotropic tensor)
 
@@ -199,7 +204,9 @@ $$\left[\begin{matrix}\frac{2 \Delta\eta n_{0}^{4} n_{2}^{4} - 2 \Delta\eta n_{0
 
 The `underworld` / `sympy` implementation follows:
 
-::: {.callout-tip collapse="true" title="Underworld python script"} 
+````{dropdown} Underworld python script
+:icon: light-bulb
+:color: success 
 
 ```python
 ## The full incompressible, trans-iso model (4 independent unknowns) 
@@ -238,7 +245,7 @@ display(C_IJm_HW_R_s2)
 
 ## Perhaps that's not so helpful
 ```
-:::
+````
 
 ## Orthotropic medium
 
@@ -267,7 +274,9 @@ $$
 
 The python code for this is:
 
-::: {.callout-tip collapse="true" title="Underworld python script"} 
+````{dropdown} Underworld python script
+:icon: light-bulb
+:color: success 
 
 ```python
 ## I can't see much benefit in expanding the full orthorhombic model
@@ -349,4 +358,4 @@ uw.maths.tensor.rank4_to_mandel(C_ijkl_BC_R, 3)
 
 # print(sympy.latex(uw.maths.tensor.rank4_to_mandel(C_ijkl_BC_R, 3)))
 ```
-:::
+````

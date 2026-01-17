@@ -26,7 +26,7 @@ This document details the design philosophy and implementation of Underworld3's 
 **Version**: 2.0 - Updated September 2025
 ```
 
-# Overview and Philosophy {#sec-overview}
+# Overview and Philosophy
 
 ## The Vision: Mathematics Should Look Like Mathematics
 
@@ -60,7 +60,7 @@ divergence = uw.function.derivative(velocity.sym[0], x) + uw.function.derivative
 5. **Performance Preservation**: No degradation of computational efficiency
 6. **JIT Compatibility**: Seamless integration with the compilation system
 
-# Core Design Principles {#sec-principles}
+# Core Design Principles
 
 ## Principle 1: Dual Nature - Computational and Mathematical
 
@@ -128,7 +128,7 @@ mixed_partial = temperature.diff(x, evaluate=False).diff(y, evaluate=False)
 complex_expr = (density * velocity).diff(x).norm()
 ```
 
-# Mathematical Object Hierarchy {#sec-hierarchy}
+# Mathematical Object Hierarchy
 
 ## Core Classes
 
@@ -229,7 +229,7 @@ class UWDerivativeExpression(UWexpression):
             return UWDerivativeExpression(name, self, symbols[0])
 ```
 
-# Natural Syntax Implementation {#sec-implementation}
+# Natural Syntax Implementation
 
 ## The _sympify_ Protocol
 
@@ -283,7 +283,7 @@ This enables:
 - `velocity.norm()` → `velocity.sym.norm()`
 - And hundreds of other SymPy methods automatically!
 
-# Derivative System Architecture {#sec-derivatives}
+# Derivative System Architecture
 
 ## The Challenge: Symbol vs. Function Derivatives
 
@@ -334,7 +334,7 @@ mixed = f.diff(x, evaluate=False).diff(y, evaluate=False)
 result = mixed.doit()  # or uw.unwrap(mixed)
 ```
 
-# Usage Patterns and Examples {#sec-usage}
+# Usage Patterns and Examples
 
 ## Pattern 1: Natural Mathematical Expressions
 
@@ -420,7 +420,7 @@ strain = 0.5 * (displacement.grad() + displacement.grad().T)
 stress = lam * strain.trace() * sympy.eye(2) + 2 * mu * strain
 ```
 
-# JIT Compilation Integration {#sec-jit}
+# JIT Compilation Integration
 
 ## The Challenge: Maintaining Compilation Compatibility
 
@@ -464,7 +464,7 @@ unwrapped = unwrap(complex_expr)
 compiled = uw.systems.compile(unwrapped)
 ```
 
-# Migration from Legacy Patterns {#sec-migration}
+# Migration from Legacy Patterns
 
 ## Automatic Migration Patterns
 
@@ -502,7 +502,7 @@ Teams can adopt the new syntax gradually:
 | `uw.function.derivative(expr, x)` | `expr.diff(x)` | Natural syntax |
 | `uw.function.derivative(expr, x, evaluate=False)` | `expr.diff(x, evaluate=False)` | Deferred derivatives |
 
-# Developer Guidelines {#sec-guidelines}
+# Developer Guidelines
 
 ## When to Use Each Approach
 
@@ -569,7 +569,7 @@ def test_mathematical_operations():
     # Should produce identical compiled code
 ```
 
-# Future Extensions {#sec-future}
+# Future Extensions
 
 ## Planned Enhancements
 
@@ -607,7 +607,7 @@ The system is designed for extensibility:
 3. **Alternative Backends**: Support other symbolic systems beyond SymPy
 4. **Performance Optimizations**: JIT-compile mathematical operations
 
-# Conclusion {#sec-conclusion}
+# Conclusion
 
 The mathematical object system in Underworld3 represents a fundamental shift toward natural mathematical expression while preserving computational efficiency and backward compatibility. The key achievements are:
 
