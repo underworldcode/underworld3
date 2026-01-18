@@ -2,7 +2,7 @@ name: uw3
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python <= 3.11
   - compilers
   - mpich
   - petsc=3.21.5
@@ -20,21 +20,26 @@ dependencies:
   - ipython
   - mpi4py
   - h5py=*=mpi*
-  - trame
-  - ipywidgets
   - gmsh
   - python-gmsh
   - python-xxhash
-  - jupyterlab
   - jupytext
-  - trame-vtk
-  - trame-vuetify
   - pygments
   - pint
+  - cmocean
+  - colorcet
+  - imageio
+  - imageio-ffmpeg
+  - ipywidgets<9.0.0
+  - jupyter-server-proxy
+  - jupyterlab<5.0.0
+  - trame>=2.5.2
+  - trame-vtk>=2.5.8
+  - trame-vuetify>=2.3.1
+  - trimesh
   - typeguard
   - pip
   - pip:
       - rich<14
       - meshio
       - pygmsh
-        # - gmsh-api # is this used still in UW?

@@ -1251,7 +1251,7 @@ class SNES_Scalar(SolverBaseClass):
                 print(" - field:      {}".format(bc.f_id))
                 print(" - components: {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
-                print(" - fn:         {} ".format(bc.fn))
+                print(" - fn:         {} ".format(bc.fn_f))
 
             boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
@@ -1397,38 +1397,39 @@ class SNES_Scalar(SolverBaseClass):
             #     continue
 
             if bc.fn_f is not None:
-
+                
                 bd_F0  = sympy.Array(bc.fn_f)
-                self._bd_f0 = sympy.ImmutableDenseMatrix(bd_F0)
+                bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
+                
+                G0 = sympy.derive_by_array(bd_F0, U)
+                G1 = sympy.derive_by_array(bd_F0, L)
 
-                G0 = sympy.derive_by_array(self._bd_f0, U)
-                G1 = sympy.derive_by_array(self._bd_f0, self.Unknowns.L)
+                bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(1, 1)) 
+                bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim, 1))
 
-                self._bd_G0 = sympy.ImmutableMatrix(G0) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-                self._bd_G1 = sympy.ImmutableMatrix(G1.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                fns_bd_residual += [bc.fns["u_f0"]]
+                fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
-                fns_bd_residual += [self._bd_f0]
-                fns_bd_jacobian += [self._bd_G0, self._bd_G1]
+            # Similar to SNES_Vector, will leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
 
+            # if bc.fn_F is not None:
 
-            if bc.fn_F is not None:
+            #     bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
+            #     self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
 
-                bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
-                self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
+            #     G2 = sympy.derive_by_array(self._bd_f1, U)
+            #     G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
 
-                G2 = sympy.derive_by_array(self._bd_f1, U)
-                G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
+            #     self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
+            #     self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
 
-                self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-                self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-
-                fns_bd_residual += [self._bd_f1]
-                fns_bd_jacobian += [self._bd_G2, self._bd_G3]
+            #     fns_bd_residual += [self._bd_f1]
+            #     fns_bd_jacobian += [self._bd_G2, self._bd_G3]
 
 
         self._fns_bd_residual = fns_bd_residual
         self._fns_bd_jacobian = fns_bd_jacobian
-
+        
         # generate JIT code.
         # first, we must specify the primary fields.
         # these are fields for which the corresponding sympy functions
@@ -1939,7 +1940,7 @@ class SNES_Vector(SolverBaseClass):
                 print(" - field:      {}".format(bc.f_id))
                 print(" - component:  {}".format(bc.components))
                 print(" - boundary:   {}".format(bc.boundary))
-                print(" - fn:         {} ".format(bc.fn))
+                print(" - fn:         {} ".format(bc.fn_f))
 
             boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
