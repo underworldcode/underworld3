@@ -21,8 +21,6 @@ def test_evaluate_with_numpy_array():
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-    with mesh.access(T):
-        T.coords[:, 0]  # Access coords to populate them
     T.array[:, 0, 0] = T.coords[:, 0]  # Temperature increases with x
 
     # Plain numpy array (traditional usage)
@@ -44,8 +42,6 @@ def test_evaluate_with_uwquantity_coords():
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-    with mesh.access(T):
-        T.coords[:, 0]  # Access coords to populate them
     T.array[:, 0, 0] = T.coords[:, 0]  # Temperature increases with x
 
     # UWQuantity coordinates (in meters)
@@ -70,8 +66,6 @@ def test_evaluate_with_pint_quantity_coords():
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-    with mesh.access(T):
-        T.coords[:, 0]  # Access coords to populate them
     T.array[:, 0, 0] = T.coords[:, 0]  # Temperature increases with x
 
     # Direct Pint quantities (from arithmetic operations)
@@ -99,8 +93,6 @@ def test_evaluate_with_mixed_units():
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-    with mesh.access(T):
-        T.coords[:, 0]  # Access coords to populate them
     T.array[:, 0, 0] = T.coords[:, 0]  # Temperature increases with x
 
     # Mixed units: meters and centimeters
@@ -126,8 +118,6 @@ def test_evaluate_with_single_point_list():
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-    with mesh.access(T):
-        T.coords[:, 0]  # Access coords to populate them
     T.array[:, 0, 0] = T.coords[:, 0]  # Temperature increases with x
 
     # Single point as flat list
@@ -152,8 +142,6 @@ def test_evaluate_unit_conversion_accuracy():
 
     # Create a field with known values
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-    with mesh.access(T):
-        T.coords[:, 0]  # Access coords to populate them
     T.array[:, 0, 0] = T.coords[:, 0] * 1000  # Temperature = 1000 * x
 
     # Evaluate at 50 cm = 0.5 m
@@ -174,8 +162,6 @@ def test_evaluate_mixed_numeric_and_units():
     )
 
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-    with mesh.access(T):
-        T.coords[:, 0]  # Access coords to populate them
     T.array[:, 0, 0] = T.coords[:, 0]
 
     # Mix of dimensionless and unit-aware

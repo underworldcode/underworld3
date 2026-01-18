@@ -28,7 +28,9 @@ old
 keep/*
 *.swp
 nohup.out
-src/underworld3/_uwid.py 
+src/underworld3/_uwid.py
+# Auto-generated version file (derived from git tags by setuptools_scm)
+src/underworld3/_version.py
 
 # TeX/LaTeX/PDF build artifacts (comprehensive)
 *.aux

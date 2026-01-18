@@ -164,9 +164,8 @@ def test_stokes_boxmesh(mesh, tmp_path):
     u2.read_timestep("test", "u", 0, outputPath=tmp_path)
     p2.read_timestep("test", "p", 0, outputPath=tmp_path)
 
-    with mesh.access():
-        assert np.allclose(u.data, u2.data)
-        assert np.allclose(p.data, p2.data)
+    assert np.allclose(u.data, u2.data)
+    assert np.allclose(p.data, p2.data)
 
     remove_test_mesh_files(directory=tmp_path)
 

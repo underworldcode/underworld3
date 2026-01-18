@@ -1,3 +1,48 @@
 [build-system]
-requires = ["setuptools", "wheel", "cython", "numpy", "petsc4py>=3.21"]
+requires = ["setuptools>=64", "setuptools-scm>=8", "wheel", "cython", "numpy", "petsc4py>=3.21"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "underworld3"
+dynamic = ["version"]
+description = "Finite element geodynamics with symbolic expressions"
+readme = "README.md"
+license = {text = "LGPL-3.0-or-later"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Underworld Team", email = "underworld-dev@underworldcode.org"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Homepage = "https://github.com/underworldcode/underworld3"
+Documentation = "https://underworldcode.github.io/underworld3/"
+Repository = "https://github.com/underworldcode/underworld3"
+
+[tool.setuptools_scm]
+# Derive version from git tags
+# This writes a _version.py file during build for runtime access
+write_to = "src/underworld3/_version.py"
+
+# Version scheme: use tag as-is for releases, add .devN for commits after tag
+version_scheme = "guess-next-dev"
+
+# Don't add local version info (+gXXXXXXX) - cleaner for PyPI
+local_scheme = "no-local-version"
+
+# Support for pre-release tags like v3.1.0-beta1 or v3.1.0b1
+tag_regex = "^(?:v)?(?P<version>[vV]?\\d+(?:\\.\\d+)*(?:[._-]?(?:alpha|beta|rc|a|b|c)\\d*)?)$"
+
+# Fallback version when not in a git repo (e.g., from tarball)
+fallback_version = "0.0.0+unknown"

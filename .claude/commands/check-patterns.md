@@ -39,6 +39,12 @@ find docs -name "*.ipynb" -exec grep -l "\.access(" {} \;
 find docs -name "*.ipynb" -exec grep -l "mesh\.data" {} \;
 ```
 
+### Tests (IMPORTANT: Tests are a source of truth for AI tools)
+```bash
+grep -r "with.*\.access(" tests/ --include="*.py"
+grep -r "mesh\.data\[" tests/ --include="*.py"
+```
+
 ---
 
 ## Pattern Classification
@@ -63,9 +69,13 @@ For each occurrence found, classify as:
 
 ## Output Format
 
-- Total occurrences by location (src, examples, docs, notebooks)
+- Total occurrences by location (src, examples, docs, notebooks, **tests**)
 - Files needing updates grouped by type
-- Priority order (user-facing examples first)
+- Priority order:
+  1. User-facing examples (docs/examples)
+  2. **Tests** (source of truth for AI tools writing notebooks)
+  3. Documentation (notebooks, markdown)
+  4. Source code
 - Recommended fixes
 
 ---

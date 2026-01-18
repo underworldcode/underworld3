@@ -176,8 +176,7 @@ def test_mesh_variable_array_interface():
             print("✅ MeshVariable array assignment works")
 
             # Also test that data interface gives different shape (unpacked format)
-            with mesh.access(mesh_var):
-                result_values_data = mesh_var.data[:, 0].copy()
+            result_values_data = mesh_var.data[:, 0].copy()
 
             # Both should have same values but different access patterns
             np.testing.assert_array_almost_equal(

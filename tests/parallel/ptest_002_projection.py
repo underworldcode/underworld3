@@ -39,14 +39,12 @@ scalar_projection.smoothing = 1.0e-6
 print(f"{uw.mpi.rank} - check values ...", flush=True)
 
 # S2 coordinates
-with mesh1.access():
-    print(f"{uw.mpi.rank} ", s_values.coords[0:10], flush=True)
+print(f"{uw.mpi.rank} ", s_values.coords[0:10], flush=True)
 
 # Values on S2
 # print(f"{uw.mpi.rank} - set values", flush=True)
-with mesh1.access(s_values):
-    print(s_values.data[0:10, 0])
-    s_values.data[:, 0] = 1.0  # uw.function.evalf(sympy.sympify(1), s_values.coords)
+print(s_values.data[0:10, 0])
+s_values.data[:, 0] = 1.0  # uw.function.evalf(sympy.sympify(1), s_values.coords)
 
 print(f"{uw.mpi.rank} - solve projection", flush=True)
 mesh1.dm.view()
