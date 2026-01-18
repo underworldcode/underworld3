@@ -49,6 +49,21 @@
 
 ---
 
+## Git Commit Conventions
+
+### AI-Assisted Commit Attribution
+When committing code developed with AI assistance, end the commit message with:
+
+```
+Underworld development team with AI support from Claude Code
+```
+
+**Do NOT use**:
+- `Co-Authored-By:` with a noreply email (useless for soliciting responses)
+- Generic AI attribution without team context
+
+---
+
 ## CRITICAL BUILD CONSTRAINTS
 
 ### PETSc Directory (DO NOT MOVE)
