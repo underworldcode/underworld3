@@ -531,3 +531,82 @@ def validate_boundary_access(mesh, boundary_name):
 3. **Gradual Migration**: Can implement incrementally without breaking changes
 4. **Extensible**: Easy to add new semantic categories as needed
 5. **Validation**: Centralized error handling with helpful messages
+
+---
+
+## ⚠️ Future Work: Internal Surface Normal Orientation
+
+**Status**: Planning - May require PETSc team discussion
+**Date Added**: 2025-01-18
+**Related**: `docs/developer/design/PROJECTED_NORMALS_API_DESIGN.md`
+
+### Background
+
+Investigation into boundary normal accuracy for curved surfaces revealed:
+- **Boundary surfaces**: PETSc handles orientation correctly for surfaces that lie on the domain boundary
+- **Internal surfaces**: Orientation is problematic for internal surfaces (e.g., fault planes, material interfaces)
+
+### The Problem
+
+For **boundary surfaces** (e.g., outer surface of a mesh):
+- PETSc provides consistent outward-pointing normals via `mesh.Gamma`
+- These are facet-based but correctly oriented
+
+For **internal surfaces** (e.g., embedded faults, material interfaces):
+- PETSc may not provide consistent orientation
+- No guaranteed "outward" direction for internal surfaces
+- This affects:
+  - Free-slip conditions on fault planes
+  - Flux conditions across material interfaces
+  - Traction boundary conditions on embedded surfaces
+
+### Proposed Solutions
+
+#### Option 1: User-Specified Orientation Vector
+```python
+# User provides reference direction for orientation
+n_proj = mesh.project_surface_normals(
+    surfaces=["Fault"],
+    orientation_reference=sympy.Matrix([1, 0]),  # User-specified
+)
+```
+**Pros**: Explicit, user controls behavior
+**Cons**: Extra parameter required, may be confusing
+
+#### Option 2: PETSc Enhancement Request
+Discuss with PETSc team about:
+- Consistent internal surface labeling
+- Orientation metadata in DMPlex labels
+- API for specifying surface orientation
+
+#### Option 3: Post-Processing Heuristics
+```python
+# Detect and correct orientation based on geometry
+def correct_internal_orientation(normals, surface_points, reference_point):
+    """Ensure normals point away from reference point."""
+    for i, (n, p) in enumerate(zip(normals, surface_points)):
+        direction = p - reference_point
+        if np.dot(n, direction) < 0:
+            normals[i] = -n
+    return normals
+```
+**Pros**: Automatic for simple cases
+**Cons**: Fails for complex geometries
+
+### Action Items
+
+1. **Document Use Cases**: Gather specific examples where internal surface orientation matters
+2. **Evaluate PETSc Capabilities**: Check current PETSc features for internal surface handling
+3. **PETSc Team Discussion**: If needed, prepare feature request or discussion topic
+4. **Interim Solution**: Implement user-specified orientation as immediate workaround
+
+### Related Documentation
+
+- `docs/advanced/curved-boundary-conditions.md` - User-facing documentation on curved boundaries
+- `docs/developer/design/PROJECTED_NORMALS_API_DESIGN.md` - API design for `mesh.project_surface_normals()`
+
+### Notes
+
+This issue was identified during investigation of boundary normal accuracy on elliptical meshes. While projected normals significantly improve accuracy for curved boundaries (~99.8% improvement over raw facet normals), the approach relies on consistent orientation from PETSc, which is only guaranteed for domain boundary surfaces.
+
+*Added 2025-01-18: Investigation into mesh.Gamma normalization and projected normals*
