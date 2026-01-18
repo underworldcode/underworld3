@@ -215,9 +215,9 @@ cdef class KDTree:
             i = i.reshape(-1)
 
         if sqr_dists:
-            return numpy.sqrt(d), i
-        else:
             return d, i
+        else:
+            return numpy.sqrt(d), i
 
 
 ## A general point-to-point rbf interpolator here

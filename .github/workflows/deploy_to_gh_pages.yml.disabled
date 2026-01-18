@@ -34,7 +34,7 @@ jobs:
     - name: Cache book files
       uses: actions/cache@v1
       env:
-        # Increase this value to reset cache if etc/example-environment.yml has not changed
+        # Increase this value to reset cache if etc/example-environment.yaml has not changed
         CACHE_NUMBER: 0
       with:
         path: |
