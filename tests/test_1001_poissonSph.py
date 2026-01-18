@@ -64,10 +64,11 @@ def test_poisson_sphere(mesh):
             ax2.scatter(r, values, s=10, alpha=0.5, label="Numerical")
 
             # Analytical solution for radial diffusion: T = (log(r/r_o))/(log(r_i/r_o))
-            r_sorted = np.linspace(mesh.radiusInner, mesh.radiusOuter, 100)
-            T_analytical = np.log(r_sorted / mesh.radiusOuter) / np.log(
-                mesh.radiusInner / mesh.radiusOuter
-            )
+            # Use getattr for radius values since not all mesh types store these
+            r_inner = getattr(mesh, 'radiusInner', 0.5)
+            r_outer = getattr(mesh, 'radiusOuter', 1.0)
+            r_sorted = np.linspace(r_inner, r_outer, 100)
+            T_analytical = np.log(r_sorted / r_outer) / np.log(r_inner / r_outer)
             ax2.plot(r_sorted, T_analytical, "r-", linewidth=2, label="Analytical")
 
             ax2.set_xlabel("Radius")
@@ -91,9 +92,12 @@ def test_poisson_sphere(mesh):
             ax2.scatter(r, values, s=10, alpha=0.5, label="Numerical")
 
             # Analytical solution
-            r_sorted = np.linspace(mesh.radiusInner, mesh.radiusOuter, 100)
-            T_analytical = (1.0 / r_sorted - 1.0 / mesh.radiusOuter) / (
-                1.0 / mesh.radiusInner - 1.0 / mesh.radiusOuter
+            # Use getattr for radius values since not all mesh types store these
+            r_inner = getattr(mesh, 'radiusInner', 0.5)
+            r_outer = getattr(mesh, 'radiusOuter', 1.0)
+            r_sorted = np.linspace(r_inner, r_outer, 100)
+            T_analytical = (1.0 / r_sorted - 1.0 / r_outer) / (
+                1.0 / r_inner - 1.0 / r_outer
             )
             ax2.plot(r_sorted, T_analytical, "r-", linewidth=2, label="Analytical")
 

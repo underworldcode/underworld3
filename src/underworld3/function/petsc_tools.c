@@ -95,7 +95,8 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
     ierr = PetscSFCreate(PETSC_COMM_SELF, &cellSF);
     CHKERRQ(ierr);
     // PETSC_OWN_POINTER => sf_cells memory control goes to cellSF
-    ierr = PetscSFSetGraph(cellSF, range, N, NULL, PETSC_OWN_POINTER, sf_cells, PETSC_OWN_POINTER);
+    // nroots must be > max(iremote.index), so use range + 1
+    ierr = PetscSFSetGraph(cellSF, range + 1, N, NULL, PETSC_OWN_POINTER, sf_cells, PETSC_OWN_POINTER);
     CHKERRQ(ierr);
   }
   PetscCall(DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF));

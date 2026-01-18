@@ -744,6 +744,35 @@ class Model(PintNativeModelMixin, BaseModel):
         except ImportError:
             pass  # Module not available yet
 
+        # CRITICAL: Update the global COEFFICIENTS dictionary used by non_dimensionalise()
+        # This connects the model's fundamental scales to the scaling system
+        if hasattr(self, '_fundamental_scales') and self._fundamental_scales:
+            from .scaling._scaling import get_coefficients
+            coeffs = get_coefficients()
+
+            # Map model scale names to COEFFICIENTS keys
+            scale_map = {
+                'length': '[length]',
+                'time': '[time]',
+                'mass': '[mass]',
+                'temperature': '[temperature]',
+            }
+
+            for model_key, coeff_key in scale_map.items():
+                if model_key in self._fundamental_scales:
+                    scale_val = self._fundamental_scales[model_key]
+                    # Ensure it's a Pint Quantity
+                    if hasattr(scale_val, 'magnitude'):
+                        coeffs[coeff_key] = scale_val
+                    else:
+                        # Wrap in Pint quantity with correct units
+                        coeffs[coeff_key] = scale_val * ureg.parse_expression(
+                            coeff_key.strip('[]')
+                        )
+
+            if verbose:
+                print("Updated global scaling coefficients from model fundamental scales")
+
         # Enable/disable non-dimensionalization based on parameter
         import underworld3 as uw
 

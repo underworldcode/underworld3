@@ -160,20 +160,42 @@ def non_dimensionalise(dimValue):
 
     # Check if it's a plain numpy array (definitely non-dimensional)
     import numpy as np
+    from pint import Quantity as PintQuantity
+
     if isinstance(dimValue, np.ndarray) and not hasattr(dimValue, 'units'):
         return dimValue
 
-    # Check if it's a UnitAwareArray with no units
-    if hasattr(dimValue, 'units'):
+    # Check if it's a Pint Quantity - let it fall through to the standard handling below
+    # DO NOT process Pint quantities here - they're handled by the .to_base_units() logic
+    if isinstance(dimValue, PintQuantity):
+        pass  # Fall through to standard Pint handling below
+
+    # Check if it's a UnitAwareArray with units - handle via Pint
+    # POLICY: Use Pint's dimensionality directly, never string comparisons
+    elif hasattr(dimValue, 'units') and hasattr(dimValue, '__array__'):
         units_val = dimValue.units
-        # If units is None or 'dimensionless', it's already non-dimensional
+        # If units is None, it's already non-dimensional
         if units_val is None:
             return dimValue
-        if hasattr(units_val, 'dimensionless') and units_val.dimensionless:
-            return dimValue
-        # Also check string representation for dimensionless
-        if str(units_val).lower() in ['dimensionless', 'none', '']:
-            return dimValue
+
+        # Use Pint to check dimensionality properly (not string comparison!)
+        if hasattr(units_val, 'dimensionality'):
+            # It's a Pint Unit object - check if dimensionless
+            if not units_val.dimensionality:  # Empty dict = dimensionless
+                return dimValue
+
+            # Has dimensional units - convert array to Pint Quantity and non-dimensionalise
+            arr = np.asarray(dimValue)
+            pint_qty = arr * units_val  # Create Pint Quantity with array values
+
+            # Now non-dimensionalise the Pint Quantity (recursive call handles it)
+            # This is safe because Pint Quantities are detected above and skip this block
+            nd_result = non_dimensionalise(pint_qty)
+
+            # Return as plain numpy array (non-dimensional)
+            if hasattr(nd_result, 'magnitude'):
+                return nd_result.magnitude
+            return nd_result
 
     # Check if it's a plain number (int, float) - already non-dimensional
     if isinstance(dimValue, (int, float)):
@@ -193,7 +215,19 @@ def non_dimensionalise(dimValue):
         if val:
             return dimValue.magnitude if hasattr(dimValue, 'magnitude') else dimValue
     except AttributeError:
-        # Not a pint Quantity, check if it's something else we should return as-is
+        # Not a pint Quantity - check if it has dimensional units via .units property
+        if hasattr(dimValue, 'units'):
+            units_val = dimValue.units
+            if units_val is not None and hasattr(units_val, 'dimensionality'):
+                if units_val.dimensionality:  # Non-empty = has dimensions
+                    # Has units but not a recognized type - try to convert
+                    import numpy as np
+                    arr = np.asarray(dimValue) if hasattr(dimValue, '__array__') else dimValue
+                    pint_qty = arr * units_val
+                    nd_result = non_dimensionalise(pint_qty)
+                    if hasattr(nd_result, 'magnitude'):
+                        return nd_result.magnitude
+                    return nd_result
         # If we can't determine it has units, assume it's already non-dimensional
         if not hasattr(dimValue, 'dimensionality'):
             return dimValue

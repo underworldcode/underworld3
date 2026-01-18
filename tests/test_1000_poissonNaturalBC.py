@@ -69,7 +69,7 @@ def test_poisson_natural_bc(mesh):
 
     with mesh.access():
         num = T_soln.data[:].squeeze()
-        ana = uw.function.evaluate(ana_soln, T_soln.coords)
+        ana = uw.function.evaluate(ana_soln, T_soln.coords).squeeze()
 
     assert np.allclose(ana, num, atol = 1e-4), "Numerical and analytical solutions differ!"
 

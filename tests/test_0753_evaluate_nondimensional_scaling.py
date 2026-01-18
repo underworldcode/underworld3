@@ -25,6 +25,39 @@ import sympy
 import underworld3 as uw
 
 
+def extract_scalar(result):
+    """
+    Extract a scalar value from evaluate() result.
+
+    evaluate() returns UnitAwareArray with shape (1,1,1) for single point evaluation.
+    This helper extracts the scalar value properly.
+    """
+    if hasattr(result, 'flat'):
+        # UnitAwareArray or numpy array - extract first element
+        scalar = result.flat[0]
+        if hasattr(scalar, 'item'):
+            return scalar.item()
+        return float(scalar)
+    elif hasattr(result, 'item'):
+        return result.item()
+    else:
+        return float(result)
+
+
+def convert_and_extract(result, target_units):
+    """
+    Convert result to target units and extract scalar.
+
+    Returns the scalar value in the specified units.
+    """
+    if hasattr(result, 'to'):
+        converted = result.to(target_units)
+        return extract_scalar(converted)
+    else:
+        # Assume result is already in base units (meters, seconds, etc.)
+        return extract_scalar(result)
+
+
 @pytest.mark.tier_b  # Validated - testing nondimensional scaling
 @pytest.mark.level_2  # Uses nondimensional model - intermediate complexity
 class TestEvaluateNondimensionalScaling:
@@ -96,11 +129,10 @@ class TestEvaluateNondimensionalScaling:
 
         # Convert to cm for comparison
         if hasattr(result, 'to'):
-            result_cm = result.to('cm')
-            value = float(result_cm.value) if hasattr(result_cm, 'value') else float(result_cm)
+            value = convert_and_extract(result, 'cm')
         else:
             # If returned as meters
-            value_m = float(result)
+            value_m = extract_scalar(result)
             value = value_m * 100  # m to cm
 
         assert np.allclose(value, 1.0, rtol=1e-6), \
@@ -114,10 +146,9 @@ class TestEvaluateNondimensionalScaling:
         expected_seconds = 31557600.0  # 1 year in seconds
 
         if hasattr(result, 'to'):
-            result_s = result.to('s')
-            value = float(result_s.value) if hasattr(result_s, 'value') else float(result_s)
+            value = convert_and_extract(result, 's')
         else:
-            value = float(result)
+            value = extract_scalar(result)
 
         assert np.allclose(value, expected_seconds, rtol=1e-6), \
             f"Expected {expected_seconds} seconds, got {value} seconds"
@@ -135,11 +166,10 @@ class TestEvaluateNondimensionalScaling:
 
         # Convert to km for comparison
         if hasattr(result, 'to'):
-            result_km = result.to('km')
-            value = float(result_km.value) if hasattr(result_km, 'value') else float(result_km)
+            value = convert_and_extract(result, 'km')
         else:
             # If returned as meters
-            value_m = float(result)
+            value_m = extract_scalar(result)
             value = value_m / 1000  # m to km
 
         assert np.allclose(value, 2900.0, rtol=1e-6), \
@@ -160,10 +190,9 @@ class TestEvaluateNondimensionalScaling:
 
         # Should be 1 second
         if hasattr(result, 'to'):
-            result_s = result.to('s')
-            value = float(result_s.value) if hasattr(result_s, 'value') else float(result_s)
+            value = convert_and_extract(result, 's')
         else:
-            value = float(result)
+            value = extract_scalar(result)
 
         assert np.allclose(value, 1.0, rtol=1e-6), \
             f"Expected 1 second, got {value} seconds (Bug: was returning 3.15e13 s = 1 Myr!)"
@@ -175,11 +204,10 @@ class TestEvaluateNondimensionalScaling:
 
         # Convert to Myr for comparison
         if hasattr(result, 'to'):
-            result_Myr = result.to('Myr')
-            value = float(result_Myr.value) if hasattr(result_Myr, 'value') else float(result_Myr)
+            value = convert_and_extract(result, 'Myr')
         else:
             # If returned as seconds
-            value_s = float(result)
+            value_s = extract_scalar(result)
             value = value_s / 31557600000000.0  # s to Myr
 
         assert np.allclose(value, 1.0, rtol=1e-6), \
@@ -191,10 +219,9 @@ class TestEvaluateNondimensionalScaling:
 
         # Should be 1000 K
         if hasattr(result, 'to'):
-            result_K = result.to('K')
-            value = float(result_K.value) if hasattr(result_K, 'value') else float(result_K)
+            value = convert_and_extract(result, 'K')
         else:
-            value = float(result)
+            value = extract_scalar(result)
 
         assert np.allclose(value, 1000.0, rtol=1e-6), \
             f"Expected 1000 K, got {value} K"
@@ -205,11 +232,10 @@ class TestEvaluateNondimensionalScaling:
 
         # Convert to mm for comparison
         if hasattr(result, 'to'):
-            result_mm = result.to('mm')
-            value = float(result_mm.value) if hasattr(result_mm, 'value') else float(result_mm)
+            value = convert_and_extract(result, 'mm')
         else:
             # If returned as meters
-            value_m = float(result)
+            value_m = extract_scalar(result)
             value = value_m * 1000  # m to mm
 
         assert np.allclose(value, 1.0, rtol=1e-6), \

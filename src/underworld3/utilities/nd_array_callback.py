@@ -330,6 +330,62 @@ class NDArray_With_Callback(np.ndarray):
         self._callback_enabled = getattr(obj, "_callback_enabled", True)
         self._disable_inplace_operators = getattr(obj, "_disable_inplace_operators", False)
 
+    # === numpy.ma (masked array) compatibility ===
+    # These attributes are needed when numpy's masked array operations
+    # interact with our array subclass.
+
+    @property
+    def _mask(self):
+        """For numpy.ma compatibility - we have no mask."""
+        return np.ma.nomask
+
+    @_mask.setter
+    def _mask(self, value):
+        """For numpy.ma compatibility - ignore mask setting."""
+        # We don't support masking, so ignore attempts to set a mask
+        pass
+
+    @property
+    def mask(self):
+        """Public mask property for numpy.ma compatibility.
+
+        Matplotlib's quiver and other plotting functions access .mask directly.
+        This aliases to _mask which returns np.ma.nomask (no masking).
+        """
+        return self._mask
+
+    @mask.setter
+    def mask(self, value):
+        """Public mask setter for numpy.ma compatibility."""
+        self._mask = value
+
+    def filled(self, fill_value=None):
+        """Return array with masked values filled.
+
+        For numpy.ma compatibility. Since we have no mask, this just
+        returns a copy of the data (as numpy array to avoid further
+        masked array operations).
+
+        Parameters
+        ----------
+        fill_value : scalar, optional
+            Value used to fill masked entries. Ignored since we have no mask.
+
+        Returns
+        -------
+        ndarray
+            A copy of the data as a plain numpy array.
+        """
+        return np.asarray(self).copy()
+
+    def _update_from(self, obj):
+        """For numpy.ma compatibility - update from another array."""
+        # This is used by masked array operations to update data
+        if hasattr(obj, '__array__'):
+            np.copyto(self, np.asarray(obj))
+        elif obj is not None:
+            np.copyto(self, obj)
+
     def __array_wrap__(self, result):
         """
         Called after numpy operations to wrap results back to our type.

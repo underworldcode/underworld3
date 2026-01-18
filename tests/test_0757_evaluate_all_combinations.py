@@ -29,6 +29,39 @@ import sympy
 import underworld3 as uw
 
 
+def extract_scalar(result):
+    """
+    Extract a scalar value from evaluate() result.
+
+    evaluate() returns UnitAwareArray with shape (1,1,1) for single point evaluation.
+    This helper extracts the scalar value properly.
+    """
+    if hasattr(result, 'flat'):
+        # UnitAwareArray or numpy array - extract first element
+        scalar = result.flat[0]
+        if hasattr(scalar, 'item'):
+            return scalar.item()
+        return float(scalar)
+    elif hasattr(result, 'item'):
+        return result.item()
+    else:
+        return float(result)
+
+
+def convert_and_extract(result, target_units):
+    """
+    Convert result to target units and extract scalar.
+
+    Returns the scalar value in the specified units.
+    """
+    if hasattr(result, 'to'):
+        converted = result.to(target_units)
+        return extract_scalar(converted)
+    else:
+        # Assume result is already in base units
+        return extract_scalar(result)
+
+
 @pytest.mark.tier_a  # Production-ready - critical for correctness
 @pytest.mark.level_2  # Intermediate - involves nondimensional scaling
 class TestEvaluateSimpleObjects:
@@ -90,11 +123,7 @@ class TestEvaluateSimpleObjects:
         result = uw.function.evaluate(qty, self.mesh.X.coords[60])
 
         # Convert to meters for comparison
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected_m = 2900000.0  # 2900 km in meters
 
@@ -107,11 +136,7 @@ class TestEvaluateSimpleObjects:
         result = uw.function.evaluate(qty, self.mesh.X.coords[60])
 
         # Convert to seconds for comparison
-        if hasattr(result, 'to'):
-            result_s = result.to('s')
-            value = float(result_s.magnitude if hasattr(result_s, 'magnitude') else result_s)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 's') if hasattr(result, 'to') else extract_scalar(result)
 
         expected_s = 1e6 * 365.25 * 24 * 3600  # 1 Myr in seconds
 
@@ -124,11 +149,7 @@ class TestEvaluateSimpleObjects:
         result = uw.function.evaluate(qty, self.mesh.X.coords[60])
 
         # Extract value in m/s
-        if hasattr(result, 'to'):
-            result_mps = result.to('m/s')
-            value = float(result_mps.magnitude if hasattr(result_mps, 'magnitude') else result_mps)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm/s') if hasattr(result, 'to') else extract_scalar(result)
 
         assert np.allclose(value, 5.0, rtol=1e-6), \
             f"evaluate(5 m/s) should return 5.0 m/s, got {value} m/s"
@@ -139,11 +160,7 @@ class TestEvaluateSimpleObjects:
         result = uw.function.evaluate(t_now, self.mesh.X.coords[60])
 
         # Extract value in seconds
-        if hasattr(result, 'to'):
-            result_s = result.to('s')
-            value = float(result_s.magnitude if hasattr(result_s, 'magnitude') else result_s)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 's') if hasattr(result, 'to') else extract_scalar(result)
 
         assert np.allclose(value, 1.0, rtol=1e-6), \
             f"evaluate(UWexpression(1 s)) should return 1.0 s, got {value} s"
@@ -154,11 +171,7 @@ class TestEvaluateSimpleObjects:
         result = uw.function.evaluate(qty, self.mesh.X.coords[60])
 
         # Convert to meters
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         assert np.allclose(value, 0.01, rtol=1e-6), \
             f"evaluate(1 cm) should return 0.01 m, got {value} m"
@@ -215,11 +228,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(product, self.mesh.X.coords[60])
 
         # Convert to meters
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 10.0  # 5 m/s * 2 s = 10 m
 
@@ -241,11 +250,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(product, self.mesh.X.coords[60])
 
         # Convert to meters
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 5.0  # 5 m/s * 1 s = 5 m
 
@@ -265,11 +270,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(product, self.mesh.X.coords[60])
 
         # Convert to meters
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 5.0  # 1 s * 5 m/s = 5 m
 
@@ -288,11 +289,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(product, self.mesh.X.coords[60])
 
         # Convert to m²
-        if hasattr(result, 'to'):
-            result_m2 = result.to('m**2')
-            value = float(result_m2.magnitude if hasattr(result_m2, 'magnitude') else result_m2)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm**2') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 50.0  # 10 m * 5 m = 50 m²
 
@@ -308,11 +305,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(quotient, self.mesh.X.coords[60])
 
         # Convert to m/s
-        if hasattr(result, 'to'):
-            result_mps = result.to('m/s')
-            value = float(result_mps.magnitude if hasattr(result_mps, 'magnitude') else result_mps)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm/s') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 5.0  # 10 m / 2 s = 5 m/s
 
@@ -328,11 +321,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(quotient, self.mesh.X.coords[60])
 
         # Convert to m/s
-        if hasattr(result, 'to'):
-            result_mps = result.to('m/s')
-            value = float(result_mps.magnitude if hasattr(result_mps, 'magnitude') else result_mps)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm/s') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 5.0  # 10 m / 2 s = 5 m/s
 
@@ -348,11 +337,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(sum_expr, self.mesh.X.coords[60])
 
         # Convert to meters
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 8.0  # 5 m + 3 m = 8 m
 
@@ -368,11 +353,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(diff, self.mesh.X.coords[60])
 
         # Convert to meters
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 7.0  # 10 m - 3 m = 7 m
 
@@ -389,11 +370,7 @@ class TestEvaluateArithmeticCombinations:
         result = uw.function.evaluate(expr, self.mesh.X.coords[60])
 
         # Convert to meters
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 13.0  # (5*2) + 3 = 13 m
 
@@ -485,13 +462,7 @@ class TestEvaluateCoordinateTypes:
         result = uw.function.evaluate(product, self.mesh.X.coords[60])
 
         # Extract value
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        elif hasattr(result, 'flat'):
-            value = float(result.flat[0])
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         # Should be ~5 m, not 4.59e-7
         assert value > 1e-3, \
@@ -544,13 +515,7 @@ class TestEvaluateScalingModes:
         result = uw.function.evaluate(product, mesh.X.coords[60])
 
         # Extract value
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        elif hasattr(result, 'flat'):
-            value = float(result.flat[0])
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 5.0
 
@@ -586,13 +551,7 @@ class TestEvaluateScalingModes:
         result = uw.function.evaluate(product, mesh.X.coords[60])
 
         # Extract value
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
-        elif hasattr(result, 'flat'):
-            value = float(result.flat[0])
-        else:
-            value = float(result)
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected = 5.0
 
@@ -619,13 +578,7 @@ class TestEvaluateScalingModes:
         )
         result_off = uw.function.evaluate(product, mesh_off.X.coords[60])
 
-        if hasattr(result_off, 'to'):
-            result_off_m = result_off.to('m')
-            value_off = float(result_off_m.magnitude if hasattr(result_off_m, 'magnitude') else result_off_m)
-        elif hasattr(result_off, 'flat'):
-            value_off = float(result_off.flat[0])
-        else:
-            value_off = float(result_off)
+        value_off = convert_and_extract(result_off, 'm') if hasattr(result_off, 'to') else extract_scalar(result_off)
 
         # Test with scaling ON
         model = uw.Model()
@@ -644,13 +597,7 @@ class TestEvaluateScalingModes:
         )
         result_on = uw.function.evaluate(product, mesh_on.X.coords[60])
 
-        if hasattr(result_on, 'to'):
-            result_on_m = result_on.to('m')
-            value_on = float(result_on_m.magnitude if hasattr(result_on_m, 'magnitude') else result_on_m)
-        elif hasattr(result_on, 'flat'):
-            value_on = float(result_on.flat[0])
-        else:
-            value_on = float(result_on)
+        value_on = convert_and_extract(result_on, 'm') if hasattr(result_on, 'to') else extract_scalar(result_on)
 
         # Should give same result
         assert np.allclose(value_off, value_on, rtol=1e-6), \

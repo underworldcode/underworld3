@@ -1,34 +1,65 @@
 """
 Test evaluation of coordinate symbols (BaseScalar objects) with nondimensional scaling.
 
-CRITICAL BUG FIX: Evaluating coordinate symbols (x, y, z) was applying dimensional
-scaling TWICE, resulting in values like 8.41×10¹² meters instead of 2900 km.
+BUG FIXED (2026-01): Double scaling bug in coordinate evaluation.
 
-ROOT CAUSE: non_dimensionalise() was failing silently when UnitAwareArray._units
-was a Pint Unit object instead of a string, causing coordinates to not be
-non-dimensionalized before evaluation.
+ORIGINAL PROBLEM:
+Evaluating coordinate symbols (x, y, z) was applying dimensional scaling TWICE,
+resulting in values like 8.41×10¹² meters instead of 2900 km.
 
-THE CHAIN OF FAILURE:
-1. Coordinates stored as [0, 2.9e6] meters (dimensional)
-2. non_dimensionalise(coords) failed → returned [0, 2.9e6] (unchanged)
-3. evaluate(x, coords) used these as [0-1] coords → returned [0, 2.9e6]
-4. dimensionalise(result) scaled again → [0, 2.9e6] × 2900 km = 8.41×10¹² m ❌
+ROOT CAUSE (NOW FIXED):
+1. model.set_reference_quantities() stored scales in model._fundamental_scales
+2. BUT the global COEFFICIENTS dict used by non_dimensionalise() was NOT updated
+3. So non_dimensionalise() used default scales (1.0 meter) instead of model scales
 
-THE FIX: Use Pint directly in non_dimensionalise():
-- Check units_obj.dimensionality using Pint (not string comparison)
-- Extract dict(units_obj.dimensionality) only when needed
-- No string conversions, pure Pint operations
+THE FIX:
+- model.set_reference_quantities() now updates global COEFFICIENTS from _fundamental_scales
+- non_dimensionalise() in _scaling.py properly handles UnitAwareArray with Pint Units
+- Uses Pint's dimensionality directly (no string comparisons per project policy)
 
 TEST COVERAGE:
-- Detects double-scaling bug (values > 1e10 when expecting ~1e6)
+- Regression tests for double-scaling bug (values > 1e10 when expecting ~1e6)
 - Tests non_dimensionalise() with Pint Unit objects
-- Verifies coordinate evaluation returns physical values
+- Verifies coordinate evaluation returns correct physical values
 """
 
 import pytest
 import numpy as np
 import sympy
 import underworld3 as uw
+
+
+def extract_scalar(result):
+    """
+    Extract a scalar value from evaluate() result.
+
+    evaluate() returns UnitAwareArray with shape (1,1,1) for single point evaluation.
+    This helper extracts the scalar value properly.
+    """
+    if hasattr(result, 'flat'):
+        # UnitAwareArray or numpy array - extract first element
+        scalar = result.flat[0]
+        if hasattr(scalar, 'item'):
+            return scalar.item()
+        return float(scalar)
+    elif hasattr(result, 'item'):
+        return result.item()
+    else:
+        return float(result)
+
+
+def convert_and_extract(result, target_units):
+    """
+    Convert result to target units and extract scalar.
+
+    Returns the scalar value in the specified units.
+    """
+    if hasattr(result, 'to'):
+        converted = result.to(target_units)
+        return extract_scalar(converted)
+    else:
+        # Assume result is already in base units
+        return extract_scalar(result)
 
 
 @pytest.mark.tier_a  # Production-ready - critical for correctness
@@ -81,23 +112,21 @@ class TestCoordinateSymbolEvaluation:
 
         uw.use_nondimensional_scaling(False)
 
+    @pytest.mark.tier_a  # Production-ready - critical regression test
     def test_coordinate_x_max_value(self):
         """
         Test: max(x) should equal domain width, not domain_width².
 
-        CRITICAL: This was returning 8.41×10¹² meters (2900 km × 2900 km)
-        instead of 2.9×10⁶ meters (2900 km).
+        BUG FIXED (2026-01): Previously returned 8.41×10¹² meters (double scaling)
+        instead of 2.9×10⁶ meters (2900 km). Fixed by connecting model._fundamental_scales
+        to global COEFFICIENTS in model.set_reference_quantities().
         """
         x, y = self.mesh.CoordinateSystem.X
 
         result = uw.function.evaluate(x, self.mesh.X.coords).max()
 
-        # Convert to meters for comparison
-        if hasattr(result, 'to'):
-            result_m = result.to('m')
-            value = float(result_m.value) if hasattr(result_m, 'value') else float(result_m.magnitude)
-        else:
-            value = float(result)
+        # Convert to meters for comparison - handle UnitAwareArray properly
+        value = convert_and_extract(result, 'm') if hasattr(result, 'to') else extract_scalar(result)
 
         expected_m = 2900000.0  # 2900 km in meters
 
@@ -109,23 +138,20 @@ class TestCoordinateSymbolEvaluation:
         assert np.allclose(value, expected_m, rtol=1e-6), \
             f"max(x) should be {expected_m} m (2900 km), got {value} m"
 
+    @pytest.mark.tier_a  # Production-ready - critical regression test
     def test_coordinate_no_double_scaling(self):
         """
         Test: Coordinate evaluation doesn't apply double scaling.
 
-        The critical bug was returning 8.41×10¹² m instead of ~2.9×10⁶ m.
-        This test checks that values are in the right order of magnitude.
+        BUG FIXED (2026-01): Previously returned 8.41×10¹² m instead of ~2.9×10⁶ m.
+        This test verifies values are in the correct order of magnitude.
         """
         x, y = self.mesh.CoordinateSystem.X
 
         result_x = uw.function.evaluate(x, self.mesh.X.coords).max()
 
-        # Extract value
-        if hasattr(result_x, 'to'):
-            result_m = result_x.to('m')
-            value = float(result_m.value) if hasattr(result_m, 'value') else float(result_m.magnitude)
-        else:
-            value = float(result_x)
+        # Extract value - handle UnitAwareArray properly
+        value = convert_and_extract(result_x, 'm') if hasattr(result_x, 'to') else extract_scalar(result_x)
 
         # Should be order of magnitude ~1e6 (millions of meters)
         # NOT ~1e12 (trillions - the double-scaling bug)
@@ -148,12 +174,13 @@ class TestCoordinateSymbolEvaluation:
         """
         pass
 
+    @pytest.mark.tier_a  # Production-ready - critical regression test
     def test_non_dimensionalise_unit_aware_array(self):
         """
         Test: non_dimensionalise() works correctly on UnitAwareArray with Pint Units.
 
-        This is the core fix - ensure UnitAwareArray._units (Pint Unit object)
-        is handled correctly, not treated as a string.
+        BUG FIXED (2026-01): UnitAwareArray._units (Pint Unit object) now handled
+        correctly using Pint's dimensionality directly (no string comparisons).
         """
         coords = self.mesh.X.coords
 

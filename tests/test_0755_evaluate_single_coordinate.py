@@ -20,6 +20,39 @@ import numpy as np
 import underworld3 as uw
 
 
+def extract_scalar(result):
+    """
+    Extract a scalar value from evaluate() result.
+
+    evaluate() returns UnitAwareArray with shape (1,1,1) for single point evaluation.
+    This helper extracts the scalar value properly.
+    """
+    if hasattr(result, 'flat'):
+        # UnitAwareArray or numpy array - extract first element
+        scalar = result.flat[0]
+        if hasattr(scalar, 'item'):
+            return scalar.item()
+        return float(scalar)
+    elif hasattr(result, 'item'):
+        return result.item()
+    else:
+        return float(result)
+
+
+def convert_and_extract(result, target_units):
+    """
+    Convert result to target units and extract scalar.
+
+    Returns the scalar value in the specified units.
+    """
+    if hasattr(result, 'to'):
+        converted = result.to(target_units)
+        return extract_scalar(converted)
+    else:
+        # Assume result is already in base units
+        return extract_scalar(result)
+
+
 @pytest.mark.tier_a  # Production-ready
 @pytest.mark.level_1  # Quick test
 class TestEvaluateSingleCoordinate:
@@ -178,8 +211,7 @@ class TestEvaluateSingleCoordinateNondimensional:
         # Should return physical units (meters), not nondimensional
         assert hasattr(result, 'units')
         # Value should be 5 cm = 0.05 m (velocity × time = displacement)
-        result_m = result.to('m') if hasattr(result, 'to') else result
-        value = float(result_m.magnitude if hasattr(result_m, 'magnitude') else result_m)
+        value = convert_and_extract(result, 'm')
         assert np.allclose(value, 0.05, rtol=1e-6), \
             f"5 cm/year × 1 year should equal 5 cm = 0.05 m, got {value} m"
 
