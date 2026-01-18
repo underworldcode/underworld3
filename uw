@@ -40,7 +40,11 @@ get_env() {
 }
 
 petsc_built() {
-    [ -d "$PETSC_CUSTOM/petsc-4-uw/lib" ]
+    # Check for actual PETSc library, not just the lib directory
+    # The lib directory can exist if the build failed partway through
+    [ -f "$PETSC_CUSTOM/petsc-4-uw/lib/libpetsc.dylib" ] || \
+    [ -f "$PETSC_CUSTOM/petsc-4-uw/lib/libpetsc.so" ] || \
+    [ -f "$PETSC_CUSTOM/petsc-4-uw/lib/libpetsc.a" ]
 }
 
 petsc4py_installed() {

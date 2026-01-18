@@ -74,7 +74,7 @@ configure_petsc() {
         --download-parmetis \
         --download-parmmg \
         --download-pragmatic \
-        --download-ptscotch \
+        --download-ptscotch="${SCRIPT_DIR}/patches/scotch-7.0.10-c23-fix.tar.gz" \
         --download-scalapack \
         --download-slepc \
         --with-debugging=0 \

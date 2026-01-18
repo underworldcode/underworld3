@@ -522,17 +522,32 @@ def check_environment_variables() -> DiagnosticResult:
     info = []
     warnings = []
 
+    # Check if this is a pixi-managed AMR environment
+    # In AMR environments, PETSC_DIR is intentionally set to petsc-custom via pixi activation
+    pixi_project_root = os.environ.get('PIXI_PROJECT_ROOT', '')
+    petsc_dir = os.environ.get('PETSC_DIR', '')
+    is_pixi_amr_environment = (
+        pixi_project_root and
+        'petsc-custom' in petsc_dir and
+        petsc_dir.startswith(pixi_project_root)
+    )
+
     for var, description in vars_to_check:
         value = os.environ.get(var, '')
         if value:
             info.append(f"{var}={value}")
-            # Check for potential issues
+            # Check for potential issues - but not for intentional pixi AMR setups
             if var == 'PETSC_DIR' and 'petsc-custom' in value:
-                conda = os.environ.get('CONDA_PREFIX', '')
-                if conda and 'petsc-custom' not in conda:
-                    warnings.append(
-                        f"PETSC_DIR points to custom PETSc but CONDA_PREFIX suggests conda-forge"
-                    )
+                if is_pixi_amr_environment:
+                    # This is intentional - AMR environments use custom PETSc
+                    info.append("(AMR environment using custom PETSc - expected)")
+                else:
+                    # Not a pixi-managed setup - could be a genuine conflict
+                    conda = os.environ.get('CONDA_PREFIX', '')
+                    if conda and 'petsc-custom' not in conda:
+                        warnings.append(
+                            f"PETSC_DIR points to custom PETSc but CONDA_PREFIX suggests conda-forge"
+                        )
 
     if warnings:
         return DiagnosticResult(
