@@ -1,0 +1,20 @@
+---
+title: "Scaling & Non-Dimensionalization"
+---
+
+# Scaling & Non-Dimensionalization
+
+```{note} Documentation In Progress
+Dimensional analysis and scaling utilities documentation.
+```
+
+## Overview
+
+The scaling module provides tools for non-dimensionalizing geophysical problems.
+
+## Features
+
+- Dimensional analysis
+- Unit conversion
+- Scaling factors for different physical regimes
+- Non-dimensionalization utilities

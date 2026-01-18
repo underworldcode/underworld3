@@ -115,16 +115,14 @@ def getext(
 
     for fn in raw_fns:
         expanded_fns.append(
-            underworld3.function.expressions.unwrap(
-                fn, keep_constants=False, return_self=False
-            )
+            underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
         )
 
     fns = tuple(expanded_fns)
 
-    if debug and underworld3.mpi.rank==0:
+    if debug and underworld3.mpi.rank == 0:
         print(f"Expanded functions for compilation:")
-        for i,fn in enumerate(fns):
+        for i, fn in enumerate(fns):
             print(f"{i}: {fn}")
 
     import os
@@ -319,9 +317,9 @@ def _createext(
                     u_x_i += 1
             elif (
                 var.vtype == VarType.VECTOR
-                or var.vtype == VarType.COMPOSITE
                 or var.vtype == VarType.TENSOR
                 or var.vtype == VarType.SYM_TENSOR
+                or var.vtype == VarType.MATRIX
             ):
                 # Pull out individual sub components
                 for comp in var.sym_1d:
@@ -337,7 +335,7 @@ def _createext(
                         u_x_i += 1
             else:
                 raise RuntimeError(
-                    "Unsupported type for code generation. Please contact developers."
+                    f"Unsupported type {var.vtype} for code generation. Please contact developers."
                 )
 
     # Patch in `_code` methods. Note that the order here
@@ -413,10 +411,10 @@ def _createext(
     eqns = []
     for index, fn in enumerate(fns):
 
-        fn = underworld3.function.expressions.unwrap(
-            fn, keep_constants=False, return_self=False
-        )
+        # Save original for debugging
+        fn_original = fn
 
+        fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
 
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
@@ -425,8 +423,54 @@ def _createext(
         else:
             fn = sympy.Matrix([fn])
 
+        # === JIT VALIDATION GATEWAY ===
+        # Check for symbols that cannot be converted to C code.
+        # Expected symbols (coordinates) have _ccodestr attribute set.
+        # Unexpected symbols indicate malformed expressions from user code.
+        free_syms = fn.free_symbols
+        unconvertible_symbols = []
+        for sym in free_syms:
+            # Check if this symbol can be converted to C code
+            if not hasattr(sym, '_ccodestr'):
+                unconvertible_symbols.append(sym)
+
+        if unconvertible_symbols:
+            # Build a helpful error message
+            sym_details = []
+            for sym in unconvertible_symbols:
+                detail = f"  - {sym} (type: {type(sym).__name__})"
+                if hasattr(sym, 'units'):
+                    detail += f" [has units: {sym.units}]"
+                if hasattr(sym, 'value'):
+                    detail += f" [value: {sym.value}]"
+                sym_details.append(detail)
+
+            raise RuntimeError(
+                f"\n{'='*70}\n"
+                f"JIT COMPILATION ERROR: Expression contains unconvertible symbols\n"
+                f"{'='*70}\n\n"
+                f"The following symbols could not be converted to C code:\n"
+                + "\n".join(sym_details) + "\n\n"
+                f"This usually means:\n"
+                f"  1. A UWexpression or UWQuantity was not properly expanded\n"
+                f"  2. An arithmetic operation failed (e.g., Matrix * UWexpression)\n"
+                f"  3. A symbolic function is missing from the expression tree\n\n"
+                f"Expression index: {index}\n"
+                f"Original expression: {fn_original}\n"
+                f"After unwrap: {fn}\n\n"
+                f"TIP: Check that all expression operations (*, /, +, -) produce\n"
+                f"valid SymPy expressions. For example, ensure scalar * Matrix\n"
+                f"and not Matrix * scalar when using UWexpression objects.\n"
+                f"{'='*70}"
+            )
+
         if verbose:
             print("Processing JIT {:4d} / {}".format(index, fn))
+            # Enhanced debugging output for remaining (valid) free symbols
+            if free_syms:
+                print("  Free symbols (all convertible):")
+                for sym in free_syms:
+                    print(f"    - {sym} (type: {type(sym).__name__}, _ccodestr: {getattr(sym, '_ccodestr', 'N/A')})")
 
         out = sympy.MatrixSymbol("out", *fn.shape)
         eqn = ("eqn_" + str(index), printer.doprint(fn, out))
@@ -610,41 +654,31 @@ cpdef PtrContainer getptrobj():
 
     eqn_count = 0
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_residual)]):
-        pyx_str += "    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_residual[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     residual_equations = (0, eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bcs)]):
-        pyx_str += "    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_bcs[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     boundary_equations = (residual_equations[1], eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_jacobian)]):
-        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_jacobian[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     jacobian_equations = (boundary_equations[1], eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bd_residual)]):
-        pyx_str += "    clsguy.fns_bd_residual[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_bd_residual[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     boundary_residual_equations = (jacobian_equations[1], eqn_count)
 
     for index, eqn in enumerate(eqns[eqn_count : eqn_count + len(fns_bd_jacobian)]):
-        pyx_str += "    clsguy.fns_bd_jacobian[{}] = {}_petsc_{}\n".format(
-            index, randstr, eqn[0]
-        )
+        pyx_str += "    clsguy.fns_bd_jacobian[{}] = {}_petsc_{}\n".format(index, randstr, eqn[0])
         eqn_count += 1
 
     boundary_jacobian_equations = (boundary_residual_equations[1], eqn_count)
@@ -655,11 +689,19 @@ cpdef PtrContainer getptrobj():
     # Write out files
     import os
 
-    tmpdir = os.path.join("/tmp", MODNAME)
+    import time
+    import random
+
+    # Make directory name unique to avoid race conditions between parallel processes
+    unique_suffix = f"{os.getpid()}_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    tmpdir = os.path.join("/tmp", f"{MODNAME}_{unique_suffix}")
+
     try:
-        os.mkdir(tmpdir)
-    except OSError:
-        pass
+        os.makedirs(tmpdir, exist_ok=True)
+    except OSError as e:
+        if verbose:
+            print(f"Warning: Failed to create tmpdir {tmpdir}: {e}")
+        raise RuntimeError(f"Cannot create temporary directory {tmpdir}") from e
     for thing in codeguys:
         filename = thing[0]
         strguy = thing[1]
@@ -675,7 +717,14 @@ cpdef PtrContainer getptrobj():
         stderr=subprocess.PIPE,
         cwd=tmpdir,
     )
-    process.communicate()
+    stdout, stderr = process.communicate()
+
+    # Check if build process failed
+    if process.returncode != 0:
+        if verbose:
+            print(f"Warning: Build process failed with return code {process.returncode}")
+            print(f"stdout: {stdout.decode() if stdout else 'None'}")
+            print(f"stderr: {stderr.decode() if stderr else 'None'}")
 
     # Load and add to dictionary
     from importlib._bootstrap import _load
@@ -695,9 +744,15 @@ cpdef PtrContainer getptrobj():
         spec = importlib.machinery.ModuleSpec(name=name, loader=loader, origin=path)
         return _load(spec)
 
-    for _file in os.listdir(tmpdir):
-        if _file.endswith(".so"):
-            _ext_dict[name] = load_dynamic(MODNAME, os.path.join(tmpdir, _file))
+    # Check if tmpdir exists before trying to list it
+    if os.path.exists(tmpdir):
+        for _file in os.listdir(tmpdir):
+            if _file.endswith(".so"):
+                _ext_dict[name] = load_dynamic(MODNAME, os.path.join(tmpdir, _file))
+    else:
+        # tmpdir doesn't exist, likely build process failed
+        if verbose:
+            print(f"Warning: tmpdir {tmpdir} does not exist - build process may have failed")
 
     if name not in _ext_dict.keys():
         raise RuntimeError(

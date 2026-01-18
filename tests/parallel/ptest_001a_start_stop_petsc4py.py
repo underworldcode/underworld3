@@ -32,10 +32,7 @@ petsc_fe = PETSc.FE().createDefault(
 
 # dmplex.projectCoordinates(petsc_fe)
 
-if (
-    PETSc.Sys.getVersion() <= (3, 20, 5)
-    and PETSc.Sys.getVersionInfo()["release"] == True
-        ):
+if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
     dmplex.projectCoordinates(petsc_fe)
 else:
     dmplex.setCoordinateDisc(petsc_fe, project=False)

@@ -1,0 +1,24 @@
+# ReadTheDocs configuration for Underworld3 Documentation
+# Builds full documentation: tutorials, developer guides, and API reference
+# Uses pixi for conda-forge PETSc environment
+# See https://docs.readthedocs.com/platform/stable/build-customization.html
+
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "latest"
+  jobs:
+    create_environment:
+      - asdf plugin add pixi
+      - asdf install pixi latest
+      - asdf global pixi latest
+    install:
+      - pixi install -e dev
+      - pixi run -e dev build
+    build:
+      html:
+        - pixi run -e dev docs-build
+        - mkdir -p $READTHEDOCS_OUTPUT/html
+        - cp -r docs/_build/html/* $READTHEDOCS_OUTPUT/html/

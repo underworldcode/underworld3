@@ -1,0 +1,99 @@
+# Branch-specific Underworld3 image
+# Builds on top of the dependencies image, adding branch-specific code
+#
+# Build: docker build --platform linux/amd64 \
+#          --build-arg UW3_BRANCH=uw3-release-candidate \
+#          -f container/Dockerfile.branch \
+#          -t ghcr.io/underworldcode/uw3-base:2025.01-slim .
+
+ARG DEPS_IMAGE=ghcr.io/underworldcode/uw3-deps:2025.01
+
+# =============================================================================
+# Builder stage - clone and build underworld3
+# =============================================================================
+FROM ${DEPS_IMAGE} AS builder
+
+# Branch to build (default: uw3-release-candidate)
+ARG UW3_BRANCH=uw3-release-candidate
+
+USER jovyan
+WORKDIR /home/jovyan
+
+# Clone underworld3 with shallow clone
+RUN rm -rf underworld3/.git underworld3/src underworld3/docs && \
+    git clone --single-branch --branch ${UW3_BRANCH} --depth 1 \
+    https://github.com/underworldcode/underworld3.git underworld3-new && \
+    cp -r underworld3-new/src underworld3/ && \
+    cp -r underworld3-new/docs underworld3/ && \
+    cp underworld3-new/setup.py underworld3/ && \
+    cp underworld3-new/pyproject.toml underworld3/ && \
+    cp -r underworld3-new/.git underworld3/ && \
+    rm -rf underworld3-new
+
+# Build underworld3 into the environment
+RUN cd underworld3 && \
+    /home/jovyan/underworld3/.pixi/envs/runtime/bin/python -m pip install -e . --no-deps && \
+    cd ..
+
+# Install jupyter kernel
+RUN /home/jovyan/underworld3/.pixi/envs/runtime/bin/python -m ipykernel install --user --name=uw3 --display-name="Underworld3"
+
+# Remove docs_legacy if present
+RUN rm -rf /home/jovyan/underworld3/docs_legacy
+
+# Remove __pycache__ directories
+RUN find /home/jovyan -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+# =============================================================================
+# Final stage - minimal runtime image
+# =============================================================================
+FROM ${DEPS_IMAGE}
+
+ARG UW3_BRANCH=uw3-release-candidate
+
+USER jovyan
+WORKDIR /home/jovyan
+
+# Copy built underworld3
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/src /home/jovyan/underworld3/src
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/setup.py /home/jovyan/underworld3/setup.py
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pyproject.toml /home/jovyan/underworld3/pyproject.toml
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/docs /home/jovyan/underworld3/docs
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.git /home/jovyan/underworld3/.git
+
+# Copy jupyter kernel config
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/.local /home/jovyan/.local
+
+# Copy installed package (in site-packages)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12/site-packages/underworld3 /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12/site-packages/underworld3
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12/site-packages/underworld3.egg-link /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12/site-packages/underworld3.egg-link 2>/dev/null || true
+
+# Create tutorials directory
+RUN mkdir -p /home/jovyan/Tutorials && \
+    cp -r /home/jovyan/underworld3/docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
+
+# Create minimal start script - launch jupyter directly (no pixi overhead)
+RUN cat > /home/jovyan/start <<'SCRIPT'
+#!/bin/bash
+export PATH="/home/jovyan/underworld3/.pixi/envs/runtime/bin:$PATH"
+cd /home/jovyan/underworld3
+exec "$@"
+SCRIPT
+RUN chmod +x /home/jovyan/start
+
+# Record branch
+ENV UW3_BRANCH=${UW3_BRANCH}
+
+# Expose jupyter port
+EXPOSE 8888
+
+# Default working directory
+WORKDIR /home/jovyan/underworld3
+
+# ENTRYPOINT runs start script, CMD provides default args
+ENTRYPOINT ["/home/jovyan/start"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--no-browser"]
+
+# Labels
+LABEL org.opencontainers.image.source="https://github.com/underworldcode/underworld3"
+LABEL org.opencontainers.image.description="Underworld3 binder image (${UW3_BRANCH} branch)"

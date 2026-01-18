@@ -2,7 +2,11 @@ import underworld3 as uw
 import numpy as np
 import pytest
 
-from underworld3.kdtree import KDTree
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
+
+# Use uw.kdtree (ckdtree/nanoflann) not underworld3.kdtree (pykdtree)
+KDTree = uw.kdtree.KDTree
 
 test_single_data = []
 
@@ -31,18 +35,16 @@ def test_single_coord(n, dim, coords):
     brute_id = np.argmin(brute_dist)
 
     # Build our index
-    index = KDTree(pts)
+    index = uw.kdtree.KDTree(pts)
     # Use KDTree to find closest point to a coord
-    kd_dist, kd_id = index.query(coords)
+    kd_dist, kd_id = index.query(coords, sqr_dists=False)
 
     assert np.any(kd_id[0] > index.n) == False, "Some point weren't found. Error"
 
-    assert (
-        kd_id[0] == brute_id
-    ), "KDTree and brute force method did not find the same point."
+    assert kd_id[0] == brute_id, "KDTree and brute force method did not find the same point."
 
     assert np.allclose(kd_dist[0], brute_dist[brute_id]), (
-        "KDTree and Numpy did not find the same distance squared.\n"
+        "KDTree and Numpy did not find the same distance.\n"
         f"KDTree distance={kd_dist[0]} Numpy distance={brute_dist[brute_id]} "
     )
 
@@ -58,10 +60,10 @@ def test_self_points(n, dim):
     pts = np.random.random(size=(n, dim))
 
     # Build our index
-    index = KDTree(pts)
+    index = uw.kdtree.KDTree(pts)
 
     # Use KDTree to find closest point to a coord
-    (dist, kdpt) = index.query(pts)
+    dist, kdpt = index.query(pts)
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.
@@ -81,26 +83,27 @@ def test_mesh_verts(res, dim):
     to mesh verts.
     """
     mesh = uw.meshing.StructuredQuadBox(elementRes=(res,) * dim)
-    index = KDTree(mesh.data)
+    index = uw.kdtree.KDTree(mesh.X.coords[...])
+    # index = KDTree(mesh.X.coords[...])
 
     # Get copy of mesh vertices, and add some noise, but only a small
     # amount such that the copied data points are still closest to the
     # original points.
     elsize = 1.0 / float(res)
-    coords = mesh.data.copy() + 0.5 * elsize * np.random.random(mesh.data.shape)
-    (dist, kdpt) = index.query(coords)
+    coords = mesh.X.coords[...] + 0.5 * elsize * np.random.random(mesh.X.coords[...].shape)
+    dist, kdpt = index.query(coords, sqr_dists=False)
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
 
     # assert np.allclose(True, found), "All points should have been found."
     # `find_closest_point` should return index of pts.
     assert np.allclose(
-        np.arange(mesh.data.shape[0]), kdpt
+        np.arange(mesh.X.coords[...].shape[0]), kdpt
     ), "Point indices weren't as expected."
     # Calc distances
-    diff = mesh.data - coords
+    diff = mesh.X.coords[...] - coords
     dot2 = np.sqrt(np.sum(np.multiply(diff, diff), 1))
-    assert np.allclose(dot2, dist), "Point distances weren't as expected."
+    assert np.allclose(dist.squeeze(), dot2), "Point distances weren't as expected."
 
 
 # Mesh centroid test
@@ -129,8 +132,7 @@ def test_mesh_centroid(res, dim, fill_param):
 
     index = uw.kdtree.KDTree(centroids)
 
-    with swarm.access():
-        dist, kdpt = index.query(swarm.data)
+    dist, kdpt = index.query(swarm._particle_coordinates.data[...])
 
     assert np.any(kdpt > index.n) == False, "Some point weren't found. Error"
     # `find_closest_point` should return index of pts.

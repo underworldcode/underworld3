@@ -1,4 +1,25 @@
-"""tensor / matrix operations on meshes"""
+r"""
+Tensor notation conversion utilities for continuum mechanics.
+
+This module provides functions to convert between different tensor notations
+commonly used in finite element implementations:
+
+- **Full tensor notation**: :math:`\sigma_{ij}`, :math:`C_{ijkl}`
+- **Voigt notation**: Compact vector/matrix forms for symmetric tensors
+- **Mandel notation**: Normalized Voigt form preserving inner products
+
+Voigt notation maps symmetric tensors to vectors/matrices:
+- 2D: :math:`[\sigma_{11}, \sigma_{22}, \sigma_{12}]`
+- 3D: :math:`[\sigma_{11}, \sigma_{22}, \sigma_{33}, \sigma_{23}, \sigma_{13}, \sigma_{12}]`
+
+Mandel notation scales off-diagonal terms by :math:`\sqrt{2}` to preserve
+tensor contractions under the standard vector inner product.
+
+See Also
+--------
+underworld3.maths.vector_calculus : Gradient, divergence, curl operations.
+underworld3.constitutive_models : Constitutive law implementations.
+"""
 
 import sympy
 from sympy import sympify
@@ -160,7 +181,7 @@ def rank2_to_voigt(
     dim,
     covariant=True,
 ):
-    r"""Convert rank 2 tensor ($v_{ij}$) to Voigt (vector) form ($V_I$)"""
+    r"""Convert rank-2 tensor :math:`v_{ij}` to Voigt (vector) form :math:`V_I`."""
 
     imapping = idxmap
     vdim = imapping[dim][0]
@@ -213,7 +234,24 @@ def voigt_to_rank4(C_IJ, dim):
 
 
 def rank2_to_mandel(v_ij, dim):
+    r"""
+    Convert rank-2 tensor to Mandel vector form.
 
+    Mandel notation scales off-diagonal terms by :math:`\sqrt{2}`,
+    preserving inner products under vector operations.
+
+    Parameters
+    ----------
+    v_ij : sympy.Matrix
+        Symmetric rank-2 tensor as (dim x dim) matrix.
+    dim : int
+        Spatial dimension (2 or 3).
+
+    Returns
+    -------
+    sympy.Matrix
+        Mandel vector (3 components for 2D, 6 for 3D).
+    """
     P = P_mandel[dim]
 
     v_I = P * _rank2_to_unscaled_matrix(v_ij, dim, covariant=True).T
@@ -222,7 +260,21 @@ def rank2_to_mandel(v_ij, dim):
 
 
 def rank4_to_mandel(c_ijkl, dim):
+    r"""
+    Convert rank-4 tensor to Mandel matrix form.
 
+    Parameters
+    ----------
+    c_ijkl : sympy.NDimArray
+        Symmetric rank-4 tensor (dim x dim x dim x dim).
+    dim : int
+        Spatial dimension (2 or 3).
+
+    Returns
+    -------
+    sympy.Matrix
+        Mandel matrix (3x3 for 2D, 6x6 for 3D).
+    """
     P = P_mandel[dim]
     c_IJ = P * _rank4_to_unscaled_matrix(c_ijkl, dim) * P
 
@@ -230,35 +282,103 @@ def rank4_to_mandel(c_ijkl, dim):
 
 
 def mandel_to_rank2(v_I, dim):
+    r"""
+    Convert Mandel vector to rank-2 tensor form.
 
+    Parameters
+    ----------
+    v_I : sympy.Matrix
+        Mandel vector (3 components for 2D, 6 for 3D).
+    dim : int
+        Spatial dimension (2 or 3).
+
+    Returns
+    -------
+    sympy.Matrix
+        Symmetric rank-2 tensor as (dim x dim) matrix.
+    """
     P = P_mandel[dim]
 
     return _unscaled_matrix_to_rank2(P.inv() * v_I, dim)
 
 
 def mandel_to_rank4(c_IJ, dim):
+    r"""
+    Convert Mandel matrix to rank-4 tensor form.
 
+    Parameters
+    ----------
+    c_IJ : sympy.Matrix
+        Mandel matrix (3x3 for 2D, 6x6 for 3D).
+    dim : int
+        Spatial dimension (2 or 3).
+
+    Returns
+    -------
+    sympy.NDimArray
+        Symmetric rank-4 tensor (dim x dim x dim x dim).
+    """
     P = P_mandel[dim]
 
     return _unscaled_matrix_to_rank4(P.inv() * c_IJ * P.inv(), dim)
 
 
 def rank4_identity(dim):
-    r"""I_ijkl = (\delta_ij \delta_kl + \delta_il\delta_jk)/2"""
+    r"""
+    Symmetric fourth-order identity tensor.
 
+    Constructs the identity tensor for symmetric second-order tensors:
+
+    .. math::
+
+        I_{ijkl} = \frac{1}{2}(\delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk})
+
+    This tensor satisfies :math:`I_{ijkl} \sigma_{kl} = \sigma_{ij}` for
+    symmetric :math:`\sigma`.
+
+    Parameters
+    ----------
+    dim : int
+        Spatial dimension (2 or 3).
+
+    Returns
+    -------
+    sympy.NDimArray
+        Fourth-order identity tensor (dim x dim x dim x dim).
+    """
     I = sympy.MutableDenseNDimArray.zeros(dim, dim, dim, dim)
 
     for i in range(dim):
         for j in range(dim):
             for k in range(dim):
                 for l in range(dim):
-                    I[i, j, k, l] = (
-                        sympy.sympify((i == k) * (j == l) + (i == l) * (j == k)) / 2
-                    )
+                    I[i, j, k, l] = sympy.sympify((i == k) * (j == l) + (i == l) * (j == k)) / 2
 
     return I
 
-def rank2_inner_product(A,B):
-    r"""p = \Sum_i \Sum_j A_{ij} \cdot B_{ij}"""
 
-    return sympy.tensorcontraction(sympy.tensorcontraction(sympy.tensorproduct(A, B),(1,3)),(0,1))
+def rank2_inner_product(A, B):
+    r"""
+    Double contraction (inner product) of two rank-2 tensors.
+
+    Computes:
+
+    .. math::
+
+        p = \sum_i \sum_j A_{ij} B_{ij} = A : B
+
+    Parameters
+    ----------
+    A : sympy.Matrix or sympy.NDimArray
+        First rank-2 tensor.
+    B : sympy.Matrix or sympy.NDimArray
+        Second rank-2 tensor.
+
+    Returns
+    -------
+    sympy.Expr
+        Scalar result of the double contraction.
+    """
+    return sympy.tensorcontraction(
+        sympy.tensorcontraction(sympy.tensorproduct(A, B), (1, 3)), (0, 1)
+    )

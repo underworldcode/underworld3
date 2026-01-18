@@ -3,6 +3,7 @@
 
 from __future__ import print_function
 import sys, petsc4py
+
 petsc4py.init(sys.argv)
 from petsc4py import PETSc
 import numpy as np
@@ -21,10 +22,10 @@ def create_dmplex_from_medit(medit_file, print_info=False):
         print_medit_mesh_info(medit_file)
 
     # Read mesh data
-    vertices, _ = read_medit_ascii(medit_file, 'Vertices')
-    cells, cells_indx = read_medit_ascii(medit_file, 'Tetrahedra')
-    triangles, triangles_indx = read_medit_ascii(medit_file, 'Triangles')
-    edges, edges_indx = read_medit_ascii(medit_file, 'Edges')
+    vertices, _ = read_medit_ascii(medit_file, "Vertices")
+    cells, cells_indx = read_medit_ascii(medit_file, "Tetrahedra")
+    triangles, triangles_indx = read_medit_ascii(medit_file, "Triangles")
+    edges, edges_indx = read_medit_ascii(medit_file, "Edges")
 
     dim = vertices.shape[1]
     plex = PETSc.DMPlex().createFromCellList(dim, cells, vertices)
@@ -38,9 +39,9 @@ def create_dmplex_from_medit(medit_file, print_info=False):
 
     # Define boundary labels
     vertices_labels_values = (
-        (('LeftPts', 101), ('RightPts', 102)),
-        (('FrontPts', 103), ('BackPts', 104)),
-        (('BottomPts', 105), ('TopPts', 106))
+        (("LeftPts", 101), ("RightPts", 102)),
+        (("FrontPts", 103), ("BackPts", 104)),
+        (("BottomPts", 105), ("TopPts", 106)),
     )
 
     def label_vertices(dm, labels_values, dim=3, atol=1e-6):
@@ -85,11 +86,11 @@ def create_dmplex_from_medit(medit_file, print_info=False):
             indices = get_label_indices(plex, name, value) - tet_End
             label_cache[(name, value)] = indices
 
-    # Label Triangles 
+    # Label Triangles
     face_labels_values = (
-        (('Left', 391), ('Right', 392)),
-        (('Front', 393), ('Back', 394)),
-        (('Bottom', 395), ('Top', 396))
+        (("Left", 391), ("Right", 392)),
+        (("Front", 393), ("Back", 394)),
+        (("Bottom", 395), ("Top", 396)),
     )
 
     plex.createLabel("TriangleLabels")
@@ -105,7 +106,9 @@ def create_dmplex_from_medit(medit_file, print_info=False):
         conepoints = np.sort(coneclose[-3:] - tet_End)
 
         if np.any(np.all(sorted_triangles == conepoints, axis=1)):
-            index_tri = np.where(np.all(sorted_triangles == conepoints, axis=1))[0][0] # fetch the where conepoints matches in sorted_triangles list
+            index_tri = np.where(np.all(sorted_triangles == conepoints, axis=1))[0][
+                0
+            ]  # fetch the where conepoints matches in sorted_triangles list
             plex.setLabelValue("TriangleLabels", i, 300 + triangles_indx[index_tri])
 
         # boundary labeling using cached indices
@@ -115,7 +118,11 @@ def create_dmplex_from_medit(medit_file, print_info=False):
                 face_label, face_value = face_labels_values[j][k]
                 vertices_indices = label_cache.get((vertices_label, vertices_value), [])
 
-                if conepoints[0] in vertices_indices and conepoints[1] in vertices_indices and conepoints[2] in vertices_indices:
+                if (
+                    conepoints[0] in vertices_indices
+                    and conepoints[1] in vertices_indices
+                    and conepoints[2] in vertices_indices
+                ):
                     plex.setLabelValue(face_label, i, face_value)
 
     # Label Edges
@@ -128,7 +135,9 @@ def create_dmplex_from_medit(medit_file, print_info=False):
         conepoints = np.sort(coneclose[-2:] - tet_End)
 
         if np.any(np.all(sorted_edges == conepoints, axis=1)):
-            index_edge = np.where(np.all(sorted_edges == conepoints, axis=1))[0][0] # fetch the where conepoints matches in sorted_edges list
+            index_edge = np.where(np.all(sorted_edges == conepoints, axis=1))[0][
+                0
+            ]  # fetch the where conepoints matches in sorted_edges list
             plex.setLabelValue("LineLabels", i, 200 + edges_indx[index_edge])
 
     return plex

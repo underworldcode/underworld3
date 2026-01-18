@@ -100,8 +100,7 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
 
         label = dm.getLabel(label_name)
         if not label:
-                if uw.mpi.rank == 0:
-                        print(f"Label {label_name} is not present on the dm")
+                uw.pprint(0, f"Label {label_name} is not present on the dm")
                 return np.array([0])
 
         pointIS = dm.getStratumIS("depth",0)

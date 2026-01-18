@@ -1,0 +1,84 @@
+import underworld3 as uw
+import numpy as np
+import sympy
+import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
+
+# ### Test IndexSwarmVariable in getting the right value on the Symmetrical Points
+
+xmin, xmax = -1, 1
+ymin, ymax = -1, 1
+xres, yres = 2, 2
+dx = (xmax - xmin) / xres
+dy = (ymax - ymin) / yres
+
+ppdegree = 1
+ppcont = True
+
+fill_params = [2, 3, 4, 5]
+
+
+meshStructuredQuadBox = uw.meshing.StructuredQuadBox(
+    elementRes=(int(xres), int(yres)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
+)
+# meshUnstructuredSimplexbox_regular = uw.meshing.UnstructuredSimplexBox(cellSize=dx,  minCoords=(xmin, ymin), maxCoords=(xmax, ymax),regular=True,refinement=0)
+# meshUnstructuredSimplexbox_irregular = uw.meshing.UnstructuredSimplexBox(cellSize=dx,  minCoords=(xmin, ymin), maxCoords=(xmax, ymax),regular=False,refinement=0)
+
+
+@pytest.mark.parametrize(
+    "mesh",
+    [
+        meshStructuredQuadBox,
+        # meshUnstructuredSimplexbox_regular,
+        # meshUnstructuredSimplexbox_irregular,
+    ],
+)
+def test_IndexSwarmVariable(mesh):
+    # Reset model state to avoid conflicts with other tests
+    uw.reset_default_model()
+
+    Pmesh = uw.discretisation.MeshVariable("P", mesh, 1, degree=ppdegree, continuous=ppcont)
+
+    for fill_param in fill_params:
+        print(fill_param)
+        swarm = uw.swarm.Swarm(mesh)
+        material = uw.swarm.IndexSwarmVariable(
+            "M", swarm, indices=2, proxy_degree=ppdegree, proxy_continuous=ppcont
+        )
+        swarm.populate(fill_param=fill_param)
+
+        amplitude, offset, wavelength = 0.5, 0.0, 1
+        k = 2.0 * np.pi / wavelength
+        interfaceSwarm = uw.swarm.Swarm(mesh)
+        npoints = 101
+        x = np.linspace(mesh.X.coords[:, 0].min(), mesh.X.coords[:, 0].max(), npoints)
+        y = offset + amplitude * np.cos(k * x)
+        interface_coords = np.ascontiguousarray(np.array([x, y]).T)
+        interfaceSwarm.add_particles_with_coordinates(interface_coords)
+
+        M0Index = 0
+        M1Index = 1
+        perturbation = (
+            offset + amplitude * np.cos(k * swarm._particle_coordinates.data[:, 0]) + 0.01
+        )
+        material.array[:, 0, 0] = np.where(
+            swarm._particle_coordinates.data[:, 1] <= perturbation, M0Index, M1Index
+        )
+
+        P0, P1 = 1, 10
+        P_fn = material.createMask([P0, P1])
+
+        ## compare the value on the Symmetrical Point on the left and right wall
+        Pmesh.array[:, 0, 0] = uw.function.evaluate(P_fn, Pmesh.coords).squeeze()
+        assert np.allclose(Pmesh.array[0, 0, 0], Pmesh.array[1, 0, 0], atol=0.01)
+        assert np.allclose(Pmesh.array[2, 0, 0], Pmesh.array[3, 0, 0], atol=0.01)
+        assert np.allclose(Pmesh.array[6, 0, 0], Pmesh.array[7, 0, 0], atol=0.01)
+        del swarm
+        del material
+
+
+# del meshStructuredQuadBox
+# del meshUnstructuredSimplexbox_regular
+# del meshUnstructuredSimplexbox_irregular

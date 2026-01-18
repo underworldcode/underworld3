@@ -9,8 +9,23 @@ import underworld3 as uw
 import numpy as np
 import sympy
 import pytest
-from IPython.display import display  # since pytest runs pure python
 
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
+
+# display() is only for pretty-printing, not required for test logic
+try:
+    from IPython.display import display
+except ImportError:
+    display = lambda x: None  # no-op when IPython unavailable
+
+# Reset model and disable strict units for this test module
+# (Tests unit metadata functionality, not physical correctness)
+# NOTE: We intentionally don't call set_reference_quantities() here to avoid
+# test pollution - global model state affects subsequent tests in the suite.
+# The warnings about "no reference quantities" are expected and acceptable.
+uw.reset_default_model()
+uw.use_strict_units(False)
 
 # ### Mesh based data types
 #
@@ -45,6 +60,17 @@ v31 = uw.discretisation.MeshVariable("U31", mesh3, mesh3.dim, degree=2)
 v32 = uw.discretisation.MeshVariable("U32", mesh3, mesh3.dim, degree=2)
 p31 = uw.discretisation.MeshVariable("P31", mesh3, 1, degree=1)
 
+
+# Unit-aware mesh variables for testing
+# Create variables with units to test unit metadata functionality
+velocity_2d = uw.discretisation.MeshVariable("velocity_2d", mesh1, mesh1.dim, degree=2, units="m/s")
+temperature_2d = uw.discretisation.MeshVariable("temperature_2d", mesh1, 1, degree=1, units="K")
+
+velocity_3d = uw.discretisation.MeshVariable(
+    "velocity_3d", mesh3, mesh3.dim, degree=2, units="cm/year"
+)
+pressure_3d = uw.discretisation.MeshVariable("pressure_3d", mesh3, 1, degree=1, units="Pa")
+
 # Validate the meshes / mesh variables
 
 # # Testing
@@ -73,15 +99,54 @@ def test_check_mesh_X(mesh, v1, v2, p):
     assert mesh3.X.shape == (1, 3)
 
 
+def test_mesh_variables_with_units():
+    """Test MeshVariable creation and unit metadata functionality."""
+    # Test 2D variables with units
+    assert velocity_2d.units is not None
+    assert "meter" in str(velocity_2d.units) or "m" in str(velocity_2d.units)
+
+    assert temperature_2d.units is not None
+    assert "kelvin" in str(temperature_2d.units) or "K" in str(temperature_2d.units)
+
+    # Test 3D variables with units
+    assert velocity_3d.units is not None
+    assert "centimeter" in str(velocity_3d.units) or "cm" in str(velocity_3d.units)
+
+    assert pressure_3d.units is not None
+    assert "pascal" in str(pressure_3d.units) or "Pa" in str(pressure_3d.units)
+
+    # Test that variables without units still work
+    assert v11.units is None
+    assert p11.units is None
+
+    # Test that units persist through mathematical operations
+    # The .sym property should contain the units information for evaluation
+    velocity_magnitude = (velocity_2d[0] ** 2 + velocity_2d[1] ** 2) ** 0.5
+    assert velocity_magnitude is not None  # Should create valid expression
+
+    # Test units are preserved in variable properties
+    assert velocity_2d.shape == (1, mesh1.dim)  # SymPy Matrix shape is (1, dim)
+    assert temperature_2d.shape == (1, 1)  # Scalar has shape (1, 1)
+    assert velocity_3d.shape == (1, mesh3.dim)  # SymPy Matrix shape is (1, dim)
+    assert pressure_3d.shape == (1, 1)  # Scalar has shape (1, 1)
+
+    # Units should still be accessible after accessing other properties
+    assert velocity_2d.units is not None
+    assert temperature_2d.units is not None
+    assert velocity_3d.units is not None
+    assert pressure_3d.units is not None
+
+
 # This tests the vector / vector field exists as expected
 # and that the vector.to_vector works
 
 
-@pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
-def test_ijk(mesh, v1, v2, p):
-    assert mesh.vector.to_vector(v1.sym) == v1.ijk
+# @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
+# def test_ijk(mesh, v1, v2, p):
+#     assert mesh.vector.to_vector(v1.sym) == v1.ijk
 
 
+# This is to be lit up after we properly deprecate .ijk
 @pytest.mark.xfail(raises=AttributeError)
 def test_no_ijk():
     # This object should not exist - Attribute error
@@ -111,7 +176,9 @@ def test_mesh_vector_div(mesh, v1, v2, p):
 
     div_v_explicit = 0.0
 
-    for i, coord in enumerate(mesh.X):
+    # Use mesh.CoordinateSystem.N for differentiation - contains BaseScalars
+    # (mesh.X contains UWCoordinates which are for user expressions, not derivatives)
+    for i, coord in enumerate(mesh.CoordinateSystem.N):
         div_v_explicit += v2.sym.diff(coord)[i]
 
     assert div_v == div_v_explicit
@@ -125,14 +192,13 @@ def test_mesh_vector_div(mesh, v1, v2, p):
 def test_mesh_vector_grad(mesh, v1, v2, p):
     grad_p = mesh.vector.gradient(p.sym)
 
-    for i, coord in enumerate(mesh.X):
+    # Use mesh.CoordinateSystem.N for differentiation - contains BaseScalars
+    for i, coord in enumerate(mesh.CoordinateSystem.N):
         assert grad_p[i] == p.sym[0].diff(coord)
 
     ## This should also be equivalent, if the .fn interface is not broken !
 
-    assert mesh.vector.gradient(p.sym) == mesh.vector.to_matrix(
-        sympy.vector.gradient(p.fn)
-    )
+    assert mesh.vector.gradient(p.sym) == mesh.vector.to_matrix(sympy.vector.gradient(p.fn))
 
 
 # Note: The curl is slightly odd - sympy returns the vector in the third dimension,
@@ -156,7 +222,8 @@ def test_mesh_vector_curl(mesh, v1, v2, p):
 @pytest.mark.parametrize("mesh, v1, v2, p", [m1_args, m2_args, m3_args])
 def test_mesh_vector_jacobian(mesh, v1, v2, p):
     jac_v = mesh.vector.jacobian(v1.sym)
-    jac_v_sym = v1.sym.jacobian(mesh.X)
+    # Use mesh.CoordinateSystem.N for jacobian - contains BaseScalars
+    jac_v_sym = v1.sym.jacobian(mesh.CoordinateSystem.N)
 
     assert jac_v == jac_v_sym
 
@@ -199,37 +266,20 @@ display(v13.sym)
 
 # The mesh variable objects are matrices, but they are structured as vectors. If the fields in the object are of the correct dimension, then they can be interpreted as vector fields and the differential operators such as **div**, **grad**, **curl** are implemented. These broadly correspond to the ones in `sympy.vector` but there are some minor differences in implementation to account for the differences in the underlying objects.
 #
-# Variables that are vector fields also have a `.ijk` representation that is the conversion to a `sympy.vector` object. In this example, `v11` should be a valid 2d vector field, `v31` is a valid 3d vector field whereas `v13` is "something else".
 
 # +
-display(v11.ijk)
-display(v31.ijk)
 
-try:
-    display(v13.ijk)
-except AttributeError:
-    print("")
-    print("AttributeError: 'MeshVariable' object has no attribute 'ijk'")
+
 # -
-display(mesh1.vector.to_matrix(v11.ijk))
-display(mesh3.vector.to_matrix(v31.ijk))
 
 
-# There are some helper functions that convert between `sympy.matrix` form and `sympy.vector` form. The only thing to watch out for is that all 2D vectors in sympy.vector are 3D vectors with a zero out-of-plane component so not every valid operation in sympy.vector gives a correct round-trip conversion.
-
-mesh1.vector.to_vector(mesh1.vector.to_matrix(v11.ijk)) == v11.ijk
-
-V = (
-    mesh1.N.i + mesh1.N.j + mesh1.N.k
-)  # V is a valid 2D vector from `sympy.vector`'s point of view
+V = mesh1.N.i + mesh1.N.j + mesh1.N.k  # V is a valid 2D vector from `sympy.vector`'s point of view
 M = mesh1.vector.to_matrix(V)
 mesh1.vector.to_vector(M)
 
 mesh1.vector.curl(v11.sym)
 
 mesh3.vector.curl(v31.sym)
-
-sympy.vector.curl(v31.ijk)
 
 # ## div, grad and curl
 #

@@ -1,4 +1,34 @@
-## This file has constitutive models that can be plugged into the SNES solvers
+r"""
+Constitutive models for Underworld3 solvers.
+
+This module provides constitutive relationships that define how material
+properties (viscosity, diffusivity, etc.) relate fluxes to gradients of
+unknowns. These models are plugged into SNES solvers to complete the
+governing equations.
+
+Classes
+-------
+Constitutive_Model
+    Base class for all constitutive models.
+ViscousFlowModel
+    Isotropic viscous flow with scalar or tensor viscosity.
+ViscoPlasticFlowModel
+    Viscous flow with yield stress (plastic behavior).
+ViscoElasticPlasticFlowModel
+    Combined viscous, elastic, and plastic rheology.
+DiffusionModel
+    Scalar diffusion (heat, chemical species).
+DarcyFlowModel
+    Porous media flow (Darcy's law).
+TransverseIsotropicFlowModel
+    Anisotropic viscosity with directional weakness.
+MultiMaterialConstitutiveModel
+    Level-set weighted composite of multiple materials.
+
+See Also
+--------
+underworld3.systems.solvers : Solvers that use these constitutive models.
+"""
 
 from typing_extensions import Self
 import sympy
@@ -18,6 +48,7 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.swarm import IndexSwarmVariable
 from underworld3.discretisation import MeshVariable
 from underworld3.systems.ddt import SemiLagrangian as SemiLagrangian_DDt
+from underworld3.function.quantities import UWQuantity
 from underworld3.systems.ddt import Lagrangian as Lagrangian_DDt
 
 from underworld3.function import expression as public_expression
@@ -26,11 +57,45 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 
 
 # How do we use the default here if input is required ?
-def validate_parameters(
-    symbol, input, default=None, allow_number=True, allow_expression=True
-):
+def validate_parameters(symbol, input, default=None, allow_number=True, allow_expression=True):
+    """Convert input to a UWexpression for use in constitutive models.
 
-    if allow_number and isinstance(input, (float)):
+    Parameters
+    ----------
+    symbol : str
+        LaTeX symbol for display (e.g., r"\\eta" for viscosity).
+    input : various
+        Value to convert (UWexpression, UWQuantity, float, int, sympy expr).
+    default : optional
+        Default value if input is None.
+    allow_number : bool
+        If True, accept plain numbers (int/float).
+    allow_expression : bool
+        If True, accept raw sympy expressions.
+
+    Returns
+    -------
+    UWexpression or None
+        Wrapped expression, or None if conversion failed.
+    """
+    # CRITICAL: Check for UWexpression FIRST, before checking sympy.Basic
+    # UWexpression inherits from sympy.Symbol, so it would match the Basic check
+    # and cause double-wrapping, losing unit information
+    from .function.expressions import UWexpression
+    if isinstance(input, UWexpression):
+        # Already a UWexpression - return as-is, no wrapping needed
+        return input
+
+    elif isinstance(input, UWQuantity):
+        # Convert UWQuantity to UWexpression - this is the beautiful symmetry!
+        # The UWexpression constructor will handle unit conversion automatically
+        input = expression(
+            symbol,
+            input,
+            f"(converted from UWQuantity with units {input.units if input.has_units else 'dimensionless'})",
+        )
+
+    elif allow_number and isinstance(input, (float)):
         # print(f"{symbol}: Converting number to uw expression {input}")
         input = expression(symbol, input, "(converted from float)")
 
@@ -48,7 +113,7 @@ def validate_parameters(
     else:
         # That's about all we can fix automagically
         print(f"Unable to set parameter: {symbol} from {input}")
-        print(f"An underworld `expression` or `function` is required", flush=True)
+        print(f"An underworld `expression`, `UWQuantity`, or `function` is required", flush=True)
         return None
 
     return input
@@ -56,37 +121,61 @@ def validate_parameters(
 
 class Constitutive_Model(uw_object):
     r"""
-    Constititutive laws relate gradients in the unknowns to fluxes of quantities
-    (for example, heat fluxes are related to temperature gradients through a thermal conductivity)
-    The `Constitutive_Model` class is a base class for building `underworld` constitutive laws
+    Base class for constitutive laws relating gradients to fluxes.
 
-    In a scalar problem, the relationship is
+    Constitutive laws relate gradients in the unknowns to fluxes of quantities
+    (for example, heat fluxes are related to temperature gradients through a
+    thermal conductivity). This class is a base class for building Underworld
+    constitutive laws.
 
-    $$
-    q_i = k_{ij} \frac{\partial T}{\partial x_j}
-    $$
+    In a scalar problem, the relationship is:
 
-    and the constitutive parameters describe $ k_{ij}$. The template assumes $ k_{ij} = \delta_{ij} $
+    .. math::
 
-    In a vector problem (such as the Stokes problem), the relationship is
+        q_i = k_{ij} \frac{\partial T}{\partial x_j}
 
-    $$
-    t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
-    $$
+    and the constitutive parameters describe :math:`k_{ij}`. The template
+    assumes :math:`k_{ij} = \delta_{ij}`.
 
-    but is usually written to eliminate the anti-symmetric part of the displacement or velocity gradients (for example):
+    In a vector problem (such as the Stokes problem), the relationship is:
 
-    $$
-    t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]
-    $$
+    .. math::
 
-    and the constitutive parameters describe $c_{ijkl}$. The template assumes
-    $ k_{ij} = \frac{1}{2} \left( \delta_{ik} \delta_{jl} + \delta_{il} \delta_{jk} \right) $ which is the
-    4th rank identity tensor accounting for symmetry in the flux and the gradient terms.
+        t_{ij} = c_{ijkl} \frac{\partial u_k}{\partial x_l}
+
+    but is usually written to eliminate the anti-symmetric part of the
+    displacement or velocity gradients:
+
+    .. math::
+
+        t_{ij} = c_{ijkl} \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
+
+    and the constitutive parameters describe :math:`c_{ijkl}`. The template
+    assumes :math:`k_{ij} = \frac{1}{2}(\delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk})`
+    which is the 4th rank identity tensor accounting for symmetry in the flux
+    and the gradient terms.
     """
 
+    # Class-level instance counter for automatic symbol uniqueness across all constitutive models
+    _global_instance_count = 0
+    # Per-class instance counters for class-specific numbering
+    _class_instance_counts = {}
+
     @timing.routine_timer_decorator
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
+        """
+        Initialize a constitutive model.
+
+        Parameters
+        ----------
+        unknowns : UnknownSet
+            The solver's unknowns (velocity, pressure, etc.)
+        material_name : str, optional
+            A distinguishing name for this material's symbols.
+            If provided, symbols will be subscripted: η → η_{name}
+            Useful when bundling multiple models in MultiMaterialModel.
+        """
         # Define / identify the various properties in the class but leave
         # the implementation to child classes. The constitutive tensor is
         # defined as a template here, but should be instantiated via class
@@ -94,6 +183,20 @@ class Constitutive_Model(uw_object):
 
         # We provide a function that converts gradients / gradient history terms
         # into the relevant flux term.
+
+        # Store material name for symbol disambiguation
+        self._material_name = material_name
+
+        # Track instance numbers for automatic symbol uniqueness
+        Constitutive_Model._global_instance_count += 1
+        self._global_instance_number = Constitutive_Model._global_instance_count
+
+        # Track per-class instance numbers (0-based indexing)
+        class_name = self.__class__.__name__
+        if class_name not in Constitutive_Model._class_instance_counts:
+            Constitutive_Model._class_instance_counts[class_name] = 0
+        self._class_instance_number = Constitutive_Model._class_instance_counts[class_name]
+        Constitutive_Model._class_instance_counts[class_name] += 1
 
         self.Unknowns = unknowns
 
@@ -123,6 +226,41 @@ class Constitutive_Model(uw_object):
 
         super().__init__()
 
+    def create_unique_symbol(self, base_symbol, value, description):
+        """
+        Create a unique symbol name for constitutive model parameters.
+
+        Symbol naming priority:
+        1. If material_name is set: η → η_{material_name}
+        2. Else if multiple instances of same class: η → η^{(n)}
+        3. Else: use base symbol as-is
+
+        Parameters
+        ----------
+        base_symbol : str
+            The base LaTeX symbol name (e.g., r"\\eta", r"\\kappa")
+        value : float or expression
+            The initial value for the symbol
+        description : str
+            Description of the parameter
+
+        Returns
+        -------
+        UWexpression
+            Expression with unique symbol name
+        """
+        # Priority 1: User-specified material name (subscript notation)
+        if self._material_name is not None:
+            symbol_name = rf"{{{base_symbol}}}_{{\mathrm{{{self._material_name}}}}}"
+        # Priority 2: Multiple instances of same class (superscript notation)
+        elif self._class_instance_number > 0:
+            symbol_name = rf"{{{base_symbol}}}^{{({self._class_instance_number})}}"
+        # Priority 3: First/only instance - clean symbol
+        else:
+            symbol_name = base_symbol
+
+        return expression(symbol_name, value, description)
+
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
@@ -135,33 +273,74 @@ class Constitutive_Model(uw_object):
 
     @property
     def Unknowns(self):
+        r"""Reference to the solver's unknown fields.
+
+        Returns
+        -------
+        Unknowns
+            Container holding the primary unknown field(s) (e.g., velocity,
+            pressure, temperature) that this constitutive model operates on.
+        """
         return self._Unknowns
 
     # We probably should not be changing this ever ... does this setter even belong here ?
     @Unknowns.setter
     def Unknowns(self, unknowns):
+        """Set the solver unknowns (invalidates setup)."""
         self._Unknowns = unknowns
         self._solver_is_setup = False
         return
 
     @property
     def K(self):
-        """The constitutive property for this flow law"""
+        r"""Primary constitutive property (viscosity, diffusivity, etc.).
+
+        Returns
+        -------
+        UWexpression
+            The material property defining the flux-gradient relationship.
+        """
         return self._K
 
-    ## Not sure about setters for these, I suppose it would be a good idea
     @property
     def u(self):
+        r"""The primary unknown field from the solver.
+
+        Returns
+        -------
+        MeshVariable
+            The unknown field (velocity, temperature, etc.).
+        """
         return self.Unknowns.u
 
     @property
     def grad_u(self):
+        r"""Gradient of the unknown field.
+
+        For scalar fields, this is a vector. For vector fields (velocity),
+        this is the velocity gradient tensor :math:`\nabla \mathbf{u}`.
+
+        Returns
+        -------
+        sympy.Matrix
+            Gradient/Jacobian of the unknown field.
+        """
         mesh = self.Unknowns.u.mesh
         # return mesh.vector.gradient(self.Unknowns.u.sym)
         return self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
 
     @property
     def DuDt(self):
+        r"""Material derivative operator for the unknown field.
+
+        Used in time-dependent problems to track Lagrangian or
+        semi-Lagrangian derivatives.
+
+        Returns
+        -------
+        SemiLagrangian_DDt or Lagrangian_DDt or None
+            The material derivative operator, or None if not set.
+        """
         return self._DuDt
 
     @DuDt.setter
@@ -169,12 +348,14 @@ class Constitutive_Model(uw_object):
         self,
         DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
+        """Set the material derivative operator for the unknown."""
         self._DuDt = DuDt_value
         self._solver_is_setup = False
         return
 
     @property
     def DFDt(self):
+        """Material derivative operator for the flux history."""
         return self._DFDt
 
     # Do we want to lock this down ?
@@ -183,6 +364,7 @@ class Constitutive_Model(uw_object):
         self,
         DFDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
+        """Set the material derivative operator for flux history."""
         self._DFDt = DFDt_value
         self._solver_is_setup = False
         return
@@ -283,6 +465,11 @@ class Constitutive_Model(uw_object):
         self._solver_is_setup = False
         self._is_setup = False
 
+        # Propagate is_setup flag to solver if we have a reference
+        if hasattr(self, "Parameters") and hasattr(self.Parameters, "_solver"):
+            if self.Parameters._solver is not None:
+                self.Parameters._solver.is_setup = False
+
         return
 
     def _build_c_tensor(self):
@@ -306,19 +493,51 @@ class Constitutive_Model(uw_object):
 
 class ViscousFlowModel(Constitutive_Model):
     r"""
-    ### Viscous Flow Model
+    Viscous flow constitutive model for Stokes-type solvers.
 
-    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
+    Defines the relationship between deviatoric stress and strain rate:
 
-    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
+    .. math::
 
-    The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.
+        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
 
+    where :math:`\eta` is the viscosity, which can be a scalar constant, SymPy
+    function, Underworld mesh variable, or any valid combination. This results
+    in an isotropic (but not necessarily homogeneous or linear) relationship
+    between :math:`\tau` and the velocity gradients.
 
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (typically velocity and pressure fields).
+    material_name : str, optional
+        Name identifier for this material (used in multi-material setups).
+
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters container. Set ``Parameters.shear_viscosity_0``
+        to define the viscosity.
+    flux : sympy.Matrix
+        The computed deviatoric stress tensor :math:`\boldsymbol{\tau}`.
+    C : sympy.Matrix
+        Mandel form of the constitutive tensor :math:`\eta_{IJ}`.
+    c : sympy.Array
+        Rank-4 tensor form :math:`\eta_{ijkl}`.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> stokes = uw.systems.Stokes(mesh)
+    >>> viscous = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns)
+    >>> viscous.Parameters.shear_viscosity_0 = 1e21  # Pa.s
+    >>> stokes.constitutive_model = viscous
+
+    See Also
+    --------
+    ViscoPlasticFlowModel : Adds yield stress for plastic behavior.
+    ViscoElasticPlasticFlowModel : Adds viscoelastic memory.
     """
 
     #     ```python
@@ -337,14 +556,14 @@ class ViscousFlowModel(Constitutive_Model):
     # tau = viscous_model.flux(gradient_matrix)
     # ```
 
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
         # All this needs to do is define the
         # viscosity property and init the parent(s)
         # In this case, nothing seems to be needed.
         # The viscosity is completely defined
         # in terms of the Parameters
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         # self._viscosity = expression(
         #     R"{\eta_0}",
@@ -356,49 +575,52 @@ class ViscousFlowModel(Constitutive_Model):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Now uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Define shear_viscosity_0 as a Parameter descriptor
+        # The lambda receives the _Parameters instance and creates the expression via the owning model
+        shear_viscosity_0 = api_tools.Parameter(
+            r"\eta",
+            lambda params_instance: params_instance._owning_model.create_unique_symbol(
+                r"\eta", 1, "Shear viscosity"
+            ),
+            "Shear viscosity",
+            units="Pa*s"
+        )
 
         def __init__(
             inner_self,
             _owning_model,
         ):
-
             inner_self._owning_model = _owning_model
-            inner_self._shear_viscosity_0 = expression(r"\eta", 1, "Shear viscosity")
-
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value: Union[float, sympy.Function]):
-
-            visc_expr = validate_parameters(
-                R"\eta", value, default=None, allow_number=True
-            )
-
-            inner_self._shear_viscosity_0.copy(visc_expr)
-            del visc_expr
-
-            return
+            # Note: shear_viscosity_0 is now a descriptor, no need to create it here
 
     @property
     def viscosity(self):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters._shear_viscosity_0
+        return self.Parameters.shear_viscosity_0
+
+    @property
+    def K(self):
+        """Effective stiffness parameter (viscosity for viscous flow)"""
+        return self.viscosity
 
     @property
     def flux(self):
+        r"""Viscous stress tensor: :math:`\boldsymbol{\tau} = 2\eta\dot{\varepsilon}`."""
         edot = self.grad_u
         return self._q(edot)
 
     def _q(self, edot):
-        """Computes the effect of the constitutive tensor on the gradients of the unknowns.
-        (always uses the `c` form of the tensor). In general cases, the history of the gradients
-        may be required to evaluate the flux.
-        """
+        """Apply constitutive tensor to strain rate to compute stress."""
 
         if not self._is_setup:
             self._build_c_tensor()
@@ -422,6 +644,12 @@ class ViscousFlowModel(Constitutive_Model):
 
     @property
     def grad_u(self):
+        r"""Symmetric strain rate tensor (with 1/2 factor).
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+        """
         mesh = self.Unknowns.u.mesh
 
         return mesh.vector.strain_tensor(self.Unknowns.u.sym)
@@ -439,19 +667,39 @@ class ViscousFlowModel(Constitutive_Model):
         d = self.dim
         viscosity = self.viscosity
 
-        try:
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
-        except:
-            d = self.dim
-            dv = uw.maths.tensor.idxmap[d][0]
-            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-                self._c = 2 * viscosity
-            else:
-                raise RuntimeError(
-                    "Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor"
-                )
+        # Check for tensor forms first (Mandel matrix or full rank-4 tensor)
+        dv = uw.maths.tensor.idxmap[d][0]
+        if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
+            # Mandel form of constitutive tensor
+            self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
+        elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
+            # Full rank-4 tensor
+            self._c = 2 * viscosity
+        else:
+            # Scalar viscosity case
+            # UWexpression has __getitem__ from MathematicalMixin, making it Iterable,
+            # which causes SymPy's array multiplication operator to reject it.
+            # Solution: Use element-wise loop construction instead of operator overloading.
+            # The multiplication creates Mul(scalar, UWexpression) objects which are NOT
+            # Iterable, so array assignment accepts them. JIT unwrapper finds the
+            # UWexpression atoms inside and substitutes correctly.
+
+            identity = uw.maths.tensor.rank4_identity(d)
+            result = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
+
+            # Element-wise multiplication: c_ijkl = 2 * I_ijkl * viscosity
+            for i in range(d):
+                for j in range(d):
+                    for k in range(d):
+                        for l in range(d):
+                            val = 2 * identity[i, j, k, l] * viscosity
+                            # If simplification returns bare UWexpression (e.g., 2*(1/2)*visc = visc),
+                            # wrap it to avoid Iterable check failure during assignment
+                            if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                                val = sympy.Mul(sympy.S.One, val, evaluate=False)
+                            result[i, j, k, l] = val
+
+            self._c = result
 
         self._is_setup = True
         self._solver_is_setup = False
@@ -466,8 +714,7 @@ class ViscousFlowModel(Constitutive_Model):
         ## feedback on this instance
         display(
             Latex(
-                r"$\quad\eta_\textrm{eff} = $ "
-                + sympy.sympify(self.viscosity.sym)._repr_latex_()
+                r"$\quad\eta_\textrm{eff} = $ " + sympy.sympify(self.viscosity.sym)._repr_latex_()
             )
         )
 
@@ -477,36 +724,62 @@ class ViscousFlowModel(Constitutive_Model):
 
 class ViscoPlasticFlowModel(ViscousFlowModel):
     r"""
+    Viscoplastic flow constitutive model with yield stress.
 
-    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
+    Extends :class:`ViscousFlowModel` with a yield stress that limits the
+    maximum deviatoric stress. When stress would exceed the yield stress,
+    the effective viscosity is reduced to cap the stress.
 
-    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
+    .. math::
 
-    In a viscoplastic model, this viscosity is actually defined to cap the value of the overall stress at a value known as the *yield stress*.
-    In this constitutive law, we are assuming that the yield stress is a scalar limit on the 2nd invariant of the stress. A general, anisotropic
-    model needs to define the yield surface carefully and only a sub-set of possible cases is available in `Underworld`
+        \tau_{ij} = \eta_\mathrm{eff} \cdot \dot{\varepsilon}_{ij}
 
-    This constitutive model is a convenience function that simplifies the code at run-time but can be reproduced easily by using the appropriate
-    `sympy` functions in the standard viscous constitutive model. **If you see `not~yet~defined` in the definition of the effective viscosity, this means
-    that you have not yet defined all the required functions. The behaviour is to default to the standard viscous constitutive law if yield terms are
-    not specified.
+    where the effective viscosity is:
 
-    The Mandel constitutive matrix is available in `viscoplastic_model.C` and the rank 4 tensor form is
-    in `viscoplastic_model.c`.  Apply the constitutive model using:
+    .. math::
 
-    ---
+        \eta_\mathrm{eff} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
+
+    and :math:`\tau_y` is the yield stress and :math:`\dot{\varepsilon}_{II}`
+    is the second invariant of the strain rate.
+
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (typically velocity and pressure fields).
+    material_name : str, optional
+        Name identifier for this material.
+
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters including:
+
+        - ``shear_viscosity_0``: Background viscosity :math:`\eta_0`
+        - ``yield_stress``: Yield stress :math:`\tau_y`
+
+    viscosity : UWexpression
+        The effective (possibly yielded) viscosity.
+
+    Notes
+    -----
+    If yield stress is not defined, this model behaves identically to
+    :class:`ViscousFlowModel`. The message ``not~yet~defined`` in the
+    effective viscosity indicates missing parameters.
+
+    See Also
+    --------
+    ViscousFlowModel : Base viscous model without yielding.
+    ViscoElasticPlasticFlowModel : Adds viscoelastic memory.
     """
 
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
         # All this needs to do is define the
         # non-paramter properties that we want to
         # use in other expressions and init the parent(s)
         #
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         self._strainrate_inv_II = expression(
             r"\dot\varepsilon_{II}",
@@ -526,134 +799,76 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         individual instances of the class.
 
         `sympy.oo` (infinity) for default values ensures that sympy.Min simplifies away
-        the conditionals when they are not required
+        the conditionals when they are not required.
+
+        Uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
 
-        def __init__(
-            inner_self,
-            _owning_model,
-        ):
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        shear_viscosity_0 = api_tools.Parameter(
+            R"{\eta}",
+            lambda inner_self: 1,
+            "Shear viscosity",
+            units="Pa*s",
+        )
+
+        shear_viscosity_min = api_tools.Parameter(
+            R"{\eta_{\textrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Shear viscosity, minimum cutoff",
+            units="Pa*s",
+        )
+
+        yield_stress = api_tools.Parameter(
+            R"{\tau_{y}}",
+            lambda inner_self: sympy.oo,
+            "Yield stress (DP)",
+            units="Pa",
+        )
+
+        yield_stress_min = api_tools.Parameter(
+            R"{\tau_{y, \mathrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Yield stress (DP) minimum cutoff",
+            units="Pa",
+        )
+
+        strainrate_inv_II_min = api_tools.Parameter(
+            R"{\dot\varepsilon_{\mathrm{min}}}",
+            lambda inner_self: 0,
+            "Strain rate invariant minimum value",
+            units="1/s",
+        )
+
+        def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
-
-            # Default / placeholder values for constitutive parameters
-
-            inner_self._shear_viscosity_0 = expression(
-                R"{\eta}",
-                1,
-                "Shear viscosity",
-            )
-            inner_self._shear_viscosity_min = expression(
-                R"{\eta_{\textrm{min}}}",
-                -sympy.oo,
-                "Shear viscosity, minimum cutoff",
-            )
-
-            inner_self._yield_stress = expression(
-                R"{\tau_{y}}",
-                sympy.oo,
-                "Yield stress (DP)",
-            )
-            inner_self._yield_stress_min = expression(
-                R"{\tau_{y, \mathrm{min}}}",
-                -sympy.oo,
-                "Yield stress (DP) minimum cutoff ",
-            )
-
-            inner_self._strainrate_inv_II_mi = expression(
-                R"{\dot\varepsilon_{\mathrm{min}}}",
-                0,
-                "Strain rate invariant minimum value ",
-            )
-
-            return
-
-        #
-
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value):
-            expr = validate_parameters(R"\eta_0", value, allow_number=True)
-            inner_self._shear_viscosity_0.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def shear_viscosity_min(inner_self):
-            return inner_self._shear_viscosity_min
-
-        @shear_viscosity_min.setter
-        def shear_viscosity_min(inner_self, value):
-
-            expr = validate_parameters(
-                R"{\eta_{\textrm{min}}}", value, allow_number=True
-            )
-            inner_self._shear_viscosity_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress(inner_self):
-            return inner_self._yield_stress
-
-        @yield_stress.setter
-        def yield_stress(inner_self, value):
-
-            expr = validate_parameters(R"{\tau_\textrm{y}}", value, allow_number=True)
-            inner_self._yield_stress.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress_min(inner_self):
-            return inner_self._yield_stress_min
-
-        @yield_stress_min.setter
-        def yield_stress_min(inner_self, value):
-            expr = validate_parameters(
-                R"{\tau_\textrm{y, min}}", value, allow_number=True
-            )
-            inner_self._yield_stress_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def strainrate_inv_II_min(inner_self):
-            return inner_self._strainrate_inv_II_min
-
-        @strainrate_inv_II_min.setter
-        def strainrate_inv_II_min(inner_self, value):
-            expr = validate_parameters(
-                R"{II(\tau)_{\textrm{min}}}", value, allow_number=True
-            )
-            inner_self._strainrate_inv_II_min.copy(expr)
-            inner_self._reset()
-
-            return
+            # Parameters are now descriptors - no manual initialization needed
 
     @property
     def viscosity(self):
+        r"""Effective viscosity with plastic yielding.
+
+        .. math::
+            \eta_{\mathrm{eff}} = \min\left(\eta_0, \frac{\tau_y}{2\dot{\varepsilon}_{II}}\right)
+
+        where :math:`\dot{\varepsilon}_{II}` is the second invariant of strain rate.
+        """
         inner_self = self.Parameters
         # detect if values we need are defined or are placeholder symbols
 
         if inner_self.yield_stress.sym == sympy.oo:
-            self._plastic_eff_viscosity.symbol = inner_self._shear_viscosity_0.symbol
-            self._plastic_eff_viscosity._sym = inner_self._shear_viscosity_0._sym
+            self._plastic_eff_viscosity.symbol = inner_self.shear_viscosity_0.symbol
+            self._plastic_eff_viscosity._sym = inner_self.shear_viscosity_0._sym
             return self._plastic_eff_viscosity
 
         # Don't put conditional behaviour in the constitutive law
         # when it is not needed
 
         if inner_self.yield_stress_min.sym != 0:
-            yield_stress = sympy.Max(
-                inner_self.yield_stress_min, inner_self.yield_stress
-            )
+            yield_stress = sympy.Max(inner_self.yield_stress_min, inner_self.yield_stress)
         else:
             yield_stress = inner_self.yield_stress
 
@@ -684,6 +899,14 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         return self._plastic_eff_viscosity
 
     def plastic_correction(self) -> float:
+        r"""Scaling factor to reduce stress to yield surface.
+
+        .. math::
+            f = \frac{\tau_y}{\tau_{II}}
+
+        where :math:`\tau_{II}` is the second invariant of deviatoric stress.
+        Returns 1 if no yield stress is set.
+        """
         parameters = self.Parameters
 
         if parameters.yield_stress == sympy.oo:
@@ -721,28 +944,34 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
 class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     r"""
+    Viscoelastic-plastic flow constitutive model.
 
-    ### Formulation
+    The stress (flux term) is given by:
 
-    The stress (flux term) is given by
+    .. math::
 
-    $$\tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right]$$
+        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
 
-    where $\eta$ is the viscosity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. This results in an isotropic (but not necessarily homogeneous or linear)
-    relationship between $\tau$ and the velocity gradients. You can also supply $\eta_{IJ}$, the Mandel form of the
-    constitutive tensor, or $\eta_{ijkl}$, the rank 4 tensor.
+    where :math:`\eta` is the viscosity, a scalar constant, SymPy function,
+    Underworld mesh variable, or any valid combination. This results in an
+    isotropic (but not necessarily homogeneous or linear) relationship between
+    :math:`\tau` and the velocity gradients. You can also supply :math:`\eta_{IJ}`,
+    the Mandel form of the constitutive tensor, or :math:`\eta_{ijkl}`, the rank-4 tensor.
 
     The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
     in `viscous_model.c`.  Apply the constitutive model using:
 
     """
 
-    def __init__(self, unknowns, order=1):
+    def __init__(self, unknowns, order=1, material_name: str = None):
 
         ## We just need to add the expressions for the stress history terms in here.\
         ## They are properties to hold expressions that are persistent for this instance
         ## (i.e. we only update the value, not the object)
+
+        # Store material_name before creating expressions (needed by create_unique_symbol)
+        self._material_name = material_name
 
         # This may not be defined at initialisation time, set to None until used
         self._stress_star = expression(
@@ -776,7 +1005,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         self._reset()
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         return
 
@@ -784,7 +1013,63 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Basic parameters with Parameter descriptors
+        shear_viscosity_0 = api_tools.Parameter(
+            R"{\eta}",
+            lambda inner_self: 1,
+            "Shear viscosity",
+            units="Pa*s",
+        )
+
+        shear_modulus = api_tools.Parameter(
+            R"{\mu}",
+            lambda inner_self: sympy.oo,
+            "Shear modulus",
+            units="Pa",
+        )
+
+        dt_elastic = api_tools.Parameter(
+            R"{\Delta t_{e}}",
+            lambda inner_self: sympy.oo,
+            "Elastic timestep",
+            units="s",
+        )
+
+        shear_viscosity_min = api_tools.Parameter(
+            R"{\eta_{\textrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Shear viscosity, minimum cutoff",
+            units="Pa*s",
+        )
+
+        yield_stress = api_tools.Parameter(
+            R"{\tau_{y}}",
+            lambda inner_self: sympy.oo,
+            "Yield stress (DP)",
+            units="Pa",
+        )
+
+        yield_stress_min = api_tools.Parameter(
+            R"{\tau_{y, \mathrm{min}}}",
+            lambda inner_self: -sympy.oo,
+            "Yield stress (DP) minimum cutoff",
+            units="Pa",
+        )
+
+        strainrate_inv_II_min = api_tools.Parameter(
+            R"{\dot\varepsilon_{II,\mathrm{min}}}",
+            lambda inner_self: 0,
+            "Strain rate invariant minimum value",
+            units="1/s",
+        )
 
         def __init__(
             inner_self,
@@ -792,65 +1077,17 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         ):
             inner_self._owning_model = _owning_model
 
+            # Internal symbols for stress history (not parameters, internal state)
             strainrate_inv_II = sympy.symbols(
                 r"\left|\dot\epsilon\right|\rightarrow\textrm{not\ defined}"
             )
-
             stress_star = sympy.symbols(r"\sigma^*\rightarrow\textrm{not\ defined}")
-
-            ## These all need to be expressions that can be replaced (for lazy evaluation)
-            ## So do any derived quantities like relaxation time. They will need all
-            ## getters that use expression.copy()
-
             inner_self._stress_star = stress_star
             inner_self._not_yielded = sympy.sympify(1)
 
-            inner_self._shear_viscosity_0 = expression(
-                R"{\eta}",
-                1,
-                "Shear viscosity",
-            )
-
-            inner_self._shear_modulus = expression(
-                R"{\mu}",
-                sympy.oo,
-                "Shear modulus",
-            )
-
-            inner_self._dt_elastic = expression(
-                R"{\Delta t_{e}}",
-                sympy.oo,
-                "Elastic timestep",
-            )
-
-            inner_self._shear_viscosity_min = expression(
-                R"{\eta_{\textrm{min}}}",
-                -sympy.oo,
-                "Shear viscosity, minimum cutoff",
-            )
-
-            inner_self._yield_stress = expression(
-                R"{\tau_{y}}",
-                sympy.oo,
-                "Yield stress (DP)",
-            )
-            inner_self._yield_stress_min = expression(
-                R"{\tau_{y, \mathrm{min}}}",
-                -sympy.oo,
-                "Yield stress (DP) minimum cutoff ",
-            )
-
-            inner_self._strainrate_inv_II_min = expression(
-                R"{\dot\varepsilon_{II,\mathrm{min}}}",
-                0,
-                "Strain rate invariant minimum value ",
-            )
-
-            ## The following expressions are not pure parameters, but
-            ## combinations. We set them up here and they will then
-            ## have @property calls to retrieve / calculate them
-            ## It is useful to have each as a separate expression
-            ## as it is these can be used in many derivations
+            ## The following expressions are containers for derived/computed values.
+            ## They have @property calls to retrieve / calculate them.
+            ## We keep them as expression containers for lazy evaluation.
 
             inner_self._ve_effective_viscosity = expression(
                 R"{\eta_{\mathrm{eff}}}",
@@ -864,101 +1101,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 "Maxwell relaxation time",
             )
 
-            return
-
-        @property
-        def shear_viscosity_0(inner_self):
-            return inner_self._shear_viscosity_0
-
-        @shear_viscosity_0.setter
-        def shear_viscosity_0(inner_self, value):
-            expr = validate_parameters(R"\eta", value, allow_number=True)
-            inner_self._shear_viscosity_0.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def shear_modulus(inner_self):
-            return inner_self._shear_modulus
-
-        @shear_modulus.setter
-        def shear_modulus(inner_self, value):
-            expr = validate_parameters(R"\mu", value, allow_number=True)
-            inner_self._shear_modulus.copy(expr)
-            del expr
-            inner_self._reset()
-
-            return
-
-        @property
-        def dt_elastic(inner_self):
-            return inner_self._dt_elastic
-
-        @dt_elastic.setter
-        def dt_elastic(inner_self, value):
-            expr = validate_parameters(R"{\Delta t_e}", value, allow_number=True)
-            inner_self._dt_elastic.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def shear_viscosity_min(inner_self):
-            return inner_self._shear_viscosity_min
-
-        @shear_viscosity_min.setter
-        def shear_viscosity_min(inner_self, value):
-
-            expr = validate_parameters(
-                R"{\eta_{\textrm{min}}}", value, allow_number=True
-            )
-            inner_self._shear_viscosity_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress(inner_self):
-            return inner_self._yield_stress
-
-        @yield_stress.setter
-        def yield_stress(inner_self, value):
-
-            expr = validate_parameters(R"{\tau_\textrm{y}}", value, allow_number=True)
-            inner_self._yield_stress.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def yield_stress_min(inner_self):
-            return inner_self._yield_stress_min
-
-        @yield_stress_min.setter
-        def yield_stress_min(inner_self, value):
-            expr = validate_parameters(
-                R"{\tau_{\textrm{y, min}}}", value, allow_number=True
-            )
-            inner_self._yield_stress_min.copy(expr)
-            inner_self._reset()
-
-            return
-
-        @property
-        def strainrate_inv_II_min(inner_self):
-            return inner_self._strainrate_inv_II_min
-
-        @strainrate_inv_II_min.setter
-        def strainrate_inv_II_min(inner_self, value):
-            expr = validate_parameters(
-                R"{II(\tau)_{\textrm{min}}}", value, allow_number=True
-            )
-            inner_self._strainrate_inv_II_min.copy(expr)
-            inner_self._reset()
-
-            return
-
         ## Derived parameters of the constitutive model (these have no setters)
         ## Note, do not return new expressions, keep the old objects as containers
         ## the correct values are used in existing expressions. These really are
@@ -966,6 +1108,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @property
         def ve_effective_viscosity(inner_self):
+            r"""Visco-elastic effective viscosity: :math:`\eta_{\mathrm{eff}} = \frac{\eta G \Delta t}{\eta + G \Delta t}`."""
             # the dt_elastic defaults to infinity, t_relax to zero,
             # so this should be well behaved in the viscous limit
 
@@ -1005,22 +1148,23 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         @property
         def t_relax(inner_self):
+            r"""Maxwell relaxation time: :math:`t_{\mathrm{relax}} = \eta / G`."""
             # shear modulus defaults to infinity so t_relax goes to zero
             # in the viscous limit
 
-            inner_self._t_relax.sym = (
-                inner_self.shear_viscosity_0 / inner_self.shear_modulus
-            )
+            inner_self._t_relax.sym = inner_self.shear_viscosity_0 / inner_self.shear_modulus
             return inner_self._t_relax
 
     ## End of parameters definition
 
     @property
     def order(self):
+        """Time integration order (1 or 2)."""
         return self._order
 
     @order.setter
     def order(self, value):
+        """Set the time integration order."""
         self._order = value
         self._reset()
         return
@@ -1028,6 +1172,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     # The following should have no setters
     @property
     def stress_star(self):
+        r"""Previous timestep stress :math:`\boldsymbol{\sigma}^*` from history."""
         if self.Unknowns.DFDt is not None:
             self._stress_star.sym = self.Unknowns.DFDt.psi_star[0].sym
 
@@ -1035,6 +1180,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def stress_2star(self):
+        r"""Second-order stress history :math:`\boldsymbol{\sigma}^{**}` (for 2nd order integration)."""
         # Check if we have enough information in DFDt to update _stress_star,
         # otherwise it will be defined as zero
 
@@ -1048,7 +1194,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def E_eff(self):
+        r"""Effective strain rate including elastic contribution.
 
+        .. math::
+            \dot{\varepsilon}_{\mathrm{eff}} = \dot{\varepsilon} + \frac{\boldsymbol{\sigma}^*}{2 G \Delta t}
+        """
         E = self.Unknowns.E
 
         if self.Unknowns.DFDt is not None:
@@ -1075,7 +1225,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def E_eff_inv_II(self):
-
+        r"""Second invariant of effective strain rate: :math:`\dot{\varepsilon}_{II} = \sqrt{\frac{1}{2}\dot{\varepsilon}_{ij}\dot{\varepsilon}_{ij}}`."""
         E_eff = self.E_eff.sym
         self._E_eff_inv_II.sym = sympy.sqrt((E_eff**2).trace() / 2)
 
@@ -1083,10 +1233,15 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def K(self):
+        """Effective stiffness parameter (viscosity for visco-elastic-plastic flow)."""
         return self.viscosity
 
     @property
     def viscosity(self):
+        r"""Effective viscosity combining visco-elastic and plastic limits.
+
+        Returns :math:`\min(\eta_{\mathrm{ve}}, \tau_y / 2\dot{\varepsilon}_{II})`.
+        """
         # detect if values we need are defined or are placeholder symbols
 
         ## Do we want this to be an expression of its own ? If so, define above in __init__() and
@@ -1161,6 +1316,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return viscosity_yield
 
     def plastic_correction(self):
+        r"""Scaling factor to reduce stress to yield surface: :math:`f = \tau_y / \tau_{II}`."""
         parameters = self.Parameters
 
         if parameters.yield_stress == sympy.oo:
@@ -1191,7 +1347,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         viscosity = self.viscosity
 
         try:
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity
+            # CRITICAL: Use .sym property to avoid UWexpression array corruption issues
+            # See ViscousFlowModel._build_c_tensor() for detailed explanation
+            viscosity_sym = viscosity.sym if hasattr(viscosity, "sym") else viscosity
+            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity_sym
         except:
             d = self.dim
             dv = uw.maths.tensor.idxmap[d][0]
@@ -1273,11 +1432,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                         * self.viscosity
                         * (
                             stress_star
-                            / (
-                                2
-                                * self.Parameters.dt_elastic
-                                * self.Parameters.shear_modulus
-                            )
+                            / (2 * self.Parameters.dt_elastic * self.Parameters.shear_modulus)
                         )
                     )
 
@@ -1290,16 +1445,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                         * self.viscosity
                         * (
                             stress_star
-                            / (
-                                self.Parameters.dt_elastic
-                                * self.Parameters.shear_modulus
-                            )
+                            / (self.Parameters.dt_elastic * self.Parameters.shear_modulus)
                             - stress_2star
-                            / (
-                                4
-                                * self.Parameters.dt_elastic
-                                * self.Parameters.shear_modulus
-                            )
+                            / (4 * self.Parameters.dt_elastic * self.Parameters.shear_modulus)
                         )
                     )
 
@@ -1344,8 +1492,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         display(Markdown(r"#### Elastic deformation"))
         display(
             Latex(
-                r"$\quad\mu = $ "
-                + sympy.sympify(self.Parameters.shear_modulus.sym)._repr_latex_(),
+                r"$\quad\mu = $ " + sympy.sympify(self.Parameters.shear_modulus.sym)._repr_latex_(),
             ),
             Latex(
                 r"$\quad\Delta t_e = $ "
@@ -1364,6 +1511,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def is_elastic(self):
+        """True if elastic behavior is active (finite dt_elastic and shear_modulus)."""
         # If any of these is not defined, elasticity is switched off
 
         if self.Parameters.dt_elastic.sym is sympy.oo:
@@ -1376,6 +1524,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def is_viscoplastic(self):
+        """True if plastic yielding is active (finite yield_stress)."""
         if self.Parameters.yield_stress == sympy.oo:
             return False
 
@@ -1387,71 +1536,109 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
 class DiffusionModel(Constitutive_Model):
     r"""
-    ```python
-    class DiffusionModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    diffusion_model = DiffusionModel(dim)
-    diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
-    scalar_solver.constititutive_model = diffusion_model
-    ```
-    $$q_{i} = \kappa_{ij} \cdot \frac{\partial \phi}{\partial x_j}$$
+    Diffusion (Fourier/Fick) constitutive model for scalar transport.
 
-    where $\kappa$ is a diffusivity, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. Access the constitutive model using:
+    Defines the flux-gradient relationship for scalar diffusion:
 
-    ```python
-    flux = diffusion_model.flux(gradient_matrix)
-    ```
-    ---
+    .. math::
+
+        q_{i} = \kappa_{ij} \frac{\partial \phi}{\partial x_j}
+
+    For isotropic diffusion, :math:`\kappa_{ij} = \kappa \delta_{ij}`.
+
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (the scalar field being diffused).
+    material_name : str, optional
+        Name identifier for this material.
+
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters container. Set ``Parameters.diffusivity``
+        to define :math:`\kappa`.
+    flux : sympy.Matrix
+        The computed diffusive flux vector.
+    diffusivity : UWexpression
+        Shortcut to ``Parameters.diffusivity``.
+    K : UWexpression
+        Alias for ``diffusivity``.
+
+    Examples
+    --------
+    >>> diffusion = uw.constitutive_models.DiffusionModel(poisson.Unknowns)
+    >>> diffusion.Parameters.diffusivity = 1e-6  # m^2/s
+    >>> poisson.constitutive_model = diffusion
+
+    See Also
+    --------
+    AnisotropicDiffusionModel : For direction-dependent diffusivity.
     """
 
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Now uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Define diffusivity as a Parameter descriptor
+        # The lambda receives the _Parameters instance and creates the expression via the owning model
+        diffusivity = api_tools.Parameter(
+            r"\upkappa",
+            lambda params_instance: params_instance._owning_model.create_unique_symbol(
+                r"\upkappa", 1, "Diffusivity"
+            ),
+            "Diffusivity",
+            units="m**2/s"  # Thermal or mass diffusivity
+        )
 
         def __init__(
             inner_self,
             _owning_model,
         ):
-
-            inner_self._diffusivity = expression(R"\upkappa", 1, "Diffusivity")
             inner_self._owning_model = _owning_model
-
-        @property
-        def diffusivity(inner_self):
-            return inner_self._diffusivity
-
-        @diffusivity.setter
-        def diffusivity(inner_self, value: Union[int, float, sympy.Function]):
-
-            diff = validate_parameters(
-                R"{\upkappa}", value, "Diffusivity", allow_number=True
-            )
-
-            if diff is not None:
-                inner_self._diffusivity.copy(diff)
-                inner_self._reset()
-
-            return
+            # Note: diffusivity is now a descriptor, no need to create it here
 
     @property
     def K(self):
+        r"""Diffusivity :math:`\kappa` (alias for ``diffusivity``)."""
         return self.Parameters.diffusivity
 
     @property
     def diffusivity(self):
+        r"""Scalar or tensor diffusivity :math:`\kappa`."""
         return self.Parameters.diffusivity
 
     def _build_c_tensor(self):
-        """For this constitutive law, we expect just a diffusivity function"""
+        """Build isotropic diffusivity tensor from scalar."""
 
         d = self.dim
         kappa = self.Parameters.diffusivity
-        self._c = sympy.Matrix.eye(d) * kappa
+
+        # Scalar diffusivity case
+        # Use element-wise construction (consistent with ViscousFlowModel pattern)
+        # to handle UWexpression properly and preserve for JIT unwrapping
+        result = sympy.Matrix.zeros(d, d)
+
+        for i in range(d):
+            for j in range(d):
+                if i == j:
+                    # Diagonal element: kappa
+                    val = kappa
+                    # Wrap if bare UWexpression to avoid Iterable check failure
+                    if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                        val = sympy.Mul(sympy.S.One, val, evaluate=False)
+                    result[i, j] = val
+                # Off-diagonal elements remain 0
+
+        self._c = result
 
         return
 
@@ -1462,16 +1649,20 @@ class DiffusionModel(Constitutive_Model):
 
         ## feedback on this instance
         display(
-            Latex(
-                r"$\quad\kappa = $ "
-                + sympy.sympify(self.Parameters.diffusivity)._repr_latex_()
-            )
+            Latex(r"$\quad\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_())
         )
 
         return
 
+
 # AnisotropicDiffusionModel: expects a diffusivity vector and builds a diagonal tensor.
 class AnisotropicDiffusionModel(DiffusionModel):
+    r"""Anisotropic diffusion with direction-dependent diffusivities.
+
+    Defines a diagonal diffusivity tensor :math:`\kappa_{ij} = \text{diag}(\kappa_0, \kappa_1, ...)`
+    for direction-dependent diffusion rates.
+    """
+
     class _Parameters:
         def __init__(inner_self, _owning_model):
             dim = _owning_model.dim
@@ -1482,19 +1673,21 @@ class AnisotropicDiffusionModel(DiffusionModel):
             validated = []
             for i, v in enumerate(elements):
                 comp = validate_parameters(
-                    fr"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
+                    rf"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
                 )
                 if comp is not None:
                     validated.append(comp)
             # Store the validated diffusivity as a diagonal matrix
             inner_self._diffusivity = sympy.diag(*validated)
-        
+
         @property
         def diffusivity(inner_self):
+            """Diagonal diffusivity tensor."""
             return inner_self._diffusivity
-        
+
         @diffusivity.setter
         def diffusivity(inner_self, value: sympy.Matrix):
+            """Set diffusivity from a vector of per-direction values."""
             dim = inner_self._owning_model.dim
 
             # Accept shape (dim, 1) or (1, dim)
@@ -1507,7 +1700,7 @@ class AnisotropicDiffusionModel(DiffusionModel):
             validated = []
             for i, v in enumerate(elements):
                 diff = validate_parameters(
-                    fr"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
+                    rf"\upkappa_{{{i}}}", v, f"Diffusivity in x_{i}", allow_number=True
                 )
                 if diff is not None:
                     validated.append(diff)
@@ -1522,9 +1715,9 @@ class AnisotropicDiffusionModel(DiffusionModel):
 
     def _object_viewer(self):
         from IPython.display import Latex, display
-        
+
         super()._object_viewer()
-        
+
         diagonal = self.Parameters.diffusivity.diagonal()
         latex_entries = ", ".join([sympy.latex(k) for k in diagonal])
         kappa_latex = r"\kappa = \mathrm{diag}\left(" + latex_entries + r"\right)"
@@ -1537,7 +1730,7 @@ class GenericFluxModel(Constitutive_Model):
 
     Example usage:
     ```python
-    grad_phi = sympy.Matrix([sp.Symbol("∂φ/∂x"), sp.Symbol("∂φ/∂y")])
+    grad_phi = sympy.Matrix([sp.Symbol("dphi_dx"), sp.Symbol("dphi_dy")])
     flux_expr = sympy.Matrix([[kappa_11, kappa_12], [kappa_21, kappa_22]]) * grad_phi
 
     model = GenericFluxModel(dim=2)
@@ -1555,7 +1748,7 @@ class GenericFluxModel(Constitutive_Model):
             validated = []
             for i, v in enumerate(elements):
                 flux_component = validate_parameters(
-                    fr"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
+                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
                 )
                 if flux_component is not None:
                     validated.append(flux_component)
@@ -1564,17 +1757,18 @@ class GenericFluxModel(Constitutive_Model):
 
         @property
         def flux(inner_self):
+            """User-defined flux expression."""
             return inner_self._flux
 
         @flux.setter
         def flux(inner_self, value: sympy.Matrix):
+            """Set the flux expression (must be a vector of length dim)."""
             dim = inner_self._owning_model.dim
 
             # Accept shape (dim, 1) or (1, dim)
             if value.shape not in [(dim, 1), (1, dim)]:
                 raise ValueError(
-                    f"Flux must be a symbolic vector of length {dim}. "
-                    f"Got shape {value.shape}."
+                    f"Flux must be a symbolic vector of length {dim}. " f"Got shape {value.shape}."
                 )
 
             # Flatten and validate
@@ -1582,7 +1776,7 @@ class GenericFluxModel(Constitutive_Model):
             validated = []
             for i, v in enumerate(elements):
                 flux_component = validate_parameters(
-                    fr"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
+                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
                 )
                 if flux_component is not None:
                     validated.append(flux_component)
@@ -1592,13 +1786,14 @@ class GenericFluxModel(Constitutive_Model):
 
     @property
     def flux(self):
+        """The user-defined flux expression."""
         # if self._flux is None:
         #     raise RuntimeError("Flux expression has not been set.")
         return self.Parameters.flux
 
-
     def _object_viewer(self):
         from IPython.display import display, Latex
+
         super()._object_viewer()
         if self.flux is not None:
             display(Latex(r"$\vec{q} = " + sympy.latex(self.flux) + "$"))
@@ -1608,90 +1803,131 @@ class GenericFluxModel(Constitutive_Model):
 
 class DarcyFlowModel(Constitutive_Model):
     r"""
-    ```python
-    class DarcyFlowModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    diffusion_model = DiffusionModel(dim)
-    diffusion_model.material_properties = diffusion_model.Parameters(diffusivity=diffusivity_fn)
-    scalar_solver.constititutive_model = diffusion_model
-    ```
-    $$q_{i} = \kappa_{ij} \cdot \left( \frac{\partial \phi}{\partial x_j} - s\right)$$
+    Darcy flow constitutive model for porous media flow.
 
-    where $\kappa$ is the permeability, a scalar constant, `sympy` function, `underworld` mesh variable or
-    any valid combination of those types. $s$ is the body force 'source' of pressure gradients.
+    Relates the Darcy flux to pressure gradients and body forces:
 
-    Access the constitutive model using:
+    .. math::
 
-    ```python
-    flux = darcy_flow_model.flux
-    ```
-    ---
+        q_{i} = \kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
+
+    where :math:`\kappa` is the permeability (or hydraulic conductivity),
+    :math:`p` is the pressure (or hydraulic head), and :math:`s` is the
+    body force term (e.g., gravity: :math:`s = \rho g`).
+
+    Parameters
+    ----------
+    unknowns : Unknowns
+        The solver unknowns (the pressure/head field).
+    material_name : str, optional
+        Name identifier for this material.
+
+    Attributes
+    ----------
+    Parameters : _Parameters
+        Material parameters container:
+
+        - ``permeability``: Intrinsic permeability :math:`\kappa` [m²]
+        - ``s``: Body force vector (e.g., gravity term)
+
+    flux : sympy.Matrix
+        The computed Darcy flux vector.
+    permeability : UWexpression
+        Shortcut to ``Parameters.permeability``.
+
+    Examples
+    --------
+    >>> darcy = uw.constitutive_models.DarcyFlowModel(solver.Unknowns)
+    >>> darcy.Parameters.permeability = 1e-12  # m^2
+    >>> darcy.Parameters.s = [0, -rho * g]  # Gravity in y-direction
+    >>> solver.constitutive_model = darcy
+
+    See Also
+    --------
+    DiffusionModel : For pure diffusion without body forces.
     """
 
     class _Parameters:
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Uses Parameter descriptor pattern for scalar permeability.
+        Matrix-valued `s` remains instance-level (special case).
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        # Define permeability as a Parameter descriptor
+        permeability = api_tools.Parameter(
+            r"\kappa",
+            lambda params_instance: params_instance._owning_model.create_unique_symbol(
+                r"\kappa", 1, "Permeability"
+            ),
+            "Permeability",
+            units="m**2"  # Intrinsic permeability
+        )
 
         def __init__(
             inner_self,
             _owning_model,
-            permeabililty: Union[float, sympy.Function] = 1,
+            permeabililty: Union[float, sympy.Function] = 1,  # Note: typo in param name preserved for compatibility
         ):
 
             inner_self._s = expression(
                 R"{s}",
-                sympy.Matrix.zeros(rows=1, cols=_owning_model.dim),
+                sympy.Matrix.zeros(
+                    rows=1, cols=_owning_model.dim
+                ),  # Row matrix (1, dim) to match grad_u from jacobian
                 "Gravitational forcing",
             )
 
-            inner_self._permeability = expression(
-                R"{\kappa}",
-                1,
-                "Permeability",
-            )
-
             inner_self._owning_model = _owning_model
+            # Note: permeability is now a descriptor, no need to create it here
 
         @property
         def s(inner_self):
+            r"""Body force vector (e.g., gravitational source term :math:`\rho \mathbf{g}`)."""
             return inner_self._s
 
         @s.setter
         def s(inner_self, value: sympy.Matrix):
+            """Set the body force vector."""
+            # Update expression content in-place to preserve object identity
+            # Cannot use validate_parameters() as it doesn't handle matrices
+            # UWexpression.sym setter handles sympy.Matrix directly
             inner_self._s.sym = value
             inner_self._reset()
 
-        @property
-        def permeability(inner_self):
-            return inner_self._permeability
-
-        @permeability.setter
-        def permeability(inner_self, value: Union[int, float, sympy.Function]):
-
-            perm = validate_parameters(
-                R"{\upkappa}", value, "Permeability", allow_number=True
-            )
-
-            if perm is not None:
-                inner_self._permeability.copy(perm)
-                inner_self._reset()
-
-            return
-
     @property
     def K(self):
+        r"""Permeability :math:`\kappa` [m²] - the primary constitutive parameter."""
         return self.Parameters.permeability
 
     def _build_c_tensor(self):
-        """For this constitutive law, we expect just a diffusivity function"""
+        """For this constitutive law, we expect just a permeability function"""
 
         d = self.dim
         kappa = self.Parameters.permeability
-        self._c = sympy.Matrix.eye(d) * kappa
+
+        # Scalar permeability case
+        # Use element-wise construction (consistent with ViscousFlowModel and DiffusionModel)
+        # to handle UWexpression properly and preserve for JIT unwrapping
+        result = sympy.Matrix.zeros(d, d)
+
+        for i in range(d):
+            for j in range(d):
+                if i == j:
+                    # Diagonal element: kappa
+                    val = kappa
+                    # Wrap if bare UWexpression to avoid Iterable check failure
+                    if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                        val = sympy.Mul(sympy.S.One, val, evaluate=False)
+                    result[i, j] = val
+                # Off-diagonal elements remain 0
+
+        self._c = result
 
         return
 
@@ -1702,10 +1938,7 @@ class DarcyFlowModel(Constitutive_Model):
 
         ## feedback on this instance
         display(
-            Latex(
-                r"$\quad\kappa = $ "
-                + sympy.sympify(self.Parameters.diffusivity)._repr_latex_()
-            )
+            Latex(r"$\quad\kappa = $ " + sympy.sympify(self.Parameters.diffusivity)._repr_latex_())
         )
 
         return
@@ -1724,44 +1957,48 @@ class DarcyFlowModel(Constitutive_Model):
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):
     r"""
-    ```python
-    class TransverseIsotropicFlowModel(Constitutive_Model)
-    ...
-    ```
-    ```python
-    viscous_model = TransverseIsotropicFlowModel(dim)
-    viscous_model.material_properties = viscous_model.Parameters(eta_0=viscosity_fn,
-                                                                eta_1=weak_viscosity_fn,
-                                                                director=orientation_vector_fn)
-    solver.constititutive_model = viscous_model
-    ```
-    $$ \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l} + \frac{\partial u_l}{\partial x_k} \right] $$
+    Transversely isotropic (anisotropic) viscous flow model.
 
-    where $\eta$ is the viscosity tensor defined as:
+    .. math::
 
-    $$ \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
-        n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right] $$
+        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        + \frac{\partial u_l}{\partial x_k} \right]
 
-    and $ \hat{\mathbf{n}} \equiv \left\{ n_i \right\} $ is the unit vector
-    defining the local orientation of the weak plane (a.k.a. the director).
+    where :math:`\eta` is the viscosity tensor defined as:
 
-    The Mandel constitutive matrix is available in `viscous_model.C` and the rank 4 tensor form is
-    in `viscous_model.c`.  Apply the constitutive model using:
+    .. math::
 
-    ```python
-    tau = viscous_model.flux(gradient_matrix)
-    ```
+        \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
+        n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk}
+        + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right]
+
+    and :math:`\hat{\mathbf{n}} \equiv \{n_i\}` is the unit vector defining
+    the local orientation of the weak plane (a.k.a. the director).
+
+    The Mandel constitutive matrix is available in ``viscous_model.C`` and the
+    rank-4 tensor form is in ``viscous_model.c``.
+
+    Examples
+    --------
+    >>> viscous_model = TransverseIsotropicFlowModel(dim)
+    >>> viscous_model.material_properties = viscous_model.Parameters(
+    ...     eta_0=viscosity_fn,
+    ...     eta_1=weak_viscosity_fn,
+    ...     director=orientation_vector_fn
+    ... )
+    >>> solver.constitutive_model = viscous_model
+    >>> tau = viscous_model.flux(gradient_matrix)
     ---
     """
 
-    def __init__(self, unknowns):
+    def __init__(self, unknowns, material_name: str = None):
         # All this needs to do is define the
         # viscosity property and init the parent(s)
         # In this case, nothing seems to be needed.
         # The viscosity is completely defined
         # in terms of the Parameters
 
-        super().__init__(unknowns)
+        super().__init__(unknowns, material_name=material_name)
 
         # self._viscosity = expression(
         #     R"{\eta_0}",
@@ -1773,66 +2010,41 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
+
+        Uses Parameter descriptor pattern for automatic lazy evaluation preservation
+        with unit-aware quantities.
         """
+
+        # Import Parameter descriptor (must use absolute import inside nested class)
+        import underworld3.utilities._api_tools as api_tools
+
+        eta_0 = api_tools.Parameter(
+            r"\eta_0",
+            lambda inner_self: 1,
+            "Shear viscosity",
+            units="Pa*s",
+        )
+
+        eta_1 = api_tools.Parameter(
+            r"\eta_1",
+            lambda inner_self: 1,
+            "Second viscosity",
+            units="Pa*s",
+        )
+
+        director = api_tools.Parameter(
+            r"\hat{n}",
+            lambda inner_self: 1,
+            "Director orientation",
+            units=None,  # Dimensionless unit vector
+        )
 
         def __init__(
             inner_self,
             _owning_model,
         ):
             inner_self._owning_model = _owning_model
-
-            inner_self._eta_0 = expression(r"\eta_0", 1, "Shear viscosity")
-            inner_self._eta_1 = expression(r"\eta_1", 1, "Second viscosity")
-            inner_self._director = expression(r"\hat{n}", 1, "Director orientation")
-
-        ## Note the inefficiency below if we change all these values one after the other
-
-        @property
-        def eta_0(inner_self):
-            return inner_self._eta_0
-
-        @eta_0.setter
-        def eta_0(
-            inner_self,
-            value: Union[float, sympy.Function],
-        ):
-            visc_expr = validate_parameters(
-                R"\eta_0", value, default=None, allow_number=True
-            )
-
-            inner_self._eta_0.copy(visc_expr)
-            del visc_expr
-            inner_self._reset()
-
-        @property
-        def eta_1(inner_self):
-            return inner_self._eta_1
-
-        @eta_1.setter
-        def eta_1(
-            inner_self,
-            value: Union[float, sympy.Function],
-        ):
-            visc_expr = validate_parameters(
-                R"\eta_1", value, default=None, allow_number=True
-            )
-
-            inner_self._eta_1.copy(visc_expr)
-            del visc_expr
-            inner_self._reset()
-
-        @property
-        def director(inner_self):
-            return inner_self._director
-
-        @director.setter
-        def director(
-            inner_self,
-            value: Union[sympy.Matrix, sympy.Function, expression],
-        ):
-
-            inner_self._director._sym = value
-            inner_self._reset()
+            # Parameters are now descriptors - no manual initialization needed
 
     ## End of parameters
 
@@ -1841,17 +2053,23 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters._eta_0
+        return self.Parameters.eta_0
 
     @property
     def K(self):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters._eta_0
+        return self.Parameters.eta_0
 
     @property
     def grad_u(self):
+        r"""Symmetric strain rate tensor (with 1/2 factor).
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+        """
         mesh = self.Unknowns.u.mesh
 
         return mesh.vector.strain_tensor(self.Unknowns.u.sym)
@@ -1866,18 +2084,30 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         d = self.dim
         dv = uw.maths.tensor.idxmap[d][0]
 
-        eta_0 = self.Parameters.eta_0
-        eta_1 = self.Parameters.eta_1
+        # Use .sym to get sympy expressions from Parameters
+        eta_0 = self.Parameters.eta_0.sym
+        eta_1 = self.Parameters.eta_1.sym
         n = self.Parameters.director.sym
 
         Delta = eta_0 - eta_1
-        lambda_mat = 2 * uw.maths.tensor.rank4_identity(d) * eta_0
+
+        # Use element-wise construction (same pattern as ViscousFlowModel).
+        # UWexpression has __getitem__ from MathematicalMixin, making it appear
+        # "Iterable" to SymPy's array multiplication operator, which rejects it.
+        # Element-wise construction avoids this by creating Mul objects that
+        # don't have __getitem__.
+        identity = uw.maths.tensor.rank4_identity(d)
+        lambda_mat = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
 
         for i in range(d):
             for j in range(d):
                 for k in range(d):
                     for l in range(d):
-                        lambda_mat[i, j, k, l] -= (
+                        # Build isotropic part element-wise
+                        base_val = 2 * identity[i, j, k, l] * eta_0
+
+                        # Anisotropic correction term
+                        aniso_correction = (
                             2
                             * Delta
                             * (
@@ -1891,6 +2121,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
                                 - 2 * n[i] * n[j] * n[k] * n[l]
                             )
                         )
+
+                        val = base_val - aniso_correction
+
+                        # Wrap if needed to avoid Iterable check during assignment
+                        if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                            val = sympy.Mul(sympy.S.One, val, evaluate=False)
+
+                        lambda_mat[i, j, k, l] = val
 
         lambda_mat = sympy.simplify(uw.maths.tensor.rank4_to_mandel(lambda_mat, d))
 
@@ -1907,18 +2145,8 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(
-            Latex(
-                r"$\quad\eta_0 = $ "
-                + sympy.sympify(self.Parameters.eta_0)._repr_latex_()
-            )
-        )
-        display(
-            Latex(
-                r"$\quad\eta_1 = $ "
-                + sympy.sympify(self.Parameters.eta_1)._repr_latex_()
-            )
-        )
+        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.eta_0)._repr_latex_()))
+        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.eta_1)._repr_latex_()))
         display(
             Latex(
                 r"$\quad\hat{\mathbf{n}} = $ "
@@ -1927,41 +2155,199 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         )
 
 
-class MultiMaterial_ViscoElasticPlastic(Constitutive_Model):
+class MultiMaterialConstitutiveModel(Constitutive_Model):
     r"""
-    Manage multiple materials in a constitutive framework.
+    Multi-material constitutive model using level-set weighted flux averaging.
 
-    Bundles multiple materials into a single consitutive law. The expectation
-    is that these all have compatible flux terms.
+    Mathematical Foundation:
+
+    .. math::
+
+        \mathbf{f}_{\text{composite}}(\mathbf{x}) = \sum_{i=1}^{N}
+        \phi_i(\mathbf{x}) \cdot \mathbf{f}_i(\mathbf{x})
+
+    Critical Architecture:
+
+    - Solver owns Unknowns (including :math:`D\mathbf{F}/Dt` stress history)
+    - All constituent models share solver's Unknowns
+    - Composite flux becomes stress history for all materials
     """
 
     def __init__(
         self,
-        material_swarmVariable: Optional[IndexSwarmVariable] = None,
-        constitutive_models: Optional[list] = [],
+        unknowns,
+        material_swarmVariable: IndexSwarmVariable,
+        constitutive_models: list,
+        normalize_levelsets: bool = False,
     ):
-        self._constitutive_models = constitutive_models
-        self._material_var = material_swarmVariable
+        r"""
+        Parameters
+        ----------
+        unknowns : UnknownSet
+            The solver's authoritative unknowns (:math:`\mathbf{u}`,
+            :math:`D\mathbf{F}/Dt`, :math:`D\mathbf{u}/Dt`).
+        material_swarmVariable : IndexSwarmVariable
+            Index variable tracking material distribution on particles.
+        constitutive_models : list of Constitutive_Model
+            Pre-configured constitutive models for each material.
+        normalize_levelsets : bool, optional
+            Whether to normalize level-set functions to enforce partition of unity.
+            Set to True if IndexSwarmVariable does not maintain partition of unity.
+            Default: False (assumes IndexSwarmVariable maintains partition of unity)
+        """
+        # Validate compatibility before initialization
+        self._validate_model_compatibility(constitutive_models)
 
-        return
+        self._material_var = material_swarmVariable
+        self._constitutive_models = constitutive_models
+        self._normalize_levelsets = normalize_levelsets
+
+        # Ensure model count matches material indices
+        if len(constitutive_models) != material_swarmVariable.indices:
+            raise ValueError(
+                f"Model count ({len(constitutive_models)}) must match "
+                f"material indices ({material_swarmVariable.indices})"
+            )
+
+        # CRITICAL: Share solver's unknowns with all constituent models
+        self._setup_shared_unknowns(constitutive_models, unknowns)
+
+        # Composite model doesn't have its own material_name - constituents do
+        super().__init__(unknowns, material_name=None)
+
+    def _setup_shared_unknowns(self, constitutive_models, unknowns):
+        """
+        Ensure all constituent models share the solver's authoritative unknowns.
+        This is critical for proper stress history management.
+        """
+        for i, model in enumerate(constitutive_models):
+            # Share solver's unknowns - this gives access to composite D(F)/Dt history
+            model.Unknowns = unknowns
+
+            # Validation: Ensure sharing worked correctly
+            assert model.Unknowns is unknowns, f"Model {i} failed to share unknowns - memory issue?"
+
+            # For elastic models, verify DFDt access
+            if hasattr(model, "_stress_star"):
+                assert hasattr(
+                    unknowns, "DFDt"
+                ), f"Model {i} needs stress history but DFDt not available"
+
+    def _validate_model_compatibility(self, models: list) -> bool:
+        """
+        Ensure all constituent models are compatible for flux averaging.
+
+        Checks:
+        - Same u_dim (scalar vs vector problem compatibility)
+        - Same spatial dimension (2D/3D consistency)
+        - Compatible flux tensor shapes
+        - All models properly initialized
+        """
+        if not models:
+            raise ValueError("At least one constitutive model required")
+
+        reference_model = models[0]
+        reference_u_dim = reference_model.u_dim
+        reference_dim = reference_model.dim
+
+        for i, model in enumerate(models):
+            if model.u_dim != reference_u_dim:
+                raise ValueError(f"Model {i} has u_dim={model.u_dim}, expected {reference_u_dim}")
+            if model.dim != reference_dim:
+                raise ValueError(f"Model {i} has dim={model.dim}, expected {reference_dim}")
+            # Validate model is properly initialized
+            if not hasattr(model, "Unknowns"):
+                raise ValueError(f"Model {i} is not properly initialized")
+
+        return True
+
+    @property
+    def flux(self):
+        r"""
+        Compute level-set weighted average of constituent model fluxes.
+
+        CRITICAL: This composite flux becomes the stress history that
+        all constituent models (including elastic ones) will read via
+        ``DFDt.psi_star[0]`` in the next time step.
+        """
+        # Get reference flux shape from first model
+        reference_flux = self._constitutive_models[0].flux
+        combined_flux = sympy.Matrix.zeros(*reference_flux.shape)
+
+        if self._normalize_levelsets:
+            # Compute normalization factor to ensure partition of unity
+            total_levelset = sum(
+                self._material_var.sym[i] for i in range(self._material_var.indices)
+            )
+
+            for i in range(self._material_var.indices):
+                # Get normalized level-set function for material i
+                material_fraction = self._material_var.sym[i] / total_levelset
+
+                # Get flux contribution from constituent model i
+                model_flux = self._constitutive_models[i].flux
+
+                # Add weighted contribution to composite flux
+                combined_flux += material_fraction * model_flux
+        else:
+            # Use level-sets directly (assuming they already maintain partition of unity)
+            for i in range(self._material_var.indices):
+                # Get flux contribution from constituent model i
+                model_flux = self._constitutive_models[i].flux
+
+                # Add weighted contribution using level-set directly
+                combined_flux += self._material_var.sym[i] * model_flux
+
+        # This combined_flux will become the stress history for ALL materials
+        return combined_flux
+
+    @property
+    def K(self):
+        r"""
+        Effective stiffness using level-set weighted harmonic average.
+
+        For composite materials, harmonic averaging gives the correct effective
+        stiffness for preconditioning: $1/K_{eff} = \sum(\phi_i / K_i) / \sum(\phi_i)$
+        """
+        # Harmonic average: 1/K_eff = sum(phi_i / K_i) / sum(phi_i)
+        combined_inv_K = sympy.sympify(0)
+
+        if self._normalize_levelsets:
+            # Compute normalization factor to ensure partition of unity
+            total_levelset = sum(
+                self._material_var.sym[i] for i in range(self._material_var.indices)
+            )
+
+            for i in range(self._material_var.indices):
+                # Get normalized level-set function for material i
+                material_fraction = self._material_var.sym[i] / total_levelset
+
+                # Get stiffness from constituent model i
+                model_K = self._constitutive_models[i].K
+
+                # Add weighted contribution to inverse stiffness
+                combined_inv_K += material_fraction / model_K
+        else:
+            # Use level-sets directly (assuming they already maintain partition of unity)
+            for i in range(self._material_var.indices):
+                # Get stiffness from constituent model i
+                model_K = self._constitutive_models[i].K
+
+                # Add weighted contribution using level-set directly
+                combined_inv_K += self._material_var.sym[i] / model_K
+
+        # Return harmonic average
+        return 1 / combined_inv_K
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
 
         super()._object_viewer()
 
-        ## feedback on this instance
+        display(Markdown(f"**Multi-Material Model**: {len(self._constitutive_models)} materials"))
 
-        ## IndexVariables etc
+        for i, model in enumerate(self._constitutive_models):
+            display(Markdown(f"**Material {i}**: {type(model).__name__}"))
 
-    @property
-    def flux(
-        self,
-    ):
-        combined_flux = sympy.sympify(0)
-
-        for i in range(self._material_var.indices):
-            M = self._material_var[i]
-            combined_flux += self._constitutive_models[i].flux(ddu, ddu_dt, u, u_dt) * M
-
-        return
+        if self.flux is not None:
+            display(Latex(r"$\mathbf{f}_{\text{composite}} = " + sympy.latex(self.flux) + "$"))

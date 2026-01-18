@@ -1,0 +1,21 @@
+---
+title: "Glossary"
+---
+
+# Glossary
+
+```{note} Documentation In Progress
+Terms and definitions for Underworld3 development.
+```
+
+## Overview
+
+Common terms, acronyms, and concepts in Underworld3.
+
+## Terms
+
+**To be populated with:**
+- Technical terms
+- PETSc concepts
+- Geophysical terminology
+- API terminology

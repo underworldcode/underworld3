@@ -1,0 +1,151 @@
+# Dependencies-only base image for Underworld3 binder launches
+# This image contains all dependencies but NOT underworld3 source code
+# It rarely changes, so it caches well on mybinder.org
+#
+# Build: docker build --platform linux/amd64 -f container/Dockerfile.deps \
+#          -t ghcr.io/underworldcode/uw3-deps:2025.01 .
+
+FROM ubuntu:24.04 AS builder
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal system dependencies for build stage
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user (binder expects jovyan with UID 1000)
+# Ubuntu 24.04 has 'ubuntu' user at UID 1000, so we replace it
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+USER jovyan
+WORKDIR /home/jovyan
+
+# Install pixi
+RUN curl -fsSL https://pixi.sh/install.sh | sh
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+
+# Clone underworld3 just to get pixi.toml/pixi.lock for environment setup
+# We use a shallow clone and only need the config files
+RUN git clone --single-branch --branch uw3-release-candidate --depth 1 \
+    https://github.com/underworldcode/underworld3.git underworld3-temp && \
+    mkdir -p underworld3 && \
+    cp underworld3-temp/pixi.toml underworld3/ && \
+    cp underworld3-temp/pixi.lock underworld3/ && \
+    rm -rf underworld3-temp
+
+# Install the runtime environment (this is the slow part that we want to cache)
+RUN cd underworld3 && \
+    pixi install -e runtime && \
+    cd ..
+
+# Clean pixi cache
+RUN pixi clean cache --yes 2>/dev/null || true
+
+# Remove unnecessary files from pixi environment to reduce size
+RUN find /home/jovyan/.pixi -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /home/jovyan/.pixi -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    find /home/jovyan/.pixi -name "*.pyc" -delete 2>/dev/null || true && \
+    find /home/jovyan/.pixi -name "*.pyo" -delete 2>/dev/null || true
+
+# Remove man pages
+RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/man
+
+# Remove conda-meta
+RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/conda-meta
+
+# =============================================================================
+# Final stage - runtime image with dependencies only
+# =============================================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime dependencies for gmsh, pyvista, and visualization
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    # OpenGL / Mesa for hardware rendering
+    libgl1 \
+    libglu1-mesa \
+    # OSMesa for software rendering (headless)
+    libosmesa6 \
+    libglx-mesa0 \
+    # X11 libraries for gmsh
+    libxft2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxrender1 \
+    libxext6 \
+    libglib2.0-0 \
+    libfreetype6 \
+    # For headless rendering
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create jovyan user (binder standard)
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+
+# =============================================================================
+# Copy dependencies in layers (split for binder reliability)
+# =============================================================================
+
+# Layer 1: Pixi binary (~10MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/.pixi /home/jovyan/.pixi
+
+# Layer 2: Pixi config files (~1MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pixi.toml /home/jovyan/underworld3/pixi.toml
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pixi.lock /home/jovyan/underworld3/pixi.lock
+
+# Layer 3: Runtime environment - bin, share, ssl, etc (~100MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/bin /home/jovyan/underworld3/.pixi/envs/runtime/bin
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/share /home/jovyan/underworld3/.pixi/envs/runtime/share
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/ssl /home/jovyan/underworld3/.pixi/envs/runtime/ssl
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/etc /home/jovyan/underworld3/.pixi/envs/runtime/etc
+
+# Layer 4: Runtime lib - shared libraries (~400MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib /home/jovyan/underworld3/.pixi/envs/runtime/lib
+
+# Layer 5: Include headers - needed for JIT compilation (~390MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/include /home/jovyan/underworld3/.pixi/envs/runtime/include
+
+# Layer 6: Compiler toolchain - needed for JIT compilation (~267MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu
+
+# Layer 7: Compiler internal binaries (cc1, etc.) - needed for JIT compilation
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/libexec /home/jovyan/underworld3/.pixi/envs/runtime/libexec
+
+USER jovyan
+WORKDIR /home/jovyan
+
+# Set up environment
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+ENV HOME="/home/jovyan"
+
+# PyVista/VTK off-screen rendering configuration
+ENV PYVISTA_OFF_SCREEN=true
+ENV PYVISTA_USE_IPYVTK=true
+ENV DISPLAY=:99
+
+# Force Mesa software rendering (avoid EGL issues in containers)
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MESA_GL_VERSION_OVERRIDE=3.3
+ENV GALLIUM_DRIVER=llvmpipe
+ENV VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow
+
+# Binder environment variables
+ENV NB_USER=jovyan
+ENV NB_UID=1000
+
+# Label for versioning
+LABEL org.opencontainers.image.source="https://github.com/underworldcode/underworld3"
+LABEL org.opencontainers.image.description="Underworld3 dependencies base image"
+LABEL org.opencontainers.image.version="2025.01"
+
+# Default working directory
+WORKDIR /home/jovyan/underworld3

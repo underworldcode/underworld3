@@ -1,7 +1,7 @@
-name: Image Build and Push
+name: "DockerHub: Command-Line Container"
 
 on:
-  push: 
+  push:
     branches:
       - development
 

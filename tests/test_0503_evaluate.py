@@ -10,6 +10,9 @@ import numpy as np
 import sympy
 import pytest
 
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
+
 
 n = 10
 x = np.linspace(0.1, 0.9, n)
@@ -60,7 +63,7 @@ def test_non_uw_variable_constant_evalf():
 
 def test_non_uw_variable_linear():
     mesh = uw.meshing.StructuredQuadBox()
-    result = fn.evaluate(mesh.r[0], coords, coord_sys=mesh.N)
+    result = fn.evaluate(mesh.r[0], coords, coord_sys=mesh.N).squeeze()
     assert np.allclose(x, result, rtol=1e-05, atol=1e-08)
 
     del mesh
@@ -68,7 +71,7 @@ def test_non_uw_variable_linear():
 
 def test_non_uw_variable_sine():
     mesh = uw.meshing.StructuredQuadBox()
-    result = fn.evaluate(sympy.sin(mesh.r[1]), coords, coord_sys=mesh.N)
+    result = fn.evaluate(sympy.sin(mesh.r[1]), coords, coord_sys=mesh.N).squeeze()
     assert np.allclose(np.sin(y), result, rtol=1e-05, atol=1e-08)
 
     del mesh
@@ -79,8 +82,7 @@ def test_single_scalar_variable():
     var = uw.discretisation.MeshVariable(
         varname="scalar_var_3", mesh=mesh, num_components=1, vtype=uw.VarType.SCALAR
     )
-    with mesh.access(var):
-        var.data[:] = 1.1
+    var.array[...] = 1.1
 
     result = fn.evaluate(var.sym[0], coords, evalf=True)
     assert np.allclose(1.1, result, rtol=1e-05, atol=1e-08)
@@ -93,8 +95,7 @@ def test_single_vector_variable():
     var = uw.discretisation.MeshVariable(
         varname="vector_var_4", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(var):
-        var.data[:] = (1.1, 1.2)
+    var.array[...] = (1.1, 1.2)
     result = uw.function.evaluate(var.sym, coords, evalf=True)
     assert np.allclose(np.array(((1.1, 1.2),)), result, rtol=1e-05, atol=1e-08)
 

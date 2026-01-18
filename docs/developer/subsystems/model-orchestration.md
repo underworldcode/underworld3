@@ -1,0 +1,197 @@
+---
+title: "Model Object & Orchestration"
+---
+
+## Purpose
+
+The Model object serves as a central orchestrator for Underworld3 simulations, providing a unified container for managing meshes, swarms, variables, and solvers. It eliminates circular reference problems between simulation components and enables model serialization for sharing and reuse. The design philosophy emphasizes simple orchestration over complex validation, leveraging existing SymPy expressions and PETSc command-line options rather than creating separate parameter systems.
+
+## Architecture
+
+### Design Goals
+
+The Model object addresses three fundamental needs in geodynamic simulation workflows:
+
+1. **Component Lifecycle Management**: Meshes, swarms, and variables form complex dependency networks. The Model acts as a central authority that owns these relationships, breaking circular references that would otherwise complicate memory management and serialization.
+
+2. **Mesh Swapping Support**: Simulations often require adaptive remeshing or mesh refinement. By mediating the relationship between swarms and meshes, the Model enables mesh replacement with automatic notification to all dependent objects.
+
+3. **Serialization Framework**: Scientific workflows benefit from model reuse and sharing. The Model provides a container that can be serialized to capture simulation state, though full expression serialization remains future work.
+
+### Implementation Strategy
+
+The current implementation uses a global singleton pattern with automatic registration. When any simulation component is created (mesh, swarm, variable, solver), it automatically registers with the default model via weak references where appropriate to prevent memory leaks.
+
+```python
+# Global default model
+_default_model = None
+
+def get_default_model():
+    """Get or create the default model for this UW3 session."""
+    global _default_model
+    if _default_model is None:
+        _default_model = Model(name="default")
+    return _default_model
+```
+
+### Component Registration
+
+Auto-registration occurs in the `__init__` methods of core classes:
+
+- **Mesh** (`discretisation_mesh.py:627`): Registers as the primary mesh
+- **MeshVariable** (`discretisation_mesh_variables.py:406`): Registers by name
+- **Swarm** (`swarm.py:1481`): Registers using weak references
+- **SwarmVariable** (`swarm.py:208`): Registers by name
+
+This automatic approach ensures all simulation objects are tracked without requiring explicit user action.
+
+## Model Structure
+
+### Core Attributes
+
+```python
+class Model:
+    def __init__(self, name=None):
+        self.name = name or f"Model_{id(self)}"
+        self.state = ModelState.CONFIGURED
+        
+        # Component tracking
+        self._mesh = None
+        self._swarms = weakref.WeakValueDictionary()
+        self._variables = {}  # name -> variable mapping
+        self._solvers = {}    # name -> solver mapping
+        
+        # Simple configuration
+        self.materials = {}   # material_name -> {property: value/expression}
+        self.metadata = {}    # User-defined metadata
+        
+        # Lifecycle tracking
+        self._version = 0  # Incremented when model structure changes
+```
+
+### Weak References
+
+Swarms use `WeakValueDictionary` to prevent circular references. When a swarm is garbage collected, it automatically disappears from the model's registry without requiring explicit cleanup.
+
+### Materials as Dictionaries
+
+Materials are intentionally simple dictionaries mapping property names to values or SymPy expressions. This avoids the complexity of validation systems while allowing full expression power:
+
+```python
+model.materials['mantle'] = {
+    'viscosity': 1e21,
+    'density': 3300,
+    'thermal_diffusivity': kappa
+}
+```
+
+## Serialization
+
+### Current Capabilities
+
+The `to_dict()` method exports basic model structure to a JSON-serializable dictionary:
+
+```python
+{
+    'model_name': 'default',
+    'model_version': 1,
+    'state': 'configured',
+    'mesh_type': 'Mesh',
+    'variables': ['T', 'V', 'P'],
+    'swarm_count': 2,
+    'solver_count': 1,
+    'materials': {...},
+    'metadata': {...}
+}
+```
+
+```{note} Expression Serialization Not Yet Implemented
+Currently only metadata and basic structure are serialized. Full SymPy expression serialization requires additional infrastructure to reconstruct symbolic expressions from JSON.
+```
+
+### Deserialization
+
+The `from_dict()` method imports materials and metadata, but simulation components (mesh, variables, swarms) must be recreated manually. This is intentional - reconstructing PETSc objects requires careful setup that depends on runtime context.
+
+## API Reference
+
+### Primary Functions
+
+```python
+# Get/reset default model
+model = uw.get_default_model()
+uw.reset_default_model()
+
+# Access registered components
+model.mesh           # Primary mesh
+model.list_variables()  # Dict of all variables
+model.list_swarms()     # Dict of all swarms
+
+# Serialization
+config = model.to_dict()
+model.from_dict(config)
+
+# Material management
+model.set_material('crust', {'density': 2700})
+props = model.get_material('crust')
+```
+
+### Internal Registration Methods
+
+```{warning} Internal API
+These methods are called automatically during object initialization. Direct use is not recommended.
+```
+
+```python
+model._register_mesh(mesh)
+model._register_swarm(swarm)
+model._register_variable(name, variable)
+model._register_solver(name, solver)
+```
+
+## Future Enhancements
+
+### Mesh Swapping Notifications
+
+Placeholder exists at `model.py:168-171` for notifying dependent objects when the mesh changes. Implementation would require:
+
+1. Swarm notification of mesh changes for particle migration
+2. Variable dependency updates for field remapping
+3. Solver cache invalidation for matrix reassembly
+
+### Expression Serialization
+
+Full model serialization requires capturing SymPy expressions in materials and boundary conditions. This involves:
+
+1. Expression tree serialization to JSON
+2. Symbol table reconstruction on deserialization
+3. Function object preservation for custom expressions
+
+### Model Composition
+
+Support for combining or inheriting from existing models would enable:
+
+1. Base model templates for common scenarios
+2. Model parameter studies via partial updates
+3. Hierarchical model organization for complex simulations
+
+## Implementation Notes
+
+### No Parameter Validation
+
+The Model intentionally avoids validation logic. SymPy expressions handle mathematical correctness, PETSc validates numerical setup, and solvers check physical consistency. The Model's role is purely organizational.
+
+### PETSc Command-Line Integration
+
+Parameters are managed via PETSc's command-line options system rather than a separate parameter framework. This leverages PETSc's existing infrastructure for solver configuration, preconditioner selection, and performance tuning.
+
+### Testing
+
+Test coverage in `tests/test_model_basic.py` validates:
+
+- Automatic registration of all object types
+- Serialization to JSON format
+- Multiple object tracking
+- String representation for debugging
+
+All tests passing as of implementation (2025-09-23).

@@ -29,20 +29,20 @@ jobs:
           post-cleanup: "all"
           create-args: quarto
 
-      - name: Render docs with quarto
+      - name: Render unified docs with quarto
         shell: bash -l {0}
         run: |
           quarto install tinytex
-          cd docs/user
+          cd docs
           quarto render --cache-refresh --log-level info
       ## Always deploy to version directory
-      - name: Deploy quarto book
+      - name: Deploy unified documentation
         uses: peaceiris/actions-gh-pages@v3
 
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          destination_dir: ${{ github.ref_name }}/_quickstart
-          publish_dir: docs/user/_build/book
+          destination_dir: ${{ github.ref_name }}/docs
+          publish_dir: docs/_build
 
       # - name: Deploy quarto lectures
       #   uses: peaceiris/actions-gh-pages@v3

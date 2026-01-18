@@ -1,0 +1,21 @@
+---
+title: "Debugging Techniques"
+---
+
+# Debugging Techniques
+
+```{note} Documentation In Progress
+Debugging strategies and tools for Underworld3 development.
+```
+
+## Overview
+
+Effective debugging approaches for Underworld3 code.
+
+## Debugging Tools
+
+- Python debuggers (pdb, ipdb)
+- Parallel debugging with MPI
+- PETSc debugging options
+- Memory debugging
+- Visualization for debugging

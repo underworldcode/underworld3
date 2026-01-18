@@ -1,0 +1,471 @@
+---
+title: "Parallel-Safe Scripting"
+---
+
+# Parallel-Safe Scripting in Underworld3
+
+## Overview
+
+Underworld3 uses PETSc for parallel operations, which means **you rarely need to use MPI directly**. PETSc handles domain decomposition, ghost cells, and synchronization automatically. However, understanding parallel safety is crucial for writing correct scripts that work on multiple processors.
+
+## Key Principle: PETSc Handles Parallelism
+
+**Critical Understanding**: You don't write MPI code - you write parallel-safe UW3 code.
+
+- All mesh operations are inherently parallel via PETSc
+- Solvers automatically distribute work across processors
+- Use UW3 API functions, not direct MPI calls
+
+The main use of `uw.mpi.rank` is for conditional output/visualization.
+
+## Parallel-Safe Output
+
+### The Problem with Rank Conditionals
+
+This common pattern is **dangerous**:
+
+```python
+# DANGEROUS - can hang in parallel!
+if uw.mpi.rank == 0:
+    stats = var.stats()  # Collective operation - other ranks wait forever!
+    print(f"Stats: {stats}")
+```
+
+**Why it hangs**: `var.stats()` is a **collective operation** - ALL ranks must call it. If only rank 0 calls it, other ranks wait forever for synchronization that never comes.
+
+### The Solution: Parallel Print
+
+Use `uw.pprint()` for rank-specific output:
+
+```python
+# Safe - all ranks execute stats(), only rank 0 prints
+uw.pprint(f"Stats: {var.stats()}")
+
+# Debug - print from multiple ranks
+uw.pprint(slice(0, 4), f"Local max: {var.data.max()}")
+```
+
+## Rank Selection Syntax
+
+`uw.pprint()` supports flexible rank selection:
+
+### Basic Selection
+
+```python
+# Single rank
+uw.pprint("Only rank 0")
+
+# All ranks
+uw.pprint(None, "Everyone prints this")
+
+# Range of ranks (Python slice)
+uw.pprint(slice(0, 4), "Ranks 0-3")
+uw.pprint(slice(2, 8, 2), "Ranks 2, 4, 6")
+
+# Specific ranks (list/tuple)
+uw.pprint([0, 3, 7], "Ranks 0, 3, and 7")
+```
+
+### Named Patterns
+
+```python
+uw.pprint('all', "All ranks")
+uw.pprint('first', "Rank 0 only")
+uw.pprint('last', "Highest rank only")
+uw.pprint('even', "Even-numbered ranks")
+uw.pprint('odd', "Odd-numbered ranks")
+```
+
+### Advanced Selection
+
+```python
+# Percentage of ranks
+uw.pprint('10%', "First 10% of ranks")
+
+# Function-based
+uw.pprint(lambda r: r % 3 == 0, "Every third rank")
+
+# NumPy arrays
+import numpy as np
+mask = np.array([True, False, True, False])
+uw.pprint(mask, "Using boolean mask")
+```
+
+## Selective Execution Context
+
+For code that should **only execute on certain ranks** (not just print), use `selective_ranks()`:
+
+```python
+# Visualization - only rank 0 executes
+with uw.selective_ranks(0) as should_execute:
+    if should_execute:
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.plot(x, temperature.data[:, 0])
+        plt.savefig("temp_profile.png")
+
+# Multiple ranks
+with uw.selective_ranks(slice(0, 4)) as should_execute:
+    if should_execute:
+        # Only ranks 0-3 execute this block
+        process_local_partition()
+```
+
+```{tip} Using the Context Manager Return Value
+The `selective_ranks()` context manager yields `True` if the current rank should execute, `False` otherwise. Always check this value to ensure code only runs on selected ranks:
+
+```python
+with uw.selective_ranks(0) as should_execute:
+    if should_execute:
+        # Your rank-specific code here
+        pass
+```
+```
+
+### Collective Operation Safety
+
+```{warning} Avoid Collective Operations in Selective Blocks
+**Never call collective operations inside `selective_ranks()` blocks** - they will cause deadlocks since not all ranks participate:
+
+```python
+# WRONG - Will hang!
+with uw.selective_ranks(0):
+    stats = var.stats()  # Collective operation - deadlock!
+
+# RIGHT - Use pprint instead
+uw.pprint(f"Stats: {var.stats()}")  # All ranks execute stats(), only rank 0 prints
+```
+```
+
+Future versions will include automatic detection of collective operations within selective execution blocks.
+
+## Understanding Collective Operations
+
+**Collective operations** require all MPI ranks to participate:
+
+### Common Collective Operations
+
+```python
+# Solver operations
+stokes.solve()           # All ranks must call
+var.stats()              # All ranks must call
+mesh.save("file.h5")     # Collective I/O
+
+# Data operations  
+var.rbf_interpolate()    # All ranks participate
+swarm.migrate()          # Redistributes particles
+```
+
+### Local Operations (Safe)
+
+```python
+# These only access local data
+var.data[...]            # Local partition only
+var.data.max()           # Local maximum
+print(var.data.shape)    # Local shape
+```
+
+## Practical Patterns
+
+### Pattern 1: Time-Stepping Output
+
+```python
+# Time-stepping loop with progress output
+for step in range(nsteps):
+    dt = stokes.estimate_dt()
+    
+    # All ranks execute solver, only rank 0 prints progress
+    stokes.solve()
+    uw.pprint(f"Step {step}: dt={dt:.3e}, time={time:.3e}")
+    
+    # Update fields...
+    time += dt
+```
+
+### Pattern 2: Convergence Monitoring
+
+```python
+# Monitor solver convergence
+solver.solve()
+
+# Get global statistics (collective), print on rank 0
+velocity_stats = velocity.stats()
+pressure_stats = pressure.stats()
+
+uw.pprint(f"Velocity max: {velocity_stats['max']:.6e}")
+uw.pprint(f"Pressure range: [{pressure_stats['min']:.6e}, {pressure_stats['max']:.6e}]")
+```
+
+### Pattern 3: Debugging Parallel Decomposition
+
+```python
+# Check local data on multiple ranks
+uw.pprint(slice(0, 4), f"Rank {uw.mpi.rank}: Local elements = {mesh.dm.getLocalSize()}")
+uw.pprint('all', f"Rank {uw.mpi.rank}: Partition shape = {var.data.shape}")
+
+# Check first and last rank only
+uw.pprint([0, uw.mpi.size-1], f"Rank {uw.mpi.rank}: Boundary points = {boundary_count}")
+
+# Custom selection - every 4th rank
+uw.pprint(lambda r: r % 4 == 0, f"Rank {uw.mpi.rank}: Memory usage = {psutil.Process().memory_info().rss / 1e9:.2f} GB")
+```
+
+### Pattern 4: Visualization and I/O
+
+```python
+# Only rank 0 does visualization
+with uw.selective_ranks(0) as should_execute:
+    if should_execute:
+        import pyvista as pv
+        
+        plotter = pv.Plotter(off_screen=True)
+        plotter.add_mesh(mesh.pyvista_mesh, scalars=temperature.data)
+        plotter.camera_position = 'xy'
+        plotter.show(screenshot=f"temp_{step:04d}.png")
+```
+
+### Pattern 5: Mesh Information Display
+
+```python
+# Display mesh statistics (from mesh.view())
+uw.pprint(f"\nMesh # {mesh.instance}: {mesh.name}\n")
+uw.pprint(f"Number of cells: {num_cells}\n")
+
+if len(mesh.vars) > 0:
+    uw.pprint(f"| Variable Name       | component | degree |     type        |")
+    uw.pprint(f"| ---------------------------------------------------------- |")
+    for vname in mesh.vars.keys():
+        v = mesh.vars[vname]
+        uw.pprint(f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |")
+    uw.pprint(f"| ---------------------------------------------------------- |")
+else:
+    uw.pprint(f"No variables are defined on the mesh\n")
+```
+
+### Pattern 6: Conditional Execution by Rank Group
+
+```python
+# Define rank groups for different tasks
+io_ranks = 0
+compute_ranks = slice(1, None)
+
+# Rank 0: Handle I/O
+with uw.selective_ranks(io_ranks) as should_execute:
+    if should_execute:
+        mesh.save(f"checkpoint_{step}.h5")
+        swarm.save(f"particles_{step}.h5")
+
+# Ranks 1+: Continue computing
+with uw.selective_ranks(compute_ranks) as should_execute:
+    if should_execute:
+        # Prepare next timestep while rank 0 saves
+        update_advection_timestep()
+```
+
+## Testing Parallel Safety
+
+Always test scripts with multiple processors:
+
+```bash
+# Test with 2 processors
+mpirun -np 2 python my_script.py
+
+# Test with 4 processors
+mpirun -np 4 python my_script.py
+```
+
+If your script hangs, check for:
+1. Collective operations inside rank conditionals
+2. Rank-specific execution of collective operations
+3. Mismatched barriers or synchronization
+
+## Common Pitfalls
+
+### Pitfall 1: Collective in Conditional
+
+```python
+# WRONG - hangs
+if uw.mpi.rank == 0:
+    result = var.stats()  # Other ranks wait forever
+
+# RIGHT - all execute, selective output
+uw.pprint(f"Result: {var.stats()}")
+```
+
+### Pitfall 2: Assuming Global Data
+
+```python
+# WRONG - data is local to each rank
+total_points = var.data.shape[0]  # Only local points!
+
+# RIGHT - use collective operation
+total_points = var.stats()['count']  # Global count
+```
+
+### Pitfall 3: Serial Libraries in Parallel
+
+```python
+# WRONG - matplotlib on all ranks (crashes or conflicts)
+import matplotlib.pyplot as plt
+plt.plot(x, y)
+
+# RIGHT - only rank 0
+with uw.selective_ranks(0):
+    import matplotlib.pyplot as plt
+    plt.plot(x, y)
+```
+
+## Migration from Old Patterns
+
+If you have existing code using rank conditionals, here's how to migrate:
+
+### Old Pattern → New Pattern
+
+```python
+# OLD: Rank conditional with print
+if uw.mpi.rank == 0:
+    print(f"Iteration {step}, Time: {time}")
+
+# NEW: Use pprint
+uw.pprint(f"Iteration {step}, Time: {time}")
+```
+
+```python
+# OLD: Collective operation in conditional (DANGEROUS!)
+if uw.mpi.rank == 0:
+    max_value = var.stats()['max']
+    print(f"Max: {max_value}")
+
+# NEW: All ranks execute, selected ranks print
+uw.pprint(f"Max: {var.stats()['max']}")
+```
+
+```python
+# OLD: Rank conditional for visualization
+if uw.mpi.rank == 0:
+    import pyvista as pv
+    plotter = pv.Plotter()
+    plotter.add_mesh(mesh.pyvista_mesh)
+    plotter.show()
+
+# NEW: Use selective_ranks
+with uw.selective_ranks(0) as should_execute:
+    if should_execute:
+        import pyvista as pv
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh.pyvista_mesh)
+        plotter.show()
+```
+
+```{note} Why the Change?
+The new patterns are safer because:
+
+1. **`uw.pprint()`** ensures all ranks evaluate arguments (preventing collective operation deadlocks)
+2. **`selective_ranks()`** makes it explicit which code is rank-specific
+3. Code is more readable and intention is clear
+4. Future automatic deadlock detection becomes possible
+```
+
+## When to Use What
+
+| Task | Use | Example |
+|------|-----|---------|
+| Print from specific ranks | `uw.pprint(ranks, ...)` | `uw.pprint("Done")` |
+| Serial code (viz, I/O) | `with uw.selective_ranks(ranks):` | Matplotlib, file writes |
+| Collective with output | `uw.pprint()` with collective args | `uw.pprint(var.stats())` |
+| Debug multiple ranks | `uw.pprint('all', ...)` | Check local data |
+
+## Best Practices
+
+1. **Never use direct MPI** unless absolutely necessary
+2. **Use `uw.pprint()`** instead of `if uw.mpi.rank == 0: print()`
+3. **Wrap serial libraries** in `selective_ranks(0)`
+4. **Test with multiple processors** early and often
+5. **Check error messages** - they tell you exactly what's wrong
+
+## Advanced: Rank Groups
+
+For complex patterns, define rank groups:
+
+```python
+class RankGroups:
+    def __init__(self):
+        size = uw.mpi.size
+        self.io_rank = 0
+        self.compute_ranks = list(range(1, size))
+        self.sample_ranks = list(range(0, size, size // 4))
+
+groups = RankGroups()
+
+# Use throughout script
+uw.pprint(groups.io_rank, "Saving data...")
+with uw.selective_ranks(groups.compute_ranks):
+    heavy_computation()
+```
+
+## Related Documentation
+
+- [Performance Optimization](performance.md) - Profiling parallel code
+- [Troubleshooting](troubleshooting.md) - Debugging parallel issues
+- [Developer: PETSc Integration](../developer/subsystems/petsc-integration.md) - How PETSc manages parallelism
+
+## Quick Reference
+
+### API Summary
+
+**`uw.pprint(ranks, *args, prefix=True, **kwargs)`**
+- Print from selected ranks
+- All ranks evaluate arguments (safe for collective operations)
+- Optional rank prefix (default: `[0]`)
+
+**`uw.selective_ranks(ranks)`**
+- Context manager for rank-specific execution
+- Yields `True`/`False` for current rank
+- Use with `if should_execute:` check
+
+### Rank Selection Quick Reference
+
+| Syntax | Selects | Example |
+|--------|---------|---------|
+| `0` | Single rank | `uw.pprint("message")` |
+| `slice(0, 4)` | Range of ranks | `uw.pprint(slice(0, 4), ...)` |
+| `[0, 3, 7]` | Specific ranks | `uw.pprint([0, 3, 7], ...)` |
+| `'all'` or `None` | All ranks | `uw.pprint('all', ...)` |
+| `'first'` | Rank 0 | `uw.pprint('first', ...)` |
+| `'last'` | Highest rank | `uw.pprint('last', ...)` |
+| `'even'` | Even ranks | `uw.pprint('even', ...)` |
+| `'odd'` | Odd ranks | `uw.pprint('odd', ...)` |
+| `'10%'` | First 10% of ranks | `uw.pprint('10%', ...)` |
+| `lambda r: ...` | Custom function | `uw.pprint(lambda r: r % 3 == 0, ...)` |
+
+### Common Collective Operations
+
+These operations require **ALL ranks** to participate:
+
+| Operation | Type | Example |
+|-----------|------|---------|
+| `var.stats()` | Statistics | Global min/max/mean |
+| `solver.solve()` | Solver | All PETSc solvers |
+| `mesh.save()` | I/O | Parallel HDF5 write |
+| `var.rbf_interpolate()` | Interpolation | Radial basis functions |
+| `swarm.migrate()` | Redistribution | Particle migration |
+
+### Migration Checklist
+
+- [ ] Replace `if uw.mpi.rank == 0: print(...)` with `uw.pprint(...)`
+- [ ] Replace `if uw.mpi.rank == 0:` for visualization with `with uw.selective_ranks(0):`
+- [ ] Ensure collective operations are called on ALL ranks
+- [ ] Test with `mpirun -np 2` and `mpirun -np 4`
+- [ ] Check for deadlocks (script hangs = collective operation issue)
+
+## Summary
+
+**Key Takeaways:**
+
+1. **PETSc handles parallelism** - you write parallel-safe UW3 code
+2. **Use `uw.pprint(ranks, ...)`** for output on specific ranks
+3. **Use `with uw.selective_ranks(ranks):`** for serial operations
+4. **Collective operations must run on ALL ranks** - never inside rank conditionals
+5. **Test with `mpirun -np N`** to catch issues early
+
+The parallel safety system makes parallel programming in Underworld3 safer and more intuitive - collective operations are evaluated on all ranks automatically, preventing common deadlock scenarios!

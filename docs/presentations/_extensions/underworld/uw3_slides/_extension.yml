@@ -1,0 +1,17 @@
+title: Underworld3 Slides Template
+author: Underworld Development Team
+version: 0.1.0
+contributes:
+  formats:
+    revealjs:
+      theme: [default, uw3.scss]
+      preview-links: auto
+      slide-number: true
+      transition: fade
+      center: true
+      touch: true
+      controls: true
+      controls-layout: bottom-right
+      navigation-mode: vertical
+      code-line-numbers: false
+      highlight-style: github

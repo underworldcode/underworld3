@@ -1,0 +1,50 @@
+---
+title: "Mathematics Module"
+---
+
+# Mathematics System Documentation
+
+```{warning} Partial Documentation - Needs Consistency
+**Module**: `maths/` (962 total lines)  
+**Priority**: 🟡 High - inconsistent quality  
+**Current Status**: Partial documentation ⚠️
+```
+
+## Overview
+
+Vector calculus, tensor operations, and mathematical utilities for computational geophysics.
+
+### Current State
+- **Files**:
+  - `vector_calculus.py`: 646 lines - Vector and tensor operations
+  - `tensors.py`: 264 lines - Tensor mathematics  
+  - `functions.py`: 52 lines - Mathematical functions
+- **Complexity**: Medium-High - mathematical operations
+- **Documentation Quality**: Partial ⚠️
+
+### Key Operations
+```python
+# Common operations needing documentation
+gradient(field)           # Spatial gradients
+divergence(vector_field)  # Divergence operator
+strain_rate(velocity)     # Strain rate tensor
+vorticity(velocity)       # Vorticity calculation
+```
+
+## Documentation Needs
+
+### Current Issues
+- ✅ Function signatures present
+- ⚠️ Mathematical definitions inconsistent  
+- ❌ Coordinate system handling unclear
+- ❌ Usage examples missing
+
+### Priority Tasks
+1. Standardize mathematical notation across all modules
+2. Add coordinate system documentation
+3. Provide comprehensive usage examples
+4. Integrate with mathematical objects system
+
+---
+
+*Needs comprehensive review for consistency and completeness.*

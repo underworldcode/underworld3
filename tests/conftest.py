@@ -58,3 +58,38 @@
 #     }
 #     mesh_type = request.param
 #     return mesh_dict[mesh_type]
+
+
+# ==============================================================================
+# STRICT UNITS MODE FIXTURE FOR LEGACY TESTS
+# ==============================================================================
+# Most existing tests were written before strict units mode was implemented.
+# They test various features (units, solvers, etc.) but don't set reference
+# quantities first. Disable strict mode for all tests EXCEPT the strict
+# enforcement tests themselves.
+# ==============================================================================
+
+import pytest
+import underworld3 as uw
+
+
+@pytest.fixture(scope="function", autouse=True)
+def manage_strict_units_mode(request):
+    """
+    Manage strict units mode for tests.
+
+    - Disable for all tests EXCEPT test_0814_strict_units_enforcement.py
+    - This allows legacy tests to work while enforcing strict mode for new code
+    """
+    test_file = request.node.fspath.basename
+
+    # Only keep strict mode ON for the strict enforcement tests
+    if test_file == "test_0814_strict_units_enforcement.py":
+        # These tests manage their own strict mode state
+        yield
+    else:
+        # All other tests: disable strict mode for backward compatibility
+        original_state = uw.is_strict_units_active()
+        uw.use_strict_units(False)
+        yield
+        uw.use_strict_units(original_state)

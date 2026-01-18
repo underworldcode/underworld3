@@ -17,20 +17,20 @@ cdef extern from "kdtree_interface.hpp" nogil:
 
 cdef class KDTree:
     """
-    KD-Tree indexes are data structures and algorithms for the efficient
-    determination of nearest neighbours.
+    Unit-aware KD-Tree for spatial indexing and queries.
 
-    This class generates a kd-tree index for the provided points, and provides
+    This class generates a kd-tree index for the provided points and provides
     the necessary methods for finding which points are closest to a given query
-    location.
+    location. It automatically handles coordinate units when provided.
 
     This class utilises `nanoflann` for kd-tree functionality.
 
     Parameters
     ----------
-    points:
-        The points for which the kd-tree index will be build. This
-        should be a 2-dimensional array of size (n_points,dim).
+    points : array-like
+        The points for which the kd-tree index will be built. This
+        should be a 2-dimensional array of size (n_points, dim).
+        Can be unit-aware (UnitAwareArray) or plain numpy array.
 
     Example
     -------
@@ -41,8 +41,7 @@ cdef class KDTree:
     >>> pts = np.random.random( size=(100,2) )
 
     Build the index on the points
-    >>> index = uw.algorithms.KDTree(pts)
-    >>> index.build_index()
+    >>> index = uw.kdtree.KDTree(pts)
 
     Search the index for a coordinate
     >>> coord = np.zeros((1,2))
@@ -56,9 +55,22 @@ cdef class KDTree:
     """
     cdef KDTree_Interface* index
     cdef const double[:,::1] points
+    cdef public object coord_units  # Store coordinate units
 
     def __cinit__( self,
-                   const double[:,::1] points not None:   numpy.ndarray ) :
+                   points_input not None:   numpy.ndarray ) :
+
+        # Check if points have units and store them
+        # Import here to avoid circular imports
+        import underworld3.function.unit_conversion as unit_conv
+        self.coord_units = unit_conv.get_units(points_input) if unit_conv.has_units(points_input) else None
+
+        # Extract raw numpy array for C++ interface
+        cdef const double[:,::1] points
+        if unit_conv.has_units(points_input):
+            points = np.ascontiguousarray(points_input, dtype=np.float64)
+        else:
+            points = points_input
 
         if points.shape[1] not in (2,3):
             raise RuntimeError(f"Provided points array dimensionality must be 2 or 3, not {points.shape[1]}.")
@@ -72,11 +84,73 @@ cdef class KDTree:
 
     @property
     def n(self):
+        """Number of points in the KD-tree."""
         return self.points.shape[0]
 
     @property
     def ndim(self):
+        """Spatial dimensionality of the KD-tree (2 or 3)."""
         return self.points.shape[1]
+
+    def _convert_coords_to_tree_units(self, coords):
+        """
+        Convert query coordinates to match the KD-tree's coordinate system.
+
+        Parameters
+        ----------
+        coords : array-like
+            Query coordinates (may or may not have units)
+
+        Returns
+        -------
+        np.ndarray
+            Coordinates converted to tree's coordinate system (raw numpy array)
+        """
+        import underworld3.function.unit_conversion as unit_conv
+        import underworld3.scaling
+
+        # If tree has no units, just extract raw array
+        if self.coord_units is None:
+            if unit_conv.has_units(coords):
+                raise ValueError(
+                    f"KD-tree was built with dimensionless coordinates, "
+                    f"but query coordinates have units '{unit_conv.get_units(coords)}'. "
+                    f"Convert to dimensionless first."
+                )
+            return np.asarray(coords, dtype=np.float64)
+
+        # Tree has units - check query coordinates
+        if not unit_conv.has_units(coords):
+            raise ValueError(
+                f"KD-tree was built with coordinates in '{self.coord_units}', "
+                f"but query coordinates have no units. "
+                f"Provide coordinates with units or convert tree coordinates to dimensionless."
+            )
+
+        query_units = unit_conv.get_units(coords)
+
+        # Same units - just extract raw array
+        if query_units == self.coord_units:
+            return np.asarray(coords, dtype=np.float64)
+
+        # Different units - convert to tree's coordinate system
+        try:
+            # Use UnitAwareArray's to method if available
+            if hasattr(coords, 'to'):
+                coords_converted = coords.to(self.coord_units)
+                return np.asarray(coords_converted, dtype=np.float64)
+            else:
+                # Convert using Pint directly
+                ureg = underworld3.scaling.units
+                coords_qty = ureg.Quantity(np.asarray(coords), query_units)
+                coords_converted_qty = coords_qty.to(self.coord_units)
+                return np.asarray(coords_converted_qty.magnitude, dtype=np.float64)
+
+        except Exception as e:
+            raise ValueError(
+                f"Cannot convert query coordinates from '{query_units}' "
+                f"to KD-tree's coordinate system '{self.coord_units}': {e}"
+            )
 
 
     @timing.routine_timer_decorator
@@ -161,7 +235,7 @@ cdef class KDTree:
             An integer array of indices into the `points` array (passed into the constructor) corresponding to
             the nearest neighbour for the search coordinates. It will be of size (n_coords).
         dist_sqr:
-            A float array of squred distances between the provided coords and the nearest neighbouring
+            A float array of squared distances between the provided coords and the nearest neighbouring
             points. It will be of size (n_coords).
 
         """
@@ -205,9 +279,40 @@ cdef class KDTree:
     ):
         """
         Find the n points closest to the provided coordinates.
-        """
 
-        coords_contiguous = np.ascontiguousarray(coords)
+        This method is unit-aware: if the KD-tree was built with unit-aware coordinates,
+        it will automatically convert query coordinates to match and return distances
+        with appropriate units.
+
+        Parameters
+        ----------
+        coords : array-like
+            An array of coordinates for which the kd-tree index will be searched for nearest
+            neighbours. This should be a 2-dimensional array of size (n_coords, dim).
+            Can be unit-aware (UnitAwareArray) or plain numpy array.
+            If KD-tree has coordinate units, coords must have compatible units.
+        k : int, optional
+            The number of nearest neighbour points to find for each `coords` (default 1).
+        sqr_dists : bool, optional
+            Set to True to return the squared distances, set to False to return the actual
+            distances (default True).
+
+        Returns
+        -------
+        d : array
+            A float array of the squared (sqr_dists = True) or actual distances (sqr_dists = False)
+            between the provided coords and the nearest neighbouring points.
+            If KD-tree has coordinate units and sqr_dists=False, distances will be unit-aware.
+            Shape is (n_coords,) for k=1, or (n_coords, k) for k>1.
+        i : array
+            An integer array of indices into the `points` array (passed into the constructor)
+            corresponding to the nearest neighbour for the search coordinates.
+            Shape is (n_coords,) for k=1, or (n_coords, k) for k>1.
+        """
+        # Convert coordinates to match tree's coordinate system
+        coords_converted = self._convert_coords_to_tree_units(coords)
+        coords_contiguous = np.ascontiguousarray(coords_converted)
+
         i, d = self.find_closest_n_points(k, coords_contiguous)
 
         # For consistency with pykdtree
@@ -217,7 +322,12 @@ cdef class KDTree:
         if sqr_dists:
             return d, i
         else:
-            return numpy.sqrt(d), i
+            distance_actual = numpy.sqrt(d)
+            # Wrap with unit-aware array if tree has coordinate units
+            if self.coord_units is not None:
+                from underworld3.utilities.unit_aware_array import UnitAwareArray
+                distance_actual = UnitAwareArray(distance_actual, units=self.coord_units)
+            return distance_actual, i
 
 
 ## A general point-to-point rbf interpolator here
@@ -233,7 +343,40 @@ cdef class KDTree:
             p=2,
             verbose = False,
         ):
+        """
+        Interpolate data to target coordinates using inverse distance weighting.
 
+        This is a convenience wrapper around :meth:`rbf_interpolator_local_from_kdtree`.
+        It performs radial basis function (RBF) interpolation using inverse distance
+        weighting to map known data values from the KD-tree points to arbitrary
+        target coordinates.
+
+        Parameters
+        ----------
+        coords : array-like
+            Target coordinates where data will be interpolated.
+            Shape should be ``(n_coords, dim)``.
+        data : ndarray
+            Known data values at KD-tree points.
+            Shape should be ``(n_points,)`` or ``(n_points, n_components)``.
+        nnn : int, optional
+            Number of nearest neighbours to use for interpolation (default 4).
+            If 1, returns raw nearest-neighbour values without distance weighting.
+        p : int, optional
+            Power index for distance weighting: ``weight = 1/distance^p`` (default 2).
+        verbose : bool, optional
+            Print progress messages (default False).
+
+        Returns
+        -------
+        ndarray
+            Interpolated data values at target coordinates.
+
+        See Also
+        --------
+        rbf_interpolator_local_from_kdtree : The underlying implementation.
+        query : Find nearest neighbours without interpolation.
+        """
         return self.rbf_interpolator_local_from_kdtree(
             coords, data, nnn, p, verbose,
         )
@@ -370,38 +513,50 @@ cdef class KDTree:
     def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose):
         """
         Performs an inverse distance (squared) mapping of data to the target `coords`.
-        User can controls the algorithm by altering the number of neighbours used, `nnn` or the
-        power factor `p` of the mapping weighting.
 
-        Args:
-        coords  : ndarray,
-                The target spatial coordinates to evaluate the data from.
-                coords.shape[1] == self.ndim
-        data    : ndarray
-                The known data to map from. Must be full described over kd-tree.
-                i.e., data.shape[0] == self.n
-        nnn     : int,
-                The number of neighbour points to sample from, if `1` no distance averaging is done.
-        p       : int,
-                The power index to calculate weights, ie. pow(distance, -p)
-        verbose : bool,
-                Print when mapping occurs
+        This method is unit-aware: if the KD-tree was built with unit-aware coordinates,
+        it will automatically convert query coordinates to match before interpolation.
+
+        Parameters
+        ----------
+        coords : array-like
+            The target spatial coordinates to evaluate the data from.
+            Can be unit-aware (UnitAwareArray) or plain numpy array.
+            If KD-tree has coordinate units, coords must have compatible units.
+            coords.shape[1] == self.ndim
+        data : ndarray
+            The known data to map from. Must be fully described over kd-tree.
+            i.e., data.shape[0] == self.n
+        nnn : int
+            The number of neighbour points to sample from. If `1`, no distance averaging is done.
+        p : int
+            The power index to calculate weights, i.e., pow(distance, -p)
+        verbose : bool
+            Print when mapping occurs
+
+        Returns
+        -------
+        ndarray
+            Interpolated data values at target coordinates
         """
+        # Convert coordinates to match tree's coordinate system
+        coords_converted = self._convert_coords_to_tree_units(coords)
 
-        if coords.shape[1] != self.ndim:
+        if coords_converted.shape[1] != self.ndim:
             raise RuntimeError(
-                f"Interpolation coordinates dimensionality ({coords.shape[1]}) is different to kD-tree dimensionality ({self.ndim})."
+                f"Interpolation coordinates dimensionality ({coords_converted.shape[1]}) is different to kD-tree dimensionality ({self.ndim})."
             )
         if data.shape[0] != self.n:
             raise RuntimeError(
                 f"Data does not match kd-tree size array ({data.shape[0]} v ({self.n}))"
             )
 
-        coords_contiguous = np.ascontiguousarray(coords)
+        coords_contiguous = np.ascontiguousarray(coords_converted)
         # query nnn points to the coords
         # distance_n is a list of distance to the nearest neighbours for all coords_contiguous
         # closest_n is the index of the neighbours from ncoords for all coords_contiguous
-        distance_n, closest_n = self.query(coords_contiguous, k=nnn)
+        # Note: query() returns sqr_dists=True by default, and we use the converted coords
+        distance_n, closest_n = self.query(coords, k=nnn)
 
         if np.any(closest_n > self.n):
             raise RuntimeError(

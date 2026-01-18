@@ -13,6 +13,7 @@ dependencies:
   - pyvista
   - pykdtree
   - pytest
+  - pytest-mpi
   - numpy
   - scipy
   - sympy
@@ -41,3 +42,4 @@ dependencies:
   - pip:
       - rich<14
       - meshio
+      - pygmsh

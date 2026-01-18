@@ -1,7 +1,7 @@
 # underworld3
 
 <center>
-<img src="docs/user/media/SocialShareS.png", width=80%>
+<img src="docs/media/SocialShareS.png" width="80%">
 </center>
 
 Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the `Underworld3` code.
@@ -21,25 +21,105 @@ development branch
 
 ## Documentation
 
-Start with the online [Quick Start Guide](https://underworldcode.github.io/underworld3/development/_quickstart/index.html) for a brief overview of the code.
+The full documentation including tutorials, API reference, and developer guides is available at:
 
-The `underworld3` module (API) documentation can be found online:
-  - [stable version](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html)
-  - [development version](https://underworldcode.github.io/underworld3/development_api/underworld3/index.html)
+  - [Documentation](https://underworld3.readthedocs.io/en/latest/) - tutorials, examples, and API reference
 
 
 
 ## Binder demonstration version
 
- - [Main Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb)
- - [Development Branch on Binder](https://mybinder.org/v2/gh/underworld-community/uw3-demo-launcher-dev/HEAD?labpath=underworld3%2Fdocs%2Fuser%2FNotebooks%2FNotebook_Index.ipynb)
+ - [Launch on Binder](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/uw3-release-candidate?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb)
 
 
 ## Installation Guide
 
-The quickest option is **not to install** anything but try the binder demo above !
+The quickest option is **not to install** anything but try the binder demo above!
 
-If do you want to install the code on your own machine, we recommend using `miniconda` and `mamba`. Create a separate virtual environment and install the code from source. More details on how to do that are in the [Installation Instructions](https://underworldcode.github.io/underworld3/development/_quickstart/Installation.html)
+### Quick Install (recommended)
+
+```bash
+git clone https://github.com/underworldcode/underworld3
+cd underworld3
+./uw setup
+```
+
+The `./uw` wrapper handles everything:
+- Installs [pixi](https://pixi.sh) if needed
+- Guides you through environment selection
+- Installs dependencies and builds underworld3
+
+### Environment Options
+
+Underworld3 uses [pixi](https://pixi.sh) to manage dependencies. The setup wizard will ask you two questions to determine which environment to install:
+
+**1. Do you need adaptive mesh refinement (AMR)?**
+
+Most users should answer **No**. This installs PETSc from conda-forge, which takes about 5 minutes.
+
+Answer **Yes** only if you need anisotropic mesh adaptation tools (pragmatic, mmg, parmmg). This builds a custom PETSc from source with these tools enabled, which takes approximately one hour.
+
+**2. What features do you need?**
+
+- **Runtime** (recommended): Includes PyVista for 3D visualization and JupyterLab for running tutorial notebooks. This is what most users want.
+
+- **Minimal**: Only the core dependencies needed to build and run underworld3. Use this for production runs on HPC systems or when you have your own visualization workflow.
+
+- **Developer**: Adds code quality tools (black, mypy), documentation tools, and Claude Code support. Use this if you plan to contribute to underworld3 development.
+
+**Summary of environments:**
+
+| Environment | PETSc Source | Features | Use Case |
+|-------------|--------------|----------|----------|
+| `runtime` | conda-forge | viz, jupyter | Running tutorials and examples |
+| `default` | conda-forge | minimal | HPC production runs |
+| `dev` | conda-forge | viz, jupyter, dev tools | Contributing to underworld3 |
+| `amr-runtime` | custom build | viz, jupyter, AMR | Adaptive mesh research |
+| `amr` | custom build | minimal, AMR | AMR on HPC |
+| `amr-dev` | custom build | all features | AMR development |
+
+### Getting Started
+
+After installation, open the tutorial index in JupyterLab:
+
+```bash
+./uw jupyter lab docs/beginner/tutorials/Notebook_Index.ipynb
+```
+
+This opens a guided introduction to underworld3 with links to all beginner tutorials.
+
+### Common Commands
+
+```bash
+./uw                  # Show status and available environments
+./uw setup            # (Re)configure environment
+./uw build            # Rebuild after source changes
+./uw test             # Run quick tests
+./uw jupyter lab      # Start JupyterLab
+./uw doctor           # Diagnose configuration issues
+./uw status           # Check for updates on GitHub
+./uw update           # Pull latest changes and rebuild
+./uw --help           # Full documentation
+```
+
+### Troubleshooting
+
+If you encounter build errors or import failures, run diagnostics:
+
+```bash
+./uw doctor
+```
+
+This checks your environment configuration and provides specific fixes for common issues like:
+- Missing dependencies (PETSc, petsc4py)
+- Library version mismatches
+- Environment configuration problems
+
+The `./uw build` command automatically handles dependency chains—if you're missing petsc4py in an AMR environment, it will build it for you before compiling underworld3.
+
+### Alternative: Manual Installation
+
+For more control, see the [Installation Instructions](https://underworldcode.github.io/underworld3/development/docs/beginner/installation.html)
 
 ## References and Archives 
 

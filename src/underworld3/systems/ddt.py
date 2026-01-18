@@ -1,3 +1,37 @@
+r"""
+Time derivative approximations for transient problems.
+
+This module provides classes for computing time derivatives using various
+numerical schemes. These are used within solvers to discretize the time
+dimension of PDEs.
+
+Classes
+-------
+Symbolic
+    Pure symbolic time derivative (stores history for multi-step methods).
+Eulerian
+    Mesh-based time derivative with projection for field updates.
+SemiLagrangian
+    Particle-based advection with mesh projection for Lagrangian tracking.
+Lagrangian
+    Full Lagrangian (particle-following) time derivative on swarms.
+Lagrangian_Swarm
+    Specialized Lagrangian derivative for swarm-based tracking.
+
+Notes
+-----
+The choice of time derivative scheme affects accuracy, stability, and
+computational cost:
+
+- **Eulerian**: Fixed grid, simple but may have numerical diffusion
+- **Semi-Lagrangian**: Good for advection-dominated problems
+- **Lagrangian**: Tracks material properties without diffusion
+
+See Also
+--------
+underworld3.systems.solvers : PDE solvers using these time derivatives.
+"""
+
 import sympy
 from sympy import sympify
 import numpy as np
@@ -12,26 +46,74 @@ from underworld3.utilities._api_tools import uw_object
 
 from petsc4py import PETSc
 
-## We need a pure Eulerian one of these too
-
-# class Eulerian(uw_object):
-# etc etc...
-
 
 class Symbolic(uw_object):
     r"""
-    Symbolic History Manager:
+    Symbolic history manager for time derivative approximations.
 
-    This class manages the update of a variable ψ across timesteps.
-    The history operator stores ψ over several timesteps (given by 'order')
-    so that it can compute backward differentiation (BDF) or Adams–Moulton expressions.
+    Manages the update of a variable :math:`\psi` across timesteps. The history
+    operator stores :math:`\psi` over several timesteps (given by ``order``) so
+    that it can compute backward differentiation (BDF) or Adams-Moulton expressions.
 
-    The history operator is defined as follows:
-    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
-    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
-    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    The history operator is defined as:
 
+    .. math::
 
+        \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
+        \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
+        \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
+
+    This is a purely symbolic history manager that operates on sympy expressions
+    without mesh or swarm storage. It is useful for tracking symbolic expressions
+    through time-stepping algorithms.
+
+    Parameters
+    ----------
+    psi_fn : sympy.Basic
+        The sympy expression to track. Can be scalar or matrix form.
+    theta : float, optional
+        Implicitness parameter for Adams-Moulton order 1 (default ``0.5``).
+        Values: 0 = explicit, 1 = implicit, 0.5 = Crank-Nicolson.
+    varsymbol : str, optional
+        LaTeX symbol for display (default ``r"\\psi"``).
+    verbose : bool, optional
+        Enable verbose output (default ``False``).
+    bcs : list, optional
+        Boundary conditions (default ``[]``).
+    order : int, optional
+        Order of time integration (1-3) (default ``1``).
+    smoothing : float, optional
+        Smoothing parameter (default ``0.0``).
+
+    Attributes
+    ----------
+    psi_fn : sympy.Matrix
+        Current symbolic expression being tracked (always stored as Matrix).
+    psi_star : list
+        History values :math:`\psi^*, \psi^{**}, \ldots` as sympy Matrices.
+    theta : float
+        Implicitness parameter for first-order Adams-Moulton.
+    order : int
+        Order of BDF/Adams-Moulton integration.
+
+    Notes
+    -----
+    The ``Symbolic`` class is the base for understanding BDF and Adams-Moulton
+    formulas without the complexity of mesh or swarm storage. It is primarily
+    useful for:
+
+    - Understanding time-stepping algorithm behavior
+    - Debugging symbolic expressions in time-dependent problems
+    - Prototyping before implementing with mesh/swarm storage
+
+    For actual simulations, use ``Eulerian``, ``SemiLagrangian``, or
+    ``Lagrangian`` which store history on computational meshes or swarms.
+
+    See Also
+    --------
+    Eulerian : Mesh-based history with BDF time-stepping.
+    SemiLagrangian : Nodal-swarm approach for advection-dominated problems.
+    Lagrangian : Swarm-based material tracking.
     """
 
     @timing.routine_timer_decorator
@@ -72,10 +154,12 @@ class Symbolic(uw_object):
 
     @property
     def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
         return self._psi_fn
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        """Set the tracked symbolic expression."""
         if not isinstance(new_fn, sympy.Matrix):
             try:
                 new_fn = sympy.Matrix(new_fn)
@@ -93,15 +177,15 @@ class Symbolic(uw_object):
         display(Latex(rf"$\quad {self._psi_fn_symbol} = {sympy.latex(self._psi_fn)}$"))
         # Display the history variable using the different symbol.
         history_latex = ", ".join([sympy.latex(elem) for elem in self.psi_star])
-        display(
-            Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$")
-        )
+        display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
 
     def update_history_fn(self):
+        r"""Copy current :math:`\psi` to the first history slot ``psi_star[0]``."""
         # Update the first history element with a copy of the current ψ.
         self.psi_star[0] = self.psi_fn.copy()
 
     def initiate_history_fn(self):
+        r"""Initialize all history slots to the current value of :math:`\psi`."""
         self.update_history_fn()
         # Propagate the initial history to all history steps.
         for i in range(1, self.order):
@@ -113,6 +197,7 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_pre_solve``)."""
         self.update_pre_solve(evalf, verbose)
         return
 
@@ -121,6 +206,7 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Symbolic)."""
         # Default: no action.
         return
 
@@ -129,6 +215,7 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
         if verbose:
             print(f"Updating history for ψ = {self.psi_fn}", flush=True)
 
@@ -162,6 +249,26 @@ class Symbolic(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order: Optional[int] = None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (1-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Matrix
+            Weighted average of :math:`\psi` and history terms.
+
+        Notes
+        -----
+        The Adams-Moulton formulas for order 1-3 are:
+
+        - Order 1: :math:`\theta \psi + (1-\theta) \psi^*`
+        - Order 2: :math:`\frac{5\psi + 8\psi^* - \psi^{**}}{12}`
+        - Order 3: :math:`\frac{9\psi + 19\psi^* - 5\psi^{**} + \psi^{***}}{24}`
+        """
         if order is None:
             order = self.order
         else:
@@ -183,11 +290,58 @@ class Symbolic(uw_object):
 
 
 class Eulerian(uw_object):
-    r"""Eulerian  (mesh based) History Manager:
-    This manages the update of a variable, $\psi$ on the mesh across timesteps.
-    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
-    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
-    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    r"""
+    Eulerian (mesh-based) history manager for time derivatives.
+
+    Manages the update of a variable :math:`\psi` on the mesh across timesteps,
+    storing history values on mesh variables for backward differentiation.
+
+    .. math::
+
+        \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
+        \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
+        \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    psi_fn : MeshVariable or sympy.Basic
+        The quantity to track. Can be a mesh variable or symbolic expression.
+    vtype : VarType
+        Variable type (SCALAR, VECTOR, etc.) for history storage.
+    degree : int
+        Polynomial degree for history mesh variables.
+    continuous : bool
+        Whether history variables are continuous across element boundaries.
+    evalf : bool, default=False
+        If True, evaluate expressions numerically during updates.
+    theta : float, default=0.5
+        Time-stepping parameter for implicit/explicit blending.
+        theta=0 is fully explicit, theta=1 is fully implicit.
+    varsymbol : str, default=r"u"
+        LaTeX symbol for display.
+    verbose : bool, default=False
+        Enable verbose output during updates.
+    bcs : list, default=[]
+        Boundary conditions to apply to projections.
+    order : int, default=1
+        Number of history timesteps to store (for multi-step methods).
+    smoothing : float, default=0.0
+        Smoothing parameter for projections.
+
+    Attributes
+    ----------
+    psi_fn : sympy.Basic
+        Current symbolic expression being tracked.
+    psi_star : list of MeshVariable
+        History values at previous timesteps.
+
+    See Also
+    --------
+    SemiLagrangian : For advection-dominated problems with nodal swarm.
+    Lagrangian : For full Lagrangian tracking on swarms.
+    Symbolic : For purely symbolic history (no mesh storage).
     """
 
     @timing.routine_timer_decorator
@@ -230,7 +384,7 @@ class Eulerian(uw_object):
         # psi_star is reaching back through each evaluation and has to be a
         # meshVariable (storage)
 
-        if isinstance(psi_fn, uw.discretisation._MeshVariable):
+        if isinstance(psi_fn, uw.discretisation.MeshVariable):
             self._psi_fn = psi_fn.sym  ### get symbolic form of the meshvariable
             self._psi_meshVar = psi_fn
         else:
@@ -262,10 +416,12 @@ class Eulerian(uw_object):
 
     @property
     def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
         return self._psi_fn
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        """Set the tracked expression."""
         self._psi_fn = new_fn
         # self._psi_star_projection_solver.uw_function = self.psi_fn
         return
@@ -286,6 +442,7 @@ class Eulerian(uw_object):
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def _setup_projections(self):
+        """Initialize projection solvers for history updates."""
         ### using this to store terms that can't be evaluated (e.g. derivatives)
         # The projection operator for mapping derivative values to the mesh - needs to be different for each variable type, unfortunately ...
         if self.vtype == uw.VarType.SCALAR:
@@ -293,10 +450,8 @@ class Eulerian(uw_object):
                 self.mesh, self.psi_star[0], verbose=False
             )
         elif self.vtype == uw.VarType.VECTOR:
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Vector_Projection(
-                    self.mesh, self.psi_star[0], verbose=False
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
+                self.mesh, self.psi_star[0], verbose=False
             )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
             self._WorkVar = uw.discretisation.MeshVariable(
@@ -307,10 +462,8 @@ class Eulerian(uw_object):
                 continuous=self.continuous,
                 varsymbol=r"W^{*}",
             )
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Tensor_Projection(
-                    self.mesh, self.psi_star[0], self._WorkVar, verbose=False
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
+                self.mesh, self.psi_star[0], self._WorkVar, verbose=False
             )
 
         self._psi_star_projection_solver.uw_function = self.psi_fn
@@ -318,6 +471,7 @@ class Eulerian(uw_object):
         self._psi_star_projection_solver.smoothing = self.smoothing
 
     def update_history_fn(self):
+        r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection."""
         ### update first value in history chain
         ### avoids projecting if function can be evaluated
         try:
@@ -346,6 +500,7 @@ class Eulerian(uw_object):
             # print('projecting data', flush=True)
 
     def initiate_history_fn(self):
+        r"""Initialize all history slots to the current value of :math:`\psi`."""
         self.update_history_fn()
 
         ### set up all history terms to the initial values
@@ -360,6 +515,7 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_pre_solve``)."""
         self.update_pre_solve(evalf, verbose)
         return
 
@@ -368,6 +524,7 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Eulerian)."""
         return
 
     def update_post_solve(
@@ -375,6 +532,7 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
         # if average_over_dt:
         #     phi = min(1.0, dt / self.dt_physical)
         # else:
@@ -409,7 +567,7 @@ class Eulerian(uw_object):
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order
@@ -421,11 +579,7 @@ class Eulerian(uw_object):
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -438,6 +592,18 @@ class Eulerian(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (1-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
         else:
@@ -449,9 +615,7 @@ class Eulerian(uw_object):
                 # am = self.theta*self.psi_fn + ((1.-self.theta)*self.psi_star[0].sym)
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (
@@ -466,12 +630,74 @@ class Eulerian(uw_object):
 
 class SemiLagrangian(uw_object):
     r"""
-    # Nodal-Swarm  Semi-Lagrangian History Manager:
+    Semi-Lagrangian history manager using nodal swarm.
 
-    This manages the semi-Lagrangian update of a Mesh Variable, $\psi$, on the mesh across timesteps.
-    $$\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$$
-    $$\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$$
-    $$\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$$
+    Manages the semi-Lagrangian update of a mesh variable :math:`\psi`
+    across timesteps. Uses a nodal swarm to track departure points and
+    interpolate values back to the mesh.
+
+    .. math::
+
+        \psi_p^{t-n\Delta t} &\leftarrow \psi_p^{t-(n-1)\Delta t} \\
+        \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
+        \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
+
+    The semi-Lagrangian method traces characteristics backward in time
+    to find departure points, providing stable advection without CFL
+    restrictions while maintaining accuracy.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    psi_fn : sympy.Function
+        The quantity to advect (typically a mesh variable's symbolic form).
+    V_fn : sympy.Function
+        Velocity field for advection (e.g., ``stokes.u.sym``).
+    vtype : VarType
+        Variable type (SCALAR, VECTOR, SYM_TENSOR, etc.).
+    degree : int
+        Polynomial degree for mesh variable storage.
+    continuous : bool
+        Whether variables are continuous across element boundaries.
+    swarm_degree : int, optional
+        Polynomial degree for swarm interpolation. Defaults to ``degree``.
+    swarm_continuous : bool, optional
+        Continuity for swarm variables. Defaults to ``continuous``.
+    varsymbol : str, optional
+        LaTeX symbol for display.
+    verbose : bool, default=False
+        Enable verbose output during updates.
+    bcs : list, default=[]
+        Boundary conditions for projections.
+    order : int, default=1
+        Number of history timesteps (1 for first-order, 2 for second-order).
+    smoothing : float, default=0.0
+        Smoothing parameter for projections.
+    preserve_moments : bool, default=False
+        Use moment-preserving projection (experimental).
+
+    Attributes
+    ----------
+    psi_fn : sympy.Basic
+        Current symbolic expression being advected.
+    psi_star : list of MeshVariable
+        History values at previous timesteps.
+    V_fn : sympy.Function
+        Velocity field used for advection.
+
+    Notes
+    -----
+    The semi-Lagrangian method is particularly useful for:
+
+    - Advection-dominated problems (high Péclet number)
+    - Problems where CFL stability is restrictive
+    - Viscoelastic stress advection
+
+    See Also
+    --------
+    Eulerian : For fixed-mesh time derivatives without advection.
+    Lagrangian : For full particle-following Lagrangian tracking.
     """
 
     @timing.routine_timer_decorator
@@ -530,6 +756,17 @@ class SemiLagrangian(uw_object):
         psi_star = []
         self.psi_star = psi_star
 
+        # Propagate units from psi_fn to psi_star if the model supports units.
+        # Internal psi_star variables should match the user's variable units when possible,
+        # but if no reference quantities are set, use unitless variables to avoid strict mode errors.
+        psi_units = uw.get_units(psi_fn)
+
+        # Check if the model can handle units (has reference quantities set)
+        model = uw.get_default_model()
+        if psi_units is not None and not model.has_units():
+            # Model doesn't have reference quantities - don't propagate units to internal vars
+            psi_units = None
+
         for i in range(order):
             self.psi_star.append(
                 uw.discretisation.MeshVariable(
@@ -539,6 +776,7 @@ class SemiLagrangian(uw_object):
                     degree=self.degree,
                     continuous=self.continuous,
                     varsymbol=rf"{{ {varsymbol}^{{ {'*'*(i+1)} }} }}",
+                    units=psi_units,  # Inherit units from psi_fn (or None if model has no units)
                 )
             )
 
@@ -553,10 +791,11 @@ class SemiLagrangian(uw_object):
             degree=self.swarm_degree,
             continuous=self.swarm_continuous,
             varsymbol=rf"{{ {varsymbol}^\nabla }}",
+            units=psi_units,  # Inherit units from psi_fn
         )
 
         # We just need one swarm since this is inherently a sequential operation
-        nswarm = uw.swarm.NodalPointUWSwarm(self._workVar, verbose)
+        nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
         self._nswarm_psi = nswarm
 
         # The projection operator for mapping swarm values to the mesh - needs to be different for
@@ -567,12 +806,10 @@ class SemiLagrangian(uw_object):
                 self.mesh, self.psi_star[0], verbose=False
             )
         elif vtype == uw.VarType.VECTOR:
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Vector_Projection(
-                    self.mesh,
-                    self.psi_star[0],
-                    verbose=False,
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
+                self.mesh,
+                self.psi_star[0],
+                verbose=False,
             )
 
         elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
@@ -584,10 +821,8 @@ class SemiLagrangian(uw_object):
                 continuous=continuous,
                 varsymbol=r"W^{*}",
             )
-            self._psi_star_projection_solver = (
-                uw.systems.solvers.SNES_Tensor_Projection(
-                    self.mesh, self.psi_star[0], self._WorkVarTP, verbose=False
-                )
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
+                self.mesh, self.psi_star[0], self._WorkVarTP, verbose=False
             )
 
         # We should find a way to add natural bcs here
@@ -605,10 +840,12 @@ class SemiLagrangian(uw_object):
 
     @property
     def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
         return self._psi_fn
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        """Set the tracked expression."""
         self._psi_fn = new_fn
         self._psi_star_projection_solver.uw_function = self._psi_fn
         return
@@ -627,6 +864,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional = None,
     ):
+        """Update history (alias for ``update_pre_solve``)."""
         self.update_pre_solve(dt, evalf, verbose, dt_physical)
         return
 
@@ -637,6 +875,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
     ):
+        """Post-solve update hook (no-op for SemiLagrangian)."""
         return
 
     def update_pre_solve(
@@ -646,79 +885,304 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
     ):
+        """Sample upstream values along characteristics before solve."""
 
         ## Progress from the oldest part of the history
-        # 1. Copy the stored values down the chain
+        # 1. Copy the stored values down the chain in preparation for the next timestep
+        #    The history term is the nodel value of psi_fn offset back along the characteristics
+        #    according to the timestep.
+        #    That is:
+        #
+        #      - psi_star[0] is the current value of psi_fn, sampled
+        #        at the location of the nodes in their previous position at t-\Delta t
+        #
+        #      - psi_star[1] is the value of psi_star[0] from the previous timestep
+        #        sampled at the location of the nodes at t - \Delta t. (note this is approximately
+        #        equivalent to the value of psi_star[0] at t - 2\Delta t)
+        #
+        #      - psi_star[2] etc if required ...
+        #
+        #    First we copy the history, then we sample can sample upstream values
 
         if dt_physical is not None:
-            phi = min(1, dt / dt_physical)
+            phi = sympy.Min(1, dt / dt_physical)
         else:
             phi = sympy.sympify(1)
 
         for i in range(self.order - 1, 0, -1):
-            with self.mesh.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = (
-                    phi * self.psi_star[i - 1].data[...]
-                    + (1 - phi) * self.psi_star[i].data[...]
-                )
+            self.psi_star[i].array[...] = (
+                phi * self.psi_star[i - 1].array[...] + (1 - phi) * self.psi_star[i].array[...]
+            )
 
-        # 2. Compute the upstream values from the psi_fn
+        # 2. Compute the current value of psi_fn which we store in psi_star[0]
+        #    Note the need to do a try/except to handle unsupported evaluations
+        #    (e.g. of derivatives)
+        #
+
+        # CRITICAL FIX (2025-11-28): Handle coordinates correctly for unit-aware mode.
+        # Previous bug: extracting .magnitude gives METERS (e.g., 1000000), but:
+        # - mesh.get_closest_cells() expects [0-1] non-dimensional coords
+        # - evaluate() assumes plain numpy is [0-1] non-dimensional
+        # Solution: use uw.non_dimensionalise() for proper conversion, OR pass
+        # unit-aware coords to evaluate() which handles conversion internally.
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        psi_star_0_coords = self.psi_star[0].coords
+
+        # For mesh internal operations, need non-dimensional [0-1] coordinates
+        if hasattr(psi_star_0_coords, "magnitude"):
+            # Unit-aware coords - need to non-dimensionalize (not just extract magnitude!)
+            psi_star_0_coords_nd = uw.non_dimensionalise(psi_star_0_coords)
+            # Extract to plain numpy for mesh operations
+            if isinstance(psi_star_0_coords_nd, UnitAwareArray):
+                psi_star_0_coords_nd = np.array(psi_star_0_coords_nd)
+            elif hasattr(psi_star_0_coords_nd, 'magnitude'):
+                psi_star_0_coords_nd = psi_star_0_coords_nd.magnitude
+            else:
+                psi_star_0_coords_nd = np.array(psi_star_0_coords_nd)
+        else:
+            # Plain numpy - assume already non-dimensional
+            psi_star_0_coords_nd = psi_star_0_coords
+
+        cellid = self.mesh.get_closest_cells(
+            psi_star_0_coords_nd,
+        )
+
+        # Move slightly within the chosen cell to avoid edge effects
+        centroid_coords = self.mesh._centroids[cellid]
+
+        shift = 0.001
+        node_coords_nd = (1.0 - shift) * psi_star_0_coords_nd[:, :] + shift * centroid_coords[
+            :, :
+        ]
+
+        try:
+            # Use shifted ND coords to avoid quad mesh boundary issues
+            # node_coords_nd is slightly shifted toward cell centroids (lines 703-709)
+            # evaluate() treats plain numpy as ND [0-1] coordinates
+            eval_result = uw.function.evaluate(
+                self.psi_fn,
+                node_coords_nd,
+                evalf=evalf,
+            )
+            # Wrap result with units if psi_star has units but eval didn't return UnitAwareArray
+            psi_star_units = self.psi_star[0].units
+            if psi_star_units is not None and not isinstance(eval_result, UnitAwareArray):
+                eval_result = UnitAwareArray(eval_result, units=psi_star_units)
+
+            self.psi_star[0].array[...] = eval_result
+
+        except Exception:
+            # Fallback to projection solver for expressions that can't be directly evaluated
+            # (e.g., containing derivatives)
+            self._psi_star_projection_solver.uw_function = self.psi_fn
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve(verbose=verbose)
+
+        # 3. Compute the upstream values from the psi_fn
 
         # We use the u_star variable as a working value here so we have to work backwards
         # so we don't over-write the history terms
+        #
+
+        # Convert dt to model units for numerical arithmetic
+        # (after symbolic logic that may use dt with units)
+        # Note: uw is already imported at module level (line 7)
+        model = uw.get_default_model()
+
+        # DIAGNOSTIC: Capture information about the unit system
+        coords_template = self.psi_star[0].coords
+        has_units = hasattr(coords_template, "magnitude") or hasattr(coords_template, "_magnitude")
+
+        # Maintain unit system consistency: either keep everything with units or convert to non-dimensional
+        if has_units:
+            # Physical coordinate system with units
+            # dt must be converted to base SI seconds so that dt * velocity(m/s) = distance(m)
+            if hasattr(dt, "to"):  # It's a Pint quantity
+                dt_for_calc = dt.to("second")  # Convert to seconds (still a quantity)
+            else:
+                # If dt is already a dimensionless number, treat it as seconds
+                dt_for_calc = dt
+        else:
+            # Non-dimensional coordinate system - convert dt to non-dimensional
+            # CRITICAL: Actually non-dimensionalize the timestep!
+            if hasattr(dt, "magnitude") or hasattr(dt, "value"):
+                # dt has units - non-dimensionalize it
+                dt_nondim = uw.non_dimensionalise(dt, model)
+                # Extract the dimensionless value
+                if hasattr(dt_nondim, "magnitude"):
+                    dt_for_calc = float(dt_nondim.magnitude)
+                elif hasattr(dt_nondim, "value"):
+                    dt_for_calc = float(dt_nondim.value)
+                else:
+                    dt_for_calc = float(dt_nondim)
+            else:
+                # Already dimensionless
+                dt_for_calc = dt
 
         for i in range(self.order - 1, -1, -1):
-            with self._nswarm_psi.access(self._nswarm_psi._X0):
-                self._nswarm_psi._X0.data[...] = self._nswarm_psi.data[...]
+            # 2nd order update along characteristics
 
-            # march nodes backwards along characteristics
-            self._nswarm_psi.advection(
+            # Use shifted ND coords to avoid quad mesh boundary issues
+            # node_coords_nd is slightly shifted toward cell centroids (lines 703-709)
+            # evaluate() treats plain numpy as ND [0-1] coordinates
+            v_result = uw.function.evaluate(
                 self.V_fn,
-                -dt,
-                order=1,
-                corrector=False,
-                restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
-                evalf=evalf,
-                step_limit=False,
-                #! substepping: this seems to be too diffusive if left on.
-                #! Check the code carefully !
+                node_coords_nd,
             )
 
-            if i == 0:
-                # Recalculate psi_star from psi_fn. If psi_fn containts
-                # derivatives, the evaluation will fail and a projection
-                # is required instead.
+            # CRITICAL: Preserve UnitAwareArray through slicing
+            # Slicing can sometimes return plain numpy views - need to preserve wrapper
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
 
-                try:
-                    with self.mesh.access(self.psi_star[0]):
-                        self.psi_star[0].data[...] = uw.function.evaluate(
-                            self.psi_fn,
-                            self.psi_star[0].coords,
-                            evalf=evalf,
-                        )
-                except:
-                    self._psi_star_projection_solver.uw_function = self.psi_fn
-                    self._psi_star_projection_solver.smoothing = 0.0
-                    self._psi_star_projection_solver.solve(verbose=verbose)
+            if isinstance(v_result, UnitAwareArray):
+                # Slice and rewrap to preserve units
+                v_at_node_pts = v_result[:, 0, :]
+                if not isinstance(v_at_node_pts, UnitAwareArray):
+                    # Slicing lost the wrapper - rewrap it
+                    v_at_node_pts = UnitAwareArray(v_at_node_pts, units=v_result.units)
+            else:
+                v_at_node_pts = v_result[:, 0, :]
 
-            # if evalf:
-            #     with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-            #         for d in range(self.psi_star[i].shape[1]):
-            #             self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evalf(
-            #                 self.psi_star[i].sym[d], self._nswarm_psi.data
-            #             )
-            # else:
-            #
+            # Non-dimensionalize velocities when working with dimensionless coordinates
+            # This prevents dimensional mismatch: velocities in m/s mixed with coords in [0,1]
+            # CRITICAL: evaluate now returns UnitAwareArray with units attached
+            # Check if velocities already have units before trying to add them manually
+            if not has_units:
+                # Coordinates are dimensionless - need to non-dimensionalize velocities too
+                if isinstance(v_at_node_pts, UnitAwareArray):
+                    # Velocities already have units from evaluate - just non-dimensionalize
+                    v_nondim = uw.non_dimensionalise(v_at_node_pts, model)
+                    # Extract numpy array for dimensionless calculation
+                    if isinstance(v_nondim, UnitAwareArray):
+                        v_at_node_pts = np.array(v_nondim)
+                    elif hasattr(v_nondim, "value"):
+                        v_at_node_pts = v_nondim.value
+                    else:
+                        v_at_node_pts = v_nondim
+                else:
+                    # Velocities don't have units - try to add them manually (legacy path)
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        v_with_units = UnitAwareArray(v_at_node_pts, units=v_units)
+                        v_nondim = uw.non_dimensionalise(v_with_units, model)
+                        if isinstance(v_nondim, UnitAwareArray):
+                            v_at_node_pts = np.array(v_nondim)
+                        elif hasattr(v_nondim, "value"):
+                            v_at_node_pts = v_nondim.value
+                        else:
+                            v_at_node_pts = v_nondim
+            else:
+                # Dimensional mode - ensure velocities have units
+                # CRITICAL FIX (2025-11-27): Variable data is stored NON-DIMENSIONALLY.
+                # We must DIMENSIONALIZE (not just wrap) the values before dimensional arithmetic.
+                # Previous bug: wrapping 0.01 (ND) with cm/yr gave 0.01 cm/yr instead of 1 cm/yr.
+                if not isinstance(v_at_node_pts, UnitAwareArray):
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        # Re-dimensionalize using the scaling system
+                        if uw.is_nondimensional_scaling_active():
+                            from underworld3.scaling import dimensionalise
+                            # dimensionalise(nd_value, units) -> value * scale in those units
+                            v_dimensional = dimensionalise(v_at_node_pts, v_units)
+                            v_at_node_pts = UnitAwareArray(v_dimensional.magnitude, units=v_dimensional.units)
+                        else:
+                            # No scaling active - assume values are already dimensional
+                            v_at_node_pts = UnitAwareArray(v_at_node_pts, units=v_units)
 
-            with self._nswarm_psi.access(self._nswarm_psi.swarmVariable):
-                for d in range(self.psi_star[i].shape[1]):
-                    self._nswarm_psi.swarmVariable.data[:, d] = uw.function.evaluate(
-                        self.psi_star[i].sym[d],
-                        self._nswarm_psi.data,
-                        evalf=evalf,
-                    )
+            # Get coordinates
+            coords = self.psi_star[i].coords
 
-            if self.preserve_moments and self._workVar.num_components == 1:
+            # CRITICAL: When working in dimensionless mode, extract coords to plain arrays
+            # to match the dimensionless velocities (otherwise unit mismatch occurs)
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+            if not has_units and isinstance(coords, UnitAwareArray):
+                # Extract to plain numpy for dimensionless arithmetic
+                coords = np.array(coords)
+
+            # CRITICAL (2025-11-27): Multiply velocity FIRST so UnitAwareArray.__mul__ handles it.
+            # If we do `dt_for_calc * v_at_node_pts`, Pint handles it and loses UnitAwareArray units.
+            mid_pt_coords = coords - v_at_node_pts * (0.5 * dt_for_calc)
+
+            v_mid_result = uw.function.global_evaluate(
+                self.V_fn,
+                mid_pt_coords,
+            )
+
+            # CRITICAL: Preserve UnitAwareArray through slicing
+            if isinstance(v_mid_result, UnitAwareArray):
+                # Slice and rewrap to preserve units
+                v_at_mid_pts = v_mid_result[:, 0, :]
+                if not isinstance(v_at_mid_pts, UnitAwareArray):
+                    # Slicing lost the wrapper - rewrap it
+                    v_at_mid_pts = UnitAwareArray(v_at_mid_pts, units=v_mid_result.units)
+            else:
+                v_at_mid_pts = v_mid_result[:, 0, :]
+
+            # Non-dimensionalize mid-point velocities when working with dimensionless coordinates
+            # CRITICAL: global_evaluate now returns UnitAwareArray with units attached
+            # Check if velocities already have units before trying to add them manually
+            if not has_units:
+                # Coordinates are dimensionless - need to non-dimensionalize velocities too
+                if isinstance(v_at_mid_pts, UnitAwareArray):
+                    # Velocities already have units from global_evaluate - just non-dimensionalize
+                    v_nondim = uw.non_dimensionalise(v_at_mid_pts, model)
+                    # Extract numpy array for dimensionless calculation
+                    if isinstance(v_nondim, UnitAwareArray):
+                        v_at_mid_pts = np.array(v_nondim)
+                    elif hasattr(v_nondim, "value"):
+                        v_at_mid_pts = v_nondim.value
+                    else:
+                        v_at_mid_pts = v_nondim
+                else:
+                    # Velocities don't have units - try to add them manually (legacy path)
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        v_with_units = UnitAwareArray(v_at_mid_pts, units=v_units)
+                        v_nondim = uw.non_dimensionalise(v_with_units, model)
+                        if isinstance(v_nondim, UnitAwareArray):
+                            v_at_mid_pts = np.array(v_nondim)
+                        elif hasattr(v_nondim, "value"):
+                            v_at_mid_pts = v_nondim.value
+                        else:
+                            v_at_mid_pts = v_nondim
+            else:
+                # Dimensional mode - ensure velocities have units
+                # CRITICAL: If V_fn doesn't have unit metadata, evaluate() returns plain numpy
+                # We need to manually wrap it with units for dimensional arithmetic to work
+                if not isinstance(v_at_mid_pts, UnitAwareArray):
+                    v_units = uw.get_units(self.V_fn)
+                    if v_units and v_units != "dimensionless":
+                        # Wrap velocities with their proper units
+                        v_at_mid_pts = UnitAwareArray(v_at_mid_pts, units=v_units)
+
+            # Calculate upstream coordinates: current position - velocity * timestep
+            end_pt_coords = coords - v_at_mid_pts * dt_for_calc
+
+            # Extract scalar from (1,1) Matrix for scalar variables
+            # MeshVariable.sym returns Matrix([[value]]) for scalars
+            expr_to_evaluate = self.psi_star[i].sym
+            if hasattr(expr_to_evaluate, 'shape') and expr_to_evaluate.shape == (1, 1):
+                expr_to_evaluate = expr_to_evaluate[0, 0]
+
+            # Evaluate psi_star at upstream coordinates
+            # global_evaluate now returns dimensional results (gateway fix 2025-11-28)
+            value_at_end_points = uw.function.global_evaluate(
+                expr_to_evaluate,
+                end_pt_coords,
+            )
+
+            # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned
+            # value also has units. global_evaluate may return plain arrays.
+            psi_star_units = self.psi_star[i].units
+            if psi_star_units is not None and not isinstance(value_at_end_points, UnitAwareArray):
+                value_at_end_points = UnitAwareArray(value_at_end_points, units=psi_star_units)
+
+            self.psi_star[i].array[...] = value_at_end_points
+
+            # disable this for now - Compute moments before update
+            if 0 and self.preserve_moments and self._workVar.num_components == 1:
 
                 self.I.fn = self.psi_star[i].sym[0]
                 Imean0 = self.I.evaluate()
@@ -729,70 +1193,8 @@ class SemiLagrangian(uw_object):
                 # if uw.mpi.rank == 0:
                 #     print(f"Pre advection:  {Imean0}, {IL20}", flush=True)
 
-            # restore coords (will call dm.migrate after context manager releases)
-            # We need some modifications to dm.migrate to snapback
-            # to original location without substepping
-
-            og_mig_type = uw.function.dm_swarm_get_migrate_type(
-                self._nswarm_psi
-            )  # get original migrate type
-            uw.function.dm_swarm_set_migrate_type(
-                self._nswarm_psi, PETSc.DMSwarm.MigrateType.MIGRATE_BASIC
-            )
-
-            # change the rank in DMSwarm_rank with the rank before advection
-            nR0_field_name = self._nswarm_psi._nR0.name
-            nI0_field_name = self._nswarm_psi._nI0.name
-
-            orig_ranks = self._nswarm_psi.dm.getField(nR0_field_name)
-            node_ranks = self._nswarm_psi.dm.getField("DMSwarm_rank")
-
-            node_ranks[...] = orig_ranks[...]
-
-            self._nswarm_psi.dm.restoreField(nR0_field_name)
-            self._nswarm_psi.dm.restoreField("DMSwarm_rank")
-
-            # will update DMSwarm_cellid, DMSwarmPIC_cooor, etc and call migrate
-
-            with self._nswarm_psi.access(self._nswarm_psi.particle_coordinates):
-                self._nswarm_psi.data[...] = self._nswarm_psi._nX0.data[...]
-
-            # reset to original migrate type
-            uw.function.dm_swarm_set_migrate_type(self._nswarm_psi, og_mig_type)
-
-            # Push data from swarm back to _workVar.data.
-            # Note: particles are removed when sent and added to the
-            # end of the swarm when received, so we need to re-order
-            # the data when we put it back onto the nodes
-
-            with self._nswarm_psi.access():
-                orig_index = self._nswarm_psi._nI0.data.copy().reshape(-1)
-
-                with self.mesh.access(self._workVar):
-                    self._workVar.data[orig_index, :] = (
-                        self._nswarm_psi.swarmVariable.data[:, :]
-                    )
-
-            # Project / Copy from advected swarm to semi-Lagrangian variables.
-
-            if self._workVar.coords.shape == self.psi_star[i].coords.shape:
-                with self.mesh.access(self.psi_star[i]):
-                    self.psi_star[i].data[...] = self._workVar.data[...]
-            else:
-                self._psi_star_projection_solver.uw_function = self._workVar.sym
-                self._psi_star_projection_solver.smoothing = 0.0
-                self._psi_star_projection_solver.solve()
-
-            # Copy data from the projection operator if i!=0
-            if i != 0:
-                with self.mesh.access(self.psi_star[i]):
-                    self.psi_star[i].data[...] = self.psi_star[0].data[...]
-
-            # Optional: Conserve moments for scalar fields
-            # (could extend this to other field types but not
-            #  sure if this is wanted / warranted at all )
-
-            if self.preserve_moments and self._workVar.num_components == 1:
+            # disable this for now - Restore moments after update
+            if 0 and self.preserve_moments and self._workVar.num_components == 1:
 
                 self.I.fn = self.psi_star[i].sym[0]
                 Imean = self.I.evaluate()
@@ -800,31 +1202,30 @@ class SemiLagrangian(uw_object):
                 self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
                 IL2 = np.sqrt(self.I.evaluate())
 
-                with self.mesh.access(self.psi_star[i]):
-                    self.psi_star[i].data[...] += Imean0 - Imean
+                # TODO: DELETE remove swarm.access / data, replace with direct array assignment
+                # with self.mesh.access(self.psi_star[i]):
+                #     self.psi_star[i].data[...] += Imean0 - Imean
+
+                self.psi_star[i].array[...] += Imean0 - Imean
 
                 self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
                 IL2 = np.sqrt(self.I.evaluate())
 
-                with self.mesh.access(self.psi_star[i]):
-                    self.psi_star[i].data[...] = (
-                        self.psi_star[i].data[...] - Imean0
-                    ) * IL20 / IL2 + Imean0
+                # TODO: DELETE remove swarm.access / data, replace with direct array assignment
+                # with self.mesh.access(self.psi_star[i]):
+                #     self.psi_star[i].data[...] = (
+                #         self.psi_star[i].data[...] - Imean0
+                #     ) * IL20 / IL2 + Imean0
 
-                # self.I.fn = self.psi_star[i].sym[0]
-                # Imean = self.I.evaluate()
-
-                # self.I.fn = (self.psi_star[0].sym[0] - Imean) ** 2
-                # IL2 = np.sqrt(self.I.evaluate())
-
-                # if uw.mpi.rank == 0:
-                #     print(f"Post advection: {Imean}, {IL2}", flush=True)
+                self.psi_star[i].array[...] = (
+                    self.psi_star[i].array[...] - Imean0
+                ) * IL20 / IL2 + Imean0
 
         return
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order
@@ -832,15 +1233,11 @@ class SemiLagrangian(uw_object):
             order = max(1, min(self.order, order))
 
         with sympy.core.evaluate(True):
-            if order == 1:
+            if order == 0 or order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -853,6 +1250,18 @@ class SemiLagrangian(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (0-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
         else:
@@ -867,9 +1276,7 @@ class SemiLagrangian(uw_object):
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (
@@ -889,18 +1296,82 @@ class SemiLagrangian(uw_object):
 
 
 class Lagrangian(uw_object):
-    r"""Swarm-based Lagrangian History Manager:
+    r"""
+    Swarm-based Lagrangian history manager for material tracking.
 
-    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    Manages the update of a Lagrangian variable :math:`\psi` on a swarm
+    across timesteps. Creates and manages its own internal swarm for
+    tracking material properties through the flow.
 
-    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+    .. math::
 
-    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+        \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}
 
-    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+        \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots
+
+        \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}
+
+    The Lagrangian approach follows material points through the flow,
+    avoiding numerical diffusion in advection. History values are stored
+    on swarm variables with proxy mesh variables for solver integration.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    psi_fn : sympy.Function
+        The quantity to track (e.g., stress tensor ``stokes.stress``).
+    V_fn : sympy.Function
+        Velocity field for particle advection.
+    vtype : VarType
+        Variable type (SCALAR, VECTOR, SYM_TENSOR, etc.).
+    degree : int
+        Polynomial degree for proxy mesh variables.
+    continuous : bool
+        Whether proxy variables are continuous across elements.
+    varsymbol : str, default=r"u"
+        LaTeX symbol for display.
+    verbose : bool, default=False
+        Enable verbose output during updates.
+    bcs : list, default=[]
+        Boundary conditions (currently unused for swarm variables).
+    order : int, default=1
+        Number of history timesteps to store.
+    smoothing : float, default=0.0
+        Smoothing parameter for projections.
+    fill_param : int, default=3
+        Fill parameter for swarm population density.
+
+    Attributes
+    ----------
+    swarm : UWSwarm
+        Internal swarm for Lagrangian tracking.
+    psi_fn : sympy.Basic
+        Current symbolic expression being tracked.
+    psi_star : list of SwarmVariable
+        History values stored on the swarm.
+    V_fn : sympy.Function
+        Velocity field for advection.
+
+    Notes
+    -----
+    The Lagrangian method is ideal for:
+
+    - Viscoelastic stress history tracking
+    - Material property advection without diffusion
+    - Tracking compositional fields
+
+    The internal swarm is automatically advected during updates.
+
+    See Also
+    --------
+    SemiLagrangian : Mesh-based semi-Lagrangian with departure points.
+    Lagrangian_Swarm : For user-provided swarms.
     """
 
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+    instances = (
+        0  # count how many of these there are in order to create unique private mesh variable ids
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -978,6 +1449,7 @@ class Lagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_post_solve``)."""
         self.update_post_solve(dt, evalf, verbose)
         return
 
@@ -987,6 +1459,7 @@ class Lagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Lagrangian)."""
         return
 
     def update_post_solve(
@@ -995,6 +1468,7 @@ class Lagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Shift history chain and advect swarm after solve."""
         for h in range(self.order - 1):
             i = self.order - (h + 1)
 
@@ -1002,22 +1476,10 @@ class Lagrangian(uw_object):
             print(f"Lagrange order = {self.order}")
             print(f"Lagrange copying {i-1} to {i}")
 
-            with self.swarm.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+            self.psi_star[i].array[...] = self.psi_star[i - 1].array[...]
 
         # Now update the swarm variable
 
-        # if evalf:
-        #     psi_star_0 = self.psi_star[0]
-        #     with self.swarm.access(psi_star_0):
-        #         for i in range(psi_star_0.shape[0]):
-        #             for j in range(psi_star_0.shape[1]):
-        #                 updated_psi = uw.function.evalf(
-        #                     self.psi_fn[i, j], self.swarm.data
-        #                 )
-        #                 psi_star_0[i, j].data[:] = updated_psi
-
-        # else:
         psi_star_0 = self.psi_star[0]
         with self.swarm.access(psi_star_0):
             for i in range(psi_star_0.shape[0]):
@@ -1039,7 +1501,7 @@ class Lagrangian(uw_object):
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order
@@ -1052,11 +1514,7 @@ class Lagrangian(uw_object):
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -1069,6 +1527,18 @@ class Lagrangian(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (0-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
 
@@ -1080,9 +1550,7 @@ class Lagrangian(uw_object):
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (
@@ -1096,17 +1564,86 @@ class Lagrangian(uw_object):
 
 
 class Lagrangian_Swarm(uw_object):
-    r"""Swarm-based Lagrangian History Manager:
-    This manages the update of a Lagrangian variable, $\psi$ on the swarm across timesteps.
+    r"""
+    Swarm-based Lagrangian history manager (user-provided swarm).
 
-    $\quad \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}\quad$
+    Manages the update of a Lagrangian variable :math:`\psi` on a user-supplied
+    swarm across timesteps:
 
-    $\quad \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots\quad$
+    .. math::
 
-    $\quad \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}$
+        \psi_p^{t-n\Delta t} \leftarrow \psi_p^{t-(n-1)\Delta t}
+
+        \psi_p^{t-(n-1)\Delta t} \leftarrow \psi_p^{t-(n-2)\Delta t} \cdots
+
+        \psi_p^{t-\Delta t} \leftarrow \psi_p^{t}
+
+    Unlike ``Lagrangian``, this class uses a user-provided swarm rather than
+    creating its own. The swarm should already be populated and configured
+    for tracking material points.
+
+    Parameters
+    ----------
+    swarm : underworld3.swarm.Swarm
+        User-provided swarm for material point tracking.
+    psi_fn : sympy.Function
+        The quantity to track (e.g., stress tensor from a solver).
+    vtype : underworld3.VarType
+        Variable type (SCALAR, VECTOR, SYM_TENSOR, etc.).
+    degree : int
+        Interpolation degree for proxy mesh variables.
+    continuous : bool
+        Whether proxy mesh variables should be continuous.
+    varsymbol : str, optional
+        LaTeX symbol for display (default ``"u"``).
+    verbose : bool, optional
+        Enable verbose output (default ``False``).
+    bcs : list, optional
+        Boundary conditions (currently unused, default ``[]``).
+    order : int, optional
+        Order of time integration (1-3) (default ``1``).
+    smoothing : float, optional
+        Smoothing parameter (default ``0.0``).
+    step_averaging : int, optional
+        Number of steps for history averaging (default ``2``).
+
+    Attributes
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        Reference to the computational mesh (from swarm).
+    swarm : underworld3.swarm.Swarm
+        The user-provided swarm.
+    psi_fn : sympy.Function
+        Symbolic expression for the tracked quantity.
+    order : int
+        Order of BDF integration.
+    step_averaging : int
+        Number of steps for averaging (affects BDF scaling).
+    psi_star : list
+        History values :math:`\psi^*, \psi^{**}, \ldots` as swarm variables.
+
+    Notes
+    -----
+    Key differences from ``Lagrangian`` class:
+
+    - Uses user-provided swarm (not internally created)
+    - Swarm advection is NOT performed (user's responsibility)
+    - Step averaging for smoothing history updates
+    - Suitable when swarm is shared between multiple history managers
+
+    The ``step_averaging`` parameter scales the BDF formula to account for
+    updates that occur over multiple sub-steps within a timestep.
+
+    See Also
+    --------
+    Lagrangian : Creates and manages its own swarm with advection.
+    SemiLagrangian : Nodal-swarm approach for advection-dominated problems.
+    Eulerian : Pure mesh-based history (no particle tracking).
     """
 
-    instances = 0  # count how many of these there are in order to create unique private mesh variable ids
+    instances = (
+        0  # count how many of these there are in order to create unique private mesh variable ids
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1178,6 +1715,7 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Update history (alias for ``update_post_solve``)."""
         self.update_post_solve(dt, evalf, verbose)
         return
 
@@ -1187,6 +1725,7 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        """Pre-solve update hook (no-op for Lagrangian_Swarm)."""
         return
 
     def update_post_solve(
@@ -1195,6 +1734,7 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
+        r"""Shift history chain and evaluate current :math:`\psi` on swarm."""
         for h in range(self.order - 1):
             i = self.order - (h + 1)
 
@@ -1243,7 +1783,7 @@ class Lagrangian_Swarm(uw_object):
 
     def bdf(self, order=None):
         r"""Backwards differentiation form for calculating DuDt
-        Note that you will need `bdf` / $\delta t$ in computing derivatives"""
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
 
         if order is None:
             order = self.order
@@ -1255,11 +1795,7 @@ class Lagrangian_Swarm(uw_object):
                 bdf0 = self.psi_fn - self.psi_star[0].sym
 
             elif order == 2:
-                bdf0 = (
-                    3 * self.psi_fn / 2
-                    - 2 * self.psi_star[0].sym
-                    + self.psi_star[1].sym / 2
-                )
+                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
 
             elif order == 3:
                 bdf0 = (
@@ -1275,6 +1811,18 @@ class Lagrangian_Swarm(uw_object):
         return bdf0
 
     def adams_moulton_flux(self, order=None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the approximation (1-3). Defaults to ``self.order``.
+
+        Returns
+        -------
+        sympy.Basic
+            Weighted average of :math:`\psi` and history terms.
+        """
         if order is None:
             order = self.order
         else:
@@ -1285,9 +1833,7 @@ class Lagrangian_Swarm(uw_object):
                 am = (self.psi_fn + self.psi_star[0].sym) / 2
 
             elif order == 2:
-                am = (
-                    5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym
-                ) / 12
+                am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
 
             elif order == 3:
                 am = (

@@ -24,9 +24,7 @@ h5plex.destroy()
 
 ## v2 - this is what we might also do in uw3
 
-viewer = PETSc.ViewerHDF5().create(
-    ".meshes/uw_annulus_ro1.0_ri0.5_csize0.1.msh.h5", "r"
-)
+viewer = PETSc.ViewerHDF5().create(".meshes/uw_annulus_ro1.0_ri0.5_csize0.1.msh.h5", "r")
 h5plex = PETSc.DMPlex().create()
 sf0 = h5plex.topologyLoad(viewer)
 h5plex.coordinatesLoad(viewer, sf0)

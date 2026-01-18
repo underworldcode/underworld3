@@ -6,6 +6,9 @@
 # +
 import pytest
 
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
+
 clean = False
 
 

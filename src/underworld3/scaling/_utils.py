@@ -1,16 +1,15 @@
-from __future__ import print_function,  absolute_import
+from __future__ import print_function, absolute_import
 from itertools import chain
 from collections import OrderedDict
 
-try:              # Python 2
+try:  # Python 2
     str_base = basestring
-    items = 'iteritems'
-except NameError: # Python 3
+    items = "iteritems"
+except NameError:  # Python 3
     str_base = str, bytes, bytearray
-    items = 'items'
+    items = "items"
 
 _RaiseKeyError = object()  # singleton for no-default behavior
-
 
 
 def ensure_lower(maybe_str):
@@ -23,13 +22,16 @@ def ensure_to_base_units(val):
 
 
 class TransformedDict(dict):  # dicts take a mapping or iterable as their optional first argument
-    __slots__ = () # no __dict__ - that would be redundant
+    __slots__ = ()  # no __dict__ - that would be redundant
 
-    @staticmethod # because this doesn't make sense as a global function.
+    @staticmethod  # because this doesn't make sense as a global function.
     def _process_args(mapping=(), **kwargs):
         if hasattr(mapping, items):
             mapping = getattr(mapping, items)()
-        return ((ensure_lower(k), ensure_to_base_units(v)) for k, v in chain(mapping, getattr(kwargs, items)()))
+        return (
+            (ensure_lower(k), ensure_to_base_units(v))
+            for k, v in chain(mapping, getattr(kwargs, items)())
+        )
 
     def __init__(self, mapping=(), **kwargs):
         super(TransformedDict, self).__init__(self._process_args(mapping, **kwargs))
@@ -60,7 +62,7 @@ class TransformedDict(dict):  # dicts take a mapping or iterable as their option
     def __contains__(self, k):
         return super(TransformedDict, self).__contains__(ensure_lower(k))
 
-    def copy(self): # don't delegate w/ super - dict.copy() -> dict :(
+    def copy(self):  # don't delegate w/ super - dict.copy() -> dict :(
         return type(self)(self)
 
     @classmethod
@@ -68,7 +70,7 @@ class TransformedDict(dict):  # dicts take a mapping or iterable as their option
         return super(TransformedDict, cls).fromkeys((ensure_lower(k) for k in keys), v)
 
     def _repr_html_(self):
-        attributes  = OrderedDict()
+        attributes = OrderedDict()
         attributes["[mass]"] = self["[mass]"]
         attributes["[length]"] = self["[length]"]
         attributes["[temperature]"] = self["[temperature]"]
