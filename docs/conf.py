@@ -24,6 +24,7 @@ extensions = [
     'sphinx.ext.intersphinx',   # Link to external docs
     'sphinx_math_dollar',       # $...$ math in docstrings
     'sphinx_design',            # Cards, grids, tabs for modern layouts
+    'sphinxcontrib.mermaid',    # Mermaid diagrams
 ]
 
 # =============================================================================
@@ -84,6 +85,7 @@ intersphinx_mapping = {
 # =============================================================================
 html_theme = 'furo'
 html_static_path = ['_static']
+html_css_files = ['custom.css']  # Custom styling (smaller headings)
 html_extra_path = ['media']  # Copy media folder (including pyvista HTML embeds) to build root
 html_title = "Underworld3"
 html_logo = "assets/MansoursNightmare.png"
@@ -92,10 +94,22 @@ html_theme_options = {
     "light_css_variables": {
         "color-brand-primary": "#2962ff",
         "color-brand-content": "#2962ff",
+        # Font sizing - smaller than Furo defaults
+        "font-size--normal": "14px",
+        "font-size--small": "12.5px",
+        "font-size--small--2": "11.5px",
+        "font-size--small--3": "10.5px",
+        "font-size--small--4": "9.5px",
     },
     "dark_css_variables": {
         "color-brand-primary": "#5c8aff",
         "color-brand-content": "#5c8aff",
+        # Same font sizing for dark mode
+        "font-size--normal": "14px",
+        "font-size--small": "12.5px",
+        "font-size--small--2": "11.5px",
+        "font-size--small--3": "10.5px",
+        "font-size--small--4": "9.5px",
     },
     "sidebar_hide_name": False,
     "navigation_with_keys": True,

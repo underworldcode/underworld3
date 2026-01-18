@@ -23,6 +23,16 @@ Implement advanced material models and constitutive laws.
 
 **[→ Complex Rheologies](complex-rheologies.md)**
 
+### Custom Meshes
+Create complex geometries with gmsh for research problems.
+
+**[→ Custom Mesh Creation](custom-meshes.md)**
+
+### Boundary Conditions on Curved Surfaces
+Accurate free-slip and Neumann conditions on elliptical and non-planar boundaries.
+
+**[→ Curved Boundary Conditions](curved-boundary-conditions.md)**
+
 ### Mesh Adaptation
 Dynamic remeshing and adaptive refinement strategies.
 
@@ -59,6 +69,8 @@ Ready to contribute to Underworld3?
 parallel-computing
 performance
 complex-rheologies
+custom-meshes
+curved-boundary-conditions
 mesh-adaptation
 troubleshooting
 api-patterns

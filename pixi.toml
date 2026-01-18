@@ -182,6 +182,7 @@ nodejs = ">=18"
 [feature.dev.pypi-dependencies]
 anthropic = "*"
 sphinx-math-dollar = "*"
+sphinxcontrib-mermaid = "*"
 
 [feature.dev.tasks]
 install-claude = "npm install -g @anthropic-ai/claude-code"

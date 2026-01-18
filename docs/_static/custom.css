@@ -1,0 +1,54 @@
+/* Custom CSS for Underworld3 Documentation */
+/* Reduce heading sizes by ~10% relative to Furo defaults */
+
+/* Furo default h1 is ~2em, reduce to ~1.8em */
+article.bd-article h1,
+.rst-content h1,
+h1 {
+    font-size: 1.8em !important;
+}
+
+/* Furo default h2 is ~1.5em, reduce to ~1.35em */
+article.bd-article h2,
+.rst-content h2,
+h2 {
+    font-size: 1.35em !important;
+}
+
+/* Furo default h3 is ~1.25em, reduce to ~1.125em */
+article.bd-article h3,
+.rst-content h3,
+h3 {
+    font-size: 1.125em !important;
+}
+
+/* Furo default h4 is ~1.1em, reduce to ~1.0em */
+article.bd-article h4,
+.rst-content h4,
+h4 {
+    font-size: 1.0em !important;
+}
+
+/* Furo default h5 is ~1em, reduce to ~0.9em */
+article.bd-article h5,
+.rst-content h5,
+h5 {
+    font-size: 0.9em !important;
+}
+
+/* Furo default h6 is ~0.9em, reduce to ~0.81em */
+article.bd-article h6,
+.rst-content h6,
+h6 {
+    font-size: 0.81em !important;
+}
+
+/* Also reduce sidebar heading sizes proportionally */
+.sidebar-tree .reference {
+    font-size: 0.95em;
+}
+
+/* Reduce TOC heading sizes */
+.toc-title {
+    font-size: 0.85em !important;
+}
