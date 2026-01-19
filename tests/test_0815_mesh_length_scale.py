@@ -230,6 +230,10 @@ def test_length_units_matches_coordinate_units():
     assert isinstance(mesh.length_units, str)
 
 
+@pytest.mark.skipif(
+    os.environ.get("CI") or not os.environ.get("DISPLAY"),
+    reason="Visualization tests require display (skipped in CI)"
+)
 def test_mesh_view_displays_length_scale():
     """Test that mesh.view() displays length scale information."""
     uw.reset_default_model()
