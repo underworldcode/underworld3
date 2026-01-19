@@ -38,6 +38,8 @@ dependencies:
   - trame-vuetify>=2.3.1
   - trimesh
   - typeguard
+  - pydantic>=2
+  - pyyaml
   - pip
   - pip:
       - rich<14
