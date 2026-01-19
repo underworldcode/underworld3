@@ -1553,8 +1553,3 @@ class SurfaceCollection:
         ]
         surfaces_repr = "\n".join(surface_strs) if surface_strs else "  (empty)"
         return f"SurfaceCollection(\n{surfaces_repr}\n)"
-
-
-# Backward compatibility aliases
-FaultSurface = Surface
-FaultCollection = SurfaceCollection

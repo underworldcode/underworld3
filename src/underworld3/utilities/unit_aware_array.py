@@ -1636,6 +1636,36 @@ class UnitAwareArray(NDArray_With_Callback):
             # Convert to plain numpy arrays and compare
             return np.core.numeric.allclose(np.asarray(a), np.asarray(b), *args, **kwargs)
 
+        @implements(np.shape)
+        def shape_impl(a):
+            """Return shape of array (units irrelevant for shape)."""
+            return np.asarray(a).shape
+
+        @implements(np.ndim)
+        def ndim_impl(a):
+            """Return number of dimensions (units irrelevant for ndim)."""
+            return np.asarray(a).ndim
+
+        @implements(np.size)
+        def size_impl(a, axis=None):
+            """Return size of array (units irrelevant for size)."""
+            return np.size(np.asarray(a), axis)
+
+        @implements(np.column_stack)
+        def column_stack_impl(tup):
+            """Column stack arrays (convert to plain arrays, units not preserved)."""
+            return np.column_stack([np.asarray(arr) for arr in tup])
+
+        @implements(np.row_stack)
+        def row_stack_impl(tup):
+            """Row stack arrays (convert to plain arrays, units not preserved)."""
+            return np.row_stack([np.asarray(arr) for arr in tup])
+
+        @implements(np.dstack)
+        def dstack_impl(tup):
+            """Depth stack arrays (convert to plain arrays, units not preserved)."""
+            return np.dstack([np.asarray(arr) for arr in tup])
+
         # Look up the handler
         if func not in HANDLED_FUNCTIONS:
             # Function not handled - use default numpy behavior

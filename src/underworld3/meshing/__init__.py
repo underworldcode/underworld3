@@ -43,7 +43,9 @@ from .surfaces import (
     Surface,
     SurfaceVariable,
     SurfaceCollection,
-    # Backward compatibility aliases
+)
+
+from .faults import (
     FaultSurface,
     FaultCollection,
 )

@@ -1,3 +1,16 @@
+# ==============================================================================
+# VISUALIZATION BACKENDS - must be set before any visualization imports
+# ==============================================================================
+# Use non-interactive backends for pytest runs to prevent GUI windows
+
+# Matplotlib: use non-interactive Agg backend
+import matplotlib
+matplotlib.use('Agg')
+
+# PyVista: enable offscreen rendering (no windows)
+import pyvista
+pyvista.OFF_SCREEN = True
+
 # import underworld3 as uw
 # import pytest
 
@@ -61,12 +74,11 @@
 
 
 # ==============================================================================
-# STRICT UNITS MODE FIXTURE FOR LEGACY TESTS
+# TEST ISOLATION FIXTURES
 # ==============================================================================
-# Most existing tests were written before strict units mode was implemented.
-# They test various features (units, solvers, etc.) but don't set reference
-# quantities first. Disable strict mode for all tests EXCEPT the strict
-# enforcement tests themselves.
+# Ensure tests don't pollute each other with global state (model, units mode).
+# The global Model singleton and scaling coefficients cause test pollution
+# if not reset between tests.
 # ==============================================================================
 
 import pytest
@@ -74,14 +86,18 @@ import underworld3 as uw
 
 
 @pytest.fixture(scope="function", autouse=True)
-def manage_strict_units_mode(request):
+def isolate_test_state(request):
     """
-    Manage strict units mode for tests.
+    Isolate tests from global state pollution.
 
-    - Disable for all tests EXCEPT test_0814_strict_units_enforcement.py
-    - This allows legacy tests to work while enforcing strict mode for new code
+    - Reset the global model between tests (prevents reference quantities leaking)
+    - Disable strict units mode for legacy tests
+    - Tests in test_0814_strict_units_enforcement.py manage their own state
     """
     test_file = request.node.fspath.basename
+
+    # Reset model to prevent pollution from previous tests
+    uw.reset_default_model()
 
     # Only keep strict mode ON for the strict enforcement tests
     if test_file == "test_0814_strict_units_enforcement.py":

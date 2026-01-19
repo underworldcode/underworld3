@@ -1126,6 +1126,10 @@ class SNES_Scalar(SolverBaseClass):
 
 
         self.essential_bcs = []
+        # TODO(BUG): add_natural_bc() causes PETSc error 73 ("Object in wrong state")
+        # when used with this solver. The Stokes solver's natural BCs work correctly,
+        # suggesting a setup/ordering issue specific to scalar Poisson.
+        # See planning file: underworld.md (Bugs section, 2026-01-19)
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
