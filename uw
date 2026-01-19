@@ -292,6 +292,88 @@ check_pixi() {
     fi
 }
 
+# Configure AI tools path (standalone)
+configure_ai_tools() {
+    echo -e "${BOLD}Extended AI Context Configuration${NC}"
+    echo ""
+    echo "Configure paths to additional AI instruction files (.md) that live"
+    echo "outside this repository. Useful for personal coding preferences,"
+    echo "project planning systems, or private instructions."
+    echo ""
+    
+    # Show current setting if any
+    if [ -n "$UW_AI_TOOLS_PATH" ]; then
+        echo "Current setting: $UW_AI_TOOLS_PATH"
+        echo ""
+    fi
+    
+    echo "Enter path(s) to directories containing .md instruction files."
+    echo "Separate multiple paths with colons (like PATH)."
+    echo "Leave empty to remove/skip."
+    echo ""
+    echo "Example: ~/Library/CloudStorage/Box-Box/Planning:~/my-ai-notes"
+    echo ""
+    read -p "Path(s): " ai_tools_path
+    
+    # Detect shell config file
+    local shell_config=""
+    if [ -f "$HOME/.zshrc" ]; then
+        shell_config="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        shell_config="$HOME/.bashrc"
+    elif [ -f "$HOME/.bash_profile" ]; then
+        shell_config="$HOME/.bash_profile"
+    fi
+    
+    if [ -z "$ai_tools_path" ]; then
+        # Empty input - offer to remove existing
+        if [ -n "$shell_config" ] && grep -q "^export UW_AI_TOOLS_PATH=" "$shell_config" 2>/dev/null; then
+            echo ""
+            read -p "Remove existing UW_AI_TOOLS_PATH from $shell_config? [y/N]: " remove_it
+            if [ "$remove_it" = "y" ] || [ "$remove_it" = "Y" ]; then
+                grep -v "^export UW_AI_TOOLS_PATH=" "$shell_config" | grep -v "^# Underworld3 AI tools path" > "$shell_config.tmp"
+                mv "$shell_config.tmp" "$shell_config"
+                echo -e "${GREEN}✓${NC} Removed from $shell_config"
+            fi
+        else
+            echo "No path configured."
+        fi
+        return
+    fi
+    
+    # Expand ~ to $HOME
+    ai_tools_path="${ai_tools_path//\~/$HOME}"
+    
+    if [ -n "$shell_config" ]; then
+        echo ""
+        read -p "Add to $shell_config? [Y/n]: " add_to_shell
+        add_to_shell=${add_to_shell:-y}
+        
+        if [ "$add_to_shell" = "y" ] || [ "$add_to_shell" = "Y" ]; then
+            # Remove any existing UW_AI_TOOLS_PATH lines
+            grep -v "^export UW_AI_TOOLS_PATH=" "$shell_config" | grep -v "^# Underworld3 AI tools path" > "$shell_config.tmp" 2>/dev/null || true
+            mv "$shell_config.tmp" "$shell_config"
+            
+            # Add new line
+            echo "" >> "$shell_config"
+            echo "# Underworld3 AI tools path (configured by ./uw ai-tools)" >> "$shell_config"
+            echo "export UW_AI_TOOLS_PATH=\"$ai_tools_path\"" >> "$shell_config"
+            
+            echo -e "${GREEN}✓${NC} Added to $shell_config"
+            echo ""
+            echo "Run 'source $shell_config' or start a new terminal to activate."
+        else
+            echo ""
+            echo "Add this to your shell config manually:"
+            echo "  export UW_AI_TOOLS_PATH=\"$ai_tools_path\""
+        fi
+    else
+        echo ""
+        echo "Could not detect shell config. Add this manually:"
+        echo "  export UW_AI_TOOLS_PATH=\"$ai_tools_path\""
+    fi
+}
+
 # Interactive setup wizard
 run_setup() {
     # Ensure pixi is available
@@ -379,6 +461,68 @@ run_setup() {
         $PIXI run -e "$new_env" pip install . --no-build-isolation
     fi
 
+    # Optional: Configure extended AI context paths
+    echo ""
+    echo -e "${BOLD}Extended AI Context (Optional)${NC}"
+    echo "  You can configure paths to additional AI instruction files that live"
+    echo "  outside this repository. This is useful for personal coding preferences,"
+    echo "  project planning systems, or private instructions not shared with others."
+    echo ""
+    read -p "Configure AI tools path? [y/N]: " config_ai
+    config_ai=${config_ai:-n}
+    
+    if [ "$config_ai" = "y" ] || [ "$config_ai" = "Y" ]; then
+        echo ""
+        echo "  Enter path(s) to directories containing .md instruction files."
+        echo "  Separate multiple paths with colons (like PATH)."
+        echo "  Example: ~/Library/CloudStorage/Box-Box/Planning:~/my-ai-notes"
+        echo ""
+        read -p "  Path(s): " ai_tools_path
+        
+        if [ -n "$ai_tools_path" ]; then
+            # Expand ~ to $HOME
+            ai_tools_path="${ai_tools_path//\~/$HOME}"
+            
+            # Detect shell config file
+            local shell_config=""
+            if [ -f "$HOME/.zshrc" ]; then
+                shell_config="$HOME/.zshrc"
+            elif [ -f "$HOME/.bashrc" ]; then
+                shell_config="$HOME/.bashrc"
+            elif [ -f "$HOME/.bash_profile" ]; then
+                shell_config="$HOME/.bash_profile"
+            fi
+            
+            if [ -n "$shell_config" ]; then
+                echo ""
+                read -p "  Add to $shell_config? [Y/n]: " add_to_shell
+                add_to_shell=${add_to_shell:-y}
+                
+                if [ "$add_to_shell" = "y" ] || [ "$add_to_shell" = "Y" ]; then
+                    # Remove any existing UW_AI_TOOLS_PATH line
+                    grep -v "^export UW_AI_TOOLS_PATH=" "$shell_config" > "$shell_config.tmp" 2>/dev/null || true
+                    mv "$shell_config.tmp" "$shell_config"
+                    
+                    # Add new line
+                    echo "" >> "$shell_config"
+                    echo "# Underworld3 AI tools path (configured by ./uw setup)" >> "$shell_config"
+                    echo "export UW_AI_TOOLS_PATH=\"$ai_tools_path\"" >> "$shell_config"
+                    
+                    echo -e "  ${GREEN}✓${NC} Added to $shell_config"
+                    echo "  Run 'source $shell_config' or start a new terminal to activate."
+                else
+                    echo ""
+                    echo "  Add this to your shell config manually:"
+                    echo "    export UW_AI_TOOLS_PATH=\"$ai_tools_path\""
+                fi
+            else
+                echo ""
+                echo "  Could not detect shell config. Add this manually:"
+                echo "    export UW_AI_TOOLS_PATH=\"$ai_tools_path\""
+            fi
+        fi
+    fi
+
     echo ""
     echo -e "${GREEN}${BOLD}Setup complete!${NC}"
     echo ""
@@ -436,6 +580,7 @@ COMMANDS
   Setup:
     setup               Interactive configuration wizard
     set-env NAME        Change environment directly
+    ai-tools            Configure external AI instruction paths
 
   Building:
     build               Build underworld3
@@ -729,6 +874,9 @@ case "${1:-}" in
         ;;
     update)
         run_update
+        ;;
+    ai-tools)
+        configure_ai_tools
         ;;
     --help|-h|help)
         show_help
