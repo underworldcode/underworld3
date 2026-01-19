@@ -717,6 +717,47 @@ class UWQuantity:
         return not self.__eq__(other)
 
     # =========================================================================
+    # Array Indexing
+    # =========================================================================
+
+    def __getitem__(self, key):
+        """
+        Enable array indexing on UWQuantity objects.
+
+        Supports indexing into the underlying value array while preserving units.
+        Returns a new UWQuantity if the result is still an array, or a scalar
+        if indexing yields a single value.
+
+        Parameters
+        ----------
+        key : int, slice, tuple, or array-like
+            Index, slice, or advanced indexing specification
+
+        Returns
+        -------
+        UWQuantity or scalar
+            Indexed value with units preserved (if result is array)
+            or scalar value (if result is single element)
+
+        Examples
+        --------
+        >>> coords = uw.quantity([[100, 200], [300, 400]], "km")
+        >>> coords[0]  # First particle: UWQuantity([100, 200], "km")
+        >>> coords[0, 0]  # First coordinate: 100.0 (scalar, units lost)
+        >>> coords[:, 0]  # All x-coordinates: UWQuantity([100, 300], "km")
+        """
+        # Index into the underlying value
+        indexed_value = self._value[key]
+
+        # If result is still an array, wrap in new UWQuantity
+        if isinstance(indexed_value, np.ndarray):
+            return UWQuantity(indexed_value, units=self._pint_unit)
+
+        # Scalar result - return bare value
+        # (Could alternatively return UWQuantity for consistency)
+        return indexed_value
+
+    # =========================================================================
     # SymPy Compatibility
     # =========================================================================
 
