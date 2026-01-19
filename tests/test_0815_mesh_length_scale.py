@@ -231,7 +231,7 @@ def test_length_units_matches_coordinate_units():
 
 
 @pytest.mark.skipif(
-    os.environ.get("CI") or not os.environ.get("DISPLAY"),
+    os.environ.get("CI", "").lower() in ("true", "1", "yes") or not os.environ.get("DISPLAY"),
     reason="Visualization tests require display (skipped in CI)"
 )
 def test_mesh_view_displays_length_scale():
