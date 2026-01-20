@@ -13,9 +13,10 @@ dependencies:
   - pyvista
   - pykdtree
   - pytest
-  - numpy
-  - scipy
-  - sympy
+  - pytest-mpi
+  - numpy<2
+  - scipy>=1.15
+  - sympy>=1.13
   - ipython
   - mpi4py
   - h5py=*=mpi*
@@ -24,7 +25,7 @@ dependencies:
   - python-xxhash
   - jupytext
   - pygments
-  - pint
+  - pint>=0.24
   - cmocean
   - colorcet
   - imageio
@@ -37,7 +38,10 @@ dependencies:
   - trame-vuetify>=2.3.1
   - trimesh
   - typeguard
+  - pydantic>=2
+  - pyyaml
   - pip
   - pip:
       - rich<14
       - meshio
+      - pygmsh

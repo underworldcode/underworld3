@@ -10,6 +10,7 @@ maths.c
 swarm.c
 *_debug.txt
 compile.log
+*.log
 .env
 **/__pycache__
 *.so
@@ -28,9 +29,90 @@ keep/*
 *.swp
 nohup.out
 src/underworld3/_uwid.py
-*.png # Add these explicitly if you want to keep them 
+# Auto-generated version file (derived from git tags by setuptools_scm)
+src/underworld3/_version.py
 
-# quarto build relics
+# TeX/LaTeX/PDF build artifacts (comprehensive)
+*.aux
+*.lof
+*.log
+*.lot
+*.fls
+*.out
+*.toc
+*.fmt
+*.fot
+*.cb
+*.cb2
+.*.lb
+*.bbl
+*.bcf
+*.blg
+*-blx.aux
+*-blx.bib
+*.run.xml
+*.fdb_latexmk
+*.synctex
+*.synctex(busy)
+*.synctex.gz
+*.synctex.gz(busy)
+*.pdfsync
+*.nav
+*.snm
+*.vrb
+*.xdv
+*.idx
+*.ilg
+*.ind
+*.glg
+*.glo
+*.gls
+*.ist
+*.acn
+*.acr
+*.alg
+*.glsdefs
+*.lzo
+*.lzs
+*.slg
+*.slo
+*.sls
+
+# Quarto build artifacts (comprehensive coverage for all docs subdirectories)
+docs/_build/
+docs/.quarto/
+docs/_freeze/
+docs/*/_build/
+docs/*/.quarto/
+docs/*/_freeze/
+docs/*/*/_build/
+docs/*/*/.quarto/
+docs/*/*/_freeze/
+docs/**/*.pdf
+docs/**/*.tex
+docs/**/*.aux
+docs/**/*.log
+docs/**/*.toc
+docs/**/*.out
+docs/**/*.fls
+docs/**/*.fdb_latexmk
+docs/**/*.synctex.gz
+docs/**/*.nav
+docs/**/*.snm
+docs/**/*.vrb
+
+# Additional documentation build artifacts
+docs/**/.ipynb_checkpoints/
+docs/**/site_libs/
+docs/**/libs/
+docs/**/_site/
+docs/**/dist/
+docs/**/node_modules/
+docs/**/.sass-cache/
+docs/**/.jekyll-cache/
+docs/**/.jekyll-metadata
+docs/**/*.rdb
+docs/**/*.rdx
 
 documentation/index.aux
 documentation/index.pdf
@@ -61,14 +143,34 @@ joss-paper/paper.pdf
 .ash_history
 
 
-# Mesh files etc
+# Example output files (comprehensive exclusion)
 
+# Mesh files
 uw_*.msh
-*.msh # unless we really want to add some examples
+*.msh
 *.h5
 *.xdmf
 *.vtk
 *.pbin
+
+# Visualization outputs (exclude generated, allow curated assets)
+docs/examples/**/output/**
+docs/examples/**/*.png
+docs/examples/**/*.jpg
+docs/examples/**/*.gif
+docs/examples/**/*.mp4
+docs/examples/**/*.html
+# But allow curated documentation images
+!docs/examples/assets/**
+
+# Additional example artifacts
+docs/examples/**/*.txt
+docs/examples/**/*.dat
+docs/examples/**/*.csv
+docs/examples/**/*.log
+docs/examples/**/checkpoint_*
+docs/examples/**/restart_*
+docs/examples/**/.meshes/
 
 # Any checkpoints from notebooks (since .md files can be run in setups with 
 # jupytext and will produce spurious/unexpected checkpoints.
@@ -101,3 +203,53 @@ Jupyterbook/.DS_Store
 Jupyterbook/Notebooks/.DS_Store
 Jupyterbook/Notebooks/Examples-NavierStokes/order_1/NS_test_Re_250_0.06_step_0.png
 Documentation/index.aux
+
+# Claude Code files (track commands, ignore settings)
+CLAUDE.md
+.claude/*
+!.claude/commands/
+.claude/commands/*
+!.claude/commands/*.md
+
+# Prevent future markdown clutter in root (allow essential docs only)
+/*_ANALYSIS.md
+/*_REPORT.md
+/*_SUMMARY.md
+/*_STATUS.md
+/*_PROGRESS.md
+/*_REVIEW.md
+/*_PLAN.md
+/*_FIXES.md
+/SESSION_SUMMARY*.md
+/PHASE_*.md
+# Exceptions for essential docs
+!TODO.md
+!README.md
+!CLAUDE.md
+!CONTRIBUTING.md
+!CHANGES.md
+!SPELLING_CONVENTION.md
+!LICENSE.md
+
+# Temporary test files (can be deleted)
+temp_tests_deletable/
+debug_*.py
+/test_*.py
+# Allow legitimate test files in tests/ directory
+!tests/**/test_*.py
+
+# IDE and editor artifacts
+.ropeproject/
+.vscode/
+
+# Mesh cache directory
+.meshes/
+
+# Additional cache directories
+.pytest_cache/
+
+# Visualization output files (generated during notebook execution)
+docs/beginner/tutorials/html5/*.html
+petsc-custom/petsc/
+.pixi-env
+Untitled*.ipynb

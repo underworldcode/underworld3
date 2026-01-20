@@ -1,59 +1,64 @@
 {
-    "creators": [
-        {
-            "name": "Louis Moresi",
-            "affiliation": "Research School of Earth Sciences, The Australian National University",
-            "orcid": "0000-0003-3685-174X"
-        },
-        {
-            "name": "John Mansour",
-            "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University",
-            "orcid": "0000-0001-5865-1664"
-        },
-        {
-            "name": "Julian Giordani",
-            "affiliation": "School of Earth Science, The University of Sydney",
-            "orcid": "0000-0003-4515-9296"
-        },
-        {
-            "name": "Matt Knepley",
-            "orcid": "0000-0002-2292-0735",
-            "affiliation": "Computer Science and Engineering, University at Buffalo"
-        },
-        {
-            "name": "Ben Knight",
-            "affiliation": "School of Earth and Planetary Sciences, Curtin University",
-            "orcid": "0000-0001-7919-2575"
-        },
-        {
-            "name": "Juan Carlos Graciosa",
-            "orcid": "0000-0003-0817-354X",
-            "affiliation": "Research School of Earth Sciences, The Australian National University"
-        },
-        {
-            "name": "Thyagarajulu Gollapalli",
-            "orcid": "0000-0001-9394-4104",
-            "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University"
-        },
-        {
-            "name": "Neng Lu",
-            "affiliation": "Research School of Earth Sciences, The Australian National University",
-            "orcid": "0000-0001-9424-2315"
-        },
-        {
-            "name": "Romain Beucher",
-            "affiliation": "Research School of Earth Sciences, The Australian National University",
-            "orcid": "0000-0003-3891-5444"
-        }
-    ],
-    "license": "lgpl-3.0",
-    "title": "Underworld3: Mathematically Self-Describing Modelling in Python for Desktop, HPC and Cloud",
-    "upload_type": "software",
-    "access_right": "open",
-    "keywords": [
-        "geodynamics",
-        "finite elements",
-        "particle-in-cell",
-        "symbolic computation"
-    ]
+  "creators": [
+    {
+      "name": "Louis Moresi",
+      "affiliation": "Research School of Earth Sciences, The Australian National University",
+      "orcid": "0000-0003-3685-174X"
+    },
+    {
+      "name": "Julian Giordani",
+      "affiliation": "School of Earth Science, The University of Sydney",
+      "orcid": "0000-0003-4515-9296"
+    },
+    {
+      "name": "Matt Knepley",
+      "orcid": "0000-0002-2292-0735",
+      "affiliation": "Computer Science and Engineering, University at Buffalo"
+    },
+    {
+      "name": "Romain Beucher",
+      "affiliation": "Research School of Earth Sciences, The Australian National University",
+      "orcid": "0000-0003-3891-5444"
+    },
+    {
+      "name": "Thyagarajulu Gollapalli",
+      "orcid": "0000-0001-9394-4104",
+      "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University"
+    },
+    {
+      "name": "Juan Carlos Graciosa",
+      "orcid": "0000-0003-0817-354X",
+      "affiliation": "Research School of Earth Sciences, The Australian National University"
+    },
+    {
+      "name": "Ben Knight",
+      "affiliation": "School of Earth and Planetary Sciences, Curtin University, Australia",
+      "orcid": "0000-0001-7919-2575"
+    },
+    {
+      "name": "Neng Lu",
+      "affiliation": "Research School of Earth Sciences, The Australian National University",
+      "orcid": "0000-0001-9424-2315"
+    },
+    {
+      "name": "John Mansour",
+      "affiliation": "School of Earth, Atmospheric & Environmental Science, Monash University",
+      "orcid": "0000-0001-5865-1664"
+    },
+    {
+      "name": "Romain Beucher",
+      "affiliation": "Research School of Earth Sciences, The Australian National University",
+      "orcid": "0000-0003-3891-5444"
+    }
+  ],
+  "license": "lgpl-3.0",
+  "title": "Underworld3: Mathematically Self-Describing Modelling in Python for Desktop, HPC and Cloud",
+  "upload_type": "software",
+  "access_right": "open",
+  "keywords": [
+    "geodynamics",
+    "finite elements",
+    "particle-in-cell",
+    "symbolic computation"
+  ]
 }

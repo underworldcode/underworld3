@@ -1,0 +1,20 @@
+project:
+  type: default
+  output-dir: _build
+
+format:
+  uw3_slides-revealjs:
+    logo: ../media/MansoursNightmare.png
+    footer: |
+      Underworld3 — Computational Geodynamics
+    code-links:
+      - text: Open in Binder
+        icon: rocket-takeoff
+        href: https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/uw3-release-candidate?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb
+    other-links:
+      - text: Github Repository
+        icon: github
+        href: https://github.com/underworldcode/underworld3
+      - text: Documentation
+        icon: book
+        href: https://underworldcode.github.io/underworld3/

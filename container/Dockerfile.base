@@ -1,0 +1,129 @@
+# Base image for Underworld3 binder launches
+# Build: docker build -f container/Dockerfile.base -t ghcr.io/underworldcode/uw3-base:test .
+# Test:  docker run --rm -w /home/jovyan/underworld3 ghcr.io/underworldcode/uw3-base:test \
+#          pixi run -e runtime python -c "import underworld3 as uw; print('OK')"
+
+FROM ubuntu:24.04 AS builder
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal system dependencies for build stage
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user (binder expects jovyan with UID 1000)
+# Ubuntu 24.04 has 'ubuntu' user at UID 1000, so we replace it
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+USER jovyan
+WORKDIR /home/jovyan
+
+# Install pixi
+RUN curl -fsSL https://pixi.sh/install.sh | sh
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+
+# Clone underworld3 to get pixi.toml, install runtime env
+RUN git clone --single-branch --branch uw3-release-candidate \
+    https://github.com/underworldcode/underworld3.git && \
+    cd underworld3 && \
+    pixi install -e runtime && \
+    cd ..
+
+# Build underworld3 into the environment
+RUN cd underworld3 && \
+    pixi run -e runtime build && \
+    cd ..
+
+# Install jupyter kernel
+RUN cd underworld3 && \
+    pixi run -e runtime python -m ipykernel install --user --name=uw3 --display-name="Underworld3" && \
+    cd ..
+
+# =============================================================================
+# Final stage
+# =============================================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime dependencies for gmsh, pyvista, and visualization
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    # OpenGL / Mesa for hardware rendering
+    libgl1 \
+    libglu1-mesa \
+    # OSMesa for software rendering (headless)
+    libosmesa6 \
+    libglx-mesa0 \
+    # X11 libraries for gmsh
+    libxft2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxrender1 \
+    libxext6 \
+    libglib2.0-0 \
+    libfreetype6 \
+    # For headless rendering
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create jovyan user (binder standard)
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+
+# Copy everything from builder
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan /home/jovyan
+
+USER jovyan
+WORKDIR /home/jovyan
+
+# Set up environment
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+ENV HOME="/home/jovyan"
+
+# PyVista/VTK off-screen rendering configuration
+ENV PYVISTA_OFF_SCREEN=true
+ENV PYVISTA_USE_IPYVTK=true
+ENV DISPLAY=:99
+
+# Expose jupyter port
+EXPOSE 8888
+
+# Default branch to pull (can be overridden by launcher Dockerfile)
+ENV UW3_BRANCH=uw3-release-candidate
+
+# Create start script that updates code before launching
+# This enables binder to always get latest code without rebuilding the image
+# Uses UW3_BRANCH env var to determine which branch to pull
+RUN cat > /home/jovyan/start <<'SCRIPT'
+#!/bin/bash
+cd /home/jovyan/underworld3
+git fetch origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
+git checkout ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
+git pull origin ${UW3_BRANCH:-uw3-release-candidate} 2>/dev/null || true
+pixi run -e runtime build 2>&1 | tail -3 || true
+cp -r docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
+exec pixi run -e runtime "$@"
+SCRIPT
+RUN chmod +x /home/jovyan/start
+
+# Create tutorials directory
+RUN mkdir -p /home/jovyan/Tutorials && \
+    cp -r /home/jovyan/underworld3/docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
+
+# Binder environment variables
+ENV NB_USER=jovyan
+ENV NB_UID=1000
+
+# Default working directory
+WORKDIR /home/jovyan/underworld3
+
+# ENTRYPOINT runs start script, CMD provides default args
+ENTRYPOINT ["/home/jovyan/start"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--no-browser"]

@@ -1,0 +1,273 @@
+# Base image for Underworld3 binder launches (OPTIMIZED)
+# Build: docker build -f container/Dockerfile.base.optimized -t ghcr.io/underworldcode/uw3-base:test .
+# Test:  docker run --rm -w /home/jovyan/underworld3 ghcr.io/underworldcode/uw3-base:test \
+#          pixi run -e runtime python -c "import underworld3 as uw; print('OK')"
+
+FROM ubuntu:24.04 AS builder
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal system dependencies for build stage
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user (binder expects jovyan with UID 1000)
+# Ubuntu 24.04 has 'ubuntu' user at UID 1000, so we replace it
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+USER jovyan
+WORKDIR /home/jovyan
+
+# Install pixi
+RUN curl -fsSL https://pixi.sh/install.sh | sh
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+
+# Clone underworld3 with shallow clone (depth 1 keeps .git small ~5MB vs 356MB)
+RUN git clone --single-branch --branch uw3-release-candidate --depth 1 \
+    https://github.com/underworldcode/underworld3.git && \
+    cd underworld3 && \
+    pixi install -e runtime && \
+    cd ..
+
+# Build underworld3 into the environment
+RUN cd underworld3 && \
+    pixi run -e runtime build && \
+    cd ..
+
+# Install jupyter kernel
+RUN cd underworld3 && \
+    pixi run -e runtime python -m ipykernel install --user --name=uw3 --display-name="Underworld3" && \
+    cd ..
+
+# Install nbgitpuller for generic binder launches
+# Allows any repo to use this image via URL parameters
+RUN cd underworld3 && \
+    pixi run -e runtime pip install --no-cache-dir nbgitpuller && \
+    cd ..
+
+# =============================================================================
+# CLEANUP STAGE - Remove unnecessary files to reduce image size
+# =============================================================================
+
+# Clean pixi cache (can be 500MB+)
+RUN pixi clean cache --yes 2>/dev/null || true
+
+# Keep shallow .git (depth 1 is only ~5MB) for fast git pull at startup
+# Don't remove: rm -rf /home/jovyan/underworld3/.git
+
+# Remove docs_legacy - saves 229MB
+RUN rm -rf /home/jovyan/underworld3/docs_legacy
+
+# Remove __pycache__ directories
+RUN find /home/jovyan -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+# Remove pip cache
+RUN rm -rf /home/jovyan/.cache/pip
+
+# Remove unnecessary package files from pixi environment
+RUN find /home/jovyan/.pixi -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /home/jovyan/.pixi -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    find /home/jovyan/.pixi -name "*.pyc" -delete 2>/dev/null || true && \
+    find /home/jovyan/.pixi -name "*.pyo" -delete 2>/dev/null || true
+
+# KEEP include directory - needed for JIT compilation at runtime
+# RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/include
+
+# KEEP compiler toolchain - needed for JIT compilation at runtime
+# RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu
+
+# Remove man pages - saves 4.5MB
+RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/man
+
+# Remove conda-meta (package metadata) - saves 24MB
+RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/conda-meta
+
+# =============================================================================
+# ORGANIZE lib directory for split copying (avoid >1GB layers)
+# =============================================================================
+# Total lib is ~2.7GB, split into chunks <800MB each
+
+# Create split directories for lib contents
+RUN mkdir -p /home/jovyan/lib-split/llvm && \
+    mkdir -p /home/jovyan/lib-split/vtk && \
+    mkdir -p /home/jovyan/lib-split/other-large && \
+    mkdir -p /home/jovyan/lib-split/remaining
+
+# Move LLVM libraries (~355MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libLLVM*.so* libclang*.so* /home/jovyan/lib-split/llvm/ 2>/dev/null || true
+
+# Move VTK-related libraries (~300MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libvtk*.so* /home/jovyan/lib-split/vtk/ 2>/dev/null || true && \
+    mv libvisk*.so* /home/jovyan/lib-split/vtk/ 2>/dev/null || true
+
+# Move other large libraries: gmsh, openblas, openvino, Qt (~400MB)
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv libgmsh*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libopenblas*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libopenvino*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libQt*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
+    mv libicu*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true
+
+# =============================================================================
+# Final stage
+# =============================================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime dependencies for gmsh, pyvista, and visualization
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    # OpenGL / Mesa for hardware rendering
+    libgl1 \
+    libglu1-mesa \
+    # OSMesa for software rendering (headless)
+    libosmesa6 \
+    libglx-mesa0 \
+    # X11 libraries for gmsh
+    libxft2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxrender1 \
+    libxext6 \
+    libglib2.0-0 \
+    libfreetype6 \
+    # For headless rendering
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create jovyan user (binder standard)
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+
+# =============================================================================
+# Split COPY into multiple layers for better binder compatibility
+# (mybinder.org struggles with single layers > 1GB)
+# =============================================================================
+
+# Layer 1: Pixi binary and global cache (~10MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/.pixi /home/jovyan/.pixi
+
+# Layer 2: Jupyter kernel config (~1MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/.local /home/jovyan/.local
+
+# Layer 3: Pixi project config files (~1MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pixi.toml /home/jovyan/underworld3/pixi.toml
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pixi.lock /home/jovyan/underworld3/pixi.lock
+
+# Layer 4: Runtime environment - everything except lib (~100MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/bin /home/jovyan/underworld3/.pixi/envs/runtime/bin
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/share /home/jovyan/underworld3/.pixi/envs/runtime/share
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/ssl /home/jovyan/underworld3/.pixi/envs/runtime/ssl
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/etc /home/jovyan/underworld3/.pixi/envs/runtime/etc
+
+# =============================================================================
+# SPLIT LIB LAYERS - Each <800MB for reliable binder uploads
+# =============================================================================
+
+# Layer 5a: Python site-packages and subdirectories (~800MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12 /home/jovyan/underworld3/.pixi/envs/runtime/lib/python3.12
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/gcc /home/jovyan/underworld3/.pixi/envs/runtime/lib/gcc
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/qt6 /home/jovyan/underworld3/.pixi/envs/runtime/lib/qt6
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/dri /home/jovyan/underworld3/.pixi/envs/runtime/lib/dri
+
+# Layer 5b: VTK and openvino directories (~140MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/vtk-9.5 /home/jovyan/underworld3/.pixi/envs/runtime/lib/vtk-9.5
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/openvino-2025.2.0 /home/jovyan/underworld3/.pixi/envs/runtime/lib/openvino-2025.2.0
+
+# Layer 5c: LLVM/Clang libraries moved to split dir (~350MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/llvm /home/jovyan/underworld3/.pixi/envs/runtime/lib/
+
+# Layer 5d: VTK shared libraries moved to split dir (~300MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/vtk /home/jovyan/underworld3/.pixi/envs/runtime/lib/
+
+# Layer 5e: Other large libs (gmsh, openblas, Qt, ICU, openvino) (~400MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/other-large /home/jovyan/underworld3/.pixi/envs/runtime/lib/
+
+# Layer 5f: Remaining lib files (~700MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib /home/jovyan/underworld3/.pixi/envs/runtime/lib
+
+# =============================================================================
+# JIT COMPILATION SUPPORT
+# =============================================================================
+
+# Layer 6a: Include headers - needed for JIT compilation (~390MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/include /home/jovyan/underworld3/.pixi/envs/runtime/include
+
+# Layer 6b: Compiler toolchain - needed for JIT compilation (~267MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu /home/jovyan/underworld3/.pixi/envs/runtime/x86_64-conda-linux-gnu
+
+# Layer 6c: Compiler internal binaries (cc1, etc.) - needed for JIT compilation
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/libexec /home/jovyan/underworld3/.pixi/envs/runtime/libexec
+
+# =============================================================================
+# UNDERWORLD3 SOURCE AND DOCS
+# =============================================================================
+
+# Layer 7: Underworld3 source code (~100MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/src /home/jovyan/underworld3/src
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/setup.py /home/jovyan/underworld3/setup.py
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/pyproject.toml /home/jovyan/underworld3/pyproject.toml
+
+# Layer 8: Documentation and tutorials (~50MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/docs /home/jovyan/underworld3/docs
+
+# Layer 9: Git repo for updates (~5MB)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.git /home/jovyan/underworld3/.git
+
+USER jovyan
+WORKDIR /home/jovyan
+
+# Set up environment
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
+ENV HOME="/home/jovyan"
+
+# PyVista/VTK off-screen rendering configuration
+ENV PYVISTA_OFF_SCREEN=true
+ENV PYVISTA_USE_IPYVTK=true
+ENV DISPLAY=:99
+
+# Force Mesa software rendering (avoid EGL issues in containers)
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MESA_GL_VERSION_OVERRIDE=3.3
+ENV GALLIUM_DRIVER=llvmpipe
+ENV VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow
+
+# Expose jupyter port
+EXPOSE 8888
+
+# Default branch to pull (can be overridden by launcher Dockerfile)
+ENV UW3_BRANCH=uw3-release-candidate
+
+# Create minimal start script - launch jupyter directly (no pixi overhead)
+# The environment is pre-built, just need to set PATH and run
+RUN cat > /home/jovyan/start <<'SCRIPT'
+#!/bin/bash
+export PATH="/home/jovyan/underworld3/.pixi/envs/runtime/bin:$PATH"
+cd /home/jovyan/underworld3
+exec "$@"
+SCRIPT
+RUN chmod +x /home/jovyan/start
+
+# Create tutorials directory
+RUN mkdir -p /home/jovyan/Tutorials && \
+    cp -r /home/jovyan/underworld3/docs/beginner/tutorials/* /home/jovyan/Tutorials/ 2>/dev/null || true
+
+# Binder environment variables
+ENV NB_USER=jovyan
+ENV NB_UID=1000
+
+# Default working directory
+WORKDIR /home/jovyan/underworld3
+
+# ENTRYPOINT runs start script, CMD provides default args
+ENTRYPOINT ["/home/jovyan/start"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--no-browser"]

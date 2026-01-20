@@ -1,5 +1,24 @@
 # CHANGES: Underworld3
 
+## 2025-12-21
+
+  - PETSc 3.24 compatibility verified (conda-forge petsc 3.24.2 works correctly)
+  - Enhanced `uw.doctor()` diagnostics to detect PETSc version mismatches:
+    - New check compares compile-time vs runtime PETSc library versions
+    - Detects when extensions link to wrong `libpetsc.X.Y.dylib`
+    - Provides clear fix instructions for rebuild
+  - Updated `./uw doctor` to detect PETSc library mismatches even when import fails
+  - Migrated all example files from `uw.options.get*` to new `uw.Params` pattern
+  - Added `uw.pause()` for interactive notebook development:
+    - Displays tidy, formatted message without Python tracebacks
+    - Automatically skipped in non-notebook environments (scripts, HPC)
+    - Same notebook runs interactively or unattended without modification
+    - Override with `UW_NOTEBOOK_EMULATION` environment variable
+  - Fixed problematic example files:
+    - `Ex_SphericalStokes_Visualise.py`: Added configurable checkpoint paths
+    - `Theory_VE_NavierStokes.py`: Marked WIP implementation sections
+    - `Ex_Sheared_Layer_Test.py`: Fixed undefined `strain` variable, added `uw.pause()` for development review points
+
 ## 2024-09-01
 
   - Add Notebooks for the quickstart guide (quarto backend for rendering)

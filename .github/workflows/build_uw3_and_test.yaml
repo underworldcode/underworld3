@@ -34,10 +34,10 @@ jobs:
           VERSION=`python3 setup.py --version`
           echo "UW - version " ${VERSION}
 
-          ## TODO. Use compile.sh once it is in development
+          ## TODO. Use scripts/compile.sh once it is in development
           pip install -e . --no-build-isolation
 
-      - name: Run tests 
+      - name: Run tests
         shell: bash -l {0}
         run: |
-          ./test.sh
+          ./scripts/test.sh --p 2

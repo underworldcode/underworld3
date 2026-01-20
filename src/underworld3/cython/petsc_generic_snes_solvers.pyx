@@ -52,7 +52,29 @@ class SolverBaseClass(uw_object):
         return
 
     class _Unknowns:
-        """We introduce a class to manage the unknown vectors and history managers for each solver
+        """
+        Manager for solver unknown variables and derived quantities.
+
+        This class manages the primary unknown variable (e.g., velocity, temperature)
+        and provides automatic computation of derived quantities like velocity gradients,
+        strain rates, and vorticity.
+
+        Attributes
+        ----------
+        u : MeshVariable
+            The primary unknown variable being solved for.
+        DuDt : SemiLagrangian_DDt, optional
+            Time derivative manager for advection-diffusion problems.
+        DFDt : SemiLagrangian_DDt, optional
+            Flux time derivative manager for viscoelastic problems.
+        L : sympy.Matrix
+            Velocity gradient tensor :math:`L_{ij} = \\partial u_i / \\partial x_j`.
+        E : sympy.Matrix
+            Strain rate tensor :math:`E = (L + L^T) / 2` (symmetric part of L).
+        W : sympy.Matrix
+            Vorticity tensor :math:`W = (L - L^T) / 2` (antisymmetric part of L).
+        Einv2 : sympy.Expr
+            Second invariant of strain rate :math:`\\sqrt{E_{ij} E_{ij} / 2}`.
         """
 
         def __init__(inner_self, _owning_solver):
@@ -72,6 +94,7 @@ class SolverBaseClass(uw_object):
 
         @property
         def u(inner_self):
+            """Primary unknown variable (MeshVariable) being solved for."""
             return inner_self._u
 
         @u.setter
@@ -93,6 +116,7 @@ class SolverBaseClass(uw_object):
 
         @property
         def DuDt(inner_self):
+            """Time derivative manager for the unknown variable (advection-diffusion)."""
             return inner_self._DuDt
 
         @DuDt.setter
@@ -103,6 +127,7 @@ class SolverBaseClass(uw_object):
 
         @property
         def DFDt(inner_self):
+            """Flux time derivative manager (viscoelastic problems)."""
             return inner_self._DFDt
 
         @DFDt.setter
@@ -113,22 +138,27 @@ class SolverBaseClass(uw_object):
 
         @property
         def E(inner_self):
+            """Strain rate tensor: symmetric part of velocity gradient L."""
             return inner_self._E
 
         @property
         def L(inner_self):
+            """Velocity gradient tensor: :math:`L_{ij} = \\partial u_i / \\partial x_j`."""
             return inner_self._L
 
         @property
         def W(inner_self):
+            """Vorticity tensor: antisymmetric part of velocity gradient L."""
             return inner_self._W
 
         @property
         def Einv2(inner_self):
+            """Second invariant of strain rate tensor."""
             return inner_self._Einv2
 
         @property
         def CoordinateSystem(inner_self):
+            """Coordinate system of the underlying mesh."""
             return inner_self._owning_solver.mesh.CoordinateSystem
 
     def _object_viewer(self):
@@ -163,6 +193,196 @@ class SolverBaseClass(uw_object):
 
         return
 
+    def get_snes_diagnostics(self):
+        """
+        Extract comprehensive SNES convergence diagnostics with string representations.
+
+        Returns:
+        --------
+        dict
+            Comprehensive convergence diagnostics including:
+            - converged: bool - Whether solver converged
+            - diverged: bool - Whether solver diverged
+            - convergence_reason: int - Numerical convergence reason
+            - convergence_reason_string: str - Human-readable convergence reason
+            - snes_iterations: int - Number of SNES iterations
+            - linear_iterations: int - Total number of linear iterations
+            - zero_iterations: bool - Whether SNES took zero iterations
+            - tolerances: dict - SNES tolerance settings
+        """
+
+        if not hasattr(self, 'snes') or self.snes is None:
+            return {
+                'error': 'SNES not initialized - call solve() first',
+                'snes_available': False
+            }
+
+        # Get basic convergence info
+        converged_reason = self.snes.getConvergedReason()
+        snes_iterations = self.snes.getIterationNumber()
+        linear_iterations = self.snes.getLinearSolveIterations()
+        rtol, atol, stol, maxit = self.snes.getTolerances()
+
+        # Determine convergence status
+        converged = converged_reason > 0
+        diverged = converged_reason < 0
+
+        # Map convergence reasons to descriptive strings (PETSc documentation)
+        convergence_reason_map = {
+            # Positive reasons = converged
+            1: "CONVERGED_FNORM_ABS - ||F|| < atol",
+            2: "CONVERGED_FNORM_RELATIVE - ||F|| < rtol*||F_initial||",
+            3: "CONVERGED_SNORM_RELATIVE - ||x|| < stol",
+            4: "CONVERGED_ITS - Maximum iterations reached",
+
+            # Zero = still iterating (shouldn't see after solve)
+            0: "ITERATING - Still iterating (unexpected after solve)",
+
+            # Negative reasons = diverged
+            -1: "DIVERGED_FUNCTION_DOMAIN - Function domain error",
+            -2: "DIVERGED_FUNCTION_COUNT - Too many function evaluations",
+            -3: "DIVERGED_LINEAR_SOLVE - Linear solver failed",
+            -4: "DIVERGED_FNORM_NAN - ||F|| is Not-a-Number",
+            -5: "DIVERGED_MAX_IT - Maximum iterations exceeded",
+            -6: "DIVERGED_LINE_SEARCH - Line search failed",
+            -7: "DIVERGED_INNER - Inner solve failed",
+            -8: "DIVERGED_LOCAL_MIN - Local minimum reached",
+            -9: "DIVERGED_DTOL - ||F|| increased by divtol",
+            -10: "DIVERGED_JACOBIAN_DOMAIN - Jacobian calculation failed",
+            -11: "DIVERGED_TR_DELTA - Trust region delta too small",
+        }
+
+        convergence_reason_string = convergence_reason_map.get(
+            converged_reason,
+            f"UNKNOWN_CONVERGENCE_REASON_{converged_reason}"
+        )
+
+        return {
+            'snes_available': True,
+            'converged': converged,
+            'diverged': diverged,
+            'convergence_reason': converged_reason,
+            'convergence_reason_string': convergence_reason_string,
+            'snes_iterations': snes_iterations,
+            'linear_iterations': linear_iterations,
+            'zero_iterations': snes_iterations == 0,
+            'linear_solver_failed': converged_reason == -3,
+            'nan_residual': converged_reason == -4,
+            'tolerances': {
+                'relative_tolerance': rtol,
+                'absolute_tolerance': atol,
+                'step_tolerance': stol,
+                'max_iterations': maxit
+            }
+        }
+
+    def check_snes_convergence(self, raise_on_divergence=True, print_diagnostics=False):
+        """
+        Check SNES convergence and optionally raise exceptions or print diagnostics.
+
+        Parameters:
+        -----------
+        raise_on_divergence : bool
+            Whether to raise an exception if solver diverged
+        print_diagnostics : bool
+            Whether to print diagnostic information
+
+        Returns:
+        --------
+        dict
+            SNES diagnostics
+
+        Raises:
+        -------
+        RuntimeError
+            If solver diverged and raise_on_divergence=True
+        """
+
+        diagnostics = self.get_snes_diagnostics()
+
+        if not diagnostics.get('snes_available', False):
+            if raise_on_divergence:
+                raise RuntimeError(diagnostics.get('error', 'SNES diagnostics not available'))
+            return diagnostics
+
+        if print_diagnostics:
+            print(f"\n=== SNES DIAGNOSTICS ===")
+            print(f"Status: {'✓ CONVERGED' if diagnostics['converged'] else '✗ DIVERGED'}")
+            print(f"Reason: {diagnostics['convergence_reason_string']}")
+            print(f"Iterations: {diagnostics['snes_iterations']} SNES, {diagnostics['linear_iterations']} linear")
+
+            tol = diagnostics['tolerances']
+            print(f"Tolerances: rtol={tol['relative_tolerance']:.1e}, "
+                  f"atol={tol['absolute_tolerance']:.1e}")
+
+            # Issue-specific warnings
+            if diagnostics['zero_iterations']:
+                print(f"⚠️  WARNING: Zero SNES iterations!")
+                print(f"   Possible scaling issues - consider geological scaling")
+
+            if diagnostics['linear_solver_failed']:
+                print(f"⚠️  LINEAR SOLVER FAILURE!")
+                print(f"   Often caused by poor matrix conditioning")
+
+        # Raise exception if requested and solver diverged
+        if diagnostics['diverged'] and raise_on_divergence:
+            error_msg = f"SNES solver diverged: {diagnostics['convergence_reason_string']}\n"
+            error_msg += f"Iterations: {diagnostics['snes_iterations']} SNES, {diagnostics['linear_iterations']} linear"
+
+            if diagnostics['zero_iterations']:
+                error_msg += "\nZERO ITERATIONS: Scaling or tolerance issues likely"
+                error_msg += "\nSUGGESTION: Try geological scaling"
+
+            if diagnostics['linear_solver_failed']:
+                error_msg += "\nLINEAR SOLVER FAILURE: Matrix conditioning problems"
+                error_msg += "\nSUGGESTION: Check scaling or solver options"
+
+            raise RuntimeError(error_msg)
+
+        return diagnostics
+
+    def solve_with_diagnostics(self,
+                              check_convergence=True,
+                              raise_on_divergence=False,
+                              print_diagnostics=False,
+                              **solve_kwargs):
+        """
+        Solve with automatic SNES convergence checking and diagnostics.
+
+        Parameters:
+        -----------
+        check_convergence : bool
+            Whether to check convergence after solving
+        raise_on_divergence : bool
+            Whether to raise exception on divergence
+        print_diagnostics : bool
+            Whether to print diagnostic information
+        **solve_kwargs
+            Additional arguments passed to solve()
+
+        Returns:
+        --------
+        dict or None
+            SNES diagnostics if check_convergence=True, None otherwise
+
+        Raises:
+        -------
+        RuntimeError
+            If solver diverged and raise_on_divergence=True
+        """
+
+        # Call the original solve method
+        self.solve(**solve_kwargs)
+
+        # Check convergence if requested
+        if check_convergence:
+            return self.check_snes_convergence(
+                raise_on_divergence=raise_on_divergence,
+                print_diagnostics=print_diagnostics
+            )
+
+        return None
+
     @timing.routine_timer_decorator
     def _build(self,
                     verbose: bool = False,
@@ -191,8 +411,14 @@ class SolverBaseClass(uw_object):
                 bc = (0,)*self.Unknowns.u.shape[1]
                 self.add_natural_bc(bc, "Null_Boundary")
 
+        if verbose:
+            uw.pprint("Build pointwise functions")
         self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
+        if verbose:
+            uw.pprint("Set up spatial discretisation")
         self._setup_discretisation(verbose)
+        if verbose:
+            uw.pprint("Setup solver")
         self._setup_solver(verbose)
 
         self.is_setup = True
@@ -237,18 +463,63 @@ class SolverBaseClass(uw_object):
 
         self.is_setup = False
         import numpy as np
+        import underworld3 as uw
 
         # process conds and error check
         if isinstance(conds, (tuple, list)):
-            # remove all None for sympy.oo
-            conds = [sympy.oo if x is None else x for x in conds]
+            # remove all None for sympy.oo, and handle UWQuantity/Pint Quantity objects
+            processed_conds = []
+            for x in conds:
+                if x is None:
+                    processed_conds.append(sympy.oo)
+                elif isinstance(x, uw.function.quantities.UWQuantity):
+                    # Convert UWQuantity to SI base units (dimensionless number)
+                    if hasattr(x, '_pint_qty'):
+                        # Use Pint to convert to base units (m, s, kg, etc.)
+                        base_qty = x._pint_qty.to_base_units()
+                        processed_conds.append(base_qty.magnitude)
+                    else:
+                        # Fallback: use the value as-is
+                        processed_conds.append(x.value)
+                elif hasattr(x, 'magnitude') and hasattr(x, 'units'):
+                    # Direct Pint Quantity (from 300 * uw.units("K"))
+                    import pint
+                    if isinstance(x, pint.Quantity):
+                        base_qty = x.to_base_units()
+                        processed_conds.append(base_qty.magnitude)
+                    else:
+                        processed_conds.append(x)
+                else:
+                    processed_conds.append(x)
+            conds = processed_conds
         elif isinstance(conds, float):
             conds = (conds,)
+        elif isinstance(conds, int):
+            conds = (conds,)
+        elif isinstance(conds, uw.function.quantities.UWQuantity):
+            # Single UWQuantity value
+            if hasattr(conds, '_pint_qty'):
+                # Use Pint to convert to base units
+                base_qty = conds._pint_qty.to_base_units()
+                conds = (base_qty.magnitude,)
+            else:
+                # Fallback: use the value as-is
+                conds = (conds.value,)
+        elif hasattr(conds, 'magnitude') and hasattr(conds, 'units'):
+            # Single Pint Quantity (from 300 * uw.units("K"))
+            import pint
+            if isinstance(conds, pint.Quantity):
+                base_qty = conds.to_base_units()
+                conds = (base_qty.magnitude,)
+            else:
+                raise ValueError(f"Unknown quantity type: {type(conds)}")
         elif isinstance(conds, sympy.Matrix):
             conds = conds.T
         else:
             raise ValueError("Unsupported BC conds: \n" +
                   "array_like,   i.e. conds = [None, 5, 1.2]\n" +
+                  "UWQuantity,   i.e. conds = uw.quantity(10, 'metre')\n" +
+                  "Pint Quantity, i.e. conds = 10*uw.units('metre')\n" +
                   "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])\n")
 
         if isinstance(components, (tuple, list, int)):
@@ -270,6 +541,54 @@ class SolverBaseClass(uw_object):
         else:
             raise("Unsupported BC 'components' argument")
 
+        # ======================================================================
+        # Apply non-dimensional scaling to BC values if ND is enabled
+        # IMPORTANT: Only scale numeric values (floats, UWQuantity), NOT symbolic
+        # expressions. Symbolic expressions (like Gamma_N, v_soln.sym) go through
+        # the standard unwrap() pipeline during JIT compilation.
+        # ======================================================================
+        if uw.is_nondimensional_scaling_active():
+            # Get the field variable for this f_id
+            field_var = None
+            if f_id == 0:
+                field_var = self.Unknowns.u
+            elif f_id == 1 and hasattr(self.Unknowns, 'p'):
+                field_var = self.Unknowns.p
+            else:
+                # For other field IDs, try to get from Unknowns (future-proofing)
+                pass
+
+            # If we have a field variable with a scaling coefficient, scale numeric BCs
+            if field_var is not None and hasattr(field_var, 'scaling_coefficient'):
+                scale = field_var.scaling_coefficient
+                if scale != 1.0 and scale != 0.0:
+                    # Scale ONLY numeric values: dimensional → ND by dividing by scale
+                    # This converts e.g. T=1000K to T*=1000/1000=1.0 (ND)
+                    # Symbolic expressions are left unchanged - they go through unwrap()
+                    def is_numeric_only(val):
+                        """Check if value is a pure number (no symbols)."""
+                        if val == sympy.oo or val == -sympy.oo:
+                            return False  # Don't scale infinity
+                        if isinstance(val, (int, float)):
+                            return True
+                        if isinstance(val, sympy.Basic):
+                            # Check if it has any free symbols (i.e., is it symbolic?)
+                            # Pure numbers like sympy.Float(1.0) have no free_symbols
+                            return len(val.free_symbols) == 0
+                        return False
+
+                    scaled_conds = []
+                    for val in conds:
+                        if val == sympy.oo or val == -sympy.oo:
+                            # Don't scale infinity (unconstrained components)
+                            scaled_conds.append(val)
+                        elif is_numeric_only(val):
+                            # Scale only pure numeric values
+                            scaled_conds.append(val / scale)
+                        else:
+                            # Symbolic expression - leave unchanged, will go through unwrap()
+                            scaled_conds.append(val)
+                    conds = scaled_conds
 
         sympy_fn = sympy.Matrix(conds).as_immutable()
 
@@ -286,7 +605,42 @@ class SolverBaseClass(uw_object):
     @timing.routine_timer_decorator
     def add_essential_bc(self, conds, boundary, components=None):
         """
-        see add_condtion() docstring
+        Add an essential (Dirichlet) boundary condition.
+
+        Alias for :meth:`add_dirichlet_bc`. Essential BCs constrain the
+        solution to specified values at boundary nodes.
+
+        Parameters
+        ----------
+        conds : array-like, float, or sympy.Matrix
+            Boundary condition values. Use ``None`` or ``sympy.oo`` for
+            unconstrained components.
+        boundary : str
+            Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+            **Case-sensitive**: must match mesh boundary names exactly.
+        components : array-like or None, optional
+            Deprecated. Use ``None`` in ``conds`` for unconstrained components.
+
+        Examples
+        --------
+        >>> # Scalar field: fix temperature at boundary
+        >>> diffusion.add_essential_bc(300.0, "Top")
+
+        >>> # Vector field: fix both velocity components
+        >>> stokes.add_essential_bc([0.0, 0.0], "Bottom")
+
+        >>> # Vector field: fix x-component only, leave y free
+        >>> stokes.add_essential_bc([0.0, None], "Left")
+
+        >>> # Symbolic expression as boundary condition
+        >>> import sympy
+        >>> x, y = stokes.mesh.X
+        >>> stokes.add_essential_bc([sympy.sin(x), 0.0], "Top")
+
+        See Also
+        --------
+        add_dirichlet_bc : Equivalent method (preferred name).
+        add_natural_bc : For flux/traction boundary conditions.
         """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
         return
@@ -294,14 +648,112 @@ class SolverBaseClass(uw_object):
     @timing.routine_timer_decorator
     def add_natural_bc(self, conds, boundary, components=None):
         """
-        see add_condtion() docstring
+        Add a natural (Neumann) boundary condition.
+
+        Natural BCs specify flux or traction at boundaries. These are
+        incorporated as surface integrals in the weak form rather than
+        direct constraints on the solution.
+
+        Parameters
+        ----------
+        conds : array-like, float, or sympy.Matrix
+            Boundary condition values representing flux (scalar problems)
+            or traction (vector problems).
+        boundary : str
+            Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+            **Case-sensitive**: must match mesh boundary names exactly.
+        components : array-like or None, optional
+            Deprecated. Use ``None`` in ``conds`` for unconstrained components.
+
+        Examples
+        --------
+        >>> # Scalar: specify heat flux at boundary (insulated if 0)
+        >>> diffusion.add_natural_bc(0.0, "Left")  # Insulated boundary
+
+        >>> # Scalar: specify inward heat flux
+        >>> diffusion.add_natural_bc(100.0, "Bottom")
+
+        >>> # Vector: apply traction to boundary
+        >>> normal = stokes.mesh.CoordinateSystem.unit_e_0
+        >>> stokes.add_natural_bc(pressure * normal, "Right")
+
+        >>> # Free-slip on arbitrary curved surface (spherical models)
+        >>> # Uses penalty method with surface normal from mesh.Gamma
+        >>> import sympy
+        >>> penalty = 1e5
+        >>> Gamma = mesh.Gamma  # Surface normal vector field
+        >>> Gamma_N = Gamma / sympy.sqrt(Gamma.dot(Gamma))  # Normalize
+        >>> # Penalize normal velocity component, allow tangential slip
+        >>> stokes.add_natural_bc(penalty * Gamma_N.dot(v.sym) * Gamma_N, "Upper")
+
+        Notes
+        -----
+        For Stokes problems, natural BCs represent tractions
+        :math:`\\mathbf{t} = \\boldsymbol{\\sigma} \\cdot \\mathbf{n}`.
+
+        The free-slip penalty method is particularly useful for spherical
+        geometries where the normal direction varies along the boundary.
+        The penalty term enforces :math:`\\mathbf{v} \\cdot \\mathbf{n} = 0`
+        weakly while allowing tangential flow.
+
+        See Also
+        --------
+        add_dirichlet_bc : For fixed-value boundary conditions.
         """
         self.add_condition(0, 'neumann', conds, boundary, components)
 
     @timing.routine_timer_decorator
     def add_dirichlet_bc(self, conds, boundary, components=None):
         """
-        see add_condtion() docstring
+        Add a Dirichlet (essential) boundary condition.
+
+        Dirichlet BCs fix the solution value at boundary nodes. This is
+        the most common type of boundary condition for prescribing known
+        values (e.g., fixed temperature, no-slip walls).
+
+        Parameters
+        ----------
+        conds : array-like, float, or sympy.Matrix
+            Boundary condition values. Use ``None`` or ``sympy.oo`` for
+            unconstrained components (partial Dirichlet conditions).
+        boundary : str
+            Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
+            **Case-sensitive**: must match mesh boundary names exactly.
+        components : array-like or None, optional
+            Deprecated. Use ``None`` in ``conds`` for unconstrained components.
+
+        Examples
+        --------
+        >>> # Scalar problem: fix temperature at boundaries
+        >>> diffusion.add_dirichlet_bc(300.0, "Top")
+        >>> diffusion.add_dirichlet_bc(500.0, "Bottom")
+
+        >>> # Vector problem: no-slip walls (zero velocity)
+        >>> stokes.add_dirichlet_bc([0.0, 0.0], "Top")
+        >>> stokes.add_dirichlet_bc([0.0, 0.0], "Bottom")
+
+        >>> # Free-slip: fix normal component, leave tangential free
+        >>> stokes.add_dirichlet_bc([0.0, None], "Left")   # x=0 at left
+        >>> stokes.add_dirichlet_bc([None, 0.0], "Bottom") # y=0 at bottom
+
+        >>> # Lid-driven cavity: moving top boundary
+        >>> stokes.add_dirichlet_bc([1.0, 0.0], "Top")
+
+        >>> # Symbolic boundary condition
+        >>> x, y = mesh.X
+        >>> T_boundary = 300 + 100 * sympy.sin(x * sympy.pi)
+        >>> diffusion.add_dirichlet_bc(T_boundary, "Top")
+
+        Raises
+        ------
+        KeyError
+            If ``boundary`` name doesn't match any mesh boundary label.
+            Check ``mesh.boundaries.keys()`` for available boundary names.
+
+        See Also
+        --------
+        add_essential_bc : Alias for this method.
+        add_natural_bc : For flux/traction boundary conditions.
         """
         self.add_condition(0, 'dirichlet', conds, boundary, components)
 
@@ -315,6 +767,13 @@ class SolverBaseClass(uw_object):
 
     @property
     def u(self):
+        """
+        Primary unknown variable (MeshVariable) being solved for.
+
+        For scalar problems (Poisson, advection-diffusion), this is typically a
+        scalar field like temperature. For vector problems (Stokes), this is
+        typically velocity.
+        """
         return self.Unknowns.u
 
     @u.setter
@@ -324,6 +783,12 @@ class SolverBaseClass(uw_object):
 
     @property
     def DuDt(self):
+        """
+        Time derivative manager for advection-diffusion problems.
+
+        This is a :class:`~underworld3.systems.ddt.SemiLagrangian_DDt` object
+        that handles material derivatives using semi-Lagrangian advection.
+        """
         return self.Unknowns.DuDt
 
     @DuDt.setter
@@ -333,6 +798,12 @@ class SolverBaseClass(uw_object):
 
     @property
     def DFDt(self):
+        """
+        Flux time derivative manager for viscoelastic problems.
+
+        This is a :class:`~underworld3.systems.ddt.SemiLagrangian_DDt` object
+        that handles time evolution of stress/flux fields.
+        """
         return self.Unknowns.DFDt
 
     @DFDt.setter
@@ -343,6 +814,17 @@ class SolverBaseClass(uw_object):
 
     @property
     def constitutive_model(self):
+        """
+        Constitutive model defining the material behavior.
+
+        The constitutive model provides the stress-strain relationship
+        (for Stokes) or diffusivity (for advection-diffusion). Can be set
+        as either a class or an instance.
+
+        See Also
+        --------
+        underworld3.constitutive_models : Available constitutive models.
+        """
         return self._constitutive_model
 
     @constitutive_model.setter
@@ -354,12 +836,16 @@ class SolverBaseClass(uw_object):
             self._constitutive_model.Unknowns = self.Unknowns
             self._constitutive_model._solver_is_setup = False
             self._constitutive_model.order = self._order
+            # Establish bidirectional reference so parameter changes can propagate to solver
+            self._constitutive_model.Parameters._solver = self
 
 
         ### checking if it's a class
         elif type(model_or_class) == type(uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model_or_class(self.Unknowns)
             self._constitutive_model.order = self._order
+            # Establish bidirectional reference so parameter changes can propagate to solver
+            self._constitutive_model.Parameters._solver = self
 
 
 
@@ -515,21 +1001,68 @@ class SolverBaseClass(uw_object):
 
 class SNES_Scalar(SolverBaseClass):
     r"""
-    # Underworld / PETSc General Scalar Equation Solver
+    General scalar equation solver using PETSc SNES.
 
-    The `SNES_Scalar` solver class provides functionality for solving the scalar conservation problem in the unknown $u$:
+    Solves the scalar conservation problem for unknown :math:`u`:
 
-    $$
-    \nabla \cdot \color{Blue}{\mathrm{F}(u, \nabla u, \dot{u}, \nabla\dot{u})} -
-    \color{Green}{\mathrm{f} (u, \nabla u, \dot{u}, \nabla\dot{u})} = 0
-    $$
+    .. math::
 
-    where $\mathrm{f}$ is a source term for $u$, $\mathrm{F}$ is a flux term that relates the rate of change of $u$ to the gradients $\nabla u$, and $\dot{\mathrm{u}}$ is the Lagrangian time-derivative of $u$.
+        \nabla \cdot \mathbf{F}(u, \nabla u, \dot{u}, \nabla\dot{u})
+        - f(u, \nabla u, \dot{u}, \nabla\dot{u}) = 0
 
-    $u$ is a scalar `underworld` `meshVariable` and $\mathrm{f}$, $\mathrm{F}$ are arbitrary sympy expressions of the coodinate variables of the mesh.
+    where :math:`f` is a source term, :math:`\mathbf{F}` is a flux term relating
+    :math:`u` to its gradients :math:`\nabla u`, and :math:`\dot{u}` is the
+    Lagrangian time derivative.
 
-    This class is used as a base layer for building solvers which translate from the common
-    physical conservation laws into this general mathematical form.
+    The unknown :math:`u` is a scalar mesh variable, and :math:`f`, :math:`\mathbf{F}`
+    are arbitrary sympy expressions of mesh coordinate variables.
+
+    This class is the base layer for building solvers that translate physical
+    conservation laws into this general mathematical form.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Pre-existing scalar field variable. If None, creates a new variable.
+    degree : int, default=2
+        Polynomial degree for finite element discretization.
+    verbose : bool, default=False
+        Enable verbose solver output (monitors convergence).
+    DuDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for the unknown (advection-diffusion problems).
+    DFDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for flux (viscoelastic problems).
+
+    Attributes
+    ----------
+    u : MeshVariable
+        The scalar unknown being solved for.
+    F0 : UWexpression
+        Source/force term :math:`f`.
+    F1 : UWexpression
+        Flux term :math:`\mathbf{F}`.
+    constitutive_model : Constitutive_Model
+        Material model defining flux-gradient relationship.
+    tolerance : float
+        Solver convergence tolerance.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(16, 16))
+    >>> poisson = uw.systems.Poisson(mesh)
+    >>> poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    >>> poisson.constitutive_model.Parameters.diffusivity = 1.0
+    >>> poisson.f = 1.0  # Source term
+    >>> poisson.add_dirichlet_bc(0.0, "Bottom")
+    >>> poisson.solve()
+
+    See Also
+    --------
+    SNES_Vector : For vector-valued equations.
+    SNES_Stokes_SaddlePt : For coupled velocity-pressure (Stokes) problems.
     """
 
     @timing.routine_timer_decorator
@@ -593,6 +1126,10 @@ class SNES_Scalar(SolverBaseClass):
 
 
         self.essential_bcs = []
+        # TODO(BUG): add_natural_bc() causes PETSc error 73 ("Object in wrong state")
+        # when used with this solver. The Stokes solver's natural BCs work correctly,
+        # suggesting a setup/ordering issue specific to scalar Poisson.
+        # See planning file: underworld.md (Bugs section, 2026-01-19)
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
@@ -610,6 +1147,24 @@ class SNES_Scalar(SolverBaseClass):
 
     @property
     def tolerance(self):
+        """
+        Solver convergence tolerance for SNES and KSP.
+
+        Setting this value automatically configures related PETSc tolerances:
+        - ``snes_rtol``: Set to ``tolerance``
+        - ``ksp_rtol``: Set to ``tolerance * 0.1``
+        - ``ksp_atol``: Set to ``tolerance * 1e-6``
+
+        Returns
+        -------
+        float
+            Current solver tolerance.
+
+        Examples
+        --------
+        >>> solver.tolerance = 1e-6  # Tighter convergence
+        >>> solver.solve()
+        """
         return self._tolerance
 
     @tolerance.setter
@@ -629,7 +1184,7 @@ class SNES_Scalar(SolverBaseClass):
         import numpy as np
 
         xxh = xxhash.xxh64()
-        xxh.update(np.ascontiguousarray(mesh.data))
+        xxh.update(np.ascontiguousarray(mesh.X.coords))
         mesh_dm_coord_hash = xxh.intdigest()
 
         # if we already set up the dm and the coordinates in the mesh dm have not
@@ -798,8 +1353,8 @@ class SNES_Scalar(SolverBaseClass):
         # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(1).as_immutable()
-        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
+        f0  = sympy.Array(uw.function.expressions._unwrap_for_compilation(self.F0.sym, keep_constants=False, return_self=False)).reshape(1).as_immutable()
+        F1  = sympy.Array(uw.function.expressions._unwrap_for_compilation(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -973,14 +1528,54 @@ class SNES_Scalar(SolverBaseClass):
               debug:           bool=False,
               debug_name:      str=None ):
         """
-        Generates solution to constructed system.
+        Solve the system of equations.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u`
-            and `self.p` will be used.
+        Assembles and solves the discretized PDE system using PETSc's SNES
+        (Scalable Nonlinear Equations Solvers) framework. The solution is
+        stored in the solver's unknown variable(s).
+
+        Parameters
+        ----------
+        zero_init_guess : bool, default=True
+            If True, use zero as the initial guess. If False, use the current
+            values in the solution variable(s) as the initial guess, which can
+            improve convergence for time-stepping or continuation methods.
+        _force_setup : bool, default=False
+            Force rebuild of the solver even if already set up. Useful after
+            changing boundary conditions or constitutive parameters.
+        verbose : bool, default=False
+            Print solver progress and timing information.
+        debug : bool, default=False
+            Enable debug output including intermediate residuals.
+        debug_name : str, optional
+            Name prefix for debug output files.
+
+        Returns
+        -------
+        None
+            Solution is stored in ``self.u`` (and ``self.p`` for Stokes).
+
+        Examples
+        --------
+        >>> # Basic solve
+        >>> solver.solve()
+        >>> temperature_values = solver.u.array[:, 0, 0]
+
+        >>> # Time-stepping with previous solution as initial guess
+        >>> for step in range(n_steps):
+        ...     solver.solve(zero_init_guess=False)
+
+        >>> # Check convergence
+        >>> print(f"Converged: {solver.snes.getConvergedReason() > 0}")
+
+        Notes
+        -----
+        This is a **collective operation** - all MPI ranks must call it.
+        The solver automatically handles mesh variable synchronization.
+
+        See Also
+        --------
+        snes : Access to underlying PETSc SNES object for advanced control.
         """
 
         import petsc4py
@@ -994,8 +1589,8 @@ class SNES_Scalar(SolverBaseClass):
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            with self.mesh.access():
-                self.dm.localToGlobal(self.u.vec, gvec)
+            # with self.mesh.access():
+            self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.0
 
@@ -1020,11 +1615,18 @@ class SNES_Scalar(SolverBaseClass):
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        with self.mesh.access(self.u,):
-            self.dm.globalToLocal(gvec, lvec)
-            # add back boundaries.
-            ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-            self.u.vec.array[:] = lvec.array[:]
+        # with self.mesh.access(self.u,):
+        self.dm.globalToLocal(gvec, lvec)
+        # add back boundaries.
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+        self.u.vec.array[:] = lvec.array[:]
+        self.mesh._stale_lvec = True
+
+        # Invalidate cached data views - PETSc buffer may have changed
+        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
 
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
@@ -1070,7 +1672,7 @@ class SNES_Scalar(SolverBaseClass):
             display(Markdown("*Where:*"))
 
             for expr in exprs:
-                expr._object_viewer(description=False)
+                expr._object_viewer()
 
 
         display(
@@ -1099,25 +1701,68 @@ class SNES_Scalar(SolverBaseClass):
 
 class SNES_Vector(SolverBaseClass):
     r"""
-    # Underworld / PETSc General Vector Equation Solver
+    General vector equation solver using PETSc SNES.
 
-    The `SNES_Vector` solver class provides functionality for solving the vector conservation problem in the unknown $\mathbf{u}$:
+    Solves the vector conservation problem for unknown :math:`\mathbf{u}`:
 
-    $$
-    \nabla \cdot \color{Blue}{\mathbf{F}(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}u})} -
-    \color{Green}{\mathbf{f} (\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}u})} = 0
-    $$
+    .. math::
 
-    where $\mathbf{f}$ is a source term for $u$, $\mathbf{F}$ is a flux term that relates
-    the rate of change of $\mathbf{u}$ to the gradients $\nabla \mathbf{u}$, and $\dot{\mathbf{u}}$
-    is the Lagrangian time-derivative of $\mathbf{u}$.
+        \nabla \cdot \mathbf{F}(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}},
+        \nabla\dot{\mathbf{u}}) - \mathbf{f}(\mathbf{u}, \nabla \mathbf{u},
+        \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) = 0
 
-    $\mathbf{u}$ is a vector `underworld` `meshVariable` and $\mathbf{f}$, $\mathbf{F}$
-    are arbitrary sympy expressions of the coodinate variables of the mesh and may include other
-    `meshVariable` and `swarmVariable` objects.
+    where :math:`\mathbf{f}` is a source term, :math:`\mathbf{F}` is a flux term
+    relating :math:`\mathbf{u}` to its gradients :math:`\nabla \mathbf{u}`, and
+    :math:`\dot{\mathbf{u}}` is the Lagrangian time derivative.
 
-    This class is used as a base layer for building solvers which translate from the common
-    physical conservation laws into this general mathematical form.
+    The unknown :math:`\mathbf{u}` is a vector mesh variable, and :math:`\mathbf{f}`,
+    :math:`\mathbf{F}` are arbitrary sympy expressions that may include mesh
+    coordinates and other mesh/swarm variables.
+
+    This class is the base layer for building solvers that translate physical
+    conservation laws into this general mathematical form.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Pre-existing vector field variable. If None, creates a new variable.
+    degree : int, default=2
+        Polynomial degree for finite element discretization.
+    verbose : bool, default=False
+        Enable verbose solver output (monitors convergence).
+    DuDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for the unknown.
+    DFDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for flux.
+
+    Attributes
+    ----------
+    u : MeshVariable
+        The vector unknown being solved for.
+    F0 : UWexpression
+        Source/force term :math:`\mathbf{f}`.
+    F1 : UWexpression
+        Flux term :math:`\mathbf{F}`.
+    constitutive_model : Constitutive_Model
+        Material model defining flux-gradient relationship.
+    tolerance : float
+        Solver convergence tolerance.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(16, 16))
+    >>> # Vector projection solver
+    >>> proj = uw.systems.Vector_Projection(mesh)
+    >>> proj.uw_function = some_vector_expression
+    >>> proj.solve()
+
+    See Also
+    --------
+    SNES_Scalar : For scalar-valued equations.
+    SNES_Stokes_SaddlePt : For coupled velocity-pressure (Stokes) problems.
     """
 
     @timing.routine_timer_decorator
@@ -1208,7 +1853,21 @@ class SNES_Vector(SolverBaseClass):
 
     @property
     def tolerance(self):
+        """
+        Solver convergence tolerance for SNES and KSP.
+
+        Setting this value automatically configures related PETSc tolerances:
+        - ``snes_rtol``: Set to ``tolerance``
+        - ``ksp_rtol``: Set to ``tolerance * 0.1``
+        - ``ksp_atol``: Set to ``tolerance * 1e-6``
+
+        Returns
+        -------
+        float
+            Current solver tolerance.
+        """
         return self._tolerance
+
     @tolerance.setter
     def tolerance(self, value):
         self._tolerance = value
@@ -1230,7 +1889,7 @@ class SNES_Vector(SolverBaseClass):
         import numpy as np
 
         xxh = xxhash.xxh64()
-        xxh.update(np.ascontiguousarray(mesh.data))
+        xxh.update(np.ascontiguousarray(mesh.X.coords))
         mesh_dm_coord_hash = xxh.intdigest()
 
         # if we already set up the dm and the coordinates in the mesh dm have not
@@ -1400,8 +2059,8 @@ class SNES_Vector(SolverBaseClass):
         # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
 
-        f0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
-        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim,dim).as_immutable()
+        f0  = sympy.Array(uw.function.expressions._unwrap_for_compilation(self.F0.sym, keep_constants=False, return_self=False)).reshape(dim).as_immutable()
+        F1  = sympy.Array(uw.function.expressions._unwrap_for_compilation(self.F1.sym, keep_constants=False, return_self=False)).reshape(dim,dim).as_immutable()
 
 
         self._u_f0 = f0
@@ -1633,14 +2292,37 @@ class SNES_Vector(SolverBaseClass):
               debug_name=None,
                ):
         """
-        Generates solution to constructed system.
+        Solve the vector field system of equations.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u`
-            and `self.p` will be used.
+        Assembles and solves the discretized PDE system for vector unknowns
+        (e.g., velocity in projection problems) using PETSc's SNES framework.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, default=True
+            If True, use zero as the initial guess. If False, use the current
+            values in ``self.u`` as the initial guess.
+        _force_setup : bool, default=False
+            Force rebuild of the solver even if already set up.
+        verbose : bool, default=False
+            Print solver progress and timing information.
+        debug : bool, default=False
+            Enable debug output.
+        debug_name : str, optional
+            Name prefix for debug output files.
+
+        Returns
+        -------
+        None
+            Solution is stored in ``self.u``.
+
+        Notes
+        -----
+        This is a **collective operation** - all MPI ranks must call it.
+
+        See Also
+        --------
+        u : The solution vector field variable.
         """
 
         if _force_setup or not self.constitutive_model._solver_is_setup:
@@ -1666,24 +2348,29 @@ class SNES_Vector(SolverBaseClass):
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            with self.mesh.access():
-                self.dm.localToGlobal(self.u.vec, gvec)
+            # with self.mesh.access():
+            self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.
 
         # Set quadrature to consistent value given by mesh quadrature.
         # self.mesh._align_quadratures()
 
-        # Call `createDS()` on aux dm. This is necessary after the
-        # quadratures are set above, as it generates the tablatures
-        # from the quadratures (among other things no doubt).
-        # TODO: What are the implications of calling this every solve.
-
-        self.mesh.dm.clearDS()
-        self.mesh.dm.createDS()
-
-        for cdm in self.mesh.dm_hierarchy:
-            self.mesh.dm.copyDisc(cdm)
+        # COMMENTED OUT: These calls are NOT in SNES_Scalar (Poisson) or Stokes
+        # They appear to destroy field registrations, causing "Invalid field number" errors
+        # when variables are created after other solvers have run.
+        # Removing to match working Poisson pattern.
+        #
+        # # Call `createDS()` on aux dm. This is necessary after the
+        # # quadratures are set above, as it generates the tablatures
+        # # from the quadratures (among other things no doubt).
+        # # TODO: What are the implications of calling this every solve.
+        #
+        # self.mesh.dm.clearDS()
+        # self.mesh.dm.createDS()
+        #
+        # for cdm in self.mesh.dm_hierarchy:
+        #     self.mesh.dm.copyDisc(cdm)
 
         self.mesh.update_lvec()
         cdef DM dm = self.dm
@@ -1699,18 +2386,26 @@ class SNES_Vector(SolverBaseClass):
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        with self.mesh.access(self.u):
-            self.dm.globalToLocal(gvec, lvec)
-            if verbose:
-                print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
+        # with self.mesh.access(self.u):
 
-            # add back boundaries.
-            # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
-            # derived from the system-dm (as opposed to the var.vec local vector), else
-            # failures can occur.
+        self.dm.globalToLocal(gvec, lvec)
+        if verbose:
+            print(f"{uw.mpi.rank}: Copy solution / bcs to user variables", flush=True)
 
-            ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
-            self.u.vec.array[:] = lvec.array[:]
+        # add back boundaries.
+        # Note that `DMPlexSNESComputeBoundaryFEM()` seems to need to use an lvec
+        # derived from the system-dm (as opposed to the var.vec local vector), else
+        # failures can occur.
+
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+        self.u.vec.array[:] = lvec.array[:]
+        self.mesh._stale_lvec = True
+
+        # Invalidate cached data views - PETSc buffer may have changed
+        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
 
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
@@ -1755,7 +2450,7 @@ class SNES_Vector(SolverBaseClass):
             display(Markdown("*Where:*"))
 
             for expr in exprs:
-                expr._object_viewer(description=False)
+                expr._object_viewer()
 
         display(
             Markdown(fr"# Boundary Conditions"),)
@@ -1776,31 +2471,92 @@ class SNES_Vector(SolverBaseClass):
 
 class SNES_Stokes_SaddlePt(SolverBaseClass):
     r"""
-    # Underworld / PETSc General Saddle Point Equation Solver
+    Saddle point equation solver for constrained problems using PETSc SNES.
 
-    The `SNES_Stokes_SaddlePt` solver class provides functionality for solving the *constrained* vector
-    conservation problem in the unknown $\mathbf{u}$ with the constraint parameter $\mathrm{p}$:
+    Solves the constrained vector conservation problem for unknown :math:`\mathbf{u}`
+    with constraint parameter :math:`p`:
 
-    $$
-    \nabla \cdot \color{Blue}{\mathbf{F}(\mathbf{u}, \mathrm{p}, \nabla \mathbf{u}, \nabla \mathbf{p}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} -
-    \color{Green}{\mathbf{f} (\mathbf{u}, \mathrm{p}, \nabla \mathbf{u}, \nabla \mathbf{p}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} = 0
-    $$
+    .. math::
 
-    $$
-    \mathrm{f}_p {(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathrm{u}}, \nabla\dot{\mathbf{u}})} = 0
-    $$
+        \nabla \cdot \mathbf{F}(\mathbf{u}, p, \nabla \mathbf{u}, \nabla p,
+        \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) - \mathbf{f}(\mathbf{u}, p,
+        \nabla \mathbf{u}, \nabla p, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) = 0
 
-    where $\mathbf{f}$ is a source term for $u$, $\mathbf{F}$ is a flux term that relates
-    the rate of change of $\mathbf{u}$ to the gradients $\nabla \mathbf{u}$, and $\dot{\mathbf{u}}$
-    is the Lagrangian time-derivative of $\mathbf{u}$. $\mathrm{f}_p$ is the expression of the constraints
-    on $\mathbf{u}$ enforced by the parameter $\mathrm{p}$.
+    .. math::
 
-    $\mathbf{u}$ is a vector `underworld` `meshVariable` and $\mathbf{f}$, $\mathbf{F}$ and $\mathrm{F}_p$
-    are arbitrary sympy expressions of the coodinate variables of the mesh and may include other
-    `meshVariable` and `swarmVariable` objects. $\mathrm{p}$ is a scalar `underworld` `meshVariable`.
+        f_p(\mathbf{u}, \nabla \mathbf{u}, \dot{\mathbf{u}}, \nabla\dot{\mathbf{u}}) = 0
 
-    This class is used as a base layer for building solvers which translate from the common
-    physical conservation laws into this general mathematical form.
+    where :math:`\mathbf{f}` is a source term, :math:`\mathbf{F}` is a flux term
+    relating :math:`\mathbf{u}` to its gradients, :math:`\dot{\mathbf{u}}` is
+    the Lagrangian time derivative, and :math:`f_p` expresses the constraints
+    on :math:`\mathbf{u}` enforced by parameter :math:`p`.
+
+    The unknown :math:`\mathbf{u}` is a vector mesh variable and :math:`p` is a
+    scalar mesh variable. The terms :math:`\mathbf{f}`, :math:`\mathbf{F}`, and
+    :math:`f_p` are arbitrary sympy expressions that may include mesh coordinates
+    and other mesh/swarm variables.
+
+    This class is the base layer for building solvers that translate physical
+    conservation laws into this general mathematical form.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The computational mesh.
+    velocityField : MeshVariable, optional
+        Pre-existing velocity field. If None, creates a new variable.
+    pressureField : MeshVariable, optional
+        Pre-existing pressure field. If None, creates a new variable.
+    degree : int, default=2
+        Polynomial degree for velocity (pressure is degree-1).
+    p_continuous : bool, default=True
+        Whether pressure field is continuous (True) or discontinuous (False).
+    verbose : bool, default=False
+        Enable verbose solver output.
+    DuDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for velocity (viscoelastic problems).
+    DFDt : SemiLagrangian or Lagrangian, optional
+        Time derivative handler for stress (viscoelastic problems).
+
+    Attributes
+    ----------
+    u : MeshVariable
+        Velocity field being solved for.
+    p : MeshVariable
+        Pressure (Lagrange multiplier) field.
+    F0 : UWexpression
+        Body force term :math:`\mathbf{f}`.
+    F1 : UWexpression
+        Stress/flux term :math:`\mathbf{F}`.
+    PF0 : UWexpression
+        Constraint term :math:`f_p` (typically incompressibility).
+    constitutive_model : Constitutive_Model
+        Viscous/viscoelastic material model.
+    tolerance : float
+        Solver convergence tolerance.
+    bodyforce : sympy.Matrix
+        Body force vector (e.g., gravity).
+    penalty : float
+        Penalty parameter for augmented Lagrangian methods.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(32, 32))
+    >>> stokes = uw.systems.Stokes(mesh)
+    >>> stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    >>> stokes.constitutive_model.Parameters.viscosity = 1.0
+    >>> stokes.bodyforce = sympy.Matrix([0, -1])  # Gravity
+    >>> stokes.add_dirichlet_bc([0.0, 0.0], "Bottom")
+    >>> stokes.add_dirichlet_bc([None, 0.0], "Top")
+    >>> stokes.solve()
+    >>> velocity = stokes.u.array[:, 0, :]
+    >>> pressure = stokes.p.array[:, 0, 0]
+
+    See Also
+    --------
+    SNES_Scalar : For scalar-valued equations.
+    SNES_Vector : For vector-valued equations without constraints.
     """
 
     class _Unknowns(SolverBaseClass._Unknowns):
@@ -2015,6 +2771,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def tolerance(self):
+        """
+        Solver convergence tolerance for the Stokes saddle-point system.
+
+        Setting this value automatically configures PETSc tolerances for the
+        coupled velocity-pressure solve using Schur complement fieldsplit:
+        - ``snes_rtol``: Set to ``tolerance``
+        - ``ksp_atol``: Set to ``tolerance * 1e-6``
+        - ``fieldsplit_pressure_ksp_rtol``: Set to ``tolerance * 0.1``
+        - ``fieldsplit_velocity_ksp_rtol``: Set to ``tolerance * 0.033``
+
+        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``).
+
+        Returns
+        -------
+        float
+            Current solver tolerance.
+
+        Examples
+        --------
+        >>> stokes.tolerance = 1e-6  # Tighter convergence
+        >>> stokes.solve()
+        """
         return self._tolerance
 
     @tolerance.setter
@@ -2031,6 +2809,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def strategy(self):
+        """
+        Solver strategy controlling preconditioner configuration.
+
+        Currently supports:
+        - ``"default"``: Standard Schur complement fieldsplit with GAMG
+        - ``"robust"``: (Reserved) More robust but slower configuration
+        - ``"fast"``: (Reserved) Faster but less robust configuration
+
+        Setting this property reconfigures the entire preconditioner stack.
+
+        Returns
+        -------
+        str
+            Current strategy name.
+        """
         return self._strategy
 
     @strategy.setter
@@ -2097,6 +2890,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def PF0(self):
+        """
+        Pressure constraint term (incompressibility and other constraints).
+
+        This is the :math:`\\mathbf{h}_0(p)` term in the saddle-point formulation,
+        typically representing the incompressibility constraint
+        :math:`\\nabla \\cdot \\mathbf{u} = 0`.
+
+        Returns
+        -------
+        UWexpression
+            Symbolic expression for the constraint term.
+
+        See Also
+        --------
+        F0 : Velocity force term.
+        F1 : Velocity flux/stress term.
+        """
         return self._PF0
 
     @PF0.setter
@@ -2107,6 +2917,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def p(self):
+        """
+        Pressure solution variable (MeshVariable).
+
+        The pressure field from the Stokes solve, typically a discontinuous
+        field one degree lower than velocity.
+
+        Returns
+        -------
+        MeshVariable
+            Pressure field variable.
+
+        See Also
+        --------
+        u : Velocity solution variable.
+        """
         return self.Unknowns.p
 
     @p.setter
@@ -2116,6 +2941,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @property
     def saddle_preconditioner(self):
+        """
+        Custom preconditioner for the pressure Schur complement.
+
+        A symbolic expression used to precondition the pressure solve.
+        If None (default), uses the mass matrix approximation.
+
+        Returns
+        -------
+        sympy expression or None
+            Custom preconditioner expression.
+        """
         return self._saddle_preconditioner
 
     @saddle_preconditioner.setter
@@ -2161,7 +2997,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             display(Markdown("*Where:*"))
 
             for expr in exprs:
-                expr._object_viewer(description=False)
+                expr._object_viewer()
 
         display(
             Markdown(fr"# Boundary Conditions"),)
@@ -2271,9 +3107,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## and do these one by one as required by PETSc. However, at the moment, this
         ## is working .. so be careful !!
 
-        F0  = sympy.Array(uw.function.expression.unwrap(self.F0.sym, keep_constants=False, return_self=False))
-        F1  = sympy.Array(uw.function.expression.unwrap(self.F1.sym, keep_constants=False, return_self=False))
-        PF0  = sympy.Array(uw.function.expression.unwrap(self.PF0.sym, keep_constants=False, return_self=False))
+        F0  = sympy.Array(uw.function.expressions._unwrap_for_compilation(self.F0.sym, keep_constants=False, return_self=False))
+        F1  = sympy.Array(uw.function.expressions._unwrap_for_compilation(self.F1.sym, keep_constants=False, return_self=False))
+        PF0  = sympy.Array(uw.function.expressions._unwrap_for_compilation(self.PF0.sym, keep_constants=False, return_self=False))
 
         # JIT compilation needs immutable, matrix input (not arrays)
         self._u_F0 = sympy.ImmutableDenseMatrix(F0)
@@ -2355,7 +3191,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if self.saddle_preconditioner is not None:
             self._pp_G0 = self.saddle_preconditioner
         else:
-            self._pp_G0 = sympy.simplify(1 / self.constitutive_model.viscosity)
+            self._pp_G0 = sympy.simplify(1 / self.constitutive_model.K)
 
         fns_jacobian.append(self._pp_G0)
 
@@ -2464,7 +3300,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         import numpy as np
 
         xxh = xxhash.xxh64()
-        xxh.update(np.ascontiguousarray(mesh.data))
+        xxh.update(np.ascontiguousarray(mesh.X.coords))
         mesh_dm_coord_hash = xxh.intdigest()
 
         # if we already set up the dm and the coordinates in the mesh dm have not
@@ -2779,14 +3615,65 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
               debug_name=None,
               _force_setup: bool =False, ):
         """
-        Generates solution to constructed system.
+        Solve the Stokes system for velocity and pressure.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u`
-            and `self.p` will be used.
+        Assembles and solves the coupled velocity-pressure system using a
+        saddle-point formulation. Handles nonlinear rheologies through
+        Newton or Picard iteration.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, default=True
+            If True, use zero as the initial guess. If False, use current
+            values in ``self.u`` (velocity) and ``self.p`` (pressure) as
+            initial guess. Using False can improve convergence for
+            time-stepping or parameter continuation.
+        picard : int, default=0
+            Number of Picard iterations before switching to Newton.
+            Picard iterations use a simplified Jacobian and can help
+            convergence for strongly nonlinear problems.
+        verbose : bool, default=False
+            Print solver progress and timing information.
+        debug : bool, default=False
+            Enable debug output including residual norms.
+        debug_name : str, optional
+            Name prefix for debug output files.
+        _force_setup : bool, default=False
+            Force rebuild of the solver even if already set up.
+
+        Returns
+        -------
+        None
+            Solution stored in ``self.u`` (velocity) and ``self.p`` (pressure).
+
+        Examples
+        --------
+        >>> # Basic Stokes solve
+        >>> stokes.solve()
+        >>> velocity = stokes.u.array[:, 0, :]
+        >>> pressure = stokes.p.array[:, 0, 0]
+
+        >>> # Nonlinear solve with Picard warmup
+        >>> stokes.solve(picard=3)
+
+        >>> # Time-stepping with previous solution
+        >>> for step in range(n_steps):
+        ...     # Update boundary conditions, material properties...
+        ...     stokes.solve(zero_init_guess=False)
+
+        Notes
+        -----
+        This is a **collective operation** - all MPI ranks must call it.
+
+        For nonlinear viscosity (e.g., power-law, viscoplastic), the solver
+        uses Newton iteration by default. The ``picard`` parameter can help
+        with initial convergence by using simpler Jacobian approximations.
+
+        See Also
+        --------
+        u : Velocity solution variable.
+        p : Pressure solution variable.
+        constitutive_model : Viscosity and stress definitions.
         """
 
         if _force_setup or not self.constitutive_model._solver_is_setup:
@@ -2816,12 +3703,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
 
-            with self.mesh.access():
-                for name,var in self.fields.items():
-                    sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
-                    subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
-                    subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
-                    gvec.restoreSubVector(self._subdict[name][0], sgvec)
+            # with self.mesh.access():
+            for name,var in self.fields.items():
+                sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
+                subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
+                subdm.localToGlobal(var.vec,sgvec)                 # Copy variable data into gvec
+                gvec.restoreSubVector(self._subdict[name][0], sgvec)
 
             self.atol = self.snes.getFunctionNorm() * self.tolerance
 
@@ -2919,12 +3806,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
 
         # Copy solution back into pressure and velocity variables
-        with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
-             for name, var in self.fields.items():
-                 if name=='velocity':
-                     var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
-                 elif name=='pressure':
-                     var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
+        # with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
+        for name, var in self.fields.items():
+            if name=='velocity':
+                var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
+            elif name=='pressure':
+                var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
+        self.mesh._stale_lvec = True
 
 
         self.dm.restoreGlobalVec(clvec)
@@ -2956,13 +3844,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # first let's extract a max global velocity magnitude
         import math
 
-        with self.mesh.access():
-            vel = self.u.data
-            magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
-            if self.mesh.dim == 3:
-                magvel_squared += vel[:, 2] ** 2
+        # with self.mesh.access():
+        vel = self.u.data
+        magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
+        if self.mesh.dim == 3:
+            magvel_squared += vel[:, 2] ** 2
 
-            max_magvel = math.sqrt(magvel_squared.max())
+        max_magvel = math.sqrt(magvel_squared.max())
 
         from mpi4py import MPI
 
@@ -2970,4 +3858,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         min_dx = self.mesh.get_min_radius()
-        return min_dx / max_magvel_glob
+        dt_nd = min_dx / max_magvel_glob
+
+        # Apply unit-aware scaling when model has units
+        from underworld3.systems.solvers import _apply_unit_aware_scaling
+        return _apply_unit_aware_scaling(dt_nd, self.u, self.mesh)

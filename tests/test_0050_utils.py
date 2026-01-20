@@ -1,3 +1,7 @@
+import pytest
+
+# All tests in this module are quick core tests
+pytestmark = pytest.mark.level_1
 # ---
 # jupyter:
 #   jupytext:
@@ -22,12 +26,8 @@ mesh = uw.meshing.StructuredQuadBox(elementRes=(5,) * 2)
 x, y = mesh.X
 
 # %%
-v = uw.discretisation.MeshVariable(
-    r"mathbf{u}", mesh, mesh.dim, vtype=uw.VarType.VECTOR, degree=2
-)
-p = uw.discretisation.MeshVariable(
-    r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1
-)
+v = uw.discretisation.MeshVariable(r"mathbf{u}", mesh, mesh.dim, vtype=uw.VarType.VECTOR, degree=2)
+p = uw.discretisation.MeshVariable(r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
 
 
 def bc_1(solver):

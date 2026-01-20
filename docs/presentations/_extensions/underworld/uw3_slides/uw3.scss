@@ -1,0 +1,362 @@
+/**
+ * Underworld3 reveal.js theme
+ * Based on the UW3 documentation colour scheme
+ */
+
+/*-- scss:defaults --*/
+
+$body-bg: #fafafa;
+$body-color: #333;
+$link-color: #883344;
+$code-color: #2a6a6a;
+$code-block-border-color: #883344;
+$presentation-heading-color: #883344;
+$presentation-font-size-root: 32px;
+$presentation-slide-text-align: left;
+$code-block-font-size: 0.7em;
+
+/*-- scss:rules --*/
+
+@import url("https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap");
+
+.reveal .slides {
+    text-align: left;
+    text-transform: none;
+}
+
+section.has-dark-background,
+section.has-dark-background h1,
+section.has-dark-background h2,
+section.has-dark-background h3,
+section.has-dark-background h4,
+section.has-dark-background h5,
+section.has-dark-background h6 {
+    color: #fff;
+}
+
+/*********************************************
+ * GLOBAL STYLES
+ *********************************************/
+:root {
+    --r-background-color: #fafafa;
+    --r-main-font: "Jost", sans-serif;
+    --r-main-font-size: 32px;
+    --r-main-color: #333;
+    --r-block-margin: 20px;
+    --r-heading-margin: 0 0 20px 0;
+    --r-heading-font: "Jost", sans-serif;
+    --r-heading-color: #883344;
+    --r-heading-line-height: 1.2;
+    --r-heading-letter-spacing: normal;
+    --r-heading-text-transform: none;
+    --r-heading-text-shadow: none;
+    --r-heading-font-weight: 500;
+    --r-heading1-text-shadow: none;
+    --r-heading1-size: 2.2em;
+    --r-heading2-size: 1.5em;
+    --r-heading3-size: 1.2em;
+    --r-heading4-size: 1em;
+    --r-code-font: "JetBrains Mono", monospace;
+    --r-link-color: #883344;
+    --r-link-color-hover: #aa5566;
+    --r-selection-background-color: #883344;
+    --r-selection-color: #fff;
+}
+
+.reveal-viewport {
+    background: #fafafa;
+    background-color: #fafafa;
+}
+
+.reveal {
+    font-family: "Jost", sans-serif;
+    font-size: var(--r-main-font-size);
+    font-weight: 400;
+    color: #333;
+}
+
+.reveal ::selection {
+    color: #fff;
+    background: #883344;
+    text-shadow: none;
+}
+
+.reveal ::-moz-selection {
+    color: #fff;
+    background: #883344;
+    text-shadow: none;
+}
+
+.reveal .slides section,
+.reveal .slides section > section {
+    line-height: 1.5;
+    font-weight: inherit;
+}
+
+/************************************************
+ * HEADERS
+ ************************************************/
+
+.reveal h1,
+.reveal h2,
+.reveal h3,
+.reveal h4,
+.reveal h5,
+.reveal h6 {
+    margin: 0 0 20px 0;
+    color: #883344;
+    font-family: "Jost", sans-serif;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: normal;
+    text-transform: none;
+    text-shadow: none;
+    word-wrap: break-word;
+}
+
+.reveal h1 {
+    font-size: 2.2em;
+    font-weight: 600;
+}
+
+.reveal h2 {
+    font-size: 1.5em;
+}
+
+.reveal h3 {
+    font-size: 1.2em;
+}
+
+.reveal h4 {
+    font-size: 1em;
+}
+
+/*********************************************
+ * TYPOGRAPHY
+ *********************************************/
+.reveal p {
+    margin: 20px 0;
+    line-height: 1.6;
+    font-weight: 400;
+}
+
+.reveal h1:last-child,
+.reveal h2:last-child,
+.reveal h3:last-child,
+.reveal h4:last-child,
+.reveal h5:last-child,
+.reveal h6:last-child {
+    margin-bottom: 0;
+}
+
+.reveal img,
+.reveal video,
+.reveal iframe {
+    max-width: 95%;
+    max-height: 95%;
+}
+
+.reveal strong,
+.reveal b {
+    font-weight: 600;
+}
+
+.reveal em {
+    font-style: italic;
+}
+
+.reveal ol,
+.reveal dl,
+.reveal ul {
+    display: inline-block;
+    text-align: left;
+    margin: 0 0 0 1em;
+}
+
+.reveal ol {
+    list-style-type: decimal;
+}
+
+.reveal ul {
+    list-style-type: disc;
+}
+
+.reveal ul ul {
+    list-style-type: circle;
+}
+
+.reveal ul ul ul {
+    list-style-type: square;
+}
+
+.reveal ul ul,
+.reveal ul ol,
+.reveal ol ol,
+.reveal ol ul {
+    display: block;
+    margin-left: 40px;
+}
+
+.reveal li {
+    margin-bottom: 0.5em;
+}
+
+/*********************************************
+ * CODE
+ *********************************************/
+.reveal pre {
+    display: block;
+    position: relative;
+    width: 95%;
+    margin: 20px auto;
+    text-align: left;
+    font-size: 0.65em;
+    font-family: "JetBrains Mono", monospace;
+    line-height: 1.4em;
+    word-wrap: break-word;
+    box-shadow: 0px 3px 10px rgba(0, 0, 0, 0.1);
+    border-left: 4px solid #883344;
+    border-radius: 4px;
+}
+
+.reveal code {
+    font-family: "JetBrains Mono", monospace;
+    text-transform: none;
+    background: rgba(136, 51, 68, 0.08);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+}
+
+.reveal pre code {
+    display: block;
+    padding: 15px;
+    overflow: auto;
+    max-height: 500px;
+    word-wrap: normal;
+    background: #f5f5f5;
+}
+
+/*********************************************
+ * BLOCKQUOTES
+ *********************************************/
+.reveal blockquote {
+    display: block;
+    position: relative;
+    width: 80%;
+    margin: 20px auto;
+    padding: 15px 20px;
+    font-style: italic;
+    background: rgba(136, 51, 68, 0.05);
+    border-left: 4px solid #883344;
+    border-radius: 0 4px 4px 0;
+}
+
+/*********************************************
+ * TABLES
+ *********************************************/
+.reveal table {
+    margin: auto;
+    border-collapse: collapse;
+    border-spacing: 0;
+}
+
+.reveal table th {
+    font-weight: 600;
+    background: rgba(136, 51, 68, 0.1);
+}
+
+.reveal table th,
+.reveal table td {
+    text-align: left;
+    padding: 0.4em 0.8em;
+    border-bottom: 1px solid #ddd;
+}
+
+.reveal table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/*********************************************
+ * LINKS
+ *********************************************/
+.reveal a {
+    color: #883344;
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+
+.reveal a:hover {
+    color: #aa5566;
+    text-shadow: none;
+    border: none;
+}
+
+/*********************************************
+ * NAVIGATION CONTROLS
+ *********************************************/
+.reveal .controls {
+    color: #883344;
+}
+
+/*********************************************
+ * PROGRESS BAR
+ *********************************************/
+.reveal .progress {
+    background: rgba(0, 0, 0, 0.1);
+    color: #883344;
+}
+
+.reveal .progress span {
+    background: #883344;
+}
+
+/*********************************************
+ * SLIDE NUMBER
+ *********************************************/
+.reveal .slide-number {
+    color: #883344;
+    font-family: "Jost", sans-serif;
+}
+
+/*********************************************
+ * CUSTOM CLASSES
+ *********************************************/
+
+/* Two-column layout */
+.columns-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2em;
+}
+
+/* Highlight box */
+.highlight-box {
+    background: rgba(136, 51, 68, 0.08);
+    border: 1px solid rgba(136, 51, 68, 0.2);
+    border-radius: 8px;
+    padding: 1em;
+    margin: 1em 0;
+}
+
+/* Muted text */
+.muted {
+    color: #666;
+    font-size: 0.85em;
+}
+
+/* Small text for asides */
+.aside {
+    font-size: 0.7em;
+    color: #666;
+    font-style: italic;
+}
+
+/*********************************************
+ * PRINT BACKGROUND
+ *********************************************/
+@media print {
+    .backgrounds {
+        background-color: #fff;
+    }
+}

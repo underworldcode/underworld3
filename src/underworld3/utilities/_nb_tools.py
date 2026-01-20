@@ -8,7 +8,10 @@ def _is_notebook() -> bool:
     """
 
     try:
-        shell = get_ipython().__class__.__name__
+        ipython = get_ipython()
+        if ipython is None:
+            return False
+        shell = ipython.__class__.__name__
         if shell == "ZMQInteractiveShell":
             return True  # Jupyter notebook or qtconsole
         elif shell == "TerminalInteractiveShell":
@@ -18,10 +21,11 @@ def _is_notebook() -> bool:
     except NameError:
         return False  # Probably standard Python interpreter
 
+
 def _is_interactive_vis() -> bool:
     """
-        Function to determine if interactive visualisation is available.
-        Returns 'True' is possible, 'False' is otherwise
+    Function to determine if interactive visualisation is available.
+    Returns 'True' is possible, 'False' is otherwise
     """
     try:
         import pyvista
@@ -29,10 +33,12 @@ def _is_interactive_vis() -> bool:
         return False
 
     import underworld3 as uw
+
     if uw.mpi.size != 1:
         return False
 
     return True
+
 
 is_notebook = _is_notebook()
 is_interactive_vis = _is_interactive_vis()

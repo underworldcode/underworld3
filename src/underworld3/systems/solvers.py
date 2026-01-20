@@ -1,3 +1,52 @@
+r"""
+PDE solvers for Underworld3.
+
+This module provides finite element solvers for common PDEs in geodynamics
+and computational mechanics. All solvers use PETSc's SNES (Scalable Nonlinear
+Equation Solvers) framework.
+
+Scalar Equations
+----------------
+SNES_Poisson
+    Poisson/diffusion equation: :math:`\nabla \cdot (k \nabla T) = f`
+SNES_Darcy
+    Darcy flow: pressure-driven flow through porous media
+
+Vector Equations
+----------------
+SNES_Stokes
+    Stokes flow: :math:`\nabla \cdot \boldsymbol{\tau} - \nabla p = f`
+SNES_VE_Stokes
+    Viscoelastic Stokes with stress history
+SNES_Stokes_SaddlePt
+    Stokes with saddle-point preconditioner
+
+Transport Equations
+-------------------
+SNES_AdvectionDiffusion
+    Scalar advection-diffusion with Lagrangian tracking
+
+Notes
+-----
+Solvers support unit-aware calculations when reference quantities are
+set on the model. Physical units are preserved through the solve process
+and timestep estimates are returned with appropriate time units.
+
+See Also
+--------
+underworld3.systems.ddt : Time derivative schemes for transient problems.
+underworld3.constitutive_models : Material constitutive laws.
+
+Examples
+--------
+Set up a Stokes solver:
+
+>>> stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+>>> stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+>>> stokes.viscosity = 1e21
+>>> stokes.solve()
+"""
+
 import sympy
 from sympy import sympify
 import numpy as np
@@ -8,11 +57,92 @@ import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 from underworld3 import VarType
 import underworld3.timing as timing
-from underworld3.utilities._api_tools import uw_object
+from underworld3.utilities._api_tools import (
+    uw_object,
+    SymbolicProperty,
+    Parameter,
+    Template,
+    ExpressionProperty,
+)
 
 from underworld3.function import expression as public_expression
 
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
+
+
+def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
+    """
+    Helper function to apply unit-aware scaling to timestep estimates.
+
+    Detects the units of the velocity field and applies appropriate time scaling
+    to convert nondimensional timestep to physical time units.
+
+    Parameters
+    ----------
+    dt_nondimensional : float or np.ndarray
+        The nondimensional timestep estimate
+    field : MeshVariable or SymPy expression (often a Matrix)
+        The velocity field - units are detected from this
+    mesh : Mesh
+        The mesh (may have reference to model with time scales)
+
+    Returns
+    -------
+    float or UWQuantity
+        Timestep with physical time units if detectable, otherwise nondimensional
+    """
+    try:
+        from ..function.quantities import UWQuantity
+        from ..units import get_units
+        import sympy
+
+        # Extract a component from field if it's a Matrix (common for velocity)
+        field_to_check = field
+        if isinstance(field, sympy.MatrixBase):
+            # Extract first component: V_fn[0] or V_fn[0,0]
+            if field.shape[0] > 0:
+                field_to_check = field[0] if len(field.shape) == 1 else field[0, 0]
+
+        # Try to get units from the field expression
+        field_units = get_units(field_to_check)
+
+        if field_units is not None:
+            # Field has units - verify it has time dimension (as expected for velocity)
+            # Get dimensionality: e.g., {'[length]': 1, '[time]': -1} for velocity
+            field_dimensionality = field_units.dimensionality
+
+            # Check if this has time dimension (velocity should have time^-1)
+            if '[time]' in field_dimensionality:
+                # Velocity field has time dimension - use model time scale for result
+                # Don't try to match the velocity's specific time units (fragile string parsing)
+                # Instead, always return in model's fundamental time scale and let user convert
+                model = uw.get_default_model()
+                if model and hasattr(model, "fundamental_scales"):
+                    model_time_scale = model.fundamental_scales.get("time")
+                    if model_time_scale is not None:
+                        # Apply scaling: dt_physical = dt_nd * time_scale
+                        dt_physical = dt_nondimensional * model_time_scale
+
+                        # Return as UWQuantity
+                        if not isinstance(dt_physical, UWQuantity):
+                            dt_physical = UWQuantity._from_pint(dt_physical)
+                        return dt_physical
+
+        # Fallback: check if model has time scales (old behavior)
+        model = uw.get_default_model()
+        if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
+            time_scale = model.fundamental_scales.get("time")
+            if time_scale is not None:
+                dt_physical = dt_nondimensional * time_scale
+                if not isinstance(dt_physical, UWQuantity):
+                    dt_physical = UWQuantity._from_pint(dt_physical)
+                return dt_physical
+
+    except Exception as e:
+        # Silently fall back to nondimensional
+        pass
+
+    return dt_nondimensional
 
 
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
@@ -22,30 +152,42 @@ from .ddt import Symbolic as Symbolic_DDt
 
 
 class SNES_Poisson(SNES_Scalar):
-    r"""
-    # Poisson Equation Solver
+    r"""Poisson equation solver.
 
-    This class provides functionality for a discrete representation
-    of the Poisson equation
+    Provides a discrete representation of the Poisson equation:
 
-    $$
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates the flux to gradients in the unknown $u$
+        \nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
 
-    ## Properties
+    where :math:`\mathbf{F} = \boldsymbol{\kappa} \nabla u` relates the flux to
+    gradients in the unknown :math:`u`.
 
-      - The unknown is $u$
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Pre-existing mesh variable for the solution. If None, one is created.
+    verbose : bool, optional
+        Enable verbose output during solve.
+    degree : int, optional
+        Polynomial degree for the solution field (default: 2).
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for time-dependent problems.
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for the flux.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
-
-      - $f$ is a volumetric source term
+    Attributes
+    ----------
+    u : MeshVariable
+        The unknown scalar field.
+    constitutive_model : DiffusionModel
+        Provides the diffusivity tensor :math:`\kappa`. Set to one of the
+        scalar ``uw.constitutive_models`` classes. Can be constant, spatially
+        varying, non-linear, or anisotropic.
+    f : sympy.Expr
+        Volumetric source term.
     """
 
     @timing.routine_timer_decorator
@@ -75,36 +217,34 @@ class SNES_Poisson(SNES_Scalar):
 
         self._constitutive_model = None
 
-    @property
-    def F0(self):
+    # =========================================================================
+    # PETSc Residual Templates
+    # For the Poisson equation: -∇·(k∇u) = f
+    # =========================================================================
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            -self.f,
-            "Poisson pointwise force term: f_0(u)",
-        )
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: -self.f,
+        r"""Source term for the Poisson equation (pointwise).
 
-        # backward compatibility
-        self._f0 = f0_val
+        The $f_0$ term represents the source/sink in the diffusion equation.
+        Set via the ``f`` property (e.g., ``poisson.f = heat_source``).
+        """,
+    )
 
-        return f0_val
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: sympy.simplify(self.constitutive_model.flux.T),
+        r"""Diffusive flux term for the Poisson equation (pointwise).
 
-    @property
-    def F1(self):
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            sympy.simplify(self.constitutive_model.flux.T),
-            "Poisson pointwise flux term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val
-
-        return F1_val
+        The $\mathbf{F}_1$ vector represents the flux $k \nabla u$
+        from the constitutive model, where $k$ is the diffusivity.
+        """,
+    )
 
     @timing.routine_timer_decorator
     def poisson_problem_description(self):
+        """Build residual terms for Poisson FEM assembly."""
         # f1 residual term (weighted integration) - scalar function
         self._f0 = self.F0.sym
 
@@ -116,60 +256,154 @@ class SNES_Poisson(SNES_Scalar):
 
     @property
     def f(self):
+        r"""Source term for the Poisson equation.
+
+        The source term :math:`f` appears on the right-hand side:
+
+        .. math::
+            \nabla \cdot (\kappa \nabla u) = f
+
+        Returns
+        -------
+        sympy.Matrix
+            Source term expression (scalar, shape ``(1, 1)``).
+
+        See Also
+        --------
+        constitutive_model : Provides the diffusivity :math:`\kappa`.
+        """
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the source term (handles units and scaling)."""
         self.is_setup = False
-        self._f = sympy.Matrix((value,))
+
+        # Handle UWQuantity with units - enforce "units everywhere" principle
+        if hasattr(value, "value") and hasattr(value, "units"):
+            # Extract the plain value
+            plain_value = float(value.value)
+
+            # If ND scaling is active, scale the constant
+            import underworld3 as uw
+
+            if uw.is_nondimensional_scaling_active():
+                # The source term should have same dimensionality as the unknown field
+                # Access via self.Unknowns.u (Poisson) or self.Unknowns.DuDt.u (Stokes)
+                u = None
+                if hasattr(self, "Unknowns") and hasattr(self.Unknowns, "u"):
+                    u = self.Unknowns.u
+
+                if u is not None and hasattr(u, "scaling_coefficient"):
+                    scale = u.scaling_coefficient
+                    if scale != 1.0 and scale != 0.0:
+                        plain_value = plain_value / scale
+
+            self._f = sympy.Matrix((plain_value,))
+
+        # Also accept plain SymPy expressions (for variables, etc.)
+        elif hasattr(value, "atoms"):  # It's a SymPy expression
+            self._f = sympy.Matrix((value,))
+
+        # Handle plain numbers - apply "units everywhere or nowhere" principle
+        # Exception: allow zero always (dimensionless/no source)
+        elif isinstance(value, (int, float)):
+            if value == 0.0 or value == 0:
+                # Zero is allowed - no source term
+                self._f = sympy.Matrix((0.0,))
+            else:
+                # Check if model has reference quantities defined
+                # If yes: enforce units everywhere
+                # If no: allow plain numbers (user is responsible for consistency)
+                import underworld3 as uw
+
+                model = uw.get_default_model()
+
+                if model.has_units():
+                    # Reference quantities defined - enforce units everywhere
+                    raise ValueError(
+                        f"Units requirement enforced: Model has reference quantities defined.\n"
+                        f"Source term 'f' requires units. Use:\n"
+                        f"  solver.f = uw.quantity({value}, 'appropriate_units')\n"
+                        f"Example: poisson.f = uw.quantity({value}, 'kelvin')"
+                    )
+                else:
+                    # No reference quantities - allow plain numbers
+                    # User is responsible for dimensional consistency
+                    self._f = sympy.Matrix((float(value),))
+
+        else:
+            # Accept other types (might be symbolic)
+            self._f = sympy.Matrix((value,))
 
     @property
     def CM_is_setup(self):
+        """Whether the constitutive model is configured for this solver."""
         return self._constitutive_model._solver_is_setup
 
 
 class SNES_Darcy(SNES_Scalar):
     r"""
-    # Darcy Flow Equation Solver
+    Darcy flow equation solver for groundwater problems.
 
-    This class provides functionality for a discrete representation
-    of the Groundwater flow equations
+    Provides a discrete representation of the groundwater flow equations:
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[  S_s \frac{\partial h}{\partial t} \Bigr]}_{\dot{\mathbf{u}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla h  - \boldsymbol{s}\Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ W \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The flux term, $\mathbf{F}$ relates the effective velocity to pressure gradients
+        \underbrace{S_s \frac{\partial h}{\partial t}}_{\dot{u}}
+        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \nabla h
+        - \boldsymbol{s} \right]}_{\mathbf{F}}
+        = \underbrace{W}_{h}
 
-    $$
-    \boldsymbol{v} = \left( \boldsymbol\kappa \nabla h  - \boldsymbol{s} \right)
-    $$
+    The flux term :math:`\mathbf{F}` relates the effective velocity to
+    pressure gradients:
 
-    The time-dependent term $\dot{\mathbf{f}}$ is not implemented in this version.
+    .. math::
 
-    ## Properties
+        \boldsymbol{v} = \boldsymbol{\kappa} \nabla h - \boldsymbol{s}
 
-      - The unknown is $h$, the hydraulic head
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    h_Field : MeshVariable, optional
+        Mesh variable for hydraulic head. Created automatically if not provided.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity. Created automatically if not provided.
+    degree : int, default=2
+        Polynomial degree for the finite element discretization.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
 
-      - The permeability tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
+    Attributes
+    ----------
+    h : MeshVariable
+        The hydraulic head unknown.
+    v : MeshVariable
+        The Darcy velocity field.
+    s : sympy.Expr
+        Source term for pressure gradients (e.g., :math:`\rho g`).
+    Ss : sympy.Expr
+        Specific storage coefficient.
 
-      - Volumetric sources for the pressure gradient are supplied through
-        the $s$ property [e.g. $s = \rho g$ ]
+    Notes
+    -----
+    - The unknown is :math:`h`, the hydraulic head
+    - The permeability tensor :math:`\kappa` is set via the ``constitutive_model``
+      property using one of the ``uw.constitutive_models`` classes
+    - :math:`W` is a pressure source term
+    - :math:`S_s` is the specific storage coefficient
+    - The time-dependent term :math:`\dot{f}` is not implemented in this version
+    - The solver returns both the primary field and the Darcy flux (mean-flow velocity)
 
-      - $W$ is a pressure source term
-
-      - $S_s$ is the specific storage coefficient
-
-    ## Notes
-
-      - The solver returns the primary field and also the Darcy flux term (the mean-flow velocity)
-
+    See Also
+    --------
+    SNES_Poisson : Related diffusion-only solver.
+    uw.constitutive_models.DarcyFlowModel : Constitutive model for Darcy flow.
     """
 
     @timing.routine_timer_decorator
@@ -213,40 +447,34 @@ class SNES_Darcy(SNES_Scalar):
         # If we add smoothing, it should be small
         self._v_projector.smoothing = 1.0e-6
 
-    ## This function is the one we will typically over-ride to build specific solvers.
-    ## This example is a poisson-like problem with isotropic coefficients
+    # =========================================================================
+    # PETSc Residual Templates
+    # For Darcy flow: -∇·(K∇p) = f, with velocity v = -K∇p
+    # =========================================================================
 
-    @property
-    def F0(self):
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: -self.f,
+        r"""Source term for the Darcy pressure equation (pointwise).
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            -self.f,
-            "Darcy pointwise force term: f_0(u)",
-        )
+        The $f_0$ term represents fluid sources/sinks.
+        Set via the ``f`` property.
+        """,
+    )
 
-        # backward compatibility
-        self._f0 = f0_val.sym
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: self.darcy_flux,
+        r"""Darcy flux term (pointwise).
 
-        return f0_val
-
-    @property
-    def F1(self):
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            sympy.simplify(self.darcy_flux),
-            "Darcy pointwise flux term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val.sym
-        self._v_projector.uw_function = -F1_val.sym
-
-        return F1_val
+        The $\mathbf{F}_1$ vector is the Darcy flux $K \nabla p$,
+        where $K$ is the permeability.
+        """,
+    )
 
     @timing.routine_timer_decorator
     def darcy_problem_description(self):
+        """Build residual terms for Darcy flow FEM assembly."""
         # f1 residual term (weighted integration)
         self._f0 = self.F0.sym
 
@@ -260,24 +488,29 @@ class SNES_Darcy(SNES_Scalar):
 
     @property
     def f(self):
+        """Source term for the Darcy equation."""
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
     @property
     def darcy_flux(self):
+        """Darcy flux velocity computed from pressure gradient."""
         flux = self.constitutive_model.flux.T
         return flux
 
     @property
     def v(self):
+        """Projected Darcy velocity field."""
         return self._v
 
     @v.setter
     def v(self, value):
+        """Set the velocity projection target."""
         self._v_projector.is_setup = False
         self._v = sympify(value)
 
@@ -289,16 +522,26 @@ class SNES_Darcy(SNES_Scalar):
         verbose: bool = False,
         _force_setup: bool = False,
     ):
-        """
-        Generates solution to constructed system.
+        r"""Solve the Darcy flow system.
 
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        timestep:
-            value used to evaluate inertial contribution
+        Computes the pressure field and Darcy flux velocity.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, optional
+            If True (default), start from zero initial guess.
+            If False, use current field values as initial guess.
+        timestep : float, optional
+            Timestep value for inertial terms (if applicable).
+        verbose : bool, optional
+            If True, print solver progress information.
+        _force_setup : bool, optional
+            Force re-setup of solver even if already configured.
+
+        Notes
+        -----
+        After solving, the pressure field ``self.u`` and velocity field
+        ``self.v`` contain the solution.
         """
 
         if (not self.is_setup) or _force_setup:
@@ -337,65 +580,103 @@ class SNES_Darcy(SNES_Scalar):
 
 class SNES_Stokes(SNES_Stokes_SaddlePt):
     r"""
-    # Stokes Equation Solver
+    Stokes equation solver for incompressible viscous flow.
 
     This class provides functionality for a discrete representation
     of the Stokes flow equations assuming an incompressibility
     (or near-incompressibility) constraint.
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[
-                    \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
-    $$
+    The momentum equation is:
 
-    $$
-    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
-    $$
+    .. math::
 
-    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
-      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
+        -\nabla \cdot \left[ \boldsymbol{\tau} - p \mathbf{I} \right] = \mathbf{f}
 
-    $$
-        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
-    $$
+    with the incompressibility constraint:
 
-    The constraint equation, $\mathbf{h}_p = 0$ gives incompressible flow by default but can be set
-    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
+    .. math::
 
-    ## Properties
+        \nabla \cdot \mathbf{u} = 0
 
-      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint parameter $\mathbf{p}$
+    The flux term is a deviatoric stress (:math:`\boldsymbol{\tau}`) related to velocity
+    gradients (:math:`\nabla \mathbf{u}`) through a viscosity tensor :math:`\eta`, and a
+    volumetric (pressure) part :math:`p`:
 
-      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
+    .. math::
 
-      - $\mathbf f$ is a volumetric source term (i.e. body forces)
-      and is set by providing the `bodyforce` property.
+        \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
 
-      - An Augmented Lagrangian approach to application of the incompressibility
-    constraint is to penalise incompressibility in the Stokes equation by adding
-    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
-    (this is in addition to the constraint equation, unlike in the classical penalty method).
-    This is activated by setting the `penalty` property to a non-zero floating point value which adds
-    the term in the `sympy` expression.
+    The constraint equation gives incompressible flow by default but can be set
+    to any function of the unknown :math:`\mathbf{u}` and :math:`\nabla \cdot \mathbf{u}`.
 
-      - A preconditioner is usually required for the saddle point system and this is provided
-    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+    Parameters
+    ----------
+    mesh : uw.discretisation.Mesh
+        The computational mesh.
+    velocityField : uw.discretisation.MeshVariable, optional
+        Pre-existing velocity field. If None, one is created automatically.
+    pressureField : uw.discretisation.MeshVariable, optional
+        Pre-existing pressure field. If None, one is created automatically.
+    degree : int, optional
+        Polynomial degree for velocity interpolation. Default is 2.
+    p_continuous : bool, optional
+        If True (default), pressure is continuous. Set False for discontinuous pressure.
+    verbose : bool, optional
+        Enable verbose output during solving. Default is False.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Material derivative operator for velocity (used in derived classes).
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Material derivative operator for flux (used in viscoelastic models).
 
-    ## Notes
+    Attributes
+    ----------
+    u : MeshVariable
+        The velocity field (accessed via ``solver.Unknowns.u``).
+    p : MeshVariable
+        The pressure field (accessed via ``solver.Unknowns.p``).
+    bodyforce : UWexpression
+        Volumetric body force vector :math:`\mathbf{f}`.
+    constitutive_model : ConstitutiveModel
+        Viscosity model providing the stress-strain relationship.
+    penalty : UWexpression
+        Augmented Lagrangian penalty parameter :math:`\lambda`.
+    saddle_preconditioner : sympy.Expr
+        Preconditioner for the saddle point system (default: :math:`1/\eta`).
+    constraints : sympy.Matrix
+        Constraint equation(s), default is :math:`\nabla \cdot \mathbf{u}`.
 
-      - For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
-        stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.
+    Notes
+    -----
+    **Viscosity model**: The viscosity tensor :math:`\boldsymbol{\eta}` is provided by
+    setting the ``constitutive_model`` property to one of the ``uw.constitutive_models``
+    classes. It may be constant, spatially varying, non-linear, or anisotropic.
 
-      - The interpolation order of the `pressureField` variable is used to determine the integration order of
-    the mixed finite element method and is usually lower than the order of the `velocityField` variable.
+    **Augmented Lagrangian**: Setting ``penalty`` to a non-zero value adds
+    :math:`\lambda \nabla \cdot \mathbf{u}` to the weak form, improving convergence
+    for incompressible flow (in addition to the constraint equation).
 
-      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
+    **Mixed finite elements**: The pressure field interpolation order determines
+    the integration order of the mixed method and is typically lower than the
+    velocity field order.
 
+    **Viscoelastic models**: For viscoelastic behaviour, the flux term contains
+    stress history tracked on a particle swarm. See :class:`SNES_VE_Stokes`.
+
+    See Also
+    --------
+    SNES_VE_Stokes : Viscoelastic Stokes solver with flux history.
+    SNES_NavierStokes : Navier-Stokes solver with inertial terms.
+    uw.constitutive_models : Available viscosity models.
+
+    Examples
+    --------
+    >>> import underworld3 as uw
+    >>> mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1), cellSize=0.1)
+    >>> stokes = uw.systems.Stokes(mesh, degree=2)
+    >>> stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel()
+    >>> stokes.constitutive_model.Parameters.viscosity = 1.0
+    >>> stokes.bodyforce = [0, -1]  # gravity
+    >>> stokes.solve()
     """
 
     instances = 0
@@ -429,9 +710,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._Estar = None
 
         self._penalty = expression(R"\uplambda", 0, "Numerical Penalty")
-        self._constraints = sympy.Matrix(
-            (self.div_u,)
-        )  # by default, incompressibility constraint
+        self._constraints = sympy.Matrix((self.div_u,))  # by default, incompressibility constraint
 
         self._bodyforce = expression(
             Rf"\mathbf{{f}}_0\left( {self.Unknowns.u.symbol} \right)",
@@ -446,63 +725,50 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         return
 
-    ## Problem Description:
-    ##  F0 - velocity equation forcing terms
-    ##  F1 - velocity equation flux terms
-    ##  PF0 - pressure / constraint equation forcing terms
+    # =========================================================================
+    # PETSc Residual Templates
+    # These define the weak form terms assembled by PETSc's finite element system.
+    # F0/F1 are velocity equation terms, PF0 is the pressure/continuity equation.
+    # =========================================================================
 
-    @property
-    def F0(self):
+    F0 = Template(
+        r"\mathbf{f}_0\left( \mathbf{u} \right)",
+        lambda self: -self.bodyforce.sym,
+        r"""Velocity equation body force term (pointwise).
 
-        # f0 = expression(
-        #     r"\mathbf{f}_0\left( \mathbf{u} \right)",
-        #     -self.bodyforce,
-        #     "Stokes pointwise force term: f_0(u)",
-        # )
+        The $\mathbf{f}_0$ term represents external body forces acting on the
+        fluid, typically gravity. This is the negative of the ``bodyforce`` parameter.
+        """,
+    )
 
-        # backward compatibility
-        self._u_f0 = self._bodyforce
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: sympy.simplify(
+            self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
+        ),
+        r"""Velocity equation flux/stress term (pointwise).
 
-        return self._bodyforce
+        The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
+        combining deviatoric stress $\boldsymbol{\tau}$, pressure $p$,
+        and penalty term for weak incompressibility.
+        """,
+    )
 
-    @property
-    def F1(self):
+    PF0 = Template(
+        r"\mathbf{h}_0\left( \mathbf{p} \right)",
+        lambda self: sympy.simplify(sympy.Matrix((self.constraints))),
+        r"""Pressure equation constraint term (continuity).
 
-        dim = self.mesh.dim
-
-        ## Should not define a new function on each call (madness !)
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            sympy.simplify(self.stress + self.penalty * self.div_u * sympy.eye(dim)),
-            "Stokes pointwise flux term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._u_f1 = F1_val
-
-        return F1_val
-
-    @property
-    def PF0(self):
-
-        ## Should not define a new function on each call (madness !)
-
-        f0 = expression(
-            r"\mathbf{h}_0\left( \mathbf{p} \right)",
-            sympy.simplify(sympy.Matrix((self.constraints))),
-            "Pointwise force term: h_0(p)",
-        )
-
-        # backward compatibility
-        self._p_f0 = f0
-
-        return f0
+        The $h_0$ term enforces the incompressibility constraint
+        $\nabla \cdot \mathbf{u} = 0$. Additional constraints can be
+        added via ``add_condition()``.
+        """,
+    )
 
     # deprecated
     @timing.routine_timer_decorator
     def stokes_problem_description(self):
-
+        """Build residual terms for Stokes FEM assembly (deprecated)."""
         # f0 residual term
         self._u_f0 = self.F0.sym
 
@@ -516,83 +782,294 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def CM_is_setup(self):
+        """Whether the constitutive model is configured for this solver."""
         return self._constitutive_model._solver_is_setup
 
     @property
     def strainrate(self):
+        r"""Symmetric strain rate tensor from velocity gradients.
+
+        The strain rate tensor :math:`\dot{\varepsilon}` is computed as:
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+
+        Returns
+        -------
+        sympy.Matrix
+            Symmetric tensor of shape ``(dim, dim)`` where ``dim`` is the
+            mesh dimensionality.
+
+        See Also
+        --------
+        strainrate_1d : Voigt notation (vector) form.
+        stress_deviator : Deviatoric stress computed from strain rate.
+        """
         return sympy.Matrix(self.mesh.vector.strain_tensor(self.Unknowns.u.sym))
 
     @property
     def strainrate_1d(self):
+        r"""Strain rate in Voigt notation (vector form).
+
+        Converts the symmetric strain rate tensor to Voigt notation for
+        use in constitutive model calculations. In 2D, returns a 3-component
+        vector; in 3D, a 6-component vector.
+
+        Returns
+        -------
+        sympy.Matrix
+            Strain rate in Voigt notation.
+
+        See Also
+        --------
+        strainrate : Full tensor form.
+        """
         return uw.maths.tensor.rank2_to_voigt(self.strainrate, self.mesh.dim)
 
     @property
     def strainrate_star_1d(self):
+        r"""Historical strain rate in Voigt notation (for viscoelastic models).
+
+        Used in viscoelastic formulations where the stress depends on
+        both current and historical strain rates.
+
+        Returns
+        -------
+        sympy.Matrix
+            Historical strain rate in Voigt notation.
+
+        See Also
+        --------
+        strainrate_1d : Current strain rate.
+        """
         return uw.maths.tensor.rank2_to_voigt(self.strainrate_star, self.mesh.dim)
 
-    # This should return standard viscous behaviour if strainrate_star is None
     @property
     def stress_deviator(self):
-        return self.constitutive_model.flux  # strainrate, strain-rate history
+        r"""Deviatoric stress tensor from the constitutive model.
+
+        The deviatoric stress :math:`\boldsymbol{\tau}` is the traceless part
+        of the stress tensor, computed by the constitutive model from the
+        strain rate:
+
+        .. math::
+            \boldsymbol{\tau} = \boldsymbol{\eta} : \dot{\boldsymbol{\varepsilon}}
+
+        For a Newtonian fluid: :math:`\boldsymbol{\tau} = 2\eta\dot{\boldsymbol{\varepsilon}}`
+
+        Returns
+        -------
+        sympy.Matrix
+            Deviatoric stress tensor of shape ``(dim, dim)``.
+
+        See Also
+        --------
+        stress : Total stress (deviatoric + pressure).
+        constitutive_model : Provides the viscosity relationship.
+        """
+        return self.constitutive_model.flux
 
     @property
     def stress_deviator_1d(self):
-        return uw.maths.tensor.rank2_to_voigt(self.stress_deviator, self.mesh.dim)  ##
+        r"""Deviatoric stress in Voigt notation.
+
+        Returns
+        -------
+        sympy.Matrix
+            Deviatoric stress in Voigt notation.
+
+        See Also
+        --------
+        stress_deviator : Full tensor form.
+        """
+        return uw.maths.tensor.rank2_to_voigt(self.stress_deviator, self.mesh.dim)
 
     @property
     def stress(self):
+        r"""Total Cauchy stress tensor.
+
+        The total stress combines the deviatoric stress and pressure:
+
+        .. math::
+            \boldsymbol{\sigma} = \boldsymbol{\tau} - p\mathbf{I}
+
+        where :math:`\boldsymbol{\tau}` is the deviatoric stress and
+        :math:`p` is the pressure (positive in compression).
+
+        Returns
+        -------
+        sympy.Matrix
+            Total stress tensor of shape ``(dim, dim)``.
+
+        See Also
+        --------
+        stress_deviator : Deviatoric (traceless) part.
+        """
         return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
 
     @property
     def stress_1d(self):
+        r"""Total stress in Voigt notation.
+
+        Returns
+        -------
+        sympy.Matrix
+            Total stress in Voigt notation.
+
+        See Also
+        --------
+        stress : Full tensor form.
+        """
         return uw.maths.tensor.rank2_to_voigt(self.stress, self.mesh.dim)
 
     @property
     def div_u(self):
-        # E = self.strainrate
-        # divergence = E.trace()
-        # return divergence
+        r"""Velocity divergence.
 
+        For incompressible flow, this should be zero:
+
+        .. math::
+            \nabla \cdot \mathbf{u} = 0
+
+        Returns
+        -------
+        sympy.Expr
+            Scalar divergence expression.
+
+        Notes
+        -----
+        Non-zero divergence indicates compressibility or mass sources/sinks.
+        """
         return self.mesh.vector.divergence(self.Unknowns.u.sym)
 
     @property
     def constraints(self):
+        r"""Constraint equation for the saddle-point system.
+
+        By default, this is the incompressibility constraint
+        :math:`\nabla \cdot \mathbf{u} = 0`. Can be modified for
+        compressible or other constrained formulations.
+
+        Returns
+        -------
+        sympy.Expr
+            Constraint expression.
+        """
         return self._constraints
 
     @constraints.setter
     def constraints(self, constraints_matrix):
+        """Set the constraint equation (e.g., incompressibility)."""
         self._is_setup = False
         symval = sympify(constraints_matrix)
         self._constraints = symval
 
     @property
     def bodyforce(self):
+        r"""Body force vector (source term).
+
+        The volumetric body force :math:`\mathbf{f}` appears on the
+        right-hand side of the momentum equation:
+
+        .. math::
+            -\nabla \cdot \boldsymbol{\sigma} = \mathbf{f}
+
+        Common examples include gravity (:math:`\rho\mathbf{g}`) or
+        buoyancy forces.
+
+        Returns
+        -------
+        UWexpression
+            Body force vector expression.
+        """
         return self._bodyforce
 
     @bodyforce.setter
     def bodyforce(self, value):
+        """Set the body force vector (e.g., gravity, buoyancy)."""
         self.is_setup = False
         if isinstance(value, uw.function.expressions.UWexpression):
-            self._bodyforce.sym = -1 * value.sym
+            self._bodyforce.sym = value.sym
         else:
-            self._bodyforce.sym = sympy.Matrix(-1 * value)
+            # Convert UWQuantity objects to SymPy expressions before Matrix creation
+            converted_value = []
+            for item in value:
+                if isinstance(item, uw.function.quantities.UWQuantity):
+                    sympified = item._sympify_()
+                    # If UWQuantity contains a Matrix, extract the scalar element
+                    if hasattr(sympified, "shape") and sympified.shape == (1, 1):
+                        converted_value.append(sympified[0, 0])
+                    else:
+                        converted_value.append(sympified)
+                else:
+                    converted_value.append(item)
+            self._bodyforce.sym = sympy.Matrix(converted_value)
 
     @property
     def saddle_preconditioner(self):
+        r"""Preconditioner for the Schur complement in the saddle-point system.
+
+        For the Stokes system, the default preconditioner is :math:`1/\eta`
+        (inverse viscosity), which approximates the Schur complement
+        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T`.
+
+        Returns
+        -------
+        sympy.Expr
+            Preconditioner expression (typically inverse viscosity).
+
+        Notes
+        -----
+        A good preconditioner significantly improves convergence of the
+        iterative solver. For variable viscosity, use the local viscosity.
+        """
         return self._saddle_preconditioner
 
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
+        """Set the Schur complement preconditioner."""
         self.is_setup = False
         symval = sympify(value)
         self._saddle_preconditioner = symval
 
     @property
     def penalty(self):
+        r"""Augmented Lagrangian penalty parameter.
+
+        The penalty $\lambda$ adds a term to the weak form that
+        penalizes non-zero divergence:
+
+        .. math::
+            \lambda \int (\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
+
+        This improves convergence for incompressible flow without
+        changing the solution (since $\nabla \cdot \mathbf{u} = 0$
+        at convergence).
+
+        Returns
+        -------
+        UWexpression
+            Augmented Lagrangian penalty parameter (typically $O(1)$).
+
+        Notes
+        -----
+        Set to zero for standard Stokes without augmentation.
+        Unlike classical penalty methods that require very large values,
+        the Augmented Lagrangian approach uses modest penalties of $O(1)$
+        to improve solver convergence.
+
+        References
+        ----------
+        Glowinski, R., & Le Tallec, P. (1989). *Augmented Lagrangian and
+        Operator-Splitting Methods in Nonlinear Mechanics*. SIAM.
+        https://doi.org/10.1137/1.9781611970838
+        """
         return self._penalty
 
     @penalty.setter
     def penalty(self, value):
+        """Set the augmented Lagrangian penalty parameter."""
         self.is_setup = False
         self._penalty.sym = value
 
@@ -605,71 +1082,167 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     #     self.is_setup = False
     #     self._continuity_rhs.sym = value
 
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r"""
+        Calculates an appropriate advective timestep for the Stokes solver.
+
+        The Stokes equations are quasi-static (no time derivative ∂v/∂t),
+        so there is no diffusive CFL constraint. The only relevant timescale
+        is the advective one: how long it takes material to cross an element.
+
+        This method computes a per-element timestep:
+
+        .. math::
+            \delta t_i = h_i / \|\mathbf{v}_i\|
+
+        where $h_i$ is the element radius and $\mathbf{v}_i$ is the velocity at the element
+        centroid, then returns the global minimum. This is more accurate than
+        using global max velocity with global min element size, especially for
+        non-uniform meshes with spatially varying velocity.
+
+        Returns:
+            Pint Quantity or float: The advective timestep with physical time units
+            if a model with reference scales is available, otherwise nondimensional.
+        """
+
+        from mpi4py import MPI
+
+        # Evaluate velocity at element centroids (consistent with AdvDiff)
+        vel = uw.function.evaluate(self.u.sym, self.mesh._centroids)
+
+        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(vel, "units") and vel.units is not None:
+            vel = uw.non_dimensionalise(vel)
+        elif hasattr(vel, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            vel = vel.magnitude
+
+        # Ensure vel is a plain numpy array
+        vel = np.asarray(vel)
+
+        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
+        vel = np.squeeze(vel)
+
+        # Handle edge case of single element (ensure 2D)
+        if vel.ndim == 1:
+            vel = vel.reshape(1, -1)
+
+        # Get per-element velocity magnitudes
+        vel_magnitudes = np.linalg.norm(vel, axis=1)
+
+        # Get per-element radii (characteristic element size)
+        element_radii = self.mesh._radii
+
+        # Compute per-element advective timestep: dt_i = h_i / |v_i|
+        # Avoid division by zero for elements with zero velocity
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dt_per_element = np.where(
+                vel_magnitudes > 0,
+                element_radii / vel_magnitudes,
+                np.inf
+            )
+
+        # Get local minimum timestep
+        min_dt_local = np.min(dt_per_element) if len(dt_per_element) > 0 else np.inf
+
+        # Get global minimum timestep (parallel-safe)
+        comm = uw.mpi.comm
+        min_dt_glob = comm.allreduce(min_dt_local, op=MPI.MIN)
+
+        # If all velocities are zero, return infinity
+        if np.isinf(min_dt_glob):
+            return np.inf
+
+        # Dimensionalise to physical time
+        try:
+            return uw.dimensionalise(np.squeeze(min_dt_glob), {'[time]': 1})
+        except Exception:
+            return np.squeeze(min_dt_glob)
+
 
 class SNES_VE_Stokes(SNES_Stokes):
     r"""
-    # ViscoElastic Stokes Equation Solver
+    Viscoelastic Stokes equation solver.
 
-    This class provides functionality for a discrete representation
-    of the Stokes flow equations assuming an incompressibility
-    (or near-incompressibility) constraint and with a flux history
-    term included to allow for viscoelastic modelling.
+    Provides a discrete representation of the Stokes flow equations with
+    incompressibility (or near-incompressibility) constraint and a flux
+    history term for viscoelastic modelling. Inherits from :class:`SNES_Stokes`.
 
-    All other functionality is inherited from SNES_Stokes
+    Momentum equation:
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[
-                    \boldsymbol{\tau} -  p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    $$
-    \underbrace{\Bigl[ \nabla \cdot \mathbf{u} \Bigr]}_{\mathbf{h}_p} = 0
-    $$
+        -\nabla \cdot \underbrace{\left[ \boldsymbol{\tau} - p \mathbf{I}
+        \right]}_{\mathbf{F}} = \underbrace{\mathbf{f}}_{\mathbf{h}}
 
-    The flux term is a deviatoric stress ( $\boldsymbol{\tau}$ ) related to velocity gradients
-      ( $\nabla \mathbf{u}$ ) through a viscosity tensor, $\eta$, and a volumetric (pressure) part $p$
+    Continuity equation:
 
-    $$
-        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}\left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
-    $$
+    .. math::
 
-    The constraint equation, $\mathbf{h}_p = 0$ is incompressible flow by default but can be set
-    to any function of the unknown  $\mathbf{u}$ and  $\nabla\cdot\mathbf{u}$
+        \underbrace{\nabla \cdot \mathbf{u}}_{\mathbf{h}_p} = 0
 
-    ## Properties
+    The flux term is a deviatoric stress :math:`\boldsymbol{\tau}` related
+    to velocity gradients :math:`\nabla \mathbf{u}` through a viscosity
+    tensor :math:`\eta`, plus a volumetric (pressure) part :math:`p`:
 
-      - The unknowns are velocities $\mathbf{u}$ and a pressure-like constraint paramter $\mathbf{p}$
+    .. math::
 
-      - The viscosity tensor, $\boldsymbol{\eta}$ is provided by setting the `constitutive_model` property to
-    one of the scalar `uw.constitutive_models` classes and populating the parameters.
-    It is usually a constant or a function of position / time and may also be non-linear
-    or anisotropic.
+        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}
+        \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
 
-      - $\mathbf f$ is a volumetric source term (i.e. body forces)
-      and is set by providing the `bodyforce` property.
+    The constraint equation :math:`\mathbf{h}_p = 0` is incompressible flow
+    by default but can be set to any function of :math:`\mathbf{u}` and
+    :math:`\nabla \cdot \mathbf{u}`.
 
-      - An Augmented Lagrangian approach to application of the incompressibility
-    constraint is to penalise incompressibility in the Stokes equation by adding
-    $ \lambda \nabla \cdot \mathbf{u} $ when the weak form of the equations is constructed.
-    (this is in addition to the constraint equation, unlike in the classical penalty method).
-    This is activated by setting the `penalty` property to a non-zero floating point value which adds
-    the term in the `sympy` expression.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    velocityField : MeshVariable, optional
+        Mesh variable for velocity. Created automatically if not provided.
+    pressureField : MeshVariable, optional
+        Mesh variable for pressure. Created automatically if not provided.
+    degree : int, default=2
+        Polynomial degree for velocity elements.
+    order : int, default=2
+        Order parameter (typically same as degree).
+    p_continuous : bool, default=True
+        If False, use discontinuous pressure elements.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator (may be used in child classes).
 
-      - A preconditioner is usually required for the saddle point system and this is provided
-    through the `saddle_preconditioner` property. The default choice is $1/\eta$ for a scalar viscosity function.
+    Attributes
+    ----------
+    u : MeshVariable
+        Velocity field unknown :math:`\mathbf{u}`.
+    p : MeshVariable
+        Pressure field unknown :math:`p`.
+    bodyforce : sympy.Expr
+        Body force term :math:`\mathbf{f}`.
+    penalty : float
+        Augmented Lagrangian penalty parameter :math:`\lambda`.
+    saddle_preconditioner : sympy.Expr
+        Preconditioner for saddle point system (default: :math:`1/\eta`).
 
-    ## Notes
+    Notes
+    -----
+    - The viscosity tensor :math:`\boldsymbol{\eta}` is set via the
+      ``constitutive_model`` property
+    - For viscoelastic problems, the flux term contains stress history
+      tracked on a particle swarm
+    - Augmented Lagrangian approach adds :math:`\lambda \nabla \cdot \mathbf{u}`
+      to penalize incompressibility
+    - Pressure element order determines mixed FEM integration order
 
-      - For problems with viscoelastic behaviour, the flux term contains the stress history as well as the
-        stress and this term is a Lagrangian quantity that has to be tracked on a particle swarm.
-
-      - The interpolation order of the `pressureField` variable is used to determine the integration order of
-    the mixed finite element method and is usually lower than the order of the `velocityField` variable.
-
-      - It is possible to set discontinuous pressure variables by setting the `p_continous` option to `False`
-
+    See Also
+    --------
+    SNES_Stokes : Base Stokes solver.
+    uw.constitutive_models.ViscoElasticPlasticFlowModel : Constitutive model for VE flow.
     """
 
     instances = 0
@@ -721,7 +1294,7 @@ class SNES_VE_Stokes(SNES_Stokes):
 
     @property
     def delta_t(self):
-
+        """Elastic timestep from the constitutive model."""
         return self.constitutive_model.Parameters.dt_elastic
 
     ## Solver needs to update the stress history terms as well as call the SNES solve:
@@ -796,24 +1369,52 @@ class SNES_VE_Stokes(SNES_Stokes):
 
 class SNES_Projection(SNES_Scalar):
     r"""
-    # Projection Solver
+    Scalar projection solver for mapping functions to mesh variables.
 
-    Solves $u = \tilde{f}$ where $\tilde{f}$ is a function that can be evaluated within an element and
-    $u$ is a `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
-    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
-    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
-    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
-    evaluated within that context.
+    Solves :math:`u = \tilde{f}` where :math:`\tilde{f}` is a function that
+    can be evaluated within an element and :math:`u` is a mesh variable with
+    associated shape functions.
 
-    The projection implemented by creating a solver for this problem
+    Typically used to obtain a continuous representation of a function not
+    well-defined at mesh nodes (e.g., derivatives or flux components). More
+    broadly, it is a projection from one basis to another.
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla u \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ u - \tilde{f} \Bigl] }_{\mathbf{h}}} = 0
-    $$
+    The projection is implemented by solving:
 
-    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    .. math::
+
+        -\nabla \cdot \underbrace{\left[ \alpha \nabla u \right]}_{\mathbf{F}}
+        - \underbrace{\left[ u - \tilde{f} \right]}_{\mathbf{h}} = 0
+
+    The term :math:`\mathbf{F}` provides optional smoothing regularization.
+    Setting :math:`\alpha = 0` gives a pure L2 projection.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Target mesh variable for the projection.
+    scalar_Field : MeshVariable, optional
+        Alternative name for the target field.
+    degree : int, default=2
+        Polynomial degree for the finite element space.
+    solver_name : str, optional
+        Name for the solver instance.
+    verbose : bool, default=False
+        Enable verbose output.
+
+    Attributes
+    ----------
+    uw_function : sympy.Expr
+        The function :math:`\tilde{f}` to project.
+    smoothing : float
+        The regularization parameter :math:`\alpha`.
+
+    See Also
+    --------
+    SNES_Vector_Projection : Vector field projection.
+    SNES_Tensor_Projection : Tensor field projection.
     """
 
     @timing.routine_timer_decorator
@@ -835,64 +1436,58 @@ class SNES_Projection(SNES_Scalar):
         self.is_setup = False
         self._smoothing = sympy.sympify(0)
         self._uw_weighting_function = sympy.sympify(1)
-        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
-            self.Unknowns
-        )
+        self._uw_function = sympy.Matrix([0])  # Default: project zero
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(self.Unknowns)
 
         return
 
-    @property
-    def F0(self):
+    # =========================================================================
+    # PETSc Residual Templates
+    # L2 projection: minimize ||u - f||^2 with optional smoothing
+    # =========================================================================
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            (self.u.sym - self.uw_function) * self.uw_weighting_function,
-            "Scalar Projection pointwise misfit term: f_0(u)",
-        )
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        r"""Projection misfit term (pointwise).
 
-        # backward compatibility
-        self._f0 = f0_val
+        The $f_0$ term measures the weighted difference between the mesh
+        variable and the target function for L2 projection.
+        """,
+    )
 
-        return f0_val
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: self.smoothing * self.mesh.vector.gradient(self.u.sym),
+        r"""Projection smoothing term (pointwise).
 
-    @property
-    def F1(self):
+        The $\mathbf{F}_1$ term provides optional regularization via
+        $\alpha \nabla u$, where $\alpha$ is the ``smoothing`` parameter.
+        """,
+    )
 
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            self.smoothing * self.mesh.vector.gradient(self.u.sym),
-            "Scalar projection pointwise smoothing term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val
-
-        return F1_val
-
-    @property
-    def uw_function(self):
-        return self._uw_function
-
-    @uw_function.setter
-    def uw_function(self, user_uw_function):
-        self.is_setup = False
-        self._uw_function = sympy.Matrix([user_uw_function])
+    # Use SymbolicProperty for automatic unwrapping
+    uw_function = SymbolicProperty(matrix_wrap=True, doc="Function to project onto mesh")
 
     @property
     def smoothing(self):
+        """Smoothing regularization parameter for the projection."""
         return self._smoothing
 
     @smoothing.setter
     def smoothing(self, smoothing_factor):
+        """Set the smoothing regularization parameter."""
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
 
     @property
     def uw_weighting_function(self):
+        """Weighting function applied during projection."""
         return self._uw_weighting_function
 
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
+        """Set the weighting function for the projection."""
         self.is_setup = False
         self._uw_weighting_function = user_uw_function
 
@@ -909,24 +1504,48 @@ class SNES_Projection(SNES_Scalar):
 
 class SNES_Vector_Projection(SNES_Vector):
     r"""
-    # Projection Solver (Vector Variable)
+    Vector projection solver for mapping vector functions to mesh variables.
 
-    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a vector function that can be evaluated within an element and
-    $\mathbf{u}$ is a vector `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
-    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
-    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
-    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
-    evaluated within that context.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
+    is a vector function that can be evaluated within an element and
+    :math:`\mathbf{u}` is a vector mesh variable with associated shape functions.
 
-    The projection is implemented by creating a solver for this problem
+    Typically used to obtain a continuous representation of a vector function
+    not well-defined at mesh nodes (e.g., gradient or flux vectors).
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
-    $$
+    The projection is implemented by solving:
 
-    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    .. math::
+
+        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
+        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
+        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
+
+    The term :math:`\mathbf{F}` provides optional smoothing regularization.
+    Setting :math:`\alpha = 0` gives a pure L2 projection.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable, optional
+        Target vector mesh variable for the projection.
+    degree : int, default=2
+        Polynomial degree for the finite element space.
+    verbose : bool, default=False
+        Enable verbose output.
+
+    Attributes
+    ----------
+    uw_function : sympy.Matrix
+        The vector function :math:`\tilde{\mathbf{f}}` to project.
+    smoothing : float
+        The regularization parameter :math:`\alpha`.
+
+    See Also
+    --------
+    SNES_Projection : Scalar field projection.
+    SNES_Tensor_Projection : Tensor field projection.
     """
 
     @timing.routine_timer_decorator
@@ -948,45 +1567,30 @@ class SNES_Vector_Projection(SNES_Vector):
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
-        self._constitutive_model = uw.constitutive_models.Constitutive_Model(
-            self.Unknowns
-        )
+        self._uw_function = sympy.Matrix([[0] * self.mesh.dim])  # Default: project zero vector
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(self.Unknowns)
 
         return
 
-    @property
-    def F0(self):
+    # Use Template for persistent read-only template expressions
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        "Vector projection pointwise misfit term: f_0(u)",
+    )
 
-        f0_val = expression(
-            r"f_0 \left( \mathbf{u} \right)",
-            (self.u.sym - self.uw_function) * self.uw_weighting_function,
-            "Vector projection pointwise misfit term: f_0(u)",
-        )
-
-        # backward compatibility
-        self._f0 = f0_val
-
-        return f0_val
-
-    @property
-    def F1(self):
-
-        F1_val = expression(
-            r"\mathbf{F}_1\left( \mathbf{u} \right)",
+    F1 = Template(
+        r"\mathbf{F}_1\left( \mathbf{u} \right)",
+        lambda self: (
             self.smoothing * self.Unknowns.E
-            + self.penalty
-            * self.mesh.vector.divergence(self.u.sym)
-            * sympy.eye(self.mesh.dim),
-            "Vector projection pointwise smoothing term: F_1(u)",
-        )
-
-        # backward compatibility
-        self._f1 = F1_val
-
-        return F1_val
+            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
+        ),
+        "Vector projection pointwise smoothing term: F_1(u)",
+    )
 
     @timing.routine_timer_decorator
     def projection_problem_description(self):
+        """Build residual terms for vector projection FEM assembly."""
         # residual terms - defines the problem:
         # solve for a best fit to the continuous mesh
         # variable given the values in self.function
@@ -1000,74 +1604,93 @@ class SNES_Vector_Projection(SNES_Vector):
         self._f1 = (
             self.F1.sym
             + self.smoothing * self.Unknowns.E
-            + self.penalty
-            * self.mesh.vector.divergence(self.u.sym)
-            * sympy.eye(self.mesh.dim)
+            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
         )
 
         return
 
-    @property
-    def uw_function(self):
-        return self._uw_function
-
-    @uw_function.setter
-    def uw_function(self, user_uw_function):
-        self.is_setup = False
-        self._uw_function = sympy.Matrix(user_uw_function)
+    # Use SymbolicProperty for automatic unwrapping
+    uw_function = SymbolicProperty(matrix_wrap=True, doc="Vector function to project onto mesh")
 
     @property
     def smoothing(self):
+        """Smoothing regularization parameter for the projection."""
         return self._smoothing
 
     @smoothing.setter
     def smoothing(self, smoothing_factor):
+        """Set the smoothing regularization parameter."""
         self.is_setup = False
         self._smoothing = sympify(smoothing_factor)
 
     @property
     def penalty(self):
+        """Divergence penalty parameter for incompressibility."""
         return self._penalty
 
     @penalty.setter
     def penalty(self, value):
+        """Set the divergence penalty parameter."""
         self.is_setup = False
         symval = sympify(value)
         self._penalty = symval
 
     @property
     def uw_weighting_function(self):
+        """Weighting function applied during projection."""
         return self._uw_weighting_function
 
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
+        """Set the weighting function for the projection."""
         self.is_setup = False
         self._uw_weighting_function = user_uw_function
 
 
 class SNES_Tensor_Projection(SNES_Projection):
     r"""
-    # Projection Solver (Tensor Variable)
+    Tensor projection solver for mapping tensor functions to mesh variables.
 
-    Solves $\mathbf{u} = \tilde{\mathbf{f}}$ where $\tilde{\mathbf{f}}$ is a tensor-valued function that can be evaluated within an element and
-    $\mathbf{u}$ is a tensor `meshVariable` with associated shape functions. Typically, the projection is used to obtain a
-    continuous representation of a function that is not well defined at the mesh nodes. For example, functions of
-    the spatial derivatives of one or more `meshVariable` (e.g. components of fluxes) can be mapped to continuous
-    variables with a projection. More broadly it is a projection from one basis to another and its limitations should be
-    evaluated within that context.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
+    is a tensor-valued function that can be evaluated within an element and
+    :math:`\mathbf{u}` is a tensor mesh variable with associated shape functions.
 
-    The projection implemented by creating a solver for this problem
+    Typically used to obtain a continuous representation of a tensor function
+    not well-defined at mesh nodes (e.g., stress or strain tensors).
 
-    $$
-    -\nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\alpha \nabla \mathbf{u} \Bigr]}_{\mathbf{F}}} -
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{u} - \tilde{\mathbf{f}} \Bigl] }_{\mathbf{h}}} = 0
-    $$
+    The projection is implemented by solving:
 
-    Where the term $\mathbf{F}$ provides a smoothing regularization. $\alpha$ can be zero.
+    .. math::
 
-    Note: this is currently implemented component-wise as we do not have a native solver for tensor unknowns.
+        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
+        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
+        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
 
+    The term :math:`\mathbf{F}` provides optional smoothing regularization.
+    Setting :math:`\alpha = 0` gives a pure L2 projection.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    tensor_Field : MeshVariable, optional
+        Target tensor mesh variable for the projection.
+    scalar_Field : MeshVariable, optional
+        Scalar work variable used internally.
+    degree : int, default=2
+        Polynomial degree for the finite element space.
+    verbose : bool, default=False
+        Enable verbose output.
+
+    Notes
+    -----
+    Currently implemented component-wise as there is no native solver
+    for tensor unknowns.
+
+    See Also
+    --------
+    SNES_Projection : Scalar field projection.
+    SNES_Vector_Projection : Vector field projection.
     """
 
     @timing.routine_timer_decorator
@@ -1092,7 +1715,9 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     ## Need to over-ride solve method to run over all components
 
+    @timing.routine_timer_decorator
     def solve(self, verbose=False):
+        """Solve by projecting each tensor component sequentially."""
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
 
@@ -1111,14 +1736,12 @@ class SNES_Tensor_Projection(SNES_Projection):
 
                 self.uw_scalar_function = sympy.Matrix([[self.uw_function[i, j]]])
 
-                with self.mesh.access(self.u):
-                    self.u.data[:, 0] = self.t_field[i, j].data[:]
+                self.u.array[:, 0, 0] = self.t_field.array[:, i, j]
 
                 # solve the projection for the scalar sub-problem
                 super().solve(verbose=verbose)
 
-                with self.mesh.access(self.t_field):
-                    self.t_field[i, j].data[:] = self.u.data[:, 0]
+                self.t_field.array[:, i, j] = self.u.array[:, 0, 0]
 
         # That might be all ...
 
@@ -1126,7 +1749,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @property
     def F0(self):
-
+        """Pointwise misfit term for scalar subproblem."""
         f0_val = expression(
             r"f_0 \left( \mathbf{u} \right)",
             (self.u.sym - self.uw_scalar_function) * self.uw_weighting_function,
@@ -1140,7 +1763,7 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @property
     def F1(self):
-
+        """Pointwise smoothing flux term for scalar subproblem."""
         F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.smoothing * self.mesh.vector.gradient(self.u.sym),
@@ -1154,10 +1777,12 @@ class SNES_Tensor_Projection(SNES_Projection):
 
     @property
     def uw_scalar_function(self):
+        """Current scalar component function being projected."""
         return self._uw_scalar_function
 
     @uw_scalar_function.setter
     def uw_scalar_function(self, user_uw_function):
+        """Set the scalar component function for current tensor element."""
         self.is_setup = False
         self._uw_scalar_function = user_uw_function
 
@@ -1172,44 +1797,67 @@ class SNES_Tensor_Projection(SNES_Projection):
 
 class SNES_AdvectionDiffusion(SNES_Scalar):
     r"""
-    # Advection-Diffusion Equation Solver (Scalar Variable)
+    Advection-diffusion equation solver using semi-Lagrangian Crank-Nicolson.
 
-    This class provides a solver for the scalar Advection-Diffusion equation using the characteristics based Semi-Lagrange Crank-Nicholson method
-    which is described in Spiegelman & Katz, (2006).
+    Implements the characteristics-based method described in Spiegelman & Katz (2006):
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{u}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
+        \underbrace{\frac{\partial u}{\partial t} + \left( \mathbf{v} \cdot \nabla
+        \right) u}_{\dot{u}} - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa}
+        \nabla u \right]}_{\mathbf{F}} = \underbrace{f}_{\mathbf{h}}
 
-    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^*$ which represents the value of $u$ at
-    the points which later arrive at the nodal points of the mesh. This is achieved using a "hidden"
-    swarm variable which is advected backwards from the nodal points automatically during the `solve` phase.
+    The flux term :math:`\mathbf{F}` relates diffusive fluxes to gradients in
+    :math:`u`. Advective fluxes along the velocity field :math:`\mathbf{v}` are
+    handled in the :math:`\dot{u}` term.
 
-    ## Properties
+    The time derivative :math:`\dot{u}` involves upstream sampling to find
+    :math:`u^*`, the value of :math:`u` at points which later arrive at mesh
+    nodes. This is achieved using a hidden swarm variable advected backwards
+    from nodal points automatically during solve.
 
-      - The unknown is $u$.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable
+        Mesh variable for the transported scalar.
+    V_fn : MeshVariable or sympy.Basic
+        Velocity field for advection.
+    order : int, default=1
+        Time integration order (1 or 2).
+    restore_points_func : callable, optional
+        Function to restore particles to valid domain.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for the unknown.
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for the flux.
 
-      - The velocity field is $\mathbf{v}$ and is provided as a `sympy` function to allow operations such as time-averaging to be
-        calculated in situ (e.g. `V_Field = v_solution.sym`) **NOTE: no it's not.
+    Attributes
+    ----------
+    u : MeshVariable
+        The scalar unknown.
+    f : sympy.Expr
+        Volumetric source term.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
+    Notes
+    -----
+    - The diffusivity :math:`\kappa` is set via the ``constitutive_model`` property
+    - Sources :math:`f` can be any sympy expression involving mesh/swarm variables
 
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
+    References
+    ----------
+    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson
+    algorithm for the numerical solution of advection-diffusion problems.
+    *Geochemistry, Geophysics, Geosystems*, 7(4).
+    https://doi.org/10.1029/2005GC001073
 
-    ## References
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
-
+    See Also
+    --------
+    SNES_Diffusion : Pure diffusion solver without advection.
+    SNES_Navier_Stokes : Full momentum advection-diffusion.
     """
 
     def _object_viewer(self):
@@ -1227,9 +1875,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable,
-        V_fn: Union[
-            uw.discretisation.MeshVariable, sympy.Basic
-        ],  # Should be a sympy function
+        V_fn: Union[uw.discretisation.MeshVariable, sympy.Basic],  # Should be a sympy function
         order: int = 1,
         restore_points_func: Callable = None,
         verbose=False,
@@ -1246,7 +1892,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             DFDt=DFDt,
         )
 
-        if isinstance(V_fn, uw.discretisation._MeshVariable):
+        if isinstance(V_fn, uw.discretisation.MeshVariable):
             self._V_fn = V_fn.sym
         else:
             self._V_fn = V_fn
@@ -1270,7 +1916,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         if DuDt is None:
             self.Unknowns.DuDt = SemiLagrangian_DDt(
                 self.mesh,
-                u_Field.sym,
+                u_Field.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
                 self._V_fn,
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
@@ -1297,9 +1943,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         self.Unknowns.DFDt = SemiLagrangian_DDt(
             self.mesh,
-            sympy.Matrix(
-                [[0] * self.mesh.dim]
-            ),  # Actual function is not defined at this point
+            sympy.Matrix([[0] * self.mesh.dim]),  # Actual function is not defined at this point
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree,
@@ -1319,7 +1963,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def F0(self):
-
+        """Pointwise source term including time derivative."""
         f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f + self.DuDt.bdf(0) / self.delta_t,
@@ -1333,7 +1977,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def F1(self):
-
+        """Pointwise diffusive flux term (Adams-Moulton integration)."""
         F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.DFDt.adams_moulton_flux(),
@@ -1346,6 +1990,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         return F1_val
 
     def adv_diff_slcn_problem_description(self):
+        """Build residual terms for advection-diffusion FEM assembly."""
         # f0 residual term
         self._f0 = self.F0.sym
 
@@ -1356,103 +2001,257 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
     @property
     def f(self):
+        r"""Source term for the advection-diffusion equation.
+
+        The source :math:`f` appears on the right-hand side:
+
+        .. math::
+            \frac{\partial u}{\partial t} + \mathbf{V} \cdot \nabla u
+            = \nabla \cdot (\kappa \nabla u) + f
+
+        Returns
+        -------
+        sympy.Matrix
+            Source term expression.
+        """
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the volumetric source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
     @property
     def V_fn(self):
+        r"""Velocity field for advection.
+
+        The advection velocity :math:`\mathbf{V}` transports the scalar
+        field :math:`u`. Can be a MeshVariable or symbolic expression.
+
+        Returns
+        -------
+        sympy.Matrix
+            Velocity vector expression.
+        """
         return self._V_fn
+
+    @V_fn.setter
+    def V_fn(self, value):
+        """
+        Set the velocity function for advection.
+
+        Parameters:
+        -----------
+        value : uw.discretisation.MeshVariable or sympy.Basic
+            Velocity field as either a MeshVariable or sympy expression
+        """
+        self.is_setup = False  # Mark as needing setup when velocity changes
+        if isinstance(value, uw.discretisation.MeshVariable):
+            self._V_fn = value.sym
+        else:
+            self._V_fn = value
 
     @property
     def delta_t(self):
+        r"""Timestep for time integration.
+
+        The timestep :math:`\Delta t` controls the temporal discretization.
+        For explicit advection, this should satisfy the CFL condition:
+
+        .. math::
+            \Delta t < \frac{h}{|\mathbf{V}|}
+
+        where :math:`h` is the element size and :math:`|\mathbf{V}|` is the
+        velocity magnitude.
+
+        Returns
+        -------
+        UWexpression
+            Timestep value.
+
+        See Also
+        --------
+        estimate_dt : Computes a stable timestep automatically.
+        """
         return self._delta_t
 
     @delta_t.setter
     def delta_t(self, value):
+        """Set the timestep (handles unit conversion if provided)."""
         self.is_setup = False
+
+        # Handle Pint Quantities with time dimensions
+        if hasattr(value, "dimensionality"):
+            # This is a Pint Quantity - check if it has time dimensions
+            try:
+                from ..scaling import units as ureg
+
+                time_dim = ureg.second.dimensionality
+                if value.dimensionality == time_dim:
+                    # Convert physical time to nondimensional using model time scale
+                    model = uw.get_default_model()
+                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
+                        time_scale = model.fundamental_scales.get("time")
+                        if time_scale is not None:
+                            # Physical time / time scale = nondimensional time
+                            # Must use to_reduced_units() to convert both quantities
+                            # to same base units before extracting magnitude.
+                            # Otherwise Pint keeps different unit bases (megayear/second)
+                            # and .magnitude returns the unconverted number!
+                            result = value / time_scale
+
+                            # Get the internal Pint quantity for proper unit conversion
+                            if hasattr(result, "_pint_qty"):
+                                # UWQuantity - access internal Pint quantity
+                                pint_result = result._pint_qty.to_reduced_units()
+                            elif hasattr(result, "to_reduced_units"):
+                                # Raw Pint Quantity
+                                pint_result = result.to_reduced_units()
+                            else:
+                                pint_result = result
+
+                            # Extract the dimensionless magnitude
+                            if hasattr(pint_result, "magnitude"):
+                                value = float(pint_result.magnitude)
+                            else:
+                                value = float(pint_result)
+            except Exception:
+                pass  # If anything fails, try to use value as-is
+
         self._delta_t.sym = value
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the given
-        mesh and diffusivity configuration. This is an implicit solver
-        so the $\delta_t$ should be interpreted as:
+        Estimate an appropriate timestep for the advection-diffusion solver.
 
-            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+        This is an implicit solver so the returned :math:`\delta t` is the
+        minimum of:
 
-            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+        - :math:`\delta t_{\textrm{diff}}`: typical time for diffusion across an element
+        - :math:`\delta t_{\textrm{adv}}`: typical element-crossing time for a fluid parcel
+
+        Returns
+        -------
+        pint.Quantity or float
+            The recommended timestep with physical time units if a model
+            with reference scales is available, otherwise nondimensional.
         """
-
-        if isinstance(self.constitutive_model.Parameters.diffusivity, sympy.Expr):
-            if uw.function.fn_is_constant_expr(
-                self.constitutive_model.Parameters.diffusivity
-            ):
-                max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.Parameters.diffusivity,
-                    np.zeros((1, self.mesh.dim)),
-                )
-
-            else:
-                k = uw.function.evaluate(
-                    sympy.sympify(self.constitutive_model.Parameters.diffusivity),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-
-                max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.Parameters.diffusivity
-            max_diffusivity = k
 
         ### required modules
         from mpi4py import MPI
 
-        ## get global max dif value
+        # Use the unified .K property from the constitutive model
+        # This provides diffusivity for diffusion models
+        K = self.constitutive_model.K
+
+        # Evaluate the diffusivity (handles constant and spatially-varying cases)
+        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
+            K_sym = K.sym if hasattr(K, 'sym') else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            diffusivity = diffusivity.magnitude
+
+        # Ensure diffusivity is a plain numpy scalar
+        max_diffusivity = float(np.asarray(diffusivity).max())
+
+        ## get global max diffusivity value
         comm = uw.mpi.comm
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ### get the velocity values
+        ### get the velocity values at element centroids (nondimensional)
         vel = uw.function.evaluate(
             self.V_fn,
             self.mesh._centroids,
-            self.mesh.N,
         )
 
-        ### get global velocity from velocity field
-        max_magvel = np.linalg.norm(vel, axis=1).max()
-        max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
+        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(vel, "units") and vel.units is not None:
+            vel = uw.non_dimensionalise(vel)
+        elif hasattr(vel, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            vel = vel.magnitude
 
-        ## get radius
-        min_dx = self.mesh.get_min_radius()
+        # Ensure vel is a plain numpy array
+        vel = np.asarray(vel)
 
-        ## estimate dt of adv and diff components
+        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
+        vel = np.squeeze(vel)
 
-        self.dt_adv = 0.0
-        self.dt_diff = 0.0
+        # Handle edge case of single element (ensure 2D)
+        if vel.ndim == 1:
+            vel = vel.reshape(1, -1)
 
-        if max_magvel_glob == 0.0:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            self.dt_diff = dt_diff
-            dt_estimate = dt_diff
-        elif diffusivity_glob == 0.0:
-            dt_adv = min_dx / max_magvel_glob
-            self.dt_adv = dt_adv
-            dt_estimate = dt_adv
+        # Get per-element velocity magnitudes
+        vel_magnitudes = np.linalg.norm(vel, axis=1)
+
+        # Get per-element radii (characteristic element size)
+        element_radii = self.mesh._radii
+
+        ## estimate dt of adv and diff components using per-element approach
+        ## dt_adv_i = h_i / |v_i| for advection
+        ## dt_diff_i = h_i^2 / κ for diffusion (using global κ for now)
+
+        # Per-element diffusive timestep (all elements use same diffusivity)
+        if diffusivity_glob > 0:
+            dt_diff_per_element = (element_radii ** 2) / diffusivity_glob
+            min_dt_diff_local = np.min(dt_diff_per_element) if len(dt_diff_per_element) > 0 else np.inf
         else:
-            dt_diff = (min_dx**2) / diffusivity_glob
-            self.dt_diff = dt_diff
-            dt_adv = min_dx / max_magvel_glob
-            self.dt_adv = dt_adv
+            min_dt_diff_local = np.inf
 
-            dt_estimate = min(dt_diff, dt_adv)
+        # Per-element advective timestep
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dt_adv_per_element = np.where(
+                vel_magnitudes > 0,
+                element_radii / vel_magnitudes,
+                np.inf
+            )
+        min_dt_adv_local = np.min(dt_adv_per_element) if len(dt_adv_per_element) > 0 else np.inf
 
-        return dt_estimate
+        # Get global minimum timesteps (parallel-safe)
+        min_dt_diff_glob = comm.allreduce(min_dt_diff_local, op=MPI.MIN)
+        min_dt_adv_glob = comm.allreduce(min_dt_adv_local, op=MPI.MIN)
+
+        # Store for user inspection
+        self.dt_adv = min_dt_adv_glob if not np.isinf(min_dt_adv_glob) else 0.0
+        self.dt_diff = min_dt_diff_glob if not np.isinf(min_dt_diff_glob) else 0.0
+
+        # Take overall minimum (respecting infinity for zero velocity/diffusivity cases)
+        dt_estimate = min(min_dt_diff_glob, min_dt_adv_glob)
+
+        # If both are infinite (no velocity and no diffusivity), return infinity
+        if np.isinf(dt_estimate):
+            return np.inf
+
+        # Dimensionalise the result to physical time
+        try:
+            return uw.dimensionalise(np.squeeze(dt_estimate), {'[time]': 1})
+        except Exception:
+            # Fallback: return plain nondimensional number
+            return np.squeeze(dt_estimate)
 
     @timing.routine_timer_decorator
     def solve(
@@ -1496,6 +2295,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         super().solve(zero_init_guess, _force_setup)
 
+        # Invalidate cached data views - PETSc may have replaced underlying buffers
+        # This ensures .data and .array properties return fresh data from PETSc
+        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
         self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
 
@@ -1507,31 +2313,54 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
 class SNES_Diffusion(SNES_Scalar):
     r"""
-    # Diffusion Equation Solver (Scalar Variable)
+    Diffusion equation solver using mesh-based finite elements.
 
-    This class provides a solver for the scalar Diffusion equation using mesh-based finite elements.
+    Solves the scalar diffusion equation:
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial u}{\partial t} - \left( \mathbf{v} \cdot \nabla \right) u \Bigr]}_{\dot{\mathbf{f}}}} -
-    \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \boldsymbol\kappa \nabla u \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ f \Bigl] }_{\mathbf{f}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$.
+        \underbrace{\frac{\partial u}{\partial t}}_{\dot{f}}
+        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \nabla u
+        \right]}_{\mathbf{F}} = \underbrace{f}_{h}
 
-    ## Properties
+    The flux term :math:`\mathbf{F}` relates diffusive fluxes to gradients
+    in the unknown :math:`u`.
 
-      - The unknown is $u$.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    u_Field : MeshVariable
+        Mesh variable for the diffusing scalar.
+    order : int, default=1
+        Time integration order.
+    theta : float, default=0.0
+        Time integration parameter (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+    evalf : bool, default=False
+        Numerically evaluate symbolic expressions during setup.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
+        Time derivative operator for the unknown.
+    DFDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
+        Time derivative operator for the flux.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
+    Attributes
+    ----------
+    u : MeshVariable
+        The scalar unknown.
+    f : sympy.Expr
+        Volumetric source term.
 
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
+    Notes
+    -----
+    - The diffusivity :math:`\kappa` is set via the ``constitutive_model`` property
+    - Sources :math:`f` can be any sympy expression involving mesh/swarm variables
 
+    See Also
+    --------
+    SNES_AdvectionDiffusion : Adds advection transport.
+    SNES_Poisson : Steady-state diffusion (no time derivative).
     """
 
     def _object_viewer(self):
@@ -1573,9 +2402,7 @@ class SNES_Diffusion(SNES_Scalar):
         self.theta = theta
 
         # These are unique to the advection solver
-        self._delta_t = uw.function.expression(
-            R"\Delta t", 0, "Physically motivated timestep"
-        )
+        self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
         self.is_setup = False
 
         ### Setup the history terms ... This version should not build anything
@@ -1642,8 +2469,8 @@ class SNES_Diffusion(SNES_Scalar):
 
     @property
     def F0(self):
-
-        f0 = uw.function.expression(
+        """Pointwise source term including time derivative."""
+        f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
             -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
             "Diffusion pointwise force term: f_0(u)",
@@ -1656,8 +2483,8 @@ class SNES_Diffusion(SNES_Scalar):
 
     @property
     def F1(self):
-
-        F1_val = uw.function.expression(
+        """Pointwise diffusive flux term."""
+        F1_val = expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self.DFDt.adams_moulton_flux(),
             "Diffusion pointwise flux term: F_1(u)",
@@ -1670,73 +2497,139 @@ class SNES_Diffusion(SNES_Scalar):
 
     @property
     def f(self):
+        """Source term for the diffusion equation."""
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the volumetric source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
     @property
     def delta_t(self):
+        """Timestep for time integration."""
         return self._delta_t
 
     @delta_t.setter
     def delta_t(self, value):
+        """Set the timestep (handles unit conversion if provided)."""
         self.is_setup = False
+
+        # Handle Pint Quantities with time dimensions
+        if hasattr(value, "dimensionality"):
+            # This is a Pint Quantity - check if it has time dimensions
+            try:
+                from ..scaling import units as ureg
+
+                time_dim = ureg.second.dimensionality
+                if value.dimensionality == time_dim:
+                    # Convert physical time to nondimensional using model time scale
+                    model = uw.get_default_model()
+                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
+                        time_scale = model.fundamental_scales.get("time")
+                        if time_scale is not None:
+                            # Physical time / time scale = nondimensional time
+                            # Must use to_reduced_units() to convert both quantities
+                            # to same base units before extracting magnitude.
+                            # Otherwise Pint keeps different unit bases (megayear/second)
+                            # and .magnitude returns the unconverted number!
+                            result = value / time_scale
+
+                            # Get the internal Pint quantity for proper unit conversion
+                            if hasattr(result, "_pint_qty"):
+                                # UWQuantity - access internal Pint quantity
+                                pint_result = result._pint_qty.to_reduced_units()
+                            elif hasattr(result, "to_reduced_units"):
+                                # Raw Pint Quantity
+                                pint_result = result.to_reduced_units()
+                            else:
+                                pint_result = result
+
+                            # Extract the dimensionless magnitude
+                            if hasattr(pint_result, "magnitude"):
+                                value = float(pint_result.magnitude)
+                            else:
+                                value = float(pint_result)
+            except Exception:
+                pass  # If anything fails, try to use value as-is
+
         self._delta_t.sym = value
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the given
-        mesh and diffusivity configuration. This is an implicit solver
-        so the $\delta_t$ should be interpreted as:
+        Estimate an appropriate timestep for the diffusion solver.
 
-            - ${\delta t}_\textrm{diff}: a typical time for the diffusion front to propagate across an element
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+        This solver only has a diffusive component, so the returned
+        :math:`\delta t` is:
 
-            returns (${\delta t}_\textrm{diff}, ${\delta t}_\textrm{adv})
+        - :math:`\delta t_{\textrm{diff}}`: typical time for diffusion across an element
+
+        Returns
+        -------
+        pint.Quantity or float
+            The diffusive timestep with physical time units if a model
+            with reference scales is available, otherwise nondimensional.
         """
-
-        if isinstance(self.constitutive_model.diffusivity.sym, sympy.Expr):
-            if uw.function.fn_is_constant_expr(self.constitutive_model.diffusivity.sym):
-                max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.diffusivity.sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-
-            else:
-                k = uw.function.evaluate(
-                    sympy.sympify(self.constitutive_model.diffusivity.sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-
-                max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.diffusivity.sym
-            max_diffusivity = k
 
         ### required modules
         from mpi4py import MPI
 
-        ## get global max dif value
-        comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
+        # Use the unified .K property from the constitutive model
+        # This provides diffusivity for diffusion models
+        K = self.constitutive_model.K
 
-        ## get radius
+        # Evaluate the diffusivity (handles constant and spatially-varying cases)
+        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
+            K_sym = K.sym if hasattr(K, 'sym') else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            diffusivity = diffusivity.magnitude
+
+        # Ensure diffusivity is a plain numpy scalar
+        diffusivity = float(np.asarray(diffusivity).max())
+
+        ## get global max diffusivity value
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+
+        ## get mesh spacing (nondimensional, consistent with diffusivity)
         min_dx = self.mesh.get_min_radius()
 
-        ## estimate dt of adv and diff components
+        ## estimate dt of diff component (all in nondimensional units)
         self.dt_diff = 0.0
 
-        dt_diff = (min_dx**2) / diffusivity_glob
-        self.dt_diff = dt_diff
+        if diffusivity_glob != 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+            self.dt_diff = dt_diff
+        else:
+            dt_diff = np.inf
 
         dt_estimate = dt_diff
 
-        return dt_estimate
+        # Apply unit-aware scaling if the solver has unit-aware variables
+        return _apply_unit_aware_scaling(np.squeeze(dt_estimate), self.u, self.mesh)
 
     @timing.routine_timer_decorator
     def solve(
@@ -1800,54 +2693,79 @@ class SNES_Diffusion(SNES_Scalar):
 # This one is already updated to work with the Lagrange D_Dt
 class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     r"""
-    # Navier-Stokes Equation Solver
+    Navier-Stokes equation solver with momentum advection.
 
-    This class provides a solver for the Navier-Stokes (vector Advection-Diffusion) equation which is similar to that
-    used in the Semi-Lagrange Crank-Nicholson method (Spiegelman & Katz, 2006) but using a
-    distributed sampling of upstream values taken from an arbitrary swarm variable.
+    Provides a solver for the Navier-Stokes (vector advection-diffusion) equation
+    similar to the Semi-Lagrange Crank-Nicolson method (Spiegelman & Katz, 2006)
+    but using distributed upstream sampling from a swarm variable.
 
-    $$
-    \color{Green}{\underbrace{ \Bigl[ \frac{\partial \mathbf{u} }{\partial t} +
-                                      \left( \mathbf{u} \cdot \nabla \right) \mathbf{u} \ \Bigr]}_{\dot{\mathbf{u}}}} -
-        \nabla \cdot
-            \color{Blue}{\underbrace{\Bigl[ \frac{\boldsymbol{\eta}}{2} \left(
-                    \nabla \mathbf{u} + \nabla \mathbf{u}^T \right) - p \mathbf{I} \Bigr]}_{\mathbf{F}}} =
-            \color{Maroon}{\underbrace{\Bigl[ \mathbf{f} \Bigl] }_{\mathbf{h}}}
-    $$
+    .. math::
 
-    The term $\mathbf{F}$ relates diffusive fluxes to gradients in the unknown $u$. The advective flux that results from having gradients along
-    the direction of transport (given by the velocity vector field $\mathbf{v}$ ) are included in the $\dot{\mathbf{u}}$ term.
+        \underbrace{\frac{\partial \mathbf{u}}{\partial t}
+        + \left( \mathbf{u} \cdot \nabla \right) \mathbf{u}}_{\dot{\mathbf{u}}}
+        - \nabla \cdot \underbrace{\left[ \frac{\boldsymbol{\eta}}{2}
+        \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
+        - p \mathbf{I} \right]}_{\mathbf{F}} = \underbrace{\mathbf{f}}_{\mathbf{h}}
 
-    The term $\dot{\mathbf{u}}$ involves upstream sampling to find the value $u^{ * }$ which represents the value of $u$ at
-    the beginning of the timestep. This is achieved using a `swarmVariable` that carries history information along the flow path.
-    A dense sampling is required to achieve similar accuracy to the original SLCN approach but it allows the use of a single swarm
-    for history tracking of variables with different interpolation order and for material tracking. The user is required to supply
-    **and update** the swarmVariable representing $u^{ * }$
+    The flux term :math:`\mathbf{F}` relates viscous stresses to velocity gradients.
+    Advective momentum transport is handled in the :math:`\dot{\mathbf{u}}` term.
 
-    ## Properties
+    The time derivative :math:`\dot{\mathbf{u}}` involves upstream sampling to find
+    :math:`\mathbf{u}^*`, representing velocity at the start of the timestep. This is
+    achieved using a swarm variable that carries history information along flow paths.
 
-      - The unknown is $u$.
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    velocityField : MeshVariable
+        Mesh variable for velocity.
+    pressureField : MeshVariable
+        Mesh variable for pressure.
+    rho : float or sympy.Expr
+        Fluid density.
+    order : int, default=1
+        Time integration order.
+    theta : float, default=0.5
+        Time integration parameter.
+    p_continuous : bool, default=True
+        If False, use discontinuous pressure elements.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for velocity.
+    DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
+        Time derivative operator for stress.
 
-      - The history variable is $u^*$ and is provided in the form of a `sympy` function. It is the user's responsibility to keep this
-        variable updated.
+    Attributes
+    ----------
+    u : MeshVariable
+        Velocity field unknown.
+    p : MeshVariable
+        Pressure field unknown.
+    rho : sympy.Expr
+        Fluid density.
+    bodyforce : sympy.Expr
+        Body force term :math:`\mathbf{f}`.
 
-      - The diffusivity tensor, $\kappa$ is provided by setting the `constitutive_model` property to
-        one of the scalar `uw.constitutive_models` classes and populating the parameters.
-        It is usually a constant or a function of position / time and may also be non-linear
-        or anisotropic.
+    Notes
+    -----
+    - The viscosity :math:`\eta` is set via the ``constitutive_model`` property
+    - High-order shape functions (cubic or higher) are recommended for accurate
+      history term interpolation
+    - The user must supply and update the swarm variable representing :math:`\mathbf{u}^*`
 
-      - Volumetric sources of $u$ are specified using the $f$ property and can be any valid combination of `sympy` functions of position and
-        `meshVariable` or `swarmVariable` types.
+    References
+    ----------
+    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson
+    algorithm for the numerical solution of advection-diffusion problems.
+    *Geochemistry, Geophysics, Geosystems*, 7(4).
+    https://doi.org/10.1029/2005GC001073
 
-    ## Notes
-
-      - The solver requires relatively high order shape functions to accurately interpolate the history terms.
-        Spiegelman & Katz recommend cubic or higher degree for $u$ but this is not checked.
-
-    ## References
-
-    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson algorithm for the numerical solution
-    of advection-diffusion problems. Geochemistry, Geophysics, Geosystems, 7(4). https://doi.org/10.1029/2005GC001073
+    See Also
+    --------
+    SNES_Stokes : Steady-state Stokes flow (no inertia).
+    SNES_AdvectionDiffusion : Scalar advection-diffusion.
     """
 
     def _object_viewer(self):
@@ -1913,7 +2831,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if self.Unknowns.DuDt is None:
             self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
                 self.mesh,
-                self.u.sym,
+                self.u.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
                 self.u.sym,
                 vtype=uw.VarType.VECTOR,
                 degree=self.u.degree,
@@ -1952,7 +2870,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def F0(self):
-
+        """Pointwise momentum source term (body force + inertia)."""
         DuDt = self.Unknowns.DuDt
 
         # I think this should be bdf(1) ... the higher order
@@ -1970,6 +2888,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def F1(self):
+        """Pointwise stress flux term (viscous + pressure)."""
         dim = self.mesh.dim
 
         DFDt = self.Unknowns.DFDt
@@ -1990,8 +2909,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         else:
             F1 = expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
-                self._constitutive_model.flux.T
-                - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
+                self._constitutive_model.flux.T - sympy.eye(self.mesh.dim) * (self.p.sym[0]),
                 "NStokes pressure gradient term: F_1(u) - No Flux history provided",
             )
 
@@ -2001,7 +2919,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def PF0(self):
-
+        """Pointwise constraint term (continuity equation)."""
         dim = self.mesh.dim
 
         f0 = expression(
@@ -2016,6 +2934,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     ## Deprecate this function
     def navier_stokes_problem_description(self):
+        """Build residual terms for Navier-Stokes FEM assembly (deprecated)."""
         # f0 residual term
         self._u_f0 = self.F0.sym
 
@@ -2029,43 +2948,57 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
     @property
     def delta_t(self):
+        """Timestep for time integration."""
         return self._delta_t
 
     @delta_t.setter
     def delta_t(self, value):
+        """Set the timestep value."""
         self.is_setup = False
         self._delta_t.sym = value
 
     @property
     def rho(self):
+        """Fluid density."""
         return self._rho
 
     @rho.setter
     def rho(self, value):
+        """Set the fluid density."""
         self.is_setup = False
         self._rho.sym = value
 
     @property
     def f(self):
+        """Source term for the momentum equation."""
         return self._f
 
     @f.setter
     def f(self, value):
+        """Set the volumetric source term."""
         self.is_setup = False
         self._f = sympy.Matrix((value,))
 
     @property
     def div_u(self):
+        r"""Velocity divergence: :math:`\nabla \cdot \mathbf{u} = \mathrm{tr}(\dot{\varepsilon})`."""
         E = self.strainrate
         divergence = E.trace()
         return divergence
 
     @property
     def strainrate(self):
+        r"""Symmetric strain rate tensor (with 1/2 factor).
+
+        .. math::
+            \dot{\varepsilon}_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j}
+            + \frac{\partial u_j}{\partial x_i}\right)
+        """
         return sympy.Matrix(self.Unknowns.E)
 
     @property
     def DuDt(self):
+        """Time derivative operator for velocity."""
         return self.Unknowns.DuDt
 
     @DuDt.setter
@@ -2073,48 +3006,58 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self,
         DuDt_value: Union[SemiLagrangian_DDt, Lagrangian_DDt],
     ):
+        """Set the time derivative operator for velocity."""
         self.Unknowns.DuDt = DuDt_value
         self._solver_is_setup = False
 
     @property
     def DFDt(self):
+        """Time derivative operator for stress flux."""
         return self.Unknowns.DFDt
 
     @property
     def constraints(self):
+        """Constraint equation (typically incompressibility)."""
         return self._constraints
 
     @constraints.setter
     def constraints(self, constraints_matrix):
+        """Set the constraint equation."""
         self._is_setup = False
         symval = sympify(constraints_matrix)
         self._constraints = symval
 
     @property
     def bodyforce(self):
+        """Body force vector (e.g., gravity)."""
         return self._bodyforce
 
     @bodyforce.setter
     def bodyforce(self, value):
+        """Set the body force vector."""
         self.is_setup = False
         self._bodyforce = self.mesh.vector.to_matrix(value)
 
     @property
     def saddle_preconditioner(self):
+        """Preconditioner for the Schur complement."""
         return self._saddle_preconditioner
 
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
+        """Set the Schur complement preconditioner."""
         self.is_setup = False
         symval = sympify(value)
         self._saddle_preconditioner = symval
 
     @property
     def penalty(self):
+        """Augmented Lagrangian penalty parameter."""
         return self._penalty
 
     @penalty.setter
     def penalty(self, value):
+        """Set the augmented Lagrangian penalty parameter."""
         self.is_setup = False
         self._penalty.sym = value
 
@@ -2187,41 +3130,62 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @timing.routine_timer_decorator
     def estimate_dt(self):
         r"""
-        Calculates an appropriate timestep for the given
-        mesh and viscosity configuration. This is an implicit solver
-        so the $\delta_t$ should be interpreted as:
+        Estimate an appropriate timestep for the Navier-Stokes solver.
 
-            - ${\delta t}_\textrm{diff}: a typical time for the diffusion of vorticity across an element
-            - ${\delta t}_\textrm{adv}: a typical element-crossing time for a fluid parcel
+        This is an implicit solver, so the returned :math:`\delta t` should
+        be interpreted as:
 
-        returns: ${\delta t}_\textrm{diff}$, ${\delta t}_\textrm{adv}$
+        - :math:`\delta t_{\textrm{diff}}`: typical time for vorticity diffusion across an element
+        - :math:`\delta t_{\textrm{adv}}`: typical element-crossing time for a fluid parcel
 
+        The Navier-Stokes equations include momentum diffusion via kinematic
+        viscosity :math:`\nu = \eta/\rho`, so the diffusive timestep is computed
+        from this quantity.
 
+        Returns
+        -------
+        tuple
+            (:math:`\delta t_{\textrm{diff}}`, :math:`\delta t_{\textrm{adv}}`)
         """
-
-        # cf advection-diffusion. Here the diffusivity is represented by viscosity
-        if isinstance(self.constitutive_model.viscosity, sympy.Expr):
-            if uw.function.fn_is_constant_expr(self.constitutive_model.viscosity):
-                max_diffusivity = uw.function.evaluate(
-                    self.constitutive_model.Parameters.viscosity,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                k = uw.function.evaluate(
-                    sympy.sympify(self.constitutive_model.viscosity),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-
-                max_diffusivity = k.max()
-        else:
-            k = self.constitutive_model.viscosity / self.rho
-            max_diffusivity = k
 
         ### required modules
         from mpi4py import MPI
 
-        ## get global max dif value
+        # For Navier-Stokes, diffusivity is the kinematic viscosity: ν = η/ρ
+        # Use the unified .K property from the constitutive model (returns viscosity)
+        K = self.constitutive_model.K
+
+        # Evaluate the viscosity (handles constant and spatially-varying cases)
+        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
+            K_sym = K.sym if hasattr(K, 'sym') else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym,
+                    np.zeros((1, self.mesh.dim)),
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym),
+                    self.mesh._centroids,
+                    self.mesh.N,
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            diffusivity = diffusivity.magnitude
+
+        # Ensure diffusivity is a plain numpy scalar
+        max_diffusivity = float(np.asarray(diffusivity).max())
+
+        ## get global max diffusivity value
         comm = uw.mpi.comm
         diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
@@ -2232,7 +3196,17 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.mesh.N,
         )
 
-        v_degree = self.u.degree
+        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
+        # consistent nondimensional values that match mesh._radii
+        # Note: .magnitude returns physical units, which would be wrong here
+        if hasattr(vel, "units") and vel.units is not None:
+            vel = uw.non_dimensionalise(vel)
+        elif hasattr(vel, "magnitude"):
+            # Plain UWQuantity without units context - use magnitude
+            vel = vel.magnitude
+
+        # Ensure vel is a plain numpy array
+        vel = np.asarray(vel)
 
         ### get global velocity from velocity field
         max_magvel = np.linalg.norm(vel, axis=1).max()
@@ -2242,16 +3216,16 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         min_dx = self.mesh.get_min_radius()
 
         ## estimate dt of adv and diff components
+        dt_diff = np.inf
+        dt_adv = np.inf
 
-        if max_magvel_glob == 0.0:
-            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
-            dt_estimate = dt_diff
-        elif diffusivity_glob == 0.0:
-            dt_adv = min_dx / max_magvel_glob
-            dt_estimate = dt_adv
-        else:
-            dt_diff = ((min_dx / v_degree) ** 2) / diffusivity_glob
-            dt_adv = min_dx / max_magvel_glob
-            dt_estimate = min(dt_diff, dt_adv)
+        if diffusivity_glob != 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
 
-        return dt_diff, dt_adv
+        if max_magvel_glob != 0.0:
+            dt_adv = min_dx / max_magvel_glob
+
+        return (
+            _apply_unit_aware_scaling(np.squeeze(dt_diff), self.u, self.mesh),
+            _apply_unit_aware_scaling(np.squeeze(dt_adv), self.u, self.mesh),
+        )

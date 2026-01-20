@@ -10,6 +10,24 @@ import numpy as np
 import sympy
 import pytest
 
+# Integration tests - multiple variables, polynomial evaluation, 3D meshes
+pytestmark = pytest.mark.level_2
+
+
+@pytest.fixture(autouse=True)
+def reset_model_state():
+    """Reset model state before each test to prevent pollution from other tests.
+
+    Tests in test_0850_units_propagation set reference quantities which can affect
+    coordinate scaling and evaluation results. This fixture ensures a clean state.
+    """
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    yield
+    # Cleanup after test (optional)
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+
 
 n = 10
 x = np.linspace(0.1, 0.9, n)
@@ -36,8 +54,7 @@ def test_number_vector_mult():
         vtype=uw.VarType.VECTOR,
         varsymbol=r"V",
     )
-    with mesh.access(var_vector):
-        var_vector.data[:, :] = (4.0, 5.0)
+    var_vector.array[...] = (4.0, 5.0)
 
     result = uw.function.evaluate(3 * var_vector.sym[0], coords)
     assert np.allclose(np.array(((12.0),)), result, rtol=1e-05, atol=1e-08)
@@ -56,8 +73,7 @@ def test_number_vector_mult_evalf():
         vtype=uw.VarType.VECTOR,
         varsymbol=r"V",
     )
-    with mesh.access(var_vector):
-        var_vector.data[:, :] = (4.0, 5.0)
+    var_vector.array[...] = (4.0, 5.0)
 
     result = uw.function.evaluate(3 * var_vector.sym[0], coords, evalf=True)
     assert np.allclose(np.array(((12.0),)), result, rtol=1e-05, atol=1e-08)
@@ -75,9 +91,9 @@ def test_scalar_vector_mult():
     var_vector = uw.discretisation.MeshVariable(
         varname="var_vector_2", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(var_scalar, var_vector):
-        var_scalar.data[:] = 3.0
-        var_vector.data[:, :] = (4.0, 5.0)
+    with uw.synchronised_array_update():
+        var_scalar.array[...] = 3.0
+        var_vector.array[...] = (4.0, 5.0)
 
     result = uw.function.evaluate(var_scalar.sym[0] * var_vector.sym[0], coords)
     assert np.allclose(np.array(((12.0),)), result, rtol=1e-05, atol=1e-08)
@@ -95,12 +111,10 @@ def test_vector_dot_product():
     var_vector2 = uw.discretisation.MeshVariable(
         varname="var_vector2", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(var_vector1, var_vector2):
-        var_vector1.data[:] = (1.0, 2.0)
-        var_vector2.data[:] = (3.0, 4.0)
-    result = uw.function.evaluate(
-        var_vector1.sym.dot(var_vector2.sym), coords, evalf=True
-    )
+    with uw.synchronised_array_update():
+        var_vector1.array[...] = (1.0, 2.0)
+        var_vector2.array[...] = (3.0, 4.0)
+    result = uw.function.evaluate(var_vector1.sym.dot(var_vector2.sym), coords, evalf=True)
     assert np.allclose(11.0, result, rtol=1e-05, atol=1e-08)
 
     del mesh
@@ -126,16 +140,15 @@ def test_polynomial_mesh_var_degree():
 
     # Set variable data to represent polynomial function.
     for var in vars:
-        with mesh.access(var):
-            vcoords = var.coords
-            var.data[:, 0] = tensor_product(var.degree, vcoords[:, 0], vcoords[:, 1])
+        vcoords = var.coords
+        var.array[:, 0, 0] = tensor_product(var.degree, vcoords[:, 0], vcoords[:, 1])
 
     # Test that interpolated variables reproduce exactly polymial function of associated degree.
     for var in vars:
         result = uw.function.evaluate(var.sym[0], coords)
         assert np.allclose(
             tensor_product(var.degree, coords[:, 0], coords[:, 1]),
-            result,
+            result.squeeze(),
             rtol=1e-05,
             atol=1e-08,
         )
@@ -154,14 +167,14 @@ def test_many_many_scalar_mult_var():
             )
         )
     factorial = 1.0
-    with mesh.access(*vars):
+    with uw.synchronised_array_update():
         for i, var in enumerate(vars):
-            var.data[:] = float(i)
+            var.array[...] = float(i)
             factorial *= float(i)
     multexpr = vars[0].fn
     for var in vars[1:]:
         multexpr *= var.fn
-    result = uw.function.evaluate(multexpr, coords)
+    result = uw.function.evaluate(multexpr, coords).squeeze()
     assert np.allclose(factorial, result, rtol=1e-05, atol=1e-08)
 
 
@@ -174,13 +187,16 @@ def test_many_many_scalar_mult_var():
 def test_polynomial_sympy():
     degree = 20
     mesh = uw.meshing.StructuredQuadBox()
+
+    print(tensor_product(degree, coords[:, 0], coords[:, 1]))
+
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
         uw.function.evaluate(
             tensor_product(degree, mesh.r[0], mesh.r[1]),
             coords,
             coord_sys=mesh.N,
-        ),
+        ).squeeze(),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -205,16 +221,16 @@ def test_polynomial_mesh_var_sympy():
     xyvar = uw.discretisation.MeshVariable(
         varname="xyvar", mesh=mesh, num_components=2, vtype=uw.VarType.VECTOR
     )
-    with mesh.access(xvar, yvar, xyvar):
+    with uw.synchronised_array_update():
         # Note that all the `coords` arrays should actually reduce to an identical array,
         # as all vars have identical degree and layout.
-        xvar.data[:, 0] = xvar.coords[:, 0]
-        yvar.data[:, 0] = yvar.coords[:, 1]
-        xyvar.data[:] = xyvar.coords[:]
+        xvar.array[:, 0, 0] = xvar.coords[:, 0]
+        yvar.array[:, 0, 0] = yvar.coords[:, 1]
+        xyvar.array[:, 0, :] = xyvar.coords
     degree = 10
     assert np.allclose(
         tensor_product(degree, coords[:, 0], coords[:, 1]),
-        uw.function.evaluate(tensor_product(degree, xvar.fn, yvar.fn), coords),
+        uw.function.evaluate(tensor_product(degree, xvar.fn, yvar.fn), coords).squeeze(),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -223,7 +239,7 @@ def test_polynomial_mesh_var_sympy():
         uw.function.evaluate(
             tensor_product(degree, xyvar.fn.dot(mesh.N.i), xyvar.fn.dot(mesh.N.j)),
             coords,
-        ),
+        ).squeeze(),
         rtol=1e-05,
         atol=1e-08,
     )
@@ -246,13 +262,22 @@ def test_3d_cross_product():
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4,) * 3)
     name = "vector cross product test"
     var_vector1 = uw.discretisation.MeshVariable(
-        varname="var_vector1", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR
+        varname="var_vector1",
+        mesh=mesh,
+        num_components=3,
+        vtype=uw.VarType.VECTOR,
+        varsymbol="V_1",
     )
     var_vector2 = uw.discretisation.MeshVariable(
-        varname="var_vector2", mesh=mesh, num_components=3, vtype=uw.VarType.VECTOR
+        varname="var_vector2",
+        mesh=mesh,
+        num_components=3,
+        vtype=uw.VarType.VECTOR,
+        varsymbol="V_2",
     )
-    with mesh.access(var_vector1, var_vector2):
-        var_vector1.data[:] = (1.0, 2.0, 3.0)
-        var_vector2.data[:] = (4.0, 5.0, 6.0)
-    result = uw.function.evaluate(var_vector1.fn.cross(var_vector2.fn), coords)
+
+    with uw.synchronised_array_update():
+        var_vector1.array[...] = (1.0, 2.0, 3.0)
+        var_vector2.array[...] = (4.0, 5.0, 6.0)
+    result = uw.function.evaluate(var_vector1.sym.cross(var_vector2.sym), coords)
     assert np.allclose(np.array(((-3, 6, -3),)), result, rtol=1e-05, atol=1e-08)
