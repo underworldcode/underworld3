@@ -386,11 +386,15 @@ class NDArray_With_Callback(np.ndarray):
         elif obj is not None:
             np.copyto(self, obj)
 
-    def __array_wrap__(self, result):
+    def __array_wrap__(self, result, context=None, return_scalar=False):
         """
         Called after numpy operations to wrap results back to our type.
+
+        Parameters updated for NumPy 2.0 compatibility:
+        - context: Information about the ufunc that produced the result (unused)
+        - return_scalar: If True, return a scalar instead of 0-d array
         """
-        if result.shape == ():
+        if return_scalar or result.shape == ():
             # Scalar result, return as numpy scalar
             return result.item()
 
