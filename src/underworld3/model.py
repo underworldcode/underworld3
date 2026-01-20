@@ -3604,6 +3604,12 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         Convert quantity to model units and extract numerical magnitude.
 
+        .. deprecated::
+            This method is deprecated. Use ``uw.scaling.non_dimensionalise()`` instead
+            for consistent unit conversion across the codebase. The global scaling
+            function ensures all conversions use the same COEFFICIENTS dictionary
+            that is synchronized with model reference quantities.
+
         This is a convenience method that combines to_model_units() with magnitude
         extraction for internal use. It handles the common pattern of converting
         user inputs (which may have units) to raw numerical values in model units
@@ -3659,6 +3665,16 @@ class Model(PintNativeModelMixin, BaseModel):
         import warnings
         import sympy
         from .function.expressions import UWexpression
+
+        # TODO: DEPRECATED - Use uw.scaling.non_dimensionalise() instead
+        # This function uses a separate code path from the global scaling system
+        # and should be phased out in favor of the canonical scaling function.
+        warnings.warn(
+            "model.to_model_magnitude() is deprecated. "
+            "Use uw.scaling.non_dimensionalise() instead for consistent unit conversion.",
+            DeprecationWarning,
+            stacklevel=2
+        )
 
         # Handle tuples/lists recursively (for coordinate inputs)
         if isinstance(quantity, (list, tuple)):
@@ -3723,6 +3739,10 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         Convert numerical magnitude in model units back to physical quantity.
 
+        .. deprecated::
+            This method is deprecated. Use ``uw.scaling.dimensionalise()`` instead
+            for consistent unit conversion across the codebase.
+
         This is the inverse of to_model_magnitude() - it takes a raw numerical value
         in model units and wraps it with appropriate physical units based on the
         dimensional specification.
@@ -3766,6 +3786,15 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         from .function import quantity as create_quantity
         import numpy as np
+        import warnings
+
+        # TODO: DEPRECATED - Use uw.scaling.dimensionalise() instead
+        warnings.warn(
+            "model.from_model_magnitude() is deprecated. "
+            "Use uw.scaling.dimensionalise() instead for consistent unit conversion.",
+            DeprecationWarning,
+            stacklevel=2
+        )
 
         # If no reference quantities set, return with SI base units
         if not hasattr(self, "_pint_registry"):

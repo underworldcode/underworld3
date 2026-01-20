@@ -2897,15 +2897,25 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self.mesh.units is not None:
             import underworld3 as uw
 
-            # Dimensionalise using the proper units system
-            # Specify length dimensionality since coords have dimension [length]
-            length_dimensionality = {'[length]': 1}
-            coords_dimensional = uw.dimensionalise(
-                coords_nondim,
-                target_dimensionality=length_dimensionality
-            )
+            model = uw.get_default_model()
 
-            return coords_dimensional
+            # Only dimensionalise if model has reference quantities set
+            # (mesh can have units attribute even when model lacks scales)
+            if not model.has_units_active():
+                return coords_nondim
+
+            # Try to dimensionalise; fall back to raw coordinates if
+            # length scale is not defined (e.g., only temperature_diff was set)
+            try:
+                length_dimensionality = {'[length]': 1}
+                coords_dimensional = uw.dimensionalise(
+                    coords_nondim,
+                    target_dimensionality=length_dimensionality
+                )
+                return coords_dimensional
+            except ValueError:
+                # Length scale not available - return raw model-unit coordinates
+                return coords_nondim
         else:
             # No units - return non-dimensional coordinates
             return coords_nondim

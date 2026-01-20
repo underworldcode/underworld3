@@ -2882,13 +2882,21 @@ class Swarm(Stateful, uw_object):
         # Get internal model-unit coordinates
         model_coords = self._particle_coordinates.data
 
-        # Convert to physical units
+        # Convert to physical units if reference quantities are set
         import underworld3 as uw
-
         model = uw.get_default_model()
 
-        # Use from_model_magnitude to convert back to physical
-        return model.from_model_magnitude(model_coords, "[length]")
+        # If no reference quantities, return raw coordinates (model units = physical units)
+        if not model.has_units_active():
+            return model_coords
+
+        # Try to convert to physical units; fall back to raw coordinates if
+        # length scale is not defined (e.g., only temperature_diff was set)
+        try:
+            return uw.scaling.dimensionalise(model_coords, uw.units.meter)
+        except ValueError:
+            # Length scale not available - return raw model-unit coordinates
+            return model_coords
 
     @coords.setter
     def coords(self, value):
