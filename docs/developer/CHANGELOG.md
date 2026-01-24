@@ -15,7 +15,7 @@ This log tracks significant development work at a conceptual level, suitable for
   - Pushes to `ghcr.io/underworldcode/uw3-base:<branch>-slim`
   - Cross-repo dispatch updates launcher repository automatically
 
-- **Command-line images** (`docker-image.yml`): Separate workflow for DockerHub (micromamba-based)
+- **Command-line images** (`docker-image.yml`): Separate workflow for GHCR (micromamba-based)
 
 - **Launcher auto-update**: `uw3-binder-launcher` receives `repository_dispatch` events and updates its Dockerfile reference automatically
 

@@ -4,11 +4,11 @@ name: "GHCR: Binder Base Image"
 # The image is used by mybinder.org via the uw3-binder-launcher repository
 #
 # This is separate from docker-image.yml which builds command-line Docker
-# images for DockerHub.
+# images (also on GHCR, different image name).
 
 on:
   push:
-    branches: [main, uw3-release-candidate, development]
+    branches: [main, development]
     paths:
       # Only rebuild when these files change (Cython/dependencies require rebuild)
       - 'container/Dockerfile.base.optimized'

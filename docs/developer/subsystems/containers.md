@@ -18,7 +18,7 @@ Underworld3 provides two container deployment strategies for different use cases
          │                  │              │binder-image │
          │                  │              │    .yml     │
          ▼                  ▼              └──────┬──────┘
-   GHCR (binder)      DockerHub                   │
+   GHCR (binder)      GHCR (CLI)                  │
    ~3.4GB slim        ~2GB                        ▼
          │                               uw3-binder-launcher
          │                               (auto-updated)
@@ -54,7 +54,7 @@ ghcr.io/underworldcode/uw3-base:<branch>-slim
 ghcr.io/underworldcode/uw3-base:latest-slim
 ```
 
-Branch-specific tags (`main-slim`, `uw3-release-candidate-slim`, `development-slim`) enable testing different versions.
+Branch-specific tags (`main-slim`, `development-slim`) enable testing different versions.
 
 ### Build Triggers
 
@@ -93,7 +93,6 @@ uw3-binder-launcher/
 | Launcher Branch | UW3 Branch | Binder URL |
 |-----------------|------------|------------|
 | `main` | `main` | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main` |
-| `uw3-release-candidate` | `uw3-release-candidate` | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/uw3-release-candidate` |
 | `development` | `development` | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development` |
 
 ### Automation Pipeline
@@ -135,7 +134,7 @@ Command-line containers provide a lightweight option for users who want to run U
 |------|----------|---------|
 | `Containerfile` | `container/` | Micromamba-based image (~2GB) |
 | `launch-container.sh` | `container/` | Podman launch script |
-| `docker-image.yml` | `.github/workflows/` | DockerHub build workflow |
+| `docker-image.yml` | `.github/workflows/` | GHCR build workflow |
 
 ### Building Locally
 
@@ -167,7 +166,7 @@ This script:
 **Manual Docker run**:
 
 ```bash
-docker run -it --rm -p 8888:8888 underworldcode/underworld3:development
+docker run -it --rm -p 8888:8888 ghcr.io/underworldcode/underworld3:development
 ```
 
 ### Rootless Podman
@@ -181,7 +180,7 @@ podman run -it --rm \
   --uidmap 0:1:$uid \
   # ... additional mappings
   -v "${HOME}/uw_space":/home/mambauser/host \
-  docker.io/underworldcode/underworld3:development
+  ghcr.io/underworldcode/underworld3:development
 ```
 
 ```{warning}
@@ -190,13 +189,14 @@ Do NOT run the launch script with `sudo`. Rootless Podman requires the executing
 
 ### Image Registry
 
-Command-line images are pushed to DockerHub:
+Command-line images are pushed to GHCR (same registry as binder images):
 
 ```
-underworldcode/underworld3:<branch>
+ghcr.io/underworldcode/underworld3:<branch>
+ghcr.io/underworldcode/underworld3:latest
 ```
 
-Currently only the `development` branch triggers automated builds.
+Builds trigger on pushes to `main` and `development` branches when container-related files change. Can also be triggered manually via workflow_dispatch.
 
 ## Comparison
 
@@ -205,7 +205,7 @@ Currently only the `development` branch triggers automated builds.
 | **Dockerfile** | `Dockerfile.base.optimized` | `Containerfile` |
 | **Base** | Ubuntu + Pixi | Micromamba |
 | **Size** | ~3.4GB (slim) | ~2GB |
-| **Registry** | GHCR | DockerHub |
+| **Registry** | GHCR | GHCR |
 | **Use case** | mybinder.org | Local `docker run` |
 | **Workflow** | `binder-image.yml` | `docker-image.yml` |
 | **Automation** | Full (build + launcher update) | Build only |

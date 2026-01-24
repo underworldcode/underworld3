@@ -40,7 +40,7 @@ podman run -it --rm \
   --gidmap 0:1:$gid \
   --gidmap $(($gid+1)):$(($gid+1)):$((subgidSize-$gid)) \
   -v "${HOME}/uw_space":/home/mambauser/host \
-  docker.io/underworldcode/underworld3:development 
+  ghcr.io/underworldcode/underworld3:development
 
 ## Description of rootless podman and uidmap/gidmap.
 # Rootless podman allows a non-root user to run a container without elevated permissions.
