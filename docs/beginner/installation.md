@@ -85,13 +85,13 @@ This checks your environment and provides specific fixes for common issues like 
 For Windows users (without WSL) or quick trials without installation:
 
 ```bash
-docker pull underworldcode/underworld3:latest
-docker run -it -p 8888:8888 underworldcode/underworld3:latest
+docker pull ghcr.io/underworldcode/underworld3:development
+docker run -it -p 8888:8888 ghcr.io/underworldcode/underworld3:development
 ```
 
 This launches JupyterLab with underworld3 pre-installed.
 
-As the code is in active development, containers may lag behind the latest changes. Check the [GitHub releases](https://github.com/underworldcode/underworld3/releases) for available container versions.
+As the code is in active development, containers may lag behind the latest changes. See the [container documentation](../developer/subsystems/containers.md) for available tags and options.
 
 ---
 
