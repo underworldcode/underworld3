@@ -29,7 +29,7 @@ The full documentation including tutorials, API reference, and developer guides 
 
 ## Binder demonstration version
 
- - [Launch on Binder](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/uw3-release-candidate?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb)
+ - [Launch on Binder](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development?labpath=underworld3%2Fdocs%2Fbeginner%2Ftutorials%2FNotebook_Index.ipynb)
 
 
 ## Installation Guide

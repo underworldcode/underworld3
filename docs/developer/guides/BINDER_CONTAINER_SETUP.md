@@ -198,9 +198,8 @@ All layers should be under 1GB. If any layer exceeds ~800MB, consider splitting 
 
 | Branch | Launch |
 |--------|--------|
-| `main` | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main) |
-| `uw3-release-candidate` | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/uw3-release-candidate) |
 | `development` | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development) |
+| `main` | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main) |
 
 ### URL Format
 
@@ -211,7 +210,7 @@ https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/<branch>
 ### Badge Markdown
 
 ```markdown
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main)
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development)
 ```
 
 ## Launcher Dockerfile
@@ -649,10 +648,10 @@ python scripts/binder_wizard.py username/my-course main tutorials/intro.ipynb
 ### URL Format
 
 ```
-https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main
+https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development
   ?urlpath=git-pull
   ?repo=https://github.com/USER/REPO
-  &branch=main
+  &branch=development
   &urlpath=lab/tree/REPO
 ```
 

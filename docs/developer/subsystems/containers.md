@@ -113,7 +113,7 @@ The `LAUNCHER_PAT` secret (Personal Access Token with `repo` scope) enables cros
 Any repository can launch on mybinder.org using the pre-built image via nbgitpuller:
 
 ```
-https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main?urlpath=git-pull%3Frepo%3Dhttps%253A%252F%252Fgithub.com%252FYOUR_ORG%252FYOUR_REPO%26urlpath%3Dlab%252Ftree%252FYOUR_REPO%252Fpath%252Fto%252Fnotebook.ipynb
+https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development?urlpath=git-pull%3Frepo%3Dhttps%253A%252F%252Fgithub.com%252FYOUR_ORG%252FYOUR_REPO%26urlpath%3Dlab%252Ftree%252FYOUR_REPO%252Fpath%252Fto%252Fnotebook.ipynb
 ```
 
 Use the `scripts/binder_wizard.py` script to generate these URLs.
