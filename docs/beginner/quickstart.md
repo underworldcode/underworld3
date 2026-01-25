@@ -16,10 +16,7 @@ In addition to the notebooks in this brief set of examples, there are a number o
 
   - [The Underworld Website / Blog](https://www.underworldcode.org)
 
-  - [The API documentation](https://underworldcode.github.io/underworld3/main_api/underworld3/index.html)
-    (all the modules and functions and their full sets of arguments) is automatically generated from the source code and uses the same rich markdown content as the notebook help text.
-
-  - [The API documentation (development branch)](https://underworldcode.github.io/underworld3/development_api/underworld3/index.html)
+  - [The API documentation](../api/index.md) (all the modules and functions and their full sets of arguments) is automatically generated from the source code. You can also access it via the navigation sidebar.
 
   - The [`underworld3` GitHub repository](https://github.com/underworldcode/underworld3) is the most active development community for the code.
 
@@ -85,7 +82,7 @@ Digging a bit deeper into `underworld3`, there are many capabilities that requir
 
 In [Example 8](tutorials/8-Particle_Swarms.ipynb), we made small variations to the mesh to conform to basal topography. We did not remesh, so we had to be careful to apply a smooth, analytic displacement to every node. For more general free-surface models, we need to calculate a smooth function using the computed boundary motions (e.g, solving a poisson equation with known boundary displacements as boundary conditions). We need to step through time and it is common to stabilize the surface motions through a surface integral term that accounts for the interface displacement during the timestep. The example below shows an `underworld3` forward model with internal loads timestepped close to isostatic equilibrium.
 
-```{figure} media/RelaxingMesh.png
+```{figure} ../media/RelaxingMesh.png
 :width: 50%
 
 Stokes flow driven by buoyancy in an annulus defined by two embedded surfaces within an enveloping disk mesh. The surfaces deform in response to the flow. The embedding medium has a very low viscosity but still acts to damp rotational modes. The outer boundary of the disk can be set to a far-field gravitational potential for whole-Earth relaxation models.
