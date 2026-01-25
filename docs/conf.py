@@ -86,6 +86,7 @@ intersphinx_mapping = {
 html_theme = 'furo'
 html_static_path = ['_static']
 html_css_files = ['custom.css']  # Custom styling (smaller headings)
+html_js_files = ['report-issue.js']  # Page-specific issue reporting
 html_extra_path = ['media']  # Copy media folder (including pyvista HTML embeds) to build root
 html_title = "Underworld3"
 html_logo = "assets/MansoursNightmare.png"
