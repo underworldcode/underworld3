@@ -23,5 +23,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
 
         reportLink.href = baseUrl + '?' + params.toString();
+        reportLink.target = '_blank';  // Open in new tab so user can still see the page
     }
 });

@@ -156,13 +156,7 @@ Underworld3 is a Python library for computational geodynamics, built on:
 - Join community discussions
 - [Underworld Blog](https://www.underworldcode.org)
 
-### Improving the Documentation
-
-Found a typo, broken link, or have a suggestion? We welcome contributions to improve the documentation.
-
-**Report an issue**: Click the "Report Issue" icon in the page footer. This opens a GitHub issue pre-filled with the current page URL and title.
-
-**Edit directly**: Click the "Edit on GitHub" button (top right of any page) to propose changes directly via a pull request.
+**Found a typo or broken link?** Click the speech bubble icon (💬) in the page footer to report it—the issue will be pre-filled with this page's URL. You can also click the GitHub icon to browse the repository, or use "Edit on GitHub" (top right) to propose changes directly.
 
 ### Try It Now
 
