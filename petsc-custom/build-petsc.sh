@@ -24,17 +24,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PETSC_DIR="${SCRIPT_DIR}/petsc"
 PETSC_ARCH="petsc-4-uw"
 
-# Detect pixi environment - need MPI and HDF5 from there
-if [ -n "$PIXI_PROJECT_ROOT" ]; then
-    PIXI_ENV="${PIXI_PROJECT_ROOT}/.pixi/envs/amr"
-    if [ ! -d "$PIXI_ENV" ]; then
-        PIXI_ENV="${PIXI_PROJECT_ROOT}/.pixi/envs/default"
-    fi
-else
+# Detect active pixi environment (robust)
+if [ -z "$PIXI_PROJECT_ROOT" ]; then
     echo "Error: This script must be run from within a pixi environment"
-    echo "Use: pixi run -e amr petsc-build"
+    echo "Use: pixi run -e <env> ./build-petsc.sh"
     exit 1
 fi
+
+PIXI_ENV="$(python3 - <<'EOF'
+import sys, pathlib
+print(pathlib.Path(sys.executable).resolve().parents[1])
+EOF
+)"
 
 echo "=========================================="
 echo "PETSc AMR Build Script"
