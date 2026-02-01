@@ -26,6 +26,47 @@ docs/reviews/
 └── INDEX.md (this file)
 ```
 
+## 2026 Reviews
+
+### February 2026
+
+**Review Period**: February 2026
+**Focus**: Consolidated architectural reviews following January 2026 cleanup
+
+#### 1. Units System Architectural Review
+
+**Status**: 🔍 Under Review
+**Date**: 2026-02-01
+**Priority**: HIGH
+
+**Summary**: Comprehensive review of the units system following January 2026 consolidation (~940 lines removed). Documents the Gateway Pattern architecture where units are handled at boundaries (input/output), not during symbolic manipulation.
+
+**Files**: [`2026-02/UNITS-SYSTEM-ARCHITECTURAL-REVIEW.md`](2026-02/UNITS-SYSTEM-ARCHITECTURAL-REVIEW.md)
+
+**Key Metrics**:
+- Total LOC: ~6,155 across 6 core modules
+- Test coverage: 60+ tests in 07xx/08xx ranges
+- Supersedes: UW3-2025-11-003
+
+---
+
+#### 2. Data Access and Mathematical Interface Review
+
+**Status**: 🔍 Under Review
+**Date**: 2026-02-01
+**Priority**: HIGH
+
+**Summary**: Comprehensive review of NDArray_With_Callback, MathematicalMixin, and the EnhancedMeshVariable wrapper layer. Documents the delegation pattern fix from January 2026 that eliminated 425 lines of duplicate code.
+
+**Files**: [`2026-02/DATA-ACCESS-MATHEMATICAL-INTERFACE-REVIEW.md`](2026-02/DATA-ACCESS-MATHEMATICAL-INTERFACE-REVIEW.md)
+
+**Key Metrics**:
+- Total LOC: ~6,183 across 4 core components
+- Test coverage: ~75 tests in 01xx/05xx/06xx ranges
+- Supersedes: UW3-2025-11-002
+
+---
+
 ## 2025 Reviews
 
 ### November 2025
@@ -219,8 +260,10 @@ docs/reviews/
 
 ## Review Summary Table
 
-| Review | Component | Tests | Pass Rate | Approval Date | Status |
-|--------|-----------|-------|-----------|---------------|--------|
+| Review | Component | Tests | Pass Rate | Date | Status |
+|--------|-----------|-------|-----------|------|--------|
+| Units System (2026-02) | Units/Scaling | 60+ | 🔍 TBD | 2026-02-01 | 🔍 Under Review |
+| Data Access (2026-02) | Array/Math Interface | 75+ | 🔍 TBD | 2026-02-01 | 🔍 Under Review |
 | Reduction Operations | Mesh/Swarm Arrays | 5 | ✅ 100% | 2025-10-25 | ✅ Approved |
 | Integration Statistics | Swarm Integration | 7 | ✅ 100% | 2025-10-25 | ✅ Approved |
 | Test Coverage | Overall Quality | - | - | 2025-10-25 | ✅ Complete |
@@ -306,7 +349,7 @@ For general process questions, see [`CODE-REVIEW-PROCESS.md`](../developer/CODE-
 
 ---
 
-**Last Updated**: 2025-10-25
+**Last Updated**: 2026-02-01
 **Maintained By**: Project Leadership
 **Archive Status**: Active
 
