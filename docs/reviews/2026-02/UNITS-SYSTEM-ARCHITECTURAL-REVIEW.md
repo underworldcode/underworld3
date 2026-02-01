@@ -10,7 +10,34 @@
 
 This architectural review documents the current state of Underworld3's units system as of February 2026. The system has undergone significant consolidation since the November 2025 reviews, with ~940 lines of deprecated mixin code removed in January 2026. The current implementation follows a **Gateway Pattern** where units are handled at boundaries (input/output), not during symbolic manipulation.
 
-## Current Architecture Summary
+## Changes Made
+
+### January 2026 Consolidation
+
+**Removed Components (~940 lines)**:
+- `DimensionalityMixin` deprecated code paths
+- Duplicate unit-tracking in expression arithmetic
+- Legacy `UnitAwareExpression` class (~1500 lines reduced to current UWexpression)
+- Complex unit-tracking inheritance chains
+
+**Resulting Clean Architecture**:
+- Single point of unit handling: `unwrap()` / `evaluate()` gateway
+- Simpler inheritance: No dual mixin patterns
+- Consistent pattern: Same as MeshVariable template
+- Better lazy evaluation: No cached state on composites
+
+### Core Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/underworld3/scaling/_scaling.py` | Model scaling infrastructure (~656 LOC) |
+| `src/underworld3/scaling/units.py` | Pint registry configuration (~1,993 LOC) |
+| `src/underworld3/function/quantities.py` | UWQuantity implementation (~859 LOC) |
+| `src/underworld3/function/expressions.py` | UWexpression implementation (~1,797 LOC) |
+| `src/underworld3/function/nondimensional.py` | Non-dimensionalization (~350 LOC) |
+| `src/underworld3/function/unit_conversion.py` | get_units(), has_units() (~500 LOC) |
+
+## System Architecture
 
 ### Codebase Metrics
 
@@ -24,14 +51,7 @@ This architectural review documents the current state of Underworld3's units sys
 | `function/unit_conversion.py` | ~500 | Conversion utilities, get_units() |
 | **Total** | **~6,155** | Core units infrastructure |
 
-### Test Coverage
-
-| Test Range | Focus | Count |
-|------------|-------|-------|
-| test_07xx | Core units system | 21 tests |
-| test_08xx | Units integration | 40+ tests |
-
-## Core Design: Gateway Pattern
+### Gateway Pattern Design
 
 The units system follows the **Gateway Pattern** documented in `UNITS_SIMPLIFIED_DESIGN_2025-11.md`:
 
@@ -181,24 +201,7 @@ uw.get_units(x)  # → 'kilometer' (discovered from expression tree)
 
 **Implementation**: `patch_coordinate_units()` adds `_units` attribute to SymPy BaseScalar objects, with enhanced `get_units()` that searches inside expressions.
 
-## January 2026 Consolidation
-
-### Removed Components (~940 lines)
-
-- `DimensionalityMixin` deprecated code paths
-- Duplicate unit-tracking in expression arithmetic
-- Legacy `UnitAwareExpression` class (~1500 lines reduced to current UWexpression)
-- Complex unit-tracking inheritance chains
-
-### Current Clean Architecture
-
-The consolidation resulted in:
-- Single point of unit handling: `unwrap()` / `evaluate()` gateway
-- Simpler inheritance: No dual mixin patterns
-- Consistent pattern: Same as MeshVariable template
-- Better lazy evaluation: No cached state on composites
-
-## Testing Status
+## Testing Instructions
 
 ### Core Tests (test_07xx)
 
@@ -213,12 +216,20 @@ The consolidation resulted in:
 - `test_0803_units_workflow_integration.py`: Workflow tests
 - `test_0818_stokes_nd.py`: Stokes solver with ND (5 tests, all passing)
 
-### Known Issues
+## Known Limitations
+
+### Current Issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
 | Poisson `add_natural_bc()` | Bug | PETSc error 73, being investigated |
 | Swarm advection CI | Environment | Pint version mismatch, fix applied |
+
+### Architectural Limitations
+
+1. **Serialization**: Unit metadata not yet preserved in HDF5 save/load operations
+2. **Complex Expressions**: Deeply nested expressions may not propagate units through all SymPy operations
+3. **Performance**: Unit checking adds minor overhead (~5-10%) for large array operations
 
 ## Key Files
 

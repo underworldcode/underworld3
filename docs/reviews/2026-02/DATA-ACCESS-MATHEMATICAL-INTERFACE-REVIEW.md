@@ -10,7 +10,30 @@
 
 This architectural review documents the current state of Underworld3's data access system and mathematical interface as of February 2026. The system provides automatic PETSc synchronization via callback-based arrays and natural mathematical notation via the MathematicalMixin. This eliminates the need for `with mesh.access()` context managers while enabling expressions like `velocity * density` without explicit `.sym` access.
 
-## Current Architecture Summary
+## Changes Made
+
+### January 2026 Consolidation
+
+**Array View Delegation Fix (~425 lines removed)**:
+- Eliminated duplicate array view implementations in `persistence.py` and `discretisation_mesh_variables.py`
+- EnhancedMeshVariable now delegates `.array` property to base variable
+- Single source of truth for array logic in `_BaseMeshVariable`
+
+**Unit Conversion in Array Views**:
+- Fixed `SimpleMeshArrayView.__setitem__` to handle UWQuantity (`.value`) and Pint (`.magnitude`)
+- Fixed `TensorMeshArrayView.__setitem__` with same pattern
+- Proper non-dimensionalization pipeline for unit-aware assignments
+
+### Core Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/underworld3/utilities/nd_array_with_callback.py` | Callback array infrastructure (~1,394 LOC) |
+| `src/underworld3/utilities/mathematical_mixin.py` | Mathematical notation support (~981 LOC) |
+| `src/underworld3/discretisation/persistence.py` | EnhancedMeshVariable wrapper (~783 LOC) |
+| `src/underworld3/discretisation/discretisation_mesh_variables.py` | Base variable, array views (~3,025 LOC) |
+
+## System Architecture
 
 ### Codebase Metrics
 
@@ -281,7 +304,7 @@ with mesh.access(var):
 mesh.data  # Use mesh.X.coords instead
 ```
 
-## Testing Status
+## Testing Instructions
 
 ### Level 1 Tests (Core Functionality)
 
@@ -303,9 +326,9 @@ mesh.data  # Use mesh.X.coords instead
 
 ~50 tests validating specific bug fixes and edge cases.
 
-## January 2026 Fixes
+### January 2026 Fix Details
 
-### 1. Array View Delegation
+#### 1. Array View Delegation
 
 **Problem**: Duplicate array view implementations in `persistence.py` and `discretisation_mesh_variables.py` (850+ lines).
 
@@ -318,7 +341,7 @@ def array(self):
 
 **Result**: 425 lines removed, single point of maintenance.
 
-### 2. Unit Conversion in Array Views
+#### 2. Unit Conversion in Array Views
 
 **Problem**: Array views didn't handle UWQuantity or Pint quantities on assignment.
 
@@ -362,6 +385,21 @@ def __mul__(self, other):
         # Keep symbolic, don't evaluate
         pass
 ```
+
+## Known Limitations
+
+### Current Issues
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| Legacy `with mesh.access()` patterns | Deprecated | Still functional for backward compatibility |
+| `mesh.data` coordinate access | Deprecated | Use `mesh.X.coords` instead |
+
+### Architectural Limitations
+
+1. **Callback Overhead**: Minor performance overhead (~5-10%) when callbacks enabled for large arrays
+2. **Batch Operations**: Recommended to use `uw.synchronised_array_update()` for multiple variable updates
+3. **Tensor Field Indexing**: Requires `(N, dim, dim)` shape awareness for symmetric tensors
 
 ## Key Files
 
