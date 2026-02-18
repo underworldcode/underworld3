@@ -290,31 +290,15 @@ class ExpressionDescriptor:
         from ..function.quantities import UWQuantity
         from ..function.expressions import UWexpression
 
-        # Special case: UWexpression assignment (update ._sym AND copy metadata)
-        # UWexpression has ._sym attribute for symbolic value
+        # Special case: UWexpression assignment — store the expression itself
+        # as a symbolic reference (not its inner ._sym value).
+        # This preserves:
+        #   - Symbolic display: parameter shows η₀ not "1e21 Pa.s"
+        #   - Lazy evaluation: if user later changes expression value, parameter updates
+        #   - Unit chain: container.units → value.units → value._sym.units (UWQuantity)
+        # At unwrap/JIT time the chain is followed automatically.
         if isinstance(value, UWexpression):
-            # Update the symbolic value AND copy unit metadata
-            # The expression object (being a SymPy Symbol) preserves identity
-            # while ._sym contains the value for JIT substitution
-            expr.sym = value._sym  # Update substitution value
-
-            # Copy unit metadata from UWexpression
-            if hasattr(value, '_pint_qty'):
-                expr._pint_qty = value._pint_qty
-            if hasattr(value, '_has_pint_qty'):
-                expr._has_pint_qty = value._has_pint_qty
-            if hasattr(value, '_dimensionality'):
-                expr._dimensionality = value._dimensionality
-            if hasattr(value, '_custom_units'):
-                expr._custom_units = value._custom_units
-            if hasattr(value, '_has_custom_units'):
-                expr._has_custom_units = value._has_custom_units
-            if hasattr(value, '_model_registry'):
-                expr._model_registry = value._model_registry
-            if hasattr(value, '_model_instance'):
-                expr._model_instance = value._model_instance
-            if hasattr(value, '_symbolic_with_units'):
-                expr._symbolic_with_units = value._symbolic_with_units
+            expr.sym = value  # Store symbolic reference, not inner value
 
         # Special case: Plain UWQuantity (not UWexpression) - has ._value and ._pint_qty
         # These are simple numbers with units, not symbolic expressions

@@ -106,7 +106,12 @@ def _unwrap_atom(atom, mode='nondimensional'):
                 except Exception:
                     pass
             # Recursively unwrap to get inner expression
-            return atom.sym
+            inner = atom.sym
+            # If inner is a UWQuantity (not SymPy-compatible), resolve it
+            # to a plain value so subs() doesn't fail with SympifyError.
+            if isinstance(inner, UWQuantity) and not isinstance(inner, UWexpression):
+                return _unwrap_atom(inner, mode)
+            return inner
         else:  # symbolic
             return atom.sym
 

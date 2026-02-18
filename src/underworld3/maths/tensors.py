@@ -146,6 +146,8 @@ def _unscaled_matrix_to_rank2(
     for I in range(imapping[dim][0]):
         indices = imapping[dim][1]
         i, j = indices[I]
+        v_ij[i, j] = V_I[I]
+        v_ij[j, i] = V_I[I]
 
     return v_ij
 
@@ -167,11 +169,22 @@ def _unscaled_matrix_to_rank4(
         i, j = indices[I]
         for J in range(imapping[dim][0]):
             k, l = indices[J]
+
+            val = C_IJ[I, J]
+
+            # Wrap values that have __getitem__ (e.g. UWexpression from
+            # MathematicalMixin) to prevent SymPy's _setter_iterable_check
+            # from rejecting them during NDimArray assignment.
+            if hasattr(val, "__getitem__") and not isinstance(
+                val, (sympy.MatrixBase, sympy.NDimArray)
+            ):
+                val = sympy.Mul(sympy.S.One, val, evaluate=False)
+
             # C_IJ -> C_ijkl -> C_jilk -> C_ij_lk -> C_jikl (Symmetry)
-            c_ijkl[i, j, k, l] = C_IJ[I, J]
-            c_ijkl[j, i, k, l] = C_IJ[I, J]
-            c_ijkl[i, j, l, k] = C_IJ[I, J]
-            c_ijkl[j, i, l, k] = C_IJ[I, J]
+            c_ijkl[i, j, k, l] = val
+            c_ijkl[j, i, k, l] = val
+            c_ijkl[i, j, l, k] = val
+            c_ijkl[j, i, l, k] = val
 
     return c_ijkl
 
