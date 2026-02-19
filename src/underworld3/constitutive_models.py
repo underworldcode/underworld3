@@ -2018,14 +2018,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         # Import Parameter descriptor (must use absolute import inside nested class)
         import underworld3.utilities._api_tools as api_tools
 
-        eta_0 = api_tools.Parameter(
+        shear_viscosity_0 = api_tools.Parameter(
             r"\eta_0",
             lambda inner_self: 1,
             "Shear viscosity",
             units="Pa*s",
         )
 
-        eta_1 = api_tools.Parameter(
+        shear_viscosity_1 = api_tools.Parameter(
             r"\eta_1",
             lambda inner_self: 1,
             "Second viscosity",
@@ -2053,14 +2053,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters.eta_0
+        return self.Parameters.shear_viscosity_0
 
     @property
     def K(self):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters.eta_0
+        return self.Parameters.shear_viscosity_0
 
     @property
     def grad_u(self):
@@ -2085,8 +2085,8 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         dv = uw.maths.tensor.idxmap[d][0]
 
         # Use .sym to get sympy expressions from Parameters
-        eta_0 = self.Parameters.eta_0.sym
-        eta_1 = self.Parameters.eta_1.sym
+        eta_0 = self.Parameters.shear_viscosity_0.sym
+        eta_1 = self.Parameters.shear_viscosity_1.sym
         n = self.Parameters.director.sym
 
         Delta = eta_0 - eta_1
@@ -2145,8 +2145,8 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.eta_0)._repr_latex_()))
-        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.eta_1)._repr_latex_()))
+        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.shear_viscosity_0)._repr_latex_()))
+        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.shear_viscosity_1)._repr_latex_()))
         display(
             Latex(
                 r"$\quad\hat{\mathbf{n}} = $ "
