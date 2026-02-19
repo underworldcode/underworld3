@@ -212,7 +212,7 @@ def QuarterAnnulus(
             )
         else:
             gmsh.model.addPhysicalGroup(
-                0, [p1], tag=boundaries.Centre.value, name=boundaries.Centre.name
+                0, [p0], tag=boundaries.Centre.value, name=boundaries.Centre.name
             )
 
         gmsh.model.addPhysicalGroup(
