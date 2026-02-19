@@ -2925,8 +2925,9 @@ class Mesh(Stateful, uw_object):
         Parameters
         ----------
         metric_field : MeshVariable
-            A scalar MeshVariable containing target edge lengths (H field).
-            Smaller values mean finer mesh, larger values mean coarser.
+            A scalar MeshVariable containing metric values (1/h² where h is
+            target edge length). Larger values mean finer mesh (smaller elements).
+            Use Surface.refinement_metric() to create this field from distance.
         verbose : bool, optional
             If True, print progress and statistics during adaptation.
 
