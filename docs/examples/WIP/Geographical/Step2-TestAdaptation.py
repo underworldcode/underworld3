@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# %%
 """
 Step 2: Test Mesh Adaptation with Constant Metric
 
