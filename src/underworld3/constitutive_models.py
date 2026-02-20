@@ -56,6 +56,77 @@ from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 
+class _ParameterBase:
+    """Base class for constitutive model parameter containers.
+
+    Provides a ``__setattr__`` guard that prevents setting public attributes
+    that don't correspond to a defined ``Parameter`` (or ``ExpressionDescriptor``)
+    descriptor.  This catches descriptor-name mismatches at the point of
+    assignment instead of silently creating a plain instance attribute that
+    shadows nothing.
+    """
+
+    @staticmethod
+    def _list_valid_parameters(cls_type):
+        """List valid parameter names for error messages."""
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+
+        valid = []
+        for cls in cls_type.__mro__:
+            for k, v in cls.__dict__.items():
+                if isinstance(v, (ExpressionDescriptor, property)) and k not in valid:
+                    valid.append(k)
+        return valid
+
+    def __setattr__(self, name, value):
+        # Private/internal attributes are always allowed
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+
+        # Walk the MRO looking for a matching descriptor or property
+        for cls in type(self).__mro__:
+            if name in cls.__dict__:
+                attr = cls.__dict__[name]
+                if isinstance(attr, ExpressionDescriptor):
+                    # Valid descriptor — let it handle the set
+                    attr.__set__(self, value)
+                    return
+                elif isinstance(attr, property):
+                    if attr.fset is not None:
+                        attr.fset(self, value)
+                        return
+                    raise AttributeError(
+                        f"Parameter '{name}' is read-only"
+                    )
+
+        # Not a known descriptor — likely a name mismatch bug
+        valid = _ParameterBase._list_valid_parameters(type(self))
+
+        raise AttributeError(
+            f"No parameter '{name}' on {type(self).__name__}. "
+            f"Valid parameters: {valid}"
+        )
+
+
+class _ViscousParameterAlias:
+    """Mixin providing ``viscosity`` as an alias for ``shear_viscosity_0``.
+
+    Used by all viscous flow model _Parameters classes so that the
+    established ``Parameters.viscosity`` API continues to work.
+    """
+
+    @property
+    def viscosity(self):
+        return self.shear_viscosity_0
+
+    @viscosity.setter
+    def viscosity(self, value):
+        self.shear_viscosity_0 = value
+
+
 # How do we use the default here if input is required ?
 def validate_parameters(symbol, input, default=None, allow_number=True, allow_expression=True):
     """Convert input to a UWexpression for use in constitutive models.
@@ -261,7 +332,7 @@ class Constitutive_Model(uw_object):
 
         return expression(symbol_name, value, description)
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -571,7 +642,7 @@ class ViscousFlowModel(Constitutive_Model):
         #     " Apparent viscosity",
         # )
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -793,7 +864,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             "Effective viscosity (plastic)",
         )
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -1009,7 +1080,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         return
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -1576,7 +1647,7 @@ class DiffusionModel(Constitutive_Model):
     AnisotropicDiffusionModel : For direction-dependent diffusivity.
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -1663,7 +1734,7 @@ class AnisotropicDiffusionModel(DiffusionModel):
     for direction-dependent diffusion rates.
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         def __init__(inner_self, _owning_model):
             dim = _owning_model.dim
             inner_self._owning_model = _owning_model
@@ -1739,7 +1810,7 @@ class GenericFluxModel(Constitutive_Model):
     ```
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
 
@@ -1847,7 +1918,7 @@ class DarcyFlowModel(Constitutive_Model):
     DiffusionModel : For pure diffusion without body forces.
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -2006,7 +2077,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         #     " Apparent viscosity",
         # )
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
