@@ -57,13 +57,40 @@ expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True,
 
 
 class _ParameterBase:
-    """Base class for constitutive model parameter containers.
+    """Base class for all constitutive model ``_Parameters`` containers.
 
-    Provides a ``__setattr__`` guard that prevents setting public attributes
-    that don't correspond to a defined ``Parameter`` (or ``ExpressionDescriptor``)
-    descriptor.  This catches descriptor-name mismatches at the point of
-    assignment instead of silently creating a plain instance attribute that
-    shadows nothing.
+    All ``_Parameters`` nested classes must inherit from this.  It provides a
+    ``__setattr__`` guard that **rejects** any public attribute assignment
+    that doesn't match a defined ``Parameter`` descriptor or ``@property``
+    on the class.  Without this guard, a typo like
+    ``Parameters.viscocity = 1`` silently creates an instance attribute
+    that the solver never reads — producing wrong results with no error.
+
+    How to define parameters in a new constitutive model
+    ----------------------------------------------------
+    1. Inherit from ``_ParameterBase`` (and ``_ViscousParameterAlias`` if
+       the model has a ``shear_viscosity_0`` parameter)::
+
+           class _Parameters(_ParameterBase, _ViscousParameterAlias):
+               ...
+
+    2. Define each parameter as a **class-level** ``Parameter`` descriptor.
+       The **attribute name IS the user API name** — users will set it via
+       ``model.Parameters.<attribute_name> = value``::
+
+           import underworld3.utilities._api_tools as api_tools
+
+           shear_viscosity_0 = api_tools.Parameter(
+               r"\\eta",              # LaTeX display name (cosmetic only)
+               lambda self: 1,        # default value factory
+               "Shear viscosity",     # description
+               units="Pa*s",          # expected units
+           )
+
+    3. To add a **convenience alias** (e.g. ``viscosity`` → ``shear_viscosity_0``),
+       either use a mixin like ``_ViscousParameterAlias`` or define a
+       ``@property`` with getter and setter on the ``_Parameters`` class.
+       The guard recognises both descriptors and properties.
     """
 
     @staticmethod
@@ -112,10 +139,18 @@ class _ParameterBase:
 
 
 class _ViscousParameterAlias:
-    """Mixin providing ``viscosity`` as an alias for ``shear_viscosity_0``.
+    """Mixin providing ``viscosity`` as a read/write alias for ``shear_viscosity_0``.
 
-    Used by all viscous flow model _Parameters classes so that the
-    established ``Parameters.viscosity`` API continues to work.
+    Add this to the inheritance of any ``_Parameters`` class that defines
+    a ``shear_viscosity_0`` descriptor, so that the established
+    ``Parameters.viscosity`` API continues to work::
+
+        class _Parameters(_ParameterBase, _ViscousParameterAlias):
+            shear_viscosity_0 = api_tools.Parameter(...)
+
+    To create similar aliases for other parameters, define a ``@property``
+    with a setter — the ``_ParameterBase`` guard recognises properties
+    automatically.
     """
 
     @property
