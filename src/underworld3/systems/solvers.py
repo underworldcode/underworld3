@@ -2669,13 +2669,13 @@ class SNES_Diffusion(SNES_Scalar):
 
         # Update History / Flux History terms
         # SemiLagrange and Lagrange may have different sequencing.
-        # self.DuDt.update_pre_solve(verbose=verbose)
-        # self.DFDt.update_pre_solve(verbose=verbose)
+        self.DuDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
+        self.DFDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
 
         super().solve(zero_init_guess, _force_setup)
 
-        self.DuDt.update_post_solve(evalf=evalf, verbose=verbose)
-        self.DFDt.update_post_solve(evalf=evalf, verbose=verbose)
+        self.DuDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
+        self.DFDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
 
         # if isinstance(self.DFDt, Eulerian_DDt):
         #     for i in range(order):

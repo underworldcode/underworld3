@@ -1,31 +1,54 @@
 r"""
 Time derivative approximations for transient problems.
 
-This module provides classes for computing time derivatives using various
-numerical schemes. These are used within solvers to discretize the time
-dimension of PDEs.
+This module provides classes for computing time derivatives (D/Dt) using
+various numerical schemes. These are used within solvers to discretize the
+time dimension of PDEs.
+
+All DDt classes share a common interface:
+
+- ``update(dt, ...)`` — alias for ``update_pre_solve``
+- ``update_pre_solve(dt, ...)`` — called before the PDE solve
+- ``update_post_solve(dt, ...)`` — called after the PDE solve
+- ``bdf(order)`` — backward differentiation formula (returns Δψ, divide by Δt for rate)
+- ``adams_moulton_flux(order)`` — weighted flux for implicit integration
 
 Classes
 -------
 Symbolic
-    Pure symbolic time derivative (stores history for multi-step methods).
+    Pure symbolic history — no mesh storage. Used for flux tracking
+    in SNES_Diffusion where the flux expression is a SymPy tree, not
+    a mesh variable.
 Eulerian
-    Mesh-based time derivative with projection for field updates.
+    Fixed-grid ∂φ/∂t with optional grid-based advection u·∇φ. When
+    ``V_fn`` is provided, ``update_pre_solve`` applies an explicit
+    advection correction so that ``bdf()`` approximates the full
+    material derivative D/Dt = ∂/∂t + u·∇.
 SemiLagrangian
-    Particle-based advection with mesh projection for Lagrangian tracking.
+    Characteristic-based D/Dt via departure points. Traces backward
+    along velocity field to sample upstream values. Unconditionally
+    stable for advection (no CFL constraint) but less accurate when
+    velocity is near zero.
 Lagrangian
-    Full Lagrangian (particle-following) time derivative on swarms.
+    Full particle-following D/Dt. Creates and manages its own swarm.
+    The swarm is advected during ``update_post_solve``.
 Lagrangian_Swarm
-    Specialized Lagrangian derivative for swarm-based tracking.
+    Specialized swarm-based Lagrangian using a user-provided swarm.
+    The swarm advection is the user's responsibility.
 
 Notes
 -----
 The choice of time derivative scheme affects accuracy, stability, and
 computational cost:
 
-- **Eulerian**: Fixed grid, simple but may have numerical diffusion
-- **Semi-Lagrangian**: Good for advection-dominated problems
-- **Lagrangian**: Tracks material properties without diffusion
+- **Eulerian**: Fixed grid, simple, best for weak-to-moderate advection
+  or purely diffusive problems (e.g. Richards equation with no transport).
+- **Eulerian (with V_fn)**: Adds explicit advection correction — subject
+  to CFL but suitable when velocity is moderate.
+- **Semi-Lagrangian**: Best for advection-dominated problems (high Péclet).
+  Unconditionally stable but breaks down when v → 0.
+- **Lagrangian**: Tracks material properties without numerical diffusion.
+  Best for purely advected quantities (e.g. composition).
 
 See Also
 --------
@@ -194,28 +217,33 @@ class Symbolic(uw_object):
 
     def update(
         self,
+        dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
         """Update history (alias for ``update_pre_solve``)."""
-        self.update_pre_solve(evalf, verbose)
+        self.update_pre_solve(dt, evalf, verbose)
         return
 
     def update_pre_solve(
         self,
+        dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
         """Pre-solve update hook (no-op for Symbolic)."""
-        # Default: no action.
+        self._dt = dt
         return
 
     def update_post_solve(
         self,
+        dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
         r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
+        self._dt = dt
+
         if verbose:
             print(f"Updating history for ψ = {self.psi_fn}", flush=True)
 
@@ -228,6 +256,12 @@ class Symbolic(uw_object):
     def bdf(self, order: Optional[int] = None):
         r"""Compute the backward differentiation approximation of the time-derivative of ψ.
         For order 1: bdf ≡ ψ - psi_star[0]
+
+        .. warning::
+            For order > 1, the coefficients assume uniform timestep spacing.
+            Variable Δt with order > 1 requires modified coefficients that
+            depend on the ratio of consecutive timesteps. This is not yet
+            implemented — use order=1 when timestep varies significantly.
         """
         if order is None:
             order = self.order
@@ -302,6 +336,18 @@ class Eulerian(uw_object):
         \psi_p^{t-(n-1)\Delta t} &\leftarrow \psi_p^{t-(n-2)\Delta t} \cdots \\
         \psi_p^{t-\Delta t} &\leftarrow \psi_p^{t}
 
+    When ``V_fn`` is provided, the ``update_pre_solve`` method applies an
+    explicit advection correction so that ``bdf()`` approximates the full
+    material derivative :math:`D\psi/Dt = \partial\psi/\partial t + \mathbf{u}\cdot\nabla\psi`
+    rather than the partial time derivative alone.
+
+    .. note::
+        The optional advection capability (V_fn parameter) is suitable for
+        problems where the advection is weak or where a purely grid-based
+        approach is desired (e.g., Richards equation with no transport).
+        For advection-dominated problems, SemiLagrangian is more mature and
+        generally preferred.
+
     Parameters
     ----------
     mesh : underworld3.discretisation.Mesh
@@ -314,6 +360,10 @@ class Eulerian(uw_object):
         Polynomial degree for history mesh variables.
     continuous : bool
         Whether history variables are continuous across element boundaries.
+    V_fn : sympy.Basic, optional
+        Velocity field for grid-based advection correction.
+        If None (default), computes pure ∂ψ/∂t. If set, computes
+        D/Dt = ∂/∂t + u·∇ via operator splitting.
     evalf : bool, default=False
         If True, evaluate expressions numerically during updates.
     theta : float, default=0.5
@@ -336,6 +386,8 @@ class Eulerian(uw_object):
         Current symbolic expression being tracked.
     psi_star : list of MeshVariable
         History values at previous timesteps.
+    V_fn : sympy.Basic or None
+        Velocity field for advection correction (None = pure Eulerian).
 
     See Also
     --------
@@ -354,6 +406,7 @@ class Eulerian(uw_object):
         vtype: uw.VarType,
         degree: int,
         continuous: bool,
+        V_fn=None,
         evalf: Optional[bool] = False,
         theta: Optional[float] = 0.5,
         varsymbol: Optional[str] = r"u",
@@ -365,6 +418,7 @@ class Eulerian(uw_object):
         super().__init__()
 
         self.mesh = mesh
+        self.V_fn = V_fn
         self.theta = theta
         self.bcs = bcs
         self.verbose = verbose
@@ -475,29 +529,18 @@ class Eulerian(uw_object):
         ### update first value in history chain
         ### avoids projecting if function can be evaluated
         try:
-            with self.mesh.access(self.psi_star[0]):
-                try:
-                    with self.mesh.access(self._psi_meshVar):
-                        self.psi_star[0].data[...] = self._psi_meshVar.data[...]
-                    # print('copying data', flush=True)
-                except:
-                    # if self.evalf:
-                    #     self.psi_star[0].data[...] = uw.function.evalf(
-                    #         self.psi_fn, self.psi_star[0].coords
-                    #     ).reshape(-1, max(self.psi_fn.shape))
-                    #     # print('evalf data', flush=True)
-                    # else:
-                    self.psi_star[0].data[...] = uw.function.evaluate(
-                        self.psi_fn,
-                        self.psi_star[0].coords,
-                        evalf=self.evalf,
-                    ).reshape(-1, max(self.psi_fn.shape))
-                    # print('evaluate data', flush=True)
+            try:
+                self.psi_star[0].data[...] = self._psi_meshVar.data[...]
+            except:
+                self.psi_star[0].data[...] = uw.function.evaluate(
+                    self.psi_fn,
+                    self.psi_star[0].coords,
+                    evalf=self.evalf,
+                ).reshape(-1, max(self.psi_fn.shape))
 
         except:
             self._setup_projections()
             self._psi_star_projection_solver.solve()
-            # print('projecting data', flush=True)
 
     def initiate_history_fn(self):
         r"""Initialize all history slots to the current value of :math:`\psi`."""
@@ -505,75 +548,110 @@ class Eulerian(uw_object):
 
         ### set up all history terms to the initial values
         for i in range(self.order - 1, 0, -1):
-            with self.mesh.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[0].data[...]
+            self.psi_star[i].data[...] = self.psi_star[0].data[...]
 
         return
 
     def update(
         self,
+        dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
         """Update history (alias for ``update_pre_solve``)."""
-        self.update_pre_solve(evalf, verbose)
+        self.update_pre_solve(dt, evalf, verbose)
         return
 
     def update_pre_solve(
         self,
+        dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Pre-solve update hook (no-op for Eulerian)."""
+        """Pre-solve: apply grid-based advection correction if V_fn is set.
+
+        Modifies psi_star[0] so that bdf() returns an approximation to
+        Dφ/Dt · Δt (material derivative) rather than ∂φ/∂t · Δt.
+
+        The advection correction is:
+            psi_star[0] ← φ^n - Δt · u·∇φ^n
+
+        Then bdf() = φ^{n+1} - psi_star[0]
+                  = φ^{n+1} - φ^n + Δt · u·∇φ^n
+                  ≈ Dφ/Dt · Δt
+
+        This is first-order explicit advection (operator splitting).
+        Subject to CFL condition: Δt < h/|u|, but for the moderate-v
+        regime where Eulerian is appropriate, CFL is not restrictive.
+        """
+        self._dt = dt
+
+        if self.V_fn is not None and dt is not None:
+            coords = self.psi_star[0].coords
+            dim = self.mesh.dim
+            X = self.mesh.X
+
+            # Build u·∇φ symbolically for each component of psi_fn
+            # psi_fn is a Matrix; V_fn is also a Matrix. For scalar
+            # psi_fn the shape is (1,1); for vector it is (1,dim).
+            psi = self.psi_fn
+            V = self.V_fn
+            ncomp = max(psi.shape)  # number of tracked components
+
+            for c in range(ncomp):
+                # ∂φ_c/∂x_i for each spatial dimension
+                grad_c = sympy.Matrix([psi[c].diff(X[i]) for i in range(dim)])
+                # u·∇φ_c = V_i * ∂φ_c/∂x_i
+                advection_expr = sum(V[i] * grad_c[i] for i in range(dim))
+
+                advection_vals = uw.function.evaluate(
+                    advection_expr, coords, evalf=evalf,
+                ).reshape(-1)
+
+                self.psi_star[0].data[:, c] -= dt * advection_vals
+
         return
 
     def update_post_solve(
         self,
+        dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
         r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
-        # if average_over_dt:
-        #     phi = min(1.0, dt / self.dt_physical)
-        # else:
-        #     phi = 1.0
+        self._dt = dt
 
         if verbose and uw.mpi.rank == 0:
             print(f"Update {self.psi_fn}", flush=True)
 
         ### copy values down the chain
         for i in range(self.order - 1, 0, -1):
-            with self.mesh.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
         ### update the history fn
         self.update_history_fn()
-        # ### update the first value in the chain
-        # if self.evaluateable:
-        #     with self.mesh.access(self.psi_star[0]):
-        #         try:
-        #             with self.mesh.access(self._psi_meshVar):
-        #                 self.psi_star[0].data[...] = self._psi_meshVar.data[...]
-        #         except:
-        #             if self.evalf:
-        #                 self.psi_star[0].data[...] = uw.function.evalf(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
-        #             else:
-        #                 self.psi_star[0].data[...] = uw.function.evaluate(self.psi_fn, self.psi_star[0].coords).reshape(-1, max(self.psi_fn.shape))
-        # else:
-        #     self._psi_star_projection_solver.uw_function = self.psi_fn
-        #     self._psi_star_projection_solver.solve()
 
         return
 
     def bdf(self, order=None):
-        r"""Backwards differentiation form for calculating DuDt
-        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
+        r"""Backwards differentiation form for calculating DuDt.
+
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives.
+
+        .. warning::
+            For order > 1, the coefficients assume uniform timestep spacing.
+            Variable Δt with order > 1 requires modified coefficients that
+            depend on the ratio of consecutive timesteps. This is not yet
+            implemented — use order=1 when timestep varies significantly.
+        """
 
         if order is None:
             order = self.order
         else:
             order = max(1, min(self.order, order))
 
+        # TODO: These coefficients assume uniform dt. For variable dt with order > 1,
+        # coefficients must be computed from dt_n/dt_{n-1} ratio.
         with sympy.core.evaluate(False):
             if order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
@@ -597,22 +675,30 @@ class Eulerian(uw_object):
         Parameters
         ----------
         order : int, optional
-            Order of the approximation (1-3). Defaults to ``self.order``.
+            Order of the approximation (0-3). Defaults to ``self.order``.
 
         Returns
         -------
         sympy.Basic
             Weighted average of :math:`\psi` and history terms.
+
+        .. warning::
+            For order > 1, the coefficients assume uniform timestep spacing.
+            Variable Δt with order > 1 requires modified coefficients.
+            Use order=1 when timestep varies significantly.
         """
         if order is None:
             order = self.order
         else:
-            order = max(1, min(self.order, order))
+            order = max(0, min(self.order, order))
 
         with sympy.core.evaluate(False):
-            if order == 1:
-                am = (self.psi_fn + self.psi_star[0].sym) / 2
-                # am = self.theta*self.psi_fn + ((1.-self.theta)*self.psi_star[0].sym)
+
+            if order == 0:
+                am = self.psi_fn
+
+            elif order == 1:
+                am = self.theta * self.psi_fn + (1.0 - self.theta) * self.psi_star[0].sym
 
             elif order == 2:
                 am = (5 * self.psi_fn + 8 * self.psi_star[0].sym - self.psi_star[1].sym) / 12
@@ -1507,8 +1593,8 @@ class Lagrangian(uw_object):
             order = self.order
 
         with sympy.core.evaluate(True):
-            if order == 0:  # special case - no history term (catch )
-                bdf0 = sympy.simpify[0]
+            if order == 0:  # special case - no history term
+                bdf0 = sympy.sympify(0)
 
             if order == 1:
                 bdf0 = self.psi_fn - self.psi_star[0].sym
