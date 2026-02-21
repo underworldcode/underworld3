@@ -383,6 +383,53 @@ class SolverBaseClass(uw_object):
 
         return None
 
+    # Compact reason map for _warn_on_divergence
+    _convergence_reasons = {
+        1: "CONVERGED_FNORM_ABS",
+        2: "CONVERGED_FNORM_RELATIVE",
+        3: "CONVERGED_SNORM_RELATIVE",
+        4: "CONVERGED_ITS",
+        -1: "DIVERGED_FUNCTION_DOMAIN",
+        -2: "DIVERGED_FUNCTION_COUNT",
+        -3: "DIVERGED_LINEAR_SOLVE",
+        -4: "DIVERGED_FNORM_NAN",
+        -5: "DIVERGED_MAX_IT",
+        -6: "DIVERGED_LINE_SEARCH",
+        -7: "DIVERGED_INNER",
+        -8: "DIVERGED_LOCAL_MIN",
+    }
+
+    def _warn_on_divergence(self, phase="solve"):
+        """Check SNES convergence and warn on genuine divergence.
+
+        Parameters
+        ----------
+        phase : str
+            ``"picard"`` -- ignore ``DIVERGED_MAX_IT`` (truncation is
+            intentional during the Picard-to-Newton transition).
+            ``"solve"``  -- any divergence is a real problem.
+        """
+
+        reason = self.snes.getConvergedReason()
+
+        if reason >= 0:
+            return                          # converged -- nothing to report
+
+        # Picard truncation (DIVERGED_MAX_IT) is expected and harmless
+        if phase == "picard" and reason == -5:
+            return
+
+        its = self.snes.getIterationNumber()
+        reason_str = self._convergence_reasons.get(reason, f"UNKNOWN({reason})")
+
+        uw.pprint(
+            f"\nSNES {phase} diverged after {its} iterations: {reason_str}\n"
+            f"  The solution vector may not have been updated.\n"
+            f"  Use  <solver>.petsc_options.setValue('snes_converged_reason', None)\n"
+            f"  and  <solver>.petsc_options.setValue('snes_monitor', None)\n"
+            f"  to investigate.\n"
+        )
+
     @timing.routine_timer_decorator
     def _build(self,
                     verbose: bool = False,
@@ -1631,17 +1678,7 @@ class SNES_Scalar(SolverBaseClass):
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
-        converged = self.snes.getConvergedReason()
-        iterations = self.snes.getIterationNumber()
-
-        if not converged and uw.mpi.rank == 0:
-            print(f"Convergence problems after {iterations} its in SNES solver use:\n",
-                  f"  <solver>.petsc_options.setValue('ksp_monitor',  None)\n",
-                  f"  <solver>.petsc_options.setValue('snes_monitor', None)\n",
-                  f"  <solver>.petsc_options.setValue('snes_converged_reason', None)\n",
-                  f"to investigate convergence problems",
-                  flush=True
-            )
+        self._warn_on_divergence()
 
         return
 
@@ -2410,17 +2447,7 @@ class SNES_Vector(SolverBaseClass):
         self.dm.restoreLocalVec(lvec)
         self.dm.restoreGlobalVec(gvec)
 
-        converged = self.snes.getConvergedReason()
-        iterations = self.snes.getIterationNumber()
-
-        if not converged and uw.mpi.rank == 0:
-            print(f"Convergence problems after {iterations} its in SNES solver use:\n",
-                  f"  <solver>.petsc_options.setValue('ksp_monitor',  None)\n",
-                  f"  <solver>.petsc_options.setValue('snes_monitor', None)\n",
-                  f"  <solver>.petsc_options.setValue('snes_converged_reason', None)\n",
-                  f"to investigate convergence problems",
-                  flush=True
-            )
+        self._warn_on_divergence()
 
         return
 
@@ -3727,6 +3754,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
             self.snes.solve(None, gvec)
+            self._warn_on_divergence(phase="picard")
 
         # Now go back to the original plan
             self.snes.setType(snes_type)
@@ -3818,17 +3846,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm.restoreGlobalVec(clvec)
         self.dm.restoreGlobalVec(gvec)
 
-        converged = self.snes.getConvergedReason()
-        iterations = self.snes.getIterationNumber()
-
-        if not converged and uw.mpi.rank == 0:
-            print(f"Convergence problems after {iterations} its in SNES solver use:\n",
-                  f"  <solver>.petsc_options.setValue('ksp_monitor',  None)\n",
-                  f"  <solver>.petsc_options.setValue('snes_monitor', None)\n",
-                  f"  <solver>.petsc_options.setValue('snes_converged_reason', None)\n",
-                  f"to investigate convergence problems",
-                  flush=True
-            )
+        self._warn_on_divergence()
 
         return
 
