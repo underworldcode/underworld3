@@ -9,8 +9,10 @@ name: "GHCR: Binder Base Image"
 on:
   push:
     branches: [main, development]
+    tags: ['v*']  # Also build on version tags (e.g., v3.0.0)
     paths:
       # Only rebuild when these files change (Cython/dependencies require rebuild)
+      # Note: path filters are ignored for tag pushes (GitHub Actions behaviour)
       - 'container/Dockerfile.base.optimized'
       - 'pixi.toml'
       - 'pixi.lock'
@@ -45,8 +47,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract branch name
-        run: echo "BRANCH=${GITHUB_REF##*/}" >> $GITHUB_ENV
+      - name: Extract ref name and type
+        run: |
+          REF_NAME="${GITHUB_REF##*/}"
+          echo "REF_NAME=${REF_NAME}" >> $GITHUB_ENV
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "REF_TYPE=tag" >> $GITHUB_ENV
+          else
+            echo "REF_TYPE=branch" >> $GITHUB_ENV
+          fi
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -57,10 +66,12 @@ jobs:
           platforms: linux/amd64
           no-cache: ${{ inputs.force_rebuild || false }}
           tags: |
-            ghcr.io/underworldcode/uw3-base:${{ env.BRANCH }}-slim
+            ghcr.io/underworldcode/uw3-base:${{ env.REF_NAME }}-slim
             ghcr.io/underworldcode/uw3-base:latest-slim
 
-      # Trigger launcher repo to update its Dockerfile reference
+      # Trigger launcher repo to update/create its branch
+      # For branches: updates existing .binder/Dockerfile
+      # For tags: creates a new launcher branch with frozen Dockerfile
       # Requires LAUNCHER_PAT secret (Personal Access Token with repo scope)
       - name: Trigger launcher update
         if: success()
@@ -69,4 +80,4 @@ jobs:
           token: ${{ secrets.LAUNCHER_PAT }}
           repository: underworldcode/uw3-binder-launcher
           event-type: image-updated
-          client-payload: '{"branch": "${{ env.BRANCH }}"}'
+          client-payload: '{"branch": "${{ env.REF_NAME }}", "ref_type": "${{ env.REF_TYPE }}"}'
