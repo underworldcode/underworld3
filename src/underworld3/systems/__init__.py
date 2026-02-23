@@ -23,6 +23,10 @@ NavierStokes : class
     Navier-Stokes equations with inertia.
 Diffusion : class
     Pure diffusion (no advection).
+TransientDarcy : class
+    Transient groundwater flow with constant storage.
+Richards : class
+    Richards equation for variably-saturated flow.
 
 Time Derivative Schemes
 -----------------------
@@ -60,6 +64,10 @@ from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
 
 # import diffusion-only solver
 from .solvers import SNES_Diffusion as Diffusion
+
+# Transient Darcy and Richards solvers
+from .solvers import SNES_TransientDarcy as TransientDarcy
+from .solvers import SNES_Richards as Richards
 
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_NavierStokes as NavierStokesSwarm

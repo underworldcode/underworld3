@@ -715,6 +715,7 @@ if uw.is_notebook():
 
     pl2.show(cpos="xy")
 
-# %%
+# %% language="sh"
+# python --version
 
 # %%
