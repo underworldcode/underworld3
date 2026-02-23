@@ -118,6 +118,29 @@ run_build() {
     fi
 
     # Step 3: Build underworld3
+    # Clean build cache if PETSc target changed (prevents stale .so from
+    # being installed when switching between default and AMR environments)
+    local petsc_marker="$SCRIPT_DIR/build/.petsc_target"
+    local current_target
+    current_target=$($PIXI run -e "$env" python -c "import petsc4py; c=petsc4py.get_config(); print(c['PETSC_DIR']+'/'+c.get('PETSC_ARCH',''))" 2>/dev/null)
+    local need_clean=false
+    if [ -f "$petsc_marker" ]; then
+        local prev_target
+        prev_target=$(cat "$petsc_marker")
+        if [ "$current_target" != "$prev_target" ]; then
+            need_clean=true
+        fi
+    elif ls "$SCRIPT_DIR"/build/lib.* 1>/dev/null 2>&1; then
+        # No marker but build cache exists — stale from a raw pip install
+        need_clean=true
+    fi
+    if [ "$need_clean" = true ]; then
+        echo "  PETSc target changed — cleaning build cache..."
+        rm -rf "$SCRIPT_DIR"/build/lib.* "$SCRIPT_DIR"/build/temp.*
+    fi
+    mkdir -p "$SCRIPT_DIR/build"
+    echo "$current_target" > "$petsc_marker"
+
     echo "  Building underworld3..."
     $PIXI run -e "$env" pip install . --no-build-isolation || {
         echo -e "${YELLOW}underworld3 build failed${NC}"
