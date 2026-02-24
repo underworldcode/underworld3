@@ -38,14 +38,35 @@ Work through hands-on notebooks covering all core concepts.
 
 Our tutorial notebooks build progressively:
 
-1. [**Meshes**](tutorials/1-Meshes.ipynb) - Creating and manipulating computational meshes
-2. [**Variables**](tutorials/2-Variables.ipynb) - Defining fields on meshes and swarms  
-3. [**Symbolic Forms**](tutorials/3-Symbolic_Forms.ipynb) - Mathematical expressions with SymPy
-4. [**Poisson Solver**](tutorials/4-Solvers-i-Poisson.ipynb) - Solving diffusion problems
-5. [**Stokes Flow**](tutorials/5-Solvers-ii-Stokes.ipynb) - Incompressible fluid dynamics
-6. [**Timestepping**](tutorials/6a-Timestepping-simple.ipynb) - Evolution and time integration
-7. [**Unsteady Flow**](tutorials/7-Unsteady_Flow.ipynb) - Time-dependent problems
-8. [**Particle Swarms**](tutorials/8-Particle_Swarms.ipynb) - Lagrangian tracking
+**Fundamentals**
+
+1. [**Meshes**](tutorials/1-Meshes.ipynb) — Creating and visualising computational meshes
+2. [**Variables**](tutorials/2-Variables.ipynb) — Defining fields on meshes and swarms
+3. [**Symbolic Forms**](tutorials/3-Symbolic_Forms.ipynb) — Mathematical expressions with SymPy
+
+**Solvers**
+
+4. [**Poisson Solver**](tutorials/4-Solvers-i-Poisson.ipynb) — Solving diffusion problems
+5. [**Poisson Validation**](tutorials/5-Solvers-i-Poisson-Validation.ipynb) — Validating against analytical solutions
+6. [**Stokes Flow**](tutorials/6-Solvers-ii-Stokes.ipynb) — Incompressible fluid dynamics
+
+**Time Dependence**
+
+7. [**Timestepping**](tutorials/7-Timestepping-simple.ipynb) — Advection-diffusion with analytical comparison
+8. [**Coupled Timestepping**](tutorials/8-Timestepping-coupled.ipynb) — Stokes + thermal convection loop
+9. [**Unsteady Flow**](tutorials/9-Unsteady_Flow.ipynb) — Navier-Stokes pipe flow
+
+**Materials and Particles**
+
+10. [**Particle Swarms**](tutorials/10-Particle_Swarms.ipynb) — Lagrangian tracking and swarm variables
+11. [**Multi-Material Models**](tutorials/11-Multi-Material_SolCx.ipynb) — SolCx benchmark with index swarms
+
+**Units and Scaling**
+
+12. [**Units System**](tutorials/12-Units_System.ipynb) — Physical units with Pint
+13. [**Non-Dimensional Scaling**](tutorials/13-Scaling-problems-with-physical-units.ipynb) — Reference quantities and ND solves
+14. [**Timestepping with Units**](tutorials/14-Timestepping-with-physical-units.ipynb) — Advection-diffusion with physical units
+15. [**Thermal Convection**](tutorials/15-Thermal-convection-with-units.ipynb) — Rayleigh-Benard in an annulus
 
 ## What's Next?
 

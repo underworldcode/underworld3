@@ -1,7 +1,7 @@
 # Underworld3 AI Assistant Context
 
 > **Note**: Human-readable developer documentation is in `docs/developer/` (Sphinx/MyST format).
-> For development history and completed migrations, see @docs/developer/historical-notes.md
+> For development history and completed migrations, see @docs/developer/ai-notes/historical-notes.md
 
 ---
 
@@ -454,12 +454,12 @@ Read them when you need deeper context beyond what's in this file.
 
 ### Units & Scaling
 - @docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md - **Authoritative** units architecture
-- @docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md - Coordinate unit handling
+- @docs/developer/ai-notes/COORDINATE-UNITS-TECHNICAL-NOTE.md - Coordinate unit handling
 - @docs/developer/design/WHY_UNITS_NOT_DIMENSIONALITY.md - Design rationale
 
 ### Testing
 - @docs/developer/TESTING-RELIABILITY-SYSTEM.md - Test tier classification (A/B/C)
-- @docs/developer/TEST-CLASSIFICATION-2025-11-15.md - Current test status
+- @docs/developer/ai-notes/TEST-CLASSIFICATION-2025-11-15.md - Current test status
 
 ### Code Style, Workflow & Patterns
 - @docs/developer/guides/branching-strategy.md - Branching, releases, API change discipline
@@ -481,7 +481,7 @@ Read them when you need deeper context beyond what's in this file.
 - @docs/developer/design/mesh-geometry-audit.md - Mesh geometry patterns
 
 ### Development History
-- @docs/developer/historical-notes.md - Completed migrations, fixed bugs
+- @docs/developer/ai-notes/historical-notes.md - Completed migrations, fixed bugs
 
 ---
 
@@ -505,8 +505,8 @@ pixi run -e default python   # Run Python in environment
 
 ### Historical Notes
 For development history, completed migrations, and fixed bugs:
-See @docs/developer/historical-notes.md
+See @docs/developer/ai-notes/historical-notes.md
 
 ---
 
-*Reorganized 2025-12-13: Historical content moved to docs/developer/historical-notes.md*
+*Reorganized 2025-12-13: Historical content moved to docs/developer/ai-notes/historical-notes.md*

@@ -184,6 +184,8 @@ exclude_patterns = [
     # Skip reviews and internal docs
     'reviews/**',
     'docstrings/**',
+    # Skip AI context files (for Claude Code agents, not published docs)
+    'developer/ai-notes/**',
     # Skip examples (not needed for main docs)
     'examples/**',
 ]

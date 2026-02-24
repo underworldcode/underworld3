@@ -29,77 +29,12 @@ Underworld3 is a Python library for computational geodynamics and geophysical mo
 
 This documentation is organized into focused sections:
 
-### Core Computational Systems
-The foundation of Underworld3's numerical capabilities:
-
-- **Meshing**: Geometric mesh generation and manipulation
-- **Discretisation**: Finite element infrastructure and field management
-- **Solvers**: PDE solvers and numerical methods
-- **Constitutive Models**: Material physics and rheology
-
-### Data Management Systems  
-How Underworld3 handles data across parallel systems:
-
-- **NDArray System**: Modern data access patterns (v0.99+)
-- **Swarm System**: Particle tracking and Lagrangian methods
-- **Variables**: Mesh and swarm field variables
-- **Parallel Data**: MPI and distributed memory management
-
-### Mathematical & Symbolic Systems
-The mathematical foundation enabling natural syntax:
-
-- **Mathematical Objects**: Natural math syntax implementation
-- **Expressions & Functions**: Symbolic expression handling
-- **Mathematics**: Vector calculus and tensor operations
-- **Coordinate Systems**: Transformations and spatial handling
-
-### Utility & Extension Systems
-Supporting infrastructure and extensibility:
-
-- **Visualization**: Plotting and rendering capabilities
-- **Scaling**: Dimensional analysis and non-dimensionalization  
-- **Cython Integration**: Performance-critical compiled extensions
-- **JIT Compilation**: Just-in-time code generation
-
-## Current Architecture Status
-
-Based on our comprehensive analysis, here's the current state of Underworld3 subsystems. Areas requiring significant documentation work are marked with (§).
-
-### Well-Documented Subsystems
-- **Discretisation** (4,145 lines) - Finite element infrastructure
-- **Solvers** (3,907 lines) - PDE solving capabilities  
-- **Swarm** (4,484 lines) - Particle systems and tracking
-- **NDArray** (946 lines) - Modern data access (v0.99+)
-- **Constitutive Models** (1,967 lines) - Material physics
-
-### Partially Documented Subsystems
-- **Meshing** (4,437 lines) - Needs geometric parameter details (§)
-- **Mathematics** (962 lines) - Inconsistent documentation quality (§)
-- **Visualization** (788 lines) - Basic documentation present
-
-### Documentation Gaps
-- **Expressions/Functions** (1,192 lines) - Critical user-facing gap (§)
-- **Scaling** (208 lines) - Minimal documentation (§)
-- **Cython Integration** - No documentation for C bridge (§)
-
-## Contributing to Documentation
-
-We welcome contributions to improve this documentation! Each subsystem page includes:
-
-- **Current implementation status**
-- **API reference and examples**  
-- **Developer guidelines**
-- **Performance considerations**
-- **Testing patterns**
-
-### Documentation Priorities
-
-Based on our analysis, these are the highest priority areas for contribution:
-
-1. **Critical**: [Expressions & Functions](subsystems/expressions-functions.md) - Core user functionality
-2. **Critical**: [Cython Integration](subsystems/cython-integration.md) - Bridge documentation missing
-3. **High**: [Meshing](subsystems/meshing.md) - Geometric parameter guidance
-4. **High**: [Mathematics](subsystems/mathematics.md) - Consistency improvements
+- **Getting Started** — Development setup and contributing guidelines
+- **Guides** — Practical how-to guides for scripts, notebooks, gmsh, code review
+- **Architecture** — Mathematical objects and NDArray system internals
+- **Design Documents** — Architecture decisions and design rationale
+- **Subsystems** — Detailed documentation of each code module
+- **Advanced Topics** — Solver development, MPI parallelism, PETSc integration
 
 ## Development Workflow
 
@@ -176,6 +111,9 @@ guides/notebook-style-guide
 guides/GMSH_INTEGRATION_GUIDE
 guides/CODE-REVIEW-PROCESS
 guides/SPELLING_CONVENTION
+guides/version-management
+guides/branching-strategy
+guides/BINDER_CONTAINER_SETUP
 ```
 
 ```{toctree}
@@ -184,12 +122,16 @@ guides/SPELLING_CONVENTION
 :caption: Design Documents
 
 design/UNITS_SIMPLIFIED_DESIGN_2025-11
+design/WHY_UNITS_NOT_DIMENSIONALITY
 design/SYMBOL_DISAMBIGUATION_2025-12
 design/ADAPTIVE_MESHING_DESIGN
 design/ARCHITECTURE_ANALYSIS
 design/MATHEMATICAL_MIXIN_DESIGN
 design/COORDINATE_MIGRATION_GUIDE
 design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN
+design/mesh-geometry-audit
+design/PROJECTED_NORMALS_API_DESIGN
+design/TURBULENCE_MODEL_DESIGN
 ```
 
 ```{toctree}
@@ -199,6 +141,9 @@ design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN
 
 UW3_Developers_MathematicalObjects
 UW3_Developers_NDArrays
+TEMPLATE_EXPRESSION_PATTERN
+TESTING-RELIABILITY-SYSTEM
+CHANGELOG
 ```
 
 ```{toctree}
@@ -210,10 +155,14 @@ subsystems/meshing
 subsystems/discretisation
 subsystems/solvers
 subsystems/constitutive-models
+subsystems/constitutive-models-theory
+subsystems/constitutive-models-anisotropy
 subsystems/swarm-system
 subsystems/data-access
 subsystems/expressions-functions
 subsystems/containers
+subsystems/checkpointing-system
+subsystems/model-orchestration
 ```
 
 ```{toctree}
