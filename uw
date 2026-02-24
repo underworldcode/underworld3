@@ -481,7 +481,7 @@ run_setup() {
     read -p "Build underworld3? [Y/n]: " build_uw
     build_uw=${build_uw:-y}
     if [ "$build_uw" = "y" ] || [ "$build_uw" = "Y" ]; then
-        $PIXI run -e "$new_env" pip install . --no-build-isolation
+        run_build
     fi
 
     # Optional: Configure extended AI context paths
@@ -888,6 +888,12 @@ case "${1:-}" in
         ;;
     build)
         run_build
+        ;;
+    clean)
+        echo "Cleaning build artifacts..."
+        rm -rf "$SCRIPT_DIR"/build/lib.* "$SCRIPT_DIR"/build/temp.* "$SCRIPT_DIR"/build/bdist.*
+        rm -f "$SCRIPT_DIR/build/.petsc_target"
+        echo -e "${GREEN}Done${NC}. Run './uw build' to rebuild."
         ;;
     doctor)
         run_doctor

@@ -7,8 +7,67 @@ from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
 import os
+import shutil
 import numpy
 import petsc4py
+
+
+def _clean_stale_build_cache():
+    """Remove cached Cython extensions when the PETSc target changes.
+
+    The setuptools build directory (build/lib.*) caches compiled .so files
+    and reuses them on subsequent installs — even if the PETSc installation
+    has changed.  When switching between pixi environments that use different
+    PETSc builds (e.g. conda-forge 3.24.2 vs custom 3.24.3), the stale .so
+    files silently link against the wrong libpetsc, causing PETSc error 73
+    ("Object is in wrong state") at solve time.
+
+    This function records which PETSc was used for the last build and wipes
+    the extension cache whenever the target changes.
+    """
+    build_dir = os.path.join(os.path.dirname(__file__) or ".", "build")
+    marker = os.path.join(build_dir, ".petsc_target")
+
+    config = petsc4py.get_config()
+    current = config["PETSC_DIR"] + "/" + config.get("PETSC_ARCH", "")
+
+    if os.path.isfile(marker):
+        with open(marker) as f:
+            previous = f.read().strip()
+        if previous == current:
+            return  # Same target — nothing to do
+        print(f"\n  *** PETSc target changed ***")
+        print(f"      was: {previous}")
+        print(f"      now: {current}")
+        print(f"      Cleaning build cache to force recompilation...\n")
+    elif any(
+        d.startswith("lib.") or d.startswith("temp.")
+        for d in os.listdir(build_dir)
+        if os.path.isdir(os.path.join(build_dir, d))
+    ) if os.path.isdir(build_dir) else False:
+        # No marker but cached extensions exist — stale from a previous build
+        print(f"\n  *** No PETSc target marker — cleaning build cache...\n")
+    else:
+        # No cache at all — first build, just record the target
+        os.makedirs(build_dir, exist_ok=True)
+        with open(marker, "w") as f:
+            f.write(current)
+        return
+
+    # Wipe cached extensions
+    for name in os.listdir(build_dir):
+        path = os.path.join(build_dir, name)
+        if os.path.isdir(path) and (
+            name.startswith("lib.") or name.startswith("temp.")
+        ):
+            shutil.rmtree(path)
+
+    os.makedirs(build_dir, exist_ok=True)
+    with open(marker, "w") as f:
+        f.write(current)
+
+
+_clean_stale_build_cache()
 
 
 def configure():
