@@ -69,7 +69,9 @@ jobs:
             ghcr.io/underworldcode/uw3-base:${{ env.REF_NAME }}-slim
             ${{ env.IS_RELEASE == 'true' && 'ghcr.io/underworldcode/uw3-base:latest-slim' || '' }}
 
-      # Trigger launcher repo to update its Dockerfile reference
+      # Trigger launcher repo to update/create its branch
+      # For branches: updates existing .binder/Dockerfile
+      # For tags: creates a new launcher branch with frozen Dockerfile
       # Requires LAUNCHER_PAT secret (Personal Access Token with repo scope)
       - name: Trigger launcher update
         if: success()
