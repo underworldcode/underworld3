@@ -1,7 +1,7 @@
 # Underworld3 AI Assistant Context
 
 > **Note**: Human-readable developer documentation is in `docs/developer/` (Sphinx/MyST format).
-> For development history and completed migrations, see @docs/developer/historical-notes.md
+> For development history and completed migrations, see @docs/developer/ai-notes/historical-notes.md
 
 ---
 
@@ -150,6 +150,22 @@ This keeps feature branches independent and makes cross-pollination of fixes str
 - Fix on `development` (commit or small PR)
 - Cherry-pick to `main` if critical → tag patch release
 - Cherry-pick to active feature branches (underworld-claude handles this)
+
+### Git Worktrees for Session Isolation
+**Use a worktree for any multi-file change** (docs cleanup, refactoring, features).
+Multiple Claude sessions sharing one working directory will overwrite each other's work.
+
+```bash
+# Use EnterWorktree tool to create .claude/worktrees/<name> on a new branch.
+# Then if needed, reset to a clean base:
+git reset --hard origin/development
+
+# To merge: switch to main worktree first, then merge and push.
+# To clean up — ORDER MATTERS (shell CWD dies if worktree is deleted under it):
+cd /Users/lmoresi/+Underworld/underworld3-pixi   # 1. move shell out
+git worktree remove .claude/worktrees/<name>       # 2. remove worktree
+git branch -D <branch>                             # 3. -D not -d (merged to development, not main)
+```
 
 ### AI-Assisted Commit Attribution
 When committing code developed with AI assistance, end the commit message with:
@@ -454,12 +470,12 @@ Read them when you need deeper context beyond what's in this file.
 
 ### Units & Scaling
 - @docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md - **Authoritative** units architecture
-- @docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md - Coordinate unit handling
+- @docs/developer/ai-notes/COORDINATE-UNITS-TECHNICAL-NOTE.md - Coordinate unit handling
 - @docs/developer/design/WHY_UNITS_NOT_DIMENSIONALITY.md - Design rationale
 
 ### Testing
 - @docs/developer/TESTING-RELIABILITY-SYSTEM.md - Test tier classification (A/B/C)
-- @docs/developer/TEST-CLASSIFICATION-2025-11-15.md - Current test status
+- @docs/developer/ai-notes/TEST-CLASSIFICATION-2025-11-15.md - Current test status
 
 ### Code Style, Workflow & Patterns
 - @docs/developer/guides/branching-strategy.md - Branching, releases, API change discipline
@@ -481,7 +497,7 @@ Read them when you need deeper context beyond what's in this file.
 - @docs/developer/design/mesh-geometry-audit.md - Mesh geometry patterns
 
 ### Development History
-- @docs/developer/historical-notes.md - Completed migrations, fixed bugs
+- @docs/developer/ai-notes/historical-notes.md - Completed migrations, fixed bugs
 
 ---
 
@@ -505,8 +521,8 @@ pixi run -e default python   # Run Python in environment
 
 ### Historical Notes
 For development history, completed migrations, and fixed bugs:
-See @docs/developer/historical-notes.md
+See @docs/developer/ai-notes/historical-notes.md
 
 ---
 
-*Reorganized 2025-12-13: Historical content moved to docs/developer/historical-notes.md*
+*Reorganized 2025-12-13: Historical content moved to docs/developer/ai-notes/historical-notes.md*
