@@ -74,7 +74,6 @@ This section urgently needs:
 
 ## Related Systems
 
-- Critical for [Performance Optimization](../guidelines/performance-optimization.md)
 - Integrates with [PETSc Integration](../advanced/petsc-integration.md)
 - Used by [Solvers](solvers.md) for computational kernels
 
