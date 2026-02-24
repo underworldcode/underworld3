@@ -151,6 +151,22 @@ This keeps feature branches independent and makes cross-pollination of fixes str
 - Cherry-pick to `main` if critical → tag patch release
 - Cherry-pick to active feature branches (underworld-claude handles this)
 
+### Git Worktrees for Session Isolation
+**Use a worktree for any multi-file change** (docs cleanup, refactoring, features).
+Multiple Claude sessions sharing one working directory will overwrite each other's work.
+
+```bash
+# Use EnterWorktree tool to create .claude/worktrees/<name> on a new branch.
+# Then if needed, reset to a clean base:
+git reset --hard origin/development
+
+# To merge: switch to main worktree first, then merge and push.
+# To clean up — ORDER MATTERS (shell CWD dies if worktree is deleted under it):
+cd /Users/lmoresi/+Underworld/underworld3-pixi   # 1. move shell out
+git worktree remove .claude/worktrees/<name>       # 2. remove worktree
+git branch -D <branch>                             # 3. -D not -d (merged to development, not main)
+```
+
 ### AI-Assisted Commit Attribution
 When committing code developed with AI assistance, end the commit message with:
 
