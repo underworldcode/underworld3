@@ -70,6 +70,138 @@ from underworld3.utilities._api_tools import uw_object
 from petsc4py import PETSc
 
 
+def _as_float(value):
+    """Extract a plain float from various numeric types (Pint, UWQuantity, etc.)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if hasattr(value, "magnitude"):
+        return float(value.magnitude)
+    if hasattr(value, "value"):
+        return float(value.value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bdf_coefficients(order, dt_current, dt_history):
+    r"""Compute BDF coefficients, handling variable timesteps.
+
+    For uniform timesteps the classical BDF-k coefficients are returned
+    as exact ``sympy.Rational`` values.  When the timestep ratio differs
+    from unity the variable-step BDF-2 formula is used (BDF-3 falls back
+    to variable-step BDF-2 when the ratio exceeds 5 %).
+
+    Parameters
+    ----------
+    order : int
+        BDF order (1, 2, or 3).
+    dt_current : float or None
+        Current timestep :math:`\Delta t_n`.
+    dt_history : list
+        Previous timesteps ``[dt_{n-1}, dt_{n-2}, ...]``.
+
+    Returns
+    -------
+    list of sympy.Basic
+        Coefficients ``[c0, c1, c2, ...]`` such that
+
+        .. math::
+
+            \Delta\psi_{\mathrm{BDF}} = c_0\,\psi^{n+1}
+                + c_1\,\psi^n + c_2\,\psi^{n-1} + \cdots
+
+    Notes
+    -----
+    **BDF-1** (backward Euler) always returns ``[1, -1]``.
+
+    **BDF-2** with variable step uses
+    :math:`r = \Delta t_n / \Delta t_{n-1}`:
+
+    .. math::
+
+        c_0 = \frac{1+2r}{1+r}, \quad
+        c_1 = -(1+r), \quad
+        c_2 = \frac{r^2}{1+r}
+
+    which reduces to :math:`[3/2,\;-2,\;1/2]` when :math:`r=1`.
+
+    **BDF-3** uses the constant-step formula when all ratios are within
+    5 % of unity; otherwise it falls back to variable-step BDF-2.
+    """
+    if order <= 1:
+        return [sympy.Integer(1), sympy.Integer(-1)]
+
+    dt_n = _as_float(dt_current)
+    dt_nm1 = (
+        _as_float(dt_history[0])
+        if len(dt_history) > 0 and dt_history[0] is not None
+        else None
+    )
+
+    if order == 2:
+        if dt_n is not None and dt_nm1 is not None and dt_nm1 > 0:
+            r = dt_n / dt_nm1
+            if abs(r - 1.0) < 1e-12:
+                # Exactly constant dt — use exact rationals
+                return [
+                    sympy.Rational(3, 2),
+                    sympy.Integer(-2),
+                    sympy.Rational(1, 2),
+                ]
+            else:
+                # Variable dt
+                return [
+                    sympy.sympify((1 + 2 * r) / (1 + r)),
+                    sympy.sympify(-(1 + r)),
+                    sympy.sympify(r**2 / (1 + r)),
+                ]
+        else:
+            # No usable history — constant-dt fallback
+            return [
+                sympy.Rational(3, 2),
+                sympy.Integer(-2),
+                sympy.Rational(1, 2),
+            ]
+
+    # order >= 3
+    dt_nm2 = (
+        _as_float(dt_history[1])
+        if len(dt_history) > 1 and dt_history[1] is not None
+        else None
+    )
+    if (
+        dt_n is not None
+        and dt_nm1 is not None
+        and dt_nm2 is not None
+        and dt_nm1 > 0
+        and dt_nm2 > 0
+    ):
+        r1 = dt_n / dt_nm1
+        r2 = dt_nm1 / dt_nm2
+        if abs(r1 - 1.0) < 0.05 and abs(r2 - 1.0) < 0.05:
+            # Approximately constant dt — standard BDF-3
+            return [
+                sympy.Rational(11, 6),
+                sympy.Integer(-3),
+                sympy.Rational(3, 2),
+                sympy.Rational(-1, 3),
+            ]
+        else:
+            # Variable dt — fall back to BDF-2 with variable coefficients
+            return _bdf_coefficients(2, dt_current, dt_history)
+    else:
+        # Insufficient history — constant-dt BDF-3
+        return [
+            sympy.Rational(11, 6),
+            sympy.Integer(-3),
+            sympy.Rational(3, 2),
+            sympy.Rational(-1, 3),
+        ]
+
+
 class Symbolic(uw_object):
     r"""
     Symbolic history manager for time derivative approximations.
@@ -157,6 +289,12 @@ class Symbolic(uw_object):
         self.smoothing = smoothing
         self.order = order
 
+        # History tracking: deferred initialization and effective order
+        self._history_initialised = False
+        self._n_solves_completed = 0
+        self._dt = None  # current timestep (set by solver or update_pre_solve)
+        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+
         # Ensure psi_fn is a sympy Matrix.
         if not isinstance(psi_fn, sympy.Matrix):
             try:
@@ -172,7 +310,6 @@ class Symbolic(uw_object):
 
         # Create the history list: each element is a Matrix of shape _shape.
         self.psi_star = [sympy.zeros(*self._shape) for _ in range(order)]
-        self.initiate_history_fn()
         return
 
     @property
@@ -202,18 +339,37 @@ class Symbolic(uw_object):
         history_latex = ", ".join([sympy.latex(elem) for elem in self.psi_star])
         display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
 
+    @property
+    def effective_order(self):
+        """Current effective BDF order, accounting for history startup.
+
+        For BDF order k, k distinct history values are needed. During
+        startup, ``effective_order`` ramps from 1 to ``self.order`` as
+        successive solves populate the history slots with distinct values.
+        """
+        return min(self.order, max(1, self._n_solves_completed + 1))
+
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to the first history slot ``psi_star[0]``."""
         # Update the first history element with a copy of the current ψ.
         self.psi_star[0] = self.psi_fn.copy()
 
-    def initiate_history_fn(self):
-        r"""Initialize all history slots to the current value of :math:`\psi`."""
+    def initialise_history(self):
+        r"""Initialize all history slots to the current value of :math:`\psi`.
+
+        Called automatically on the first ``update_pre_solve``. Can also
+        be called manually after setting initial conditions.
+        """
         self.update_history_fn()
         # Propagate the initial history to all history steps.
         for i in range(1, self.order):
             self.psi_star[i] = self.psi_star[0].copy()
+        self._history_initialised = True
         return
+
+    def initiate_history_fn(self):
+        """Deprecated: use ``initialise_history`` instead."""
+        self.initialise_history()
 
     def update(
         self,
@@ -231,8 +387,12 @@ class Symbolic(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Pre-solve update hook (no-op for Symbolic)."""
+        """Pre-solve update hook. Auto-initialises history on first call."""
         self._dt = dt
+
+        if not self._history_initialised:
+            self.initialise_history()
+
         return
 
     def update_post_solve(
@@ -247,48 +407,58 @@ class Symbolic(uw_object):
         if verbose:
             print(f"Updating history for ψ = {self.psi_fn}", flush=True)
 
+        # Record timestep history for variable-dt BDF
+        for i in range(self.order - 1, 0, -1):
+            self._dt_history[i] = self._dt_history[i - 1]
+        self._dt_history[0] = dt
+
         # Shift history: copy each element down the chain.
         for i in range(self.order - 1, 0, -1):
             self.psi_star[i] = self.psi_star[i - 1].copy()
         self.update_history_fn()
+
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
+
         return
 
     def bdf(self, order: Optional[int] = None):
         r"""Compute the backward differentiation approximation of the time-derivative of ψ.
         For order 1: bdf ≡ ψ - psi_star[0]
 
-        .. warning::
-            For order > 1, the coefficients assume uniform timestep spacing.
-            Variable Δt with order > 1 requires modified coefficients that
-            depend on the ratio of consecutive timesteps. This is not yet
-            implemented — use order=1 when timestep varies significantly.
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup to avoid using higher-order BDF
+        coefficients before distinct history values are available.
+
+        For order > 1 with variable timesteps, the BDF coefficients are
+        adjusted using the ratio of consecutive timesteps (see
+        ``_bdf_coefficients``).
         """
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(1, min(self.order, order))
+            order = max(1, min(self.effective_order, order))
 
+        coeffs = _bdf_coefficients(order, self._dt, self._dt_history)
+
+        # Build BDF sum: c0 * psi + c1 * psi_star[0] + c2 * psi_star[1] + ...
         with sympy.core.evaluate(False):
-            if order == 1:
-                bdf0 = self.psi_fn - self.psi_star[0]
-            elif order == 2:
-                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0] + self.psi_star[1] / 2
-            elif order == 3:
-                bdf0 = (
-                    11 * self.psi_fn / 6
-                    - 3 * self.psi_star[0]
-                    + (3 * self.psi_star[1]) / 2
-                    - self.psi_star[2] / 3
-                )
+            bdf0 = coeffs[0] * self.psi_fn
+            for i in range(1, len(coeffs)):
+                bdf0 = bdf0 + coeffs[i] * self.psi_star[i - 1]
+
         return bdf0
 
     def adams_moulton_flux(self, order: Optional[int] = None):
         r"""Adams-Moulton flux approximation for implicit time integration.
 
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.
+
         Parameters
         ----------
         order : int, optional
-            Order of the approximation (1-3). Defaults to ``self.order``.
+            Order of the approximation (1-3). Defaults to ``effective_order``.
 
         Returns
         -------
@@ -304,9 +474,9 @@ class Symbolic(uw_object):
         - Order 3: :math:`\frac{9\psi + 19\psi^* - 5\psi^{**} + \psi^{***}}{24}`
         """
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(1, min(self.order, order))
+            order = max(1, min(self.effective_order, order))
 
         with sympy.core.evaluate(False):
             if order == 1:
@@ -428,6 +598,10 @@ class Eulerian(uw_object):
         self.smoothing = smoothing
         self.evalf = evalf
 
+        # History tracking: deferred initialization and effective order
+        self._history_initialised = False
+        self._n_solves_completed = 0
+
         # meshVariables are required for:
         #
         # u(t) - evaluation of u_fn at the current time
@@ -446,6 +620,8 @@ class Eulerian(uw_object):
             self._psi_meshVar = None
 
         self.order = order
+        self._dt = None  # current timestep (set by solver or update_pre_solve)
+        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
 
         psi_star = []
         self.psi_star = psi_star
@@ -461,10 +637,6 @@ class Eulerian(uw_object):
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
                 )
             )
-
-        # print('initiating history fn', flush=True)
-        ### Initiate first history value in chain
-        self.initiate_history_fn()
 
         return
 
@@ -524,6 +696,16 @@ class Eulerian(uw_object):
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
 
+    @property
+    def effective_order(self):
+        """Current effective BDF order, accounting for history startup.
+
+        For BDF order k, k distinct history values are needed. During
+        startup, ``effective_order`` ramps from 1 to ``self.order`` as
+        successive solves populate the history slots with distinct values.
+        """
+        return min(self.order, max(1, self._n_solves_completed + 1))
+
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection."""
         ### update first value in history chain
@@ -542,15 +724,25 @@ class Eulerian(uw_object):
             self._setup_projections()
             self._psi_star_projection_solver.solve()
 
-    def initiate_history_fn(self):
-        r"""Initialize all history slots to the current value of :math:`\psi`."""
+    def initialise_history(self):
+        r"""Initialize all history slots to the current value of :math:`\psi`.
+
+        Called automatically on the first ``update_pre_solve``. Can also
+        be called manually after setting initial conditions to ensure
+        the history chain starts from the correct state.
+        """
         self.update_history_fn()
 
         ### set up all history terms to the initial values
         for i in range(self.order - 1, 0, -1):
             self.psi_star[i].data[...] = self.psi_star[0].data[...]
 
+        self._history_initialised = True
         return
+
+    def initiate_history_fn(self):
+        """Deprecated: use ``initialise_history`` instead."""
+        self.initialise_history()
 
     def update(
         self,
@@ -568,23 +760,17 @@ class Eulerian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Pre-solve: apply grid-based advection correction if V_fn is set.
+        """Pre-solve: auto-initialise history and apply advection correction.
 
-        Modifies psi_star[0] so that bdf() returns an approximation to
-        Dφ/Dt · Δt (material derivative) rather than ∂φ/∂t · Δt.
-
-        The advection correction is:
-            psi_star[0] ← φ^n - Δt · u·∇φ^n
-
-        Then bdf() = φ^{n+1} - psi_star[0]
-                  = φ^{n+1} - φ^n + Δt · u·∇φ^n
-                  ≈ Dφ/Dt · Δt
-
-        This is first-order explicit advection (operator splitting).
-        Subject to CFL condition: Δt < h/|u|, but for the moderate-v
-        regime where Eulerian is appropriate, CFL is not restrictive.
+        On the first call, automatically initialises history from the
+        current field values. If V_fn is set, also applies an explicit
+        grid-based advection correction so that bdf() approximates the
+        material derivative Dφ/Dt rather than ∂φ/∂t.
         """
         self._dt = dt
+
+        if not self._history_initialised:
+            self.initialise_history()
 
         if self.V_fn is not None and dt is not None:
             coords = self.psi_star[0].coords
@@ -624,12 +810,20 @@ class Eulerian(uw_object):
         if verbose and uw.mpi.rank == 0:
             print(f"Update {self.psi_fn}", flush=True)
 
+        # Record timestep history for variable-dt BDF
+        for i in range(self.order - 1, 0, -1):
+            self._dt_history[i] = self._dt_history[i - 1]
+        self._dt_history[0] = dt
+
         ### copy values down the chain
         for i in range(self.order - 1, 0, -1):
             self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
         ### update the history fn
         self.update_history_fn()
+
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
 
         return
 
@@ -638,44 +832,40 @@ class Eulerian(uw_object):
 
         Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives.
 
-        .. warning::
-            For order > 1, the coefficients assume uniform timestep spacing.
-            Variable Δt with order > 1 requires modified coefficients that
-            depend on the ratio of consecutive timesteps. This is not yet
-            implemented — use order=1 when timestep varies significantly.
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup to avoid using higher-order BDF
+        coefficients before distinct history values are available.
+
+        For order > 1 with variable timesteps, the BDF coefficients are
+        adjusted using the ratio of consecutive timesteps (see
+        ``_bdf_coefficients``).
         """
 
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(1, min(self.order, order))
+            order = max(1, min(self.effective_order, order))
 
-        # TODO: These coefficients assume uniform dt. For variable dt with order > 1,
-        # coefficients must be computed from dt_n/dt_{n-1} ratio.
+        coeffs = _bdf_coefficients(order, self._dt, self._dt_history)
+
+        # Build BDF sum: c0 * psi + c1 * psi_star[0].sym + ...
         with sympy.core.evaluate(False):
-            if order == 1:
-                bdf0 = self.psi_fn - self.psi_star[0].sym
-
-            elif order == 2:
-                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
-
-            elif order == 3:
-                bdf0 = (
-                    11 * self.psi_fn / 6
-                    - 3 * self.psi_star[0].sym
-                    + 3 * self.psi_star[1].sym / 2
-                    - self.psi_star[2].sym / 3
-                )
+            bdf0 = coeffs[0] * self.psi_fn
+            for i in range(1, len(coeffs)):
+                bdf0 = bdf0 + coeffs[i] * self.psi_star[i - 1].sym
 
         return bdf0
 
     def adams_moulton_flux(self, order=None):
         r"""Adams-Moulton flux approximation for implicit time integration.
 
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.
+
         Parameters
         ----------
         order : int, optional
-            Order of the approximation (0-3). Defaults to ``self.order``.
+            Order of the approximation (0-3). Defaults to ``effective_order``.
 
         Returns
         -------
@@ -688,9 +878,9 @@ class Eulerian(uw_object):
             Use order=1 when timestep varies significantly.
         """
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(0, min(self.order, order))
+            order = max(0, min(self.effective_order, order))
 
         with sympy.core.evaluate(False):
 
@@ -815,6 +1005,12 @@ class SemiLagrangian(uw_object):
         self.V_fn = V_fn
         self.order = order
         self.preserve_moments = preserve_moments
+
+        # History tracking: deferred initialization and effective order
+        self._history_initialised = False
+        self._n_solves_completed = 0
+        self._dt = None  # current timestep (set by solver or update_pre_solve)
+        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
 
         if swarm_degree is None:
             self.swarm_degree = degree
@@ -943,6 +1139,57 @@ class SemiLagrangian(uw_object):
 
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
+    @property
+    def effective_order(self):
+        """Current effective BDF order, accounting for history startup.
+
+        For BDF order k, k distinct history values are needed. During
+        startup, ``effective_order`` ramps from 1 to ``self.order`` as
+        successive solves populate the history slots with distinct values.
+        """
+        return min(self.order, max(1, self._n_solves_completed + 1))
+
+    def initialise_history(self):
+        r"""Initialize all history slots to the current value of :math:`\psi`.
+
+        Called automatically on the first ``update_pre_solve``. Can also
+        be called manually after setting initial conditions.
+        """
+        # Evaluate psi_fn at psi_star node positions and store in psi_star[0]
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        coords = self.psi_star[0].coords
+        if hasattr(coords, "magnitude"):
+            coords_nd = uw.non_dimensionalise(coords)
+            if isinstance(coords_nd, UnitAwareArray):
+                coords_nd = np.array(coords_nd)
+            elif hasattr(coords_nd, 'magnitude'):
+                coords_nd = coords_nd.magnitude
+        else:
+            coords_nd = coords
+
+        try:
+            eval_result = uw.function.evaluate(self.psi_fn, coords_nd)
+            psi_units = self.psi_star[0].units
+            if psi_units is not None and not isinstance(eval_result, UnitAwareArray):
+                eval_result = UnitAwareArray(eval_result, units=psi_units)
+            self.psi_star[0].array[...] = eval_result
+        except Exception:
+            self._psi_star_projection_solver.uw_function = self.psi_fn
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve()
+
+        # Copy to all other history slots
+        for i in range(1, self.order):
+            self.psi_star[i].array[...] = self.psi_star[0].array[...]
+
+        self._history_initialised = True
+        return
+
+    def initiate_history_fn(self):
+        """Deprecated: use ``initialise_history`` instead."""
+        self.initialise_history()
+
     def update(
         self,
         dt: float,
@@ -961,7 +1208,16 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
     ):
-        """Post-solve update hook (no-op for SemiLagrangian)."""
+        """Post-solve: record timestep and increment solve counter."""
+        self._dt = dt
+
+        # Record timestep history for variable-dt BDF
+        for i in range(self.order - 1, 0, -1):
+            self._dt_history[i] = self._dt_history[i - 1]
+        self._dt_history[0] = dt
+
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
         return
 
     def update_pre_solve(
@@ -971,7 +1227,14 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
     ):
-        """Sample upstream values along characteristics before solve."""
+        """Sample upstream values along characteristics before solve.
+
+        On the first call, automatically initialises history from the
+        current field values so that bdf() returns zero on the first step.
+        """
+
+        if not self._history_initialised:
+            self.initialise_history()
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain in preparation for the next timestep
@@ -1276,8 +1539,6 @@ class SemiLagrangian(uw_object):
                 self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
                 IL20 = np.sqrt(self.I.evaluate())
 
-                # if uw.mpi.rank == 0:
-                #     print(f"Pre advection:  {Imean0}, {IL20}", flush=True)
 
             # disable this for now - Restore moments after update
             if 0 and self.preserve_moments and self._workVar.num_components == 1:
@@ -1310,38 +1571,40 @@ class SemiLagrangian(uw_object):
         return
 
     def bdf(self, order=None):
-        r"""Backwards differentiation form for calculating DuDt
-        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
+        r"""Backwards differentiation form for calculating DuDt.
+
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives.
+
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.  For order > 1 with variable
+        timesteps, coefficients are adjusted automatically.
+        """
 
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(1, min(self.order, order))
+            order = max(1, min(self.effective_order, order))
 
+        coeffs = _bdf_coefficients(order, self._dt, self._dt_history)
+
+        # Build BDF sum: c0 * psi + c1 * psi_star[0].sym + ...
         with sympy.core.evaluate(True):
-            if order == 0 or order == 1:
-                bdf0 = self.psi_fn - self.psi_star[0].sym
-
-            elif order == 2:
-                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
-
-            elif order == 3:
-                bdf0 = (
-                    11 * self.psi_fn / 6
-                    - 3 * self.psi_star[0].sym
-                    + 3 * self.psi_star[1].sym / 2
-                    - self.psi_star[2].sym / 3
-                )
+            bdf0 = coeffs[0] * self.psi_fn
+            for i in range(1, len(coeffs)):
+                bdf0 = bdf0 + coeffs[i] * self.psi_star[i - 1].sym
 
         return bdf0
 
     def adams_moulton_flux(self, order=None):
         r"""Adams-Moulton flux approximation for implicit time integration.
 
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.
+
         Parameters
         ----------
         order : int, optional
-            Order of the approximation (0-3). Defaults to ``self.order``.
+            Order of the approximation (0-3). Defaults to ``effective_order``.
 
         Returns
         -------
@@ -1349,9 +1612,9 @@ class SemiLagrangian(uw_object):
             Weighted average of :math:`\psi` and history terms.
         """
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(0, min(self.order, order))
+            order = max(0, min(self.effective_order, order))
 
         with sympy.core.evaluate(True):
 
@@ -1487,11 +1750,16 @@ class Lagrangian(uw_object):
         self.verbose = verbose
         self.order = order
 
+        # History tracking: deferred initialization and effective order
+        self._history_initialised = False
+        self._n_solves_completed = 0
+        self._dt = None  # current timestep (set by solver or update_pre_solve)
+        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+
         psi_star = []
         self.psi_star = psi_star
 
         for i in range(order):
-            print(f"Creating psi_star[{i}]")
             self.psi_star.append(
                 uw.swarm.SwarmVariable(
                     f"psi_star_sw_{self.instance_number}_{i}",
@@ -1522,6 +1790,39 @@ class Lagrangian(uw_object):
         )
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
+    @property
+    def effective_order(self):
+        """Current effective BDF order, accounting for history startup."""
+        return min(self.order, max(1, self._n_solves_completed + 1))
+
+    def initialise_history(self):
+        r"""Initialize all history slots to the current value of :math:`\psi`.
+
+        Called automatically on the first ``update_pre_solve``. Can also
+        be called manually after setting initial conditions.
+        """
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j],
+                        self.swarm.data,
+                    )
+                    psi_star_0[i, j].data[:] = updated_psi
+
+        # Copy to all other history slots
+        for k in range(1, self.order):
+            with self.swarm.access(self.psi_star[k]):
+                self.psi_star[k].data[...] = psi_star_0.data[...]
+
+        self._history_initialised = True
+        return
+
+    def initiate_history_fn(self):
+        """Deprecated: use ``initialise_history`` instead."""
+        self.initialise_history()
+
     ## Note: We may be able to eliminate this
     ## The SL updater and the Lag updater have
     ## different sequencing because of the way they
@@ -1545,7 +1846,9 @@ class Lagrangian(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Pre-solve update hook (no-op for Lagrangian)."""
+        """Pre-solve: auto-initialise history on first call."""
+        if not self._history_initialised:
+            self.initialise_history()
         return
 
     def update_post_solve(
@@ -1555,12 +1858,20 @@ class Lagrangian(uw_object):
         verbose: Optional[bool] = False,
     ):
         """Shift history chain and advect swarm after solve."""
+        self._dt = dt
+
+        # Record timestep history for variable-dt BDF
+        for i in range(self.order - 1, 0, -1):
+            self._dt_history[i] = self._dt_history[i - 1]
+        self._dt_history[0] = dt
+
         for h in range(self.order - 1):
             i = self.order - (h + 1)
 
             # copy the information down the chain
-            print(f"Lagrange order = {self.order}")
-            print(f"Lagrange copying {i-1} to {i}")
+            if verbose:
+                print(f"Lagrange order = {self.order}")
+                print(f"Lagrange copying {i-1} to {i}")
 
             self.psi_star[i].array[...] = self.psi_star[i - 1].array[...]
 
@@ -1585,40 +1896,43 @@ class Lagrangian(uw_object):
             restore_points_to_domain_func=self.mesh.return_coords_to_bounds,
         )
 
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
+
     def bdf(self, order=None):
-        r"""Backwards differentiation form for calculating DuDt
-        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
+        r"""Backwards differentiation form for calculating DuDt.
+
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives.
+
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.  For order > 1 with variable
+        timesteps, coefficients are adjusted automatically.
+        """
 
         if order is None:
-            order = self.order
+            order = self.effective_order
+        else:
+            order = max(1, min(self.effective_order, order))
+
+        coeffs = _bdf_coefficients(order, self._dt, self._dt_history)
 
         with sympy.core.evaluate(True):
-            if order == 0:  # special case - no history term
-                bdf0 = sympy.sympify(0)
-
-            if order == 1:
-                bdf0 = self.psi_fn - self.psi_star[0].sym
-
-            elif order == 2:
-                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
-
-            elif order == 3:
-                bdf0 = (
-                    11 * self.psi_fn / 6
-                    - 3 * self.psi_star[0].sym
-                    + 3 * self.psi_star[1].sym / 2
-                    - self.psi_star[2].sym / 3
-                )
+            bdf0 = coeffs[0] * self.psi_fn
+            for i in range(1, len(coeffs)):
+                bdf0 = bdf0 + coeffs[i] * self.psi_star[i - 1].sym
 
         return bdf0
 
     def adams_moulton_flux(self, order=None):
         r"""Adams-Moulton flux approximation for implicit time integration.
 
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.
+
         Parameters
         ----------
         order : int, optional
-            Order of the approximation (0-3). Defaults to ``self.order``.
+            Order of the approximation (0-3). Defaults to ``effective_order``.
 
         Returns
         -------
@@ -1626,7 +1940,9 @@ class Lagrangian(uw_object):
             Weighted average of :math:`\psi` and history terms.
         """
         if order is None:
-            order = self.order
+            order = self.effective_order
+        else:
+            order = max(1, min(self.effective_order, order))
 
         with sympy.core.evaluate(True):
             if order == 0:  # Special case - no history term
@@ -1755,11 +2071,16 @@ class Lagrangian_Swarm(uw_object):
         self.order = order
         self.step_averaging = step_averaging
 
+        # History tracking: deferred initialization and effective order
+        self._history_initialised = False
+        self._n_solves_completed = 0
+        self._dt = None  # current timestep (set by solver or update_pre_solve)
+        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+
         psi_star = []
         self.psi_star = psi_star
 
         for i in range(order):
-            print(f"Creating psi_star[{i}]")
             self.psi_star.append(
                 uw.swarm.SwarmVariable(
                     f"psi_star_sw_{self.instance_number}_{i}",
@@ -1788,6 +2109,39 @@ class Lagrangian_Swarm(uw_object):
         )
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
+    @property
+    def effective_order(self):
+        """Current effective BDF order, accounting for history startup."""
+        return min(self.order, max(1, self._n_solves_completed + 1))
+
+    def initialise_history(self):
+        r"""Initialize all history slots to the current value of :math:`\psi`.
+
+        Called automatically on the first ``update_pre_solve``. Can also
+        be called manually after setting initial conditions.
+        """
+        psi_star_0 = self.psi_star[0]
+        with self.swarm.access(psi_star_0):
+            for i in range(psi_star_0.shape[0]):
+                for j in range(psi_star_0.shape[1]):
+                    updated_psi = uw.function.evaluate(
+                        self.psi_fn[i, j],
+                        self.swarm.data,
+                    )
+                    psi_star_0[i, j].data[:] = updated_psi
+
+        # Copy to all other history slots
+        for k in range(1, self.order):
+            with self.swarm.access(self.psi_star[k]):
+                self.psi_star[k].data[...] = psi_star_0.data[...]
+
+        self._history_initialised = True
+        return
+
+    def initiate_history_fn(self):
+        """Deprecated: use ``initialise_history`` instead."""
+        self.initialise_history()
+
     ## Note: We may be able to eliminate this
     ## The SL updater and the Lag updater have
     ## different sequencing because of the way they
@@ -1811,7 +2165,9 @@ class Lagrangian_Swarm(uw_object):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        """Pre-solve update hook (no-op for Lagrangian_Swarm)."""
+        """Pre-solve: auto-initialise history on first call."""
+        if not self._history_initialised:
+            self.initialise_history()
         return
 
     def update_post_solve(
@@ -1821,6 +2177,13 @@ class Lagrangian_Swarm(uw_object):
         verbose: Optional[bool] = False,
     ):
         r"""Shift history chain and evaluate current :math:`\psi` on swarm."""
+        self._dt = dt
+
+        # Record timestep history for variable-dt BDF
+        for i in range(self.order - 1, 0, -1):
+            self._dt_history[i] = self._dt_history[i - 1]
+        self._dt_history[0] = dt
+
         for h in range(self.order - 1):
             i = self.order - (h + 1)
 
@@ -1838,20 +2201,6 @@ class Lagrangian_Swarm(uw_object):
 
         phi = 1 / self.step_averaging
 
-        # Now update the swarm variable
-        # if evalf:
-        #     psi_star_0 = self.psi_star[0]
-        #     with self.swarm.access(psi_star_0):
-        #         for i in range(psi_star_0.shape[0]):
-        #             for j in range(psi_star_0.shape[1]):
-        #                 updated_psi = uw.function.evalf(
-        #                     self.psi_fn[i, j], self.swarm.data
-        #                 )
-        #                 psi_star_0[i, j].data[:] = (
-        #                     phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-        #                 )
-        # else:
-        #
         psi_star_0 = self.psi_star[0]
         with self.swarm.access(psi_star_0):
             for i in range(psi_star_0.shape[0]):
@@ -1865,31 +2214,32 @@ class Lagrangian_Swarm(uw_object):
                         phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
                     )
 
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1
+
         return
 
     def bdf(self, order=None):
-        r"""Backwards differentiation form for calculating DuDt
-        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives"""
+        r"""Backwards differentiation form for calculating DuDt.
+
+        Note that you will need ``bdf`` / :math:`\delta t` in computing derivatives.
+
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.  For order > 1 with variable
+        timesteps, coefficients are adjusted automatically.
+        """
 
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(1, min(self.order, order))
+            order = max(1, min(self.effective_order, order))
+
+        coeffs = _bdf_coefficients(order, self._dt, self._dt_history)
 
         with sympy.core.evaluate(False):
-            if order <= 1:
-                bdf0 = self.psi_fn - self.psi_star[0].sym
-
-            elif order == 2:
-                bdf0 = 3 * self.psi_fn / 2 - 2 * self.psi_star[0].sym + self.psi_star[1].sym / 2
-
-            elif order == 3:
-                bdf0 = (
-                    11 * self.psi_fn / 6
-                    - 3 * self.psi_star[0].sym
-                    + 3 * self.psi_star[1].sym / 2
-                    - self.psi_star[2].sym / 3
-                )
+            bdf0 = coeffs[0] * self.psi_fn
+            for i in range(1, len(coeffs)):
+                bdf0 = bdf0 + coeffs[i] * self.psi_star[i - 1].sym
 
             bdf0 /= self.step_averaging
 
@@ -1899,10 +2249,13 @@ class Lagrangian_Swarm(uw_object):
     def adams_moulton_flux(self, order=None):
         r"""Adams-Moulton flux approximation for implicit time integration.
 
+        When ``order`` is not specified, uses ``effective_order`` which
+        ramps up from 1 during startup.
+
         Parameters
         ----------
         order : int, optional
-            Order of the approximation (1-3). Defaults to ``self.order``.
+            Order of the approximation (1-3). Defaults to ``effective_order``.
 
         Returns
         -------
@@ -1910,9 +2263,9 @@ class Lagrangian_Swarm(uw_object):
             Weighted average of :math:`\psi` and history terms.
         """
         if order is None:
-            order = self.order
+            order = self.effective_order
         else:
-            order = max(1, min(self.order, order))
+            order = max(1, min(self.effective_order, order))
 
         with sympy.core.evaluate(False):
             if order == 1:
