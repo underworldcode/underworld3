@@ -7,6 +7,7 @@
 ---
 
 ## Table of Contents
+- [Stale Data Cache Bug Fix](#stale-data-cache-bug-fix-self-validating-_canonical_data)
 - [Symbol Disambiguation Implementation](#symbol-disambiguation-implementation)
 - [Documentation Migration Status](#documentation-migration-status)
 - [Parallel Safety System Implementation](#parallel-safety-system-implementation)
@@ -475,5 +476,60 @@ The swarm.points callback incorrectly wrapped migration in `with self.migration_
 
 ---
 
-*Last updated: 2025-12-13*
+## Stale Data Cache Bug Fix: Self-Validating _canonical_data
+
+### Status: FIXED (2026-02)
+
+### Problem
+
+The `.data` property on `_BaseMeshVariable` cached an `NDArray_With_Callback` object (`_canonical_data`) wrapping a NumPy view into the PETSc local vector (`_lvec.array`). When `_lvec` was destroyed and recreated — which happens during DM rebuilds triggered by adding new MeshVariables to an existing mesh — the cached view became a dangling reference to freed memory.
+
+**Symptom**: After solving, `v.data` returned all zeros while `v._lvec.getArray()` contained the correct solution. This only occurred when `.data` was accessed *before* additional MeshVariables were created on the same mesh, because that early access populated the cache before the DM rebuild replaced `_lvec`.
+
+**Trigger sequence**:
+1. Create MeshVariable `v` on mesh
+2. Access `v.data` (e.g., `print(v.data.shape)`) → populates `_canonical_data` cache pointing to `_lvec`
+3. Create more MeshVariables on same mesh → DM rebuild → old `_lvec` destroyed, new `_lvec` created
+4. Solver writes solution to new `_lvec`
+5. Access `v.data` → returns stale cache pointing to destroyed memory → **zeros**
+
+### Root Cause
+
+In `_setup_ds()` (discretisation_mesh_variables.py), the DM rebuild loop destroyed and recreated `_lvec` for all existing variables but did not invalidate `_canonical_data`. The `mesh.adapt()` code path correctly invalidated the cache, but the "new variable added" path did not.
+
+### Fix Applied
+
+**Immediate fix**: Added `var._canonical_data = None` in the DM rebuild loop after `_set_vec()`.
+
+**Robust fix**: Replaced the fragile flag-based cache invalidation with a **self-validating cache**. The `.data` property now tracks `id(self._lvec)` when the cache is created and checks it on every access:
+
+```python
+@property
+def data(self):
+    cache_valid = (
+        "_canonical_data" in self.__dict__
+        and self._canonical_data is not None
+        and "_canonical_data_lvec_id" in self.__dict__
+        and self._canonical_data_lvec_id == id(self._lvec)
+    )
+    if not cache_valid:
+        self._canonical_data = self._create_canonical_data_array()
+        self._canonical_data_lvec_id = id(self._lvec)
+    return self._canonical_data
+```
+
+This makes the cache self-healing — no code path that replaces `_lvec` needs to remember to also invalidate `_canonical_data`. The existing eager invalidation in the DM rebuild loop and `mesh.adapt()` is preserved as a performance optimization.
+
+### Files Modified
+
+- `src/underworld3/discretisation/discretisation_mesh_variables.py` — Self-validating `.data` property, eager invalidation in DM rebuild loop
+- `src/underworld3/discretisation/discretisation_mesh.py` — Updated comment on eager invalidation in `mesh.adapt()`
+
+### Design Principle
+
+The fix follows the **Transparent Container Principle**: cached views must always be validated against their source before being returned. Rather than relying on every code path that modifies source state to also update caches (fragile), the cache itself detects staleness (robust).
+
+---
+
+*Last updated: 2026-02-13*
 *Moved from CLAUDE.md to reduce context load*

@@ -117,6 +117,42 @@ def vec(self):
 
 This guarantees solver compatibility while maintaining the simple user interface.
 
+### Data Property Caching and Self-Validation
+
+The `.data` property on `_BaseMeshVariable` caches an `NDArray_With_Callback` object (`_canonical_data`) that wraps a NumPy view into the PETSc local vector (`_lvec.array`). This cache avoids recreating the view on every access, which would cause PETSc field access conflicts.
+
+**The stale cache problem**: The cached view becomes invalid when `_lvec` is destroyed and recreated. This happens in two situations:
+
+1. **DM rebuild**: When a new MeshVariable is added to a mesh that already has fields, PETSc requires a new DM. All existing variables' vectors are destroyed and recreated from the new DM (see `_setup_ds()` in `discretisation_mesh_variables.py`).
+2. **Mesh adaptation**: When `mesh.adapt()` replaces the mesh, all variables get new vectors on the adapted mesh.
+
+If the cached `_canonical_data` still references the old (destroyed) `_lvec`, it reads freed memory and returns zeros — even though the solver correctly wrote results to the new `_lvec`.
+
+**Self-validating cache**: The `.data` property tracks `id(self._lvec)` when the cache is created. On every access, it verifies the cached view still corresponds to the current `_lvec`:
+
+```python
+@property
+def data(self):
+    cache_valid = (
+        "_canonical_data" in self.__dict__
+        and self._canonical_data is not None
+        and "_canonical_data_lvec_id" in self.__dict__
+        and self._canonical_data_lvec_id == id(self._lvec)
+    )
+
+    if not cache_valid:
+        self._canonical_data = self._create_canonical_data_array()
+        self._canonical_data_lvec_id = id(self._lvec)
+
+    return self._canonical_data
+```
+
+This makes the cache self-healing — no code path that replaces `_lvec` needs to manually invalidate `_canonical_data`. The DM rebuild loop and `mesh.adapt()` also eagerly clear `_canonical_data` as a performance optimization, but correctness does not depend on it.
+
+```{warning} Variable Creation After Data Access
+Creating new MeshVariables on a mesh triggers a DM rebuild that replaces all existing variables' PETSc vectors. Code that accesses `.data` before all variables are created will get a stale cache automatically healed on the next access — but the old NumPy array reference becomes invalid. Always re-read `.data` after creating new variables.
+```
+
 ## Performance Considerations
 
 ### Direct Access Overhead
