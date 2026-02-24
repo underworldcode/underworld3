@@ -175,7 +175,6 @@ class TestEvaluateNondimensionalScaling:
         assert np.allclose(value, 2900.0, rtol=1e-6), \
             f"Expected 2900 km, got {value} km (Bug: was returning 1 meter!)"
 
-    @pytest.mark.xfail(reason="UWexpression ND scaling not fully implemented - known bug")
     def test_uwexpression_1_second(self):
         """
         Test: evaluate(UWexpression(1 s), coords) returns 1 second

@@ -242,7 +242,6 @@ class TestRBFFlagBehavior:
         expected = special.erf(5 * sample_points[:, 0] - 2) / 2
         assert np.allclose(result_rbf_false.flatten(), expected)
 
-    @pytest.mark.xfail(reason="DMInterpolationSetUp_UW error 98 when run after other mesh tests - state pollution issue")
     def test_rbf_false_mesh_variable(self, setup_mesh, sample_points):
         """MeshVariable with rbf=False should still work (use RBF).
 
