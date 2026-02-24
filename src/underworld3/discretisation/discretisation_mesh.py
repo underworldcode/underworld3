@@ -3074,7 +3074,9 @@ class Mesh(Stateful, uw_object):
                     old_var._gvec.destroy()
                     old_var._gvec = None
 
-                # Invalidate cached data arrays (must be recreated for new shape)
+                # Eagerly invalidate cached data arrays. The .data property also
+                # self-validates via _lvec identity check, but clearing here avoids
+                # unnecessary recreation on next access.
                 if hasattr(old_var, '_canonical_data'):
                     old_var._canonical_data = None
                 if hasattr(old_var, '_cached_data_array'):

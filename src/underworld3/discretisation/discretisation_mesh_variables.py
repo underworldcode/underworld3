@@ -1451,6 +1451,11 @@ class _BaseMeshVariable(Stateful, uw_object):
                 if var.clean_name in var_data_backup:
                     # _set_vec will create new vectors from the new DM
                     var._set_vec(available=True)
+                    # Eagerly invalidate cached data array. The .data property also
+                    # self-validates via _lvec identity check, but clearing here avoids
+                    # unnecessary recreation on next access.
+                    if hasattr(var, '_canonical_data'):
+                        var._canonical_data = None
                     # Restore the data
                     var._lvec.array[...] = var_data_backup[var.clean_name]
 
@@ -2364,11 +2369,21 @@ class _BaseMeshVariable(Stateful, uw_object):
         array : Structured format ``(N, a, b)`` with automatic unit handling.
         sym : Symbolic representation for equations.
         """
-        # Cache and reuse canonical data object to avoid field access conflicts
-        # Use direct __dict__ check to avoid potential attribute access issues
-        if "_canonical_data" not in self.__dict__ or self._canonical_data is None:
-            # Create the single canonical data array with PETSc sync
+        # Cache validation: the cached array is a numpy view into _lvec.array.
+        # If _lvec has been destroyed and recreated (e.g. DM rebuild when new
+        # variables are added, or mesh adaptation), the cached view becomes a
+        # dangling reference to freed memory. We detect this by tracking the
+        # Python object identity of _lvec when the cache was created.
+        cache_valid = (
+            "_canonical_data" in self.__dict__
+            and self._canonical_data is not None
+            and "_canonical_data_lvec_id" in self.__dict__
+            and self._canonical_data_lvec_id == id(self._lvec)
+        )
+
+        if not cache_valid:
             self._canonical_data = self._create_canonical_data_array()
+            self._canonical_data_lvec_id = id(self._lvec)
 
         return self._canonical_data
 

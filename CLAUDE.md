@@ -304,6 +304,9 @@ swarm.data       # Swarm particle positions
 - **array**: `(N, a, b)` where scalar=`(N,1,1)`, vector=`(N,1,dim)`, tensor=`(N,dim,dim)`
 - **data**: `(-1, num_components)` flat format for backward compatibility
 
+### Data Cache Safety
+The `.data` property caches an `NDArray_With_Callback` view into the PETSc local vector. This cache self-validates via `id(self._lvec)` tracking — if the underlying vector is replaced (DM rebuild, mesh adaptation), the cache auto-rebuilds on next access. See @docs/developer/subsystems/data-access.md for details.
+
 ---
 
 ## Expression Processing
@@ -440,6 +443,10 @@ Read them when you need deeper context beyond what's in this file.
 
 ### Code Style & Patterns
 - @docs/developer/UW3_Style_and_Patterns_Guide.qmd - Development standards
+
+### Data Access & Variables
+- @docs/developer/subsystems/data-access.md - Data access patterns, self-validating cache
+- @docs/developer/UW3_Developers_NDArrays.md - NDArray_With_Callback internals
 
 ### Architecture & Design
 - @docs/developer/design/ARCHITECTURE_ANALYSIS.md - System structure analysis

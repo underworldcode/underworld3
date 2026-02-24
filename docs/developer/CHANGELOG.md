@@ -6,6 +6,17 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q1 (January – March)
 
+### MeshVariable Data Cache Bug Fix (February 2026)
+
+**Self-validating `.data` cache**: Fixed a critical bug where the `.data` property could return stale (zero) values after PETSc DM rebuilds. When new MeshVariables are added to a mesh, PETSc requires a new DM — destroying and recreating all existing variables' local vectors (`_lvec`). The cached `_canonical_data` array (a NumPy view into the old `_lvec`) would silently read freed memory, returning zeros even though the solver correctly wrote results to the new vector.
+
+- Root cause: Early `.data` access cached a view that became invalid after DM rebuild
+- Fix: `.data` property now tracks `id(self._lvec)` and auto-rebuilds when stale
+- Self-healing design: no code path that replaces `_lvec` needs to manually invalidate the cache
+- Eager invalidation in DM rebuild loop and `mesh.adapt()` preserved as performance optimization
+
+**Files**: `discretisation_mesh_variables.py` (`.data` property), `discretisation_mesh.py` (`mesh.adapt()`)
+
 ### Binder/Docker CI Automation (January 2026)
 
 **Automated container build pipeline**: Implemented full GitHub Actions automation for Docker image builds and mybinder.org integration.

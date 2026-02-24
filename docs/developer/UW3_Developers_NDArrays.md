@@ -65,17 +65,22 @@ graph TD
     B --> C[NDArray_With_Callback]
     C --> D[Callbacks]
     D --> E[PETSc Sync]
-    
+
     A --> F[Data Property]
-    F --> G[Reshape View]
-    G --> C
-    
+    F --> K[Self-Validating Cache]
+    K -->|cache valid| C
+    K -->|cache stale| L[Recreate from _lvec]
+    L --> C
+
     H[Solvers] --> I[Vec Property]
-    I --> J[Direct PETSc]
-    
+    I --> J[Direct PETSc _lvec]
+
     style H fill:#f9f,stroke:#333,stroke-width:4px
     style J fill:#f9f,stroke:#333,stroke-width:4px
+    style K fill:#ff9,stroke:#333,stroke-width:2px
 ```
+
+The self-validating cache (yellow) tracks `id(_lvec)` to detect when the PETSc vector has been replaced. This happens automatically during DM rebuilds (new variable creation) and mesh adaptation.
 
 ## Array Shape Formats
 
@@ -471,17 +476,23 @@ def pack_to_petsc(self):
     with self.vec.localForm() as lvec:
         lvec.array[:] = packed.flat
 
-# Why data property avoids this overhead:
-@property 
+# The data property uses a self-validating cache:
+@property
 def data(self):
-    """Direct access to PETSc format - NO repacking for tensors."""
-    if self.vtype == VarType.SYMMETRIC_TENSOR:
-        # Returns PETSc's native packed format directly
-        # Shape: (N, 6) instead of (N, 3, 3)
-        # No pack/unpack operations needed!
-        return self.vec.array.reshape(-1, self.num_components)
-    else:
-        return self.vec.array.reshape(-1, self.num_components)
+    """Cached view into PETSc local vector with automatic invalidation.
+
+    Returns an NDArray_With_Callback wrapping _lvec.array, cached as
+    _canonical_data. The cache tracks id(_lvec) and automatically
+    rebuilds when _lvec is replaced (DM rebuild, mesh adaptation).
+    """
+    cache_valid = (
+        self._canonical_data is not None
+        and self._canonical_data_lvec_id == id(self._lvec)
+    )
+    if not cache_valid:
+        self._canonical_data = self._create_canonical_data_array()
+        self._canonical_data_lvec_id = id(self._lvec)
+    return self._canonical_data  # Shape: (N, num_components)
 ```
 
 ## MPI Coordination
