@@ -360,8 +360,26 @@ def _createext(
     # mesh.Gamma_N.y._ccodestr = "petsc_n[1]"
     # mesh.Gamma_N.z._ccodestr = "petsc_n[2]"
 
-    type(mesh.N.x)._ccode = lambda self, printer: self._ccodestr
-    type(mesh.Gamma_N.x)._ccode = lambda self, printer: self._ccodestr
+    def _basescalar_ccode(self, printer):
+        """C code for coordinate symbols, with fallback for new instances.
+
+        sympy.simplify() may create new BaseScalar/UWCoordinate instances
+        that lack _ccodestr. We recover it from the coordinate's _id attribute
+        which stores (index, system_name).
+        """
+        if hasattr(self, '_ccodestr'):
+            return self._ccodestr
+        # Fallback: compute from _id
+        idx = self._id[0]
+        system_name = str(self._id[1])
+        if 'Gamma' in system_name:
+            return f"petsc_n[{idx}]"
+        else:
+            return f"petsc_x[{idx}]"
+
+    type(mesh.N.x)._ccode = _basescalar_ccode
+    if type(mesh.Gamma_N.x) is not type(mesh.N.x):
+        type(mesh.Gamma_N.x)._ccode = _basescalar_ccode
 
     # Create a custom functions replacement dictionary.
     # Note that this dictionary is really just to appease Sympy,
@@ -423,11 +441,29 @@ def _createext(
         else:
             fn = sympy.Matrix([fn])
 
+        # === COORDINATE SYMBOL RECOVERY ===
+        # When sympy.simplify() manipulates expressions containing coordinate
+        # symbols (BaseScalar/UWCoordinate), it may create NEW instances that
+        # lack the _ccodestr attribute set during mesh initialization.
+        # This commonly occurs with coordinate-dependent constitutive models
+        # (e.g., TransverseIsotropicFlowModel with a radial director).
+        # We recover _ccodestr from the coordinate's _id attribute.
+        from sympy.vector.scalar import BaseScalar
+
+        free_syms = fn.free_symbols
+        for sym in free_syms:
+            if isinstance(sym, BaseScalar) and not hasattr(sym, '_ccodestr'):
+                idx = sym._id[0]  # 0, 1, or 2 for x, y, z
+                system_name = str(sym._id[1])
+                if 'Gamma' in system_name:
+                    sym._ccodestr = f"petsc_n[{idx}]"
+                else:
+                    sym._ccodestr = f"petsc_x[{idx}]"
+
         # === JIT VALIDATION GATEWAY ===
         # Check for symbols that cannot be converted to C code.
         # Expected symbols (coordinates) have _ccodestr attribute set.
         # Unexpected symbols indicate malformed expressions from user code.
-        free_syms = fn.free_symbols
         unconvertible_symbols = []
         for sym in free_syms:
             # Check if this symbol can be converted to C code

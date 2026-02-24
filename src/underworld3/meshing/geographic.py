@@ -275,8 +275,7 @@ def RegionalSphericalBox(
         gmsh.model.addPhysicalGroup(2, [2], boundaries.Lower.value)
         gmsh.model.setPhysicalName(2, boundaries.Lower.value, "Lower")
 
-        ## These probably have the wrong names ... check ordering
-
+        # Side faces: verified correct (surface 3=South, 4=North, 5=East, 6=West)
         gmsh.model.addPhysicalGroup(2, [4], boundaries.North.value)
         gmsh.model.setPhysicalName(2, boundaries.North.value, "North")
 
@@ -758,13 +757,13 @@ def RegionalGeographicBox(
         gmsh.model.addPhysicalGroup(2, [2], boundaries.Bottom.value)
         gmsh.model.setPhysicalName(2, boundaries.Bottom.value, "Bottom")
 
-        gmsh.model.addPhysicalGroup(2, [4], boundaries.South.value)
+        gmsh.model.addPhysicalGroup(2, [3], boundaries.South.value)
         gmsh.model.setPhysicalName(2, boundaries.South.value, "South")
 
-        gmsh.model.addPhysicalGroup(2, [5], boundaries.East.value)
+        gmsh.model.addPhysicalGroup(2, [4], boundaries.East.value)
         gmsh.model.setPhysicalName(2, boundaries.East.value, "East")
 
-        gmsh.model.addPhysicalGroup(2, [3], boundaries.North.value)
+        gmsh.model.addPhysicalGroup(2, [5], boundaries.North.value)
         gmsh.model.setPhysicalName(2, boundaries.North.value, "North")
 
         gmsh.model.addPhysicalGroup(2, [6], boundaries.West.value)

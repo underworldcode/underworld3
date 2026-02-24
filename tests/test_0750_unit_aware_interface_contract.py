@@ -71,7 +71,6 @@ class TestUnitAwareInterfaceContract:
         assert isinstance(expr.units, Unit), \
             f"UWexpression.units should be pint.Unit, got {type(expr.units)}"
 
-    @pytest.mark.xfail(reason="BUG: UnitAwareExpression.units returns string, not Pint Unit")
     def test_units_property_returns_pint_unit_arithmetic_result(self):
         """Arithmetic results must return Pint Unit object, not string."""
         qty = uw.quantity(5, "cm/year")
@@ -232,7 +231,6 @@ class TestUnitAwareInterfaceContract:
         assert not isinstance(result.units, str), \
             "Result .units should be Pint Unit, not string"
 
-    @pytest.mark.xfail(reason="BUG: UWQuantity * UWexpression returns UnitAwareExpression without full interface")
     def test_multiplication_closure_quantity_expression(self):
         """UWQuantity * UWexpression should return object with full interface."""
         qty = uw.quantity(5, "cm/year")
@@ -288,7 +286,6 @@ class TestUnitAwareInterfaceContract:
         assert result_pint.dimensionality == expected_pint.dimensionality, \
             f"cm/year * Myr should have length dimensionality, got {result_pint.dimensionality}"
 
-    @pytest.mark.xfail(reason="BUG: get_units may not correctly extract units from compound expressions")
     def test_get_units_consistency(self):
         """uw.get_units() should return Pint Unit objects consistently."""
         qty = uw.quantity(5, "cm/year")

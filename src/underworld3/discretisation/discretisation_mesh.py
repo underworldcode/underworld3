@@ -2925,8 +2925,9 @@ class Mesh(Stateful, uw_object):
         Parameters
         ----------
         metric_field : MeshVariable
-            A scalar MeshVariable containing target edge lengths (H field).
-            Smaller values mean finer mesh, larger values mean coarser.
+            A scalar MeshVariable containing metric values (1/h² where h is
+            target edge length). Larger values mean finer mesh (smaller elements).
+            Use Surface.refinement_metric() to create this field from distance.
         verbose : bool, optional
             If True, print progress and statistics during adaptation.
 
@@ -3073,7 +3074,9 @@ class Mesh(Stateful, uw_object):
                     old_var._gvec.destroy()
                     old_var._gvec = None
 
-                # Invalidate cached data arrays (must be recreated for new shape)
+                # Eagerly invalidate cached data arrays. The .data property also
+                # self-validates via _lvec identity check, but clearing here avoids
+                # unnecessary recreation on next access.
                 if hasattr(old_var, '_canonical_data'):
                     old_var._canonical_data = None
                 if hasattr(old_var, '_cached_data_array'):

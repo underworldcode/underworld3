@@ -269,15 +269,13 @@ class SurfaceVariable:
         if self._proxy is None:
             self._create_proxy()
 
-        # Get local mesh node coordinates
-        mesh_coords = self.surface.mesh.X.coords
-        if hasattr(mesh_coords, 'magnitude'):
-            mesh_coords = mesh_coords.magnitude
-        elif hasattr(mesh_coords, '__array__'):
-            mesh_coords = np.asarray(mesh_coords)
+        # Get local mesh node coordinates in model (internal) space
+        # to match surface vertex coordinates
+        mesh_coords = np.asarray(self.surface.mesh._coords)
 
-        # Get surface vertex data
-        surface_coords = self.surface.vertices
+        # Get surface vertex data in model (internal) space — bypass the
+        # dimensionalising output gateway so coordinates match mesh._coords.
+        surface_coords = np.array(self.surface._pv_mesh.points) if self.surface._pv_mesh is not None else None
         surface_values = self.data
 
         # For 2D surfaces, use only x,y components for KDTree
@@ -458,24 +456,72 @@ class Surface:
                 self._distance_var = None
                 self._distance_stale = True
 
+    def _dimensionalise_coords(self, coords: np.ndarray) -> np.ndarray:
+        """Apply dimensional scaling to internal model coordinates.
+
+        Follows the same gateway pattern as ``mesh.X.coords``: internal
+        storage is in model (ND) space; user-facing properties return
+        physical (dimensional) coordinates when the units system is active.
+
+        Returns the original array unchanged when no units are configured.
+        """
+        if coords is None:
+            return None
+
+        cs = getattr(self.mesh, "CoordinateSystem", None)
+        if cs is not None and getattr(cs, "_scaled", False):
+            coords = coords * cs._length_scale
+
+        if self.mesh.units is not None:
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+            return UnitAwareArray(coords, units="meter")
+
+        return coords
+
     @property
     def control_points(self) -> Optional[np.ndarray]:
-        """(N, 3) array of control points defining the surface."""
-        return self._control_points
+        """(N, 3) array of control points defining the surface.
+
+        Returns coordinates in physical (dimensional) units when the
+        units system is active, matching the ``mesh.X.coords`` convention.
+        Internally, points are stored in model (non-dimensional) space.
+        """
+        if self._control_points is None:
+            return None
+        return self._dimensionalise_coords(np.array(self._control_points))
 
     def set_control_points(self, points: np.ndarray) -> None:
         """Set control points and mark discretization as stale.
 
+        Coordinates are stored internally in model (non-dimensional) space,
+        matching the mesh's internal coordinate representation (``mesh._coords``).
+
         Args:
-            points: (N, 2) or (N, 3) array of points. Can include Pint units,
-                   which will be converted using the model's scaling system.
-                   For 2D points, z-coordinate is set to 0.
+            points: (N, 2) or (N, 3) array of points in one of these forms:
+
+                - **Raw numpy array**: Assumed to be in model coordinates
+                  (same space as ``mesh._coords``). When units are active,
+                  this means nondimensional coordinates.
+                - **Pint Quantity / UnitAwareArray**: Automatically converted
+                  to model coordinates via the scaling system.
+
+                For 2D points, a z=0 column is appended automatically.
         """
-        # Handle unit conversion using standard scaling system (ndim)
-        # This works with both legacy (get_coefficients) and modern patterns
-        if hasattr(points, 'magnitude'):
-            # Points have Pint units - convert using scaling system
-            points = uw.scaling.non_dimensionalise(points)
+        # Handle unit conversion: Pint Quantity or UnitAwareArray → model coords
+        # Use the mesh's coordinate system scale factor for consistency with
+        # the output gateway (_dimensionalise_coords).
+        if hasattr(points, "magnitude"):
+            cs = getattr(self.mesh, "CoordinateSystem", None)
+            if cs is not None and getattr(cs, "_scaled", False):
+                # Convert to base SI (meters) then divide by scale factor
+                if hasattr(points, "to_base_units"):
+                    points = np.asarray(points.to_base_units().magnitude) / cs._length_scale
+                else:
+                    points = np.asarray(points.magnitude) / cs._length_scale
+            else:
+                # No scaling active — just strip units
+                points = np.asarray(points.magnitude)
 
         points = np.asarray(points)
         if points.ndim != 2 or points.shape[1] not in (2, 3):
@@ -500,10 +546,15 @@ class Surface:
 
     @property
     def vertices(self) -> Optional[np.ndarray]:
-        """(N, 3) array of vertex positions."""
+        """(N, 3) array of vertex positions.
+
+        Returns coordinates in physical (dimensional) units when the
+        units system is active, matching the ``mesh.X.coords`` convention.
+        Internally, vertices are stored in model (non-dimensional) space.
+        """
         if self._pv_mesh is None:
             return None
-        return np.array(self._pv_mesh.points)
+        return self._dimensionalise_coords(np.array(self._pv_mesh.points))
 
     @property
     def n_vertices(self) -> int:
@@ -783,12 +834,12 @@ class Surface:
                 varsymbol=f"d_{{{self._symbol}}}",
             )
 
-        # Get mesh coordinates
-        coords = self.mesh.X.coords
-        if hasattr(coords, 'magnitude'):
-            coords = coords.magnitude
-        elif hasattr(coords, '__array__'):
-            coords = np.asarray(coords)
+        # Get mesh coordinates in model (internal) space.
+        # Must use raw model coordinates (mesh._coords) rather than mesh.X.coords
+        # because mesh.X.coords returns dimensional/scaled coordinates when units
+        # are active, while surface points (self._pv_mesh) are stored in the same
+        # coordinate space used to create them — typically model coordinates.
+        coords = np.asarray(self.mesh._coords)
 
         if self.is_2d:
             # 2D: Use geometry_tools for signed distance to polyline
@@ -1385,12 +1436,9 @@ class SurfaceCollection:
                 )
             distance_var = self._distance_var
 
-        # Get mesh coordinates
-        coords = mesh.X.coords
-        if hasattr(coords, 'magnitude'):
-            coords = coords.magnitude
-        elif hasattr(coords, '__array__'):
-            coords = np.asarray(coords)
+        # Get mesh coordinates in model (internal) space
+        # to match surface point coordinates
+        coords = np.asarray(mesh._coords)
 
         pv_mesh = pv.PolyData(coords)
 
@@ -1439,11 +1487,11 @@ class SurfaceCollection:
         for name, surface in self.surfaces.items():
             surface._ensure_discretized()
 
-        # Get query coordinates
+        # Get query coordinates in model (internal) space
+        # to match surface point coordinates
         if coords is None:
-            coords = mesh.X.coords
-
-        if hasattr(coords, 'magnitude'):
+            coords = np.asarray(mesh._coords)
+        elif hasattr(coords, 'magnitude'):
             coords = coords.magnitude
         elif hasattr(coords, '__array__'):
             coords = np.asarray(coords)

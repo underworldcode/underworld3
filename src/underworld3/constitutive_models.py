@@ -56,6 +56,112 @@ from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
 
+class _ParameterBase:
+    """Base class for all constitutive model ``_Parameters`` containers.
+
+    All ``_Parameters`` nested classes must inherit from this.  It provides a
+    ``__setattr__`` guard that **rejects** any public attribute assignment
+    that doesn't match a defined ``Parameter`` descriptor or ``@property``
+    on the class.  Without this guard, a typo like
+    ``Parameters.viscocity = 1`` silently creates an instance attribute
+    that the solver never reads — producing wrong results with no error.
+
+    How to define parameters in a new constitutive model
+    ----------------------------------------------------
+    1. Inherit from ``_ParameterBase`` (and ``_ViscousParameterAlias`` if
+       the model has a ``shear_viscosity_0`` parameter)::
+
+           class _Parameters(_ParameterBase, _ViscousParameterAlias):
+               ...
+
+    2. Define each parameter as a **class-level** ``Parameter`` descriptor.
+       The **attribute name IS the user API name** — users will set it via
+       ``model.Parameters.<attribute_name> = value``::
+
+           import underworld3.utilities._api_tools as api_tools
+
+           shear_viscosity_0 = api_tools.Parameter(
+               r"\\eta",              # LaTeX display name (cosmetic only)
+               lambda self: 1,        # default value factory
+               "Shear viscosity",     # description
+               units="Pa*s",          # expected units
+           )
+
+    3. To add a **convenience alias** (e.g. ``viscosity`` → ``shear_viscosity_0``),
+       either use a mixin like ``_ViscousParameterAlias`` or define a
+       ``@property`` with getter and setter on the ``_Parameters`` class.
+       The guard recognises both descriptors and properties.
+    """
+
+    @staticmethod
+    def _list_valid_parameters(cls_type):
+        """List valid parameter names for error messages."""
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+
+        valid = []
+        for cls in cls_type.__mro__:
+            for k, v in cls.__dict__.items():
+                if isinstance(v, (ExpressionDescriptor, property)) and k not in valid:
+                    valid.append(k)
+        return valid
+
+    def __setattr__(self, name, value):
+        # Private/internal attributes are always allowed
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+
+        # Walk the MRO looking for a matching descriptor or property
+        for cls in type(self).__mro__:
+            if name in cls.__dict__:
+                attr = cls.__dict__[name]
+                if isinstance(attr, ExpressionDescriptor):
+                    # Valid descriptor — let it handle the set
+                    attr.__set__(self, value)
+                    return
+                elif isinstance(attr, property):
+                    if attr.fset is not None:
+                        attr.fset(self, value)
+                        return
+                    raise AttributeError(
+                        f"Parameter '{name}' is read-only"
+                    )
+
+        # Not a known descriptor — likely a name mismatch bug
+        valid = _ParameterBase._list_valid_parameters(type(self))
+
+        raise AttributeError(
+            f"No parameter '{name}' on {type(self).__name__}. "
+            f"Valid parameters: {valid}"
+        )
+
+
+class _ViscousParameterAlias:
+    """Mixin providing ``viscosity`` as a read/write alias for ``shear_viscosity_0``.
+
+    Add this to the inheritance of any ``_Parameters`` class that defines
+    a ``shear_viscosity_0`` descriptor, so that the established
+    ``Parameters.viscosity`` API continues to work::
+
+        class _Parameters(_ParameterBase, _ViscousParameterAlias):
+            shear_viscosity_0 = api_tools.Parameter(...)
+
+    To create similar aliases for other parameters, define a ``@property``
+    with a setter — the ``_ParameterBase`` guard recognises properties
+    automatically.
+    """
+
+    @property
+    def viscosity(self):
+        return self.shear_viscosity_0
+
+    @viscosity.setter
+    def viscosity(self, value):
+        self.shear_viscosity_0 = value
+
+
 # How do we use the default here if input is required ?
 def validate_parameters(symbol, input, default=None, allow_number=True, allow_expression=True):
     """Convert input to a UWexpression for use in constitutive models.
@@ -261,7 +367,7 @@ class Constitutive_Model(uw_object):
 
         return expression(symbol_name, value, description)
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -571,7 +677,7 @@ class ViscousFlowModel(Constitutive_Model):
         #     " Apparent viscosity",
         # )
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -793,7 +899,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             "Effective viscosity (plastic)",
         )
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -1009,7 +1115,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         return
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -1576,7 +1682,7 @@ class DiffusionModel(Constitutive_Model):
     AnisotropicDiffusionModel : For direction-dependent diffusivity.
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -1663,7 +1769,7 @@ class AnisotropicDiffusionModel(DiffusionModel):
     for direction-dependent diffusion rates.
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         def __init__(inner_self, _owning_model):
             dim = _owning_model.dim
             inner_self._owning_model = _owning_model
@@ -1739,7 +1845,7 @@ class GenericFluxModel(Constitutive_Model):
     ```
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
 
@@ -1847,7 +1953,7 @@ class DarcyFlowModel(Constitutive_Model):
     DiffusionModel : For pure diffusion without body forces.
     """
 
-    class _Parameters:
+    class _Parameters(_ParameterBase):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -2006,7 +2112,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         #     " Apparent viscosity",
         # )
 
-    class _Parameters:
+    class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
         individual instances of the class.
@@ -2018,14 +2124,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         # Import Parameter descriptor (must use absolute import inside nested class)
         import underworld3.utilities._api_tools as api_tools
 
-        eta_0 = api_tools.Parameter(
+        shear_viscosity_0 = api_tools.Parameter(
             r"\eta_0",
             lambda inner_self: 1,
             "Shear viscosity",
             units="Pa*s",
         )
 
-        eta_1 = api_tools.Parameter(
+        shear_viscosity_1 = api_tools.Parameter(
             r"\eta_1",
             lambda inner_self: 1,
             "Second viscosity",
@@ -2053,14 +2159,14 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters.eta_0
+        return self.Parameters.shear_viscosity_0
 
     @property
     def K(self):
         """Whatever the consistutive model defines as the effective value of viscosity
         in the form of an uw.expression"""
 
-        return self.Parameters.eta_0
+        return self.Parameters.shear_viscosity_0
 
     @property
     def grad_u(self):
@@ -2085,8 +2191,8 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         dv = uw.maths.tensor.idxmap[d][0]
 
         # Use .sym to get sympy expressions from Parameters
-        eta_0 = self.Parameters.eta_0.sym
-        eta_1 = self.Parameters.eta_1.sym
+        eta_0 = self.Parameters.shear_viscosity_0.sym
+        eta_1 = self.Parameters.shear_viscosity_1.sym
         n = self.Parameters.director.sym
 
         Delta = eta_0 - eta_1
@@ -2145,8 +2251,8 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.eta_0)._repr_latex_()))
-        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.eta_1)._repr_latex_()))
+        display(Latex(r"$\quad\eta_0 = $ " + sympy.sympify(self.Parameters.shear_viscosity_0)._repr_latex_()))
+        display(Latex(r"$\quad\eta_1 = $ " + sympy.sympify(self.Parameters.shear_viscosity_1)._repr_latex_()))
         display(
             Latex(
                 r"$\quad\hat{\mathbf{n}} = $ "

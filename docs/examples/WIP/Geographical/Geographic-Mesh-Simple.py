@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# %%
 """
 Simplified geographic mesh workflow using the new GEOGRAPHIC coordinate system.
 

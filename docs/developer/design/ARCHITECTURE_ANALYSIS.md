@@ -222,12 +222,23 @@ User Code:
     - Wraps _BaseMeshVariable
     - Adds: Math operations (MathematicalMixin), units support (DimensionalityMixin)
     - DELEGATES .array property to base variable ✓ (no duplication)
+    - DELEGATES .data property to base variable ✓ (uses self-validating cache)
          ↓
   _BaseMeshVariable (discretisation_mesh_variables.py)
     - Low-level PETSc interface
     - Has .array property with WORKING view classes ✓
     - SimpleMeshArrayView and TensorMeshArrayView (SINGLE SOURCE OF TRUTH)
+    - .data property: Self-validating cached NDArray_With_Callback view into _lvec
+      Tracks id(_lvec) to detect stale cache after DM rebuild or mesh adaptation
 ```
+
+### Data Caching Detail (2025-02)
+
+The `.data` property caches an `NDArray_With_Callback` wrapping a NumPy view into `_lvec.array`. This cache (`_canonical_data`) becomes stale when `_lvec` is destroyed and recreated — which happens during DM rebuilds (triggered by adding new variables to a mesh) and mesh adaptation.
+
+**Self-validating mechanism**: The `.data` property stores `id(self._lvec)` alongside the cache and checks it on every access. If `_lvec` has been replaced, the cache is automatically rebuilt. This eliminates reliance on manual invalidation flags.
+
+**Bug this fixed**: When a user accessed `v.data` early in their workflow (e.g., to print shape), then created additional MeshVariables (triggering DM rebuild), the cached view pointed to destroyed memory. The solver would correctly write results to the new `_lvec`, but `v.data` returned zeros from the stale cache.
 
 ### What Changed
 
