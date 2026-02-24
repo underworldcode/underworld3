@@ -263,5 +263,5 @@ def test_richards_gardner_analytical():
     )
 
 
-if uw.is_notebook:
+if uw.is_notebook():
     test_richards_steady_constant_K()
