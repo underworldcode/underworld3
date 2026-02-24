@@ -7,6 +7,7 @@
 ---
 
 ## Table of Contents
+- [KDTree Backend Migration](#kdtree-backend-migration)
 - [Stale Data Cache Bug Fix](#stale-data-cache-bug-fix-self-validating-_canonical_data)
 - [Symbol Disambiguation Implementation](#symbol-disambiguation-implementation)
 - [Documentation Migration Status](#documentation-migration-status)
@@ -473,6 +474,34 @@ The swarm.points callback incorrectly wrapped migration in `with self.migration_
 2. **Enhanced setter** (line 1545-1551): Added direct PETSc DM field update for immediate consistency
 3. **New context manager**: Added `migration_control(disable=False)` with deferred migration support
 4. **Backward compatibility**: `migration_disabled()` now calls `migration_control(disable=True)`
+
+---
+
+## KDTree Backend Migration
+
+### Status: COMPLETE (2026-02-13)
+
+Migrated from pykdtree to ckdtree (nanoflann) as the KDTree backend due to fatal OpenMP conflicts.
+
+**Original Issue (Aug 2025)**: pykdtree was hanging during KDTree queries under MPI. Commit `16cddf5` ("kdtree swap out (temporary)") switched `__init__.py` to import `ckdtree` as the `kdtree` module, but the actual `kdtree.py` file (285-line wrapper around pykdtree) remained.
+
+**Fatal Crash Discovered (2026-02-13)**: `import underworld3.kdtree` (as done by `test_0000_imports.py`) loaded the real `kdtree.py`, which imported pykdtree at module level. pykdtree loads its own copy of `libomp.dylib` (OpenMP runtime). On macOS, this conflicts with the `libomp.dylib` already loaded by PETSc/numpy/scipy, triggering OpenMP's "Error #15: Initializing libomp.dylib, but found libomp.dylib already initialized" — a **C-level abort** that cannot be caught by Python try/except.
+
+**Root Causes**:
+1. **OpenMP double-init**: pykdtree's OpenMP + PETSc/numpy OpenMP = fatal crash on macOS
+2. **MPI thread contention**: Under MPI, pykdtree's OpenMP threading contends with MPI processes, causing query hangs (the original Aug 2025 issue)
+3. **Module shadowing**: `import underworld3.kdtree` loads `kdtree.py` (pykdtree wrapper), overwriting the `uw.kdtree` alias that pointed to ckdtree
+
+**Fix Applied**: Replaced entire `kdtree.py` with a 1-line re-export: `from underworld3.ckdtree import KDTree`. This ensures any import path (`uw.kdtree`, `import underworld3.kdtree`) gets the ckdtree implementation without loading pykdtree.
+
+**Current Backend**: ckdtree — Cython wrapper around vendored `nanoflann.hpp` (v1.3.2, header-only C++ KDTree, BSD license). Pure C/Cython with no OpenMP, no threading conflicts.
+
+**Pending Actions**:
+- Remove pykdtree from `pixi.toml`, `setup.cfg`, `environment.yaml` dependencies
+- Update vendored nanoflann from 1.3.2 to 1.9.0 (performance improvements, bug fixes)
+
+**Files Modified**: `src/underworld3/kdtree.py`
+**Commit**: `ba3e8ae` on development branch
 
 ---
 
