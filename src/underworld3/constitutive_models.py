@@ -2236,7 +2236,10 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
                         lambda_mat[i, j, k, l] = val
 
-        lambda_mat = sympy.simplify(uw.maths.tensor.rank4_to_mandel(lambda_mat, d))
+        # NOTE: Do NOT use sympy.simplify() here — it hangs on complex expressions
+        # containing exp(), UnderworldFunction products, or geographic basis vectors.
+        # The Mandel conversion is algebraically correct without simplification.
+        lambda_mat = uw.maths.tensor.rank4_to_mandel(lambda_mat, d)
 
         self._c = uw.maths.tensor.mandel_to_rank4(lambda_mat, d)
 

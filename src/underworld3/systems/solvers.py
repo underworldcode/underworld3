@@ -234,7 +234,7 @@ class SNES_Poisson(SNES_Scalar):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: sympy.simplify(self.constitutive_model.flux.T),
+        lambda self: self.constitutive_model.flux.T,
         r"""Diffusive flux term for the Poisson equation (pointwise).
 
         The $\mathbf{F}_1$ vector represents the flux $k \nabla u$
@@ -743,7 +743,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: sympy.simplify(
+        lambda self: (
             self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
         ),
         r"""Velocity equation flux/stress term (pointwise).
@@ -756,7 +756,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     PF0 = Template(
         r"\mathbf{h}_0\left( \mathbf{p} \right)",
-        lambda self: sympy.simplify(sympy.Matrix((self.constraints))),
+        lambda self: sympy.Matrix((self.constraints)),
         r"""Pressure equation constraint term (continuity).
 
         The $h_0$ term enforces the incompressibility constraint

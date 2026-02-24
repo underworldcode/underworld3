@@ -229,7 +229,7 @@ print(f"\nCreated {len(fault_surfaces)} fault surfaces")
 # ## 6. Build Refinement Metric and Adapt Mesh
 
 # %%
-H_NEAR = 3.0  / L_REF_KM     # target edge length near faults (3 km, nondimensional)
+H_NEAR = 10.0  / L_REF_KM     # target edge length near faults (3 km, nondimensional)
 H_FAR = 30.0  / L_REF_KM      # target edge length far from faults (30 km, nondimensional)
 TRANSITION = 10.0 / L_REF_KM  # transition width (20 km, nondimensional)
 
@@ -277,46 +277,137 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
 # %% [markdown]
 # ### Rheology
 #
+# **Transverse isotropic (TI) model**: the viscosity is anisotropic with a weak
+# shear direction aligned to the nearest fault normal.  Two mesh-wide fields are
+# constructed from *all* fault surfaces:
+#
+# - `fault_normal` — unit normal of the nearest fault face (vector, 3 components)
+# - `fault_id` — segment ID of the nearest fault (scalar)
+#
+# A combined "nearest fault distance" field drives a Gaussian influence function
+# that smoothly transitions `eta_1` from the reference viscosity (far from faults)
+# to a weakened value (near faults).
+#
 # Set `USE_ISOVISCOUS = True` for debugging (constant viscosity, no fault influence).
-# Set `USE_ISOVISCOUS = False` for the full transverse isotropic rheology.
 
 # %%
-USE_ISOVISCOUS = False
+# Three rheology modes:
+#   "isoviscous"  — constant viscosity, no fault influence (debugging baseline)
+#   "isotropic"   — isotropic weak zones aligned with faults (tests composite eta expression)
+#   "anisotropic" — transverse isotropic with fault-normal director (full model)
+
+RHEOLOGY = "isotropic"  # Change to "isoviscous" or "isotropic" for debugging
 
 # Physical viscosity as expression with units
 eta_0 = uw.expression(r"\eta_0", uw.quantity(1e21, "Pa.s"), "reference viscosity")
 eta_0_nd = uw.non_dimensionalise(eta_0)
 
-if USE_ISOVISCOUS:
+if RHEOLOGY == "isoviscous":
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
     print(f"Constitutive model: ISOVISCOUS (eta = {eta_0.value})")
 
 else:
-    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
-
-    eta_1_weak_ratio = 0.01
+    # Both "isotropic" and "anisotropic" need fault data fields
+    eta_1_weak_ratio = 1  # Set < 1 for actual weak zones (e.g. 0.01)
     eta_1_weak = uw.expression(
         r"\eta_1", uw.quantity(eta_1_weak_ratio * 1e21, "Pa.s"), "weak fault viscosity"
     )
 
-    primary_fault = fault_surfaces.get(11) or list(fault_surfaces.values())[0]
-    print(f"Primary fault: '{primary_fault.name}' ({primary_fault.n_vertices} vertices)")
+    # --- Composite fault normal and ID fields (all faults) ---
+    # For each mesh node, find the nearest fault vertex across all surfaces
+    # and copy its geological normal vector and fault segment ID.
 
-    fault_influence = primary_fault.influence_function(
-        width=10.0 / L_REF_KM, value_near=1.0, value_far=0.0, profile="gaussian",
+    all_vertices = []
+    all_normals = []
+    all_fault_ids = []
+
+    for sid, surface in fault_surfaces.items():
+        pts = np.array(surface._pv_mesh.points)  # ND model coords
+        n_var = surface.get_variable("normals")
+        norms = np.array(n_var.data)
+
+        all_vertices.append(pts)
+        all_normals.append(norms)
+        all_fault_ids.append(np.full(len(pts), sid))
+
+    combined_vertices = np.vstack(all_vertices)
+    combined_normals = np.vstack(all_normals)
+    combined_ids = np.concatenate(all_fault_ids)
+
+    kdtree = uw.kdtree.KDTree(combined_vertices)
+    mesh_coords = np.asarray(mesh._coords)
+    _, closest_idx = kdtree.query(mesh_coords)
+    closest_idx = closest_idx.flatten()
+
+    fault_normal = uw.discretisation.MeshVariable(
+        "fault_n", mesh, mesh.dim, degree=1, varsymbol=r"\hat{\mathbf{n}}_f"
     )
-    eta_1_expr = eta_0 - (eta_0 - eta_1_weak) * fault_influence
+    fault_id_var = uw.discretisation.MeshVariable(
+        "fault_id", mesh, 1, degree=1, varsymbol=r"f_{id}"
+    )
 
-    normals_var = primary_fault.get_variable("normals")
-    director = normals_var.sym
+    with uw.synchronised_array_update():
+        fault_normal.data[:] = combined_normals[closest_idx]
+        fault_id_var.data[:, 0] = combined_ids[closest_idx]
 
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
-    stokes.constitutive_model.Parameters.shear_viscosity_1 = eta_1_expr
-    stokes.constitutive_model.Parameters.director = director
+    print(f"Composite fault fields: {len(fault_surfaces)} faults, "
+          f"IDs present: {np.unique(fault_id_var.data[:, 0]).astype(int)}")
 
-    print(f"Constitutive model: TransverseIsotropicFlowModel")
-    print(f"  eta_0 = {eta_0.value}, eta_1/eta_0 = {eta_1_weak_ratio}")
+    # --- Combined influence function ---
+    # Minimum absolute distance across all fault surfaces gives a single
+    # "nearest fault" distance field. A Gaussian profile turns this into
+    # a smooth rheological transition.
+
+    FAULT_WIDTH = 10.0 / L_REF_KM  # 10 km transition width (nondimensional)
+
+    nearest_dist = uw.discretisation.MeshVariable(
+        "d_faults", mesh, 1, degree=1, varsymbol=r"d_f"
+    )
+
+    min_dist = np.full(mesh_coords.shape[0], np.inf)
+    for sid, surface in fault_surfaces.items():
+        d = surface.distance  # lazy signed distance computation
+        abs_dist = np.abs(d.data[:, 0])
+        min_dist = np.minimum(min_dist, abs_dist)
+
+    nearest_dist.data[:, 0] = min_dist
+
+    # Precompute the Gaussian influence as a MeshVariable (not symbolic exp).
+    # Keeping exp() in the symbolic expression makes the TI constitutive tensor
+    # extremely complex and causes sympy.simplify() / solver hangs.
+    fault_weight = uw.discretisation.MeshVariable(
+        "fault_w", mesh, 1, degree=1, varsymbol=r"w_f"
+    )
+    fault_weight.data[:, 0] = np.exp(-0.5 * (min_dist / FAULT_WIDTH) ** 2)
+
+    # Build composite viscosity using the precomputed weight
+    eta_1_expr = eta_0 - (eta_0 - eta_1_weak) * fault_weight.sym[0]
+
+    if RHEOLOGY == "isotropic":
+        # Isotropic weak zones: use composite viscosity as eta_0 in standard model.
+        # This tests whether the composite expression works correctly without
+        # the TI tensor machinery.
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_1_expr
+
+        print(f"Constitutive model: ISOTROPIC weak zones (ViscousFlowModel)")
+        print(f"  eta_0 = {eta_0.value}, eta_1/eta_0 = {eta_1_weak_ratio}")
+        print(f"  Fault influence width: {FAULT_WIDTH * L_REF_KM:.0f} km")
+
+    else:  # "anisotropic"
+        # Transverse isotropic: full anisotropic model with fault-normal director
+        stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
+
+        director = fault_normal.sym
+
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
+        stokes.constitutive_model.Parameters.shear_viscosity_1 = eta_1_expr
+        stokes.constitutive_model.Parameters.director = director
+
+        print(f"Constitutive model: TransverseIsotropicFlowModel")
+        print(f"  eta_0 = {eta_0.value}, eta_1/eta_0 = {eta_1_weak_ratio}")
+        print(f"  Fault influence width: {FAULT_WIDTH * L_REF_KM:.0f} km")
 
 stokes.saddle_preconditioner = 1.0 / eta_0_nd
 
@@ -361,10 +452,74 @@ stokes.add_natural_bc(Vel_penalty * unit_north.dot(v.sym) * unit_north, "North")
 stokes.add_natural_bc(Vel_penalty * unit_north.dot(v.sym) * unit_north, "South")
 
 # %% [markdown]
-# ## 8. Solve
+# ## 8. Diagnostics and Solve
 
 # %%
-stokes.solve(verbose=False, debug=False)
+# Diagnostic: check what the constitutive model actually evaluates to
+if RHEOLOGY != "isoviscous":
+    # Evaluate the composite eta expression at mesh nodes
+    eta_eval = uw.function.evaluate(eta_1_expr, mesh.X.coords)
+    print(f"=== Composite viscosity diagnostic ===")
+    print(f"  eta_1_expr symbolic: {eta_1_expr}")
+    print(f"  Evaluated: min={eta_eval.min():.6e}, max={eta_eval.max():.6e}")
+    print(f"  Expected (ratio=1): all values should be ~{eta_0_nd:.6e}")
+    print(f"  fault_weight range: [{fault_weight.data.min():.6f}, {fault_weight.data.max():.6f}]")
+
+# Check the constitutive model flux / c tensor
+from underworld3.function.expressions import _unwrap_for_compilation, UWexpression
+
+c = stokes.constitutive_model.c
+c_0000 = c[0, 0, 0, 0]
+print(f"\n=== C tensor diagnostic ===")
+print(f"  c[0,0,0,0] symbolic: {str(c_0000)[:200]}")
+
+# Find UWexpression atoms in the c tensor entry
+if hasattr(c_0000, 'atoms'):
+    uw_atoms = c_0000.atoms(UWexpression)
+    print(f"  UWexpression atoms ({len(uw_atoms)}):")
+    for a in uw_atoms:
+        print(f"    {a.name}: data={a.data}")
+
+# Unwrap and check
+try:
+    c_0000_uw = _unwrap_for_compilation(c_0000, keep_constants=False, return_self=False)
+    print(f"  c[0,0,0,0] unwrapped: {str(c_0000_uw)[:200]}")
+    if hasattr(c_0000_uw, 'atoms'):
+        remaining = c_0000_uw.atoms(UWexpression)
+        if remaining:
+            print(f"  WARNING: {len(remaining)} UWexpression atoms REMAIN after unwrap!")
+            for a in remaining:
+                print(f"    REMAINING: {a.name} data={a.data}")
+    # Evaluate numerically
+    c_0000_val = uw.function.evaluate(c_0000, mesh.X.coords[:1])
+    print(f"  c[0,0,0,0] evaluated at node 0: {float(c_0000_val.flatten()[0]):.6e}")
+    print(f"  Expected (isoviscous): 2.0")
+except Exception as e:
+    print(f"  c[0,0,0,0] diagnostic error: {e}")
+
+# Check F1 template
+F1_sym = stokes.F1.sym
+print(f"\n=== F1 diagnostic ===")
+if hasattr(F1_sym, 'atoms'):
+    f1_atoms = F1_sym.atoms(UWexpression)
+    print(f"  UWexpression atoms in F1 ({len(f1_atoms)}):")
+    for a in f1_atoms:
+        print(f"    {a.name}: data={a.data}")
+try:
+    F1_uw = _unwrap_for_compilation(F1_sym, keep_constants=False, return_self=False)
+    if hasattr(F1_uw, 'atoms'):
+        f1_remaining = F1_uw.atoms(UWexpression)
+        if f1_remaining:
+            print(f"  WARNING: {len(f1_remaining)} UWexpression atoms REMAIN in F1 after unwrap!")
+            for a in f1_remaining:
+                print(f"    REMAINING: {a.name} data={a.data}")
+        else:
+            print(f"  F1 unwrap: clean (no remaining UWexpression atoms)")
+except Exception as e:
+    print(f"  F1 unwrap error: {e}")
+
+# %%
+stokes.solve(verbose=False, debug=False, )
 
 print(f"\nSolution statistics:")
 print(f"  |v|_max = {np.abs(v.data).max():.4f}")
@@ -375,6 +530,8 @@ uw.timing.print_summary()
 
 # %%
 uw.pause("visualise when ready")
+
+# %%
 
 # %% [markdown]
 # ## 9. Visualization
@@ -393,11 +550,22 @@ pvmesh.point_data["N"] = vis.vector_fn_to_pv_points(pvmesh, unit_north, simplify
 pvmesh.point_data["E"] = vis.vector_fn_to_pv_points(pvmesh, unit_east, simplify=False)
 pvmesh.point_data["Z"] = vis.vector_fn_to_pv_points(pvmesh, unit_down, simplify=False)
 
+if RHEOLOGY != "isoviscous":
+    pvmesh.point_data["fault_n"] = vis.vector_fn_to_pv_points(pvmesh, fault_normal.sym)
+    pvmesh.point_data["fault_id"] = vis.scalar_fn_to_pv_points(pvmesh, fault_id_var.sym)
+    pvmesh.point_data["fault_dist"] = vis.scalar_fn_to_pv_points(pvmesh, nearest_dist.sym)
+    pvmesh.point_data["fault_w"] = vis.scalar_fn_to_pv_points(pvmesh, fault_weight.sym)
+
 # %%
 pl = pv.Plotter(window_size=(750, 750))
 
 pl.add_mesh(pvmesh, cmap="coolwarm", scalars="Vmag", style="wireframe")
-pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=1e32, color="Blue")
+pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=1e14, color="Blue")
 # pl.add_arrows(pvmesh.points, pvmesh.point_data["N"], mag=1e4, color="Red", opacity=0.33)
 
 pl.show()
+
+# %%
+fault_normals_all
+
+# %%
