@@ -4,9 +4,12 @@ Retention curve functions for variably-saturated porous media flow.
 Provides retention curve functions that return SymPy expressions
 suitable for use with the Richards equation solver:
 
-- **Van Genuchten–Mualem** model: general-purpose, widely used.
+- **Van Genuchten--Mualem** model: general-purpose, widely used.
 - **Gardner exponential** model: simpler, admits exact analytical
   solutions for steady-state Richards equation with gravity.
+- **Haverkamp** model: rational-function form with independent
+  parameters for retention and conductivity; used in the Vauclin
+  (1979) water-table recharge benchmark.
 
 All functions accept a SymPy symbol or expression for pressure head
 (typically ``psi_field.sym[0]``) and return SymPy expressions that
@@ -16,15 +19,19 @@ References
 ----------
 Van Genuchten, M. Th. (1980). A closed-form equation for predicting
 the hydraulic conductivity of unsaturated soils.
-*Soil Science Society of America Journal*, 44(5), 892–898.
+*Soil Science Society of America Journal*, 44(5), 892--898.
 
 Mualem, Y. (1976). A new model for predicting the hydraulic
 conductivity of unsaturated porous media.
-*Water Resources Research*, 12(3), 513–522.
+*Water Resources Research*, 12(3), 513--522.
 
 Gardner, W. R. (1958). Some steady-state solutions of the
 unsaturated moisture flow equation with application to evaporation
-from a water table. *Soil Science*, 85(4), 228–232.
+from a water table. *Soil Science*, 85(4), 228--232.
+
+Haverkamp, R. et al. (1977). A comparison of numerical simulation
+models for one-dimensional infiltration.
+*Soil Science Society of America Journal*, 41(2), 285--294.
 
 Examples
 --------
@@ -44,6 +51,15 @@ Gardner model with analytical steady-state solution:
 ... )
 >>> K = gardner_K(psi, Ks=1e-4, alpha=1.0)
 >>> C = gardner_C(psi, theta_r=0.05, theta_s=0.4, alpha=1.0)
+
+Haverkamp model (Vauclin benchmark parameters):
+
+>>> from underworld3.utilities.retention_curves import (
+...     haverkamp_theta, haverkamp_K, haverkamp_C,
+... )
+>>> theta = haverkamp_theta(psi, theta_r=0.075, theta_s=0.287,
+...     alpha=1.611e6, beta=3.96)
+>>> K = haverkamp_K(psi, Ks=9.44e-5, A=1.175e6, B=4.74)
 """
 
 import sympy
@@ -503,3 +519,154 @@ def gardner_transient_psi(y, t, psi_dry, psi_wet, L, Ks, alpha, theta_r, theta_s
     u = u_dry + (u_wet - u_dry) * H
 
     return (1.0 / alpha) * np.log(np.maximum(u, 1e-30))
+
+
+# =====================================================================
+# Haverkamp model
+# =====================================================================
+
+
+def haverkamp_theta(psi, theta_r, theta_s, alpha, beta):
+    r"""Volumetric water content (Haverkamp model).
+
+    .. math::
+
+        \theta(\psi) = \begin{cases}
+            \theta_r + \dfrac{\alpha\,(\theta_s - \theta_r)}
+                              {\alpha + |\psi|^{\beta}}
+            & \psi < 0 \\[6pt]
+            \theta_s & \psi \ge 0
+        \end{cases}
+
+    Unlike Van Genuchten, the retention and conductivity curves have
+    **independent** parameters, which gives extra flexibility when
+    fitting laboratory data.
+
+    Parameters
+    ----------
+    psi : sympy expression
+        Pressure head (negative in unsaturated zone).
+    theta_r : float
+        Residual water content.
+    theta_s : float
+        Saturated water content.
+    alpha : float
+        Retention shape parameter (dimensionless or [length]^beta,
+        depending on convention).
+    beta : float
+        Retention exponent.
+
+    Returns
+    -------
+    sympy.Piecewise
+        Water content expression.
+
+    References
+    ----------
+    Haverkamp, R. et al. (1977). A comparison of numerical simulation
+    models for one-dimensional infiltration.
+    *Soil Science Society of America Journal*, 41(2), 285--294.
+    """
+    theta_r = sympy.sympify(theta_r)
+    theta_s = sympy.sympify(theta_s)
+    alpha = sympy.sympify(alpha)
+    beta = sympy.sympify(beta)
+
+    theta_unsat = theta_r + alpha * (theta_s - theta_r) / (alpha + (-psi) ** beta)
+    return sympy.Piecewise((theta_s, psi >= 0), (theta_unsat, True))
+
+
+def haverkamp_K(psi, Ks, A, B):
+    r"""Hydraulic conductivity (Haverkamp model).
+
+    .. math::
+
+        K(\psi) = \begin{cases}
+            K_s\,\dfrac{A}{A + |\psi|^B} & \psi < 0 \\[6pt]
+            K_s & \psi \ge 0
+        \end{cases}
+
+    The conductivity parameters *A* and *B* are independent of the
+    retention parameters *alpha* and *beta*.
+
+    Parameters
+    ----------
+    psi : sympy expression
+        Pressure head (negative in unsaturated zone).
+    Ks : float
+        Saturated hydraulic conductivity.
+    A : float
+        Conductivity shape parameter.
+    B : float
+        Conductivity exponent.
+
+    Returns
+    -------
+    sympy.Piecewise
+        Hydraulic conductivity expression.
+
+    References
+    ----------
+    Haverkamp, R. et al. (1977). A comparison of numerical simulation
+    models for one-dimensional infiltration.
+    *Soil Science Society of America Journal*, 41(2), 285--294.
+    """
+    Ks = sympy.sympify(Ks)
+    A = sympy.sympify(A)
+    B = sympy.sympify(B)
+
+    K_unsat = Ks * A / (A + (-psi) ** B)
+    return sympy.Piecewise((Ks, psi >= 0), (K_unsat, True))
+
+
+def haverkamp_C(psi, theta_r, theta_s, alpha, beta, Ss=0.0):
+    r"""Specific moisture capacity (Haverkamp model).
+
+    .. math::
+
+        C(\psi) = \frac{d\theta}{d\psi} = \begin{cases}
+            \dfrac{\alpha\,\beta\,(\theta_s - \theta_r)\,|\psi|^{\beta - 1}}
+                  {\bigl(\alpha + |\psi|^{\beta}\bigr)^2}
+            & \psi < 0 \\[6pt]
+            S_s & \psi \ge 0
+        \end{cases}
+
+    Parameters
+    ----------
+    psi : sympy expression
+        Pressure head.
+    theta_r : float
+        Residual water content.
+    theta_s : float
+        Saturated water content.
+    alpha : float
+        Retention shape parameter.
+    beta : float
+        Retention exponent.
+    Ss : float, optional
+        Specific storage for the saturated zone (default 0).
+
+    Returns
+    -------
+    sympy.Piecewise
+        Specific moisture capacity expression.
+
+    References
+    ----------
+    Haverkamp, R. et al. (1977). A comparison of numerical simulation
+    models for one-dimensional infiltration.
+    *Soil Science Society of America Journal*, 41(2), 285--294.
+    """
+    theta_r = sympy.sympify(theta_r)
+    theta_s = sympy.sympify(theta_s)
+    alpha = sympy.sympify(alpha)
+    beta = sympy.sympify(beta)
+    Ss = sympy.sympify(Ss)
+
+    abs_psi = -psi  # psi < 0, so |psi| = -psi
+    C_unsat = (
+        alpha * beta * (theta_s - theta_r) * abs_psi ** (beta - 1)
+        / (alpha + abs_psi ** beta) ** 2
+    )
+
+    return sympy.Piecewise((Ss, psi >= 0), (C_unsat, True))
