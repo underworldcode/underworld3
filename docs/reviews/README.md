@@ -303,12 +303,15 @@ To trace a feature from implementation to approval:
 
 | Year | Reviews | Tests | Pass Rate |
 |------|---------|-------|-----------|
+| 2026 | 2 | 135+ | 🔍 TBD |
 | 2025 | 3 | 12 | 100% |
 
 ### By Component
 
 | Component | Reviews | Tests | Status |
 |-----------|---------|-------|--------|
+| Units System | 1 | 60+ | 🔍 Under Review |
+| Data Access / Math Interface | 1 | 75+ | 🔍 Under Review |
 | Reduction Operations | 1 | 5 | ✅ Approved |
 | Swarm Integration | 1 | 7 | ✅ Approved |
 | Test Coverage | 1 | - | ✅ Complete |

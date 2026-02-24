@@ -28,9 +28,9 @@ This architectural review documents the current state of Underworld3's data acce
 
 | File | Changes |
 |------|---------|
-| `src/underworld3/utilities/nd_array_with_callback.py` | Callback array infrastructure (~1,394 LOC) |
+| `src/underworld3/utilities/nd_array_callback.py` | Callback array infrastructure (~1,394 LOC) |
 | `src/underworld3/utilities/mathematical_mixin.py` | Mathematical notation support (~981 LOC) |
-| `src/underworld3/discretisation/persistence.py` | EnhancedMeshVariable wrapper (~783 LOC) |
+| `src/underworld3/discretisation/enhanced_variables.py` | EnhancedMeshVariable wrapper (~783 LOC) |
 | `src/underworld3/discretisation/discretisation_mesh_variables.py` | Base variable, array views (~3,025 LOC) |
 
 ## System Architecture
@@ -62,7 +62,7 @@ User Code
     ↓
 uw.discretisation.MeshVariable(...)
     ↓
-EnhancedMeshVariable (persistence.py) ← THIS IS WHAT USERS GET
+EnhancedMeshVariable (enhanced_variables.py) ← THIS IS WHAT USERS GET
   - Wraps _BaseMeshVariable
   - Adds: Math operations, units support, persistence
   - DELEGATES .array property to base
@@ -75,13 +75,13 @@ _BaseMeshVariable (discretisation_mesh_variables.py)
 
 **Key Discovery**: `MeshVariable` is an **alias** for `EnhancedMeshVariable`:
 ```python
-# src/underworld3/discretisation/__init__.py line 2:
-from .persistence import EnhancedMeshVariable as MeshVariable
+# src/underworld3/discretisation/__init__.py:
+from .enhanced_variables import EnhancedMeshVariable as MeshVariable
 ```
 
 ## Core Components
 
-### 1. NDArray_With_Callback (`utilities/nd_array_with_callback.py`)
+### 1. NDArray_With_Callback (`utilities/nd_array_callback.py`)
 
 NumPy array subclass with MPI-aware callbacks for PETSc synchronization:
 
@@ -186,16 +186,16 @@ def __getattr__(self, name):
 - Explicit methods: Handle Python-initiated operations (`var * 2`)
 - Both needed for complete mathematical integration
 
-### 3. EnhancedMeshVariable (`discretisation/persistence.py`)
+### 3. EnhancedMeshVariable (`discretisation/enhanced_variables.py`)
 
 User-facing wrapper combining multiple capabilities:
 
 ```python
-class EnhancedMeshVariable(UnitAwareMixin, MathematicalMixin):
+class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
     """
     Enhanced MeshVariable with:
     - Mathematical operations (via MathematicalMixin)
-    - Units support (via UnitAwareMixin)
+    - Units support (via DimensionalityMixin)
     - Optional persistence for adaptive meshing scenarios
     - Collision-safe registration
     """
@@ -405,9 +405,9 @@ def __mul__(self, other):
 
 | File | Purpose |
 |------|---------|
-| `src/underworld3/utilities/nd_array_with_callback.py` | Callback array implementation |
+| `src/underworld3/utilities/nd_array_callback.py` | Callback array implementation |
 | `src/underworld3/utilities/mathematical_mixin.py` | Mathematical notation support |
-| `src/underworld3/discretisation/persistence.py` | EnhancedMeshVariable |
+| `src/underworld3/discretisation/enhanced_variables.py` | EnhancedMeshVariable |
 | `src/underworld3/discretisation/discretisation_mesh_variables.py` | _BaseMeshVariable, array views |
 | `src/underworld3/swarm.py` | SwarmVariable integration |
 | `docs/developer/UW3_Style_and_Patterns_Guide.md` | Usage patterns |

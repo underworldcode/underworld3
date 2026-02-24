@@ -31,10 +31,10 @@ This architectural review documents the current state of Underworld3's units sys
 | File | Changes |
 |------|---------|
 | `src/underworld3/scaling/_scaling.py` | Model scaling infrastructure (~656 LOC) |
-| `src/underworld3/scaling/units.py` | Pint registry configuration (~1,993 LOC) |
+| `src/underworld3/units.py` | Pint registry configuration (~1,993 LOC) |
 | `src/underworld3/function/quantities.py` | UWQuantity implementation (~859 LOC) |
 | `src/underworld3/function/expressions.py` | UWexpression implementation (~1,797 LOC) |
-| `src/underworld3/function/nondimensional.py` | Non-dimensionalization (~350 LOC) |
+| `src/underworld3/utilities/nondimensional.py` | Non-dimensionalization (~350 LOC) |
 | `src/underworld3/function/unit_conversion.py` | get_units(), has_units() (~500 LOC) |
 
 ## System Architecture
@@ -44,10 +44,10 @@ This architectural review documents the current state of Underworld3's units sys
 | Module | Lines of Code | Purpose |
 |--------|---------------|---------|
 | `scaling/_scaling.py` | ~656 | Model scaling infrastructure |
-| `scaling/units.py` | ~1,993 | Pint registry, unit definitions |
+| `units.py` | ~1,993 | Pint registry, unit definitions |
 | `function/quantities.py` | ~859 | UWQuantity class |
 | `function/expressions.py` | ~1,797 | UWexpression (lazy evaluation) |
-| `function/nondimensional.py` | ~350 | Non-dimensionalization utilities |
+| `utilities/nondimensional.py` | ~350 | Non-dimensionalization utilities |
 | `function/unit_conversion.py` | ~500 | Conversion utilities, get_units() |
 | **Total** | **~6,155** | Core units infrastructure |
 
@@ -119,9 +119,9 @@ class UWexpression:
     @property
     def units(self):
         # Always derived, never stored separately
-        if self._value_with_units is not None:
-            return self._value_with_units.units  # From contained atom
-        return get_units(self._sym)  # From contained tree
+        if hasattr(self._sym, 'units'):
+            return self._sym.units  # From contained atom
+        return None  # No units discoverable
 ```
 
 ### 3. MeshVariable Integration
@@ -236,10 +236,10 @@ uw.get_units(x)  # → 'kilometer' (discovered from expression tree)
 | File | Purpose |
 |------|---------|
 | `src/underworld3/scaling/_scaling.py` | Model scaling infrastructure |
-| `src/underworld3/scaling/units.py` | Pint registry configuration |
+| `src/underworld3/units.py` | Pint registry configuration |
 | `src/underworld3/function/quantities.py` | UWQuantity implementation |
 | `src/underworld3/function/expressions.py` | UWexpression implementation |
-| `src/underworld3/function/nondimensional.py` | Non-dimensionalization |
+| `src/underworld3/utilities/nondimensional.py` | Non-dimensionalization |
 | `src/underworld3/function/unit_conversion.py` | get_units(), has_units() |
 | `docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md` | Authoritative design doc |
 
