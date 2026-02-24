@@ -123,11 +123,18 @@ def has_units(obj):
         return True
 
     return False
-# DEPRECATED: Old get_units() from function.unit_conversion has been removed.
-# Use uw.get_units() from the units module instead, which provides the unified,
-# high-level API for extracting units from any object type. The units module
-# version delegates to _extract_units_info() which provides the same smart
-# extraction strategy (prioritizing variables over atoms, avoiding blind tree-walking).
+
+
+def get_units(obj):
+    """Extract unit information from an object.
+
+    Delegates to ``underworld3.units.get_units`` which is the canonical
+    implementation.  This wrapper exists because compiled Cython modules
+    (e.g. ``ckdtree.pyx``) import from this location.
+    """
+    from underworld3.units import get_units as _get_units
+
+    return _get_units(obj)
 
 
 def compute_expression_units(expr):
