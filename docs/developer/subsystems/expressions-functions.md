@@ -61,7 +61,6 @@ This section desperately needs:
 ## Related Systems
 
 - Works closely with [Mathematical Objects](../UW3_Developers_MathematicalObjects.md)
-- Integrates with [JIT Compilation](jit-compilation.md)
 - Used by [Solvers](solvers.md) for symbolic equation definition
 
 ---

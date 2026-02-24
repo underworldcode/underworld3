@@ -20,7 +20,6 @@ Underworld3 is a Python library for computational geodynamics and geophysical mo
 
 ```{tip} Quick Navigation for Developers
 - **New to UW3?** → Start with [Development Setup](guides/development-setup.md)
-- **Understanding the codebase?** → Read [Architecture Overview](UW3_Architecture_and_Documentation_Overview.md)
 - **Working with math expressions?** → See [Mathematical Objects](UW3_Developers_MathematicalObjects.md)
 - **Handling data arrays?** → Check [NDArray System](UW3_Developers_NDArrays.md)
 - **Need coding standards?** → Reference [Style Guide](UW3_Style_and_Patterns_Guide.md)
@@ -130,7 +129,6 @@ Feature Branch → Development → Testing → Documentation → Code Review →
 | Follow coding standards | [Style Guide](UW3_Style_and_Patterns_Guide.md) | Patterns and conventions |
 | Add new functionality | [Contributing](guides/contributing.md) | Development workflow |
 | Debug parallel issues | [MPI Parallelism](advanced/mpi-parallelism.md) | Parallel debugging |
-| Optimize performance | [Performance Guide](guidelines/performance-optimization.md) | Profiling and optimization |
 
 ### Build and Test Commands
 
@@ -199,7 +197,6 @@ design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN
 :hidden:
 :caption: Architecture
 
-UW3_Architecture_and_Documentation_Overview
 UW3_Developers_MathematicalObjects
 UW3_Developers_NDArrays
 ```
