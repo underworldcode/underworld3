@@ -129,7 +129,27 @@ See `docs/developer/guides/version-management.md` for details.
 
 ---
 
-## Git Commit Conventions
+## Git and Branching Strategy
+
+**Full guide**: @docs/developer/guides/branching-strategy.md
+
+### Branch Roles
+- **`main`** — stable releases (tagged quarterly). No direct pushes.
+- **`development`** — integration branch. Bug fixes land here. Features merge here via PR.
+- **`feature/*`** — long-lived feature work. Branch from and PR back to `development`.
+
+### Key Discipline: Separate API from Implementation
+Feature branches must not introduce API changes (new methods, changed signatures) that other branches can't access. When a feature needs an API change:
+1. Extract the interface (stub or minimal implementation) into a separate commit.
+2. Merge that to `development` first (or extract after the fact).
+3. The feature PR should only contain implementation behind already-merged interfaces.
+
+This keeps feature branches independent and makes cross-pollination of fixes straightforward.
+
+### Bug Fix Flow
+- Fix on `development` (commit or small PR)
+- Cherry-pick to `main` if critical → tag patch release
+- Cherry-pick to active feature branches (underworld-claude handles this)
 
 ### AI-Assisted Commit Attribution
 When committing code developed with AI assistance, end the commit message with:
@@ -441,7 +461,8 @@ Read them when you need deeper context beyond what's in this file.
 - @docs/developer/TESTING-RELIABILITY-SYSTEM.md - Test tier classification (A/B/C)
 - @docs/developer/TEST-CLASSIFICATION-2025-11-15.md - Current test status
 
-### Code Style & Patterns
+### Code Style, Workflow & Patterns
+- @docs/developer/guides/branching-strategy.md - Branching, releases, API change discipline
 - @docs/developer/UW3_Style_and_Patterns_Guide.qmd - Development standards
 
 ### Data Access & Variables
