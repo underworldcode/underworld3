@@ -1,0 +1,17 @@
+# Underworld3 Code Owners
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: project lead reviews everything
+* @lmoresi
+
+# Solver internals — careful review required
+src/underworld3/systems/ @lmoresi
+src/underworld3/discretisation/ @lmoresi
+src/underworld3/function/ @lmoresi
+
+# Build and CI — review to avoid breaking infrastructure
+.github/workflows/ @lmoresi
+container/ @lmoresi
+pixi.toml @lmoresi
+setup.py @lmoresi
+pyproject.toml @lmoresi
