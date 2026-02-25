@@ -57,12 +57,10 @@ uw.timing.start()
 #
 # The fault data is stored as an NPZ file with:
 # - `arr_0`: geographic coordinates (lon, lat, depth_m, dip, fault_id, segment_id)
-# - `arr_1`: normal vectors (nx, ny, nz, dip, fault_id, segment_id)
 
 # %%
 fault_data = np.load("Structures/faults_as_swarm_points_xyz.npz")
 geo_coords = fault_data["arr_0"]
-normal_vecs = fault_data["arr_1"]
 
 lon = geo_coords[:, 0]
 lat = geo_coords[:, 1]
@@ -79,14 +77,9 @@ print(f"Depth range: {depth_m.min()/1000:.0f} to {depth_m.max()/1000:.0f} km")
 # %% [markdown]
 # ## 3. Convert Geographic → Cartesian Coordinates
 #
-# The Surface class accepts control points as Pint arrays (km) and
-# nondimensionalises them internally via `set_control_points()`.
-#
-# The normals in the NPZ file are in a local geographic frame
-# (east, north, up components) because they were computed from fault surface
-# traces in geographic coordinates (by Faults-2-PointCloud.py).
-# The mesh uses global Cartesian (x, y, z), so we must rotate the normals
-# from geographic to Cartesian frame at each fault point.
+# Convert fault point locations from geographic (lon, lat, depth) to
+# Cartesian (x, y, z) and nondimensionalise for the solver.
+# Fault-plane normals are computed later by PyVista from the triangulated surfaces.
 
 # %%
 ell = ELLIPSOIDS["WGS84"]
@@ -110,48 +103,6 @@ print(f"Cartesian coordinates (km):")
 print(f"  x: [{fault_x.min():.1f}, {fault_x.max():.1f}]")
 print(f"  y: [{fault_y.min():.1f}, {fault_y.max():.1f}]")
 print(f"  z: [{fault_z.min():.1f}, {fault_z.max():.1f}]")
-
-# %%
-# Rotate normals from geographic frame to Cartesian frame.
-#
-# Geographic basis vectors at each point (from ellipsoid geometry):
-#   unit_east  = (-sin(lon), cos(lon), 0)
-#   unit_up    = (x/a², y/a², z/b²) / |...| (geodetic normal)
-#   unit_north = unit_up × unit_east (normalised)
-#
-# A normal expressed as (n_east, n_north, n_up) becomes:
-#   n_cartesian = n_east * unit_east + n_north * unit_north + n_up * unit_up
-
-fault_normals_geo = normal_vecs[:, :3]  # (n_east, n_north, n_up) — geographic frame
-
-lon_rad = np.radians(lon)
-
-# Unit east: (-sin(lon), cos(lon), 0)
-ue = np.column_stack([-np.sin(lon_rad), np.cos(lon_rad), np.zeros_like(lon)])
-
-# Unit up (geodetic normal): gradient of ellipsoid equation, normalised
-gn_x = fault_x / a_km**2
-gn_y = fault_y / a_km**2
-gn_z = fault_z / b_km**2
-gn_mag = np.sqrt(gn_x**2 + gn_y**2 + gn_z**2)
-uu = np.column_stack([gn_x / gn_mag, gn_y / gn_mag, gn_z / gn_mag])
-
-# Unit north: up × east, normalised
-un = np.cross(uu, ue)
-un = un / np.linalg.norm(un, axis=1, keepdims=True)
-
-# Transform: n_cartesian = n_e * unit_east + n_n * unit_north + n_u * unit_up
-fault_normals_all = (
-    fault_normals_geo[:, 0:1] * ue +
-    fault_normals_geo[:, 1:2] * un +
-    fault_normals_geo[:, 2:3] * uu
-)
-
-print(f"Normal transformation (geographic → Cartesian):")
-print(f"  Input magnitude:  [{np.linalg.norm(fault_normals_geo, axis=1).min():.3f}, "
-      f"{np.linalg.norm(fault_normals_geo, axis=1).max():.3f}]")
-print(f"  Output magnitude: [{np.linalg.norm(fault_normals_all, axis=1).min():.3f}, "
-      f"{np.linalg.norm(fault_normals_all, axis=1).max():.3f}]")
 
 # %% [markdown]
 # ## 4. Create Geographic Mesh
@@ -188,7 +139,6 @@ unique_segments = np.unique(segment_id)
 for sid in unique_segments:
     mask = segment_id == sid
     pts = fault_xyz_nd[mask]
-    norms = fault_normals_all[mask]
 
     if pts.shape[0] < 3:
         print(f"  Segment {sid}: only {pts.shape[0]} points (skipped)")
@@ -198,26 +148,7 @@ for sid in unique_segments:
     s = uw.meshing.Surface(name, mesh, pts, symbol=f"F{sid}")
     s.discretize()
 
-    # Store pre-computed normals as a SurfaceVariable
-    n_var = s.add_variable("normals", size=3)
-
-    norms_magnitude = np.linalg.norm(norms, axis=1)
-    if norms_magnitude.min() < 0.5 or norms_magnitude.max() > 2.0:
-        print(f"  WARNING: fault_{sid} normals have unexpected magnitudes"
-              f" [{norms_magnitude.min():.3f}, {norms_magnitude.max():.3f}]")
-
-    # Normalise to unit vectors before storing
-    norms = norms / norms_magnitude[:, np.newaxis]
-    n_var.data[:] = norms
-
-    # Sanity check against triangulation normals
-    pv_normals = s.normals
-    if pv_normals is not None and len(pv_normals) == len(norms):
-        alignment = np.abs(np.sum(norms * pv_normals, axis=1)).mean()
-        print(f"  {name}: {s.n_vertices} vertices, alignment: {alignment:.3f}")
-    else:
-        print(f"  {name}: {s.n_vertices} vertices")
-
+    print(f"  {name}: {s.n_vertices} vertices")
     fault_surfaces[sid] = s
 
 print(f"\nCreated {len(fault_surfaces)} fault surfaces")
@@ -287,7 +218,7 @@ RHEOLOGY = "anisotropic"
 
 # Physical parameters as expressions with units
 eta_0 = uw.expression(r"\eta_0", uw.quantity(1e21, "Pa.s"), "reference viscosity")
-eta_1_ratio = 0.01  # weak-to-strong viscosity ratio in fault zones
+eta_1_ratio = 0.1  # weak-to-strong viscosity ratio in fault zones
 eta_1_weak = uw.expression(
     r"\eta_1", uw.quantity(eta_1_ratio * 1e21, "Pa.s"), "weak fault viscosity"
 )
@@ -310,8 +241,7 @@ else:
 
     for sid, surface in fault_surfaces.items():
         pts = np.array(surface._pv_mesh.points)  # ND model coords
-        n_var = surface.get_variable("normals")
-        norms = np.array(n_var.data)
+        norms = surface.normals  # PyVista triangulation normals (fault-plane normals)
 
         all_vertices.append(pts)
         all_normals.append(norms)
@@ -460,11 +390,29 @@ if RHEOLOGY != "isoviscous":
 pl = pv.Plotter(window_size=(750, 750))
 
 pl.add_mesh(pvmesh, cmap="coolwarm", scalars="Vmag", style="wireframe")
-pl.add_mesh(pvmesh, cmap="coolwarm", scalars="fault_dist", style="surface", opacity=0.2)
+pl.add_mesh(pvmesh, cmap="coolwarm", scalars="fault_dist", style="surface", opacity=0.5)
 
 pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=2e13, color="Blue")
 pl.add_arrows(pvmesh.points, pvmesh.point_data["fault_n"], mag=1e4, color="Red", opacity=0.33)
 
+# Add fault surfaces with distinct colours
+fault_colors = [
+    "Red", "Orange", "Blue", "Green", "Purple",
+    "Cyan", "Yellow", "Magenta", "Lime", "Pink",
+]
+for i, (sid, surface) in enumerate(fault_surfaces.items()):
+    if surface.pv_mesh is not None:
+        pl.add_mesh(
+            surface.pv_mesh,
+            style="surface",
+            color=fault_colors[i % len(fault_colors)],
+            opacity=1.0,
+            show_edges=True,
+            label=f"fault_{sid}",
+        )
+
 pl.show()
+
+# %%
 
 # %%
