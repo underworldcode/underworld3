@@ -630,7 +630,8 @@ COMMANDS
 
   Development:
     shell               Interactive pixi shell
-    jupyter [args]      Run jupyter
+    jupyter [args]      Run jupyter (add --worktree NAME to open a worktree)
+    worktrees           List available git worktrees
     format              Run black
     type-check          Run mypy
 
@@ -884,7 +885,75 @@ case "${1:-}" in
         ;;
     jupyter)
         shift
-        exec $PIXI run -e "$(get_env)" jupyter "$@"
+        # Check for --worktree flag
+        WORKTREE_DIR=""
+        JUPYTER_ARGS=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --worktree)
+                    if [ -z "$2" ]; then
+                        echo "Usage: ./uw jupyter lab --worktree <name>"
+                        echo "Run './uw worktrees' to see available worktrees."
+                        exit 1
+                    fi
+                    WT_NAME="$2"
+                    WT_PATH="$SCRIPT_DIR/.claude/worktrees/$WT_NAME"
+                    if [ ! -d "$WT_PATH" ]; then
+                        echo "Worktree '$WT_NAME' not found at $WT_PATH"
+                        echo ""
+                        echo "Available worktrees:"
+                        if [ -d "$SCRIPT_DIR/.claude/worktrees" ]; then
+                            for d in "$SCRIPT_DIR/.claude/worktrees"/*/; do
+                                [ -d "$d" ] && echo "  $(basename "$d")"
+                            done
+                        else
+                            echo "  (none)"
+                        fi
+                        exit 1
+                    fi
+                    WORKTREE_DIR="$WT_PATH"
+                    shift 2
+                    ;;
+                *)
+                    JUPYTER_ARGS+=("$1")
+                    shift
+                    ;;
+            esac
+        done
+        if [ -n "$WORKTREE_DIR" ]; then
+            echo -e "Starting JupyterLab in worktree: ${GREEN}$(basename "$WORKTREE_DIR")${NC}"
+            echo "  Path: $WORKTREE_DIR"
+            echo ""
+            exec $PIXI run -e "$(get_env)" jupyter "${JUPYTER_ARGS[@]}" --notebook-dir="$WORKTREE_DIR"
+        else
+            exec $PIXI run -e "$(get_env)" jupyter "${JUPYTER_ARGS[@]}"
+        fi
+        ;;
+    worktrees)
+        echo "Git worktrees (.claude/worktrees/):"
+        echo ""
+        if [ -d "$SCRIPT_DIR/.claude/worktrees" ]; then
+            found=0
+            for d in "$SCRIPT_DIR/.claude/worktrees"/*/; do
+                [ ! -d "$d" ] && continue
+                wt_name=$(basename "$d")
+                # Check if it's a real git worktree (has .git file)
+                if [ -f "$d/.git" ]; then
+                    branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+                    echo -e "  ${GREEN}${wt_name}${NC}  (branch: $branch)"
+                    echo "    $d"
+                else
+                    echo -e "  ${YELLOW}${wt_name}${NC}  (not a git worktree)"
+                    echo "    $d"
+                fi
+                found=1
+            done
+            [ "$found" -eq 0 ] && echo "  (no worktrees found)"
+        else
+            echo "  (no worktrees directory)"
+        fi
+        echo ""
+        echo "Usage: ./uw jupyter lab --worktree <name>"
         ;;
     build)
         run_build

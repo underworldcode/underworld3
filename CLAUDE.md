@@ -155,11 +155,41 @@ This keeps feature branches independent and makes cross-pollination of fixes str
 **Use a worktree for any multi-file change** (docs cleanup, refactoring, features).
 Multiple Claude sessions sharing one working directory will overwrite each other's work.
 
+#### Creating a worktree — FOLLOW THESE STEPS EXACTLY
+
 ```bash
-# Use EnterWorktree tool to create .claude/worktrees/<name> on a new branch.
-# Then if needed, reset to a clean base:
+# 1. Use EnterWorktree tool to create .claude/worktrees/<name>
+#    (This branches from HEAD, which may be main — that's wrong for us)
+
+# 2. ALWAYS fetch and reset to development immediately after creation:
+git fetch origin
 git reset --hard origin/development
 
+# 3. Rename the auto-generated branch to follow our convention:
+git branch -m worktree-<name> feature/<name>
+#    (or bugfix/<name>, docs/<name>, etc. as appropriate)
+```
+
+**Why step 2 is mandatory**: EnterWorktree branches from whatever HEAD is in the
+main repo (often `main`). Our work branches from `development`. Skipping the reset
+causes massive merge conflicts later. Every Claude session must do this.
+
+#### Working in the worktree
+
+```bash
+# The user can open notebooks in the worktree via:
+./uw jupyter lab --worktree <name>
+
+# List available worktrees:
+./uw worktrees
+
+# Bring files from other branches without switching:
+git checkout origin/<branch> -- path/to/file
+```
+
+#### Merging and cleanup
+
+```bash
 # To merge: switch to main worktree first, then merge and push.
 # To clean up — ORDER MATTERS (shell CWD dies if worktree is deleted under it):
 cd /Users/lmoresi/+Underworld/underworld3-pixi   # 1. move shell out
