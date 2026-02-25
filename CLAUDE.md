@@ -1,7 +1,7 @@
 # Underworld3 AI Assistant Context
 
 > **Note**: Human-readable developer documentation is in `docs/developer/` (Sphinx/MyST format).
-> For development history and completed migrations, see @docs/developer/ai-notes/historical-notes.md
+> For development history and completed migrations, see `docs/developer/ai-notes/historical-notes.md`
 
 ---
 
@@ -124,14 +124,14 @@ See `docs/developer/guides/version-management.md` for details.
 - Build and verify: `pixi run docs-build`
 
 **Style references**:
-- Notebook writing: @docs/developer/guides/notebook-style-guide.md
-- Code patterns: @docs/developer/UW3_Style_and_Patterns_Guide.md
+- Notebook writing: `docs/developer/guides/notebook-style-guide.md`
+- Code patterns: `docs/developer/UW3_Style_and_Patterns_Guide.md`
 
 ---
 
 ## Git and Branching Strategy
 
-**Full guide**: @docs/developer/guides/branching-strategy.md
+**Full guide**: `docs/developer/guides/branching-strategy.md`
 
 ### Branch Roles
 - **`main`** — stable releases (tagged quarterly). No direct pushes.
@@ -338,7 +338,7 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 
 ## Data Access Patterns
 
-**Authoritative Reference**: @docs/developer/UW3_Style_and_Patterns_Guide.qmd
+**Authoritative Reference**: `docs/developer/UW3_Style_and_Patterns_Guide.md`
 **Pattern Checker**: Use `/check-patterns` to scan for deprecated patterns
 
 ### Quick Summary
@@ -371,7 +371,7 @@ swarm.data       # Swarm particle positions
 - **data**: `(-1, num_components)` flat format for backward compatibility
 
 ### Data Cache Safety
-The `.data` property caches an `NDArray_With_Callback` view into the PETSc local vector. This cache self-validates via `id(self._lvec)` tracking — if the underlying vector is replaced (DM rebuild, mesh adaptation), the cache auto-rebuilds on next access. See @docs/developer/subsystems/data-access.md for details.
+The `.data` property caches an `NDArray_With_Callback` view into the PETSc local vector. This cache self-validates via `id(self._lvec)` tracking — if the underlying vector is replaced (DM rebuild, mesh adaptation), the cache auto-rebuilds on next access. See `docs/developer/subsystems/data-access.md` for details.
 
 ---
 
@@ -492,42 +492,42 @@ pytest -m "tier_a or tier_b"
 ## On-Demand Documentation References
 
 When working on specific subsystems, these documents provide detailed guidance.
-Read them when you need deeper context beyond what's in this file.
+**Read them on demand using the Read tool** — do NOT load them all at conversation start.
 
-> **AI Assistant Protocol**: When reading any @ referenced document, explicitly tell
-> the user what you're checking and why. This confirms you're accessing deeper context
-> and prevents redundant prompting. Example: "Let me check the units design doc for this..."
+> **AI Assistant Protocol**: When you need deeper context, explicitly tell the user
+> what you're reading and why. Use the Read tool to load the specific file.
+> Example: "Let me check the units design doc for this..."
 
 ### Units & Scaling
-- @docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md - **Authoritative** units architecture
-- @docs/developer/ai-notes/COORDINATE-UNITS-TECHNICAL-NOTE.md - Coordinate unit handling
-- @docs/developer/design/WHY_UNITS_NOT_DIMENSIONALITY.md - Design rationale
+- `docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md` - **Authoritative** units architecture
+- `docs/developer/ai-notes/COORDINATE-UNITS-TECHNICAL-NOTE.md` - Coordinate unit handling
+- `docs/developer/design/WHY_UNITS_NOT_DIMENSIONALITY.md` - Design rationale
 
 ### Testing
-- @docs/developer/TESTING-RELIABILITY-SYSTEM.md - Test tier classification (A/B/C)
-- @docs/developer/ai-notes/TEST-CLASSIFICATION-2025-11-15.md - Current test status
+- `docs/developer/TESTING-RELIABILITY-SYSTEM.md` - Test tier classification (A/B/C)
+- `docs/developer/ai-notes/TEST-CLASSIFICATION-2025-11-15.md` - Current test status
 
 ### Code Style, Workflow & Patterns
-- @docs/developer/guides/branching-strategy.md - Branching, releases, API change discipline
-- @docs/developer/UW3_Style_and_Patterns_Guide.qmd - Development standards
+- `docs/developer/guides/branching-strategy.md` - Branching, releases, API change discipline
+- `docs/developer/UW3_Style_and_Patterns_Guide.md` - Development standards
 
 ### Data Access & Variables
-- @docs/developer/subsystems/data-access.md - Data access patterns, self-validating cache
-- @docs/developer/UW3_Developers_NDArrays.md - NDArray_With_Callback internals
+- `docs/developer/subsystems/data-access.md` - Data access patterns, self-validating cache
+- `docs/developer/UW3_Developers_NDArrays.md` - NDArray_With_Callback internals
 
 ### Architecture & Design
-- @docs/developer/design/ARCHITECTURE_ANALYSIS.md - System structure analysis
-- @docs/developer/design/MATHEMATICAL_MIXIN_DESIGN.md - Mathematical objects internals
-- @docs/developer/design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN.md - Spherical/planetary meshes
-- @docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md - Multi-mesh symbol identity
-- @docs/developer/TEMPLATE_EXPRESSION_PATTERN.md - Solver template expressions
+- `docs/developer/design/ARCHITECTURE_ANALYSIS.md` - System structure analysis
+- `docs/developer/design/MATHEMATICAL_MIXIN_DESIGN.md` - Mathematical objects internals
+- `docs/developer/design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN.md` - Spherical/planetary meshes
+- `docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md` - Multi-mesh symbol identity
+- `docs/developer/TEMPLATE_EXPRESSION_PATTERN.md` - Solver template expressions
 
 ### Coordinates & Mesh
-- @docs/developer/design/COORDINATE_MIGRATION_GUIDE.md - Coordinate system changes
-- @docs/developer/design/mesh-geometry-audit.md - Mesh geometry patterns
+- `docs/developer/design/COORDINATE_MIGRATION_GUIDE.md` - Coordinate system changes
+- `docs/developer/design/mesh-geometry-audit.md` - Mesh geometry patterns
 
 ### Development History
-- @docs/developer/ai-notes/historical-notes.md - Completed migrations, fixed bugs
+- `docs/developer/ai-notes/historical-notes.md` - Completed migrations, fixed bugs
 
 ---
 
@@ -551,7 +551,7 @@ pixi run -e default python   # Run Python in environment
 
 ### Historical Notes
 For development history, completed migrations, and fixed bugs:
-See @docs/developer/ai-notes/historical-notes.md
+See `docs/developer/ai-notes/historical-notes.md`
 
 ---
 
