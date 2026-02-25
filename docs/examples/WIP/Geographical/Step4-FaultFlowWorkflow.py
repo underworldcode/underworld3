@@ -37,7 +37,6 @@
 import numpy as np
 import underworld3 as uw
 from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
-import sympy
 
 # Reset any stale model, then set up units for geographic workflow
 uw.reset_default_model()
@@ -49,9 +48,6 @@ model.set_reference_quantities(
     diffusivity=uw.quantity(1e-6, "m**2/s"),
     verbose=False,
 )
-
-# Reference length for manual nondimensionalisation of external data (e.g. fault coords)
-L_REF_KM = 1000.0
 
 uw.timing.start()
 
@@ -83,8 +79,8 @@ print(f"Depth range: {depth_m.min()/1000:.0f} to {depth_m.max()/1000:.0f} km")
 # %% [markdown]
 # ## 3. Convert Geographic → Cartesian Coordinates
 #
-# The Surface class expects control points in the same coordinate system as
-# the mesh. With units active, mesh coordinates are nondimensional Cartesian.
+# The Surface class accepts control points as Pint arrays (km) and
+# nondimensionalises them internally via `set_control_points()`.
 #
 # The normals in the NPZ file are in a local geographic frame
 # (east, north, up components) because they were computed from fault surface
@@ -102,16 +98,18 @@ depth_km = depth_m / 1000.0
 fault_x, fault_y, fault_z = geographic_to_cartesian(
     lon, lat, -depth_km, a_km, b_km
 )
-fault_xyz_all = np.column_stack([fault_x, fault_y, fault_z])
+# Cartesian coordinates in km
+fault_xyz_km = np.column_stack([fault_x, fault_y, fault_z])
 
-# Nondimensionalise to match mesh coordinate system
-fault_xyz_nd = fault_xyz_all / L_REF_KM
+# Nondimensionalise via the units system (not manual division)
+fault_xyz_nd = np.asarray(
+    uw.non_dimensionalise(uw.quantity(fault_xyz_km, "km"))
+)
 
 print(f"Cartesian coordinates (km):")
 print(f"  x: [{fault_x.min():.1f}, {fault_x.max():.1f}]")
 print(f"  y: [{fault_y.min():.1f}, {fault_y.max():.1f}]")
 print(f"  z: [{fault_z.min():.1f}, {fault_z.max():.1f}]")
-print(f"Nondimensionalised (÷ {L_REF_KM:.0f} km)")
 
 # %%
 # Rotate normals from geographic frame to Cartesian frame.
@@ -127,7 +125,6 @@ print(f"Nondimensionalised (÷ {L_REF_KM:.0f} km)")
 fault_normals_geo = normal_vecs[:, :3]  # (n_east, n_north, n_up) — geographic frame
 
 lon_rad = np.radians(lon)
-lat_rad = np.radians(lat)
 
 # Unit east: (-sin(lon), cos(lon), 0)
 ue = np.column_stack([-np.sin(lon_rad), np.cos(lon_rad), np.zeros_like(lon)])
@@ -229,9 +226,9 @@ print(f"\nCreated {len(fault_surfaces)} fault surfaces")
 # ## 6. Build Refinement Metric and Adapt Mesh
 
 # %%
-H_NEAR = 10.0  / L_REF_KM     # target edge length near faults (3 km, nondimensional)
-H_FAR = 30.0  / L_REF_KM      # target edge length far from faults (30 km, nondimensional)
-TRANSITION = 10.0 / L_REF_KM  # transition width (20 km, nondimensional)
+H_NEAR = uw.quantity(3.0, "km")      # target edge length near faults
+H_FAR = uw.quantity(30.0, "km")      # target edge length far from faults
+TRANSITION = uw.quantity(10.0, "km")  # transition width
 
 combined_metric = None
 for sid, surface in fault_surfaces.items():
@@ -243,14 +240,9 @@ for sid, surface in fault_surfaces.items():
     else:
         combined_metric.data[:] = np.maximum(combined_metric.data, m.data)
 
-print(f"Metric range: [{combined_metric.data.min():.6f}, {combined_metric.data.max():.6f}]")
-
-print(f"\nBefore adaptation: {mesh.X.coords.shape[0]} nodes")
+print(f"Before adaptation: {mesh.X.coords.shape[0]} nodes")
 mesh.adapt(combined_metric, verbose=True)
-print(f"After adaptation: {mesh.X.coords.shape[0]} nodes")
-
-# %%
-# mesh.view()
+print(f"After adaptation:  {mesh.X.coords.shape[0]} nodes")
 
 # %% [markdown]
 # ## 7. Set Up Stokes Solver
@@ -260,9 +252,6 @@ v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2,
                                     varsymbol=r"\mathbf{v}", units="cm/yr")
 p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1,
                                     varsymbol="p", units="MPa")
-
-print(f"Velocity DOFs: {v.data.shape}")
-print(f"Pressure DOFs: {p.data.shape}")
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 
@@ -282,37 +271,34 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
 # constructed from *all* fault surfaces:
 #
 # - `fault_normal` — unit normal of the nearest fault face (vector, 3 components)
-# - `fault_id` — segment ID of the nearest fault (scalar)
+# - `fault_weight` — Gaussian influence (1 on fault, 0 far away)
 #
 # A combined "nearest fault distance" field drives a Gaussian influence function
-# that smoothly transitions `eta_1` from the reference viscosity (far from faults)
-# to a weakened value (near faults).
+# that smoothly transitions the weak viscosity `eta_1` between the reference
+# value (far from faults) and the weakened value (near faults).
 #
-# Set `USE_ISOVISCOUS = True` for debugging (constant viscosity, no fault influence).
+# Three rheology modes are available:
+# - `"anisotropic"` — transverse isotropic with fault-normal director (full model)
+# - `"isotropic"` — isotropic weak zones aligned with faults
+# - `"isoviscous"` — constant viscosity, no fault influence (baseline)
 
 # %%
-# Three rheology modes:
-#   "isoviscous"  — constant viscosity, no fault influence (debugging baseline)
-#   "isotropic"   — isotropic weak zones aligned with faults (tests composite eta expression)
-#   "anisotropic" — transverse isotropic with fault-normal director (full model)
+RHEOLOGY = "anisotropic"
 
-RHEOLOGY = "isotropic"  # Change to "isoviscous" or "isotropic" for debugging
-
-# Physical viscosity as expression with units
+# Physical parameters as expressions with units
 eta_0 = uw.expression(r"\eta_0", uw.quantity(1e21, "Pa.s"), "reference viscosity")
-eta_0_nd = uw.non_dimensionalise(eta_0)
+eta_1_ratio = 0.01  # weak-to-strong viscosity ratio in fault zones
+eta_1_weak = uw.expression(
+    r"\eta_1", uw.quantity(eta_1_ratio * 1e21, "Pa.s"), "weak fault viscosity"
+)
+fault_width = uw.quantity(10.0, "km")  # Gaussian half-width for fault influence
 
 if RHEOLOGY == "isoviscous":
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
-    print(f"Constitutive model: ISOVISCOUS (eta = {eta_0.value})")
 
 else:
     # Both "isotropic" and "anisotropic" need fault data fields
-    eta_1_weak_ratio = 1  # Set < 1 for actual weak zones (e.g. 0.01)
-    eta_1_weak = uw.expression(
-        r"\eta_1", uw.quantity(eta_1_weak_ratio * 1e21, "Pa.s"), "weak fault viscosity"
-    )
 
     # --- Composite fault normal and ID fields (all faults) ---
     # For each mesh node, find the nearest fault vertex across all surfaces
@@ -351,15 +337,12 @@ else:
         fault_normal.data[:] = combined_normals[closest_idx]
         fault_id_var.data[:, 0] = combined_ids[closest_idx]
 
-    print(f"Composite fault fields: {len(fault_surfaces)} faults, "
-          f"IDs present: {np.unique(fault_id_var.data[:, 0]).astype(int)}")
-
     # --- Combined influence function ---
     # Minimum absolute distance across all fault surfaces gives a single
     # "nearest fault" distance field. A Gaussian profile turns this into
     # a smooth rheological transition.
 
-    FAULT_WIDTH = 10.0 / L_REF_KM  # 10 km transition width (nondimensional)
+    fault_width_nd = float(uw.non_dimensionalise(fault_width))
 
     nearest_dist = uw.discretisation.MeshVariable(
         "d_faults", mesh, 1, degree=1, varsymbol=r"d_f"
@@ -379,37 +362,24 @@ else:
     fault_weight = uw.discretisation.MeshVariable(
         "fault_w", mesh, 1, degree=1, varsymbol=r"w_f"
     )
-    fault_weight.data[:, 0] = np.exp(-0.5 * (min_dist / FAULT_WIDTH) ** 2)
+    fault_weight.data[:, 0] = np.exp(-0.5 * (min_dist / fault_width_nd) ** 2)
 
     # Build composite viscosity using the precomputed weight
     eta_1_expr = eta_0 - (eta_0 - eta_1_weak) * fault_weight.sym[0]
 
     if RHEOLOGY == "isotropic":
-        # Isotropic weak zones: use composite viscosity as eta_0 in standard model.
-        # This tests whether the composite expression works correctly without
-        # the TI tensor machinery.
+        # Isotropic weak zones: composite viscosity in standard ViscousFlowModel.
         stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
         stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_1_expr
 
-        print(f"Constitutive model: ISOTROPIC weak zones (ViscousFlowModel)")
-        print(f"  eta_0 = {eta_0.value}, eta_1/eta_0 = {eta_1_weak_ratio}")
-        print(f"  Fault influence width: {FAULT_WIDTH * L_REF_KM:.0f} km")
-
     else:  # "anisotropic"
-        # Transverse isotropic: full anisotropic model with fault-normal director
+        # Transverse isotropic: anisotropic model with fault-normal director
         stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
-
-        director = fault_normal.sym
-
         stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
         stokes.constitutive_model.Parameters.shear_viscosity_1 = eta_1_expr
-        stokes.constitutive_model.Parameters.director = director
+        stokes.constitutive_model.Parameters.director = fault_normal.sym
 
-        print(f"Constitutive model: TransverseIsotropicFlowModel")
-        print(f"  eta_0 = {eta_0.value}, eta_1/eta_0 = {eta_1_weak_ratio}")
-        print(f"  Fault influence width: {FAULT_WIDTH * L_REF_KM:.0f} km")
-
-stokes.saddle_preconditioner = 1.0 / eta_0_nd
+stokes.saddle_preconditioner = 1.0 / uw.non_dimensionalise(eta_0)
 
 # %% [markdown]
 # ### Boundary Conditions
@@ -429,99 +399,31 @@ unit_down = geo.unit_down
 unit_east = geo.unit_east
 unit_north = geo.unit_north
 
-# Driving velocity with units
+# Driving velocity
 V0 = uw.expression(r"V_0", uw.quantity(1, "cm/yr"), "driving velocity")
 V0_nd = uw.non_dimensionalise(V0)
 
 # Penalty scales with viscosity for proper balance
-penalty_factor = 1.0e6
-Vel_penalty = penalty_factor * eta_0_nd
-
-print(f"V0 = {V0.value} → nondimensional: {V0_nd:.2e}")
-print(f"Penalty = {penalty_factor:.0e} × η₀(nd) = {Vel_penalty:.2e}")
+penalty = 1.0e6 * uw.non_dimensionalise(eta_0)
 
 # Bottom: free-slip (no normal flow)
-stokes.add_natural_bc(Vel_penalty * unit_down.dot(v.sym) * unit_down, "Bottom")
+stokes.add_natural_bc(penalty * unit_down.dot(v.sym) * unit_down, "Bottom")
 
 # East/West: driven shear (constrain only the east component)
-stokes.add_natural_bc(Vel_penalty * (unit_east.dot(v.sym) + V0_nd) * unit_east, "East")
-stokes.add_natural_bc(Vel_penalty * (unit_east.dot(v.sym) - V0_nd) * unit_east, "West")
+stokes.add_natural_bc(penalty * (unit_east.dot(v.sym) + V0_nd) * unit_east, "East")
+stokes.add_natural_bc(penalty * (unit_east.dot(v.sym) - V0_nd) * unit_east, "West")
 
 # North/South: free-slip (no N–S flow)
-stokes.add_natural_bc(Vel_penalty * unit_north.dot(v.sym) * unit_north, "North")
-stokes.add_natural_bc(Vel_penalty * unit_north.dot(v.sym) * unit_north, "South")
+stokes.add_natural_bc(penalty * unit_north.dot(v.sym) * unit_north, "North")
+stokes.add_natural_bc(penalty * unit_north.dot(v.sym) * unit_north, "South")
 
 # %% [markdown]
-# ## 8. Diagnostics and Solve
+# ## 8. Solve
 
 # %%
-# Diagnostic: check what the constitutive model actually evaluates to
-if RHEOLOGY != "isoviscous":
-    # Evaluate the composite eta expression at mesh nodes
-    eta_eval = uw.function.evaluate(eta_1_expr, mesh.X.coords)
-    print(f"=== Composite viscosity diagnostic ===")
-    print(f"  eta_1_expr symbolic: {eta_1_expr}")
-    print(f"  Evaluated: min={eta_eval.min():.6e}, max={eta_eval.max():.6e}")
-    print(f"  Expected (ratio=1): all values should be ~{eta_0_nd:.6e}")
-    print(f"  fault_weight range: [{fault_weight.data.min():.6f}, {fault_weight.data.max():.6f}]")
+stokes.solve(verbose=False, debug=False)
 
-# Check the constitutive model flux / c tensor
-from underworld3.function.expressions import _unwrap_for_compilation, UWexpression
-
-c = stokes.constitutive_model.c
-c_0000 = c[0, 0, 0, 0]
-print(f"\n=== C tensor diagnostic ===")
-print(f"  c[0,0,0,0] symbolic: {str(c_0000)[:200]}")
-
-# Find UWexpression atoms in the c tensor entry
-if hasattr(c_0000, 'atoms'):
-    uw_atoms = c_0000.atoms(UWexpression)
-    print(f"  UWexpression atoms ({len(uw_atoms)}):")
-    for a in uw_atoms:
-        print(f"    {a.name}: data={a.data}")
-
-# Unwrap and check
-try:
-    c_0000_uw = _unwrap_for_compilation(c_0000, keep_constants=False, return_self=False)
-    print(f"  c[0,0,0,0] unwrapped: {str(c_0000_uw)[:200]}")
-    if hasattr(c_0000_uw, 'atoms'):
-        remaining = c_0000_uw.atoms(UWexpression)
-        if remaining:
-            print(f"  WARNING: {len(remaining)} UWexpression atoms REMAIN after unwrap!")
-            for a in remaining:
-                print(f"    REMAINING: {a.name} data={a.data}")
-    # Evaluate numerically
-    c_0000_val = uw.function.evaluate(c_0000, mesh.X.coords[:1])
-    print(f"  c[0,0,0,0] evaluated at node 0: {float(c_0000_val.flatten()[0]):.6e}")
-    print(f"  Expected (isoviscous): 2.0")
-except Exception as e:
-    print(f"  c[0,0,0,0] diagnostic error: {e}")
-
-# Check F1 template
-F1_sym = stokes.F1.sym
-print(f"\n=== F1 diagnostic ===")
-if hasattr(F1_sym, 'atoms'):
-    f1_atoms = F1_sym.atoms(UWexpression)
-    print(f"  UWexpression atoms in F1 ({len(f1_atoms)}):")
-    for a in f1_atoms:
-        print(f"    {a.name}: data={a.data}")
-try:
-    F1_uw = _unwrap_for_compilation(F1_sym, keep_constants=False, return_self=False)
-    if hasattr(F1_uw, 'atoms'):
-        f1_remaining = F1_uw.atoms(UWexpression)
-        if f1_remaining:
-            print(f"  WARNING: {len(f1_remaining)} UWexpression atoms REMAIN in F1 after unwrap!")
-            for a in f1_remaining:
-                print(f"    REMAINING: {a.name} data={a.data}")
-        else:
-            print(f"  F1 unwrap: clean (no remaining UWexpression atoms)")
-except Exception as e:
-    print(f"  F1 unwrap error: {e}")
-
-# %%
-stokes.solve(verbose=False, debug=False, )
-
-print(f"\nSolution statistics:")
+print(f"Rheology: {RHEOLOGY}")
 print(f"  |v|_max = {np.abs(v.data).max():.4f}")
 print(f"  |p|_max = {np.abs(p.data).max():.4f}")
 
@@ -530,8 +432,6 @@ uw.timing.print_summary()
 
 # %%
 uw.pause("visualise when ready")
-
-# %%
 
 # %% [markdown]
 # ## 9. Visualization
@@ -560,12 +460,11 @@ if RHEOLOGY != "isoviscous":
 pl = pv.Plotter(window_size=(750, 750))
 
 pl.add_mesh(pvmesh, cmap="coolwarm", scalars="Vmag", style="wireframe")
-pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=1e14, color="Blue")
-# pl.add_arrows(pvmesh.points, pvmesh.point_data["N"], mag=1e4, color="Red", opacity=0.33)
+pl.add_mesh(pvmesh, cmap="coolwarm", scalars="fault_dist", style="surface", opacity=0.2)
+
+pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=2e13, color="Blue")
+pl.add_arrows(pvmesh.points, pvmesh.point_data["fault_n"], mag=1e4, color="Red", opacity=0.33)
 
 pl.show()
-
-# %%
-fault_normals_all
 
 # %%

@@ -1,6 +1,6 @@
 # %% [markdown]
 """
-# 🎓 Shear Band Notch Benchmark
+# Shear Band Notch Benchmark
 
 **PHYSICS:** solid_mechanics  
 **DIFFICULTY:** advanced  

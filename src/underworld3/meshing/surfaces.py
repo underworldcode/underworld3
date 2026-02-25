@@ -55,6 +55,48 @@ if TYPE_CHECKING:
     from underworld3.discretisation import Mesh, MeshVariable
 
 
+def _to_nd_length(value) -> float:
+    """Convert a length value to nondimensional mesh coordinates.
+
+    Accepts either a plain float (returned as-is) or a unit-aware quantity
+    (e.g., ``uw.quantity(10, "km")``) which is nondimensionalised via the
+    model's reference scales.
+
+    This helper is used by Surface methods that accept physical distances
+    (``h_near``, ``h_far``, ``width``, etc.) so that users can specify
+    distances in natural units rather than manually dividing by a reference
+    length.
+
+    Parameters
+    ----------
+    value : float or UWQuantity
+        A length value.  If it has a ``.magnitude`` attribute (Pint/UWQuantity),
+        it is nondimensionalised.  Plain numbers pass through unchanged.
+
+    Returns
+    -------
+    float
+        Nondimensional value in mesh coordinate space.
+    """
+    if isinstance(value, (int, float, np.floating)):
+        return float(value)
+
+    # UWQuantity or Pint quantity — nondimensionalise via the units system
+    try:
+        nd_val = uw.non_dimensionalise(value)
+        # non_dimensionalise may return UWQuantity or scalar — extract float
+        if hasattr(nd_val, "value"):
+            return float(nd_val.value)
+        if hasattr(nd_val, "magnitude"):
+            return float(nd_val.magnitude)
+        return float(nd_val)
+    except (TypeError, AttributeError):
+        # Fallback: try to extract raw magnitude
+        if hasattr(value, "magnitude"):
+            return float(value.magnitude)
+        return float(value)
+
+
 def _require_pyvista():
     """Check pyvista availability with helpful error message."""
     try:
@@ -920,10 +962,8 @@ class Surface:
             ...     profile="gaussian",
             ... )
         """
-        # Handle unit conversion for width using standard scaling system (ndim)
-        # This works with both legacy (get_coefficients) and modern patterns
-        if hasattr(width, 'magnitude'):
-            width = float(uw.scaling.non_dimensionalise(width))
+        # Accept quantities and convert to nondimensional mesh coordinates
+        width = _to_nd_length(width)
 
         # Use absolute distance - influence is symmetric about surface
         d = sympy.Abs(self.distance.sym[0])
@@ -1062,9 +1102,9 @@ class Surface:
 
     def refinement_metric(
         self,
-        h_near: float,
-        h_far: float,
-        width: float = None,
+        h_near,
+        h_far,
+        width=None,
         profile: str = "linear",
         name: str = None,
     ) -> "MeshVariable":
@@ -1076,15 +1116,17 @@ class Surface:
 
         Parameters
         ----------
-        h_near : float
+        h_near : float or quantity
             Target edge length near the surface (smaller = finer mesh).
-            Smaller values produce more refinement near the surface.
-        h_far : float
+            Accepts a plain float (in nondimensional mesh coordinates) or a
+            ``uw.quantity`` (e.g., ``uw.quantity(3, "km")``) which is
+            automatically nondimensionalised.
+        h_far : float or quantity
             Target edge length far from the surface (larger = coarser mesh).
-            Larger values allow coarser mesh far from the surface.
-        width : float, optional
+            Same unit handling as *h_near*.
+        width : float or quantity, optional
             Distance over which to transition from h_near to h_far.
-            If None, defaults to 2 * h_far.
+            If None, defaults to 2 * h_far.  Same unit handling as *h_near*.
         profile : str, optional
             Transition profile: "linear", "smoothstep", or "gaussian".
             Default is "linear".
@@ -1137,8 +1179,16 @@ class Surface:
         >>> fault = uw.meshing.Surface("fault", mesh, fault_points)
         >>> fault.discretize()
         >>>
-        >>> # 10x refinement near fault, maintain original density far away
+        >>> # With plain floats (nondimensional coordinates)
         >>> metric = fault.refinement_metric(h_near=0.005, h_far=0.05)
+        >>> mesh.adapt(metric)
+        >>>
+        >>> # With quantities (automatic nondimensionalisation)
+        >>> metric = fault.refinement_metric(
+        ...     h_near=uw.quantity(3, "km"),
+        ...     h_far=uw.quantity(30, "km"),
+        ...     width=uw.quantity(10, "km"),
+        ... )
         >>> mesh.adapt(metric)
         """
         if self.mesh is None:
@@ -1146,7 +1196,13 @@ class Surface:
                 f"Surface '{self.name}' must be attached to a mesh to create refinement metric"
             )
 
-        if width is None:
+        # Accept quantities and convert to nondimensional mesh coordinates
+        h_near = _to_nd_length(h_near)
+        h_far = _to_nd_length(h_far)
+
+        if width is not None:
+            width = _to_nd_length(width)
+        else:
             width = 2.0 * h_far
 
         # Create metric MeshVariable
