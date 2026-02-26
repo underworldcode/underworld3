@@ -25,6 +25,13 @@ cdef class KDTree:
 
     This class utilises `nanoflann` for kd-tree functionality.
 
+    .. note::
+        The vendored ``nanoflann.hpp`` is version **1.3.2** (2021).
+        Upstream nanoflann is at **1.9.0** as of 2026-02. Consider updating
+        for ~20% performance improvement on small point clouds and accumulated
+        bug fixes. See https://github.com/jlblancoc/nanoflann/releases
+        See planning file: underworld.md (Nice to Have, 2026-02-13)
+
     Parameters
     ----------
     points : array-like
