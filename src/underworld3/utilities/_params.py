@@ -492,7 +492,7 @@ class Params:
             lines.append("  " + ", ".join(legend))
 
         text = "\n".join(lines)
-        uw.pprint(0, text)
+        uw.pprint(text, clean_display=False)
         return text
 
     def to_dict(self) -> dict:
