@@ -458,14 +458,14 @@ class Params:
             else:
                 val_str = repr(value)
 
-            # Mark CLI / override sources
+            # Source tag appended to description, not value
             source = sources[name]
-            if source == 'cli':
-                val_str += "  *"
-            elif source == 'override':
-                val_str += "  ~"
-
             desc = default.description if isinstance(default, Param) and default.description else ""
+            if source == 'cli':
+                desc = f"{desc} (CLI)" if desc else "(CLI)"
+            elif source == 'override':
+                desc = f"{desc} (set)" if desc else "(set)"
+
             rows.append((display, val_str, desc))
 
         # Column widths
@@ -481,15 +481,6 @@ class Params:
                 line += f"  {desc}"
             lines.append(line)
         lines.append("-" * table_width)
-
-        # Legend if any non-default sources
-        if any(s != 'default' for s in sources.values()):
-            legend = []
-            if any(s == 'cli' for s in sources.values()):
-                legend.append("* = from CLI")
-            if any(s == 'override' for s in sources.values()):
-                legend.append("~ = overridden")
-            lines.append("  " + ", ".join(legend))
 
         text = "\n".join(lines)
         uw.pprint(text, clean_display=False)
