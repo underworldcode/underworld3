@@ -411,6 +411,90 @@ class Params:
 
         return "\n".join(lines)
 
+    def summary(self, title: str = "Parameters"):
+        """Print a compact table of current parameter settings.
+
+        Uses uw.pprint so only rank 0 prints in parallel.
+
+        Args:
+            title: Header line for the table.
+
+        Example output::
+
+            Parameters
+            -----------------------------------------------
+            eta_background   1e+24 Pa*s     background viscosity
+            eta_base         1e+21 Pa*s     base (weak) viscosity
+            convergence_rate 2.5 mm/yr      convergence velocity
+            problem_size     2              mesh resolution level
+            smoothing        3e-05
+            -----------------------------------------------
+        """
+        values = object.__getattribute__(self, '_values')
+        defaults = object.__getattribute__(self, '_defaults')
+        sources = object.__getattribute__(self, '_sources')
+
+        # Strip common prefix for display (e.g. "uw_" → cleaner names)
+        names = list(values.keys())
+        prefix = ""
+        if len(names) > 1:
+            candidate = names[0].split("_")[0] + "_"
+            if all(n.startswith(candidate) for n in names):
+                prefix = candidate
+
+        # Build rows: (display_name, value_str, description)
+        rows = []
+        for name, value in values.items():
+            display = name[len(prefix):] if prefix else name
+            default = defaults[name]
+
+            # Format value — use the Param's original units string if available
+            # (e.g. "Pa*s") rather than Pint's verbose form ("pascal * second")
+            if hasattr(value, '_pint_qty'):
+                units_str = default.units if isinstance(default, Param) and default.units else str(value.units)
+                val_str = f"{value.magnitude:g} {units_str}"
+            elif isinstance(value, float):
+                val_str = f"{value:g}"
+            else:
+                val_str = repr(value)
+
+            # Mark CLI / override sources
+            source = sources[name]
+            if source == 'cli':
+                val_str += "  *"
+            elif source == 'override':
+                val_str += "  ~"
+
+            desc = default.description if isinstance(default, Param) and default.description else ""
+            rows.append((display, val_str, desc))
+
+        # Column widths
+        w_name = max(len(r[0]) for r in rows)
+        w_val = max(len(r[1]) for r in rows)
+        table_width = max(w_name + w_val + 4 + max((len(r[2]) for r in rows), default=0),
+                          len(title) + 4)
+
+        lines = [title, "-" * table_width]
+        for display, val_str, desc in rows:
+            line = f"  {display:<{w_name}}  {val_str:<{w_val}}"
+            if desc:
+                line += f"  {desc}"
+            lines.append(line)
+        lines.append("-" * table_width)
+
+        # Legend if any non-default sources
+        if any(s != 'default' for s in sources.values()):
+            legend = []
+            if any(s == 'cli' for s in sources.values()):
+                legend.append("* = from CLI")
+            if any(s == 'override' for s in sources.values()):
+                legend.append("~ = overridden")
+            lines.append("  " + ", ".join(legend))
+
+        text = "\n".join(lines)
+        uw.pprint(0, text)
+        return text
+
     def to_dict(self) -> dict:
         """Return parameters as a dictionary."""
         return dict(object.__getattribute__(self, '_values'))
