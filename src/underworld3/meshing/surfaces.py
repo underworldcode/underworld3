@@ -648,8 +648,21 @@ class Surface:
 
     @property
     def pv_mesh(self):
-        """PyVista PolyData mesh (None if not discretized)."""
-        return self._pv_mesh
+        """PyVista PolyData mesh in the same coordinate space as ``mesh.X.coords``.
+
+        Returns a shallow copy whose points have been dimensionalised so that
+        they overlay correctly with ``vis.mesh_to_pv_mesh(mesh)``.  The
+        internal ``_pv_mesh`` stays in nondimensional model space so that
+        distance calculations remain consistent with the solver.
+
+        Returns None if the surface has not been discretized.
+        """
+        if self._pv_mesh is None:
+            return None
+        dim_coords = self._dimensionalise_coords(np.array(self._pv_mesh.points))
+        copy = self._pv_mesh.copy(deep=True)
+        copy.points = np.asarray(dim_coords, dtype=float)
+        return copy
 
     @property
     def is_discretized(self) -> bool:
