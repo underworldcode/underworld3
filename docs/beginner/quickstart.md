@@ -67,7 +67,7 @@ $$
 
 where $t(N_{ref})$ is the run-time for a reference number of processors, $N_{ref}$, and $t(N)$ is the run-time when $N$ processors are used. In the ideal case, $N$ additional processors should contribute all of its resources in solving the problem and reduce the compute time by a factor of $N$ relative to the reference run time. For example, using $2 N_{ref}$ processors will ideally halve the run-time resulting to a speed-up = 2.
 
-```{figure} media/UW3-StrongScalingSolvers.png
+```{figure} ../media/UW3-StrongScalingSolvers.png
 :name: fig-strong-scaling
 
 Strong parallel-scaling tests run on Australia's peak computing system, [GADI, at the National Computational Infrastructure](https://nci.org.au/our-systems/hpc-systems?ref=underworldcode.org). This is a typical High Performance Computing facility with large numbers of dedicated, identical CPUs and fast communication links.

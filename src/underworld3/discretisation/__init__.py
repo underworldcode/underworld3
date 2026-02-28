@@ -4,20 +4,13 @@ Mesh and variable discretisation classes.
 This module provides the core discretisation infrastructure for finite
 element computations in Underworld3.
 
-Classes
--------
-Mesh : class
-    Unstructured mesh with PETSc DMPlex backend. Supports various cell
-    types and coordinate systems.
-MeshVariable : class
-    Field variable defined on mesh (nodal or cell-based storage).
+**Mesh** -- Unstructured mesh with PETSc DMPlex backend.
 
-Functions
----------
-checkpoint_xdmf : function
-    Save mesh and variables to XDMF format for visualization.
-meshVariable_lookup_by_symbol : function
-    Find mesh variable by its symbolic representation.
+**MeshVariable** -- Field variable defined on mesh (nodal or cell-based storage).
+
+**checkpoint_xdmf** -- Save mesh and variables to XDMF format.
+
+**meshVariable_lookup_by_symbol** -- Find mesh variable by its symbol.
 
 See Also
 --------

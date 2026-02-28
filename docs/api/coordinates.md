@@ -1,10 +1,5 @@
 # Coordinate Systems
 
-```{eval-rst}
-.. automodule:: underworld3.coordinates
-   :no-members:
-```
-
 ## CoordinateSystem
 
 The base class for coordinate system handling on meshes.

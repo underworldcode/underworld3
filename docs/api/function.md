@@ -1,16 +1,11 @@
 # Function and Expressions
 
-```{eval-rst}
-.. automodule:: underworld3.function
-   :no-members:
-```
-
 ## Expressions
 
 ### UWexpression
 
 ```{eval-rst}
-.. autoclass:: underworld3.function.UWexpression
+.. autoclass:: underworld3.function.expressions.UWexpression
    :members:
    :show-inheritance:
 ```
@@ -73,12 +68,6 @@ Factory function for creating UWQuantity objects with units.
 
 ```{eval-rst}
 .. autofunction:: underworld3.function.global_evaluate
-```
-
-### evalf
-
-```{eval-rst}
-.. autofunction:: underworld3.function.evalf
 ```
 
 ### evaluate_gradient

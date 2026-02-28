@@ -72,14 +72,11 @@ def evaluate(
     evalf : bool, optional
         Force numerical evaluation via sympy evalf (default: False)
     mode : str, optional
-        Evaluation mode controlling accuracy vs speed tradeoff:
-        - "default": Accurate evaluation. Projection for derivatives (O(h²)),
-          direct calculation otherwise. DMInterpolation inside mesh, RBF outside.
-        - "fast": Quick visualization mode. Clement gradient recovery for
-          derivatives (O(h), no solve), RBF interpolation everywhere.
-        - "projection": Always use L2 projection (even without derivatives),
-          DMInterpolation inside mesh, RBF outside.
-        Default: "default"
+        Evaluation mode controlling accuracy vs speed tradeoff.
+        Options: ``"default"`` (accurate, projection for derivatives),
+        ``"fast"`` (Clement gradient, RBF everywhere),
+        ``"projection"`` (always L2 projection).
+        Default: ``"default"``
     data_layout : callable, optional
         Data layout specification (default: None)
     check_extrapolated : bool, optional
@@ -95,10 +92,9 @@ def evaluate(
     Returns
     -------
     UWQuantity, UnitAwareArray, or ndarray
-        - If non-dimensional scaling is active: plain ndarray (non-dimensional)
-        - If expression has units and result is scalar: UWQuantity
-        - If expression has units and result is array: UnitAwareArray
-        - If expression has no units: plain ndarray (as before)
+        If non-dimensional scaling is active, returns plain ndarray.
+        If expression has units, returns UWQuantity (scalar) or UnitAwareArray.
+        Otherwise returns plain ndarray.
 
     Notes
     -----
@@ -402,14 +398,11 @@ def global_evaluate(
     evalf : bool, optional
         Force numerical evaluation via sympy evalf (default: False)
     mode : str, optional
-        Evaluation mode controlling accuracy vs speed tradeoff:
-        - "default": Accurate evaluation. Projection for derivatives (O(h²)),
-          direct calculation otherwise. DMInterpolation inside mesh, RBF outside.
-        - "fast": Quick visualization mode. Clement gradient recovery for
-          derivatives (O(h), no solve), RBF interpolation everywhere.
-        - "projection": Always use L2 projection (even without derivatives),
-          DMInterpolation inside mesh, RBF outside.
-        Default: "default"
+        Evaluation mode controlling accuracy vs speed tradeoff.
+        Options: ``"default"`` (accurate, projection for derivatives),
+        ``"fast"`` (Clement gradient, RBF everywhere),
+        ``"projection"`` (always L2 projection).
+        Default: ``"default"``
     data_layout : callable, optional
         Data layout specification (default: None)
     check_extrapolated : bool, optional
@@ -425,8 +418,8 @@ def global_evaluate(
     Returns
     -------
     UWQuantity, UnitAwareArray, or ndarray
-        - If non-dimensional scaling is active: plain ndarray (non-dimensional)
-        - Otherwise: result with appropriate unit tracking
+        If non-dimensional scaling is active, returns plain ndarray.
+        Otherwise returns result with appropriate unit tracking.
 
     Notes
     -----

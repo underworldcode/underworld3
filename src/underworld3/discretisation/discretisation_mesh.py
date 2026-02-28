@@ -1869,11 +1869,11 @@ class Mesh(Stateful, uw_object):
         index: Optional[int] = 0,
         unique_id: Optional[bool] = False,
     ):
-        """Write data in a format that can be restored for restarting the simulation
+        """Write data in a format that can be restored for restarting the simulation.
+
         The difference between this and the visualisation is 1) the parallel section needs
         to be stored to reload the data correctly, and 2) the visualisation information (vertex form of fields)
-        is not stored. This routines uses dmplex *VectorView and *VectorLoad functionality
-
+        is not stored. This routine uses dmplex VectorView and VectorLoad functionality.
         """
 
         # The mesh checkpoint is the same as the one required for visualisation

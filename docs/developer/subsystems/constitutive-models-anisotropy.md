@@ -45,7 +45,7 @@ In `underworld` tensor rotation is provided for rank 2 and rank 4 tensors by `uw
 
 If we apply constraints to the deformation, we expect to reduce the number of independent material constants. Incompressibility should reduce the number of *independent* material constants. In an isotropic medium (or a medium with cubic symmetry), incompressibility eliminates the one volumetric material modulus (e.g. the bulk modulus). In general anisotropic media, it is not the case that changes in pressure result in uniform expansion or contraction, and an incompressibility constraint reduces the number of *independent* material constants. In the transversely isotropic case, there are five independent materia constants in general, reducing to four when the material is incompressible. 
 
-It is not a given that the stiffness matrix is trivial to construct / meaningful for incompressible anisotropy and there is some discussion here: https://rastgaragah.wordpress.com/2013/03/12/incompressibility-of-linearly-elastic-material/ (identifies the issue) and this is explained in more detail by {cite}`destradeIncompressibleLimitLinear2002`
+It is not a given that the stiffness matrix is trivial to construct / meaningful for incompressible anisotropy and there is some discussion here: https://rastgaragah.wordpress.com/2013/03/12/incompressibility-of-linearly-elastic-material/ (identifies the issue) and this is explained in more detail by Destrade et al. (2002)
 
 
 ### Example
@@ -192,7 +192,7 @@ display(C_IJm_MM_iso)
 
 ## Han & Wahr, 1997 (full transverse isotropic tensor)
 
-In the {cite}`hanAnalysisAnisotropicMantle1997` paper, the expression for incompressible transverse-isotropy is as follows
+In the Han & Wahr (1997) paper, the expression for incompressible transverse-isotropy is as follows
 
 $$\left[\begin{matrix}2 \eta_{0} + \mu_{0} & \mu_{0} & 0 & 0 & 0 & 0\\\mu_{0} & 2 \eta_{0} + \mu_{0} & 0 & 0 & 0 & 0\\0 & 0 & - 2 \Delta\eta + 2 \eta_{0} + \mu_{1} & 0 & 0 & 0\\0 & 0 & 0 & - 2 \Delta\eta + 2 \eta_{0} & 0 & 0\\0 & 0 & 0 & 0 & - 2 \Delta\eta + 2 \eta_{0} & 0\\0 & 0 & 0 & 0 & 0 & 2 \eta_{0}\end{matrix}\right]$$
 
@@ -249,7 +249,7 @@ display(C_IJm_HW_R_s2)
 
 ## Orthotropic medium
 
-**Note** all the caveats above regarding incompressibility. The {cite}`browaeysDecompositionElasticTensor2004` elastic tensors have a bulk modulus term, so it is not completely obvious how to square the assumptions in the first two implementations with this set. 
+**Note** all the caveats above regarding incompressibility. The Browaeys & Chevrot (2004) elastic tensors have a bulk modulus term, so it is not completely obvious how to square the assumptions in the first two implementations with this set. 
 
 The full formulation should look like this:
 
