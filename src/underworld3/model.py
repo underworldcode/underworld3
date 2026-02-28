@@ -124,7 +124,7 @@ class Model(PintNativeModelMixin, BaseModel):
         ----------
         name : str, optional
             Human-readable name for this model instance
-        \*\*kwargs : dict
+        **kwargs : dict
             Additional arguments for Pydantic BaseModel
         """
         # Handle name generation before calling super().__init__
@@ -540,7 +540,7 @@ class Model(PintNativeModelMixin, BaseModel):
             Parameter path (e.g., 'material.viscosity', 'solver.tolerance')
         ptype : ParameterType, optional
             Parameter type for validation (not used yet)
-        \*\*kwargs : dict
+        **kwargs : dict
             Additional arguments
         """
         # TODO: Implement when parameter system is ready
@@ -592,7 +592,7 @@ class Model(PintNativeModelMixin, BaseModel):
             [0-1] space while user-facing values remain in physical units.
             Set to False for expert mode (dimensional units only, no scaling).
             Disabling this may cause numerical conditioning issues.
-        \*\*quantities : dict
+        **quantities : dict
             Named reference quantities using Pint units or UWQuantity objects,
             e.g. ``domain_depth=uw.quantity(2900, "km")``.
 
