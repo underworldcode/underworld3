@@ -1851,6 +1851,7 @@ class Mesh(Stateful, uw_object):
         ### Empty meshVars will save just the mesh
         if meshVars != None:
             for var in meshVars:
+                var._sync_lvec_to_gvec()
                 viewer(var._gvec)
 
         viewer.destroy()
@@ -1903,6 +1904,7 @@ class Mesh(Stateful, uw_object):
 
         if meshVars is not None:
             for var in meshVars:
+                var._sync_lvec_to_gvec()
                 iset, subdm = self.dm.createSubDM(var.field_id)
                 subdm.setName(var.clean_name)
                 self.dm.globalVectorView(viewer, subdm, var._gvec)
@@ -1912,6 +1914,7 @@ class Mesh(Stateful, uw_object):
         if swarmVars is not None:
             for svar in swarmVars:
                 var = svar._meshVar
+                var._sync_lvec_to_gvec()
                 iset, subdm = self.dm.createSubDM(var.field_id)
                 subdm.setName(var.clean_name)
                 self.dm.globalVectorView(viewer, subdm, var._gvec)

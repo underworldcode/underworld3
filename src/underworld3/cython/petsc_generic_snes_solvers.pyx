@@ -1669,9 +1669,11 @@ class SNES_Scalar(SolverBaseClass):
         self.u.vec.array[:] = lvec.array[:]
         self.mesh._stale_lvec = True
 
-        # Invalidate cached data views - PETSc buffer may have changed
-        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        # Sync _gvec so downstream consumers (write, stats) see the result
         target_var = getattr(self.u, "_base_var", self.u)
+        target_var._sync_lvec_to_gvec()
+
+        # Invalidate cached data views - PETSc buffer may have changed
         if hasattr(target_var, "_canonical_data"):
             target_var._canonical_data = None
 
@@ -2438,9 +2440,11 @@ class SNES_Vector(SolverBaseClass):
         self.u.vec.array[:] = lvec.array[:]
         self.mesh._stale_lvec = True
 
-        # Invalidate cached data views - PETSc buffer may have changed
-        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        # Sync _gvec so downstream consumers (write, stats) see the result
         target_var = getattr(self.u, "_base_var", self.u)
+        target_var._sync_lvec_to_gvec()
+
+        # Invalidate cached data views - PETSc buffer may have changed
         if hasattr(target_var, "_canonical_data"):
             target_var._canonical_data = None
 
@@ -3842,6 +3846,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
         self.mesh._stale_lvec = True
 
+        # Sync _gvec so downstream consumers (write, stats) see the result
+        for name, var in self.fields.items():
+            target_var = getattr(var, "_base_var", var)
+            target_var._sync_lvec_to_gvec()
+            if hasattr(target_var, "_canonical_data"):
+                target_var._canonical_data = None
 
         self.dm.restoreGlobalVec(clvec)
         self.dm.restoreGlobalVec(gvec)
