@@ -1192,7 +1192,13 @@ class _BaseMeshVariable(Stateful, uw_object):
 
             mesh_kdt = uw.kdtree.KDTree(X)
 
-            return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, p, verbose)
+            # Strip pint units from query coords — the KDTree was built
+            # from plain HDF5 floats (same physical units, no metadata).
+            query_coords = self.coords
+            if hasattr(query_coords, "magnitude"):
+                query_coords = query_coords.magnitude
+
+            return mesh_kdt.rbf_interpolator_local(query_coords, D, nnn, p, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
             mesh = mesh_variable.mesh
