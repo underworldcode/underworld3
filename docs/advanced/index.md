@@ -74,4 +74,5 @@ curved-boundary-conditions
 mesh-adaptation
 troubleshooting
 api-patterns
+SWARM-INTEGRATION-STATISTICS
 ```

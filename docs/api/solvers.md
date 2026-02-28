@@ -1,10 +1,5 @@
 # Solvers
 
-```{eval-rst}
-.. automodule:: underworld3.systems.solvers
-   :no-members:
-```
-
 ## Stokes Flow
 
 ### SNES_Stokes

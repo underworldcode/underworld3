@@ -574,8 +574,7 @@ def test_mathematical_operations():
 ## Planned Enhancements
 
 ### 1. Operator Overloading
-```python
-
+```text
 # Future possibilities
 laplacian = velocity @ nabla**2  # Operator syntax
 curl = nabla × velocity          # Cross product notation

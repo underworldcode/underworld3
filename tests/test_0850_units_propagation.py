@@ -198,9 +198,6 @@ class TestUnitsPropagationRules:
         units_str = str(units).replace(" ", "")  # Remove spaces for comparison
         assert "meter" in units_str
 
-    @pytest.mark.xfail(
-        reason="Rayleigh number may not simplify to exact dimensionless due to Pint representation"
-    )
     def test_rayleigh_number_is_dimensionless(self):
         """Test that Rayleigh number calculation yields dimensionless number."""
         uw.reset_default_model()

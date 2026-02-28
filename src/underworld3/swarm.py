@@ -6,15 +6,12 @@ tracking material properties through deformation. Swarms enable Lagrangian
 representations of material history, composition, and other quantities
 that move with the flow.
 
-Key Components
---------------
-SwarmType : enum
-    PETSc swarm type specification (BASIC or PIC).
-SwarmVariable : class
-    Variable storing values at particle locations with mesh-based proxy
-    for use in symbolic expressions.
-IndexSwarmVariable : class
-    Integer-valued swarm variable for material indexing.
+**SwarmType** -- PETSc swarm type specification (BASIC or PIC).
+
+**SwarmVariable** -- Variable storing values at particle locations with
+mesh-based proxy for use in symbolic expressions.
+
+**IndexSwarmVariable** -- Integer-valued swarm variable for material indexing.
 
 The swarm module integrates with PETSc's DMSwarm for parallel particle
 management and provides automatic population, advection, and repopulation
@@ -3047,14 +3044,17 @@ class Swarm(Stateful, uw_object):
             If False (default), migration is deferred until context exit.
             If True, migration is completely disabled.
 
-        Usage:
-            # Defer migration until end (default)
+        Examples
+        --------
+        Defer migration until end (default)::
+
             with swarm.migration_control():
                 swarm.points[mask1] += delta1
                 swarm.points[mask2] *= scale
                 # Migration happens HERE on exit
 
-            # Completely disable migration
+        Completely disable migration::
+
             with swarm.migration_control(disable=True):
                 # Operations where migration should never happen
                 # No migration on exit

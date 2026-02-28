@@ -1,10 +1,5 @@
 # Constitutive Models
 
-```{eval-rst}
-.. automodule:: underworld3.constitutive_models
-   :no-members:
-```
-
 ## Viscous Flow Models
 
 ### ViscousFlowModel

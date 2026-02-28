@@ -559,60 +559,45 @@ def SegmentofAnnulus(
     Generates a segment of an annulus using Gmsh. This function creates a 2D mesh of an annular segment defined by outer and inner radii,
     and the extent of the angle. The mesh can be customized with various parameters like cell size, element degree, and verbosity.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     radiusOuter : float, optional
         The outer radius of the annular segment. Default is 1.0.
-
     radiusInner : float, optional
         The inner radius of the annular segment. Default is 0.547.
-
     angleExtent : float, optional
         The angular extent of the segment in degrees. Default is 45.
-
     cellSize : float, optional
-        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
-
+        The target size for the mesh elements. Default is 0.1.
     centre : bool, optional
-        If True, the segment will be centered at the origin. If False, the segment is positioned based on the radii. Default is False.
-
+        If True, the segment will be centered at the origin. Default is False.
     degree : int, optional
-        The polynomial degree of the finite elements used in the mesh. Default is 1.
-
+        The polynomial degree of the finite elements. Default is 1.
     qdegree : int, optional
-        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
-
+        The quadrature degree for integration. Default is 2.
     filename : str, optional
-        The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
-
+        The name of the file where the mesh will be saved. Default is None.
     refinement : optional
-        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
-
+        Refinement level for the mesh. Default is None.
     gmsh_verbosity : int, optional
-        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
-
+        Gmsh output verbosity (0=quiet). Default is 0.
     verbose : bool, optional
-        If True, the function prints additional information during execution. Default is False.
+        If True, print additional information. Default is False.
 
-    Returns:
-    --------
-    None
-        The function generates and saves a mesh file according to the specified parameters.
+    Returns
+    -------
+    Mesh
+        The generated annular segment mesh.
 
-    Example:
+    Examples
     --------
-    mesh = uw.meshing.SegmentofAnnulus(
-        radiusOuter=2.0,
-        radiusInner=1.0,
-        angleExtent=90.0,
-        cellSize=0.05,
-        centre=True,
-        degree=2,
-        qdegree=3,
-        filename="custom_annulus_segment.msh",
-        gmsh_verbosity=1,
-        verbose=True
-    )
+    >>> mesh = uw.meshing.SegmentofAnnulus(
+    ...     radiusOuter=2.0,
+    ...     radiusInner=1.0,
+    ...     angleExtent=90.0,
+    ...     cellSize=0.05,
+    ...     centre=True,
+    ... )
     """
     # Convert unit-aware quantities to non-dimensional units
     radiusOuter = uw.scaling.non_dimensionalise(radiusOuter)

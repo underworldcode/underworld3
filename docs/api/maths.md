@@ -1,11 +1,5 @@
 # Mathematical Operations
 
-```{eval-rst}
-.. automodule:: underworld3.maths
-   :members:
-   :show-inheritance:
-```
-
 ## Integral Operations
 
 ```{eval-rst}

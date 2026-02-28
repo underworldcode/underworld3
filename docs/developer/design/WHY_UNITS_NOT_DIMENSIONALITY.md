@@ -20,7 +20,7 @@
 - **Dimensionality**: ⚠️ Abstract physics concept ([length], [time], [mass])
 
 ### What the API Shows:
-```python
+```text
 # User-friendly - clear what's happening
 var.units = "m"
 var.to("km")
@@ -345,7 +345,7 @@ from underworld3.utilities.units_mixin import UnitAwareMixin
 - What does that even mean?
 
 ### 3. API Clarity ✅
-```python
+```text
 # Clear and intuitive
 var.units = "m"
 var.to("km")

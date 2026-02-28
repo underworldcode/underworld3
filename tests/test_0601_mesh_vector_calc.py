@@ -146,8 +146,6 @@ def test_mesh_variables_with_units():
 #     assert mesh.vector.to_vector(v1.sym) == v1.ijk
 
 
-# This is to be lit up after we properly deprecate .ijk
-@pytest.mark.xfail(raises=AttributeError)
 def test_no_ijk():
     # This object should not exist - Attribute error
     v13.ijk

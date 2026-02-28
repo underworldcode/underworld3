@@ -7,10 +7,21 @@ Tests:
 3. Unit conversions
 4. .data property (non-dimensional values)
 5. SymPy compatibility
+
+NOTE: These tests import from `underworld3.function.quantities_simplified`
+which was planned but never implemented. The existing quantities module is
+`underworld3.function.quantities`. This entire file is skipped until the
+simplified API is implemented or these tests are rewritten against the
+existing quantities module.
 """
 
 import pytest
 import numpy as np
+
+pytestmark = pytest.mark.skip(
+    reason="Tests import quantities_simplified module which does not exist. "
+    "Rewrite against underworld3.function.quantities or implement the module."
+)
 
 
 class TestSimplifiedQuantityBasics:

@@ -133,18 +133,16 @@ class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
 
 class UnderworldFunction(sympy.Function):
     """
-    This is a metaclass, so it returns programmatic class objects rather
-    than instances. This basically follows the pattern of the `sympy.Function`
-    metaclass, with two key differences:
-    1. We set `UnderworldAppliedFunction` as the base class. This is really just a
-       dummy class (see its definition) which allows us to do calls such
-       as `isinstance(someobj, UnderworldAppliedFunction)` to test if a `sympy`
-       object is one we've defined.
-    2. We grab a weakref of the owning meshvariable onto the *class* itself. Note
-       that it's important that it's recorded onto the class (instead of the instance),
-       as Sympy internally sometimes uses calls such as `type(obj)(obj.args)` to
-       replace objects with cloned instances, and therefore 'extra' info must be
-       recorded onto the class so that the clones are _complete_.
+    Metaclass that returns programmatic class objects rather than instances.
+
+    This basically follows the pattern of the ``sympy.Function``
+    metaclass, with two key differences. First, we set
+    ``UnderworldAppliedFunction`` as the base class, which allows
+    ``isinstance(someobj, UnderworldAppliedFunction)`` checks.
+    Second, we grab a weakref of the owning meshvariable onto the
+    class itself (not the instance), because SymPy internally uses
+    ``type(obj)(obj.args)`` to clone instances and extra info must
+    be on the class so that clones are complete.
 
     Consider the calling pattern
 
@@ -157,16 +155,16 @@ class UnderworldFunction(sympy.Function):
 
     Parameters
     ----------
-    name:
+    name : str
         The name of the function.
-    meshvar:
+    meshvar : MeshVariable
         The mesh variable corresponding to this function.
-    vtype:
-        The variable type (scalar,vector,etc).
-    component:
+    vtype : VarType
+        The variable type (scalar, vector, etc).
+    component : int or tuple
         For vector functions, this is the component of the vector.
-        For example, component `1` might correspond to `v_y`.
-        For tensors, the component is a tuple
+        For example, component ``1`` might correspond to ``v_y``.
+        For tensors, the component is a tuple.
         For scalars, this value is ignored.
     """
     def __new__(cls,
