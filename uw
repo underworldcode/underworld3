@@ -631,9 +631,17 @@ COMMANDS
   Development:
     shell               Interactive pixi shell
     jupyter [args]      Run jupyter (add --worktree NAME to open a worktree)
-    worktrees           List available git worktrees
     format              Run black
     type-check          Run mypy
+
+  Worktrees:
+    worktree create <name> [prefix]   Create worktree (symlinks .pixi + PETSc)
+    worktree shell <name>             Start shell in worktree directory
+    worktree list                     List worktrees with status
+    worktree remove <name>            Remove worktree and branch
+
+    Worktrees share the main repo's pixi environment and PETSc build.
+    Once inside a worktree shell, ./uw build installs from that source.
 
   Diagnostics:
     doctor              Check for configuration issues (PETSc mismatch, etc.)
@@ -768,6 +776,228 @@ run_update() {
         echo -e "${YELLOW}Pull failed - check errors above${NC}"
         exit 1
     fi
+}
+
+# ── Worktree management ──────────────────────────────────────────────
+#
+# Worktrees share the main repo's pixi environment and PETSc build
+# via symlinks.  `./uw build` from inside a worktree installs the
+# worktree's source into the shared env.
+
+WORKTREE_ROOT="$SCRIPT_DIR/.claude/worktrees"
+
+# Resolve the main repo root.  If we ARE a worktree, follow the chain
+# back to the principal working tree.
+get_main_repo() {
+    git -C "$SCRIPT_DIR" worktree list --porcelain 2>/dev/null \
+        | head -1 | sed 's/^worktree //'
+}
+
+worktree_create() {
+    local name="$1"
+    local branch_prefix="${2:-feature}"   # feature, bugfix, docs, …
+
+    if [ -z "$name" ]; then
+        echo "Usage: ./uw worktree create <name> [branch-prefix]"
+        echo ""
+        echo "  branch-prefix: feature (default), bugfix, docs, etc."
+        echo ""
+        echo "Examples:"
+        echo "  ./uw worktree create viscoelasticity"
+        echo "  ./uw worktree create mesh-fix bugfix"
+        exit 1
+    fi
+
+    local main_repo=$(get_main_repo)
+    local wt_path="$main_repo/.claude/worktrees/$name"
+    local branch_name="${branch_prefix}/${name}"
+
+    if [ -d "$wt_path" ]; then
+        echo "Worktree '$name' already exists at $wt_path"
+        exit 1
+    fi
+
+    echo -e "${BOLD}Creating worktree:${NC} $name"
+    echo "  Path:   $wt_path"
+    echo "  Branch: $branch_name"
+    echo ""
+
+    # 1. Create the worktree
+    mkdir -p "$main_repo/.claude/worktrees"
+    git -C "$main_repo" worktree add "$wt_path" -b "worktree-$name" 2>/dev/null || {
+        # Branch may already exist
+        git -C "$main_repo" worktree add "$wt_path" "worktree-$name" 2>/dev/null || {
+            echo -e "${YELLOW}Failed to create worktree${NC}"
+            exit 1
+        }
+    }
+
+    # 2. Reset to development (worktrees branch from HEAD which may be main)
+    echo "  Resetting to origin/development..."
+    git -C "$wt_path" fetch origin
+    git -C "$wt_path" reset --hard origin/development
+
+    # 3. Rename branch to follow convention
+    git -C "$wt_path" branch -m "worktree-$name" "$branch_name" 2>/dev/null || true
+
+    # 4. Symlink shared resources
+    echo "  Linking shared environment..."
+
+    # .pixi → main repo's .pixi (shared conda/pip packages)
+    if [ -d "$main_repo/.pixi" ]; then
+        rm -rf "$wt_path/.pixi"
+        ln -s "$main_repo/.pixi" "$wt_path/.pixi"
+        echo -e "    ${GREEN}✓${NC} .pixi → main repo"
+    fi
+
+    # petsc-custom/petsc → main repo's PETSc build (read-only, not relocatable)
+    if [ -d "$main_repo/petsc-custom/petsc" ]; then
+        ln -sf "$main_repo/petsc-custom/petsc" "$wt_path/petsc-custom/petsc"
+        echo -e "    ${GREEN}✓${NC} petsc-custom/petsc → main repo"
+    fi
+
+    # .pixi-env — copy so ./uw knows which environment to use
+    if [ -f "$main_repo/.pixi-env" ]; then
+        cp "$main_repo/.pixi-env" "$wt_path/.pixi-env"
+        echo -e "    ${GREEN}✓${NC} .pixi-env copied ($(cat "$main_repo/.pixi-env"))"
+    fi
+
+    echo ""
+    echo -e "${GREEN}${BOLD}Worktree ready!${NC}"
+    echo ""
+    echo "  Start working:  ./uw worktree shell $name"
+    echo "  Build:           cd $wt_path && ./uw build"
+    echo "  Remove:          ./uw worktree remove $name"
+}
+
+worktree_shell() {
+    local name="$1"
+
+    if [ -z "$name" ]; then
+        echo "Usage: ./uw worktree shell <name>"
+        echo ""
+        worktree_list
+        exit 1
+    fi
+
+    local main_repo=$(get_main_repo)
+    local wt_path="$main_repo/.claude/worktrees/$name"
+
+    if [ ! -d "$wt_path" ]; then
+        echo "Worktree '$name' not found."
+        echo ""
+        worktree_list
+        exit 1
+    fi
+
+    local branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    local env=$(cat "$wt_path/.pixi-env" 2>/dev/null || get_env)
+
+    echo -e "${BOLD}Entering worktree:${NC} $name"
+    echo "  Branch: $branch"
+    echo "  Env:    $env"
+    echo "  Path:   $wt_path"
+    echo ""
+    echo "  ./uw build   — build from this worktree's source"
+    echo "  ./uw test    — run tests"
+    echo "  ./uw shell   — pixi shell (if you need raw access)"
+    echo "  exit         — leave worktree shell"
+    echo ""
+
+    # Start a pixi shell cd'd into the worktree
+    cd "$wt_path"
+    exec $PIXI shell -e "$env"
+}
+
+worktree_list() {
+    local main_repo=$(get_main_repo)
+    local wt_root="$main_repo/.claude/worktrees"
+
+    echo -e "${BOLD}Worktrees:${NC}"
+    echo ""
+
+    if [ ! -d "$wt_root" ]; then
+        echo "  (none)"
+        echo ""
+        echo "Create one:  ./uw worktree create <name>"
+        return
+    fi
+
+    local found=0
+    for d in "$wt_root"/*/; do
+        [ ! -d "$d" ] && continue
+        local wt_name=$(basename "$d")
+
+        if [ -f "$d/.git" ]; then
+            local branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+            local status=$(git -C "$d" status --short 2>/dev/null | wc -l | tr -d ' ')
+            local linked=$( [ -L "$d/.pixi" ] && echo "linked" || echo "standalone" )
+            local dirty=""
+            [ "$status" -gt 0 ] && dirty="  ${YELLOW}($status modified)${NC}"
+
+            echo -e "  ${GREEN}${wt_name}${NC}  [$branch]  ($linked)$dirty"
+            echo "    $d"
+        else
+            echo -e "  ${YELLOW}${wt_name}${NC}  (not a git worktree)"
+        fi
+        found=1
+    done
+
+    [ "$found" -eq 0 ] && echo "  (none)"
+    echo ""
+    echo "Commands:"
+    echo "  ./uw worktree create <name>   Create a new worktree"
+    echo "  ./uw worktree shell <name>    Start a shell in the worktree"
+    echo "  ./uw worktree remove <name>   Remove a worktree"
+}
+
+worktree_remove() {
+    local name="$1"
+
+    if [ -z "$name" ]; then
+        echo "Usage: ./uw worktree remove <name>"
+        echo ""
+        worktree_list
+        exit 1
+    fi
+
+    local main_repo=$(get_main_repo)
+    local wt_path="$main_repo/.claude/worktrees/$name"
+
+    if [ ! -d "$wt_path" ]; then
+        echo "Worktree '$name' not found."
+        exit 1
+    fi
+
+    local branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    local status=$(git -C "$wt_path" status --short 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ "$status" -gt 0 ]; then
+        echo -e "${YELLOW}Worktree has $status uncommitted change(s):${NC}"
+        git -C "$wt_path" status --short
+        echo ""
+        read -p "Remove anyway? [y/N]: " confirm
+        [ "$confirm" != "y" ] && [ "$confirm" != "Y" ] && exit 1
+    fi
+
+    echo "Removing worktree '$name'..."
+
+    # Must not be cd'd into the worktree
+    cd "$main_repo"
+
+    git worktree remove "$wt_path" --force 2>/dev/null || {
+        echo -e "${YELLOW}git worktree remove failed — removing manually${NC}"
+        rm -rf "$wt_path"
+        git worktree prune
+    }
+
+    # Delete the branch (use -D because it's merged to development, not main)
+    if [ -n "$branch" ] && [ "$branch" != "HEAD" ] && [ "$branch" != "development" ]; then
+        git branch -D "$branch" 2>/dev/null && \
+            echo -e "  ${GREEN}✓${NC} Deleted branch $branch" || true
+    fi
+
+    echo -e "${GREEN}✓${NC} Worktree '$name' removed"
 }
 
 # Check if an environment is installed
@@ -929,31 +1159,27 @@ case "${1:-}" in
             exec $PIXI run -e "$(get_env)" jupyter "${JUPYTER_ARGS[@]}"
         fi
         ;;
+    worktree)
+        shift
+        case "${1:-list}" in
+            create)  shift; worktree_create "$@" ;;
+            shell)   shift; worktree_shell "$@" ;;
+            list)    worktree_list ;;
+            remove)  shift; worktree_remove "$@" ;;
+            *)
+                echo "Usage: ./uw worktree <command>"
+                echo ""
+                echo "Commands:"
+                echo "  create <name> [prefix]   Create a new worktree"
+                echo "  shell <name>             Start a shell in the worktree"
+                echo "  list                     List worktrees (default)"
+                echo "  remove <name>            Remove a worktree"
+                ;;
+        esac
+        ;;
     worktrees)
-        echo "Git worktrees (.claude/worktrees/):"
-        echo ""
-        if [ -d "$SCRIPT_DIR/.claude/worktrees" ]; then
-            found=0
-            for d in "$SCRIPT_DIR/.claude/worktrees"/*/; do
-                [ ! -d "$d" ] && continue
-                wt_name=$(basename "$d")
-                # Check if it's a real git worktree (has .git file)
-                if [ -f "$d/.git" ]; then
-                    branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-                    echo -e "  ${GREEN}${wt_name}${NC}  (branch: $branch)"
-                    echo "    $d"
-                else
-                    echo -e "  ${YELLOW}${wt_name}${NC}  (not a git worktree)"
-                    echo "    $d"
-                fi
-                found=1
-            done
-            [ "$found" -eq 0 ] && echo "  (no worktrees found)"
-        else
-            echo "  (no worktrees directory)"
-        fi
-        echo ""
-        echo "Usage: ./uw jupyter lab --worktree <name>"
+        # Backward compat alias
+        worktree_list
         ;;
     build)
         run_build

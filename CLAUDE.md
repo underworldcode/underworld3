@@ -155,47 +155,48 @@ This keeps feature branches independent and makes cross-pollination of fixes str
 **Use a worktree for any multi-file change** (docs cleanup, refactoring, features).
 Multiple Claude sessions sharing one working directory will overwrite each other's work.
 
-#### Creating a worktree — FOLLOW THESE STEPS EXACTLY
+Worktrees share the main repo's pixi environment and PETSc build via symlinks —
+there is one set of dependencies, not one per worktree. `./uw build` from inside
+a worktree installs that worktree's source into the shared environment.
+
+**Full documentation**: `docs/developer/guides/branching-strategy.md` (Git Worktrees section)
+
+#### Creating and using a worktree
 
 ```bash
-# 1. Use EnterWorktree tool to create .claude/worktrees/<name>
-#    (This branches from HEAD, which may be main — that's wrong for us)
+# Create — resets to development, sets up symlinks, names the branch
+./uw worktree create <name>              # → feature/<name>
+./uw worktree create <name> bugfix       # → bugfix/<name>
 
-# 2. ALWAYS fetch and reset to development immediately after creation:
-git fetch origin
-git reset --hard origin/development
+# Work — drops you into a shell cd'd to the worktree
+./uw worktree shell <name>
+./uw build           # builds from THIS source into the shared env
+./uw test            # runs tests
+exit                 # leave
 
-# 3. Rename the auto-generated branch to follow our convention:
-git branch -m worktree-<name> feature/<name>
-#    (or bugfix/<name>, docs/<name>, etc. as appropriate)
-```
-
-**Why step 2 is mandatory**: EnterWorktree branches from whatever HEAD is in the
-main repo (often `main`). Our work branches from `development`. Skipping the reset
-causes massive merge conflicts later. Every Claude session must do this.
-
-#### Working in the worktree
-
-```bash
-# The user can open notebooks in the worktree via:
-./uw jupyter lab --worktree <name>
-
-# List available worktrees:
-./uw worktrees
+# List worktrees with branch and status
+./uw worktree list
 
 # Bring files from other branches without switching:
 git checkout origin/<branch> -- path/to/file
 ```
 
-#### Merging and cleanup
+#### Cleanup
 
 ```bash
-# To merge: switch to main worktree first, then merge and push.
-# To clean up — ORDER MATTERS (shell CWD dies if worktree is deleted under it):
-cd /Users/lmoresi/+Underworld/underworld3-pixi   # 1. move shell out
-git worktree remove .claude/worktrees/<name>       # 2. remove worktree
-git branch -D <branch>                             # 3. -D not -d (merged to development, not main)
+# Removes worktree directory and deletes the branch
+./uw worktree remove <name>
 ```
+
+#### Important: always build and run from inside the worktree
+
+Because there is one shared environment, `./uw build` installs whichever source
+tree you run it from. If you build from the main repo then run code expecting
+worktree changes, the worktree edits will not be active. Always:
+
+1. `./uw worktree shell <name>` (or `cd` into the worktree)
+2. `./uw build`
+3. Run your code / tests from there
 
 ### AI-Assisted Commit Attribution
 When committing code developed with AI assistance, end the commit message with:
