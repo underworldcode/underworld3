@@ -6,8 +6,6 @@
 
 ```{eval-rst}
 .. autoclass:: underworld3.constitutive_models.ViscousFlowModel
-   :members:
-   :show-inheritance:
 ```
 
 ## Diffusion Models
@@ -16,16 +14,12 @@
 
 ```{eval-rst}
 .. autoclass:: underworld3.constitutive_models.DiffusionModel
-   :members:
-   :show-inheritance:
 ```
 
 ### TransverseIsotropicFlowModel
 
 ```{eval-rst}
 .. autoclass:: underworld3.constitutive_models.TransverseIsotropicFlowModel
-   :members:
-   :show-inheritance:
 ```
 
 ## Viscoelastic Models
@@ -34,8 +28,6 @@
 
 ```{eval-rst}
 .. autoclass:: underworld3.constitutive_models.ViscoElasticPlasticFlowModel
-   :members:
-   :show-inheritance:
 ```
 
 ## Darcy Flow
@@ -44,6 +36,4 @@
 
 ```{eval-rst}
 .. autoclass:: underworld3.constitutive_models.DarcyFlowModel
-   :members:
-   :show-inheritance:
 ```
