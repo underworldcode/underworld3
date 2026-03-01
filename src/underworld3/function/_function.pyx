@@ -292,6 +292,27 @@ def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, m
 
     r = N.base_scalars()[0:dim]
 
+    # 2b. Canonicalize coordinate symbols for lambdify.
+    # The expression may contain UWCoordinate objects (from mesh.X or
+    # mesh.CoordinateSystem.unit_e_0) alongside BaseScalar objects. Since
+    # lambdify uses object identity to map arguments to generated code,
+    # we must ensure only ONE set of coordinate objects appears.
+    # Strategy: collect all coordinate-like symbols from the expression,
+    # group by index, and replace all variants with a single canonical
+    # sympy.Dummy symbol per coordinate. Use the same Dummy as the
+    # lambdify argument.
+    from sympy.vector.scalar import BaseScalar
+    coord_dummies = [sympy.Dummy(f"_coord_{i}") for i in range(dim)]
+    coord_subs = {}
+    for sym in subbedexpr.free_symbols:
+        if isinstance(sym, BaseScalar):
+            idx = sym._id[0]
+            if idx < dim:
+                coord_subs[sym] = coord_dummies[idx]
+    if coord_subs:
+        subbedexpr = subbedexpr.xreplace(coord_subs)
+    r = coord_dummies
+
     # 3. Handle vector/dyadic expressions
     if isinstance(subbedexpr, sympy.vector.Vector):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim, 0]
