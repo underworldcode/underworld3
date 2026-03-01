@@ -110,6 +110,260 @@ def _require_pyvista():
         )
 
 
+def _depth_to_km(value) -> float:
+    """Convert a depth value to kilometres.
+
+    Accepts a plain float (assumed km) or a ``uw.quantity`` which is
+    converted to km via Pint.
+    """
+    if isinstance(value, (int, float, np.floating)):
+        return float(value)
+    # UWQuantity / Pint quantity — convert to km
+    try:
+        if hasattr(value, "to"):
+            return float(value.to("km").magnitude)
+        if hasattr(value, "magnitude"):
+            return float(value.magnitude)
+    except Exception:
+        pass
+    return float(value)
+
+
+def _order_polyline(points: np.ndarray) -> np.ndarray:
+    """Order 2D points along a polyline.
+
+    First removes near-duplicate points (within 1e-10 distance), then
+    finds the two true endpoints of the trace (the farthest-apart pair)
+    and chains from one endpoint using nearest-neighbour traversal.
+
+    Starting from a true endpoint avoids the common failure mode where
+    nearest-neighbour begins mid-trace and creates loops at bends.
+
+    Parameters
+    ----------
+    points : ndarray, shape (N, 2)
+        Unordered 2D points.
+
+    Returns
+    -------
+    ndarray, shape (M, 2)
+        Points reordered along the polyline (M <= N after dedup).
+    """
+    if len(points) <= 2:
+        return points.copy()
+
+    # Remove near-duplicate points
+    _, unique_idx = np.unique(np.round(points, decimals=10), axis=0, return_index=True)
+    pts = points[np.sort(unique_idx)]
+    n = len(pts)
+    if n <= 2:
+        return pts.copy()
+
+    # Find the farthest-apart pair — these are the trace endpoints.
+    # For small N (typical fault traces), brute-force pairwise is fine.
+    dist_sq = np.sum((pts[:, None, :] - pts[None, :, :]) ** 2, axis=2)
+    i_max, j_max = np.unravel_index(dist_sq.argmax(), dist_sq.shape)
+    start = i_max  # begin from one endpoint
+
+    # Nearest-neighbour chain from the endpoint
+    visited = np.zeros(n, dtype=bool)
+    order = np.empty(n, dtype=int)
+    order[0] = start
+    visited[start] = True
+
+    for step in range(1, n):
+        current = order[step - 1]
+        diffs = pts[~visited] - pts[current]
+        dists = np.einsum("ij,ij->i", diffs, diffs)
+        unvisited_idx = np.where(~visited)[0]
+        nearest = unvisited_idx[np.argmin(dists)]
+        order[step] = nearest
+        visited[nearest] = True
+
+    return pts[order]
+
+
+def _interpolate_trace(
+    points: np.ndarray,
+    target_spacing: float,
+    smoothing: float = 0.0,
+    is_geographic: bool = False,
+) -> np.ndarray:
+    """Interpolate a 2D polyline to a target point spacing.
+
+    Uses scipy parametric spline fitting (``splprep`` / ``splev``).
+
+    Parameters
+    ----------
+    points : ndarray, shape (N, 2)
+        Ordered polyline vertices (lon/lat or x/y).
+    target_spacing : float
+        Desired spacing between output points.  For geographic traces
+        this is in km; for Cartesian traces it is in model coordinates.
+    smoothing : float
+        Spline smoothing parameter (0 = exact interpolation).
+    is_geographic : bool
+        If True, arc lengths are estimated in km using a rough
+        degree-to-km conversion (~111 km/deg).
+
+    Returns
+    -------
+    ndarray, shape (M, 2)
+        Resampled polyline with approximately *target_spacing* between
+        consecutive points.
+    """
+    from scipy.interpolate import splprep, splev
+
+    if len(points) < 2:
+        return points.copy()
+
+    # Estimate cumulative arc length
+    diffs = np.diff(points, axis=0)
+    if is_geographic:
+        # Rough conversion: 1 degree ≈ 111 km (adequate for spacing estimates)
+        seg_lengths = np.sqrt((diffs[:, 0] * 111) ** 2 + (diffs[:, 1] * 111) ** 2)
+    else:
+        seg_lengths = np.sqrt((diffs ** 2).sum(axis=1))
+
+    total_length = seg_lengths.sum()
+    if total_length < 1e-12:
+        return points.copy()
+
+    n_out = max(3, int(round(total_length / target_spacing)) + 1)
+
+    # Fit parametric spline
+    try:
+        tck, u = splprep([points[:, 0], points[:, 1]], s=smoothing)
+        u_new = np.linspace(0, 1, n_out)
+        x_new, y_new = splev(u_new, tck)
+        return np.column_stack([x_new, y_new])
+    except Exception:
+        # Fallback: linear interpolation along arc length
+        cum_length = np.concatenate([[0], np.cumsum(seg_lengths)])
+        t_old = cum_length / total_length
+        t_new = np.linspace(0, 1, n_out)
+        x_new = np.interp(t_new, t_old, points[:, 0])
+        y_new = np.interp(t_new, t_old, points[:, 1])
+        return np.column_stack([x_new, y_new])
+
+
+def _profile_to_edge_lengths(
+    dist_values: np.ndarray,
+    h_near: float,
+    h_far: float,
+    width: float,
+    profile: str,
+) -> np.ndarray:
+    """Compute target edge lengths from distance values using a profile function.
+
+    Parameters
+    ----------
+    dist_values : ndarray
+        Unsigned distance values at each mesh node.
+    h_near : float
+        Target edge length near the surface.
+    h_far : float
+        Target edge length far from the surface.
+    width : float
+        Transition distance from h_near to h_far.
+    profile : str
+        One of "linear", "smoothstep", or "gaussian".
+
+    Returns
+    -------
+    ndarray
+        Target edge lengths, same shape as *dist_values*.
+    """
+    if profile == "linear":
+        t = np.minimum(dist_values / width, 1.0)
+        return h_near + (h_far - h_near) * t
+    elif profile == "smoothstep":
+        t = np.minimum(dist_values / width, 1.0)
+        smooth_t = 3 * t**2 - 2 * t**3
+        return h_near + (h_far - h_near) * smooth_t
+    elif profile == "gaussian":
+        sigma = width / 3.0
+        gaussian = np.exp(-(dist_values**2) / (2 * sigma**2))
+        return h_far - (h_far - h_near) * gaussian
+    else:
+        raise ValueError(
+            f"Unknown profile: {profile}. Use 'linear', 'smoothstep', or 'gaussian'"
+        )
+
+
+def _compute_trace_perpendicular(
+    trace_points: np.ndarray,
+    direction: str = "right",
+    is_geographic: bool = False,
+) -> np.ndarray:
+    """Compute the perpendicular direction at each point of a 2D trace.
+
+    Returns vectors such that ``offset_km * result`` (geographic) or
+    ``offset * result`` (Cartesian) gives the correct horizontal
+    displacement perpendicular to the trace.
+
+    Parameters
+    ----------
+    trace_points : ndarray, shape (N, 2)
+        Ordered trace points — ``(lon, lat)`` for geographic or
+        ``(x, y)`` for Cartesian.
+    direction : str
+        ``"right"`` or ``"left"`` relative to the trace direction
+        (from first point to last).
+    is_geographic : bool
+        If True, account for the latitude-dependent metric when
+        computing directions and return results in degrees so that
+        ``offset_km * perp`` gives the geographic offset.
+
+    Returns
+    -------
+    ndarray, shape (N, 2)
+        Perpendicular direction at each trace point.
+    """
+    n = len(trace_points)
+    tangent = np.zeros_like(trace_points)
+
+    # Central differences for interior, forward/backward for endpoints
+    if n > 2:
+        tangent[1:-1] = trace_points[2:] - trace_points[:-2]
+    tangent[0] = trace_points[min(1, n - 1)] - trace_points[0]
+    tangent[-1] = trace_points[-1] - trace_points[max(0, n - 2)]
+
+    if is_geographic:
+        cos_lat = np.cos(np.radians(trace_points[:, 1]))
+        km_per_deg_lon = 111.32 * cos_lat
+        km_per_deg_lat = 111.32
+
+        tangent_km = np.column_stack([
+            tangent[:, 0] * km_per_deg_lon,
+            tangent[:, 1] * km_per_deg_lat,
+        ])
+    else:
+        tangent_km = tangent.copy()
+
+    # Normalise to unit length
+    lengths = np.sqrt(tangent_km[:, 0] ** 2 + tangent_km[:, 1] ** 2)
+    lengths = np.maximum(lengths, 1e-10)
+    tangent_km /= lengths[:, np.newaxis]
+
+    # Rotate 90° to get perpendicular
+    if direction == "right":
+        perp_km = np.column_stack([tangent_km[:, 1], -tangent_km[:, 0]])
+    else:  # "left"
+        perp_km = np.column_stack([-tangent_km[:, 1], tangent_km[:, 0]])
+
+    if is_geographic:
+        # Convert back to degrees (so offset_km * perp gives degree offset)
+        perp = np.column_stack([
+            perp_km[:, 0] / km_per_deg_lon,
+            perp_km[:, 1] / km_per_deg_lat,
+        ])
+    else:
+        perp = perp_km
+
+    return perp
+
+
 class SurfaceVariable:
     """Variable defined on surface vertices, stored in pyvista point_data.
 
@@ -1226,34 +1480,276 @@ class Surface:
 
         # Get distance values directly from the distance MeshVariable
         dist_var = self.distance
-        with self.mesh.access(dist_var, metric):
-            dist_values = np.abs(dist_var.data[:, 0])
+        dist_values = np.abs(dist_var.data[:, 0])
 
-            # Compute target edge lengths based on distance profile
-            if profile == "linear":
-                t = np.minimum(dist_values / width, 1.0)
-                h_values = h_near + (h_far - h_near) * t
+        # Compute target edge lengths based on distance profile
+        h_values = _profile_to_edge_lengths(dist_values, h_near, h_far, width, profile)
 
-            elif profile == "smoothstep":
-                t = np.minimum(dist_values / width, 1.0)
-                smooth_t = 3 * t**2 - 2 * t**3
-                h_values = h_near + (h_far - h_near) * smooth_t
-
-            elif profile == "gaussian":
-                sigma = width / 3.0
-                gaussian = np.exp(-(dist_values**2) / (2 * sigma**2))
-                h_values = h_far - (h_far - h_near) * gaussian
-
-            else:
-                raise ValueError(f"Unknown profile: {profile}. Use 'linear', 'smoothstep', or 'gaussian'")
-
-            # Convert to metric tensor: M = 1/h² × I (isotropic)
-            # This is dimension-independent: same formula for 2D and 3D
-            # The metric defines edge lengths, not areas/volumes
-            # Higher metric values → finer mesh (smaller elements)
-            metric.data[:, 0] = 1.0 / (h_values ** 2)
+        # Convert to metric tensor: M = 1/h² × I (isotropic)
+        # This is dimension-independent: same formula for 2D and 3D
+        # The metric defines edge lengths, not areas/volumes
+        # Higher metric values → finer mesh (smaller elements)
+        metric.data[:, 0] = 1.0 / (h_values ** 2)
 
         return metric
+
+    # --- Factory methods ---
+
+    @classmethod
+    def from_trace(
+        cls,
+        name: str,
+        mesh: "Mesh",
+        trace_points: np.ndarray,
+        depth_range: tuple,
+        n_depth_layers: int = None,
+        depth_spacing=None,
+        trace_resolution=None,
+        smoothing: float = 0.0,
+        dip: float = None,
+        dip_direction: str = "right",
+        symbol: str = None,
+    ) -> "Surface":
+        """Create a surface by extruding a polyline trace to depth.
+
+        This is the recommended way to create fault surfaces from map-view
+        trace data.  The trace polyline is optionally interpolated to a
+        target resolution, then extruded to depth to create a ruled
+        surface with explicit triangulation.
+
+        When *dip* is specified, the surface follows a parabolic curve
+        from vertical at the surface to the given dip angle at maximum
+        depth.  The offset is applied perpendicular to the local trace
+        direction.  This produces geologically realistic fault geometry
+        where faults are steep near the surface and flatten at depth.
+
+        For geographic meshes, trace points are (lon, lat) in degrees and
+        depths are physical distances below the ellipsoid surface.  The
+        ellipsoid parameters are read from the mesh automatically.
+
+        For Cartesian meshes, trace points are (x, y) in model coordinates
+        and depth is the z-coordinate (downward positive).
+
+        Parameters
+        ----------
+        name : str
+            Surface identifier.
+        mesh : Mesh
+            Computational mesh.  For geographic meshes the ellipsoid is
+            read from ``mesh.CoordinateSystem.ellipsoid``.
+        trace_points : ndarray, shape (N, 2)
+            Surface trace polyline.  For geographic meshes: ``(lon, lat)``
+            in degrees.  For Cartesian meshes: ``(x, y)`` in the same
+            coordinate space as control points (model or physical,
+            depending on whether units are active).
+        depth_range : tuple of (min_depth, max_depth)
+            Depth extent for extrusion (positive downward).  Each value
+            can be a plain float (km for geographic, model coords for
+            Cartesian) or a ``uw.quantity``.
+        n_depth_layers : int, optional
+            Number of depth levels (including surface and deepest).
+            If None, computed from *depth_spacing*.  If both are None,
+            defaults to 7 layers.
+        depth_spacing : float or quantity, optional
+            Spacing between depth layers.  Alternative to *n_depth_layers*.
+        trace_resolution : float or quantity, optional
+            Target point spacing along the trace.  If None the trace is
+            used as-is.  For geographic meshes this is in km; for
+            Cartesian meshes it is in model coordinates.
+        smoothing : float
+            Spline smoothing parameter for ``splprep`` (0 = interpolate
+            exactly through points, >0 allows smoothing).
+        dip : float, optional
+            Dip angle in degrees measured from horizontal.  ``90`` means
+            vertical (no offset), ``45`` means equal horizontal and
+            vertical extent at maximum depth.  When *None* (default),
+            the surface is extruded vertically.
+
+            The surface profile is parabolic: vertical at the surface
+            (``depth = depth_range[0]``) and reaching *dip* at the
+            deepest layer.
+        dip_direction : str
+            Direction of the dip offset relative to the trace:
+            ``"right"`` (default) or ``"left"`` when looking along the
+            trace from first to last point.
+        symbol : str, optional
+            Short LaTeX symbol for expressions (e.g. ``"F"``).
+
+        Returns
+        -------
+        Surface
+            A fully discretized surface ready for use.
+
+        Examples
+        --------
+        >>> # Geographic mesh — trace in lon/lat, depths in km
+        >>> trace = np.column_stack([lon_points, lat_points])
+        >>> s = Surface.from_trace(
+        ...     "fault_1", mesh, trace,
+        ...     depth_range=(uw.quantity(0, "km"), uw.quantity(30, "km")),
+        ...     depth_spacing=uw.quantity(5, "km"),
+        ...     trace_resolution=uw.quantity(3, "km"),
+        ...     dip=60,  # 60° from horizontal, parabolic profile
+        ... )
+        """
+        pv = _require_pyvista()
+        from scipy.interpolate import splprep, splev
+
+        trace_points = np.asarray(trace_points)
+        if trace_points.ndim != 2 or trace_points.shape[1] != 2:
+            raise ValueError(
+                f"trace_points must be (N, 2) array, got shape {trace_points.shape}"
+            )
+        if trace_points.shape[0] < 2:
+            raise ValueError("Need at least 2 trace points")
+
+        # --- Detect geographic vs Cartesian ---
+        cs = getattr(mesh, "CoordinateSystem", None)
+        ellipsoid = getattr(cs, "ellipsoid", None) if cs is not None else None
+        is_geographic = ellipsoid is not None
+
+        # --- Parse depth range ---
+        d_min_raw, d_max_raw = depth_range
+        if is_geographic:
+            # For geographic: depths are in km (or quantities → km)
+            d_min_km = _depth_to_km(d_min_raw)
+            d_max_km = _depth_to_km(d_max_raw)
+        else:
+            # For Cartesian: depths in model coordinates
+            d_min = _to_nd_length(d_min_raw) if not isinstance(d_min_raw, (int, float)) else float(d_min_raw)
+            d_max = _to_nd_length(d_max_raw) if not isinstance(d_max_raw, (int, float)) else float(d_max_raw)
+
+        # --- Determine depth layers ---
+        if n_depth_layers is not None:
+            n_layers = int(n_depth_layers)
+        elif depth_spacing is not None:
+            if is_geographic:
+                ds_km = _depth_to_km(depth_spacing)
+                n_layers = max(2, int(round((d_max_km - d_min_km) / ds_km)) + 1)
+            else:
+                ds = _to_nd_length(depth_spacing) if not isinstance(depth_spacing, (int, float)) else float(depth_spacing)
+                n_layers = max(2, int(round((d_max - d_min) / ds)) + 1)
+        else:
+            n_layers = 7  # sensible default
+
+        if is_geographic:
+            depth_values_km = np.linspace(d_min_km, d_max_km, n_layers)
+        else:
+            depth_values = np.linspace(d_min, d_max, n_layers)
+
+        # --- Order trace points along the curve ---
+        trace_ordered = _order_polyline(trace_points)
+
+        # --- Interpolate trace if requested ---
+        if trace_resolution is not None:
+            if is_geographic:
+                target_spacing_km = _depth_to_km(trace_resolution)
+            else:
+                target_spacing_km = None
+                target_spacing_nd = (
+                    _to_nd_length(trace_resolution)
+                    if not isinstance(trace_resolution, (int, float))
+                    else float(trace_resolution)
+                )
+
+            trace_ordered = _interpolate_trace(
+                trace_ordered,
+                target_spacing=target_spacing_km if is_geographic else target_spacing_nd,
+                smoothing=smoothing,
+                is_geographic=is_geographic,
+            )
+
+        n_trace = len(trace_ordered)
+
+        # --- Parabolic dip offset ---
+        # When dip < 90°, each depth layer is offset perpendicular to the
+        # trace by a parabolic amount: offset(z) = z² / (2·z_max·tan(dip))
+        # This gives vertical at the surface (z=0) and the specified dip at
+        # maximum depth.
+        has_dip = dip is not None and float(dip) < 90.0
+        if has_dip:
+            dip_deg = float(dip)
+            perp = _compute_trace_perpendicular(
+                trace_ordered, direction=dip_direction, is_geographic=is_geographic
+            )
+            if is_geographic:
+                z_total_km = d_max_km - d_min_km
+            else:
+                z_total = d_max - d_min
+
+        # --- Build 3D points for each depth layer ---
+        if is_geographic:
+            a_km = ellipsoid["a"]
+            b_km = ellipsoid["b"]
+            from underworld3.coordinates import geographic_to_cartesian
+
+            all_points_km = []
+            for depth_km in depth_values_km:
+                if has_dip and z_total_km > 0:
+                    z = depth_km - d_min_km
+                    offset_km = z ** 2 / (2 * z_total_km * np.tan(np.radians(dip_deg)))
+                    lon_layer = trace_ordered[:, 0] + offset_km * perp[:, 0]
+                    lat_layer = trace_ordered[:, 1] + offset_km * perp[:, 1]
+                else:
+                    lon_layer = trace_ordered[:, 0]
+                    lat_layer = trace_ordered[:, 1]
+                x, y, z_cart = geographic_to_cartesian(lon_layer, lat_layer, depth_km, a_km, b_km)
+                all_points_km.append(np.column_stack([x, y, z_cart]))
+
+            all_points_km = np.vstack(all_points_km)
+
+            # Nondimensionalise
+            all_points_nd = np.asarray(
+                uw.non_dimensionalise(uw.quantity(all_points_km, "km"))
+            )
+        else:
+            # Cartesian: extrude along z (downward positive → negative z)
+            all_points = []
+            for depth_val in depth_values:
+                if has_dip and z_total > 0:
+                    z_offset = depth_val - d_min
+                    offset = z_offset ** 2 / (2 * z_total * np.tan(np.radians(dip_deg)))
+                    x_layer = trace_ordered[:, 0] + offset * perp[:, 0]
+                    y_layer = trace_ordered[:, 1] + offset * perp[:, 1]
+                else:
+                    x_layer = trace_ordered[:, 0]
+                    y_layer = trace_ordered[:, 1]
+                layer = np.column_stack([
+                    x_layer,
+                    y_layer,
+                    np.full(n_trace, -depth_val),
+                ])
+                all_points.append(layer)
+            all_points_nd = np.vstack(all_points)
+
+        # --- Build explicit triangulation ---
+        # Grid is n_layers rows × n_trace columns
+        # Vertex index: layer * n_trace + i
+        faces = []
+        for layer in range(n_layers - 1):
+            for i in range(n_trace - 1):
+                # Quad: (layer, i) → (layer, i+1) → (layer+1, i+1) → (layer+1, i)
+                v00 = layer * n_trace + i
+                v10 = layer * n_trace + (i + 1)
+                v01 = (layer + 1) * n_trace + i
+                v11 = (layer + 1) * n_trace + (i + 1)
+                # Two triangles per quad
+                faces.append([3, v00, v10, v01])
+                faces.append([3, v10, v11, v01])
+
+        faces = np.array(faces, dtype=np.int64)
+
+        # --- Create Surface with explicit mesh ---
+        surface = cls(name, mesh, symbol=symbol)
+        surface._control_points = all_points_nd.copy()
+
+        pv_mesh = pv.PolyData(all_points_nd, faces=faces.ravel())
+        pv_mesh.compute_normals(inplace=True)
+        surface._pv_mesh = pv_mesh
+        surface._discretization_stale = False
+        surface._distance_stale = True
+
+        return surface
 
     @classmethod
     def from_vtk(
@@ -1630,6 +2126,171 @@ class SurfaceCollection:
             return value_far + (value_near - value_far) * smooth
         else:
             raise ValueError(f"Unknown profile '{profile}'")
+
+    def refinement_metric(
+        self,
+        mesh: "Mesh",
+        h_near,
+        h_far,
+        width=None,
+        profile: str = "linear",
+        variable_name: str = "fault_metric",
+    ) -> "MeshVariable":
+        r"""Create a combined refinement metric for mesh adaptation.
+
+        Computes a single metric field using the minimum unsigned distance
+        across all surfaces in the collection.  This creates **2 MeshVariables**
+        (distance + metric) regardless of how many surfaces are in the
+        collection, avoiding the O(N²) DM-rebuild cost of computing per-surface
+        metrics in a loop.
+
+        Parameters
+        ----------
+        mesh : Mesh
+            The computational mesh.
+        h_near : float or quantity
+            Target edge length near any surface.
+        h_far : float or quantity
+            Target edge length far from surfaces.
+        width : float or quantity, optional
+            Transition distance.  Defaults to ``2 * h_far``.
+        profile : str
+            ``"linear"``, ``"smoothstep"``, or ``"gaussian"``.
+        variable_name : str
+            Name for the metric MeshVariable.
+
+        Returns
+        -------
+        MeshVariable
+            Scalar metric field suitable for ``mesh.adapt()``.
+        """
+        h_near = _to_nd_length(h_near)
+        h_far = _to_nd_length(h_far)
+        width = _to_nd_length(width) if width is not None else 2.0 * h_far
+
+        # Compute (or reuse) the collection-wide minimum unsigned distance
+        distance_var = self.compute_distance_field(mesh)
+
+        metric = uw.discretisation.MeshVariable(variable_name, mesh, 1, degree=1)
+
+        dist_values = np.abs(distance_var.data[:, 0])
+        h_values = _profile_to_edge_lengths(dist_values, h_near, h_far, width, profile)
+        metric.data[:, 0] = 1.0 / (h_values ** 2)
+
+        return metric
+
+    def compute_nearest_fields(
+        self,
+        mesh: "Mesh",
+        fault_width=None,
+        normal_var_name: str = "fault_n",
+        id_var_name: str = "fault_id",
+        distance_var_name: str = "d_faults",
+        weight_var_name: str = "fault_w",
+    ) -> dict:
+        """Compute per-node nearest-surface fields for rheology.
+
+        For every mesh node, finds the closest surface vertex across all
+        surfaces and returns:
+
+        - **normal**: unit normal of the nearest surface vertex
+        - **id**: surface identifier for the nearest surface
+        - **distance**: minimum unsigned distance to any surface
+        - **weight** *(optional)*: Gaussian influence ``exp(-0.5*(d/width)²)``
+
+        This consolidates what would otherwise be manual KDTree code into a
+        single reusable call, and creates only 3–4 MeshVariables total.
+
+        Parameters
+        ----------
+        mesh : Mesh
+            The computational mesh.
+        fault_width : float or quantity, optional
+            Gaussian half-width for the weight field.  If ``None``, the
+            weight field is omitted from the returned dict.
+        normal_var_name, id_var_name, distance_var_name, weight_var_name : str
+            Names for the output MeshVariables.
+
+        Returns
+        -------
+        dict
+            Keys: ``"normal"``, ``"id"``, ``"distance"``, and optionally
+            ``"weight"``.  Values are MeshVariable instances.
+        """
+        if len(self.surfaces) == 0:
+            raise ValueError("Cannot compute nearest fields: no surfaces in collection")
+
+        # Ensure discretized
+        for name, surface in self.surfaces.items():
+            surface._ensure_discretized()
+
+        # --- Gather combined vertex data from all surfaces ---
+        all_vertices = []
+        all_normals = []
+        all_ids = []
+
+        for sid, surface in self.surfaces.items():
+            pts = np.array(surface._pv_mesh.points)  # ND model coords
+            norms = surface.normals  # triangulation normals
+            # Use a numeric ID: try float(sid), fall back to index
+            try:
+                numeric_id = float(sid)
+            except (TypeError, ValueError):
+                numeric_id = float(len(all_vertices))
+
+            all_vertices.append(pts)
+            all_normals.append(norms)
+            all_ids.append(np.full(len(pts), numeric_id))
+
+        combined_vertices = np.vstack(all_vertices)
+        combined_normals = np.vstack(all_normals)
+        combined_ids = np.concatenate(all_ids)
+
+        # --- KDTree query ---
+        kdtree = uw.kdtree.KDTree(combined_vertices)
+        mesh_coords = np.asarray(mesh._coords)
+        _, closest_idx = kdtree.query(mesh_coords)
+        closest_idx = closest_idx.flatten()
+
+        # --- Create output MeshVariables ---
+        dim = mesh.dim
+        fault_normal = uw.discretisation.MeshVariable(
+            normal_var_name, mesh, dim, degree=1,
+            varsymbol=r"\hat{\mathbf{n}}_f",
+        )
+        fault_id_var = uw.discretisation.MeshVariable(
+            id_var_name, mesh, 1, degree=1,
+            varsymbol=r"f_{id}",
+        )
+
+        with uw.synchronised_array_update():
+            fault_normal.data[:] = combined_normals[closest_idx]
+            fault_id_var.data[:, 0] = combined_ids[closest_idx]
+
+        # --- Distance field (reuse collection's cached distance) ---
+        distance_var = self.compute_distance_field(
+            mesh, variable_name=distance_var_name,
+        )
+
+        result = {
+            "normal": fault_normal,
+            "id": fault_id_var,
+            "distance": distance_var,
+        }
+
+        # --- Optional Gaussian weight ---
+        if fault_width is not None:
+            fw_nd = _to_nd_length(fault_width)
+            dist_values = np.abs(distance_var.data[:, 0])
+
+            weight_var = uw.discretisation.MeshVariable(
+                weight_var_name, mesh, 1, degree=1,
+                varsymbol=r"w_f",
+            )
+            weight_var.data[:, 0] = np.exp(-0.5 * (dist_values / fw_nd) ** 2)
+            result["weight"] = weight_var
+
+        return result
 
     # --- Backward compatibility ---
 

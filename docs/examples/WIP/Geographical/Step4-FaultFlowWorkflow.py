@@ -36,7 +36,6 @@
 # %%
 import numpy as np
 import underworld3 as uw
-from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
 
 # Reset any stale model, then set up units for geographic workflow
 uw.reset_default_model()
@@ -57,6 +56,14 @@ uw.timing.start()
 #
 # The fault data is stored as an NPZ file with:
 # - `arr_0`: geographic coordinates (lon, lat, depth_m, dip, fault_id, segment_id)
+#
+# Column 4 (`fault_id`) is a composite float like `11.3` where the integer part
+# groups related faults and the fractional part identifies individual segments
+# digitised by the operator.  Each unique `fault_id` is an independent trace
+# that should be processed separately.
+#
+# `Surface.from_trace()` interpolates each trace to a target resolution and
+# extrudes it to depth, producing a well-conditioned triangulated surface.
 
 # %%
 fault_data = np.load("Structures/faults_as_swarm_points_xyz.npz")
@@ -66,43 +73,15 @@ lon = geo_coords[:, 0]
 lat = geo_coords[:, 1]
 depth_m = geo_coords[:, 2]  # meters, negative (below surface)
 dip = geo_coords[:, 3]
-fault_id = geo_coords[:, 4]  # composite: integer.segment
-segment_id = np.round(geo_coords[:, 5]).astype(int)
+fault_id = geo_coords[:, 4]  # composite: e.g. 11.3 = fault 11, segment 3
 
-print(f"Loaded {len(lon)} fault points across {len(np.unique(segment_id))} segments")
+# Each unique fault_id is an independent digitised segment
+unique_fault_ids = np.unique(np.round(fault_id, 4))
+
+print(f"Loaded {len(lon)} fault points across {len(unique_fault_ids)} segments")
 print(f"Geographic extent: lon=[{lon.min():.2f}, {lon.max():.2f}], "
       f"lat=[{lat.min():.2f}, {lat.max():.2f}]")
 print(f"Depth range: {depth_m.min()/1000:.0f} to {depth_m.max()/1000:.0f} km")
-
-# %% [markdown]
-# ## 3. Convert Geographic → Cartesian Coordinates
-#
-# Convert fault point locations from geographic (lon, lat, depth) to
-# Cartesian (x, y, z) and nondimensionalise for the solver.
-# Fault-plane normals are computed later by PyVista from the triangulated surfaces.
-
-# %%
-ell = ELLIPSOIDS["WGS84"]
-a_km, b_km = ell["a"], ell["b"]
-
-# depth_m is negative (below surface), geographic_to_cartesian expects
-# positive depth, so negate the negative depth
-depth_km = depth_m / 1000.0
-fault_x, fault_y, fault_z = geographic_to_cartesian(
-    lon, lat, -depth_km, a_km, b_km
-)
-# Cartesian coordinates in km
-fault_xyz_km = np.column_stack([fault_x, fault_y, fault_z])
-
-# Nondimensionalise via the units system (not manual division)
-fault_xyz_nd = np.asarray(
-    uw.non_dimensionalise(uw.quantity(fault_xyz_km, "km"))
-)
-
-print(f"Cartesian coordinates (km):")
-print(f"  x: [{fault_x.min():.1f}, {fault_x.max():.1f}]")
-print(f"  y: [{fault_y.min():.1f}, {fault_y.max():.1f}]")
-print(f"  z: [{fault_z.min():.1f}, {fault_z.max():.1f}]")
 
 # %% [markdown]
 # ## 4. Create Geographic Mesh
@@ -126,50 +105,73 @@ print(f"Mesh: {mesh.dim}D, {mesh.X.coords.shape[0]} nodes")
 # %% [markdown]
 # ## 5. Create Fault Surfaces
 #
-# One `Surface` per fault segment. Each Surface provides:
-# - triangulation (`discretize()`)
+# `Surface.from_trace()` takes each fault's surface trace (lon, lat),
+# interpolates it to ~3 km resolution, and extrudes to depth with a
+# **parabolic dip profile**: vertical at the surface and reaching the
+# recorded dip angle at maximum depth.
+#
+# Each Surface provides:
 # - signed distance field (lazy, on demand)
 # - `influence_function()` for smooth rheological transitions
 # - `refinement_metric()` for mesh adaptation
 
 # %%
 fault_surfaces = {}
-unique_segments = np.unique(segment_id)
 
-for sid in unique_segments:
-    mask = segment_id == sid
-    pts = fault_xyz_nd[mask]
+for fid in unique_fault_ids:
+    mask = np.abs(np.round(fault_id, 4) - fid) < 1e-6
+    pts = geo_coords[mask]
 
-    if pts.shape[0] < 3:
-        print(f"  Segment {sid}: only {pts.shape[0]} points (skipped)")
+    # Extract surface trace (depth ≈ 0 layer)
+    surface_mask = np.abs(pts[:, 2]) < 100  # within 100 m of surface
+    if surface_mask.sum() < 2:
         continue
 
-    name = f"fault_{sid}"
-    s = uw.meshing.Surface(name, mesh, pts, symbol=f"F{sid}")
-    s.discretize()
+    trace = pts[surface_mask][:, :2]  # (lon, lat)
+    depth_km_max = abs(pts[:, 2].min()) / 1000.0
 
-    print(f"  {name}: {s.n_vertices} vertices")
-    fault_surfaces[sid] = s
+    # Dip angle for this segment (degrees from horizontal)
+    segment_dip = float(np.median(pts[:, 3]))
+
+    # Detect depth spacing from the data
+    unique_depths = np.unique(np.round(pts[:, 2] / 1000, 1))
+    ds_km = float(np.median(np.abs(np.diff(np.sort(unique_depths))))) if len(unique_depths) > 1 else 5.0
+
+    name = f"fault_{fid}"
+    s = uw.meshing.Surface.from_trace(
+        name, mesh, trace,
+        depth_range=(uw.quantity(0, "km"), uw.quantity(depth_km_max, "km")),
+        depth_spacing=uw.quantity(ds_km, "km"),
+        trace_resolution=uw.quantity(3, "km"),
+        dip=segment_dip,
+        dip_direction="right",
+        symbol=f"F{fid}",
+    )
+    print(f"  {name}: dip={segment_dip:.0f}°, {s.n_vertices} vertices, {s.n_triangles} triangles")
+    fault_surfaces[fid] = s
 
 print(f"\nCreated {len(fault_surfaces)} fault surfaces")
 
 # %% [markdown]
 # ## 6. Build Refinement Metric and Adapt Mesh
+#
+# `SurfaceCollection.refinement_metric()` computes a single combined metric
+# using the minimum unsigned distance across all surfaces.  This creates only
+# 2 MeshVariables (distance + metric) instead of 2 per surface, avoiding
+# the O(N²) DM-rebuild cost that would occur with a per-surface loop.
 
 # %%
-H_NEAR = uw.quantity(3.0, "km")      # target edge length near faults
-H_FAR = uw.quantity(30.0, "km")      # target edge length far from faults
+faults = uw.meshing.SurfaceCollection()
+for s in fault_surfaces.values():
+    faults.add(s)
+
+H_NEAR = uw.quantity(2.0, "km")      # target edge length near faults
+H_FAR = uw.quantity(20.0, "km")      # target edge length far from faults
 TRANSITION = uw.quantity(10.0, "km")  # transition width
 
-combined_metric = None
-for sid, surface in fault_surfaces.items():
-    m = surface.refinement_metric(
-        h_near=H_NEAR, h_far=H_FAR, width=TRANSITION, profile="smoothstep",
-    )
-    if combined_metric is None:
-        combined_metric = m
-    else:
-        combined_metric.data[:] = np.maximum(combined_metric.data, m.data)
+combined_metric = faults.refinement_metric(
+    mesh, h_near=H_NEAR, h_far=H_FAR, width=TRANSITION, profile="smoothstep",
+)
 
 print(f"Before adaptation: {mesh.X.coords.shape[0]} nodes")
 mesh.adapt(combined_metric, verbose=True)
@@ -229,72 +231,20 @@ if RHEOLOGY == "isoviscous":
     stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
 
 else:
-    # Both "isotropic" and "anisotropic" need fault data fields
+    # Both "isotropic" and "anisotropic" need fault data fields.
+    # compute_nearest_fields() builds a single KDTree over all surface
+    # vertices, creating only 4 MeshVariables (normal, id, distance, weight)
+    # instead of 2 per surface.
 
-    # --- Composite fault normal and ID fields (all faults) ---
-    # For each mesh node, find the nearest fault vertex across all surfaces
-    # and copy its geological normal vector and fault segment ID.
+    fields = faults.compute_nearest_fields(mesh, fault_width=fault_width)
+    fault_normal = fields["normal"]
+    fault_id_var = fields["id"]
+    nearest_dist = fields["distance"]
+    fault_weight = fields["weight"]
 
-    all_vertices = []
-    all_normals = []
-    all_fault_ids = []
-
-    for sid, surface in fault_surfaces.items():
-        pts = np.array(surface._pv_mesh.points)  # ND model coords
-        norms = surface.normals  # PyVista triangulation normals (fault-plane normals)
-
-        all_vertices.append(pts)
-        all_normals.append(norms)
-        all_fault_ids.append(np.full(len(pts), sid))
-
-    combined_vertices = np.vstack(all_vertices)
-    combined_normals = np.vstack(all_normals)
-    combined_ids = np.concatenate(all_fault_ids)
-
-    kdtree = uw.kdtree.KDTree(combined_vertices)
-    mesh_coords = np.asarray(mesh._coords)
-    _, closest_idx = kdtree.query(mesh_coords)
-    closest_idx = closest_idx.flatten()
-
-    fault_normal = uw.discretisation.MeshVariable(
-        "fault_n", mesh, mesh.dim, degree=1, varsymbol=r"\hat{\mathbf{n}}_f"
-    )
-    fault_id_var = uw.discretisation.MeshVariable(
-        "fault_id", mesh, 1, degree=1, varsymbol=r"f_{id}"
-    )
-
-    with uw.synchronised_array_update():
-        fault_normal.data[:] = combined_normals[closest_idx]
-        fault_id_var.data[:, 0] = combined_ids[closest_idx]
-
-    # --- Combined influence function ---
-    # Minimum absolute distance across all fault surfaces gives a single
-    # "nearest fault" distance field. A Gaussian profile turns this into
-    # a smooth rheological transition.
-
-    fault_width_nd = float(uw.non_dimensionalise(fault_width))
-
-    nearest_dist = uw.discretisation.MeshVariable(
-        "d_faults", mesh, 1, degree=1, varsymbol=r"d_f"
-    )
-
-    min_dist = np.full(mesh_coords.shape[0], np.inf)
-    for sid, surface in fault_surfaces.items():
-        d = surface.distance  # lazy signed distance computation
-        abs_dist = np.abs(d.data[:, 0])
-        min_dist = np.minimum(min_dist, abs_dist)
-
-    nearest_dist.data[:, 0] = min_dist
-
-    # Precompute the Gaussian influence as a MeshVariable (not symbolic exp).
-    # Keeping exp() in the symbolic expression makes the TI constitutive tensor
-    # extremely complex and causes sympy.simplify() / solver hangs.
-    fault_weight = uw.discretisation.MeshVariable(
-        "fault_w", mesh, 1, degree=1, varsymbol=r"w_f"
-    )
-    fault_weight.data[:, 0] = np.exp(-0.5 * (min_dist / fault_width_nd) ** 2)
-
-    # Build composite viscosity using the precomputed weight
+    # Build composite viscosity using the precomputed Gaussian weight.
+    # Keeping exp() in the symbolic expression would make the TI constitutive
+    # tensor extremely complex and cause sympy.simplify() / solver hangs.
     eta_1_expr = eta_0 - (eta_0 - eta_1_weak) * fault_weight.sym[0]
 
     if RHEOLOGY == "isotropic":
@@ -393,7 +343,7 @@ pl.add_mesh(pvmesh, cmap="coolwarm", scalars="Vmag", style="wireframe")
 pl.add_mesh(pvmesh, cmap="coolwarm", scalars="fault_dist", style="surface", opacity=0.5)
 
 pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=2e13, color="Blue")
-pl.add_arrows(pvmesh.points, pvmesh.point_data["fault_n"], mag=1e4, color="Red", opacity=0.33)
+# pl.add_arrows(pvmesh.points, pvmesh.point_data["fault_n"], mag=1e4, color="Red", opacity=0.33)
 
 # Add fault surfaces with distinct colours
 fault_colors = [
