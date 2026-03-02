@@ -16,16 +16,13 @@ vector_calculus_cylindrical : module
 vector_calculus_spherical : module
     Vector calculus operators in spherical coordinates.
 
-Functions
----------
-delta_function : function
-    Regularized delta function for localized source terms.
-L2_norm : function
-    L2 norm computation for fields.
-Integral : class
-    Domain integration over mesh.
-CellWiseIntegral : class
-    Cell-by-cell integration.
+**delta_function** -- Regularized delta function for localized source terms.
+
+**L2_norm** -- L2 norm computation for fields.
+
+**Integral** -- Domain integration over mesh.
+
+**CellWiseIntegral** -- Cell-by-cell integration.
 
 See Also
 --------

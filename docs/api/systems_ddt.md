@@ -1,10 +1,5 @@
 # Time Derivatives
 
-```{eval-rst}
-.. automodule:: underworld3.systems.ddt
-   :no-members:
-```
-
 Time derivative operators approximate $D\phi/Dt$ or $DF/Dt$ for transient
 solvers.  All operators share a common interface: ``update_pre_solve(dt)``
 before each timestep, ``bdf()`` for the BDF approximation in the weak form,

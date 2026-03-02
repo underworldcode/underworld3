@@ -655,15 +655,19 @@ class Surface:
     ):
         """Create a surface.
 
-        Args:
-            name: Identifier for this surface
-            mesh: Computational mesh (required for .sym access and distance field)
-            control_points: (N, 3) array of 3D points defining the surface.
-                           If None, the surface is empty and must be loaded or
-                           have points set later.
-            symbol: Short LaTeX-friendly symbol for math display (e.g., "F" for "fault").
-                   If None, defaults to first letter of name capitalized.
-                   Used in expressions like d_F instead of {surf_fault_distance}.
+        Parameters
+        ----------
+        name : str
+            Identifier for this surface.
+        mesh : Mesh, optional
+            Computational mesh (required for ``.sym`` access and distance field).
+        control_points : ndarray, optional
+            (N, 3) array of 3D points defining the surface.
+            If None, the surface is empty and must be loaded or
+            have points set later.
+        symbol : str, optional
+            Short LaTeX-friendly symbol for math display (e.g., ``"F"``).
+            If None, defaults to first letter of name capitalized.
         """
         self.name = name
         self.mesh = mesh
@@ -763,6 +767,9 @@ class Surface:
         """
         if coords is None:
             return None
+
+        if self.mesh is None:
+            return coords
 
         cs = getattr(self.mesh, "CoordinateSystem", None)
         if cs is not None and getattr(cs, "_scaled", False):
@@ -1195,26 +1202,31 @@ class Surface:
 
         Uses the absolute value of the signed distance field, so the influence
         is symmetric on both sides of the surface. For asymmetric behavior,
-        access the signed distance directly via surface.distance.sym[0].
+        access the signed distance directly via ``surface.distance.sym[0]``.
 
-        Args:
-            width: Characteristic width of the transition zone. Can include
-                   Pint units (e.g., 500 * u.meter), which will be converted
-                   using the model's scaling system.
-            value_near: Value at/near the surface (can be a scalar or sympy expression)
-            value_far: Value far from the surface (can be a scalar or sympy expression)
-            profile: Transition profile type:
-                - "step": Sharp transition at distance = width
-                - "linear": Linear ramp from 0 to width
-                - "gaussian": Smooth Gaussian decay
-                - "smoothstep": C1-continuous Hermite interpolation
+        Parameters
+        ----------
+        width : float
+            Characteristic width of the transition zone.
+        value_near : float or sympy.Expr, optional
+            Value at/near the surface. Default is 1.0.
+        value_far : float or sympy.Expr, optional
+            Value far from the surface. Default is 0.0.
+        profile : str, optional
+            Transition profile type. One of ``"step"`` (sharp transition),
+            ``"linear"`` (linear ramp), ``"gaussian"`` (smooth decay),
+            or ``"smoothstep"`` (C1-continuous Hermite). Default is ``"step"``.
 
-        Returns:
-            sympy.Expr that can be used in Underworld expressions
+        Returns
+        -------
+        sympy.Expr
+            Expression that can be used in Underworld equations.
 
-        Example:
-            >>> # Step function for fault zone viscosity
-            >>> eta = surface.influence_function(
+        Examples
+        --------
+        Step function for fault zone viscosity:
+
+        >>> eta = surface.influence_function(
             ...     width=0.05,
             ...     value_near=0.01,
             ...     value_far=1.0,

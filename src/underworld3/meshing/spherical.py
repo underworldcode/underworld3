@@ -289,56 +289,42 @@ def SphericalShellInternalBoundary(
     Generates a spherical shell with an internal boundary using Gmsh. The function creates a 3D mesh of a spherical shell
     defined by outer, internal, and inner radii. Mesh size, polynomial degree, and Gmsh verbosity can be customized.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     radiusOuter : float, optional
         The outer radius of the spherical shell. Default is 1.0.
-
     radiusInternal : float, optional
-        The radius of the internal boundary within the spherical shell. Default is 0.8.
-
+        The radius of the internal boundary. Default is 0.8.
     radiusInner : float, optional
         The inner radius of the spherical shell. Default is 0.547.
-
     cellSize : float, optional
-        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
-
+        The target size for the mesh elements. Default is 0.1.
     degree : int, optional
-        The polynomial degree of the finite elements used in the mesh. Default is 1.
-
+        The polynomial degree of the finite elements. Default is 1.
     qdegree : int, optional
-        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
-
+        The quadrature degree for integration. Default is 2.
     filename : str, optional
-        The name of the file where the mesh will be saved. If None, a default name is generated based on the radii and mesh size. Default is None.
-
+        The name of the file where the mesh will be saved. Default is None.
     refinement : optional
-        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
-
+        Refinement level for the mesh. Default is None.
     gmsh_verbosity : int, optional
-        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
-
+        Gmsh output verbosity (0=quiet). Default is 0.
     verbose : bool, optional
-        If True, the function prints additional information during execution. Default is False.
+        If True, print additional information. Default is False.
 
-    Returns:
-    --------
-    None
-        The function generates and saves a mesh file according to the specified parameters.
+    Returns
+    -------
+    Mesh
+        The generated spherical shell mesh with internal boundary.
 
-    Example:
+    Examples
     --------
-    mesh = uw.meshing.SphericalShellInternalBoundary(
-        radiusOuter=2.0,
-        radiusInternal=1.5,
-        radiusInner=1.0,
-        cellSize=0.05,
-        degree=2,
-        qdegree=3,
-        filename="custom_spherical_shell.msh",
-        gmsh_verbosity=1,
-        verbose=True
-    )
+    >>> mesh = uw.meshing.SphericalShellInternalBoundary(
+    ...     radiusOuter=2.0,
+    ...     radiusInternal=1.5,
+    ...     radiusInner=1.0,
+    ...     cellSize=0.05,
+    ... )
     """
 
     class boundaries(Enum):
@@ -511,64 +497,48 @@ def SegmentofSphere(
     Generates a segment of a sphere using Gmsh. This function creates a 3D mesh of a spherical segment defined by outer and inner radii,
     and the extent in longitude and latitude. The mesh can be customized in terms of size, polynomial degree, and verbosity.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     radiusOuter : float, optional
         The outer radius of the spherical segment. Default is 1.0.
-
     radiusInner : float, optional
         The inner radius of the spherical segment. Default is 0.547.
-
     longitudeExtent : float, optional
-        The angular extent of the segment in the longitudinal direction (in degrees). Default is 90.0.
-
+        The angular extent in longitude (degrees). Default is 90.0.
     latitudeExtent : float, optional
-        The angular extent of the segment in the latitudinal direction (in degrees). Default is 90.0.
-
+        The angular extent in latitude (degrees). Default is 90.0.
     cellSize : float, optional
-        The target size for the mesh elements. This controls the density of the mesh. Default is 0.1.
-
+        The target size for the mesh elements. Default is 0.1.
     degree : int, optional
-        The polynomial degree of the finite elements used in the mesh. Default is 1.
-
+        The polynomial degree of the finite elements. Default is 1.
     qdegree : int, optional
-        The quadrature degree for integration. Higher values may improve accuracy but increase computation time. Default is 2.
-
+        The quadrature degree for integration. Default is 2.
     filename : str, optional
-        The name of the file where the mesh will be saved. If None, a default name is generated based on the parameters. Default is None.
-
+        The name of the file where the mesh will be saved. Default is None.
     refinement : optional
-        Refinement level or method for the mesh. Used to increase the resolution of the mesh in certain regions. Default is None.
-
+        Refinement level for the mesh. Default is None.
     gmsh_verbosity : int, optional
-        Controls the verbosity of Gmsh output. Set to 0 for minimal output, higher numbers for more detailed logs. Default is 0.
-
+        Gmsh output verbosity (0=quiet). Default is 0.
     verbose : bool, optional
-        If True, the function prints additional information during execution. Default is False.
+        If True, print additional information. Default is False.
+    centroid : tuple of float, optional
+        The coordinates of the centroid of the sphere segment.
+        Default is (0.0, 0.0, 0.0).
 
-    centroid : Tuple[float, float, float], optional
-        The coordinates of the centroid (center) of the sphere segment. Default is (0.0, 0.0, 0.0).
+    Returns
+    -------
+    Mesh
+        The generated spherical segment mesh.
 
-    Returns:
+    Examples
     --------
-    None
-        The function generates and saves a mesh file according to the specified parameters.
-
-    Example:
-    --------
-    mesh = uw.meshing.SegmentofSphere(
-        radiusOuter=2.0,
-        radiusInner=1.0,
-        longitudeExtent=120.0,
-        latitudeExtent=60.0,
-        cellSize=0.05,
-        degree=2,
-        qdegree=3,
-        filename="custom_sphere_segment.msh",
-        centroid=(0.0, 0.0, 0.0),
-        gmsh_verbosity=1,
-        verbose=True
-    )
+    >>> mesh = uw.meshing.SegmentofSphere(
+    ...     radiusOuter=2.0,
+    ...     radiusInner=1.0,
+    ...     longitudeExtent=120.0,
+    ...     latitudeExtent=60.0,
+    ...     cellSize=0.05,
+    ... )
     """
 
     class boundaries(Enum):

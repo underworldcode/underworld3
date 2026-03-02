@@ -53,7 +53,6 @@ mesh_quad = uw.meshing.StructuredQuadBox(
 )
 
 
-@pytest.mark.skip(reason="Poisson natural BC setup failing - needs solver investigation (PETSc error 73: Object in wrong state)")
 @pytest.mark.parametrize("mesh", [mesh_simp_reg, mesh_simp_irreg, mesh_quad])
 def test_poisson_natural_bc(mesh):
     """Test Poisson solver with natural (flux) boundary conditions."""

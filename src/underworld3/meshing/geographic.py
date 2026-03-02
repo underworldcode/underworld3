@@ -488,44 +488,29 @@ def RegionalGeographicBox(
 
     Examples
     --------
-    # Create mesh for southeastern Australia, 0-400 km depth
-    mesh = uw.meshing.RegionalGeographicBox(
-        lon_range=(135, 140),
-        lat_range=(-35, -30),
-        depth_range=(0, 400),
-        ellipsoid='WGS84',
-        numElements=(20, 20, 10),
-    )
+    Create mesh for southeastern Australia, 0-400 km depth::
 
-    # Access geographic coordinates
-    lon = mesh.geo.lon         # Longitude array (degrees East)
-    lat = mesh.geo.lat         # Latitude array (degrees North)
-    depth = mesh.geo.depth     # Depth array (km below surface)
+        mesh = uw.meshing.RegionalGeographicBox(
+            lon_range=(135, 140),
+            lat_range=(-35, -30),
+            depth_range=(0, 400),
+            ellipsoid='WGS84',
+            numElements=(20, 20, 10),
+        )
 
-    # Use in equations
-    λ_lon, λ_lat, λ_d = mesh.geo[:]
-    T = 1600 - 0.5 * λ_d       # Temperature decreasing with depth
+    Access geographic coordinates::
 
-    # Basis vectors for boundary conditions
-    v_surface = 0 * mesh.geo.unit_up     # No vertical flow at surface
-    v_bottom = 10 * mesh.geo.unit_down   # Downward flow at bottom
-
-    # Mars example
-    mesh_mars = uw.meshing.RegionalGeographicBox(
-        lon_range=(0, 45),
-        lat_range=(-22.5, 22.5),
-        depth_range=(0, 200),
-        ellipsoid='Mars',
-        numElements=(15, 15, 8),
-    )
+        lon = mesh.geo.lon
+        lat = mesh.geo.lat
+        depth = mesh.geo.depth
 
     Notes
     -----
-    - Uses geodetic latitude (GPS/map standard), not geocentric latitude
-    - Depth is measured from reference ellipsoid surface, not from center
-    - mesh.R provides spherical coordinates $(r, \\theta, \\phi)$ for backward compatibility
-    - mesh.geo provides geographic coordinates (lon, lat, depth) with ellipsoid geometry
-    - Right-handed coordinate system: WE × SN = down
+    Uses geodetic latitude (GPS/map standard), not geocentric latitude.
+    Depth is measured from reference ellipsoid surface, not from center.
+    ``mesh.R`` provides spherical coordinates for backward compatibility.
+    ``mesh.geo`` provides geographic coordinates with ellipsoid geometry.
+    Right-handed coordinate system: WE x SN = down.
     """
     from underworld3.coordinates import ELLIPSOIDS, geographic_to_cartesian
     from underworld3.units import (

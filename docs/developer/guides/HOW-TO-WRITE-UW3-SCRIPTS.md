@@ -612,7 +612,7 @@ def test_swarm_functionality():
 
 If you see generated C code with symbolic expressions instead of numbers:
 
-```c
+```text
 // ERROR symptom in generated code:
 out[0] = 1.0/{ \eta \hspace{ 0.0006pt } };  // Should be numeric!
 ```

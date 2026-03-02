@@ -294,10 +294,10 @@ class MaterialRegistry:
         """
         Add a callback function for material changes.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         callback : callable
-            Function called as callback(event_type, *args)
+            Function called as ``callback(event_type, *args)``
         """
         self._callbacks.append(callback)
 

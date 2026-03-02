@@ -937,40 +937,42 @@ def dimensionalise(expression, target_dimensionality=None, model=None) -> Any:
     1. **Auto mode**: Extract dimensionality from the expression itself (if preserved)
     2. **Explicit mode**: Use provided target_dimensionality
 
-    Args:
-        expression: Non-dimensional value (UWQuantity, UnitAwareArray, or plain number)
-                   with preserved dimensionality metadata
-        target_dimensionality: Optional dict specifying target dimensionality
-                              (Pint format: e.g., {'[length]': 1, '[time]': -1} for velocity)
-                              If None, uses dimensionality from expression
-        model: Model instance with reference quantities (uses default if None)
+    Parameters
+    ----------
+    expression : UWQuantity, UnitAwareArray, or number
+        Non-dimensional value with preserved dimensionality metadata.
+    target_dimensionality : dict, optional
+        Target dimensionality in Pint format, e.g.
+        ``{'[length]': 1, '[time]': -1}`` for velocity.
+        If None, uses dimensionality from the expression.
+    model : Model, optional
+        Model instance with reference quantities. Uses default if None.
 
-    Returns:
-        Dimensional quantity with appropriate units
+    Returns
+    -------
+    quantity
+        Dimensional quantity with appropriate units.
 
-    Raises:
-        ValueError: If no dimensionality information available
-        ValueError: If model has no reference quantities
+    Raises
+    ------
+    ValueError
+        If no dimensionality information is available.
+    ValueError
+        If model has no reference quantities.
 
-    Examples:
-        >>> # Auto mode - dimensionality preserved from non_dimensionalise()
-        >>> velocity_qty = uw.quantity(5.0, "cm/year")
-        >>> nondim_vel = non_dimensionalise(velocity_qty, model)
-        >>> # nondim_vel remembers it was velocity
-        >>> dimensional_vel = dimensionalise(nondim_vel, model=model)
-        >>> # Result has appropriate units based on model scales
+    Examples
+    --------
+    Auto mode -- dimensionality preserved from ``non_dimensionalise()``:
 
-        >>> # Explicit mode - specify dimensionality
-        >>> plain_value = 2.5  # dimensionless number
-        >>> velocity_dimensionality = {'[length]': 1, '[time]': -1}
-        >>> velocity = dimensionalise(plain_value, velocity_dimensionality, model)
-        >>> # Result is 2.5 * (length_scale / time_scale)
+    >>> velocity_qty = uw.quantity(5.0, "cm/year")
+    >>> nondim_vel = non_dimensionalise(velocity_qty, model)
+    >>> dimensional_vel = dimensionalise(nondim_vel, model=model)
 
-        >>> # With arrays
-        >>> nondim_array = UnitAwareArray([1.0, 2.0, 3.0],
-        ...                               units="dimensionless",
-        ...                               dimensionality={'[length]': 1})
-        >>> dimensional_array = dimensionalise(nondim_array, model=model)
+    Explicit mode -- specify dimensionality:
+
+    >>> plain_value = 2.5
+    >>> velocity_dimensionality = {'[length]': 1, '[time]': -1}
+    >>> velocity = dimensionalise(plain_value, velocity_dimensionality, model)
     """
     # Get model if not provided
     if model is None:

@@ -7,18 +7,18 @@
 
 ### Pattern Migration Cheat Sheet
 
-```python
-# ❌ DEPRECATED          →  ✅ RECOMMENDED
-mesh.data                 →  mesh.X.coords  or  mesh.points
-mesh.data.shape           →  mesh.X.coords.shape
-mesh.data[:, 0]           →  mesh.X.coords[:, 0]
-mesh.data.min()           →  mesh.X.coords.min()
-mesh.data.copy()          →  mesh.X.coords.copy()
+```text
+DEPRECATED                   RECOMMENDED
+mesh.data                 -> mesh.X.coords  or  mesh.points
+mesh.data.shape           -> mesh.X.coords.shape
+mesh.data[:, 0]           -> mesh.X.coords[:, 0]
+mesh.data.min()           -> mesh.X.coords.min()
+mesh.data.copy()          -> mesh.X.coords.copy()
 
-# ✅ UNCHANGED (these work exactly as before)
-mesh.X[0]                 →  mesh.X[0]  (symbolic x-coordinate)
-x, y = mesh.X             →  x, y = mesh.X  (symbolic unpacking)
-mesh.units                →  mesh.units  (coordinate units)
+UNCHANGED (these work exactly as before)
+mesh.X[0]                 -> mesh.X[0]  (symbolic x-coordinate)
+x, y = mesh.X             -> x, y = mesh.X  (symbolic unpacking)
+mesh.units                -> mesh.units  (coordinate units)
 ```
 
 ## Migration Examples by Use Case

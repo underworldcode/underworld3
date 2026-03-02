@@ -1173,10 +1173,6 @@ class SNES_Scalar(SolverBaseClass):
 
 
         self.essential_bcs = []
-        # TODO(BUG): add_natural_bc() causes PETSc error 73 ("Object in wrong state")
-        # when used with this solver. The Stokes solver's natural BCs work correctly,
-        # suggesting a setup/ordering issue specific to scalar Poisson.
-        # See planning file: underworld.md (Bugs section, 2026-01-19)
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
@@ -1321,7 +1317,7 @@ class SNES_Scalar(SolverBaseClass):
             bc = PetscDSAddBoundary_UW(cdm.dm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
-                                str(boundary).encode('utf8'),
+                                "UW_Boundaries".encode('utf8'),   # consolidated boundary label
                                 bc.f_id,  # field ID in the DM
                                 num_constrained_components,
                                 <const PetscInt *> &comps_view[0],
@@ -1540,7 +1536,46 @@ class SNES_Scalar(SolverBaseClass):
 
         ## Now add the boundary residual / jacobian terms
 
+        cdef DMLabel c_label
 
+        for bc in self.natural_bcs:
+
+            boundary = bc.boundary
+            boundary_id = bc.PETScID
+
+            value = self.mesh.boundaries[bc.boundary].value
+            bc_label = self.dm.getLabel("UW_Boundaries")
+
+            label_val = value
+
+            i_bd_res = self.ext_dict.bd_res
+            i_bd_jac = self.ext_dict.bd_jac
+
+            c_label = bc_label
+
+            if bc.fn_f is not None:
+
+                UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                0, 0,
+                                ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                NULL,
+                                )
+
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                0, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                NULL,
+                                NULL,
+                                )
+
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                0, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                NULL,
+                                NULL,
+                                )
 
         # Rebuild this lot
 
@@ -1669,9 +1704,11 @@ class SNES_Scalar(SolverBaseClass):
         self.u.vec.array[:] = lvec.array[:]
         self.mesh._stale_lvec = True
 
-        # Invalidate cached data views - PETSc buffer may have changed
-        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        # Sync _gvec so downstream consumers (write, stats) see the result
         target_var = getattr(self.u, "_base_var", self.u)
+        target_var._sync_lvec_to_gvec()
+
+        # Invalidate cached data views - PETSc buffer may have changed
         if hasattr(target_var, "_canonical_data"):
             target_var._canonical_data = None
 
@@ -2438,9 +2475,11 @@ class SNES_Vector(SolverBaseClass):
         self.u.vec.array[:] = lvec.array[:]
         self.mesh._stale_lvec = True
 
-        # Invalidate cached data views - PETSc buffer may have changed
-        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
+        # Sync _gvec so downstream consumers (write, stats) see the result
         target_var = getattr(self.u, "_base_var", self.u)
+        target_var._sync_lvec_to_gvec()
+
+        # Invalidate cached data views - PETSc buffer may have changed
         if hasattr(target_var, "_canonical_data"):
             target_var._canonical_data = None
 
@@ -3842,6 +3881,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
         self.mesh._stale_lvec = True
 
+        # Sync _gvec so downstream consumers (write, stats) see the result
+        for name, var in self.fields.items():
+            target_var = getattr(var, "_base_var", var)
+            target_var._sync_lvec_to_gvec()
+            if hasattr(target_var, "_canonical_data"):
+                target_var._canonical_data = None
 
         self.dm.restoreGlobalVec(clvec)
         self.dm.restoreGlobalVec(gvec)

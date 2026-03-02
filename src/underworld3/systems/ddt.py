@@ -13,28 +13,23 @@ All DDt classes share a common interface:
 - ``bdf(order)`` — backward differentiation formula (returns Δψ, divide by Δt for rate)
 - ``adams_moulton_flux(order)`` — weighted flux for implicit integration
 
-Classes
--------
-Symbolic
-    Pure symbolic history — no mesh storage. Used for flux tracking
-    in SNES_Diffusion where the flux expression is a SymPy tree, not
-    a mesh variable.
-Eulerian
-    Fixed-grid ∂φ/∂t with optional grid-based advection u·∇φ. When
-    ``V_fn`` is provided, ``update_pre_solve`` applies an explicit
-    advection correction so that ``bdf()`` approximates the full
-    material derivative D/Dt = ∂/∂t + u·∇.
-SemiLagrangian
-    Characteristic-based D/Dt via departure points. Traces backward
-    along velocity field to sample upstream values. Unconditionally
-    stable for advection (no CFL constraint) but less accurate when
-    velocity is near zero.
-Lagrangian
-    Full particle-following D/Dt. Creates and manages its own swarm.
-    The swarm is advected during ``update_post_solve``.
-Lagrangian_Swarm
-    Specialized swarm-based Lagrangian using a user-provided swarm.
-    The swarm advection is the user's responsibility.
+**Symbolic** -- Pure symbolic history, no mesh storage. Used for flux
+tracking in SNES_Diffusion where the flux expression is a SymPy tree.
+
+**Eulerian** -- Fixed-grid time derivative with optional grid-based
+advection. When ``V_fn`` is provided, ``update_pre_solve`` applies an
+explicit advection correction so that ``bdf()`` approximates the full
+material derivative.
+
+**SemiLagrangian** -- Characteristic-based D/Dt via departure points.
+Traces backward along velocity field to sample upstream values.
+Unconditionally stable for advection (no CFL constraint).
+
+**Lagrangian** -- Full particle-following D/Dt. Creates and manages
+its own swarm, advected during ``update_post_solve``.
+
+**Lagrangian_Swarm** -- Specialized swarm-based Lagrangian using a
+user-provided swarm. Swarm advection is the user's responsibility.
 
 Notes
 -----

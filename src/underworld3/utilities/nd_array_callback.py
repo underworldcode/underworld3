@@ -104,32 +104,17 @@ _delayed_callback_manager = DelayedCallbackManager()
 
 
 class NDArray_With_Callback(np.ndarray):
-    """
-    # NDArray_With_Callback
+    """A numpy ndarray subclass that triggers callbacks when array data is modified.
 
-    A numpy ndarray subclass that triggers **callbacks** when array data is modified.
-    This class maintains full numpy array compatibility while providing reactive programming
-    capabilities for scientific computing applications.
+    This class maintains full numpy array compatibility while providing reactive
+    programming capabilities for scientific computing applications.
 
-    ## Mathematical Representation
+    **Callback Function Signature**::
 
-    Given an array $\\mathbf{A} \\in \\mathbb{R}^{n \\times m}$, any modification operation
-    $\\mathcal{O}(\\mathbf{A}) \\rightarrow \\mathbf{A}'$ will trigger registered callbacks:
+        def callback(array: NDArray_With_Callback, change_info: dict) -> None:
+            pass
 
-    $$\\mathbf{A}' = \\mathcal{O}(\\mathbf{A}) \\implies \\text{callback}(\\mathbf{A}', \\text{change\\_info})$$
-
-    Where $\\mathcal{O}$ represents operations like assignment, in-place arithmetic, or array methods.
-
-    ## Callback Interface
-
-    ### Function Signature
-    ```python
-    def callback(array: NDArray_With_Callback, change_info: dict) -> None:
-        # Handle array modification
-        pass
-    ```
-
-    ### change_info Dictionary
+    The ``change_info`` dictionary contains:
 
     - ``operation`` (str): Operation name ('setitem', 'iadd', 'fill', etc.)
     - ``indices`` (tuple/slice/None): Location of change (for setitem operations)
@@ -138,109 +123,16 @@ class NDArray_With_Callback(np.ndarray):
     - ``array_shape`` (tuple): Current shape of the array
     - ``array_dtype`` (np.dtype): Data type of the array
 
-    ## Usage Examples
+    **Features**:
 
-    ### Basic Reactive Array
-    ```python
-    def on_change(array, change_info):
-        print(f"🔔 {change_info['operation']} at {change_info['indices']}")
-        print(f"   New value: {change_info['new_value']}")
-
-    # Create reactive array
-    arr = NDArray_With_Callback([1, 2, 3])
-    arr.set_callback(on_change)
-
-    # Modifications trigger callbacks
-    arr[0] = 99      # 🔔 setitem at 0, New value: 99
-    arr += 10        # 🔔 iadd at None, New value: 10
-    arr.fill(0)      # 🔔 fill at None, New value: 0
-    ```
-
-    ### Scientific Computing Integration
-    ```python
-    class Mesh:
-        def __init__(self, coordinates):
-            self._coords = coordinates
-
-        @property
-        def data(self):
-            arr = NDArray_With_Callback(self._coords, owner=self)
-            arr.set_callback(self._on_coordinates_changed)
-            return arr
-
-        def _on_coordinates_changed(self, array, info):
-            # Invalidate cached computations
-            self._jacobians = None
-            self._mesh_quality = None
-            # Trigger dependent updates
-            self._update_connectivity()
-    ```
-
-    ### Backend Abstraction Pattern
-
-    The callback mechanism enables **backend-agnostic data storage**. Different storage
-    backends (PETSc, pyvista, HDF5, etc.) can be wrapped with the same interface by
-    providing different callbacks:
-
-    ```python
-    # Example 1: PETSc backend (for MeshVariable)
-    def petsc_sync_callback(array, info):
-        '''Sync numpy array to PETSc Vec.'''
-        self._petsc_vec.setArray(array)
-        self._petsc_vec.assemble()
-
-    mesh_var.data = NDArray_With_Callback(
-        self._petsc_vec.getArray(),
-        callback=petsc_sync_callback,
-        owner=self,
-    )
-
-    # Example 2: pyvista backend (for SurfaceVariable)
-    def pyvista_sync_callback(array, info):
-        '''Sync numpy array to pyvista point_data.'''
-        self.surface._pv_mesh.point_data[self.name] = np.asarray(array)
-        self._proxy_stale = True  # Mark derived data as stale
-
-    surface_var.data = NDArray_With_Callback(
-        self._pv_mesh.point_data[name],
-        callback=pyvista_sync_callback,
-        owner=self,
-    )
-    ```
-
-    This pattern allows `UnitAwareArray` (which extends this class) to work with
-    any storage backend without modification - only the callback changes.
-
-    ### Delayed Callback Context
-    ```python
-    # Batch multiple operations
-    with arr.delay_callback("batch update"):
-        arr[0] = 1
-        arr[1] = 2
-        arr[2] = 3
-    # All callbacks fire here (with MPI synchronization)
-
-    # Global coordination across arrays
-    with NDArray_With_Callback.delay_callbacks_global("mesh deformation"):
-        mesh.data += displacement
-        swarm.data += velocity * dt
-    # Synchronized callback execution across all arrays
-    ```
-
-    ## Advanced Features
-
-    - **Multiple callbacks**: `add_callback()`, `remove_callback()`, `clear_callbacks()`
-    - **Enable/disable**: `enable_callbacks()`, `disable_callbacks()`
-    - **Delayed execution**: `delay_callback()`, `delay_callbacks_global()`
+    - **Multiple callbacks**: ``add_callback()``, ``remove_callback()``, ``clear_callbacks()``
+    - **Enable/disable**: ``enable_callbacks()``, ``disable_callbacks()``
+    - **Delayed execution**: ``delay_callback()``, ``delay_callbacks_global()``
     - **MPI synchronization**: Automatic barriers in parallel contexts
     - **Weak references**: Owner tracking without circular dependencies
-    - **Error resilience**: Callback exceptions don't break array operations
-    - **Global reductions**: MPI-aware `global_max()`, `global_min()`, `global_sum()`, etc.
+    - **Global reductions**: MPI-aware ``global_max()``, ``global_min()``, ``global_sum()``, etc.
 
-    ## Global Reduction Operations (MPI-aware)
-
-    These methods perform reduction operations across all MPI ranks, essential for
-    parallel scientific computing where data is distributed across processes.
+    **Global Reduction Operations (MPI-aware)**:
 
     - ``global_max(axis=None)``: Maximum value across all MPI ranks
     - ``global_min(axis=None)``: Minimum value across all MPI ranks
@@ -250,37 +142,9 @@ class NDArray_With_Callback(np.ndarray):
     - ``global_norm(ord=2)``: 2-norm (Euclidean) across all ranks
     - ``global_rms()``: Root mean square across all ranks
 
-    ### Usage Example
-    ```python
-    # In parallel code, each rank has a portion of mesh coordinates
-    coords = mesh.X.coords  # NDArray_With_Callback or subclass
-
-    # Find global bounds (across all MPI ranks)
-    x_min = coords[:, 0].global_min()  # True minimum across all ranks
-    x_max = coords[:, 0].global_max()  # True maximum across all ranks
-
-    # Compute global statistics
-    mean_coord = coords.global_mean()  # True mean (not just local mean!)
-    total_size = coords.global_size()  # Total elements across all ranks
-
-    # Compute global norms
-    rms_value = coords.global_rms()    # Root mean square
-    l2_norm = coords.global_norm()     # Euclidean norm
-    ```
-
-    ### Important Notes
-
-    - These methods use MPI collective operations (`allreduce`)
-    - **All ranks must call these methods** (they are collective operations)
-    - Subclasses like `UnitAwareArray` override these to preserve units
-
-    ## Performance Notes
-
-    - **Zero overhead** when callbacks disabled
-    - **Minimal impact** on array operations (< 5% typical)
-    - **Batch processing** via delayed contexts for optimal performance
-    - **Thread-safe** delayed callback management
-    - **Memory efficient** weak reference ownership tracking
+    These methods use MPI collective operations (``allreduce``).
+    All ranks must call these methods (they are collective operations).
+    Subclasses like ``UnitAwareArray`` override these to preserve units.
     """
 
     def __new__(cls, input_array=None, owner=None, callback=None, disable_inplace_operators=False):
@@ -296,8 +160,9 @@ class NDArray_With_Callback(np.ndarray):
         callback : callable, optional
             Initial callback function to register
         disable_inplace_operators : bool, optional
-            If True, in-place operators (+=, -=, *=, /=, etc.) will raise RuntimeError
-            for parallel safety. Default is False for backward compatibility.
+            If True, in-place operators (``+=``, ``-=``, ``*=``, ``/=``, etc.)
+            will raise RuntimeError for parallel safety.
+            Default is False for backward compatibility.
         """
         if input_array is None:
             input_array = []

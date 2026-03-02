@@ -5,21 +5,16 @@ This module provides the infrastructure for evaluating symbolic expressions
 on meshes and swarms. It bridges SymPy symbolic mathematics with PETSc
 numerical evaluation.
 
-Key Components
---------------
-expression : class
-    User-facing symbolic expression wrapper (UWexpression).
-evaluate : function
-    Evaluate expressions at mesh/swarm points.
-global_evaluate : function
-    Parallel-safe evaluation gathering results across MPI ranks.
-UnderworldFunction : class
-    Core function evaluation machinery.
+**expression** -- User-facing symbolic expression wrapper (UWexpression).
 
-Unit Conversion
----------------
-convert_quantity_units, make_dimensionless, add_units
-    Utilities for handling physical units in expressions.
+**evaluate** -- Evaluate expressions at mesh/swarm points.
+
+**global_evaluate** -- Parallel-safe evaluation gathering results across MPI ranks.
+
+**UnderworldFunction** -- Core function evaluation machinery.
+
+**convert_quantity_units**, **make_dimensionless**, **add_units** --
+Utilities for handling physical units in expressions.
 
 The function module integrates with pint for optional unit-aware
 computations when the mesh has an associated unit registry.
