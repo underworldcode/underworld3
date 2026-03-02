@@ -109,6 +109,14 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
         cell_points_list.append(cell_points - pStart)
 
+    # PETSc DMPlex hexahedra have bottom-face vertices wound opposite to VTK convention.
+    # PETSc: (0,0,0)→(0,1,0)→(1,1,0)→(1,0,0)  (CCW from above)
+    # VTK:   (0,0,0)→(1,0,0)→(1,1,0)→(0,1,0)  (CW from above)
+    # Fix by swapping vertices 1 and 3 on the bottom face: [0,3,2,1,4,5,6,7]
+    if not mesh.dm.isSimplex() and mesh.dim == 3:
+        hex_reorder = [0, 3, 2, 1, 4, 5, 6, 7]
+        cell_points_list = [pts[hex_reorder] for pts in cell_points_list]
+
     try:
         import meshio
 
