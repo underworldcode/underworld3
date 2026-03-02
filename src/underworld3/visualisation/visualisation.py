@@ -109,6 +109,22 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         cell_points = mesh.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
         cell_points_list.append(cell_points - pStart)
 
+    # PETSc DMPlex uses opposite winding to VTK for 3D cells.
+    # Reorder vertices to match VTK convention (right-handed orientation)
+    # so that face normals, shading, clipping, and back-face culling work correctly.
+    #
+    # Hexahedra: PETSc winds bottom face CCW from above, VTK expects CW from above.
+    #   Fix: swap vertices 1 and 3 on the bottom face → [0,3,2,1,4,5,6,7]
+    # Tetrahedra: PETSc uses left-handed orientation, VTK expects right-handed.
+    #   Fix: swap vertices 1 and 2 → [0,2,1,3]
+    if mesh.dim == 3:
+        if mesh.dm.isSimplex():
+            tet_reorder = [0, 2, 1, 3]
+            cell_points_list = [pts[tet_reorder] for pts in cell_points_list]
+        else:
+            hex_reorder = [0, 3, 2, 1, 4, 5, 6, 7]
+            cell_points_list = [pts[hex_reorder] for pts in cell_points_list]
+
     try:
         import meshio
 
