@@ -3315,14 +3315,13 @@ class Swarm(Stateful, uw_object):
                 for index in indices:
                     self.dm.removePointAtIndex(index)
 
-                # CRITICAL FIX: Invalidate cached data after removing particles
-                # The _particle_coordinates variable caches data - must refresh after DM changes
-                self._particle_coordinates._canonical_data = None
-
-                # Also invalidate caches for all swarm variables
-                for var in self._vars.values():
-                    if hasattr(var, "_canonical_data"):
-                        var._canonical_data = None
+        # Invalidate all cached data after migration.
+        # Any particle movement (send, receive, or balanced swap) makes
+        # cached arrays stale — both size and values may have changed.
+        self._particle_coordinates._canonical_data = None
+        for var in self._vars.values():
+            if hasattr(var, "_canonical_data"):
+                var._canonical_data = None
 
         return
 
