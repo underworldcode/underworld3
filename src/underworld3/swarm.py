@@ -112,13 +112,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         Physical units for this variable (e.g., 'kelvin', 'Pa').
         Requires reference quantities to be set on the model.
 
-    Attributes
-    ----------
-    data : numpy.ndarray
-        Direct access to variable values at particle locations.
-    sym : sympy.Matrix
-        Symbolic representation for use in expressions.
-
     See Also
     --------
     MeshVariable : Variable supported by mesh nodes.
@@ -1975,11 +1968,6 @@ class IndexSwarmVariable(SwarmVariable):
     proxy_continuous : bool
         Whether mesh proxy is continuous (default True).
 
-    Attributes
-    ----------
-    sym : list of sympy.Expr
-        Symbolic mask expressions for each material index.
-
     Examples
     --------
     >>> material = IndexSwarmVariable("M", swarm, indices=3)
@@ -2374,44 +2362,6 @@ class Swarm(Stateful, uw_object):
     verbose : bool, optional
         Enable verbose output for debugging and monitoring particle operations.
         Default is False.
-
-    Attributes
-    ----------
-    mesh : uw.discretisation.Mesh
-        Reference to the associated mesh object.
-    dim : int
-        Spatial dimension of the mesh (2D or 3D).
-    cdim : int
-        Coordinate dimension of the mesh.
-    data : numpy.ndarray
-        Direct access to particle coordinate data.
-    particle_coordinates : SwarmVariable
-        SwarmVariable containing particle coordinate information.
-    recycle_rate : int
-        Current recycle rate for streak management.
-    cycle : int
-        Current cycle number for streak particles.
-
-    Methods
-    -------
-    populate(fill_param=1)
-        Populate the swarm with particles throughout the domain.
-    migrate(remove_sent_points=True, delete_lost_points=True, max_its=10)
-        Manually migrate particles across MPI processes after coordinate updates.
-    add_particles_with_coordinates(coords)
-        Add new particles at specified coordinate locations.
-    add_particles_with_global_coordinates(coords)
-        Add particles using global coordinate system.
-    add_variable(name, size, dtype=float)
-        Add a new variable to track additional particle properties.
-    save(filename, meshUnits=1.0, swarmUnits=1.0, units="dimensionless")
-        Save swarm data to file.
-    read_timestep(filename, step_name, outputPath="./output/")
-        Read swarm data from a specific timestep file.
-    advection(V_fn, delta_t, evalf=False, corrector=True, restore_points_func=None)
-        Advect particles using a velocity field.
-    estimate_dt(V_fn, dt_min=1.0e-15, dt_max=1.0)
-        Estimate appropriate timestep for particle advection.
 
     Examples
     --------

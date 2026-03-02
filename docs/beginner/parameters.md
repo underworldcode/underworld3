@@ -50,6 +50,33 @@ python script.py -uw_resolution 0.025 -uw_solver superlu_dist
 mpirun -np 4 python script.py -uw_resolution 0.01
 ```
 
+### Why Single-Dash Options?
+
+Underworld uses **PETSc-style** command-line options, not Python's standard `argparse`
+conventions. The key differences:
+
+| Convention | Long option | Short option | Word separator |
+|------------|-------------|--------------|----------------|
+| **PETSc** (Underworld) | `-uw_resolution` | — | underscore `_` |
+| **argparse** (Python) | `--resolution` | `-r` | hyphen `-` |
+
+Underworld inherits PETSc's options database, which uses a **single dash** followed
+by a descriptive name with **underscores**. This is by design:
+
+- PETSc solver options (e.g., `-ksp_type gmres`, `-pc_type lu`) use this format
+- Underworld user parameters share the same options database
+- The `uw_` prefix prevents collisions with PETSc's own options
+
+This means standard Python option parsers (argparse, click) will **not** work with
+Underworld's CLI parameters. Use `uw.Params` instead — it reads from PETSc's
+options database automatically.
+
+```{tip}
+If you're writing a wrapper script that also needs argparse-style options,
+parse those with argparse first, then pass the remaining arguments to PETSc
+via `petsc4py.init(sys.argv)` before importing underworld.
+```
+
 ### Notebook Override
 
 ```python

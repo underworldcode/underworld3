@@ -890,8 +890,7 @@ class Surface:
 
         Args:
             offset: (3D only) Height offset for delaunay_2d (controls curvature tolerance).
-            n_segments: (2D only) Number of line segments. If None, uses number
-                       of control points minus 1.
+            n_segments: (2D only) Number of line segments, or None for auto.
 
         Raises:
             ImportError: If pyvista not available

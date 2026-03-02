@@ -620,18 +620,6 @@ class ViscousFlowModel(Constitutive_Model):
     material_name : str, optional
         Name identifier for this material (used in multi-material setups).
 
-    Attributes
-    ----------
-    Parameters : _Parameters
-        Material parameters container. Set ``Parameters.shear_viscosity_0``
-        to define the viscosity.
-    flux : sympy.Matrix
-        The computed deviatoric stress tensor :math:`\boldsymbol{\tau}`.
-    C : sympy.Matrix
-        Mandel form of the constitutive tensor :math:`\eta_{IJ}`.
-    c : sympy.Array
-        Rank-4 tensor form :math:`\eta_{ijkl}`.
-
     Examples
     --------
     >>> import underworld3 as uw
@@ -855,17 +843,6 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         The solver unknowns (typically velocity and pressure fields).
     material_name : str, optional
         Name identifier for this material.
-
-    Attributes
-    ----------
-    Parameters : _Parameters
-        Material parameters including:
-
-        - ``shear_viscosity_0``: Background viscosity :math:`\eta_0`
-        - ``yield_stress``: Yield stress :math:`\tau_y`
-
-    viscosity : UWexpression
-        The effective (possibly yielded) viscosity.
 
     Notes
     -----
@@ -1659,18 +1636,6 @@ class DiffusionModel(Constitutive_Model):
     material_name : str, optional
         Name identifier for this material.
 
-    Attributes
-    ----------
-    Parameters : _Parameters
-        Material parameters container. Set ``Parameters.diffusivity``
-        to define :math:`\kappa`.
-    flux : sympy.Matrix
-        The computed diffusive flux vector.
-    diffusivity : UWexpression
-        Shortcut to ``Parameters.diffusivity``.
-    K : UWexpression
-        Alias for ``diffusivity``.
-
     Examples
     --------
     >>> diffusion = uw.constitutive_models.DiffusionModel(poisson.Unknowns)
@@ -1927,19 +1892,6 @@ class DarcyFlowModel(Constitutive_Model):
         The solver unknowns (the pressure/head field).
     material_name : str, optional
         Name identifier for this material.
-
-    Attributes
-    ----------
-    Parameters : _Parameters
-        Material parameters container:
-
-        - ``permeability``: Intrinsic permeability :math:`\kappa` [m²]
-        - ``s``: Body force vector (e.g., gravity term)
-
-    flux : sympy.Matrix
-        The computed Darcy flux vector.
-    permeability : UWexpression
-        Shortcut to ``Parameters.permeability``.
 
     Examples
     --------

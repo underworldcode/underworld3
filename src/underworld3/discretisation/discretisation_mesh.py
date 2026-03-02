@@ -176,17 +176,6 @@ class Mesh(Stateful, uw_object):
     verbose : bool, optional
         Print mesh construction information.
 
-    Attributes
-    ----------
-    N : sympy.vector.CoordSys3D
-        SymPy coordinate system for symbolic expressions.
-    X : UWCoordinate tuple
-        Coordinate variables (x, y, z) for use in expressions.
-    dim : int
-        Spatial dimension of the mesh.
-    dm : PETSc.DMPlex
-        Underlying PETSc distributed mesh object.
-
     Examples
     --------
     Meshes are typically created via the meshing module::
