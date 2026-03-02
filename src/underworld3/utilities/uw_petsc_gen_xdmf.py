@@ -401,24 +401,26 @@ class Xdmf:
                     self.writeSpaceGridFooter(fp)
                 self.writeSpaceGridHeader(fp, numCells, numCorners, cellDim, spaceDim)
                 for vf in vfields:
+                    vpath = vf[2] if len(vf) > 2 else "/vertex_fields/" + vf[0]
                     self.writeField(
                         fp,
                         len(time),
                         t,
                         cellDim,
                         spaceDim,
-                        "/vertex_fields/" + vf[0],
+                        vpath,
                         vf,
                         "Node",
                     )
                 for cf in cfields:
+                    cpath = cf[2] if len(cf) > 2 else "/cell_fields/" + cf[0]
                     self.writeField(
                         fp,
                         len(time),
                         t,
                         cellDim,
                         spaceDim,
-                        "/cell_fields/" + cf[0],
+                        cpath,
                         cf,
                         "Cell",
                     )
@@ -440,6 +442,40 @@ class Xdmf:
                     self.writeTimeGridFooter(fp)
             self.writeFooter(fp)
         return
+
+
+def _collect_mesh_fields(h5, numVertices, numCells):
+    """Collect mesh fields from HDF5 in either new (/fields) or legacy layouts."""
+    vfields = []
+    cfields = []
+
+    # New layout: /fields/<name>, with /fields/coordinates reserved for point locations
+    if "fields" in h5:
+        for name, dataset in h5["fields"].items():
+            if name == "coordinates":
+                continue
+
+            dims = tuple(dataset.shape)
+            has_vertices_dim = numVertices in dims
+            has_cells_dim = numCells in dims
+
+            item = (name, dataset, f"/fields/{name}")
+
+            if has_cells_dim and not has_vertices_dim:
+                cfields.append(item)
+            else:
+                # Default to node-centered when ambiguous
+                vfields.append(item)
+
+        return vfields, cfields
+
+    # Legacy layout
+    if "vertex_fields" in h5:
+        vfields = list(h5["vertex_fields"].items())
+    if "cell_fields" in h5:
+        cfields = list(h5["cell_fields"].items())
+
+    return vfields, cfields
 
 
 def generateXdmf(hdfFilename, xdmfFilename=None):
@@ -486,19 +522,13 @@ def generateXdmf(hdfFilename, xdmfFilename=None):
         time = np.array(h5["time"]).flatten()
     else:
         time = [-1]
-    vfields = []
-    cfields = []
+    vfields, cfields = _collect_mesh_fields(h5, numVertices, numCells)
     pfields = []
-    pfields = []
-    if "vertex_fields" in h5:
-        vfields = h5["vertex_fields"].items()
-    if "cell_fields" in h5:
-        cfields = h5["cell_fields"].items()
     numParticles = 0
     if "particles" in h5:
         numParticles = h5["particles"]["coordinates"].shape[0]
     if "particle_fields" in h5:
-        pfields = h5["particle_fields"].items()
+        pfields = list(h5["particle_fields"].items())
 
     # Write Xdmf
     Xdmf(xdmfFilename).write(
@@ -568,19 +598,13 @@ def generate_uw_Xdmf(hdfFilename, xdmfFilename=None):
         time = np.array(h5["time"]).flatten()
     else:
         time = [-1]
-    vfields = []
-    cfields = []
+    vfields, cfields = _collect_mesh_fields(h5, numVertices, numCells)
     pfields = []
-    pfields = []
-    if "vertex_fields" in h5:
-        vfields = h5["vertex_fields"].items()
-    if "cell_fields" in h5:
-        cfields = h5["cell_fields"].items()
     numParticles = 0
     if "particles" in h5:
         numParticles = h5["particles"]["coordinates"].shape[0]
     if "particle_fields" in h5:
-        pfields = h5["particle_fields"].items()
+        pfields = list(h5["particle_fields"].items())
 
     # Write Xdmf
     Xdmf(xdmfFilename).write(
