@@ -3311,27 +3311,26 @@ class Swarm(Stateful, uw_object):
 
     @timing.routine_timer_decorator
     def add_particles_with_coordinates(self, coordinatesArray) -> int:
-        """
-        Add particles to the swarm using particle coordinates provided
-        using a numpy array.
+        """Add particles at given coordinates, keeping only locally-owned points.
 
-        Note that particles with coordinates NOT local to the current processor will
-        be rejected / ignored.
+        Each rank filters the input array and adds only the points that fall
+        within its local domain partition. Non-local points are silently
+        ignored, so it is safe to pass the same global coordinate array to
+        every rank — no duplicates will be created.
 
-        Either include an array with all coordinates to all processors
-        or an array with the local coordinates.
+        This is the recommended method for user code.  For pre-partitioned
+        data where each rank already holds only its own points, this method
+        also works correctly.
 
         Parameters
         ----------
         coordinatesArray : numpy.ndarray
-            The numpy array containing the coordinate of the new particles. Array is
-            expected to take shape n*dim, where n is the number of new particles, and
-            dim is the dimensionality of the swarm's supporting mesh.
+            Coordinates of new particles, shape ``(n, dim)``.
 
         Returns
         --------
-        npoints: int
-            The number of points added to the local section of the swarm.
+        npoints : int
+            Number of points actually added on this rank.
         """
 
         if not isinstance(coordinatesArray, np.ndarray):
@@ -3391,23 +3390,33 @@ class Swarm(Stateful, uw_object):
         migrate=True,
         delete_lost_points=True,
     ) -> int:
-        """
-        Add particles to the swarm using particle coordinates provided
-        using a numpy array.
+        """Add particles on every rank, then migrate to correct owners.
 
-        global coordinates: particles will be appropriately migrated
+        Every rank inserts **all** supplied points into the local swarm, then
+        ``dm.migrate()`` moves each particle to the rank that owns its
+        spatial location.  If the same array is passed on every rank, this
+        produces one copy of each point in the correct partition — but calling
+        it with *different* arrays per rank will accumulate all of them.
+
+        This is primarily an internal method used by global-evaluation and
+        mesh-transfer utilities.  For general use, prefer
+        :meth:`add_particles_with_coordinates`, which filters non-local
+        points automatically and never creates duplicates.
 
         Parameters
         ----------
         globalCoordinatesArray : numpy.ndarray
-            The numpy array containing the coordinate of the new particles. Array is
-            expected to take shape n*dim, where n is the number of new particles, and
-            dim is the dimensionality of the swarm's supporting mesh.
+            Coordinates of new particles, shape ``(n, dim)``.
+        migrate : bool
+            Run PETSc swarm migration after insertion (default True).
+        delete_lost_points : bool
+            Remove particles that fall outside any rank's domain
+            during migration (default True).
 
         Returns
         --------
-        npoints: int
-            The number of points added to the local section of the swarm.
+        npoints : int
+            Number of points added on this rank before migration.
         """
 
         if not isinstance(globalCoordinatesArray, np.ndarray):
