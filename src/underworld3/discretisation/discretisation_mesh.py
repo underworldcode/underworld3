@@ -2961,13 +2961,12 @@ class Mesh(Stateful, uw_object):
                         print(f"[{uw.mpi.rank}] Notifying surface '{surface.name}' (marking distance stale)...", flush=True)
                     surface._on_mesh_adapted(self)
 
-        # Capture current variable data, excluding only the metric field
-        # (which becomes invalid after adaptation)
-        # All other variables (including surface distance fields) are reinitialized
+        # Capture all user-supplied variables for reinitialization on the new mesh.
+        # The metric field is included — it's a user-created variable that may
+        # have external references and be reused in subsequent adaptation cycles.
         old_vars_data = {}
-        metric_name = metric_field.name if hasattr(metric_field, 'name') else None
         for var_name, var in self._vars.items():
-            if var is not None and var_name != metric_name:
+            if var is not None:
                 old_vars_data[var_name] = var
 
         # Stack boundary labels for adaptation
@@ -3054,27 +3053,26 @@ class Mesh(Stateful, uw_object):
             # Rebuild coordinate navigation
             self.nuke_coords_and_rebuild(verbose=False)
 
+        # Destroy ALL old vectors upfront before reinitializing any variable.
+        # This is critical because _setup_ds() iterates mesh._vars to backup/restore
+        # data — if some variables still hold lvecs with stale field_ids from the
+        # pre-adaptation DM, createSubDM will fail on the new DM.  (Fixes #48)
+        for old_var in old_vars_data.values():
+            if old_var._lvec is not None:
+                old_var._lvec.destroy()
+                old_var._lvec = None
+            if old_var._gvec is not None:
+                old_var._gvec.destroy()
+                old_var._gvec = None
+            if hasattr(old_var, '_canonical_data'):
+                old_var._canonical_data = None
+            if hasattr(old_var, '_cached_data_array'):
+                old_var._cached_data_array = None
+
         # Reinitialize MeshVariables on the new mesh
         # Note: Variables are reset to zero. Users should reinitialize with data.
         for var_name, old_var in old_vars_data.items():
             try:
-                # Destroy old vectors
-                if old_var._lvec is not None:
-                    old_var._lvec.destroy()
-                    old_var._lvec = None
-                if old_var._gvec is not None:
-                    old_var._gvec.destroy()
-                    old_var._gvec = None
-
-                # Eagerly invalidate cached data arrays. The .data property also
-                # self-validates via _lvec identity check, but clearing here avoids
-                # unnecessary recreation on next access.
-                if hasattr(old_var, '_canonical_data'):
-                    old_var._canonical_data = None
-                if hasattr(old_var, '_cached_data_array'):
-                    old_var._cached_data_array = None
-
-                # Re-setup the variable on the new mesh
                 old_var._setup_ds()
                 old_var._set_vec(available=True)
 
@@ -3093,12 +3091,6 @@ class Mesh(Stateful, uw_object):
                 solver.is_setup = False
                 if verbose:
                     print(f"[{uw.mpi.rank}] Solver marked for rebuild", flush=True)
-
-        # Remove only the metric field from mesh._vars
-        # (it was specific to the pre-adaptation mesh and is now invalid)
-        # Surface distance variables stay - they're just marked stale and will recompute
-        if metric_name and metric_name in self._vars:
-            del self._vars[metric_name]
 
         # Clear caches
         self._evaluation_hash = None
