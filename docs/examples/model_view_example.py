@@ -71,26 +71,24 @@ def model_view_example():
     return model
 
 def specialized_config_example():
-    """Demonstrate view() with ThermalConvectionConfig"""
+    """Demonstrate view() with WorkflowConfig"""
 
     print("\n" + "="*60)
-    print("SPECIALIZED CONFIGURATION MODEL")
+    print("WORKFLOW CONFIGURATION MODEL")
     print("="*60)
 
-    # Create specialized thermal convection configuration
-    config = uw.ThermalConvectionConfig(
-        rayleigh_number=1e5,
-        cellsize=0.05,
-        stokes_tolerance=1e-8,
-        temperature_top=273.15,
-        temperature_bottom=1873.15,
-        stokes_solver_type='pcdksp'
+    # Create a workflow configuration
+    config = uw.WorkflowConfig(
+        workflow_name="convection_benchmark",
+        description="Thermal convection benchmark",
+        ref_length="1000 km",
+        ref_viscosity="1e21 Pa*s",
     )
 
     # Create model from configuration
-    model = uw.create_thermal_convection_model(config, "convection_benchmark")
+    model = config.setup_model()
 
-    print("Model created from ThermalConvectionConfig:")
+    print("Model created from WorkflowConfig:")
     model.view(verbose=1, show_petsc=True)
 
     return model

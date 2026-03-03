@@ -875,9 +875,31 @@ class Mesh(Stateful, uw_object):
             for acc in accessors:
                 uw.pprint(f"  • {acc}\n")
 
-            # Only if notebook and serial
-            if uw.is_notebook and uw.mpi.size == 1:
-                uw.visualisation.plot_mesh(self, window_size=(600, 400))
+            # Static snapshot of the mesh — headless, no interactivity needed
+            if uw.mpi.size == 1:
+                try:
+                    import pyvista as pv
+                    import underworld3.visualisation as vis
+
+                    pvmesh = vis.mesh_to_pv_mesh(self)
+                    pl = pv.Plotter(window_size=(600, 400), off_screen=True)
+                    pl.add_mesh(pvmesh, edge_color="k", show_edges=True, opacity=1.0)
+                    pl.camera_position = "xy"
+                    img = pl.screenshot(return_img=True)
+                    pl.close()
+
+                    try:
+                        from IPython.display import display, Image
+                        import io
+                        buf = io.BytesIO()
+                        from PIL import Image as PILImage
+                        PILImage.fromarray(img).save(buf, format="PNG")
+                        display(Image(data=buf.getvalue()))
+                    except ImportError:
+                        pass  # not in notebook / PIL not available
+
+                except (ImportError, Exception):
+                    pass  # pyvista not available — skip plot
 
             # Total number of cells
             nstart, nend = self.dm.getHeightStratum(0)
@@ -944,7 +966,10 @@ class Mesh(Stateful, uw_object):
             if uw.mpi.rank == 0:
                 print(f"\n")
                 print(f"Mesh # {self.instance}: {self.name}\n")
-                uw.visualisation.plot_mesh(self)
+                try:
+                    uw.visualisation.plot_mesh(self)
+                except (ImportError, Exception):
+                    pass
 
                 # Total number of cells
                 nstart, nend = self.dm.getHeightStratum(0)

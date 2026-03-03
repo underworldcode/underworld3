@@ -145,6 +145,7 @@ import underworld3.utilities
 import underworld3.model
 import underworld3.parameters
 import underworld3.materials
+import underworld3.workflows
 import underworld3.discretisation.persistence
 
 from .model import (
@@ -152,9 +153,8 @@ from .model import (
     create_model,
     get_default_model,
     reset_default_model,
-    ThermalConvectionConfig,
-    create_thermal_convection_model,
 )
+from .workflows import WorkflowConfig
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
