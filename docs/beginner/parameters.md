@@ -67,14 +67,16 @@ by a descriptive name with **underscores**. This is by design:
 - Underworld user parameters share the same options database
 - The `uw_` prefix prevents collisions with PETSc's own options
 
-This means standard Python option parsers (argparse, click) will **not** work with
-Underworld's CLI parameters. Use `uw.Params` instead — it reads from PETSc's
-options database automatically.
+This means standard Python option parsers (argparse, click) do **not** support this
+style of options by default and may require custom handling if you try to parse
+`-uw_*` flags yourself. Use `uw.Params` instead — it reads from PETSc's options
+database automatically.
 
 ```{tip}
 If you're writing a wrapper script that also needs argparse-style options,
-parse those with argparse first, then pass the remaining arguments to PETSc
-via `petsc4py.init(sys.argv)` before importing underworld.
+parse those with argparse first (for example using `parse_known_args`),
+then pass only the remaining/unparsed arguments to PETSc via
+`petsc4py.init(remaining_argv)` before importing underworld.
 ```
 
 ### Notebook Override
