@@ -188,6 +188,8 @@ exclude_patterns = [
     'developer/ai-notes/**',
     # Skip examples (not needed for main docs)
     'examples/**',
+    # Skip myst_nb execution artifacts (regenerated each build)
+    'jupyter_execute/**',
 ]
 
 # =============================================================================

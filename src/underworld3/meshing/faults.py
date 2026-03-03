@@ -97,10 +97,8 @@ class FaultSurface:
         """Create a fault surface.
 
         Args:
-            name: Identifier for this fault segment
-            points: (N, 3) array of 3D points defining the fault surface.
-                   If None, the fault is empty and must be loaded or
-                   have points added later.
+            name: Identifier for this fault segment.
+            points: (N, 3) array of 3D points, or None for an empty fault.
         """
         self.name = name
         self._points = None

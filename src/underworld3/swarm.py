@@ -112,13 +112,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         Physical units for this variable (e.g., 'kelvin', 'Pa').
         Requires reference quantities to be set on the model.
 
-    Attributes
-    ----------
-    data : numpy.ndarray
-        Direct access to variable values at particle locations.
-    sym : sympy.Matrix
-        Symbolic representation for use in expressions.
-
     See Also
     --------
     MeshVariable : Variable supported by mesh nodes.
@@ -1975,11 +1968,6 @@ class IndexSwarmVariable(SwarmVariable):
     proxy_continuous : bool
         Whether mesh proxy is continuous (default True).
 
-    Attributes
-    ----------
-    sym : list of sympy.Expr
-        Symbolic mask expressions for each material index.
-
     Examples
     --------
     >>> material = IndexSwarmVariable("M", swarm, indices=3)
@@ -2374,44 +2362,6 @@ class Swarm(Stateful, uw_object):
     verbose : bool, optional
         Enable verbose output for debugging and monitoring particle operations.
         Default is False.
-
-    Attributes
-    ----------
-    mesh : uw.discretisation.Mesh
-        Reference to the associated mesh object.
-    dim : int
-        Spatial dimension of the mesh (2D or 3D).
-    cdim : int
-        Coordinate dimension of the mesh.
-    data : numpy.ndarray
-        Direct access to particle coordinate data.
-    particle_coordinates : SwarmVariable
-        SwarmVariable containing particle coordinate information.
-    recycle_rate : int
-        Current recycle rate for streak management.
-    cycle : int
-        Current cycle number for streak particles.
-
-    Methods
-    -------
-    populate(fill_param=1)
-        Populate the swarm with particles throughout the domain.
-    migrate(remove_sent_points=True, delete_lost_points=True, max_its=10)
-        Manually migrate particles across MPI processes after coordinate updates.
-    add_particles_with_coordinates(coords)
-        Add new particles at specified coordinate locations.
-    add_particles_with_global_coordinates(coords)
-        Add particles using global coordinate system.
-    add_variable(name, size, dtype=float)
-        Add a new variable to track additional particle properties.
-    save(filename, meshUnits=1.0, swarmUnits=1.0, units="dimensionless")
-        Save swarm data to file.
-    read_timestep(filename, step_name, outputPath="./output/")
-        Read swarm data from a specific timestep file.
-    advection(V_fn, delta_t, evalf=False, corrector=True, restore_points_func=None)
-        Advect particles using a velocity field.
-    estimate_dt(V_fn, dt_min=1.0e-15, dt_max=1.0)
-        Estimate appropriate timestep for particle advection.
 
     Examples
     --------
@@ -3360,27 +3310,26 @@ class Swarm(Stateful, uw_object):
 
     @timing.routine_timer_decorator
     def add_particles_with_coordinates(self, coordinatesArray) -> int:
-        """
-        Add particles to the swarm using particle coordinates provided
-        using a numpy array.
+        """Add particles at given coordinates, keeping only locally-owned points.
 
-        Note that particles with coordinates NOT local to the current processor will
-        be rejected / ignored.
+        Each rank filters the input array and adds only the points that fall
+        within its local domain partition. Non-local points are silently
+        ignored, so it is safe to pass the same global coordinate array to
+        every rank — no duplicates will be created.
 
-        Either include an array with all coordinates to all processors
-        or an array with the local coordinates.
+        This is the recommended method for user code.  For pre-partitioned
+        data where each rank already holds only its own points, this method
+        also works correctly.
 
         Parameters
         ----------
         coordinatesArray : numpy.ndarray
-            The numpy array containing the coordinate of the new particles. Array is
-            expected to take shape n*dim, where n is the number of new particles, and
-            dim is the dimensionality of the swarm's supporting mesh.
+            Coordinates of new particles, shape ``(n, dim)``.
 
         Returns
         --------
-        npoints: int
-            The number of points added to the local section of the swarm.
+        npoints : int
+            Number of points actually added on this rank.
         """
 
         if not isinstance(coordinatesArray, np.ndarray):
@@ -3440,23 +3389,33 @@ class Swarm(Stateful, uw_object):
         migrate=True,
         delete_lost_points=True,
     ) -> int:
-        """
-        Add particles to the swarm using particle coordinates provided
-        using a numpy array.
+        """Add particles on every rank, then migrate to correct owners.
 
-        global coordinates: particles will be appropriately migrated
+        Every rank inserts **all** supplied points into the local swarm, then
+        ``dm.migrate()`` moves each particle to the rank that owns its
+        spatial location.  If the same array is passed on every rank, this
+        produces one copy of each point in the correct partition — but calling
+        it with *different* arrays per rank will accumulate all of them.
+
+        This is primarily an internal method used by global-evaluation and
+        mesh-transfer utilities.  For general use, prefer
+        :meth:`add_particles_with_coordinates`, which filters non-local
+        points automatically and never creates duplicates.
 
         Parameters
         ----------
         globalCoordinatesArray : numpy.ndarray
-            The numpy array containing the coordinate of the new particles. Array is
-            expected to take shape n*dim, where n is the number of new particles, and
-            dim is the dimensionality of the swarm's supporting mesh.
+            Coordinates of new particles, shape ``(n, dim)``.
+        migrate : bool
+            Run PETSc swarm migration after insertion (default True).
+        delete_lost_points : bool
+            Remove particles that fall outside any rank's domain
+            during migration (default True).
 
         Returns
         --------
-        npoints: int
-            The number of points added to the local section of the swarm.
+        npoints : int
+            Number of points added on this rank before migration.
         """
 
         if not isinstance(globalCoordinatesArray, np.ndarray):

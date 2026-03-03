@@ -602,9 +602,7 @@ def get_units(expression, simplify: bool = False) -> Optional[Any]:
 
     Args:
         expression: Expression, quantity, or unit-aware object
-        simplify: If True, convert mixed units to simplified base SI units.
-                  For example, `megayear ** 0.5 * meter / second ** 0.5`
-                  simplifies to just `meter`. Default: False.
+        simplify: If True, simplify mixed units to base SI (default False).
 
     Returns:
         Pint Unit object or None if no units

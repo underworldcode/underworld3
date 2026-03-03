@@ -235,17 +235,6 @@ class Symbolic(uw_object):
     smoothing : float, optional
         Smoothing parameter (default ``0.0``).
 
-    Attributes
-    ----------
-    psi_fn : sympy.Matrix
-        Current symbolic expression being tracked (always stored as Matrix).
-    psi_star : list
-        History values :math:`\psi^*, \psi^{**}, \ldots` as sympy Matrices.
-    theta : float
-        Implicitness parameter for first-order Adams-Moulton.
-    order : int
-        Order of BDF/Adams-Moulton integration.
-
     Notes
     -----
     The ``Symbolic`` class is the base for understanding BDF and Adams-Moulton
@@ -544,15 +533,6 @@ class Eulerian(uw_object):
         Number of history timesteps to store (for multi-step methods).
     smoothing : float, default=0.0
         Smoothing parameter for projections.
-
-    Attributes
-    ----------
-    psi_fn : sympy.Basic
-        Current symbolic expression being tracked.
-    psi_star : list of MeshVariable
-        History values at previous timesteps.
-    V_fn : sympy.Basic or None
-        Velocity field for advection correction (None = pure Eulerian).
 
     See Also
     --------
@@ -947,15 +927,6 @@ class SemiLagrangian(uw_object):
         Smoothing parameter for projections.
     preserve_moments : bool, default=False
         Use moment-preserving projection (experimental).
-
-    Attributes
-    ----------
-    psi_fn : sympy.Basic
-        Current symbolic expression being advected.
-    psi_star : list of MeshVariable
-        History values at previous timesteps.
-    V_fn : sympy.Function
-        Velocity field used for advection.
 
     Notes
     -----
@@ -1685,17 +1656,6 @@ class Lagrangian(uw_object):
         Smoothing parameter for projections.
     fill_param : int, default=3
         Fill parameter for swarm population density.
-
-    Attributes
-    ----------
-    swarm : UWSwarm
-        Internal swarm for Lagrangian tracking.
-    psi_fn : sympy.Basic
-        Current symbolic expression being tracked.
-    psi_star : list of SwarmVariable
-        History values stored on the swarm.
-    V_fn : sympy.Function
-        Velocity field for advection.
 
     Notes
     -----
