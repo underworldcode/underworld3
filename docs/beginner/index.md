@@ -29,7 +29,12 @@ Configure your models for notebooks and command-line execution.
 
 **[→ Parameters Guide](parameters.md)**
 
-### 4. Interactive Tutorials
+### 4. XDMF / HDF5 Compatibility
+Understand the PETSc output-format change and how to write ParaView-ready XDMF/HDF5.
+
+**[→ XDMF / HDF5 Compatibility Guide](create_xdmf.md)**
+
+### 5. Interactive Tutorials
 Work through hands-on notebooks covering all core concepts.
 
 **[→ Start Tutorials](tutorials/Notebook_Index.ipynb)**
@@ -88,6 +93,7 @@ Once comfortable with the basics, explore:
 installation
 quickstart
 parameters
+create_xdmf
 tutorials/Notebook_Index
 tutorials/1-Meshes
 tutorials/2-Variables
