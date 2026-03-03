@@ -41,8 +41,9 @@ cdef extern from "petsc_compat.h":
     PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*)
     PetscErrorCode UW_PetscDSSetBdTerms   (PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*, void*, void* )
     PetscErrorCode UW_PetscDSViewWF(PetscDS)     
-    PetscErrorCode UW_PetscDSViewBdWF(PetscDS, PetscInt)     
+    PetscErrorCode UW_PetscDSViewBdWF(PetscDS, PetscInt)
     PetscErrorCode UW_DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
+    PetscErrorCode UW_DMPlexComputeBdIntegral( PetscDM, PetscVec, PetscDMLabel, PetscInt, const PetscInt*, void*, PetscScalar*, void*)
 
 cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)

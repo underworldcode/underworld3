@@ -138,3 +138,42 @@ PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
     return DMPlexSetSNESLocalFEM(dm, flag, NULL);
 #endif
 }
+
+// Simplified wrapper for DMPlexComputeBdIntegral.
+// Takes a single boundary pointwise function (for field 0) instead of an Nf-element array.
+// Internally allocates the full array with NULL for all other fields.
+PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
+                                          DMLabel label, PetscInt numVals, const PetscInt vals[],
+                                          void (*func)(UW_SIG_F0),
+                                          PetscScalar *result,
+                                          void *ctx)
+{
+    PetscDS       ds;
+    PetscSection  section;
+    PetscInt      Nf;
+
+    PetscFunctionBeginUser;
+
+    PetscCall(DMGetLocalSection(dm, &section));
+    PetscCall(PetscSectionGetNumFields(section, &Nf));
+
+    // Allocate function pointer array (all NULL except field 0)
+    void (**funcs)(UW_SIG_F0);
+    PetscCall(PetscCalloc1(Nf, &funcs));
+    funcs[0] = func;
+
+    // Allocate output array (one value per field)
+    PetscScalar *integral;
+    PetscCall(PetscCalloc1(Nf, &integral));
+
+    // Compute the boundary integral
+    PetscCall(DMPlexComputeBdIntegral(dm, X, label, numVals, vals, funcs, integral, ctx));
+
+    // Return field 0 result
+    *result = integral[0];
+
+    PetscCall(PetscFree(funcs));
+    PetscCall(PetscFree(integral));
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
