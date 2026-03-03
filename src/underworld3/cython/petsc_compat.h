@@ -166,11 +166,17 @@ PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
     PetscScalar *integral;
     PetscCall(PetscCalloc1(Nf, &integral));
 
-    // Compute the boundary integral
+    // Compute the boundary integral (returns local contribution only —
+    // DMPlexComputeBdIntegral is missing the MPI reduction that
+    // DMPlexComputeIntegralFEM has at plexfem.c:2633)
     PetscCall(DMPlexComputeBdIntegral(dm, X, label, numVals, vals, funcs, integral, ctx));
 
-    // Return field 0 result
-    *result = integral[0];
+    // Sum across all MPI ranks (mirrors DMPlexComputeIntegralFEM behaviour)
+    PetscScalar global_val;
+    PetscCallMPI(MPIU_Allreduce(&integral[0], &global_val, 1, MPIU_SCALAR, MPIU_SUM,
+                                PetscObjectComm((PetscObject)dm)));
+
+    *result = global_val;
 
     PetscCall(PetscFree(funcs));
     PetscCall(PetscFree(integral));
