@@ -111,27 +111,37 @@ def test_bd_integral_invalid_boundary():
         uw.maths.BdIntegral(mesh, fn=1.0, boundary="Nonexistent")
 
 
-# --- Internal boundary tests ---
+# --- Internal boundary tests (BoxInternalBoundary) ---
+# These use lazy initialization because BoxInternalBoundary has a pre-existing
+# MPI bug (UnboundLocalError at cartesian.py:881) that would prevent the entire
+# test module from loading under mpirun.
 
 from underworld3.meshing import BoxInternalBoundary
 
-mesh_internal = BoxInternalBoundary(
-    minCoords=(0.0, 0.0),
-    maxCoords=(1.0, 1.0),
-    cellSize=1.0 / 32.0,
-    zintCoord=0.5,
-    simplex=True,
-)
+_mesh_internal = None
+_x_i = None
+_y_i = None
 
-x_i, y_i = mesh_internal.X
 
-# Need a mesh variable for PETSc
-_v_internal = uw.discretisation.MeshVariable("T_int", mesh_internal, 1, degree=2)
+def _get_internal_mesh():
+    global _mesh_internal, _x_i, _y_i
+    if _mesh_internal is None:
+        _mesh_internal = BoxInternalBoundary(
+            minCoords=(0.0, 0.0),
+            maxCoords=(1.0, 1.0),
+            cellSize=1.0 / 32.0,
+            zintCoord=0.5,
+            simplex=True,
+        )
+        _x_i, _y_i = _mesh_internal.X
+        uw.discretisation.MeshVariable("T_int", _mesh_internal, 1, degree=2)
+    return _mesh_internal, _x_i, _y_i
 
 
 def test_bd_integral_internal_boundary_length():
     """Internal boundary at y=0.5 across a unit box should have length 1.0."""
 
+    mesh_internal, _, _ = _get_internal_mesh()
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=1.0, boundary="Internal")
     value = bd_int.evaluate()
 
@@ -141,6 +151,7 @@ def test_bd_integral_internal_boundary_length():
 def test_bd_integral_internal_coordinate_fn():
     """Integrate x along internal boundary at y=0.5: int_0^1 x dx = 0.5."""
 
+    mesh_internal, x_i, _ = _get_internal_mesh()
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=x_i, boundary="Internal")
     value = bd_int.evaluate()
 
@@ -150,6 +161,7 @@ def test_bd_integral_internal_coordinate_fn():
 def test_bd_integral_internal_does_not_affect_external():
     """External boundaries should still work on the internal-boundary mesh."""
 
+    mesh_internal, _, _ = _get_internal_mesh()
     total = 0.0
     for bnd in ["Top", "Bottom", "Left", "Right"]:
         bd_int = uw.maths.BdIntegral(mesh_internal, fn=1.0, boundary=bnd)

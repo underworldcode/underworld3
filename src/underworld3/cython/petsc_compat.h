@@ -141,43 +141,85 @@ PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 
 // Simplified wrapper for DMPlexComputeBdIntegral.
 // Takes a single boundary pointwise function (for field 0) instead of an Nf-element array.
-// Internally allocates the full array with NULL for all other fields.
+//
+// Fixes two issues in DMPlexComputeBdIntegral:
+//   1. Missing MPI Allreduce (plexfem.c returns local contribution only,
+//      unlike DMPlexComputeIntegralFEM which reduces at plexfem.c:2633).
+//   2. Ghost facet double-counting: DMPlexComputeBdIntegral iterates over ALL
+//      label stratum points including ghost facets, so shared boundary facets
+//      get integrated on both the owning rank and the ghost rank. We create a
+//      temporary label containing only owned (non-ghost) boundary points.
 PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
                                           DMLabel label, PetscInt numVals, const PetscInt vals[],
                                           void (*func)(UW_SIG_F0),
                                           PetscScalar *result,
                                           void *ctx)
 {
-    PetscDS       ds;
     PetscSection  section;
-    PetscInt      Nf;
+    PetscInt      Nf, pStart, pEnd;
 
     PetscFunctionBeginUser;
 
     PetscCall(DMGetLocalSection(dm, &section));
     PetscCall(PetscSectionGetNumFields(section, &Nf));
 
-    // Allocate function pointer array (all NULL except field 0)
+    // --- Build a ghost-point bitset from the point SF ---
+    PetscSF   sf;
+    PetscInt  nleaves;
+    const PetscInt *ilocal;
+    PetscCall(DMGetPointSF(dm, &sf));
+    PetscCall(PetscSFGetGraph(sf, NULL, &nleaves, &ilocal, NULL));
+    PetscCall(DMPlexGetChart(dm, &pStart, &pEnd));
+
+    PetscBT ghostBT;
+    PetscCall(PetscBTCreate(pEnd - pStart, &ghostBT));
+    if (ilocal) {
+        for (PetscInt i = 0; i < nleaves; i++) {
+            PetscCall(PetscBTSet(ghostBT, ilocal[i] - pStart));
+        }
+    }
+
+    // --- Create a temporary label with only owned boundary points ---
+    DMLabel ownedLabel;
+    PetscCall(DMLabelCreate(PetscObjectComm((PetscObject)dm), "uw_owned_bd", &ownedLabel));
+
+    for (PetscInt v = 0; v < numVals; v++) {
+        IS origIS;
+        PetscCall(DMLabelGetStratumIS(label, vals[v], &origIS));
+        if (!origIS) continue;
+
+        PetscInt        n;
+        const PetscInt *indices;
+        PetscCall(ISGetLocalSize(origIS, &n));
+        PetscCall(ISGetIndices(origIS, &indices));
+
+        for (PetscInt i = 0; i < n; i++) {
+            if (!PetscBTLookup(ghostBT, indices[i] - pStart)) {
+                PetscCall(DMLabelSetValue(ownedLabel, indices[i], vals[v]));
+            }
+        }
+        PetscCall(ISRestoreIndices(origIS, &indices));
+        PetscCall(ISDestroy(&origIS));
+    }
+    PetscCall(PetscBTDestroy(&ghostBT));
+
+    // --- Compute boundary integral over owned points only ---
     void (**funcs)(UW_SIG_F0);
     PetscCall(PetscCalloc1(Nf, &funcs));
     funcs[0] = func;
 
-    // Allocate output array (one value per field)
     PetscScalar *integral;
     PetscCall(PetscCalloc1(Nf, &integral));
 
-    // Compute the boundary integral (returns local contribution only —
-    // DMPlexComputeBdIntegral is missing the MPI reduction that
-    // DMPlexComputeIntegralFEM has at plexfem.c:2633)
-    PetscCall(DMPlexComputeBdIntegral(dm, X, label, numVals, vals, funcs, integral, ctx));
+    PetscCall(DMPlexComputeBdIntegral(dm, X, ownedLabel, numVals, vals, funcs, integral, ctx));
 
-    // Sum across all MPI ranks (mirrors DMPlexComputeIntegralFEM behaviour)
+    // --- MPI reduction (sum local owned contributions across all ranks) ---
     PetscScalar global_val;
     PetscCallMPI(MPIU_Allreduce(&integral[0], &global_val, 1, MPIU_SCALAR, MPIU_SUM,
                                 PetscObjectComm((PetscObject)dm)));
-
     *result = global_val;
 
+    PetscCall(DMLabelDestroy(&ownedLabel));
     PetscCall(PetscFree(funcs));
     PetscCall(PetscFree(integral));
 
