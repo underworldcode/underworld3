@@ -198,16 +198,20 @@ worktree changes, the worktree edits will not be active. Always:
 2. `./uw build`
 3. Run your code / tests from there
 
-### AI-Assisted Commit Attribution
-When committing code developed with AI assistance, end the commit message with:
+### AI-Assisted Attribution (Commits and PRs)
+When committing code or creating pull requests with AI assistance, end the
+message/body with:
 
 ```
-Underworld development team with AI support from Claude Code
+Underworld development team with AI support from [Claude Code](https://claude.com/claude-code)
 ```
+
+(In commit messages, use the plain-text form without the markdown link.)
 
 **Do NOT use**:
 - `Co-Authored-By:` with a noreply email (useless for soliciting responses)
 - Generic AI attribution without team context
+- Emoji in PR descriptions
 
 ---
 
