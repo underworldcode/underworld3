@@ -211,7 +211,14 @@ PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
     PetscScalar *integral;
     PetscCall(PetscCalloc1(Nf, &integral));
 
+    // PETSc changed DMPlexComputeBdIntegral signature in v3.22.0:
+    //   <= 3.21.x: void (*func)(...)     — single function pointer
+    //   >= 3.22.0: void (**funcs)(...)    — array of Nf function pointers
+#if PETSC_VERSION_GE(3, 22, 0)
     PetscCall(DMPlexComputeBdIntegral(dm, X, ownedLabel, numVals, vals, funcs, integral, ctx));
+#else
+    PetscCall(DMPlexComputeBdIntegral(dm, X, ownedLabel, numVals, vals, funcs[0], integral, ctx));
+#endif
 
     // --- MPI reduction (sum local owned contributions across all ranks) ---
     PetscScalar global_val;
