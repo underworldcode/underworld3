@@ -57,6 +57,27 @@ clone_petsc() {
     echo "Clone complete."
 }
 
+apply_patches() {
+    echo "Applying UW3 patches to PETSc..."
+    cd "$PETSC_DIR"
+
+    # Fix ghost facet double-counting in boundary residual/integral assembly.
+    # Without this, internal boundary natural BCs and BdIntegral produce
+    # incorrect results in parallel (shared facets integrated on multiple ranks).
+    # Submitted upstream: [TODO: add PETSc MR link when available]
+    local patch="${SCRIPT_DIR}/patches/plexfem-ghost-facet-fix.patch"
+    if [ -f "$patch" ]; then
+        if git apply --check "$patch" 2>/dev/null; then
+            git apply "$patch"
+            echo "  Applied: plexfem-ghost-facet-fix.patch"
+        else
+            echo "  Skipped: plexfem-ghost-facet-fix.patch (already applied or conflict)"
+        fi
+    fi
+
+    echo "Patches complete."
+}
+
 configure_petsc() {
     echo "Configuring PETSc with AMR tools..."
     cd "$PETSC_DIR"
@@ -147,6 +168,7 @@ show_help() {
     echo "  build     Build PETSc"
     echo "  test      Run PETSc tests"
     echo "  petsc4py  Build and install petsc4py"
+    echo "  patch     Apply UW3 patches to PETSc source"
     echo "  clean     Remove PETSc directory"
     echo "  help      Show this help"
 }
@@ -155,6 +177,7 @@ show_help() {
 case "${1:-all}" in
     all)
         clone_petsc
+        apply_patches
         configure_petsc
         build_petsc
         build_petsc4py
@@ -174,6 +197,9 @@ case "${1:-all}" in
         ;;
     build)
         build_petsc
+        ;;
+    patch)
+        apply_patches
         ;;
     test)
         test_petsc
