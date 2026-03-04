@@ -49,6 +49,15 @@ HAS_PYPROJ = check_module_available("pyproj")
 HAS_GDAL = check_module_available("osgeo.gdal")
 HAS_GEOPANDAS = check_module_available("geopandas")
 HAS_PYVISTA = check_module_available("pyvista")
+
+# Check if a display server is available for rendering.
+# On headless CI (no DISPLAY, no WAYLAND), pyvista.Plotter() calls
+# VTK's OpenGL probe which aborts the entire process — not catchable
+# with try/except. We must skip rendering tests before they run.
+import os
+HAS_DISPLAY = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+                    or os.environ.get("PYVISTA_OFF_SCREEN"))
+HAS_PYVISTA_RENDERING = HAS_PYVISTA and HAS_DISPLAY
 HAS_TRAME = check_module_available("trame")
 
 # Composite feature flags
@@ -96,6 +105,11 @@ requires_cartopy = pytest.mark.skipif(
 requires_pyvista = pytest.mark.skipif(
     not HAS_PYVISTA,
     reason="Requires pyvista. Install with: pixi install -e runtime"
+)
+
+requires_pyvista_rendering = pytest.mark.skipif(
+    not HAS_PYVISTA_RENDERING,
+    reason="Requires pyvista and a display server (DISPLAY or PYVISTA_OFF_SCREEN)"
 )
 
 requires_amr = pytest.mark.skipif(
@@ -233,12 +247,12 @@ class TestVisualizationFeatures:
             sphere = pv.Sphere()
             assert sphere is not None
 
-    @requires_pyvista
+    @requires_pyvista_rendering
     def test_pyvista_plotter_available(self):
         """Test pyvista plotter when available."""
         import pyvista as pv
 
-        # Just verify we can create a plotter (off-screen)
+        pv.OFF_SCREEN = True
         plotter = pv.Plotter(off_screen=True)
         assert plotter is not None
         plotter.close()

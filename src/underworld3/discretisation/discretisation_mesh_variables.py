@@ -977,6 +977,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Keep vector available for future access
         pass
 
+        # Ensure global vector is up-to-date before writing.
+        self._sync_lvec_to_gvec()
+
         viewer = PETSc.ViewerHDF5().create(filename, "a", comm=PETSc.COMM_WORLD)
         if index:
             raise RuntimeError("Recording `index` not currently supported")
@@ -1077,6 +1080,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         lvec.array[...] = self.coords.reshape(-1)[...]
         dmnew.localToGlobal(lvec, gvec, addv=False)
         gvec.setName("coordinates")
+
+        # Ensure global vector is up-to-date before writing.
+        self._sync_lvec_to_gvec()
 
         viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         viewer(self._gvec)
@@ -1186,7 +1192,13 @@ class _BaseMeshVariable(Stateful, uw_object):
 
             mesh_kdt = uw.kdtree.KDTree(X)
 
-            return mesh_kdt.rbf_interpolator_local(self.coords, D, nnn, p, verbose)
+            # Strip pint units from query coords — the KDTree was built
+            # from plain HDF5 floats (same physical units, no metadata).
+            query_coords = self.coords
+            if hasattr(query_coords, "magnitude"):
+                query_coords = query_coords.magnitude
+
+            return mesh_kdt.rbf_interpolator_local(query_coords, D, nnn, p, verbose)
 
         def values_to_mesh_var(mesh_variable, Values):
             mesh = mesh_variable.mesh
@@ -1600,6 +1612,23 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._set_vec(available=self._available)
 
         return self._lvec
+
+    def _sync_lvec_to_gvec(self):
+        """Ensure the global vector reflects the current local vector.
+
+        After PETSc solves (Stokes, Projection, etc.), data lives only in
+        ``_lvec``.  Any operation that reads ``_gvec`` (writes, norms, etc.)
+        must call this first.  The scatter uses the variable's sub-DM so it
+        works for any field order (P1, P2, DG-0, …).
+
+        The operation is idempotent — calling it when ``_gvec`` is already
+        up-to-date is harmless.
+        """
+        if self._lvec is None or self._gvec is None:
+            return
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        subdm.localToGlobal(self._lvec, self._gvec, addv=False)
+        indexset.destroy()
 
     @property
     def old_data(self) -> numpy.ndarray:

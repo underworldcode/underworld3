@@ -133,18 +133,16 @@ class UnderworldAppliedFunctionDeriv(UnderworldAppliedFunction):
 
 class UnderworldFunction(sympy.Function):
     """
-    This is a metaclass, so it returns programmatic class objects rather
-    than instances. This basically follows the pattern of the `sympy.Function`
-    metaclass, with two key differences:
-    1. We set `UnderworldAppliedFunction` as the base class. This is really just a
-       dummy class (see its definition) which allows us to do calls such
-       as `isinstance(someobj, UnderworldAppliedFunction)` to test if a `sympy`
-       object is one we've defined.
-    2. We grab a weakref of the owning meshvariable onto the *class* itself. Note
-       that it's important that it's recorded onto the class (instead of the instance),
-       as Sympy internally sometimes uses calls such as `type(obj)(obj.args)` to
-       replace objects with cloned instances, and therefore 'extra' info must be
-       recorded onto the class so that the clones are _complete_.
+    Metaclass that returns programmatic class objects rather than instances.
+
+    This basically follows the pattern of the ``sympy.Function``
+    metaclass, with two key differences. First, we set
+    ``UnderworldAppliedFunction`` as the base class, which allows
+    ``isinstance(someobj, UnderworldAppliedFunction)`` checks.
+    Second, we grab a weakref of the owning meshvariable onto the
+    class itself (not the instance), because SymPy internally uses
+    ``type(obj)(obj.args)`` to clone instances and extra info must
+    be on the class so that clones are complete.
 
     Consider the calling pattern
 
@@ -157,16 +155,16 @@ class UnderworldFunction(sympy.Function):
 
     Parameters
     ----------
-    name:
+    name : str
         The name of the function.
-    meshvar:
+    meshvar : MeshVariable
         The mesh variable corresponding to this function.
-    vtype:
-        The variable type (scalar,vector,etc).
-    component:
+    vtype : VarType
+        The variable type (scalar, vector, etc).
+    component : int or tuple
         For vector functions, this is the component of the vector.
-        For example, component `1` might correspond to `v_y`.
-        For tensors, the component is a tuple
+        For example, component ``1`` might correspond to ``v_y``.
+        For tensors, the component is a tuple.
         For scalars, this value is ignored.
     """
     def __new__(cls,
@@ -293,6 +291,27 @@ def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, m
         N = mesh.N
 
     r = N.base_scalars()[0:dim]
+
+    # 2b. Canonicalize coordinate symbols for lambdify.
+    # The expression may contain UWCoordinate objects (from mesh.X or
+    # mesh.CoordinateSystem.unit_e_0) alongside BaseScalar objects. Since
+    # lambdify uses object identity to map arguments to generated code,
+    # we must ensure only ONE set of coordinate objects appears.
+    # Strategy: collect all coordinate-like symbols from the expression,
+    # group by index, and replace all variants with a single canonical
+    # sympy.Dummy symbol per coordinate. Use the same Dummy as the
+    # lambdify argument.
+    from sympy.vector.scalar import BaseScalar
+    coord_dummies = [sympy.Dummy(f"_coord_{i}") for i in range(dim)]
+    coord_subs = {}
+    for sym in subbedexpr.free_symbols:
+        if isinstance(sym, BaseScalar):
+            idx = sym._id[0]
+            if idx < dim:
+                coord_subs[sym] = coord_dummies[idx]
+    if coord_subs:
+        subbedexpr = subbedexpr.xreplace(coord_subs)
+    r = coord_dummies
 
     # 3. Handle vector/dyadic expressions
     if isinstance(subbedexpr, sympy.vector.Vector):
@@ -483,6 +502,12 @@ def global_evaluate_nd(   expr,
     evaluation_swarm.dm.migrate(remove_sent_points=True)
     uw.mpi.barrier()
 
+    # Invalidate cached data after bare-bones dm.migrate —
+    # particle count and values changed but Swarm.migrate() was bypassed.
+    evaluation_swarm._particle_coordinates._canonical_data = None
+    for var in evaluation_swarm._vars.values():
+        if hasattr(var, "_canonical_data"):
+            var._canonical_data = None
 
     index = original_index.array[:,0,0]
 

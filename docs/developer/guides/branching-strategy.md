@@ -140,16 +140,86 @@ The test suite uses a tiered system (A/B/C reliability). CI runs Tier A tests as
 - PRs required for feature branch merges
 - Require CI to pass on PRs
 
+## Git Worktrees
+
+Worktrees provide isolated working copies for parallel feature work, documentation
+cleanup, or any multi-file change.  Each worktree has its own checkout of the source
+tree but shares the main repo's pixi environment and PETSc build — so there is only
+one set of dependencies and one (expensive) PETSc compilation.
+
+### Why worktrees?
+
+- **Session isolation**: Multiple Claude sessions or human editors sharing one
+  working directory will overwrite each other's work.
+- **Quick context switching**: Jump between features without stashing or committing
+  half-finished work.
+- **Clean PRs**: Each worktree has its own branch, so commits stay focused.
+
+### Lifecycle
+
+```bash
+# Create — sets up symlinks, resets to development, names the branch
+./uw worktree create viscoelasticity          # → feature/viscoelasticity
+./uw worktree create mesh-fix bugfix          # → bugfix/mesh-fix
+
+# Work — start a shell in the worktree directory
+./uw worktree shell viscoelasticity
+# Now you're cd'd into the worktree with pixi activated:
+./uw build           # builds from THIS source into the shared env
+./uw test            # runs tests
+pixi run python ...  # uses the shared env
+exit                 # leave worktree shell
+
+# List — see all worktrees with branch, link status, dirty files
+./uw worktree list
+
+# Remove — cleans up worktree directory and branch
+./uw worktree remove viscoelasticity
+```
+
+### How sharing works
+
+The `./uw worktree create` command sets up two symlinks:
+
+| Symlink | Target | Purpose |
+|---------|--------|---------|
+| `.pixi/` | main repo's `.pixi/` | Shared conda/pip packages |
+| `petsc-custom/petsc` | main repo's PETSc build | Shared PETSc (not relocatable) |
+
+It also copies `.pixi-env` so `./uw` knows which environment to use.
+
+Because there is **one shared environment**, `./uw build` from any worktree installs
+that worktree's source.  When you switch worktrees, rebuild to pick up the new source:
+
+```bash
+./uw worktree shell other-feature
+./uw build    # now the shared env has other-feature's code
+```
+
+### Worktrees and branches
+
+Worktrees follow the same branching conventions as regular branches:
+
+| Prefix | Use |
+|--------|-----|
+| `feature/<name>` | New functionality (default) |
+| `bugfix/<name>` | Bug fixes |
+| `docs/<name>` | Documentation changes |
+
+Merge to `development` via PR when ready.  The `./uw worktree remove` command
+handles deleting both the worktree directory and its branch.
+
 ## For AI Assistants
 
 When working on Underworld3:
 
 - **Bug fixes**: Commit to `development`. If critical, note that it should be cherry-picked to `main`.
 - **Feature work**: Work on a `feature/*` branch. Keep API changes in separate commits that can be extracted.
+- **Worktrees**: Use `./uw worktree create` for any multi-file change. Always build and run from inside the worktree.
 - **Cross-pollination**: When you see a fix on `development` that affects a feature branch you're working on, cherry-pick it.
 - **Don't push to `main` directly.** Always go through `development` or a PR.
 - **If CI is broken on `development`**, fixing it takes priority over feature work.
 
 ## Summary
 
-The strategy is simple: `main` is stable, `development` integrates, features are independent, and API changes are shared infrastructure. The discipline of separating interface from implementation is what makes parallel feature development tractable. Everything else follows from that.
+The strategy is simple: `main` is stable, `development` integrates, features are independent, and API changes are shared infrastructure. The discipline of separating interface from implementation is what makes parallel feature development tractable. Worktrees provide the isolation needed for parallel work without duplicating the expensive build environment. Everything else follows from that.

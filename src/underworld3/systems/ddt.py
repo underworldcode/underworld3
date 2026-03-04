@@ -13,28 +13,23 @@ All DDt classes share a common interface:
 - ``bdf(order)`` — backward differentiation formula (returns Δψ, divide by Δt for rate)
 - ``adams_moulton_flux(order)`` — weighted flux for implicit integration
 
-Classes
--------
-Symbolic
-    Pure symbolic history — no mesh storage. Used for flux tracking
-    in SNES_Diffusion where the flux expression is a SymPy tree, not
-    a mesh variable.
-Eulerian
-    Fixed-grid ∂φ/∂t with optional grid-based advection u·∇φ. When
-    ``V_fn`` is provided, ``update_pre_solve`` applies an explicit
-    advection correction so that ``bdf()`` approximates the full
-    material derivative D/Dt = ∂/∂t + u·∇.
-SemiLagrangian
-    Characteristic-based D/Dt via departure points. Traces backward
-    along velocity field to sample upstream values. Unconditionally
-    stable for advection (no CFL constraint) but less accurate when
-    velocity is near zero.
-Lagrangian
-    Full particle-following D/Dt. Creates and manages its own swarm.
-    The swarm is advected during ``update_post_solve``.
-Lagrangian_Swarm
-    Specialized swarm-based Lagrangian using a user-provided swarm.
-    The swarm advection is the user's responsibility.
+**Symbolic** -- Pure symbolic history, no mesh storage. Used for flux
+tracking in SNES_Diffusion where the flux expression is a SymPy tree.
+
+**Eulerian** -- Fixed-grid time derivative with optional grid-based
+advection. When ``V_fn`` is provided, ``update_pre_solve`` applies an
+explicit advection correction so that ``bdf()`` approximates the full
+material derivative.
+
+**SemiLagrangian** -- Characteristic-based D/Dt via departure points.
+Traces backward along velocity field to sample upstream values.
+Unconditionally stable for advection (no CFL constraint).
+
+**Lagrangian** -- Full particle-following D/Dt. Creates and manages
+its own swarm, advected during ``update_post_solve``.
+
+**Lagrangian_Swarm** -- Specialized swarm-based Lagrangian using a
+user-provided swarm. Swarm advection is the user's responsibility.
 
 Notes
 -----
@@ -239,17 +234,6 @@ class Symbolic(uw_object):
         Order of time integration (1-3) (default ``1``).
     smoothing : float, optional
         Smoothing parameter (default ``0.0``).
-
-    Attributes
-    ----------
-    psi_fn : sympy.Matrix
-        Current symbolic expression being tracked (always stored as Matrix).
-    psi_star : list
-        History values :math:`\psi^*, \psi^{**}, \ldots` as sympy Matrices.
-    theta : float
-        Implicitness parameter for first-order Adams-Moulton.
-    order : int
-        Order of BDF/Adams-Moulton integration.
 
     Notes
     -----
@@ -549,15 +533,6 @@ class Eulerian(uw_object):
         Number of history timesteps to store (for multi-step methods).
     smoothing : float, default=0.0
         Smoothing parameter for projections.
-
-    Attributes
-    ----------
-    psi_fn : sympy.Basic
-        Current symbolic expression being tracked.
-    psi_star : list of MeshVariable
-        History values at previous timesteps.
-    V_fn : sympy.Basic or None
-        Velocity field for advection correction (None = pure Eulerian).
 
     See Also
     --------
@@ -952,15 +927,6 @@ class SemiLagrangian(uw_object):
         Smoothing parameter for projections.
     preserve_moments : bool, default=False
         Use moment-preserving projection (experimental).
-
-    Attributes
-    ----------
-    psi_fn : sympy.Basic
-        Current symbolic expression being advected.
-    psi_star : list of MeshVariable
-        History values at previous timesteps.
-    V_fn : sympy.Function
-        Velocity field used for advection.
 
     Notes
     -----
@@ -1690,17 +1656,6 @@ class Lagrangian(uw_object):
         Smoothing parameter for projections.
     fill_param : int, default=3
         Fill parameter for swarm population density.
-
-    Attributes
-    ----------
-    swarm : UWSwarm
-        Internal swarm for Lagrangian tracking.
-    psi_fn : sympy.Basic
-        Current symbolic expression being tracked.
-    psi_star : list of SwarmVariable
-        History values stored on the swarm.
-    V_fn : sympy.Function
-        Velocity field for advection.
 
     Notes
     -----

@@ -1,10 +1,5 @@
 # Discretisation
 
-```{eval-rst}
-.. automodule:: underworld3.discretisation
-   :no-members:
-```
-
 ## Mesh
 
 The computational mesh class that provides the spatial discretisation for finite element calculations.

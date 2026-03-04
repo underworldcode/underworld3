@@ -1,10 +1,5 @@
 # Particle Swarms
 
-```{eval-rst}
-.. automodule:: underworld3.swarm
-   :no-members:
-```
-
 ## Swarm
 
 ```{eval-rst}
@@ -17,14 +12,6 @@
 
 ```{eval-rst}
 .. autoclass:: underworld3.swarm.SwarmVariable
-   :members:
-   :show-inheritance:
-```
-
-## Population Control
-
-```{eval-rst}
-.. autoclass:: underworld3.swarm.PopulationControl
    :members:
    :show-inheritance:
 ```

@@ -120,8 +120,8 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         Initialize a new Model instance.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         name : str, optional
             Human-readable name for this model instance
         **kwargs : dict
@@ -534,8 +534,8 @@ class Model(PintNativeModelMixin, BaseModel):
 
         NOTE: Parameter system not yet implemented. Use model.materials dict directly.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         name : str
             Parameter path (e.g., 'material.viscosity', 'solver.tolerance')
         ptype : ParameterType, optional
@@ -581,8 +581,8 @@ class Model(PintNativeModelMixin, BaseModel):
         By default, this automatically enables non-dimensionalization for solvers,
         ensuring consistent behavior between user-facing units and solver internals.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         verbose : bool, optional
             If True, print diagnostic information about dimensional analysis
             and scale derivation. Default: False.
@@ -591,60 +591,24 @@ class Model(PintNativeModelMixin, BaseModel):
             When True (recommended), solver operations work in non-dimensional
             [0-1] space while user-facing values remain in physical units.
             Set to False for expert mode (dimensional units only, no scaling).
-            **Warning**: Disabling this may cause numerical conditioning issues
-            and inconsistencies in unit conversions.
+            Disabling this may cause numerical conditioning issues.
         **quantities : dict
-            Named reference quantities using Pint units or UWQuantity objects, e.g.:
-            - mantle_viscosity=1e21*uw.units.Pa*uw.units.s
-            - plate_velocity=5*uw.units.cm/uw.units.year
-            - domain_depth=3000*uw.units.km
-            OR using uw.quantity():
-            - domain_depth=uw.quantity(2900, "km")
+            Named reference quantities using Pint units or UWQuantity objects,
+            e.g. ``domain_depth=uw.quantity(2900, "km")``.
 
-        Example:
-        --------
-        >>> # Standard usage (recommended for most users)
-        >>> model.set_reference_quantities(
-        ...     mantle_viscosity=1e21*uw.units.Pa*uw.units.s,
-        ...     plate_velocity=5*uw.units.cm/uw.units.year,
-        ...     domain_depth=3000*uw.units.km
-        ... )
-        # ✓ Units system active with automatic non-dimensionalization
-
-        >>> # Also accepts UWQuantity objects
-        >>> model.set_reference_quantities(
-        ...     domain_depth=uw.quantity(2900, "km"),
-        ...     mantle_viscosity=uw.quantity(1e21, "Pa*s")
-        ... )
-
-        >>> # Expert mode (not recommended - dimensional units without scaling)
-        >>> model.set_reference_quantities(
-        ...     domain_depth=uw.quantity(2900, "km"),
-        ...     nondimensional_scaling=False
-        ... )
-        # ⚠ Expert mode: Units active WITHOUT non-dimensionalization
-
-        >>> # With diagnostic output
-        >>> model.set_reference_quantities(
-        ...     verbose=True,
-        ...     domain_depth=uw.quantity(500, "m"),
-        ...     mantle_temperature=uw.quantity(1300, "K")
-        ... )
-
-        Notes:
+        Raises
         ------
+        RuntimeError
+            If called after a mesh has been created (units are locked)
+
+        Notes
+        -----
         This method creates a Pint-native registry with model-specific constants
         using the _constants pattern for optimal numerical conditioning.
 
-        The default behavior (nondimensional_scaling=True) ensures:
-        - User-facing values in physical units (km, Myr, Pa*s, etc.)
-        - Solver operations in well-conditioned non-dimensional [0-1] space
-        - Automatic conversions handled transparently
-
-        Raises:
-        -------
-        RuntimeError
-            If called after a mesh has been created (units are locked)
+        The default behavior (nondimensional_scaling=True) ensures user-facing
+        values in physical units, solver operations in well-conditioned
+        non-dimensional [0-1] space, and automatic conversions.
         """
         # Check if units are locked
         self._check_units_locked()

@@ -97,10 +97,8 @@ class FaultSurface:
         """Create a fault surface.
 
         Args:
-            name: Identifier for this fault segment
-            points: (N, 3) array of 3D points defining the fault surface.
-                   If None, the fault is empty and must be loaded or
-                   have points added later.
+            name: Identifier for this fault segment.
+            points: (N, 3) array of 3D points, or None for an empty fault.
         """
         self.name = name
         self._points = None
@@ -477,18 +475,27 @@ class FaultCollection:
         computation. The returned field contains the absolute distance to the
         nearest fault surface at each mesh point.
 
-        Args:
-            mesh: The mesh to compute distances on
-            distance_var: Optional existing MeshVariable to store results.
-                         If None, creates a new variable.
-            variable_name: Name for new variable if distance_var is None
+        Parameters
+        ----------
+        mesh : Mesh
+            The mesh to compute distances on.
+        distance_var : MeshVariable, optional
+            Existing MeshVariable to store results.
+            If None, creates a new variable.
+        variable_name : str, optional
+            Name for new variable if distance_var is None.
 
-        Returns:
-            MeshVariable with distance values (scalar, 1 component)
+        Returns
+        -------
+        MeshVariable
+            Scalar variable with distance values (1 component).
 
-        Raises:
-            ValueError: If collection is empty or no faults are triangulated
-            ImportError: If pyvista not available
+        Raises
+        ------
+        ValueError
+            If collection is empty or no faults are triangulated.
+        ImportError
+            If pyvista is not available.
         """
         pv = _require_pyvista()
 
@@ -544,18 +551,27 @@ class FaultCollection:
         For each mesh point, finds the closest fault face (from any fault in
         the collection) and copies that face's normal vector.
 
-        Args:
-            mesh: The mesh to transfer normals to
-            coords: Optional coordinates to query. If None, uses mesh.X.coords
-            normal_var: Optional existing MeshVariable to store results.
-                       If None, creates a new variable.
-            variable_name: Name for new variable if normal_var is None
+        Parameters
+        ----------
+        mesh : Mesh
+            The mesh to transfer normals to.
+        coords : ndarray, optional
+            Coordinates to query. If None, uses mesh.X.coords.
+        normal_var : MeshVariable, optional
+            Existing MeshVariable to store results.
+            If None, creates a new variable.
+        variable_name : str, optional
+            Name for new variable if normal_var is None.
 
-        Returns:
-            MeshVariable with normal vectors (3 components)
+        Returns
+        -------
+        MeshVariable
+            Variable with normal vectors (3 components).
 
-        Raises:
-            ValueError: If collection is empty or no faults are triangulated
+        Raises
+        ------
+        ValueError
+            If collection is empty or no faults are triangulated.
         """
         if len(self.faults) == 0:
             raise ValueError("Cannot transfer normals: no faults in collection")

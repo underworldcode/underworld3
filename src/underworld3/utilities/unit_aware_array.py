@@ -31,51 +31,15 @@ from ..units import get_units
 
 
 class UnitAwareArray(NDArray_With_Callback):
-    """
-    A numpy ndarray subclass that combines callback functionality with unit awareness.
+    """A numpy ndarray subclass that combines callback functionality with unit awareness.
 
-    This class extends NDArray_With_Callback to provide:
-    - Automatic unit tracking and propagation
-    - Unit compatibility checking for operations
-    - Integration with UW3 unit conversion system
-    - Preservation of all callback functionality
-    - Unit-preserving global reduction operations (MPI-aware)
+    Extends ``NDArray_With_Callback`` to provide automatic unit tracking,
+    compatibility checking, and integration with the UW3 unit conversion system.
 
-    Mathematical Representation:
-    Given an array A with units [A], operations preserve dimensional consistency:
+    Operations preserve dimensional consistency: compatible units are added,
+    incompatible units raise errors, and multiplication combines units.
 
-    - A [m] + B [m] -> C [m] (compatible units)
-    - A [m] + B [s] -> Error (incompatible units)
-    - A [m] * B [s] -> C [m*s] (unit multiplication)
-    - A [m] * 2 -> C [m] (scalar multiplication)
-
-    Usage Examples:
-    ```python
-    # Create arrays with units
-    length = UnitAwareArray([1, 2, 3], units="m")
-    time = UnitAwareArray([0.1, 0.2, 0.3], units="s")
-
-    # Operations preserve units
-    velocity = length / time  # Result has units m/s
-
-    # Unit checking prevents errors
-    total = length + time  # Raises ValueError (incompatible units)
-
-    # Automatic conversion when possible
-    length_km = UnitAwareArray([1, 2, 3], units="km")
-    total_length = length + length_km  # Converts km to m automatically
-
-    # Callbacks still work
-    def on_change(array, info):
-        print(f"Array {array.units} changed: {info['operation']}")
-    length.set_callback(on_change)
-    length[0] = 5  # Triggers callback
-    ```
-
-    Global Reduction Operations (MPI-aware, unit-preserving):
-
-    These methods extend the parent class's global reduction operations to preserve
-    units in the result. Essential for parallel simulations with physical quantities.
+    **Global Reduction Operations (MPI-aware, unit-preserving)**:
 
     - ``global_max()`` -> UWQuantity (same units as array)
     - ``global_min()`` -> UWQuantity (same units as array)
@@ -87,53 +51,13 @@ class UnitAwareArray(NDArray_With_Callback):
     - ``global_var()`` -> UWQuantity (units squared)
     - ``global_std()`` -> UWQuantity (same units as array)
 
-    ```python
-    # Example: mesh coordinates with units
-    mesh.units = "kilometer"
-    coords = mesh.X.coords  # UnitAwareArray with units="kilometer"
-
-    # Global reductions preserve units
-    x_max = coords[:, 0].global_max()  # Returns: 100.0 [kilometer]
-    x_min = coords[:, 0].global_min()  # Returns: 0.0 [kilometer]
-    mean_coord = coords.global_mean()  # Returns: UWQuantity in kilometers
-
-    # Variance has squared units
-    variance = coords.global_var()     # Returns: UWQuantity in (kilometer)**2
-    std_dev = coords.global_std()      # Returns: UWQuantity in kilometers
-    ```
-
-    Note: Tensor arrays (ndim > 2) raise NotImplementedError for global reductions.
+    Tensor arrays (ndim > 2) raise NotImplementedError for global reductions.
     Use component-wise operations or slice the array for tensors.
 
-    Backend Abstraction:
-
-    UnitAwareArray inherits the callback mechanism from NDArray_With_Callback,
-    enabling it to work with **any storage backend** - only the callback changes.
-    This provides a consistent unit-aware interface regardless of underlying storage:
-
-    ```python
-    # MeshVariable: PETSc backend with units
-    def petsc_sync(array, info):
-        self._petsc_vec.setArray(array)
-
-    mesh_var.data = UnitAwareArray(
-        petsc_data, units="m/s",
-        callback=petsc_sync, owner=self,
-    )
-
-    # SurfaceVariable: pyvista backend with units
-    def pyvista_sync(array, info):
-        self._pv_mesh.point_data[name] = np.asarray(array)
-        self._proxy_stale = True
-
-    surface_var.data = UnitAwareArray(
-        pv_data, units="Pa",
-        callback=pyvista_sync, owner=self,
-    )
-    ```
-
-    The same UnitAwareArray class provides consistent `.units`, `.magnitude`, and
-    unit-aware arithmetic for both backends without any code changes.
+    Inherits the callback mechanism from ``NDArray_With_Callback``, enabling it
+    to work with any storage backend (PETSc, pyvista, etc.) by changing only
+    the callback. Provides consistent ``.units``, ``.magnitude``, and unit-aware
+    arithmetic regardless of underlying storage.
     """
 
     def __new__(
