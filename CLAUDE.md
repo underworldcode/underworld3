@@ -220,10 +220,19 @@ Underworld development team with AI support from Claude Code
 - Requires complete rebuild (~1 hour) if relocated
 
 ### Rebuild After Source Changes
-**After modifying source files, always run `pixi run underworld-build`!**
+**After modifying source files, always run `./uw build`!**
 - Underworld3 is installed as a package in the pixi environment
 - Changes go to `.pixi/envs/default/lib/python3.12/site-packages/underworld3/`
 - Verify with `uw.model.__file__`
+
+**⚠️ STALE BUILD CACHE**: If `./uw build` succeeds but Python still uses old code
+(e.g. a new parameter is "unknown"), pip's wheel cache is stale. Fix with:
+```bash
+rm -rf build/lib.* build/bdist.*
+pixi run -e default pip install --no-build-isolation --force-reinstall --no-deps .
+```
+This is the most common build issue — `./uw build` reuses cached wheels when the
+version number hasn't changed. Always verify changes are installed before debugging.
 
 ### Test Quality Principles
 **New tests must be validated before making code changes to fix them!**
@@ -534,10 +543,10 @@ When working on specific subsystems, these documents provide detailed guidance.
 
 ## Quick Reference
 
-### Pixi Commands
+### Build & Test Commands
 ```bash
-pixi run underworld-build    # Rebuild after source changes
-pixi run underworld-test     # Run test suite
+./uw build                   # Rebuild after source changes (preferred)
+./uw test                    # Run test suite
 pixi run -e default python   # Run Python in environment
 ```
 

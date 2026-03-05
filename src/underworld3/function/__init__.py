@@ -89,6 +89,8 @@ from .gradient_evaluation import (
 from .field_projection import (
     project_to_degree,
     project_to_vertices,
+    write_vertices_to_viewer,
+    write_cell_field_to_viewer,
 )
 
 

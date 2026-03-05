@@ -3120,76 +3120,16 @@ class Mesh(Stateful, uw_object):
 ## Simplified to allow us to decide how we want to checkpoint
 
 
-def _repack_tensor_to_paraview(data, vtype, dim):
-    """Repack UW3 tensor data to ParaView 9-component (3x3) format.
-
-    UW3 ``_data_layout`` ordering (row-major):
-
-    - TENSOR 2D:     ``[xx, xy, yx, yy]``
-    - SYM_TENSOR 2D: ``[xx, yy, xy]``
-    - TENSOR 3D:     ``[xx, xy, xz, yx, yy, yz, zx, zy, zz]``
-    - SYM_TENSOR 3D: ``[xx, yy, zz, xy, xz, yz]``
-
-    ParaView expects row-major 3x3:
-    ``[xx, xy, xz, yx, yy, yz, zx, zy, zz]``
-    """
-    import numpy as np
-    import underworld3 as uw
-
-    n = data.shape[0]
-    ncomp = data.shape[1]
-    out = np.zeros((n, 9), dtype=data.dtype)
-
-    if vtype == uw.VarType.TENSOR:
-        if dim == 2 and ncomp == 4:
-            # [xx, xy, yx, yy] → [xx, xy, 0, yx, yy, 0, 0, 0, 0]
-            out[:, 0] = data[:, 0]  # xx
-            out[:, 1] = data[:, 1]  # xy
-            out[:, 3] = data[:, 2]  # yx
-            out[:, 4] = data[:, 3]  # yy
-        elif dim == 3 and ncomp == 9:
-            out[:, :] = data[:, :]
-        else:
-            return data  # unknown layout, pass through
-    elif vtype == uw.VarType.SYM_TENSOR:
-        if dim == 2 and ncomp == 3:
-            # [xx, yy, xy] → [xx, xy, 0, xy, yy, 0, 0, 0, 0]
-            out[:, 0] = data[:, 0]  # xx
-            out[:, 1] = data[:, 2]  # xy
-            out[:, 3] = data[:, 2]  # xy (symmetric)
-            out[:, 4] = data[:, 1]  # yy
-        elif dim == 3 and ncomp == 6:
-            # [xx, yy, zz, xy, xz, yz] → full 3x3
-            out[:, 0] = data[:, 0]  # xx
-            out[:, 4] = data[:, 1]  # yy
-            out[:, 8] = data[:, 2]  # zz
-            out[:, 1] = data[:, 3]  # xy
-            out[:, 3] = data[:, 3]  # yx = xy
-            out[:, 2] = data[:, 4]  # xz
-            out[:, 6] = data[:, 4]  # zx = xz
-            out[:, 5] = data[:, 5]  # yz
-            out[:, 7] = data[:, 5]  # zy = yz
-        else:
-            return data
-    else:
-        # MATRIX or unknown — pass through
-        return data
-
-    return out
-
-
 def _write_compat_groups(mesh, var, var_h5_path):
     """Write ``/vertex_fields/`` or ``/cell_fields/`` compatibility groups.
 
-    For P1 continuous variables, copies owned global-vector data directly
-    (DOFs match vertices exactly).  For P2+ continuous variables, uses
-    ``uw.function.evaluate`` to obtain exact FE values at mesh vertex
-    positions.  Cell (discontinuous / degree-0) variables are copied to
-    ``/cell_fields/``.  Tensor variables are repacked to 9-component
-    ParaView format.
+    Uses ``uw.function.write_vertices_to_viewer`` (PETSc interpolation +
+    ViewerHDF5) for continuous variables, and
+    ``uw.function.write_cell_field_to_viewer`` for cell/DG-0 variables.
+    PETSc handles all parallel I/O natively.
 
-    All ranks participate in the evaluation step (collective), then data
-    is gathered to rank 0 for a single h5py write.
+    Vertex coordinates are also written to ``/vertex_fields/coordinates``
+    for XDMF compatibility.
 
     Parameters
     ----------
@@ -3201,97 +3141,29 @@ def _write_compat_groups(mesh, var, var_h5_path):
     var_h5_path : str
         Path to the HDF5 file (already contains ``/fields/<name>``).
     """
-    import h5py
-    import numpy as np
     import underworld3 as uw
 
-    comm = uw.mpi.comm
-    rank = uw.mpi.rank
-
     is_cell = (not var.continuous) or (var.degree == 0)
-    is_tensor = hasattr(var, "vtype") and var.vtype in (
-        uw.VarType.TENSOR,
-        uw.VarType.SYM_TENSOR,
-        uw.VarType.MATRIX,
+
+    viewer = PETSc.ViewerHDF5().create(
+        var_h5_path, "a", comm=PETSc.COMM_WORLD,
     )
 
-    output_name = f"{var.clean_name}_{var.clean_name}"
-
-    # --- Obtain owned-only values ------------------------------------------
-    # var._gvec contains owned DOFs (no ghosts), already synced by var.write()
-
     if is_cell:
-        ncomp = var.num_components
-        local_values = var._gvec.array.reshape(-1, ncomp).copy()
-        group_name = "cell_fields"
-    elif var.degree == 1:
-        # P1: DOFs match mesh vertices — direct copy
-        ncomp = var.num_components
-        local_values = var._gvec.array.reshape(-1, ncomp).copy()
-        group_name = "vertex_fields"
+        uw.function.write_cell_field_to_viewer(var, viewer)
     else:
-        # P2+: exact FE evaluation at owned vertex positions
-        # NOTE: uw.function.evaluate is a COLLECTIVE operation (all ranks
-        #       must call it) — no early returns before this point.
+        uw.function.write_vertices_to_viewer(var, viewer)
+
+        # Write vertex coordinates for XDMF (as standalone vec)
+        import numpy as np
+        from underworld3.function.field_projection import _write_vec_to_group
+
         coord_gvec = mesh.dm.getCoordinates()
-        owned_coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
+        coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
+        _write_vec_to_group(viewer, coords, "coordinates",
+                            "/vertex_fields", PETSc.COMM_WORLD)
 
-        raw = np.asarray(
-            uw.function.evaluate(var.sym, owned_coords), dtype=np.float64
-        )
-        npts = owned_coords.shape[0]
-        # evaluate returns (N,), (N, cols), or (N, rows, cols) depending
-        # on expression shape — flatten trailing dimensions.
-        local_values = raw.reshape(npts, -1)
-        ncomp = local_values.shape[1]
-        group_name = "vertex_fields"
-
-    # Tensor repacking to ParaView 9-component format
-    if is_tensor:
-        if var.degree >= 2:
-            # P2+ evaluate gives full matrix in row-major order —
-            # identical to TENSOR _data_layout, so repack as TENSOR.
-            local_values = _repack_tensor_to_paraview(
-                local_values, uw.VarType.TENSOR, mesh.dim
-            )
-        else:
-            # P1: gvec data uses the variable's own _data_layout packing
-            local_values = _repack_tensor_to_paraview(
-                local_values, var.vtype, mesh.dim
-            )
-        ncomp = local_values.shape[1]
-
-    # Owned vertex coordinates (needed for vertex_fields group)
-    local_coords = None
-    if group_name == "vertex_fields":
-        coord_gvec = mesh.dm.getCoordinates()
-        local_coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
-
-    # --- Gather to rank 0 and write ----------------------------------------
-
-    if uw.mpi.size > 1:
-        all_values = comm.gather(local_values, root=0)
-        all_coords = comm.gather(local_coords, root=0) if local_coords is not None else None
-        if rank != 0:
-            return
-        local_values = np.concatenate(all_values, axis=0)
-        if all_coords is not None:
-            local_coords = np.concatenate(all_coords, axis=0)
-
-    if rank != 0:
-        return
-
-    with h5py.File(var_h5_path, "a") as h5f:
-        grp = h5f.require_group(group_name)
-
-        if output_name in grp:
-            del grp[output_name]
-        grp.create_dataset(output_name, data=local_values)
-
-        if local_coords is not None:
-            if "coordinates" in grp:
-                del grp["coordinates"]
-            grp.create_dataset("coordinates", data=local_coords)
+    viewer.destroy()
 
 
 def checkpoint_xdmf(
