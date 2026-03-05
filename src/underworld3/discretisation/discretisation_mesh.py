@@ -3153,15 +3153,7 @@ def _write_compat_groups(mesh, var, var_h5_path):
         uw.function.write_cell_field_to_viewer(var, viewer)
     else:
         uw.function.write_vertices_to_viewer(var, viewer)
-
-        # Write vertex coordinates for XDMF (as standalone vec)
-        import numpy as np
-        from underworld3.function.field_projection import _write_vec_to_group
-
-        coord_gvec = mesh.dm.getCoordinates()
-        coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
-        _write_vec_to_group(viewer, coords, "coordinates",
-                            "/vertex_fields", PETSc.COMM_WORLD)
+        uw.function.write_coordinates_to_viewer(mesh, viewer)
 
     viewer.destroy()
 

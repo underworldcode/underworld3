@@ -243,11 +243,52 @@ def test_no_xdmf_when_disabled(tmp_path):
     )
 
     s_h5 = os.path.join(str(tmp_path), "noxdmf.mesh.s.00000.h5")
-    assert not _check_h5_group_exists(s_h5, "vertex_fields"), (
-        "vertex_fields should not exist when create_xdmf=False"
+    # Check that our compat dataset was NOT written.  We check the specific
+    # dataset rather than the group because some PETSc versions create
+    # /vertex_fields/ as a side effect of DM-associated writes.
+    assert not _check_h5_group_exists(s_h5, "vertex_fields/s_s"), (
+        "vertex_fields/s_s should not exist when create_xdmf=False"
     )
 
     xdmf_file = os.path.join(str(tmp_path), "noxdmf.mesh.00000.xdmf")
     assert not os.path.exists(xdmf_file), "XDMF file should not exist"
+
+    del mesh
+
+
+# ---------------------------------------------------------------------------
+# Test: Tensor variable repacking
+# ---------------------------------------------------------------------------
+
+
+def test_tensor_variable_repacking(tmp_path):
+    """Tensor variables are repacked to 9 components (3x3) in vertex_fields."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+
+    # 2D full tensor (4 components internally)
+    T = uw.discretisation.MeshVariable(
+        "T", mesh, mesh.dim, degree=1, vtype=uw.VarType.TENSOR
+    )
+    T.data[:, 0] = 1.0  # xx
+    T.data[:, 1] = 0.1  # xy
+    T.data[:, 2] = 0.2  # yx
+    T.data[:, 3] = 2.0  # yy
+
+    mesh.write_timestep(
+        "tensor", index=0, outputPath=str(tmp_path), meshVars=[T]
+    )
+
+    t_h5 = os.path.join(str(tmp_path), "tensor.mesh.T.00000.h5")
+    assert _check_h5_group_exists(t_h5, "vertex_fields/T_T")
+
+    t_compat = _read_h5_dataset(t_h5, "vertex_fields/T_T")
+    n_verts = mesh._coords.shape[0]
+    t_ncomp = t_compat.size // n_verts
+    assert t_ncomp == 9, f"Tensor should be repacked to 9 components, got {t_ncomp}"
+
+    # Verify XDMF
+    xdmf_file = os.path.join(str(tmp_path), "tensor.mesh.00000.xdmf")
+    _check_xdmf_refs(xdmf_file, str(tmp_path))
 
     del mesh

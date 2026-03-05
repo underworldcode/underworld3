@@ -27,6 +27,7 @@ def project_to_degree(
     mesh_var: "MeshVariable",
     target_degree: int = 1,
     continuous: bool = True,
+    include_ghosts: bool = True,
 ) -> np.ndarray:
     """Project a MeshVariable to a different polynomial degree.
 
@@ -38,11 +39,15 @@ def project_to_degree(
         Polynomial degree of the target space (default 1 = vertex values).
     continuous
         Whether the target space is continuous (default ``True``).
+    include_ghosts
+        If ``True`` (default), return the full local vector including ghost
+        DOFs.  If ``False``, return only the owned partition (suitable for
+        parallel HDF5 writing where each rank writes its own slice).
 
     Returns
     -------
     np.ndarray
-        Projected values with shape ``(n_target_dofs, num_components)``.
+        Projected values with shape ``(n_dofs, num_components)``.
 
     Notes
     -----
@@ -85,15 +90,18 @@ def project_to_degree(
     subdm_src.localToGlobal(mesh_var._lvec, g_src)
 
     g_dst = dm_scratch.createGlobalVec()
-    l_dst = dm_scratch.createLocalVec()
-
     interp.mult(g_src, g_dst)
-    dm_scratch.globalToLocal(g_dst, l_dst)
 
-    result = l_dst.array.reshape(-1, nc).copy()
+    if include_ghosts:
+        l_dst = dm_scratch.createLocalVec()
+        dm_scratch.globalToLocal(g_dst, l_dst)
+        result = l_dst.array.reshape(-1, nc).copy()
+        l_dst.destroy()
+    else:
+        result = g_dst.array.reshape(-1, nc).copy()
 
     # --- cleanup ---
-    for obj in (interp, g_src, g_dst, l_dst, dm_scratch, fe_target):
+    for obj in (interp, g_src, g_dst, dm_scratch, fe_target, subdm_src, iset):
         obj.destroy()
     if _scale is not None:
         _scale.destroy()
@@ -264,40 +272,15 @@ def write_vertices_to_viewer(
     is_p1 = mesh_var.continuous and mesh_var.degree == 1
 
     if is_p1:
-        # DOFs = vertices — use gvec data directly
+        # DOFs = vertices — use gvec data directly (already owned-only)
         mesh_var._sync_lvec_to_gvec()
         data = mesh_var._gvec.array.reshape(-1, nc).copy()
     else:
-        # Build scratch DM at degree 1, interpolate, extract array
-        options = PETSc.Options()
-        prefix = "_fieldproj_"
-        options.setValue(f"{prefix}petscspace_degree", 1)
-        options.setValue(f"{prefix}petscdualspace_lagrange_continuity", True)
-        options.setValue(f"{prefix}petscdualspace_lagrange_node_endpoints", False)
-
-        fe_target = PETSc.FE().createDefault(
-            mesh.dim, nc, mesh.isSimplex, mesh.qdegree, prefix, PETSc.COMM_SELF,
+        # include_ghosts=False → owned partition only, suitable for
+        # parallel HDF5 writing where each rank writes its own slice.
+        data = project_to_degree(
+            mesh_var, target_degree=1, continuous=True, include_ghosts=False,
         )
-
-        dm_scratch = mesh.dm.clone()
-        dm_scratch.addField(fe_target)
-        dm_scratch.createDS()
-
-        iset, subdm_src = mesh.dm.createSubDM(mesh_var.field_id)
-        interp, _scale = subdm_src.createInterpolation(dm_scratch)
-
-        g_src = subdm_src.createGlobalVec()
-        subdm_src.localToGlobal(mesh_var._lvec, g_src)
-
-        g_dst = dm_scratch.createGlobalVec()
-        interp.mult(g_src, g_dst)
-
-        data = g_dst.array.reshape(-1, nc).copy()
-
-        for obj in (interp, g_src, g_dst, dm_scratch, fe_target):
-            obj.destroy()
-        if _scale is not None:
-            _scale.destroy()
 
     # Repack tensors to ParaView 9-component format for visualisation.
     # The projected data uses the same _data_layout as the source variable.
@@ -311,6 +294,30 @@ def write_vertices_to_viewer(
         data = _repack_tensor_to_paraview(data, mesh_var.vtype, mesh.dim)
 
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
+
+
+def write_coordinates_to_viewer(
+    mesh,
+    viewer: "PETSc.ViewerHDF5",
+    group: str = "/vertex_fields",
+    name: str = "coordinates",
+) -> None:
+    """Write mesh vertex coordinates via PETSc ViewerHDF5.
+
+    Parameters
+    ----------
+    mesh
+        Source mesh.
+    viewer
+        An open ``PETSc.ViewerHDF5`` in append or write mode.
+    group
+        HDF5 group path to write into.
+    name
+        Dataset name (default ``coordinates``).
+    """
+    coord_gvec = mesh.dm.getCoordinates()
+    coords = coord_gvec.array.reshape(-1, mesh.dim).copy()
+    _write_vec_to_group(viewer, coords, name, group, PETSc.COMM_WORLD)
 
 
 def write_cell_field_to_viewer(
