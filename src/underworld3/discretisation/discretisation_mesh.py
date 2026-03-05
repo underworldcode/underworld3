@@ -3144,6 +3144,19 @@ def _write_compat_groups(mesh, var, var_h5_path):
     import underworld3 as uw
 
     is_cell = (not var.continuous) or (var.degree == 0)
+    group = "cell_fields" if is_cell else "vertex_fields"
+
+    # Some PETSc versions (3.21+) write /vertex_fields/ or /cell_fields/
+    # automatically during var.write().  Remove any pre-existing group so
+    # that our compat writer can create it afresh (otherwise PETSc error 76
+    # on duplicate dataset).
+    import h5py
+
+    if uw.mpi.rank == 0:
+        with h5py.File(var_h5_path, "a") as f:
+            if group in f:
+                del f[group]
+    uw.mpi.barrier()
 
     viewer = PETSc.ViewerHDF5().create(
         var_h5_path, "a", comm=PETSc.COMM_WORLD,
