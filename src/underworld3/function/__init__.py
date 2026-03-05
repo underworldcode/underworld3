@@ -85,6 +85,12 @@ from .gradient_evaluation import (
     interpolate_gradients_at_coords,
 )
 
+# Field projection utilities (scratch-DM based, no MeshVariable creation)
+from .field_projection import (
+    project_to_degree,
+    project_to_vertices,
+)
+
 
 def with_units(sympy_expr, name=None, units=None):
     """
