@@ -117,6 +117,72 @@ def project_to_vertices(mesh_var: "MeshVariable") -> np.ndarray:
     return project_to_degree(mesh_var, target_degree=1, continuous=True)
 
 
+def _repack_tensor_to_paraview(data, vtype, dim):
+    """Repack UW3 tensor data to ParaView 9-component (3x3) format.
+
+    The checkpoint path (``/fields/``) stores tensors in UW3's internal
+    ``_data_layout`` ordering.  The visualisation path
+    (``/vertex_fields/``) must repack to ParaView's expected row-major
+    3x3 layout: ``[xx, xy, xz, yx, yy, yz, zx, zy, zz]``.
+
+    UW3 ``_data_layout`` ordering:
+
+    - TENSOR 2D:     ``[xx, xy, yx, yy]``  (row-major, 4 components)
+    - SYM_TENSOR 2D: ``[xx, yy, xy]``       (3 unique components)
+    - TENSOR 3D:     ``[xx, xy, xz, yx, yy, yz, zx, zy, zz]``
+                     (row-major, already ParaView-compatible)
+    - SYM_TENSOR 3D: ``[xx, yy, zz, xy, xz, yz]``  (6 unique components)
+
+    .. note::
+
+       The original PR #69 assumed 2D TENSOR stored ``[xx, yy, xy, yx]``.
+       This corrected version uses the actual ``_data_layout`` row-major
+       ordering ``[xx, xy, yx, yy]``.
+    """
+    import underworld3 as uw
+
+    n = data.shape[0]
+    ncomp = data.shape[1]
+    out = np.zeros((n, 9), dtype=data.dtype)
+
+    if vtype == uw.VarType.TENSOR:
+        if dim == 2 and ncomp == 4:
+            # [xx, xy, yx, yy] → [xx, xy, 0, yx, yy, 0, 0, 0, 0]
+            out[:, 0] = data[:, 0]  # xx
+            out[:, 1] = data[:, 1]  # xy
+            out[:, 3] = data[:, 2]  # yx
+            out[:, 4] = data[:, 3]  # yy
+        elif dim == 3 and ncomp == 9:
+            out[:, :] = data[:, :]
+        else:
+            return data  # unknown layout, pass through
+    elif vtype == uw.VarType.SYM_TENSOR:
+        if dim == 2 and ncomp == 3:
+            # [xx, yy, xy] → [xx, xy, 0, xy, yy, 0, 0, 0, 0]
+            out[:, 0] = data[:, 0]  # xx
+            out[:, 1] = data[:, 2]  # xy
+            out[:, 3] = data[:, 2]  # xy (symmetric)
+            out[:, 4] = data[:, 1]  # yy
+        elif dim == 3 and ncomp == 6:
+            # [xx, yy, zz, xy, xz, yz] → full 3x3
+            out[:, 0] = data[:, 0]  # xx
+            out[:, 4] = data[:, 1]  # yy
+            out[:, 8] = data[:, 2]  # zz
+            out[:, 1] = data[:, 3]  # xy
+            out[:, 3] = data[:, 3]  # yx = xy
+            out[:, 2] = data[:, 4]  # xz
+            out[:, 6] = data[:, 4]  # zx = xz
+            out[:, 5] = data[:, 5]  # yz
+            out[:, 7] = data[:, 5]  # zy = yz
+        else:
+            return data
+    else:
+        # MATRIX or unknown — pass through
+        return data
+
+    return out
+
+
 def _write_vec_to_group(viewer, data_array, name, group, comm):
     """Write a numpy array as a standalone PETSc Vec under an HDF5 group.
 
@@ -124,12 +190,17 @@ def _write_vec_to_group(viewer, data_array, name, group, comm):
     pushes its own ``/fields/`` prefix.  This helper creates a plain Vec
     (no DM) so ``pushGroup`` is respected.
 
+    When *data_array* is 2D ``(N, ncomp)``, the Vec block size is set to
+    *ncomp* so the HDF5 dataset is written as ``(N, ncomp)`` rather than
+    flat ``(N*ncomp,)``.
+
     Parameters
     ----------
     viewer
         An open ``PETSc.ViewerHDF5``.
     data_array : np.ndarray
-        Local (owned) data to write — shape ``(n_local, ...)``.
+        Local (owned) data to write — shape ``(n_local,)`` or
+        ``(n_local, ncomp)``.
     name : str
         Dataset name in the HDF5 group.
     group : str
@@ -138,6 +209,8 @@ def _write_vec_to_group(viewer, data_array, name, group, comm):
         MPI communicator.
     """
     vec = PETSc.Vec().createWithArray(data_array.ravel(), comm=comm)
+    if data_array.ndim == 2 and data_array.shape[1] > 1:
+        vec.setBlockSize(data_array.shape[1])
     vec.setName(name)
     viewer.pushGroup(group)
     viewer(vec)
@@ -157,6 +230,11 @@ def write_vertices_to_viewer(
     written directly (DOFs already match mesh vertices).  For P2+
     continuous variables, a scratch DM and PETSc interpolation matrix
     project to degree 1.
+
+    Tensor variables (TENSOR, SYM_TENSOR) are repacked from UW3's
+    internal ``_data_layout`` ordering to ParaView's 9-component
+    row-major 3x3 format.  The checkpoint data in ``/fields/`` is
+    unchanged — only the visualisation copy is repacked.
 
     Data is written as a standalone Vec (no DM) so that ``pushGroup``
     is respected — DM-associated Vecs would be redirected to ``/fields/``
@@ -220,6 +298,17 @@ def write_vertices_to_viewer(
             obj.destroy()
         if _scale is not None:
             _scale.destroy()
+
+    # Repack tensors to ParaView 9-component format for visualisation.
+    # The projected data uses the same _data_layout as the source variable.
+    import underworld3 as uw
+
+    is_tensor = hasattr(mesh_var, "vtype") and mesh_var.vtype in (
+        uw.VarType.TENSOR,
+        uw.VarType.SYM_TENSOR,
+    )
+    if is_tensor:
+        data = _repack_tensor_to_paraview(data, mesh_var.vtype, mesh.dim)
 
     _write_vec_to_group(viewer, data, name, group, PETSc.COMM_WORLD)
 

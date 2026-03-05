@@ -122,22 +122,42 @@ Then:
 
 ### How vertex data is obtained
 
-The compatibility group writer uses the live in-memory variable data:
+The compatibility group writer uses PETSc's `createInterpolation` to project
+data to mesh vertices:
 
 - **P1 continuous variables**: DOFs match mesh vertices exactly, so the owned
-  global-vector data is copied directly to `/vertex_fields/` — no interpolation needed.
-- **P2+ continuous variables**: `uw.function.evaluate(var.sym, vertex_coords)` gives
-  exact finite-element polynomial values at mesh vertex positions.
-- **Cell (discontinuous / degree-0) variables**: owned global-vector data is copied
+  global-vector data is written directly to `/vertex_fields/` — no interpolation needed.
+- **P2+ continuous variables**: a scratch DM at degree 1 is created, PETSc builds
+  the interpolation matrix, and the projected global vector is written. This gives
+  exact polynomial-consistent values at vertex positions.
+- **Cell (discontinuous / degree-0) variables**: owned global-vector data is written
   directly to `/cell_fields/`.
+
+### Tensor repacking
+
+Tensor variables are repacked from UW3's internal `_data_layout` storage order to
+ParaView's 9-component row-major 3x3 format before writing to the compatibility
+groups.  The checkpoint data in `/fields/` is always stored in UW3's native ordering.
+
+UW3 `_data_layout` storage (different from ParaView's expected order):
+
+| Type | 2D components | 3D components |
+|------|--------------|--------------|
+| TENSOR | `[xx, xy, yx, yy]` | `[xx, xy, xz, yx, yy, yz, zx, zy, zz]` (same as ParaView) |
+| SYM_TENSOR | `[xx, yy, xy]` | `[xx, yy, zz, xy, xz, yz]` |
+
+```{note}
+The original PR #69 assumed 2D TENSOR stored `[xx, yy, xy, yx]`.
+The corrected implementation uses the actual `_data_layout` row-major
+ordering `[xx, xy, yx, yy]`.
+```
 
 ### Parallel execution details
 
-The compatibility group writer is parallel-aware:
-
-- All ranks participate in the evaluation step (collective for P2+ variables)
-- Owned data from each rank is gathered to rank 0
-- Rank 0 writes the assembled arrays to HDF5 via `h5py`
+All I/O uses PETSc's parallel `ViewerHDF5`.  Data is written as standalone Vecs
+(not DM-associated) with `setBlockSize()` to preserve the `(N, ncomp)` dataset
+shape.  This is necessary because DM-associated Vecs ignore `pushGroup()` — the
+DMPlex HDF5 writer internally redirects to `/fields/`.
 
 ## 4. Tensor representation for ParaView (2D and 3D)
 
