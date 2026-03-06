@@ -406,6 +406,18 @@ class BdIntegral:
         cdef PetscInt num_vals = 1
 
         c_label = mesh.dm.getLabel(self.boundary)
+        if c_label is None:
+            # Some meshes keep boundary strata only on the consolidated label.
+            # Fall back to UW_Boundaries and select this boundary via label_val.
+            c_label = mesh.dm.getLabel("UW_Boundaries")
+        if underworld3.mpi.comm.allreduce(1 if c_label else 0) == 0:
+            mesh_name = getattr(mesh, "name", "<unnamed mesh>")
+            raise ValueError(
+                f"Boundary '{self.boundary}' was requested on mesh '{mesh_name}', "
+                f"but neither a DM label named '{self.boundary}' nor the "
+                "'UW_Boundaries' label "
+                "was found on this mesh."
+            )
 
         # Output value
         cdef PetscScalar result = 0.0
