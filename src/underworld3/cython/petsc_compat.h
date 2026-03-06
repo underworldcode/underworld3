@@ -163,6 +163,15 @@ PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
     PetscCall(DMGetLocalSection(dm, &section));
     PetscCall(PetscSectionGetNumFields(section, &Nf));
 
+    // If label is NULL (boundary not present on this rank), contribute 0
+    // but still participate in the MPI Allreduce to avoid hangs.
+    if (!label) {
+        PetscScalar zero = 0.0;
+        PetscCallMPI(MPIU_Allreduce(&zero, result, 1, MPIU_SCALAR, MPIU_SUM,
+                                    PetscObjectComm((PetscObject)dm)));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+
     // --- Build a ghost-point bitset from the point SF ---
     PetscSF   sf;
     PetscInt  nleaves;

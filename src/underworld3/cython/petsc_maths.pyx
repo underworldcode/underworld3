@@ -406,15 +406,24 @@ class BdIntegral:
         cdef PetscInt num_vals = 1
 
         c_label = mesh.dm.getLabel(self.boundary)
-        cdef DMLabel dmlabel = c_label
 
         # Output value
         cdef PetscScalar result = 0.0
 
+        # Label can be None if this boundary has no facets on this process
+        # (normal in parallel) or if the DM doesn't carry the label at all.
+        # The C wrapper handles NULL labels gracefully (contributes 0 to the
+        # MPI reduction so all ranks still participate).
+        cdef PetscDMLabel c_dmlabel = NULL
+        cdef DMLabel dmlabel
+        if c_label:
+            dmlabel = c_label
+            c_dmlabel = dmlabel.dmlabel
+
         # Call the boundary integral
         ierr = UW_DMPlexComputeBdIntegral(
             dm_c.dm, cgvec.vec,
-            dmlabel.dmlabel, num_vals, &label_val,
+            c_dmlabel, num_vals, &label_val,
             ext.fns_bd_residual[0],
             &result, NULL
         )
