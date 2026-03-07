@@ -18,6 +18,31 @@ else
     GREEN='' YELLOW='' BOLD='' NC=''
 fi
 
+# MPI-safe thread defaults:
+# Cap BLAS/OpenMP-style thread pools to 1 unless users explicitly override.
+# This avoids severe oversubscription when running multiple MPI ranks.
+apply_thread_caps() {
+    if [ "${UW_DISABLE_THREAD_CAPS:-0}" = "1" ]; then
+        return
+    fi
+
+    local thread_vars=(
+        OMP_NUM_THREADS
+        OPENBLAS_NUM_THREADS
+        MKL_NUM_THREADS
+        VECLIB_MAXIMUM_THREADS
+        NUMEXPR_NUM_THREADS
+    )
+
+    for var in "${thread_vars[@]}"; do
+        if [ -z "${!var+x}" ] || [ -z "${!var}" ]; then
+            export "${var}=1"
+        fi
+    done
+}
+
+apply_thread_caps
+
 # Find pixi - check PATH first, then ~/.pixi/bin/ (where installer puts it)
 find_pixi() {
     if command -v pixi &> /dev/null; then
