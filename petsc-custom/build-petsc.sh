@@ -9,6 +9,11 @@
 # - slepc: eigenvalue solvers
 # - mumps: direct solver
 #
+# MPI is auto-detected from the active pixi environment:
+# - MPICH  → PETSC_ARCH = petsc-4-uw-mpich
+# - OpenMPI → PETSC_ARCH = petsc-4-uw-openmpi
+#
+# Both builds co-exist under the same PETSc source tree.
 # Build time: ~1 hour on Apple Silicon
 #
 # Usage:
@@ -16,13 +21,14 @@
 #   ./build-petsc.sh configure # Just reconfigure
 #   ./build-petsc.sh build     # Just build (after configure)
 #   ./build-petsc.sh petsc4py  # Just build petsc4py
-#   ./build-petsc.sh clean     # Remove PETSc directory
+#   ./build-petsc.sh clean     # Remove build for detected MPI
+#   ./build-petsc.sh clean-all # Remove entire PETSc directory
+#   ./build-petsc.sh help      # Show this help
 #
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PETSC_DIR="${SCRIPT_DIR}/petsc"
-PETSC_ARCH="petsc-4-uw"
 
 # Detect active pixi environment (robust)
 if [ -z "$PIXI_PROJECT_ROOT" ]; then
@@ -37,18 +43,46 @@ print(pathlib.Path(sys.executable).resolve().parents[1])
 EOF
 )"
 
+# ── MPI auto-detection ──────────────────────────────────────────────
+# Detect which MPI implementation is available in the pixi environment.
+# Sets MPI_IMPL ("mpich" or "openmpi") and PETSC_ARCH accordingly.
+
+detect_mpi() {
+    local mpi_version
+    mpi_version=$(python3 -c "from mpi4py import MPI; print(MPI.Get_library_version())" 2>/dev/null || echo "")
+
+    if echo "$mpi_version" | grep -qi "open mpi"; then
+        echo "openmpi"
+    elif echo "$mpi_version" | grep -qi "mpich"; then
+        echo "mpich"
+    else
+        # Fallback: check for mpicc --version
+        local mpicc_out
+        mpicc_out=$("$PIXI_ENV/bin/mpicc" --version 2>&1 || echo "")
+        if echo "$mpicc_out" | grep -qi "open mpi"; then
+            echo "openmpi"
+        else
+            echo "mpich"  # default fallback
+        fi
+    fi
+}
+
+MPI_IMPL=$(detect_mpi)
+PETSC_ARCH="petsc-4-uw-${MPI_IMPL}"
+
 echo "=========================================="
 echo "PETSc AMR Build Script"
 echo "=========================================="
 echo "PETSC_DIR:  $PETSC_DIR"
 echo "PETSC_ARCH: $PETSC_ARCH"
+echo "MPI:        $MPI_IMPL"
 echo "PIXI_ENV:   $PIXI_ENV"
 echo "=========================================="
 
 clone_petsc() {
     if [ -d "$PETSC_DIR" ]; then
         echo "PETSc directory already exists. Skipping clone."
-        echo "To force fresh clone, run: ./build-petsc.sh clean"
+        echo "To force fresh clone, run: ./build-petsc.sh clean-all"
         return 0
     fi
 
@@ -58,7 +92,7 @@ clone_petsc() {
 }
 
 configure_petsc() {
-    echo "Configuring PETSc with AMR tools..."
+    echo "Configuring PETSc with AMR tools ($MPI_IMPL)..."
     cd "$PETSC_DIR"
 
     # Configure with adaptive mesh refinement tools
@@ -86,6 +120,7 @@ configure_petsc() {
         --with-hdf5-dir="$PIXI_ENV" \
         --download-hdf5=0 \
         --download-mpich=0 \
+        --download-openmpi=0 \
         --download-mpi4py=0 \
         --with-petsc4py=0
 
@@ -93,7 +128,7 @@ configure_petsc() {
 }
 
 build_petsc() {
-    echo "Building PETSc..."
+    echo "Building PETSc ($MPI_IMPL)..."
     cd "$PETSC_DIR"
 
     # Set environment for build
@@ -116,7 +151,7 @@ test_petsc() {
 }
 
 build_petsc4py() {
-    echo "Building petsc4py..."
+    echo "Building petsc4py ($MPI_IMPL)..."
     cd "$PETSC_DIR/src/binding/petsc4py"
 
     export PETSC_DIR
@@ -128,7 +163,19 @@ build_petsc4py() {
 }
 
 clean_petsc() {
-    echo "Removing PETSc directory..."
+    # Clean just the arch-specific build
+    local arch_dir="$PETSC_DIR/$PETSC_ARCH"
+    echo "Removing PETSc build for $MPI_IMPL ($arch_dir)..."
+    if [ -d "$arch_dir" ]; then
+        rm -rf "$arch_dir"
+        echo "Cleaned $PETSC_ARCH."
+    else
+        echo "Nothing to clean for $PETSC_ARCH."
+    fi
+}
+
+clean_all() {
+    echo "Removing entire PETSc directory..."
     if [ -d "$PETSC_DIR" ]; then
         rm -rf "$PETSC_DIR"
         echo "Cleaned."
@@ -140,6 +187,9 @@ clean_petsc() {
 show_help() {
     echo "Usage: $0 [command]"
     echo ""
+    echo "MPI auto-detected from pixi environment: $MPI_IMPL"
+    echo "PETSC_ARCH: $PETSC_ARCH"
+    echo ""
     echo "Commands:"
     echo "  (none)    Full build: clone, configure, build, petsc4py"
     echo "  clone     Clone PETSc repository"
@@ -147,8 +197,13 @@ show_help() {
     echo "  build     Build PETSc"
     echo "  test      Run PETSc tests"
     echo "  petsc4py  Build and install petsc4py"
-    echo "  clean     Remove PETSc directory"
+    echo "  clean     Remove build for current MPI ($PETSC_ARCH)"
+    echo "  clean-all Remove entire PETSc directory (all MPI builds)"
     echo "  help      Show this help"
+    echo ""
+    echo "MPICH and OpenMPI builds co-exist. To build both:"
+    echo "  pixi run -e amr         ./petsc-custom/build-petsc.sh"
+    echo "  pixi run -e amr-openmpi ./petsc-custom/build-petsc.sh"
 }
 
 # Main entry point
@@ -160,7 +215,7 @@ case "${1:-all}" in
         build_petsc4py
         echo ""
         echo "=========================================="
-        echo "PETSc AMR build complete!"
+        echo "PETSc AMR build complete! ($MPI_IMPL)"
         echo "Set these environment variables:"
         echo "  export PETSC_DIR=$PETSC_DIR"
         echo "  export PETSC_ARCH=$PETSC_ARCH"
@@ -183,6 +238,9 @@ case "${1:-all}" in
         ;;
     clean)
         clean_petsc
+        ;;
+    clean-all)
+        clean_all
         ;;
     help|--help|-h)
         show_help
