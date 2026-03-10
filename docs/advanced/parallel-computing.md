@@ -18,6 +18,56 @@ Underworld3 uses PETSc for parallel operations, which means **you rarely need to
 
 The main use of `uw.mpi.rank` is for conditional output/visualization.
 
+## MPI + Thread Pools (Oversubscription)
+
+When running with MPI, each rank can also spawn BLAS/OpenMP worker threads.
+If this is not controlled, total runnable threads can explode and performance
+can degrade severely.
+
+Example: `mpirun -np 8` with OpenBLAS default `10` threads can create up to
+`80` compute threads, often slower than expected.
+
+### Default Underworld3 Policy
+
+Underworld3 now applies MPI-safe defaults (thread pool size `1`) unless users
+explicitly set their own values:
+
+- `OMP_NUM_THREADS`
+- `OPENBLAS_NUM_THREADS`
+- `MKL_NUM_THREADS`
+- `VECLIB_MAXIMUM_THREADS`
+- `NUMEXPR_NUM_THREADS`
+
+This happens in two places:
+
+1. `./uw` launcher: sets defaults before Python starts.
+2. `underworld3` import path: applies the same defaults for MPI runs if unset.
+
+### Runtime Warning
+
+If running with MPI and any of the thread variables above are explicitly set
+to values greater than `1`, Underworld3 prints a rank-0 warning about possible
+oversubscription.
+
+### User Controls
+
+- Disable automatic thread caps:
+
+```bash
+export UW_DISABLE_THREAD_CAPS=1
+```
+
+- Suppress warning (keep your explicit thread settings):
+
+```bash
+export UW_SUPPRESS_THREAD_WARNING=1
+```
+
+### Recommended Practice
+
+For most MPI benchmark and production jobs, keep `1` thread per rank unless
+you are intentionally tuning hybrid MPI+threads.
+
 ## Parallel-Safe Output
 
 ### The Problem with Rank Conditionals
