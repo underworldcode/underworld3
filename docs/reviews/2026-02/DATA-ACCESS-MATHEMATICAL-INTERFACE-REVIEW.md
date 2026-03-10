@@ -459,17 +459,27 @@ def __mul__(self, other):
 | Role | Name | Date | Status |
 |------|------|------|--------|
 | Author | AI Assistant (Claude) | 2026-02-01 | Submitted |
-| Primary Reviewer | [To be assigned] | | Pending |
-| Secondary Reviewer | [To be assigned] | | Pending |
-| Project Lead | [To be assigned] | | Pending |
+| Reviewer | Copilot (automated) | 2026-02 | Comments resolved |
+| Reviewer | jcgraciosa | 2026-03 | Questions answered |
+| Project Lead | lmoresi | 2026-03-10 | Approved (admin merge) |
 
 ## Review Comments and Resolutions
 
-[To be filled during review process]
+### Copilot (automated review)
+- **Import path fix**: Layer diagram and alias snippet referenced `persistence.py`; corrected to `enhanced_variables.py` (where `EnhancedMeshVariable` actually lives).
+- **File name fix**: References to `nd_array_with_callback.py` corrected to `nd_array_callback.py`.
+- **Mixin name fix**: Class signature showed `UnitAwareMixin`; corrected to `DimensionalityMixin, MathematicalMixin`.
+- **Key Files table**: Corrected all paths to match actual source tree.
+
+### jcgraciosa (PR #45, March 2026)
+1. **Saving dimensional data**: Currently HDF5 writes non-dimensional values. Storing unit metadata as HDF5 attributes is on the medium-term roadmap.
+2. **Tensor indexing**: Confirmed `(N, row, col)` — matches standard matrix notation.
+3. **Batch synchronization**: Recommended for multiple variable updates to avoid redundant MPI barriers. Single variable direct access is fine.
+4. **Callback overhead in parallel**: The 5-10% figure is serial. In parallel, MPI barrier cost dominates. Systematic profiling across process counts is a medium-term task.
 
 ---
 
-**Review Status**: Awaiting assignment of reviewers
+**Review Status**: Approved and merged (PR #45, 2026-03-10)
 **Priority**: HIGH
 **Supersedes**: UW3-2025-11-002 (ARRAY-SYSTEM-MATHEMATICAL-MIXINS-REVIEW.md)
 

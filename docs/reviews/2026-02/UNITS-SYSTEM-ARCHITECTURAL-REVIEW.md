@@ -281,17 +281,24 @@ uw.get_units(x)  # → 'kilometer' (discovered from expression tree)
 | Role | Name | Date | Status |
 |------|------|------|--------|
 | Author | AI Assistant (Claude) | 2026-02-01 | Submitted |
-| Primary Reviewer | [To be assigned] | | Pending |
-| Secondary Reviewer | [To be assigned] | | Pending |
-| Project Lead | [To be assigned] | | Pending |
+| Reviewer | Copilot (automated) | 2026-02 | Comments resolved |
+| Reviewer | jcgraciosa | 2026-03 | Questions answered |
+| Project Lead | lmoresi | 2026-03-10 | Approved (admin merge) |
 
 ## Review Comments and Resolutions
 
-[To be filled during review process]
+### Copilot (automated review)
+- **File path corrections**: Several module paths in metrics and Key Files tables referenced non-existent locations (`scaling/units.py`, `function/nondimensional.py`). Corrected to actual paths (`units.py`, `utilities/nondimensional.py`).
+- **Code snippet fix**: `UWexpression.units` example referenced `_value_with_units` which doesn't exist. Updated to match actual implementation (`self._sym.units`).
+
+### jcgraciosa (PR #45, March 2026)
+1. **`.array` vs `.data` dimensional convention**: Confirmed — `.array` is dimensional, `.data` is non-dimensional. Non-dimensionalisation happens automatically via the scaling model.
+2. **Units of `MeshVar.sym * MeshVar.sym`**: Discoverable via `get_units()` which traverses the SymPy expression tree and combines units from atoms.
+3. **Maximum depth for nested expressions**: No hard limit; 3-5 levels typical for geodynamics. For deeper nesting, break into named `uw.expression()` intermediates.
 
 ---
 
-**Review Status**: Awaiting assignment of reviewers
+**Review Status**: Approved and merged (PR #45, 2026-03-10)
 **Priority**: HIGH
 **Supersedes**: UW3-2025-11-003 (UNITS-AWARENESS-SYSTEM-REVIEW.md)
 
