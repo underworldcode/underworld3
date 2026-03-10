@@ -1,22 +1,26 @@
 # Underworld3 In-Repository Build Configuration
 #
-# Two PETSc options:
-# - Default: conda-forge PETSc (~5 min install)
-# - AMR: Custom PETSc with adaptive mesh tools (~1 hour build)
+# MPI is chosen automatically per platform:
+#   macOS  → OpenMPI (MPICH 4.x has a collective-op scaling bug — issue #68)
+#   Linux  → MPICH   (traditional default)
 #
-# Three environment tiers:
-# - default/amr: Minimal - build and run underworld3
-# - runtime/amr-runtime: Run tutorials - adds viz, jupyter
-# - dev/amr-dev: Development - adds claude, linting, etc.
+# Two PETSc tracks:
+#   conda-forge PETSc  (~5 min install, no AMR tools)
+#   Custom PETSc       (~1 hour build, includes pragmatic/mmg/parmmg/slepc)
 #
-# Usage:
-#   pixi install                    # Minimal environment
-#   pixi install -e runtime         # For running tutorials
-#   pixi install -e dev             # For development
+# Three feature tiers:
+#   minimal  — build and run underworld3
+#   runtime  — add visualization + Jupyter
+#   dev      — add Claude, linting, documentation tools
 #
-#   pixi install -e amr             # AMR minimal (then: pixi run -e amr petsc-build)
-#   pixi install -e amr-runtime     # AMR for tutorials
-#   pixi install -e amr-dev         # AMR for development
+# Interactive setup (recommended):
+#   ./uw setup                      # Guides you through all choices
+#
+# Manual install:
+#   pixi install                    # Minimal (platform-default MPI)
+#   pixi install -e dev             # Development
+#   pixi install -e amr-dev         # AMR + development
+#   pixi install -e amr-openmpi-dev # AMR + explicit OpenMPI + development
 
 [workspace]
 name = "underworld3"
@@ -47,7 +51,17 @@ install-geo = "pip install gdal pyproj cartopy geopandas owslib"
 # ============================================
 # BASE DEPENDENCIES (shared by all environments)
 # ============================================
-# NOTE: petsc/petsc4py are in features below, not here
+# NOTE: petsc/petsc4py and MPI are in features below, not here
+
+# Prevent OpenMP thread oversubscription with MPI.  The conda-forge
+# OpenBLAS, SuiteSparse, and SuperLU_DIST are all built with OpenMP and
+# default to spawning one thread per core.  With N MPI ranks that means
+# N × cores threads competing for cores — catastrophic at scale.
+# The pthreads variant of OpenBLAS would be ideal but mumps-mpi in
+# conda-forge hard-requires the openmp build, so we cap threads instead.
+[activation.env]
+OMP_NUM_THREADS = "1"
+OPENBLAS_NUM_THREADS = "1"
 
 [dependencies]
 python = "3.12.*"
@@ -95,49 +109,123 @@ pygmsh = ">=7.1,<8"
 rich = "*"
 
 # ============================================
-# CONDA-FORGE PETSC FEATURE
+# CONDA-FORGE PETSC — platform-default MPI
 # ============================================
-# Quick install (~5 min), no AMR tools
+# macOS gets OpenMPI, Linux gets MPICH (via [target] sections).
+# Quick install (~5 min), no AMR tools.
 
 [feature.conda-petsc.dependencies]
-# PETSc 3.24 compatible - requires clean rebuild after version changes
 petsc = ">=3.21,<4"
 petsc4py = ">=3.21,<4"
-h5py = { version = ">=3.12,<4", build = "*mpich*" }
 mpi4py = ">=4,<5"
 
+[feature.conda-petsc.target.osx-arm64.dependencies]
+openmpi = ">=5.0,<6"
+h5py = { version = ">=3.12,<4", build = "*openmpi*" }
+
+[feature.conda-petsc.target.linux-64.dependencies]
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+
 # ============================================
-# CUSTOM PETSC FEATURE (AMR)
+# CONDA-FORGE PETSC — explicit MPI overrides
+# ============================================
+# Use these when you need the non-default MPI for your platform.
+
+[feature.conda-petsc-mpich.dependencies]
+petsc = ">=3.21,<4"
+petsc4py = ">=3.21,<4"
+mpi4py = ">=4,<5"
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+
+[feature.conda-petsc-openmpi.dependencies]
+openmpi = ">=5.0,<6"
+petsc = ">=3.21,<4"
+petsc4py = ">=3.21,<4"
+mpi4py = ">=4,<5"
+h5py = { version = ">=3.12,<4", build = "*openmpi*" }
+
+# ============================================
+# CUSTOM PETSC (AMR) — platform-default MPI
 # ============================================
 # Build PETSc from source with adaptive mesh tools:
 # - pragmatic: anisotropic mesh adaptation
 # - mmg/parmmg: surface/volume mesh adaptation
 # - slepc: eigenvalue solvers
+#
+# The build script (petsc-custom/build-petsc.sh) auto-detects MPI
+# from the active pixi environment and sets PETSC_ARCH accordingly.
+# MPICH and OpenMPI builds co-exist under the same PETSc source tree.
+#
 # Build time: ~1 hour on Apple Silicon
 
 [feature.amr.dependencies]
-# Build tools for PETSc compilation
 gfortran = ">=14.2,<15"
 cxx-compiler = ">=1.9,<2"
 cmake = ">=3.31,<4"
 make = ">=4.4,<5"
+mpi4py = ">=4,<5"
 
-# MPI and HDF5 from conda-forge (PETSc links against these)
+[feature.amr.activation.env]
+PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
+
+[feature.amr.target.osx-arm64.dependencies]
+openmpi = ">=5.0,<6"
+hdf5 = { version = ">=1.14,<2", build = "*openmpi*" }
+h5py = { version = ">=3.12,<4", build = "*openmpi*" }
+
+[feature.amr.target.osx-arm64.activation.env]
+PETSC_ARCH = "petsc-4-uw-openmpi"
+
+[feature.amr.target.linux-64.dependencies]
+hdf5 = { version = ">=1.14,<2", build = "*mpich*" }
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+
+[feature.amr.target.linux-64.activation.env]
+PETSC_ARCH = "petsc-4-uw-mpich"
+
+[feature.amr.tasks]
+petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
+petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
+
+# ============================================
+# CUSTOM PETSC (AMR) — explicit MPI overrides
+# ============================================
+
+# --- Force MPICH (e.g. macOS user needing MPICH for compatibility) ---
+[feature.amr-mpich.dependencies]
+gfortran = ">=14.2,<15"
+cxx-compiler = ">=1.9,<2"
+cmake = ">=3.31,<4"
+make = ">=4.4,<5"
 mpich = ">=4.3,<5"
 mpi4py = ">=4,<5"
 hdf5 = { version = ">=1.14,<2", build = "*mpich*" }
 h5py = { version = ">=3.12,<4", build = "*mpich*" }
 
-# NOTE: petsc and petsc4py are built from source
-# by petsc-custom/build-petsc.sh
-
-[feature.amr.activation.env]
+[feature.amr-mpich.activation.env]
 PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
-PETSC_ARCH = "petsc-4-uw"
+PETSC_ARCH = "petsc-4-uw-mpich"
 
-[feature.amr.tasks]
-# Build custom PETSc with AMR tools (~1 hour, includes petsc4py)
-# Sub-commands: ./build-petsc.sh [configure|build|petsc4py|clean|help]
+[feature.amr-mpich.tasks]
+petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
+petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
+
+# --- Force OpenMPI (e.g. Linux cluster with OpenMPI) ---
+[feature.amr-openmpi.dependencies]
+gfortran = ">=14.2,<15"
+cxx-compiler = ">=1.9,<2"
+cmake = ">=3.31,<4"
+make = ">=4.4,<5"
+openmpi = ">=5.0,<6"
+mpi4py = ">=4,<5"
+hdf5 = { version = ">=1.14,<2", build = "*openmpi*" }
+h5py = { version = ">=3.12,<4", build = "*openmpi*" }
+
+[feature.amr-openmpi.activation.env]
+PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
+PETSC_ARCH = "petsc-4-uw-openmpi"
+
+[feature.amr-openmpi.tasks]
 petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
 petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 
@@ -198,24 +286,29 @@ docs-audit = { cmd = "python scripts/docs_audit.py", description = "Audit API do
 # ============================================
 # ENVIRONMENT DEFINITIONS
 # ============================================
+# Primary environments use platform-default MPI (OpenMPI on macOS,
+# MPICH on Linux). Override environments force a specific MPI.
 
 [environments]
-# --- Default Track (conda-forge PETSc) ---
-# Minimal: Just build and run underworld3
-default = { features = ["conda-petsc"], solve-group = "default" }
+# --- Primary (platform-default MPI) ---
+default     = { features = ["conda-petsc"], solve-group = "default" }
+runtime     = { features = ["conda-petsc", "runtime"], solve-group = "default" }
+dev         = { features = ["conda-petsc", "runtime", "dev"], solve-group = "default" }
 
-# Runtime: Run tutorials and examples (viz, jupyter)
-runtime = { features = ["conda-petsc", "runtime"], solve-group = "default" }
-
-# Dev: Full development environment
-dev = { features = ["conda-petsc", "runtime", "dev"], solve-group = "default" }
-
-# --- AMR Track (custom PETSc with mesh adaptation) ---
-# AMR Minimal: Build custom PETSc, then underworld3
-amr = { features = ["amr"], solve-group = "amr" }
-
-# AMR Runtime: For tutorials with adaptive mesh
+amr         = { features = ["amr"], solve-group = "amr" }
 amr-runtime = { features = ["amr", "runtime"], solve-group = "amr" }
+amr-dev     = { features = ["amr", "runtime", "dev"], solve-group = "amr" }
 
-# AMR Dev: Full development with custom PETSc
-amr-dev = { features = ["amr", "runtime", "dev"], solve-group = "amr" }
+# --- Explicit MPICH (override for macOS, or when MPICH is required) ---
+mpich       = { features = ["conda-petsc-mpich"], solve-group = "mpich" }
+mpich-dev   = { features = ["conda-petsc-mpich", "runtime", "dev"], solve-group = "mpich" }
+
+amr-mpich     = { features = ["amr-mpich"], solve-group = "amr-mpich" }
+amr-mpich-dev = { features = ["amr-mpich", "runtime", "dev"], solve-group = "amr-mpich" }
+
+# --- Explicit OpenMPI (override for Linux clusters, or when OpenMPI is required) ---
+openmpi       = { features = ["conda-petsc-openmpi"], solve-group = "openmpi" }
+openmpi-dev   = { features = ["conda-petsc-openmpi", "runtime", "dev"], solve-group = "openmpi" }
+
+amr-openmpi     = { features = ["amr-openmpi"], solve-group = "amr-openmpi" }
+amr-openmpi-dev = { features = ["amr-openmpi", "runtime", "dev"], solve-group = "amr-openmpi" }

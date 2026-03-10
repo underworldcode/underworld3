@@ -39,12 +39,35 @@ get_env() {
     fi
 }
 
+petsc_arch_for_env() {
+    # Derive the PETSC_ARCH from the environment name.
+    # Primary AMR envs (amr, amr-runtime, amr-dev) use platform-default MPI.
+    # Override envs (amr-mpich*, amr-openmpi*) force a specific MPI.
+    local env="$1"
+    case "$env" in
+        amr-mpich*)   echo "petsc-4-uw-mpich" ;;
+        amr-openmpi*) echo "petsc-4-uw-openmpi" ;;
+        amr*)
+            # Platform-default MPI
+            if [[ "$(uname -s)" == "Darwin" ]]; then
+                echo "petsc-4-uw-openmpi"
+            else
+                echo "petsc-4-uw-mpich"
+            fi
+            ;;
+        *)            echo "" ;;  # conda-forge, no custom PETSc
+    esac
+}
+
 petsc_built() {
     # Check for actual PETSc library, not just the lib directory
     # The lib directory can exist if the build failed partway through
-    [ -f "$PETSC_CUSTOM/petsc-4-uw/lib/libpetsc.dylib" ] || \
-    [ -f "$PETSC_CUSTOM/petsc-4-uw/lib/libpetsc.so" ] || \
-    [ -f "$PETSC_CUSTOM/petsc-4-uw/lib/libpetsc.a" ]
+    local env="${1:-$(get_env)}"
+    local arch=$(petsc_arch_for_env "$env")
+    [ -z "$arch" ] && return 1  # not an AMR env
+    [ -f "$PETSC_CUSTOM/$arch/lib/libpetsc.dylib" ] || \
+    [ -f "$PETSC_CUSTOM/$arch/lib/libpetsc.so" ] || \
+    [ -f "$PETSC_CUSTOM/$arch/lib/libpetsc.a" ]
 }
 
 petsc4py_installed() {
@@ -217,8 +240,8 @@ run_doctor() {
     # Check 4: underworld3 importable?
     echo -n "  Checking underworld3... "
     local import_error=""
-    import_error=$($PIXI run -e "$env" python -c "import underworld3" 2>&1)
-    local import_status=$?
+    local import_status=0
+    import_error=$($PIXI run -e "$env" python -c "import underworld3" 2>&1) || import_status=$?
 
     if [ $import_status -eq 0 ]; then
         echo -e "${GREEN}[OK]${NC} underworld3 importable"
@@ -431,20 +454,65 @@ run_setup() {
     read -p "Choice [2]: " feature_choice
     feature_choice=${feature_choice:-2}
 
-    # Determine environment
+    echo ""
+
+    # Question 3: MPI implementation?
+    echo -e "${BOLD}Which MPI implementation?${NC}"
+    echo ""
+    # Platform-default MPI
+    local default_mpi="mpich"
+    local other_mpi="openmpi"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        default_mpi="openmpi"
+        other_mpi="mpich"
+    fi
+    echo "  [1] Platform default ($default_mpi)"
+    echo "  [2] Override: $other_mpi"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        echo ""
+        echo "  Note: MPICH 4.x has a known scaling bug on macOS (issue #68)."
+        echo "  OpenMPI is recommended unless you need MPICH for compatibility."
+    fi
+    echo ""
+    read -p "Choice [1]: " mpi_choice
+    mpi_choice=${mpi_choice:-1}
+
+    local mpi_override=false
+    [ "$mpi_choice" = "2" ] && mpi_override=true
+
+    # Determine environment from the three choices
+    # Primary envs use platform-default MPI; override envs force non-default MPI.
     local new_env
-    if [ "$use_amr" = true ]; then
-        case "$feature_choice" in
-            1) new_env="amr" ;;
-            3) new_env="amr-dev" ;;
-            *) new_env="amr-runtime" ;;
-        esac
+    if [ "$mpi_override" = false ]; then
+        # Platform-default MPI → use primary environments
+        if [ "$use_amr" = true ]; then
+            case "$feature_choice" in
+                1) new_env="amr" ;;
+                3) new_env="amr-dev" ;;
+                *) new_env="amr-runtime" ;;
+            esac
+        else
+            case "$feature_choice" in
+                1) new_env="default" ;;
+                3) new_env="dev" ;;
+                *) new_env="runtime" ;;
+            esac
+        fi
     else
-        case "$feature_choice" in
-            1) new_env="default" ;;
-            3) new_env="dev" ;;
-            *) new_env="runtime" ;;
-        esac
+        # Non-default MPI → use override environments
+        if [ "$use_amr" = true ]; then
+            case "$feature_choice" in
+                1) new_env="amr-${other_mpi}" ;;
+                3) new_env="amr-${other_mpi}-dev" ;;
+                *) new_env="amr-${other_mpi}-dev" ;;  # no runtime override; use dev
+            esac
+        else
+            case "$feature_choice" in
+                1) new_env="${other_mpi}" ;;
+                3) new_env="${other_mpi}-dev" ;;
+                *) new_env="${other_mpi}-dev" ;;  # no runtime override; use dev
+            esac
+        fi
     fi
 
     echo ""
@@ -586,17 +654,28 @@ QUICK START
 
 ENVIRONMENTS
 
-  ┌─────────────┬──────────────────┬─────────────────────────────────┐
-  │ Environment │ PETSc            │ Features                        │
-  ├─────────────┼──────────────────┼─────────────────────────────────┤
-  │ default     │ conda-forge      │ minimal                         │
-  │ runtime     │ conda-forge      │ + pyvista, jupyter              │
-  │ dev         │ conda-forge      │ + claude, black, mypy           │
-  ├─────────────┼──────────────────┼─────────────────────────────────┤
-  │ amr         │ custom (~1hr)    │ minimal + AMR tools             │
-  │ amr-runtime │ custom (~1hr)    │ + pyvista, jupyter              │
-  │ amr-dev     │ custom (~1hr)    │ + claude, black, mypy           │
-  └─────────────┴──────────────────┴─────────────────────────────────┘
+  MPI is chosen automatically per platform (OpenMPI on macOS, MPICH on
+  Linux). Use ./uw setup to configure — it stores the choice in .pixi-env.
+
+  Primary environments (platform-default MPI):
+  ┌─────────────┬──────────────────┬───────────────────┐
+  │ Environment │ PETSc            │ Features          │
+  ├─────────────┼──────────────────┼───────────────────┤
+  │ default     │ conda-forge      │ minimal           │
+  │ runtime     │ conda-forge      │ + pyvista, jupyter│
+  │ dev         │ conda-forge      │ + claude, black   │
+  ├─────────────┼──────────────────┼───────────────────┤
+  │ amr         │ custom (~1hr)    │ AMR tools         │
+  │ amr-runtime │ custom (~1hr)    │ + pyvista, jupyter│
+  │ amr-dev     │ custom (~1hr)    │ + claude, black   │
+  └─────────────┴──────────────────┴───────────────────┘
+
+  MPI override environments (when you need the non-default MPI):
+    mpich, mpich-dev, amr-mpich, amr-mpich-dev
+    openmpi, openmpi-dev, amr-openmpi, amr-openmpi-dev
+
+  Platform defaults: macOS → OpenMPI, Linux → MPICH.
+  MPICH 4.x has a known scaling bug on macOS (issue #68).
 
 COMMANDS
 
@@ -1018,7 +1097,18 @@ show_env_status() {
     echo "Environments:  (* = selected,  [✓] = uw3 built,  [ ] = needs ./uw build)"
     echo ""
 
-    for env in default runtime dev amr amr-runtime amr-dev; do
+    # Determine platform-default MPI for display
+    local default_mpi="mpich"
+    [[ "$(uname -s)" == "Darwin" ]] && default_mpi="openmpi"
+
+    for env in default runtime dev amr amr-runtime amr-dev \
+               mpich mpich-dev amr-mpich amr-mpich-dev \
+               openmpi openmpi-dev amr-openmpi amr-openmpi-dev; do
+        # Only show environments that are installed or selected
+        if ! env_installed "$env" && [ "$env" != "$current_env" ]; then
+            continue
+        fi
+
         # Selected marker
         local marker="  "
         [ "$env" = "$current_env" ] && marker="* "
@@ -1034,20 +1124,28 @@ show_env_status() {
         # Description
         local desc=""
         case "$env" in
-            default)     desc="minimal" ;;
-            runtime)     desc="+ viz, jupyter" ;;
-            dev)         desc="+ claude, linting" ;;
-            amr)         desc="custom PETSc" ;;
-            amr-runtime) desc="custom PETSc + viz" ;;
-            amr-dev)     desc="custom PETSc + dev" ;;
+            default)         desc="minimal ($default_mpi)" ;;
+            runtime)         desc="+ viz, jupyter ($default_mpi)" ;;
+            dev)             desc="+ claude, linting ($default_mpi)" ;;
+            mpich)           desc="minimal (mpich override)" ;;
+            mpich-dev)       desc="+ claude, linting (mpich override)" ;;
+            openmpi)         desc="minimal (openmpi override)" ;;
+            openmpi-dev)     desc="+ claude, linting (openmpi override)" ;;
+            amr)             desc="custom PETSc ($default_mpi)" ;;
+            amr-runtime)     desc="custom PETSc + viz ($default_mpi)" ;;
+            amr-dev)         desc="custom PETSc + dev ($default_mpi)" ;;
+            amr-mpich)       desc="custom PETSc (mpich override)" ;;
+            amr-mpich-dev)   desc="custom PETSc + dev (mpich override)" ;;
+            amr-openmpi)     desc="custom PETSc (openmpi override)" ;;
+            amr-openmpi-dev) desc="custom PETSc + dev (openmpi override)" ;;
         esac
 
-        # AMR note if PETSc not built
-        if [[ "$env" == amr* ]] && [ "$has_petsc" = "no" ]; then
+        # AMR note if PETSc not built for this env's arch
+        if is_amr_env "$env" && ! petsc_built "$env"; then
             desc="$desc (petsc not built)"
         fi
 
-        printf "  %s%-11s  %s  %s\n" "$marker" "$env" "$build_status" "$desc"
+        printf "  %s%-22s  %s  %s\n" "$marker" "$env" "$build_status" "$desc"
     done
 }
 
@@ -1102,7 +1200,16 @@ case "${1:-}" in
     set-env)
         if [ -z "$2" ]; then
             echo "Usage: ./uw set-env <environment>"
-            echo "Options: default, runtime, dev, amr, amr-runtime, amr-dev"
+            echo ""
+            echo "Conda-forge PETSc:"
+            echo "  MPICH:   default, runtime, dev"
+            echo "  OpenMPI: openmpi, openmpi-runtime, openmpi-dev"
+            echo ""
+            echo "Custom PETSc (AMR):"
+            echo "  MPICH:   amr, amr-runtime, amr-dev"
+            echo "  OpenMPI: amr-openmpi, amr-openmpi-runtime, amr-openmpi-dev"
+            echo ""
+            echo "Or run './uw setup' for interactive configuration."
             exit 1
         fi
         echo "$2" > "$CONFIG_FILE"
