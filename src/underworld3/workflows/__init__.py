@@ -8,6 +8,7 @@ See ``docs/developer/guides/workflow-packages.md`` for the full pattern.
 """
 
 from ._base import WorkflowConfig
+from ._products import WorkflowProducts
 from ._utils import check_dependencies, parse_quantity, show_source, workflow_step
 
 
@@ -30,7 +31,11 @@ def view(module):
     for name, obj in inspect.getmembers(module, callable):
         if getattr(obj, "_is_workflow_step", False):
             desc = obj.workflow_description or ""
-            steps.append((name, desc))
+            prod = getattr(obj, "workflow_produces", [])
+            reqs = getattr(obj, "workflow_requires", [])
+            steps.append((name, desc, prod, reqs))
+
+    has_dag = any(s[2] or s[3] for s in steps)
 
     # Also find WorkflowConfig subclasses
     configs = []
@@ -53,22 +58,31 @@ def view(module):
             html += "</ul>"
 
         if steps:
-            html += (
-                '<table style="border-collapse:collapse;">'
-                "<tr>"
+            th = (
                 '<th style="text-align:left; padding:4px 12px 4px 0; '
-                'border-bottom:2px solid #ccc;">Step</th>'
-                '<th style="text-align:left; padding:4px 12px 4px 0; '
-                'border-bottom:2px solid #ccc;">Description</th>'
-                "</tr>"
+                'border-bottom:2px solid #ccc;">'
             )
-            for name, desc in steps:
+            html += '<table style="border-collapse:collapse;"><tr>'
+            html += f"{th}Step</th>{th}Description</th>"
+            if has_dag:
+                html += f"{th}Produces</th>{th}Requires</th>"
+            html += "</tr>"
+
+            for name, desc, prod, reqs in steps:
+                td = '<td style="padding:2px 12px 2px 0;'
                 html += (
-                    "<tr>"
-                    f'<td style="padding:2px 12px 2px 0; font-family:monospace;">{name}</td>'
-                    f'<td style="padding:2px 12px 2px 0;">{desc}</td>'
-                    "</tr>"
+                    f"<tr>"
+                    f'{td} font-family:monospace;">{name}</td>'
+                    f'{td}">{desc}</td>'
                 )
+                if has_dag:
+                    prod_str = ", ".join(prod) if prod else "\u2014"
+                    reqs_str = ", ".join(reqs) if reqs else "\u2014"
+                    html += (
+                        f'{td} font-family:monospace; color:#555;">{prod_str}</td>'
+                        f'{td} font-family:monospace; color:#555;">{reqs_str}</td>'
+                    )
+                html += "</tr>"
             html += "</table>"
             html += (
                 '<p style="color:#888; font-size:0.9em;">'
@@ -88,9 +102,21 @@ def view(module):
                 print(f"    {name} — {doc}")
         if steps:
             name_w = max(len(s[0]) for s in steps)
-            print("  Steps:")
-            for name, desc in steps:
-                print(f"    {name:<{name_w}}  {desc}")
+            if has_dag:
+                desc_w = max(len(s[1]) for s in steps)
+                prod_w = max(len(", ".join(s[2]) or "\u2014") for s in steps)
+                print("  Steps:")
+                hdr = f"    {'Step':<{name_w}}  {'Description':<{desc_w}}  {'Produces':<{prod_w}}  Requires"
+                print(hdr)
+                print(f"    {'\u2500' * name_w}  {'\u2500' * desc_w}  {'\u2500' * prod_w}  {'\u2500' * 8}")
+                for name, desc, prod, reqs in steps:
+                    p = ", ".join(prod) or "\u2014"
+                    r = ", ".join(reqs) or "\u2014"
+                    print(f"    {name:<{name_w}}  {desc:<{desc_w}}  {p:<{prod_w}}  {r}")
+            else:
+                print("  Steps:")
+                for name, desc, _, _ in steps:
+                    print(f"    {name:<{name_w}}  {desc}")
         if not configs and not steps:
             print("  No workflow steps found.")
         print()
@@ -99,6 +125,7 @@ def view(module):
 
 __all__ = [
     "WorkflowConfig",
+    "WorkflowProducts",
     "check_dependencies",
     "parse_quantity",
     "show_source",

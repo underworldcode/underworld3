@@ -84,7 +84,10 @@ class ConvectionConfig(WorkflowConfig):
 # ---------------------------------------------------------------------------
 
 
-@workflow_step(description="Build a 2D unstructured simplex mesh")
+@workflow_step(
+    description="Build a 2D unstructured simplex mesh",
+    produces=["mesh"],
+)
 def create_mesh(config: ConvectionConfig):
     """Build a 2D unstructured simplex mesh.
 
@@ -104,7 +107,11 @@ def create_mesh(config: ConvectionConfig):
     return mesh
 
 
-@workflow_step(description="Configure Stokes solver with constant viscosity")
+@workflow_step(
+    description="Configure Stokes solver with constant viscosity",
+    produces=["stokes"],
+    requires=["mesh"],
+)
 def create_stokes(mesh, config: ConvectionConfig):
     """Configure a Stokes solver with constant viscosity and free-slip walls.
 
@@ -135,7 +142,11 @@ def create_stokes(mesh, config: ConvectionConfig):
     return stokes, v, p
 
 
-@workflow_step(description="Configure advection-diffusion solver for temperature")
+@workflow_step(
+    description="Configure advection-diffusion solver for temperature",
+    produces=["adv_diff"],
+    requires=["mesh", "stokes"],
+)
 def create_advdiff(mesh, v, config: ConvectionConfig):
     """Configure the advection–diffusion solver for temperature.
 
@@ -160,7 +171,10 @@ def create_advdiff(mesh, v, config: ConvectionConfig):
     return adv_diff, T
 
 
-@workflow_step(description="Wire buoyancy force into the Stokes solver")
+@workflow_step(
+    description="Wire buoyancy force into the Stokes solver",
+    requires=["stokes", "adv_diff"],
+)
 def set_buoyancy(stokes, T, config: ConvectionConfig):
     """Wire the buoyancy force into the Stokes solver.
 
@@ -170,7 +184,10 @@ def set_buoyancy(stokes, T, config: ConvectionConfig):
     stokes.bodyforce = sympy.Matrix([0, config.rayleigh * T.sym[0]])
 
 
-@workflow_step(description="Set initial temperature: linear gradient + perturbation")
+@workflow_step(
+    description="Set initial temperature: linear gradient + perturbation",
+    requires=["mesh", "adv_diff"],
+)
 def set_initial_temperature(T, mesh, config: ConvectionConfig):
     """Set a linear gradient with a sinusoidal perturbation.
 
@@ -194,7 +211,10 @@ def set_initial_temperature(T, mesh, config: ConvectionConfig):
 # ---------------------------------------------------------------------------
 
 
-@workflow_step(description="Plot temperature field with optional streamlines")
+@workflow_step(
+    description="Plot temperature field with optional streamlines",
+    requires=["mesh", "adv_diff", "stokes"],
+)
 def plot_temperature(mesh, T, v=None, config=None, title=None, save_to=None):
     """Plot the temperature field with optional velocity streamlines.
 

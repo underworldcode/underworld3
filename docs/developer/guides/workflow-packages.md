@@ -233,11 +233,129 @@ from underworld3.workflows import check_dependencies, parse_quantity
   `packages` maps import names to install instructions.
 - **`parse_quantity(s)`** — Parse `"1000 km"` into `uw.quantity(1000, "km")`.
 
-## In-repo example
+## Products and persistence
 
-See `docs/examples/workflows/` for a complete working example:
+Real workflows have **expensive serial steps** (mesh adaptation, fault
+processing) and **cheap-to-vary parallel steps** (Stokes solve with different
+rheology).  The product system lets you save the output of expensive steps
+and reload them for parameter studies — like `make` rules with targets,
+prerequisites, and recipes.
+
+### `WorkflowProducts` — named product manager
+
+```python
+from underworld3.workflows import WorkflowProducts
+
+products = WorkflowProducts(config)       # uses config.output_dir/products
+products = WorkflowProducts(products_dir="my_products")  # explicit path
+
+# Save products after expensive steps
+products.save("adapted_mesh", mesh)
+products.save("fault_surfaces", surface_collection)
+
+# Check what's available
+products.exists("adapted_mesh")   # True
+products.list()                   # HTML table in Jupyter, plain text otherwise
+
+# Load products in a later session
+mesh = products.load("adapted_mesh")
+surfaces = products.load("fault_surfaces", mesh=mesh)
+
+# Cross-reference with workflow DAG
+products.status(h2ex_module)      # shows built vs missing products
+
+# Cleanup
+products.remove("adapted_mesh")
+products.clear()                  # remove all
+```
+
+Type dispatch is automatic:
+
+| Object Type | Save Format | Notes |
+|-------------|-------------|-------|
+| Mesh | HDF5 via `write_timestep` | Portable, ParaView-readable |
+| MeshVariable | HDF5 via `write_timestep` | Vertex values + XDMF; kd-tree reload |
+| Surface | VTK (`.save()`) | |
+| SurfaceCollection | Directory of VTK files | |
+| ndarray | `.npz` | |
+| Other | YAML (if serializable) | Fallback |
+
+MeshVariables are loaded via `read_timestep`, which uses kd-tree interpolation.
+This means you can save on one mesh and reload onto a different one (e.g. after
+re-adaptation):
+
+```python
+# Save a variable
+products.save("temperature", T)
+
+# Load onto same or different mesh — pass the target variable
+products.load("temperature", mesh_variable=T_new)
+```
+
+A YAML manifest (`products/manifest.yaml`) tracks product names, types,
+file paths, and timestamps.
+
+### Step metadata — `produces` and `requires`
+
+Workflow steps can declare what products they create and depend on:
+
+```python
+@workflow_step(
+    description="Adapt mesh near fault surfaces",
+    produces=["adapted_mesh"],
+    requires=["mesh", "fault_surfaces"],
+)
+def adapt_mesh(mesh, surfaces, config):
+    ...
+```
+
+This metadata is used by:
+- **`view(module)`** — shows a DAG table with Produces / Requires columns
+- **`products.status(module)`** — cross-references declared products with
+  what exists on disk
+
+There is no automatic DAG traversal — the user orchestrates in the notebook.
+The infrastructure provides save/load/exists and DAG visualisation.
+
+### Two notebook patterns
+
+**Pattern A — Full serial build** (development / first run):
+
+```python
+mesh = h2ex.create_mesh(config)
+surfaces = h2ex.load_and_build_faults(mesh, config)
+mesh = h2ex.adapt_mesh(mesh, surfaces, config)
+products.save("adapted_mesh", mesh)
+products.save("fault_surfaces", surfaces)
+
+stokes, v, p = h2ex.create_stokes(mesh, config)
+fields = h2ex.setup_rheology(stokes, surfaces, mesh, config)
+```
+
+**Pattern B — Product reload** (parameter studies):
+
+```python
+mesh = products.load("adapted_mesh")
+surfaces = products.load("fault_surfaces", mesh=mesh)
+
+config.rheology = "anisotropic"
+config.eta_1_ratio = 0.01
+
+stokes, v, p = h2ex.create_stokes(mesh, config)
+fields = h2ex.setup_rheology(stokes, surfaces, mesh, config)
+```
+
+The expensive steps (mesh, faults, adaptation) run once; the cheap steps
+(solver setup, rheology, BCs) run many times with different parameters.
+
+## In-repo examples
+
+See `docs/examples/workflows/` for complete working examples:
 
 - `convection_config.py` — `ConvectionConfig(WorkflowConfig)` with helpers
 - `convection_notebook.py` — Clean notebook using the config + helpers
+- `h2ex_config.py` — `H2ExConfig(WorkflowConfig)` with product-aware steps
+- `h2ex_notebook.py` — Product-aware notebook with save/load patterns
 
-This serves as the template to copy when starting a new workflow package.
+The convection example demonstrates the basic pattern; the H2Ex example
+demonstrates the product-aware extension for multi-stage workflows.

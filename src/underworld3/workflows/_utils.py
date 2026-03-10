@@ -89,7 +89,7 @@ def show_source(fn) -> None:
 # ---------------------------------------------------------------------------
 
 
-def workflow_step(fn=None, *, description=None):
+def workflow_step(fn=None, *, description=None, produces=None, requires=None):
     """Mark a function as a workflow helper step.
 
     Attaches a ``.view()`` method that displays the function source
@@ -104,9 +104,16 @@ def workflow_step(fn=None, *, description=None):
         @workflow_step(description="Build the simulation mesh")
         def create_mesh(config): ...
 
-    The *description* is stored as ``fn.workflow_description`` and may
-    be used by future tooling (e.g. automatic documentation, DAG
-    visualisation).
+        @workflow_step(
+            description="Adapt mesh near fault surfaces",
+            produces=["adapted_mesh"],
+            requires=["mesh", "fault_surfaces"],
+        )
+        def adapt_mesh(mesh, faults, config): ...
+
+    The *description* is stored as ``fn.workflow_description`` and the
+    *produces*/*requires* lists document the DAG of product
+    dependencies (used by ``view()`` and ``WorkflowProducts``).
 
     Parameters
     ----------
@@ -114,6 +121,10 @@ def workflow_step(fn=None, *, description=None):
         The function to decorate (when used without parentheses).
     description : str, optional
         Short human-readable description of this step.
+    produces : list of str, optional
+        Product names this step creates.
+    requires : list of str, optional
+        Product names this step depends on.
     """
 
     def _decorate(func):
@@ -124,6 +135,8 @@ def workflow_step(fn=None, *, description=None):
         # Attach metadata
         wrapper._is_workflow_step = True
         wrapper.workflow_description = description or func.__doc__ or ""
+        wrapper.workflow_produces = list(produces) if produces else []
+        wrapper.workflow_requires = list(requires) if requires else []
 
         # Attach view() — shows source in Jupyter or terminal
         def _view():
