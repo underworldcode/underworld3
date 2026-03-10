@@ -1739,8 +1739,7 @@ class Mesh(Stateful, uw_object):
         meshVars: Optional[list] = [],
         swarmVars: Optional[list] = [],
         meshUpdates: bool = False,
-        create_xdmf: bool = False,
-        vertex_cell_chunk_size: Optional[int] = None,
+        create_xdmf: bool = True,
     ):
         """
         Write mesh and selected variables for visualisation output.
@@ -1751,16 +1750,9 @@ class Mesh(Stateful, uw_object):
         - optional proxy files for swarm variables
         - optional XDMF file linking all output files
 
-        When ``create_xdmf=True``, variable files also include
-        compatibility groups:
-        - ``/vertex_fields`` for node-like variables
-        - ``/cell_fields`` for cell-like variables
-
-        and ``checkpoint_xdmf()`` is called on rank 0.
-
-        ``vertex_cell_chunk_size`` controls source-point chunking for
-        node-like remapping. Default is automatic. Set a positive integer
-        to manually override the auto-chosen chunk size.
+        When ``create_xdmf=True`` (the default), variable files also include
+        ParaView-compatible groups (``/vertex_fields`` or ``/cell_fields``),
+        and an XDMF file is generated on rank 0.
 
         """
         options = PETSc.Options()
@@ -1803,15 +1795,7 @@ class Mesh(Stateful, uw_object):
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
                 var.write(save_location)
                 if create_xdmf:
-                    is_cell = (not getattr(var, "continuous")) or (getattr(var, "degree") == 0)
-                    _write_vertex_cell_groups(
-                        mesh_h5=mesh_file,
-                        var_h5=save_location,
-                        var_name=var.clean_name,
-                        var_obj=var,
-                        is_cell=is_cell,
-                        vertex_cell_chunk_size=vertex_cell_chunk_size,
-                    )
+                    _write_compat_groups(self, var, save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
@@ -3136,272 +3120,55 @@ class Mesh(Stateful, uw_object):
 ## Simplified to allow us to decide how we want to checkpoint
 
 
-def _write_vertex_cell_groups(
-    mesh_h5: str,
-    var_h5: str,
-    var_name: str,
-    var_obj=None,
-    is_cell: bool = False,
-    vertex_cell_chunk_size: Optional[int] = None,
-):
+def _write_compat_groups(mesh, var, var_h5_path):
+    """Write ``/vertex_fields/`` or ``/cell_fields/`` compatibility groups.
+
+    Uses ``uw.function.write_vertices_to_viewer`` (PETSc interpolation +
+    ViewerHDF5) for continuous variables, and
+    ``uw.function.write_cell_field_to_viewer`` for cell/DG-0 variables.
+    PETSc handles all parallel I/O natively.
+
+    Vertex coordinates are also written to ``/vertex_fields/coordinates``
+    for XDMF compatibility.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The parent mesh.
+    var : MeshVariable
+        The variable whose data has already been written to *var_h5_path*
+        by ``var.write()`` (so ``var._gvec`` is up-to-date).
+    var_h5_path : str
+        Path to the HDF5 file (already contains ``/fields/<name>``).
     """
-    Write vertex/cell compatibility groups into a variable file.
-
-    Source layout:
-    - ``/fields/<var_name>``
-    - ``/fields/coordinates`` (for node-style mapping)
-
-    Output layout:
-    - cell-like variables -> ``/cell_fields/<var_name>_<var_name>``
-    - node-like variables -> ``/vertex_fields/coordinates`` and
-      ``/vertex_fields/<var_name>_<var_name>``
-
-    Tensor-like node variables are written as flattened 3x3 tensors
-    (N, 9) in ``/vertex_fields/<var_name>_<var_name>`` for ParaView
-    compatibility.
-    """
-
-    import h5py
-    import numpy as np
     import underworld3 as uw
 
-    comm = uw.mpi.comm
-    rank = uw.mpi.rank
-    size = uw.mpi.size
+    is_cell = (not var.continuous) or (var.degree == 0)
+    group = "cell_fields" if is_cell else "vertex_fields"
 
-    def _chunk_bounds(total_count, proc_rank, proc_size):
-        base = total_count // proc_size
-        rem = total_count % proc_size
-        start = proc_rank * base + min(proc_rank, rem)
-        stop = start + base + (1 if proc_rank < rem else 0)
-        return start, stop
+    # Some PETSc versions (3.21+) write /vertex_fields/ or /cell_fields/
+    # automatically during var.write().  Remove any pre-existing group so
+    # that our compat writer can create it afresh (otherwise PETSc error 76
+    # on duplicate dataset).
+    import h5py
 
-    def _auto_chunk_size(
-        total_source_rows: int,
-        coordinate_columns: int,
-        field_columns: int,
-        dtype_itemsize: int,
-    ) -> int:
-        # Approximate per-rank transient memory for source coordinates + values.
-        target_bytes_per_rank = 192 * 1024 * 1024
-        bytes_per_source_row = max(
-            dtype_itemsize * max(1, coordinate_columns + field_columns), 8
-        )
-        chunk_from_memory = max(10_000, target_bytes_per_rank // bytes_per_source_row)
+    if uw.mpi.rank == 0:
+        with h5py.File(var_h5_path, "a") as f:
+            if group in f:
+                del f[group]
+    uw.mpi.barrier()
 
-        # Keep enough chunks to spread work and reduce tail effects as rank count grows.
-        chunk_from_ranks = max(
-            10_000, (total_source_rows + (size * 8) - 1) // max(size * 8, 1)
-        )
+    viewer = PETSc.ViewerHDF5().create(
+        var_h5_path, "a", comm=PETSc.COMM_WORLD,
+    )
 
-        return int(min(total_source_rows, max(10_000, min(chunk_from_memory, chunk_from_ranks))))
-
-    def _flatten_source_points(source_coordinate_chunk, source_field_chunk, dim):
-        if source_coordinate_chunk.ndim != 2:
-            raise RuntimeError(
-                f"Unsupported coordinate rank for {var_name}: {source_coordinate_chunk.ndim}"
-            )
-
-        if source_coordinate_chunk.shape[1] == dim:
-            coords = source_coordinate_chunk
-            values = source_field_chunk
-            if values.ndim == 1:
-                values = values.reshape(-1, 1)
-            return coords, values
-
-        if source_coordinate_chunk.shape[1] % dim != 0:
-            raise RuntimeError(
-                f"Coordinate dimension mismatch: mesh={dim}, field={source_coordinate_chunk.shape[1]}"
-            )
-
-        dof_per_row = source_coordinate_chunk.shape[1] // dim
-        coords = source_coordinate_chunk.reshape(-1, dim)
-        values = source_field_chunk
-
-        if values.ndim == 1:
-            values = values.reshape(-1, 1)
-            values = np.repeat(values, dof_per_row, axis=0)
-            return coords, values
-
-        if values.shape[1] == dof_per_row:
-            values = values.reshape(-1, 1)
-            return coords, values
-
-        if values.shape[1] % dof_per_row == 0:
-            ncomp_eff = values.shape[1] // dof_per_row
-            values = values.reshape(values.shape[0], dof_per_row, ncomp_eff).reshape(-1, ncomp_eff)
-            return coords, values
-
-        raise RuntimeError(
-            f"Cannot unpack field layout for {var_name}: "
-            f"values={values.shape}, coords={source_coordinate_chunk.shape}, dim={dim}"
-        )
-
-    is_tensor = False
-    if var_obj is not None and hasattr(var_obj, "vtype"):
-        is_tensor = var_obj.vtype in (
-            uw.VarType.TENSOR,
-            uw.VarType.SYM_TENSOR,
-            uw.VarType.MATRIX,
-        )
-
-    parallel_h5 = bool(getattr(h5py.get_config(), "mpi", False))
-    if parallel_h5:
-        open_kwargs = {"driver": "mpio", "comm": comm}
+    if is_cell:
+        uw.function.write_cell_field_to_viewer(var, viewer)
     else:
-        # Fallback: single-writer path when MPI-HDF5 is unavailable.
-        if rank != 0:
-            return
-        open_kwargs = {}
+        uw.function.write_vertices_to_viewer(var, viewer)
+        uw.function.write_coordinates_to_viewer(mesh, viewer)
 
-    with h5py.File(mesh_h5, "r", **open_kwargs) as mesh_file:
-        mesh_vertices_dataset = mesh_file["geometry/vertices"]
-        num_vertices = mesh_vertices_dataset.shape[0]
-        dim = mesh_vertices_dataset.shape[1]
-        local_vertex_start, local_vertex_stop = _chunk_bounds(num_vertices, rank, size)
-        local_vertices = mesh_vertices_dataset[local_vertex_start:local_vertex_stop, :]
-
-    with h5py.File(var_h5, "r+", **open_kwargs) as variable_file:
-        if "fields" not in variable_file:
-            raise RuntimeError(f"Missing group '/fields' in {var_h5}")
-        if var_name not in variable_file["fields"]:
-            raise RuntimeError(f"Missing dataset '/fields/{var_name}' in {var_h5}")
-
-        field_dataset = variable_file["fields"][var_name]
-        field_dataset_dtype = field_dataset.dtype
-        output_dataset_name = f"{var_name}_{var_name}"
-
-        if is_cell:
-            num_rows = field_dataset.shape[0]
-            local_row_start, local_row_stop = _chunk_bounds(num_rows, rank, size)
-            local_field_chunk = field_dataset[local_row_start:local_row_stop]
-            if local_field_chunk.ndim == 1:
-                local_field_chunk = local_field_chunk.reshape(-1, 1)
-            output_components = local_field_chunk.shape[1]
-
-            cell_group = variable_file.require_group("cell_fields")
-            if rank == 0 and output_dataset_name in cell_group:
-                del cell_group[output_dataset_name]
-            if parallel_h5:
-                comm.Barrier()
-            output_dataset = cell_group.require_dataset(
-                output_dataset_name, shape=(num_rows, output_components), dtype=field_dataset_dtype
-            )
-            output_dataset[local_row_start:local_row_stop, :] = local_field_chunk
-            if parallel_h5:
-                comm.Barrier()
-            return
-
-        if "coordinates" not in variable_file["fields"]:
-            raise RuntimeError(f"Missing dataset '/fields/coordinates' in {var_h5}")
-
-        coordinate_dataset = variable_file["fields"]["coordinates"]
-        num_source_rows = coordinate_dataset.shape[0]
-        coordinate_columns = coordinate_dataset.shape[1]
-        if field_dataset.ndim == 1:
-            field_columns = 1
-        else:
-            field_columns = field_dataset.shape[1]
-
-        if vertex_cell_chunk_size is None or vertex_cell_chunk_size <= 0:
-            effective_chunk_size = _auto_chunk_size(
-                total_source_rows=num_source_rows,
-                coordinate_columns=coordinate_columns,
-                field_columns=field_columns,
-                dtype_itemsize=field_dataset_dtype.itemsize,
-            )
-        else:
-            effective_chunk_size = int(vertex_cell_chunk_size)
-
-        local_vertex_count = max(local_vertex_stop - local_vertex_start, 0)
-        local_best_distance_sq = np.full(local_vertex_count, np.inf, dtype=np.float64)
-        local_best_values = None
-
-        for source_start in range(0, num_source_rows, effective_chunk_size):
-            source_stop = min(source_start + effective_chunk_size, num_source_rows)
-            source_coordinates = coordinate_dataset[source_start:source_stop, :]
-            source_values = field_dataset[source_start:source_stop]
-            source_coordinates, source_values = _flatten_source_points(
-                source_coordinates, source_values, dim
-            )
-
-            if local_best_values is None:
-                local_best_values = np.zeros(
-                    (local_vertex_count, source_values.shape[1]), dtype=field_dataset_dtype
-                )
-
-            source_tree = uw.kdtree.KDTree(source_coordinates)
-            nearest_distance, nearest_index = source_tree.query(
-                local_vertices, k=1, sqr_dists=False
-            )
-            nearest_distance = np.asarray(nearest_distance).reshape(-1)
-            nearest_index = np.asarray(nearest_index).reshape(-1)
-            nearest_distance_sq = nearest_distance * nearest_distance
-            improved = nearest_distance_sq < local_best_distance_sq
-
-            if np.any(improved):
-                local_best_distance_sq[improved] = nearest_distance_sq[improved]
-                local_best_values[improved, :] = source_values[nearest_index[improved], :]
-
-        if local_best_values is None:
-            # Degenerate case: empty source
-            local_best_values = np.zeros((local_vertex_count, 1), dtype=field_dataset_dtype)
-
-        if is_tensor:
-            local_component_count = local_best_values.shape[1]
-            tensor_values = np.zeros((local_vertex_count, 9), dtype=field_dataset_dtype)
-
-            if dim == 2 and local_component_count == 4:
-                tensor_values[:, 0] = local_best_values[:, 0]
-                tensor_values[:, 4] = local_best_values[:, 1]
-                tensor_values[:, 1] = local_best_values[:, 2]
-                tensor_values[:, 3] = local_best_values[:, 3]
-            elif dim == 2 and local_component_count == 3:
-                tensor_values[:, 0] = local_best_values[:, 0]
-                tensor_values[:, 4] = local_best_values[:, 1]
-                tensor_values[:, 1] = local_best_values[:, 2]
-                tensor_values[:, 3] = local_best_values[:, 2]
-            elif dim == 3 and local_component_count == 9:
-                tensor_values[:, :] = local_best_values[:, :]
-            elif dim == 3 and local_component_count == 6:
-                tensor_values[:, 0] = local_best_values[:, 0]
-                tensor_values[:, 4] = local_best_values[:, 1]
-                tensor_values[:, 8] = local_best_values[:, 2]
-                tensor_values[:, 1] = local_best_values[:, 3]
-                tensor_values[:, 3] = local_best_values[:, 3]
-                tensor_values[:, 5] = local_best_values[:, 4]
-                tensor_values[:, 7] = local_best_values[:, 4]
-                tensor_values[:, 2] = local_best_values[:, 5]
-                tensor_values[:, 6] = local_best_values[:, 5]
-            else:
-                tensor_values = None
-
-            if tensor_values is not None:
-                local_best_values = tensor_values
-
-        output_components = local_best_values.shape[1]
-        vertex_group = variable_file.require_group("vertex_fields")
-        if rank == 0:
-            if "coordinates" in vertex_group:
-                del vertex_group["coordinates"]
-            if output_dataset_name in vertex_group:
-                del vertex_group[output_dataset_name]
-        if parallel_h5:
-            comm.Barrier()
-
-        coordinates_output = vertex_group.require_dataset(
-            "coordinates", shape=(num_vertices, dim), dtype=local_vertices.dtype
-        )
-        values_output = vertex_group.require_dataset(
-            output_dataset_name,
-            shape=(num_vertices, output_components),
-            dtype=field_dataset_dtype,
-        )
-        coordinates_output[local_vertex_start:local_vertex_stop, :] = local_vertices
-        values_output[local_vertex_start:local_vertex_stop, :] = local_best_values
-
-        if parallel_h5:
-            comm.Barrier()
+    viewer.destroy()
 
 
 def checkpoint_xdmf(
