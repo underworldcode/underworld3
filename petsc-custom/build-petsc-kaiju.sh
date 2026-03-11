@@ -97,6 +97,7 @@ configure_petsc() {
         --download-slepc=1 \
         --download-ptscotch=1 \
         --download-mmg=1 \
+        --download-mmg-cmake-arguments="-DMMG_INSTALL_PRIVATE_HEADERS=ON" \
         --download-parmmg=1 \
         --download-pragmatic=1 \
         --with-pragmatic=1 \
