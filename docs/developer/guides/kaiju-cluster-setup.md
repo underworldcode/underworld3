@@ -164,6 +164,23 @@ sbatch --nodes=4 --ntasks-per-node=30 uw3_slurm_job.sh
 
 ---
 
+## Shared Installation (Admin)
+
+A system-wide installation can be deployed to `/opt/cluster/software/underworld3/` so all users access it via Lmod:
+
+```bash
+module load underworld3/development-12Mar26
+```
+
+Use `uw3_install_kaiju_shared.sh` from the `kaiju-admin-notes` repo. It is identical to the per-user script except:
+- `INSTALL_PATH=/opt/cluster/software`
+- Adds `fix_permissions()` — sets world-readable permissions after install
+- Adds `install_modulefile()` — copies the Lmod modulefile with a date-stamped name
+
+The Lmod modulefile (`modulefiles/underworld3/development.lua`) hardcodes the spack OpenMPI and pixi env paths. If spack is rebuilt (hash changes), update `mpi_root` in the modulefile.
+
+---
+
 ## Troubleshooting
 
 ### `import underworld3` fails on compute nodes
@@ -189,6 +206,41 @@ rm -rf ~/uw3-installation/underworld3/petsc-custom/petsc
 install_petsc
 install_h5py
 ```
+
+### h5py replaces source-built mpi4py
+
+`pip install h5py` without `--no-deps` silently replaces the source-built mpi4py (spack OpenMPI) with a pre-built wheel linked to a different MPI. Always use `--no-deps` when installing h5py. The install script handles this correctly.
+
+If mpi4py was accidentally replaced, rebuild it from source:
+```bash
+source uw3_install_kaiju_amr.sh
+pip install --no-binary :all: --no-cache-dir --force-reinstall "mpi4py>=4,<5"
+```
+
+Verify it links to spack OpenMPI:
+```bash
+ldd $(python3 -c "import mpi4py; print(mpi4py.__file__.replace('__init__.py',''))") \
+    MPI*.so | grep mpi
+# Should show: libmpi.so.40 => /opt/cluster/spack/.../openmpi-4.1.6-.../lib/libmpi.so.40
+```
+
+### numpy ABI mismatch after h5py install
+
+If numpy is upgraded after petsc4py is compiled, `import petsc4py` fails with:
+```
+ValueError: numpy.dtype size changed, may indicate binary incompatibility.
+```
+
+Fix: restore the numpy version used during the PETSc build, then rebuild h5py:
+```bash
+pip install --force-reinstall "numpy==1.26.4"
+CC=mpicc HDF5_MPI="ON" HDF5_DIR="${PETSC_DIR}/${PETSC_ARCH}" \
+    pip install --no-binary=h5py --no-cache-dir --force-reinstall --no-deps h5py
+```
+
+### PARMMG configure failure (pixi ld + spack transitive deps)
+
+pixi's conda linker (`ld` 14.x) requires transitive shared library dependencies to be explicitly linked. `libmmg.so` built with SCOTCH support causes PARMMG's `MMG_WORKS` link test to fail because `libscotch.so` is not explicitly passed. This is fixed in `petsc-custom/build-petsc-kaiju.sh` by building MMG without SCOTCH (`-DUSE_SCOTCH=OFF`). PARMMG uses ptscotch separately for parallel partitioning, which is unaffected.
 
 ### Checking what's installed
 
