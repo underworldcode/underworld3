@@ -3,7 +3,7 @@
 # Build PETSc with AMR tools for the Kaiju cluster (Rocky Linux 8, Spack OpenMPI)
 #
 # Differences from build-petsc.sh (local macOS/pixi):
-#   --with-mpi-dir   → spack OpenMPI (not pixi's MPICH)
+#   MPI auto-detected from PATH (spack load puts mpicc in PATH; no --with-mpi-dir needed)
 #   --download-hdf5  → PETSc downloads HDF5 (not provided by pixi)
 #   --download-fblaslapack → no guaranteed system BLAS on Rocky Linux 8
 #   --download-cmake → spack does not have cmake
@@ -35,8 +35,6 @@ if ! command -v mpicc &>/dev/null; then
     exit 1
 fi
 
-MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
-
 # Require pixi kaiju environment
 # Check PATH since PIXI_ENVIRONMENT is not set by pixi shell-hook (only by pixi shell)
 if ! echo "$PATH" | tr ':' '\n' | grep -q "\.pixi/envs/kaiju/bin"; then
@@ -50,7 +48,7 @@ echo "PETSc AMR Build Script (Kaiju)"
 echo "=========================================="
 echo "PETSC_DIR:  $PETSC_DIR"
 echo "PETSC_ARCH: $PETSC_ARCH"
-echo "MPI_DIR:    $MPI_DIR"
+echo "mpicc:      $(which mpicc)"
 echo "=========================================="
 
 clone_petsc() {
@@ -78,17 +76,13 @@ configure_petsc() {
     #   cmake:      downloaded (spack does not have cmake)
     #   MPI:        spack OpenMPI (not downloaded)
     #   petsc4py:   built during configure
-    # Pass MPI compilers via CC/CXX/FC env vars rather than --with-mpi-dir.
-    # Spack's mpicc wrapper works in the current shell (spack load sets the
-    # required env), but PETSc configure tests wrappers in a subprocess that
-    # may not inherit the full spack environment, causing --with-mpi-dir to fail.
-    CC=mpicc CXX=mpicxx FC=mpif90 \
+    # No --with-mpi-dir or --with-mpi flags: PETSc auto-detects mpicc from PATH.
+    # spack load openmpi@4.1.6 (called in load_env) puts mpicc in PATH.
+    # --download-mpich=0 prevents fallback to downloading MPICH.
     python3 ./configure \
         --with-petsc-arch="$PETSC_ARCH" \
         --with-debugging=0 \
-        --with-mpi=1 \
         --download-mpich=0 \
-        --download-mpi4py=0 \
         --download-hdf5=1 \
         --download-fblaslapack=1 \
         --download-cmake=1 \
