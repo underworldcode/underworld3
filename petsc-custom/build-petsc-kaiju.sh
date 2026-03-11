@@ -78,10 +78,15 @@ configure_petsc() {
     #   cmake:      downloaded (spack does not have cmake)
     #   MPI:        spack OpenMPI (not downloaded)
     #   petsc4py:   built during configure
+    # Pass MPI compilers via CC/CXX/FC env vars rather than --with-mpi-dir.
+    # Spack's mpicc wrapper works in the current shell (spack load sets the
+    # required env), but PETSc configure tests wrappers in a subprocess that
+    # may not inherit the full spack environment, causing --with-mpi-dir to fail.
+    CC=mpicc CXX=mpicxx FC=mpif90 \
     python3 ./configure \
         --with-petsc-arch="$PETSC_ARCH" \
         --with-debugging=0 \
-        --with-mpi-dir="$MPI_DIR" \
+        --with-mpi=1 \
         --download-mpich=0 \
         --download-mpi4py=0 \
         --download-hdf5=1 \
