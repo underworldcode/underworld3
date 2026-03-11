@@ -326,10 +326,12 @@ mesh = h2ex.create_mesh(config)
 surfaces = h2ex.load_and_build_faults(mesh, config)
 mesh = h2ex.adapt_mesh(mesh, surfaces, config)
 products.save("adapted_mesh", mesh)
-products.save("fault_surfaces", surfaces)
 
-stokes, v, p = h2ex.create_stokes(mesh, config)
-fields = h2ex.setup_rheology(stokes, surfaces, mesh, config)
+stokes, strain_rate = h2ex.solve_stress(mesh, surfaces, config)
+strain_rate_ref = h2ex.solve_reference_stress(mesh, config)
+permeability = h2ex.compute_permeability(mesh, strain_rate, strain_rate_ref, config)
+darcy, v_darcy, p_darcy = h2ex.solve_darcy(mesh, permeability, config)
+accumulation = h2ex.advect_tracers(mesh, v_darcy, config)
 ```
 
 **Pattern B — Product reload** (parameter studies):
@@ -338,15 +340,18 @@ fields = h2ex.setup_rheology(stokes, surfaces, mesh, config)
 mesh = products.load("adapted_mesh")
 surfaces = products.load("fault_surfaces", mesh=mesh)
 
-config.rheology = "anisotropic"
-config.eta_1_ratio = 0.01
+# Vary stress orientation without rebuilding the mesh
+config.stress_azimuth_deg = 45.0
 
-stokes, v, p = h2ex.create_stokes(mesh, config)
-fields = h2ex.setup_rheology(stokes, surfaces, mesh, config)
+stokes, strain_rate = h2ex.solve_stress(mesh, surfaces, config)
+strain_rate_ref = h2ex.solve_reference_stress(mesh, config)
+permeability = h2ex.compute_permeability(mesh, strain_rate, strain_rate_ref, config)
+darcy, v_darcy, p_darcy = h2ex.solve_darcy(mesh, permeability, config)
 ```
 
-The expensive steps (mesh, faults, adaptation) run once; the cheap steps
-(solver setup, rheology, BCs) run many times with different parameters.
+The expensive steps (mesh, faults, adaptation) run once; the downstream
+steps (stress, permeability, Darcy flow) run many times with different
+stress orientations or fault weakness values.
 
 ## In-repo examples
 

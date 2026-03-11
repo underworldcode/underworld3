@@ -4,6 +4,15 @@ Demonstrates the **product-aware workflow pattern** where expensive
 serial steps (mesh creation, fault loading, adaptation) produce named
 products that can be saved and reloaded for parameter studies.
 
+The full pipeline computes:
+
+1. Geographic mesh → adapt near faults
+2. Stress (TransverseIsotropic, oriented BCs) → strain rate
+3. Reference stress (no faults) → background strain rate
+4. Permeability from strain-rate delta
+5. Darcy flow with computed permeability
+6. Tracer advection → surface accumulation map
+
 The companion notebook (``h2ex_notebook.py``) shows both the full
 serial pipeline and the product-loading shortcut.
 
@@ -20,11 +29,15 @@ Usage::
     surfaces = h2ex.load_and_build_faults(mesh, config)
     mesh = h2ex.adapt_mesh(mesh, surfaces, config)
     products.save("adapted_mesh", mesh)
-    products.save("fault_surfaces", surfaces)
 
-    # Or reload products for a parameter study
-    mesh = products.load("adapted_mesh")
-    surfaces = products.load("fault_surfaces", mesh=mesh)
+    # Stress calculations
+    stokes, strain_rate = h2ex.solve_stress(mesh, surfaces, config)
+    strain_rate_ref = h2ex.solve_reference_stress(mesh, config)
+    permeability = h2ex.compute_permeability(mesh, strain_rate, strain_rate_ref, config)
+
+    # Flow and accumulation
+    darcy, v_darcy = h2ex.solve_darcy(mesh, permeability, config)
+    accumulation = h2ex.advect_tracers(mesh, v_darcy, config)
 
     # Inspect
     h2ex.view()
@@ -106,31 +119,176 @@ class H2ExConfig(WorkflowConfig):
         default=10.0, gt=0, description="Transition distance for refinement (km)"
     )
 
-    # Rheology
-    rheology: str = Field(
-        default="anisotropic",
-        description="Rheology type: isoviscous or anisotropic",
+    # Stress orientation and fault rheology
+    stress_azimuth_deg: float = Field(
+        default=0.0, description="Stress orientation angle from E-W (degrees)"
     )
-    eta_0_Pa_s: float = Field(
-        default=1e21, gt=0, description="Background viscosity (Pa s)"
-    )
-    eta_1_ratio: float = Field(
-        default=0.1, gt=0, description="Fault-zone viscosity ratio (eta_1/eta_0)"
-    )
-    fault_width_km: float = Field(
-        default=10.0, gt=0, description="Fault influence width (km)"
+    fault_weakness: float = Field(
+        default=1e-5, gt=0, description="Fault-zone viscosity ratio (eta_1/eta_0)"
     )
 
-    # Boundary conditions
-    driving_velocity_cm_yr: float = Field(
-        default=1.0, description="Driving velocity (cm/yr)"
+    # Permeability thresholds (strain-rate delta → log10 permeability)
+    delta_low: float = Field(
+        default=-2.0, description="Delta below which perm is very low"
     )
-    penalty_factor: float = Field(
-        default=1.0e6, gt=0, description="BC penalty factor"
+    delta_mid: float = Field(
+        default=0.0, description="Delta below which perm is low"
+    )
+    delta_high: float = Field(
+        default=5.0, description="Delta above which perm is high"
+    )
+    delta_very_high: float = Field(
+        default=10.0, description="Delta above which perm is very high"
+    )
+
+    # Darcy flow
+    source_depth_km: float = Field(
+        default=30.0, gt=0, description="Depth below which Darcy source is active (km)"
+    )
+    source_magnitude: float = Field(
+        default=10.0, description="Darcy source strength"
+    )
+    gravity_scale: float = Field(
+        default=0.01, description="Gravity term scaling for Darcy"
+    )
+
+    # Tracer advection
+    tracer_grid_n: int = Field(
+        default=100, gt=0, description="Tracer grid points per horizontal dimension"
+    )
+    tracer_n_depths: int = Field(
+        default=20, gt=0, description="Number of depth levels for seeding tracers"
+    )
+    accumulation_depth_km: float = Field(
+        default=0.0, ge=0, description="Depth at which to capture tracers (km)"
+    )
+    max_advection_steps: int = Field(
+        default=500, gt=0, description="Maximum advection steps"
     )
 
     # Output
     output_dir: str = "output/h2ex"
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+
+def _geographic_basis(mesh):
+    """Get geographic coordinate basis vectors and coordinates.
+
+    Returns (unit_vertical, unit_SN, unit_EW, r, th, ph).
+    The SN vector is negated from the co-latitude basis vector
+    to give a northward-pointing direction.
+    """
+    r, th, ph = mesh.CoordinateSystem.R
+    unit_vertical = mesh.CoordinateSystem.unit_e_0
+    unit_SN = -mesh.CoordinateSystem.unit_e_1
+    unit_EW = mesh.CoordinateSystem.unit_e_2
+    return unit_vertical, unit_SN, unit_EW, r, th, ph
+
+
+def _build_position_function(mesh, ph):
+    """Build normalized longitude position function P ∈ [-0.5, 0.5].
+
+    Used for spatially varying boundary conditions: traction is strongest
+    at the edges and zero at the center.
+    """
+    import underworld3 as uw
+
+    ph_vals = uw.function.evaluate(ph, mesh.data, rbf=True)
+    ph_min_val = uw.utilities.gather_data(ph_vals.min(), bcast=True).min()
+    ph_max_val = uw.utilities.gather_data(ph_vals.max(), bcast=True).max()
+
+    ph_min = uw.function.expression(r"\theta_{-}", ph_min_val, "min longitude")
+    ph_max = uw.function.expression(r"\theta_{+}", ph_max_val, "max longitude")
+
+    P = (ph - (ph_max + ph_min) / 2) / (ph_max - ph_min)
+    return P
+
+
+def _solve_stokes_stress(mesh, surfaces, config, fault_weakness_value):
+    """Build and solve a Stokes system for stress calculation.
+
+    Uses TransverseIsotropicFlowModel with fault normals as directors.
+    Oriented velocity BCs on vertical faces and base; stress-free top.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The (adapted) geographic mesh.
+    surfaces : SurfaceCollection or None
+        Fault surfaces for anisotropy. None for reference (isotropic) solve.
+    config : H2ExConfig
+        Workflow configuration.
+    fault_weakness_value : float
+        eta_1/eta_0 ratio.  Use config.fault_weakness for fault solve,
+        1.0 for reference solve.
+
+    Returns
+    -------
+    stokes, v, p, strain_rate_inv2
+    """
+    import underworld3 as uw
+
+    unit_vertical, unit_SN, unit_EW, r, th, ph = _geographic_basis(mesh)
+    P = _build_position_function(mesh, ph)
+
+    # Variables
+    v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
+    strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh, 1, degree=1)
+
+    # Stokes solver with TransverseIsotropicFlowModel
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
+    stokes.constitutive_model.Parameters.eta_0 = 1
+    stokes.penalty = 0.1
+
+    # Fault-controlled anisotropy
+    if surfaces is not None and len(surfaces.surfaces) > 0:
+        fault_fields = surfaces.compute_nearest_fields(mesh)
+        dist_var = fault_fields["distance"]
+        normal_var = fault_fields["normal"]
+
+        stokes.constitutive_model.Parameters.eta_1 = sympy.Piecewise(
+            (fault_weakness_value, dist_var.sym[0] < mesh.get_min_radius() * 5),
+            (1, True),
+        )
+        stokes.constitutive_model.Parameters.director = normal_var.sym
+    else:
+        stokes.constitutive_model.Parameters.eta_1 = 1
+
+    # Oriented velocity BCs: -P * (cos(θ)·e_EW - sin(θ)·e_SN)
+    theta = np.deg2rad(config.stress_azimuth_deg)
+    stress_orientation = uw.function.expression(
+        r"\theta_s", theta, "Stress orientation angle"
+    )
+    traction = -P * (
+        sympy.cos(stress_orientation) * unit_EW
+        - sympy.sin(stress_orientation) * unit_SN
+    )
+
+    # Apply to vertical faces and base (stress-free top)
+    for bnd_name in ["West", "North", "East", "South", "Lower"]:
+        bnd = getattr(mesh.boundaries, bnd_name, None)
+        if bnd is not None:
+            stokes.add_essential_bc(traction, bnd.name)
+
+    # Body force
+    stokes.bodyforce = -1 * unit_vertical
+
+    stokes.tolerance = 1.0e-3
+    stokes.solve(zero_init_guess=True)
+
+    # Project strain rate invariant
+    projection = uw.systems.Projection(mesh, strain_rate_inv2)
+    projection.uw_function = stokes.constitutive_model.Unknowns.Einv2
+    projection.smoothing = 1.0e-6
+    projection.solve()
+
+    return stokes, v, p, strain_rate_inv2
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +406,6 @@ def adapt_mesh(mesh, surfaces, config: H2ExConfig):
     d = dist_var.data[:, 0]
     t = np.clip(d / transition, 0.0, 1.0)
     target_h = h_near + (h_far - h_near) * t
-    # Metric is 1/h² (edge-length based)
     metric.data[:, 0] = 1.0 / target_h**2
 
     uw.pprint(0, "Adapting mesh...")
@@ -259,112 +416,332 @@ def adapt_mesh(mesh, surfaces, config: H2ExConfig):
 
 
 @workflow_step(
-    description="Create Stokes solver on the mesh",
-    produces=["stokes"],
+    description="Solve Stokes for fault-controlled stress",
+    produces=["strain_rate"],
+    requires=["adapted_mesh", "fault_surfaces"],
+)
+def solve_stress(mesh, surfaces, config: H2ExConfig):
+    """Solve Stokes with TransverseIsotropicFlowModel for fault-controlled stress.
+
+    Uses oriented velocity BCs on vertical faces and base with the
+    stress azimuth from config.  Faults appear as weak anisotropic zones
+    (eta_1 = fault_weakness near faults, 1 elsewhere).
+
+    Returns
+    -------
+    stokes, strain_rate_inv2
+        The solved Stokes system and projected strain rate invariant.
+    """
+    import underworld3 as uw
+
+    uw.pprint(
+        0,
+        f"Solving stress: azimuth={config.stress_azimuth_deg}°, "
+        f"fault_weakness={config.fault_weakness}",
+    )
+
+    stokes, v, p, strain_rate_inv2 = _solve_stokes_stress(
+        mesh, surfaces, config,
+        fault_weakness_value=config.fault_weakness,
+    )
+
+    uw.pprint(0, "Stress solve complete")
+    return stokes, strain_rate_inv2
+
+
+@workflow_step(
+    description="Solve reference stress (no faults)",
+    produces=["strain_rate_ref"],
     requires=["adapted_mesh"],
 )
-def create_stokes(mesh, config: H2ExConfig):
-    """Create a Stokes solver with velocity and pressure variables.
+def solve_reference_stress(mesh, config: H2ExConfig):
+    """Solve Stokes with uniform viscosity (no fault weakness).
+
+    Same BCs and setup as solve_stress but with fault_weakness=1.0,
+    giving the background strain rate for comparison.
 
     Returns
     -------
-    stokes, v, p
-        The Stokes solver and its velocity / pressure variables.
+    strain_rate_ref
+        Projected strain rate invariant for the reference (no-fault) case.
     """
     import underworld3 as uw
 
-    v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-    p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
+    uw.pprint(0, "Solving reference stress (no faults)...")
 
-    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    stokes.tolerance = 1.0e-3
+    _, _, _, strain_rate_ref = _solve_stokes_stress(
+        mesh, None, config,
+        fault_weakness_value=1.0,
+    )
 
-    return stokes, v, p
+    uw.pprint(0, "Reference stress solve complete")
+    return strain_rate_ref
 
 
 @workflow_step(
-    description="Configure fault-controlled rheology",
-    produces=["fault_fields"],
-    requires=["stokes", "fault_surfaces"],
+    description="Compute permeability from strain-rate delta",
+    produces=["permeability"],
+    requires=["strain_rate", "strain_rate_ref"],
 )
-def setup_rheology(stokes, surfaces, mesh, config: H2ExConfig):
-    """Set up isoviscous or anisotropic fault-controlled rheology.
+def compute_permeability(mesh, strain_rate, strain_rate_ref, config: H2ExConfig):
+    """Compute permeability field from difference in strain rate.
 
-    For anisotropic mode, creates a MeshVariable for fault influence
-    and configures viscosity reduction near fault surfaces.
+    Where faults concentrate strain (positive delta), permeability is
+    enhanced.  Where strain is reduced, permeability is lowered.  The
+    mapping uses piecewise thresholds on log10 scale:
+
+    - delta < delta_low     → 10^(-2) (very low)
+    - delta_low ≤ delta < 0 → 10^(-1) (low)
+    - 0 ≤ delta ≤ delta_high → 10^(0)  (background)
+    - delta_high < delta ≤ delta_very_high → 10^(1)  (high)
+    - delta > delta_very_high → 10^(2)  (very high)
 
     Returns
     -------
-    fields : dict
-        Dictionary of created fields (e.g. ``{"fault_influence": var}``).
-        Empty dict for isoviscous mode.
+    permeability : MeshVariable
+        Permeability field on the mesh.
     """
     import underworld3 as uw
 
-    fields = {}
-
-    if config.rheology == "isoviscous" or len(surfaces.surfaces) == 0:
-        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-        uw.pprint(0, "Rheology: isoviscous")
-        return fields
-
-    # Anisotropic: reduce viscosity near faults
-    dist_var = surfaces.compute_distance_field(mesh)
-
-    # Gaussian influence function
-    fault_influence = uw.discretisation.MeshVariable(
-        "fault_influence", mesh, 1, degree=2
+    permeability = uw.discretisation.MeshVariable(
+        "Perm", mesh, 1, degree=1, varsymbol=r"\kappa"
     )
-    sigma = config.fault_width_km
-    fault_influence.data[:, 0] = np.exp(
-        -0.5 * (dist_var.data[:, 0] / sigma) ** 2
+
+    # Strain rate delta
+    delta = strain_rate.data[:, 0] - strain_rate_ref.data[:, 0]
+
+    # Piecewise log10 permeability from thresholds
+    log_perm = np.zeros_like(delta)
+
+    log_perm[delta < config.delta_mid] = -1
+    log_perm[delta < config.delta_low] = -2
+    log_perm[delta > config.delta_high] = 1
+    log_perm[delta > config.delta_very_high] = 2
+
+    permeability.data[:, 0] = np.power(10.0, log_perm)
+
+    uw.pprint(
+        0,
+        f"Permeability: min={permeability.data[:, 0].min():.2e}, "
+        f"max={permeability.data[:, 0].max():.2e}",
     )
-    fields["fault_influence"] = fault_influence
-
-    # Effective viscosity: eta = eta_0 * (1 - (1-ratio) * influence)
-    ratio = config.eta_1_ratio
-    eta_eff = 1.0 - (1.0 - ratio) * fault_influence.sym[0]
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_eff
-
-    uw.pprint(0, f"Rheology: anisotropic (ratio={ratio}, width={sigma} km)")
-    return fields
+    return permeability
 
 
 @workflow_step(
-    description="Apply boundary conditions",
-    requires=["stokes"],
+    description="Solve Darcy flow with computed permeability",
+    produces=["darcy_velocity"],
+    requires=["adapted_mesh", "permeability"],
 )
-def set_boundary_conditions(stokes, mesh, config: H2ExConfig):
-    """Apply geographic penalty BCs to the Stokes solver.
+def solve_darcy(mesh, permeability, config: H2ExConfig):
+    """Solve steady-state Darcy flow with the computed permeability field.
 
-    Free-slip on top/bottom, driving velocity on sides.
+    Boundary conditions: p = 0 at the upper surface (free drainage).
+    Source term active below ``source_depth_km`` to drive upward flow.
+    Gravity term points radially inward.
+
+    Returns
+    -------
+    darcy, v_darcy, p_darcy
+        The Darcy solver and its velocity / pressure fields.
     """
-    # Free-slip top and bottom
-    stokes.add_dirichlet_bc((sympy.oo, sympy.oo, 0.0), "Top")
-    stokes.add_dirichlet_bc((sympy.oo, sympy.oo, 0.0), "Bottom")
+    import underworld3 as uw
 
-    # Simple side BCs — no-normal-flow
-    stokes.add_dirichlet_bc((0.0, sympy.oo, sympy.oo), "Left")
-    stokes.add_dirichlet_bc((0.0, sympy.oo, sympy.oo), "Right")
-    stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Front")
-    stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Back")
+    unit_vertical, unit_SN, unit_EW, r, th, ph = _geographic_basis(mesh)
+
+    p_darcy = uw.discretisation.MeshVariable(
+        "DarcyP", mesh, 1, degree=2, varsymbol=r"P_d"
+    )
+    v_darcy = uw.discretisation.MeshVariable(
+        "DarcyU", mesh, mesh.dim, degree=1, continuous=True, varsymbol=r"V_d"
+    )
+
+    darcy = uw.systems.SteadyStateDarcy(mesh, h_Field=p_darcy, v_Field=v_darcy)
+    darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
+    darcy.constitutive_model.Parameters.permeability = permeability.sym[0]
+
+    # p = 0 at upper surface
+    darcy.add_essential_bc(0.0, "Upper")
+
+    # Source at depth: drives fluid upward from below source_depth_km
+    r_source = 1 - config.source_depth_km / 6370
+    darcy.f = sympy.Piecewise(
+        (config.source_magnitude, r < r_source),
+        (0.0, True),
+    )
+
+    # Gravity term
+    darcy.constitutive_model.Parameters.s = sympy.Matrix(
+        -unit_vertical * config.gravity_scale
+    )
+
+    darcy.tolerance = 1.0e-3
+    darcy._v_projector.tolerance = 1.0e-3
+    darcy._v_projector.smoothing = 0.0
+
+    uw.pprint(0, "Solving Darcy flow...")
+    darcy.solve()
+    uw.pprint(0, "Darcy solve complete")
+
+    return darcy, v_darcy, p_darcy
 
 
 @workflow_step(
-    description="Visualize results with fault surfaces",
-    requires=["stokes", "fault_fields"],
+    description="Advect tracers to surface and compute accumulation",
+    produces=["accumulation"],
+    requires=["adapted_mesh", "darcy_velocity"],
 )
-def plot_results(mesh, stokes, surfaces=None, config=None, save_to=None):
-    """Plot the velocity magnitude with optional fault surface overlay.
+def advect_tracers(mesh, v_darcy, config: H2ExConfig):
+    """Seed tracers at depth, advect in -v_darcy, compute surface density.
+
+    Tracers are seeded on a regular grid in (lon, lat, depth) space,
+    converted to Cartesian, and advected using midpoint integration
+    in the negative Darcy velocity.  When a tracer reaches the surface
+    (r > 1), it is stopped and projected to the accumulation depth.
+
+    The density is computed via KD-tree kernel density estimation on a
+    Delaunay triangulation of the upper surface.
+
+    Returns
+    -------
+    accumulation : dict
+        Dictionary with keys:
+
+        - ``"grid_xyz"``: final tracer positions (N, 3)
+        - ``"grid_xyz_0"``: initial tracer positions (N, 3)
+        - ``"original_depths"``: initial depths in km (N,)
+        - ``"density"``: surface density array (n_cells,)
+        - ``"surface_mesh"``: pyvista PolyData of surface triangulation
+    """
+    import underworld3 as uw
+    import mpi4py
+
+    unit_vertical, _, _, r, _, _ = _geographic_basis(mesh)
+
+    # --- Seed tracer grid ---
+    lon_min, lon_max = config.lon_range
+    lat_min, lat_max = config.lat_range
+    d_min, d_max = 1.0, config.depth_range_km[1]
+
+    lons = np.linspace(lon_min, lon_max, config.tracer_grid_n)
+    lats = np.linspace(lat_min, lat_max, config.tracer_grid_n)
+    depths = np.linspace(d_min, d_max, config.tracer_n_depths)
+
+    grid_lons, grid_lats, grid_depths = np.meshgrid(lons, lats, depths)
+    grid_llz = np.column_stack([
+        grid_lons.ravel(),
+        grid_lats.ravel(),
+        grid_depths.ravel(),
+    ])
+
+    # Convert (lon, lat, depth_km) → Cartesian (x, y, z) on unit sphere
+    grid_r = 1.0 - grid_llz[:, 2] / 6370
+    grid_lat_rad = np.radians(grid_llz[:, 1])
+    grid_lon_rad = np.radians(grid_llz[:, 0])
+
+    grid_xyz = np.column_stack([
+        grid_r * np.cos(grid_lat_rad) * np.cos(grid_lon_rad),
+        grid_r * np.cos(grid_lat_rad) * np.sin(grid_lon_rad),
+        grid_r * np.sin(grid_lat_rad),
+    ])
+
+    grid_xyz_0 = grid_xyz.copy()
+    original_depths = (1.0 - grid_r) * 6370
+
+    # --- Compute advection timestep ---
+    vel = uw.function.evaluate(v_darcy.sym, mesh._centroids, rbf=True)
+    max_magvel = np.linalg.norm(vel, axis=1).max()
+    max_magvel_glob = uw.mpi.comm.allreduce(max_magvel, op=mpi4py.MPI.MAX)
+    min_dx = mesh.get_min_radius()
+    dt_adv = 10 * min_dx / max_magvel_glob
+
+    r_cutoff = 1.0 - config.accumulation_depth_km / 6370
+
+    # --- Midpoint advection ---
+    mask = np.ones((grid_xyz.shape[0], 1), dtype=int)
+    counter = 0
+
+    while np.count_nonzero(mask) > 1 and counter < config.max_advection_steps:
+        if counter % 50 == 0:
+            uw.pprint(
+                0,
+                f"Advection step {counter}, "
+                f"active tracers: {np.count_nonzero(mask)}",
+            )
+
+        v_xyz = uw.function.evaluate(-v_darcy.sym, grid_xyz, rbf=True)
+        xyz_half = 0.5 * dt_adv * v_xyz + grid_xyz
+        vh_xyz = uw.function.evaluate(-v_darcy.sym, xyz_half, rbf=True)
+        grid_xyz = mask * dt_adv * vh_xyz + grid_xyz
+
+        r_new = np.sqrt(np.sum(grid_xyz**2, axis=1))
+        mask[r_new > 1] = 0
+        hit_surface = r_new > 1
+        if np.any(hit_surface):
+            grid_xyz[hit_surface] *= r_cutoff / r_new[hit_surface].reshape(-1, 1)
+
+        counter += 1
+
+    uw.pprint(0, f"Advection complete after {counter} steps")
+
+    # --- Surface density estimation ---
+    result = {
+        "grid_xyz": grid_xyz,
+        "grid_xyz_0": grid_xyz_0,
+        "original_depths": original_depths,
+    }
+
+    try:
+        import pyvista as pv
+
+        # Build surface triangulation from upper boundary
+        upper_points = uw.discretisation.petsc_dm_find_labeled_points_local(
+            mesh.dm, "UW_Boundaries", 2
+        )
+        upper_polydata = pv.PolyData(mesh.data[upper_points])
+        upper_tri = upper_polydata.delaunay_2d(offset=0.01)
+        upper_tri = upper_tri.compute_cell_sizes(length=False, volume=False)
+
+        # KD-tree density
+        kdtree = uw.kdtree.KDTree(upper_tri.cell_centers().points)
+        dist_sq, nearest = kdtree.query(
+            np.ascontiguousarray(grid_xyz), k=25, sqr_dists=True,
+        )
+
+        density = np.zeros(upper_tri.number_of_cells)
+        for j in range(nearest.shape[1]):
+            for i in range(nearest.shape[0]):
+                density[nearest[i, j]] += 1.0 / np.sqrt(dist_sq[i, j])
+
+        # Normalize by cell area
+        cell_area = np.asarray(upper_tri.cell_data["Area"]).ravel()
+        density /= np.maximum(cell_area, 1e-30)
+        density /= np.maximum(density.max(), 1e-30)
+
+        result["density"] = density
+        result["surface_mesh"] = upper_tri
+
+        uw.pprint(0, f"Surface density computed ({upper_tri.number_of_cells} cells)")
+
+    except (ImportError, Exception) as e:
+        uw.pprint(0, f"Surface density computation skipped: {e}")
+
+    return result
+
+
+@workflow_step(
+    description="Visualize Darcy flow with fault surfaces",
+    requires=["adapted_mesh", "darcy_velocity"],
+)
+def plot_results(mesh, v_darcy, surfaces=None, config=None, save_to=None):
+    """Plot the Darcy velocity magnitude with optional fault surface overlay.
 
     Parameters
     ----------
     mesh : Mesh
         The simulation mesh.
-    stokes : Stokes
-        Solved Stokes system.
+    v_darcy : MeshVariable
+        Darcy velocity field.
     surfaces : SurfaceCollection, optional
         Fault surfaces to overlay.
     config : H2ExConfig, optional
@@ -385,33 +762,40 @@ def plot_results(mesh, stokes, surfaces=None, config=None, save_to=None):
         import pyvista as pv
         import underworld3.visualisation as vis
 
-        v = stokes.u
         pv_mesh = vis.mesh_to_pv_mesh(mesh)
-        vel = vis.vector_fn_to_pv_points(pv_mesh, v.sym)
-        pv_mesh.point_data["velocity_mag"] = np.linalg.norm(vel, axis=1)
+        vel = vis.vector_fn_to_pv_points(pv_mesh, v_darcy.sym)
+        pv_mesh.point_data["Vd_mag"] = np.linalg.norm(vel, axis=1)
+        pv_mesh.point_data["Vd"] = vel
 
         pl = pv.Plotter(window_size=(1200, 800))
+
         pl.add_mesh(
             pv_mesh,
-            scalars="velocity_mag",
+            scalars="Vd_mag",
             cmap="viridis",
             show_edges=False,
+            opacity=0.3,
+        )
+
+        pl.add_arrows(
+            pv_mesh.points, -vel, mag=5e-3,
+            show_scalar_bar=False, opacity=0.5,
         )
 
         # Overlay fault surfaces
         if surfaces is not None:
             for name, surf in surfaces.surfaces.items():
-                if hasattr(surf, "pv_mesh") and surf.pv_mesh is not None:
+                if hasattr(surf, "_pv_mesh") and surf._pv_mesh is not None:
                     pl.add_mesh(
-                        surf.pv_mesh,
+                        surf._pv_mesh,
                         color="red",
                         opacity=0.5,
                         label=name,
                     )
 
-        title = "H2Ex Fault Flow"
+        title = "H2Ex Darcy Flow"
         if config is not None:
-            title += f" ({config.rheology})"
+            title += f" (azimuth={config.stress_azimuth_deg}°)"
         pl.add_title(title)
 
         if save_to:
