@@ -38,9 +38,10 @@ fi
 MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
 
 # Require pixi kaiju environment
-if [ -z "$PIXI_ENVIRONMENT" ] || [ "$PIXI_ENVIRONMENT" != "kaiju" ]; then
+# Check PATH since PIXI_ENVIRONMENT is not set by pixi shell-hook (only by pixi shell)
+if ! echo "$PATH" | tr ':' '\n' | grep -q "\.pixi/envs/kaiju/bin"; then
     echo "Error: must be run inside the pixi kaiju environment"
-    echo "  pixi shell -e kaiju"
+    echo "  source uw3_install_kaiju_amr.sh   (sets up env via pixi shell-hook)"
     exit 1
 fi
 
