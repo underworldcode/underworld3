@@ -76,13 +76,15 @@ configure_petsc() {
     #   cmake:      downloaded (spack does not have cmake)
     #   MPI:        spack OpenMPI (not downloaded)
     #   petsc4py:   built during configure
-    # No --with-mpi-dir or --with-mpi flags: PETSc auto-detects mpicc from PATH.
-    # spack load openmpi@4.1.6 (called in load_env) puts mpicc in PATH.
-    # --download-mpich=0 prevents fallback to downloading MPICH.
+    # MPI_DIR is computed from `which mpicc` (spack OpenMPI in PATH).
+    # LD_LIBRARY_PATH must include $MPI_DIR/lib so PETSc configure test binaries
+    # can find libmpi.so at runtime (spack uses RPATH for its own binaries but
+    # does not set LD_LIBRARY_PATH — load_env in uw3_install_kaiju_amr.sh sets it).
+    MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
     python3 ./configure \
         --with-petsc-arch="$PETSC_ARCH" \
         --with-debugging=0 \
-        --download-mpich=0 \
+        --with-mpi-dir="$MPI_DIR" \
         --download-hdf5=1 \
         --download-fblaslapack=1 \
         --download-cmake=1 \
