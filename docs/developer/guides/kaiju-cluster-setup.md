@@ -129,12 +129,18 @@ This:
 
 ## Running with Slurm
 
-Use `kaiju-admin-notes/uw3_slurm_job.sh` as your job script template.
+Two job script templates are available in `kaiju-admin-notes`:
+
+| Script | Use when |
+|--------|----------|
+| `uw3_slurm_job.sh` | Per-user install (sources `uw3_install_kaiju_amr.sh`) |
+| `uw3_slurm_job_shared.sh` | Shared install (`module load underworld3/...`) |
 
 ### Submitting a job
 
 ```bash
-sbatch uw3_slurm_job.sh
+sbatch uw3_slurm_job.sh           # per-user install
+sbatch uw3_slurm_job_shared.sh    # shared install
 ```
 
 Monitor progress:
@@ -166,18 +172,43 @@ sbatch --nodes=4 --ntasks-per-node=30 uw3_slurm_job.sh
 
 ## Shared Installation (Admin)
 
-A system-wide installation can be deployed to `/opt/cluster/software/underworld3/` so all users access it via Lmod:
+A system-wide installation can be deployed to `/opt/cluster/software/underworld3/` so all users access it via Environment Modules:
 
 ```bash
 module load underworld3/development-12Mar26
 ```
 
-Use `uw3_install_kaiju_shared.sh` from the `kaiju-admin-notes` repo. It is identical to the per-user script except:
+Run as an admin with write access to `/opt/cluster/software`:
+
+```bash
+source uw3_install_kaiju_shared.sh install
+```
+
+This script is identical to the per-user script except:
 - `INSTALL_PATH=/opt/cluster/software`
 - Adds `fix_permissions()` — sets world-readable permissions after install
-- Adds `install_modulefile()` — copies the Lmod modulefile with a date-stamped name
+- Adds `install_modulefile()` — copies the TCL modulefile with a date-stamped name to `/opt/cluster/modulefiles/underworld3/`
 
-The Lmod modulefile (`modulefiles/underworld3/development.lua`) hardcodes the spack OpenMPI and pixi env paths. If spack is rebuilt (hash changes), update `mpi_root` in the modulefile.
+The modulefile (`modulefiles/underworld3/development.tcl`) hardcodes the spack OpenMPI and pixi env paths. If spack is rebuilt (hash changes), update `mpi_root` in the modulefile.
+
+### Slurm job script (shared install)
+
+Users with the shared install should use `uw3_slurm_job_shared.sh`:
+
+```bash
+# Edit UW3_MODULE and SCRIPT at the top, then:
+sbatch uw3_slurm_job_shared.sh
+```
+
+The key difference from the per-user job script is environment setup:
+
+```bash
+# Shared install: load module
+module load underworld3/development-12Mar26
+
+# Per-user install: source install script
+source ~/install_scripts/uw3_install_kaiju_amr.sh
+```
 
 ---
 
