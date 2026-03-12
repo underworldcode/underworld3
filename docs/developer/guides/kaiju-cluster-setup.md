@@ -54,7 +54,7 @@ curl -fsSL https://pixi.sh/install.sh | bash
 
 ## Installation
 
-Use the install script at `kaiju-admin-notes/uw3_install_kaiju_amr.sh`.
+Use the install script at `uw3_install_kaiju_amr.sh` from the [kaiju-admin-notes](https://github.com/jcgraciosa/kaiju-admin-notes) repo.
 
 ### Step 1: Edit configuration
 
@@ -129,7 +129,7 @@ This:
 
 ## Running with Slurm
 
-Two job script templates are available in `kaiju-admin-notes`:
+Two job script templates are available in the [kaiju-admin-notes](https://github.com/jcgraciosa/kaiju-admin-notes) repo:
 
 | Script | Use when |
 |--------|----------|
