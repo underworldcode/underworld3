@@ -138,3 +138,106 @@ PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
     return DMPlexSetSNESLocalFEM(dm, flag, NULL);
 #endif
 }
+
+// Simplified wrapper for DMPlexComputeBdIntegral.
+// Takes a single boundary pointwise function (for field 0) instead of an Nf-element array.
+//
+// Fixes two issues in DMPlexComputeBdIntegral:
+//   1. Missing MPI Allreduce (plexfem.c returns local contribution only,
+//      unlike DMPlexComputeIntegralFEM which reduces at plexfem.c:2633).
+//   2. Ghost facet double-counting: DMPlexComputeBdIntegral iterates over ALL
+//      label stratum points including ghost facets, so shared boundary facets
+//      get integrated on both the owning rank and the ghost rank. We create a
+//      temporary label containing only owned (non-ghost) boundary points.
+PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
+                                          DMLabel label, PetscInt numVals, const PetscInt vals[],
+                                          void (*func)(UW_SIG_F0),
+                                          PetscScalar *result,
+                                          void *ctx)
+{
+    PetscSection  section;
+    PetscInt      Nf, pStart, pEnd;
+
+    PetscFunctionBeginUser;
+
+    PetscCall(DMGetLocalSection(dm, &section));
+    PetscCall(PetscSectionGetNumFields(section, &Nf));
+
+    // If label is NULL (boundary not present on this rank), contribute 0
+    // but still participate in the MPI Allreduce to avoid hangs.
+    if (!label) {
+        PetscScalar zero = 0.0;
+        PetscCallMPI(MPIU_Allreduce(&zero, result, 1, MPIU_SCALAR, MPIU_SUM,
+                                    PetscObjectComm((PetscObject)dm)));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+
+    // --- Build a ghost-point bitset from the point SF ---
+    PetscSF   sf;
+    PetscInt  nleaves;
+    const PetscInt *ilocal;
+    PetscCall(DMGetPointSF(dm, &sf));
+    PetscCall(PetscSFGetGraph(sf, NULL, &nleaves, &ilocal, NULL));
+    PetscCall(DMPlexGetChart(dm, &pStart, &pEnd));
+
+    PetscBT ghostBT;
+    PetscCall(PetscBTCreate(pEnd - pStart, &ghostBT));
+    if (ilocal) {
+        for (PetscInt i = 0; i < nleaves; i++) {
+            PetscCall(PetscBTSet(ghostBT, ilocal[i] - pStart));
+        }
+    }
+
+    // --- Create a temporary label with only owned boundary points ---
+    DMLabel ownedLabel;
+    PetscCall(DMLabelCreate(PetscObjectComm((PetscObject)dm), "uw_owned_bd", &ownedLabel));
+
+    for (PetscInt v = 0; v < numVals; v++) {
+        IS origIS;
+        PetscCall(DMLabelGetStratumIS(label, vals[v], &origIS));
+        if (!origIS) continue;
+
+        PetscInt        n;
+        const PetscInt *indices;
+        PetscCall(ISGetLocalSize(origIS, &n));
+        PetscCall(ISGetIndices(origIS, &indices));
+
+        for (PetscInt i = 0; i < n; i++) {
+            if (!PetscBTLookup(ghostBT, indices[i] - pStart)) {
+                PetscCall(DMLabelSetValue(ownedLabel, indices[i], vals[v]));
+            }
+        }
+        PetscCall(ISRestoreIndices(origIS, &indices));
+        PetscCall(ISDestroy(&origIS));
+    }
+    PetscCall(PetscBTDestroy(&ghostBT));
+
+    // --- Compute boundary integral over owned points only ---
+    void (**funcs)(UW_SIG_F0);
+    PetscCall(PetscCalloc1(Nf, &funcs));
+    funcs[0] = func;
+
+    PetscScalar *integral;
+    PetscCall(PetscCalloc1(Nf, &integral));
+
+    // PETSc changed DMPlexComputeBdIntegral signature in v3.22.0:
+    //   <= 3.21.x: void (*func)(...)     — single function pointer
+    //   >= 3.22.0: void (**funcs)(...)    — array of Nf function pointers
+#if PETSC_VERSION_GE(3, 22, 0)
+    PetscCall(DMPlexComputeBdIntegral(dm, X, ownedLabel, numVals, vals, funcs, integral, ctx));
+#else
+    PetscCall(DMPlexComputeBdIntegral(dm, X, ownedLabel, numVals, vals, funcs[0], integral, ctx));
+#endif
+
+    // --- MPI reduction (sum local owned contributions across all ranks) ---
+    PetscScalar global_val;
+    PetscCallMPI(MPIU_Allreduce(&integral[0], &global_val, 1, MPIU_SCALAR, MPIU_SUM,
+                                PetscObjectComm((PetscObject)dm)));
+    *result = global_val;
+
+    PetscCall(DMLabelDestroy(&ownedLabel));
+    PetscCall(PetscFree(funcs));
+    PetscCall(PetscFree(integral));
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+}

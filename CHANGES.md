@@ -1,5 +1,16 @@
 # CHANGES: Underworld3
 
+## 2026-03-12
+
+  - Fixed PETSc DMPlex internal-boundary MPI rank-dependence in custom PETSc patch workflow.
+  - Added `plexfem-internal-boundary-ownership-fix.patch`:
+    - ghost-facet ownership filtering in boundary integral / residual / Jacobian paths
+    - part-consistent residual assembly (`support[key.part]`) with support-size guards
+  - Added MPI regression test:
+    - `tests/parallel/test_0765_internal_boundary_integral_mpi.py`
+  - Validation benchmark:
+    - `Ex_Stokes_Kramer_latest.py` (`case1`, natural BC) now shows stable velocity L2 across `np=1,2,4,8` (no `np=8` branch split).
+
 ## 2025-12-21
 
   - PETSc 3.24 compatibility verified (conda-forge petsc 3.24.2 works correctly)
