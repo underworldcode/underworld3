@@ -39,6 +39,15 @@ cd petsc-custom
 ./build-petsc.sh clean     # Remove everything
 ```
 
+## PETSc Patch Selection
+
+- `build-petsc.sh` applies PETSc boundary-assembly patches from `petsc-custom/patches`.
+- Preferred patch:
+  - `plexfem-internal-boundary-ownership-fix.patch`
+- Legacy fallback (only if preferred patch is absent):
+  - `plexfem-ghost-facet-fix.patch`
+- Do not apply both patches together.
+
 ## What Gets Installed
 
 The build downloads and compiles:
