@@ -10,6 +10,17 @@ File touched in PETSc:
 
 - `src/dm/impls/plex/plexfem.c`
 
+## PETSc Version Details
+
+- Upstream baseline used for patch generation:
+  - PETSc repository branch: `release`
+  - Local baseline commit: `5a03b95372f` (before applying this patch)
+- Runtime/tested configuration:
+  - PETSc: `3.24.5` (release build)
+  - petsc4py: `3.24.5`
+  - `PETSC_ARCH`: `petsc-4-uw-openmpi`
+  - `PETSC_DIR`: `.../underworld3/petsc-custom/petsc`
+
 ## Problem
 
 Internal-boundary contributions in parallel were rank-dependent for natural BC / boundary integral workflows.
@@ -58,6 +69,125 @@ Validated with Underworld3 annulus internal-boundary cases:
 - A UW MPI regression test was added:
   - `tests/parallel/test_0765_internal_boundary_integral_mpi.py`
   - checks annulus internal-boundary circumference in parallel against analytic value.
+
+## PETSc-Only Reproducer (For Upstream MR)
+
+Goal: provide a PETSc-native (no UW dependency) reproducer under
+`src/dm/impls/plex/tests` that demonstrates rank-dependent internal-boundary
+assembly before this patch and rank-invariant behavior after.
+
+### Proposed test shape
+
+- New PETSc test source:
+  - `src/dm/impls/plex/tests/ex_internalbd_ownership.c` (name illustrative)
+- Setup:
+  - create a distributed 2D DMPlex box mesh
+  - define a facet `DMLabel` for an interior line (internal boundary)
+  - add a simple natural-boundary contribution over that internal label
+  - compute a deterministic scalar diagnostic (boundary integral or derived norm)
+- Runs:
+  - `nsize: 1` and `nsize: 4` (or `8`)
+  - compare scalar outputs with strict tolerance
+
+### Why C test (not petsc4py)
+
+`petsc4py` does not currently expose the needed internal DMPlex boundary
+assembly entry points directly enough for a clean reproducer of this path.
+Upstream PETSc C tests are the correct home for long-term regression coverage.
+
+## Exact Before / After Numbers
+
+The following were measured on the same mesh/problem configuration
+(`internal_bc_rank_reproducer.py`, cellsize `0.03125`):
+
+### Before fix (rank-dependent branch split)
+
+- `np=7`: `v_l2_int=2.3234597202763355e-03`
+- `np=8`: `v_l2_int=6.2729732160772709e-03`
+
+### After fix (rank-invariant)
+
+- `np=7`: `v_l2_int=2.3234597202763251e-03`
+- `np=8`: `v_l2_int=2.3234597202740370e-03`
+
+### Tolerance criteria
+
+- Rank-invariance target for this case:
+  - relative difference between MPI sizes `< 1e-10` for `v_l2_int` in this benchmark family
+- Practical acceptance in PETSc test harness:
+  - choose tolerance robust to platform/compiler variation (e.g. `1e-9` to `1e-8`)
+
+## Changed-Function Map
+
+Patch updates are limited to:
+
+- `DMPlexComputeBdIntegral`
+- `DMPlexComputeBdResidual_Internal`
+- `DMPlexComputeBdJacobian_Internal`
+- `DMPlexComputeBdResidualSingleByKey`
+
+No public API signatures were changed.
+
+## Rationale: `support[key.part]` vs `support[0]`
+
+Boundary weak-form callbacks can be registered with a nonzero `part` to target
+a specific side of a facet. Using `support[0]` unconditionally can pull
+closures from the wrong adjacent cell and produce side-inconsistent assembly.
+Therefore `support[key.part]` must be used, with explicit support-size guards,
+and points invalid for `part > 0` must be filtered.
+
+## Ownership Model Note (SF leaves)
+
+In parallel DMPlex, ghost facets appear as SF leaves on non-owning ranks.
+If these are assembled in boundary paths, shared internal facets can
+contribute multiple times and then be summed by MPI reductions / ADD_VALUES.
+Filtering SF leaves ensures each physical facet contributes exactly once
+(owner rank only), removing duplicate assembly.
+
+## PETSc Regression Test Plan (Upstream)
+
+Add a regression test under `src/dm/impls/plex/tests` with MPI coverage:
+
+- `nsize: 1`
+- `nsize: 4` (or `8`)
+- check scalar diagnostic equality within tolerance
+- include in PETSc test harness (`TEST` block) so CI exercises the path
+
+Suggested command pattern once merged in PETSc tree:
+
+```bash
+make -C $PETSC_DIR check TESTDIR=src/dm/impls/plex/tests
+```
+
+Or direct:
+
+```bash
+mpirun -np 4 ./ex_internalbd_ownership [args]
+```
+
+## Version Scope
+
+- Baseline for patch generation:
+  - PETSc `release` branch, local baseline commit `5a03b95372f`
+- Runtime validated in this workflow:
+  - PETSc `3.24.5`
+  - petsc4py `3.24.5`
+  - OpenMPI `5.0.10`
+- Affected code sections are structurally stable across recent PETSc releases,
+  so backport applicability is expected to be broad with minimal adaptation.
+
+## Risk / Performance
+
+- No API changes.
+- Correctness-only fix in boundary assembly ownership/part handling.
+- Additional operations are lightweight (`ISDifference`, support checks) and
+  expected overhead is negligible relative to FE assembly costs.
+
+## Backport Recommendation
+
+- Recommended target: PETSc `release` branch.
+- Also suitable for older maintained branches where the same boundary assembly
+  code is present (confirm with `git apply --check` and test run).
 
 ## Benchmark Script And Case
 
