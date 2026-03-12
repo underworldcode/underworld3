@@ -39,14 +39,15 @@ cd petsc-custom
 ./build-petsc.sh clean     # Remove everything
 ```
 
-## PETSc Patch Selection
+## PETSc Patches
 
-- `build-petsc.sh` applies PETSc boundary-assembly patches from `petsc-custom/patches`.
-- Preferred patch:
-  - `plexfem-internal-boundary-ownership-fix.patch`
-- Legacy fallback (only if preferred patch is absent):
-  - `plexfem-ghost-facet-fix.patch`
-- Do not apply both patches together.
+`build-petsc.sh` automatically applies UW3 patches from `petsc-custom/patches/` after cloning:
+
+- **`plexfem-internal-boundary-ownership-fix.patch`** — Fixes ghost facet
+  ownership and part-consistent assembly in PETSc's boundary residual, integral,
+  and Jacobian paths. Required for correct internal boundary natural BCs in
+  parallel. See `patches/PETSC_MR_DESCRIPTION_INTERNAL_BOUNDARY_OWNERSHIP.md`
+  for details.
 
 ## What Gets Installed
 

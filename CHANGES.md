@@ -1,15 +1,18 @@
 # CHANGES: Underworld3
 
-## 2026-03-12
+## 2026-03-13
 
-  - Fixed PETSc DMPlex internal-boundary MPI rank-dependence in custom PETSc patch workflow.
-  - Added `plexfem-internal-boundary-ownership-fix.patch`:
-    - ghost-facet ownership filtering in boundary integral / residual / Jacobian paths
-    - part-consistent residual assembly (`support[key.part]`) with support-size guards
-  - Added MPI regression test:
-    - `tests/parallel/test_0765_internal_boundary_integral_mpi.py`
-  - Validation benchmark:
-    - `Ex_Stokes_Kramer_latest.py` (`case1`, natural BC) now shows stable velocity L2 across `np=1,2,4,8` (no `np=8` branch split).
+  - New `uw.maths.BdIntegral` for boundary and surface integrals:
+    - Wraps PETSc `DMPlexComputeBdIntegral` with MPI Allreduce and units support
+    - Works on external boundaries, internal boundaries (`AnnulusInternalBoundary`, etc.)
+    - Integrand can reference outward unit normal via `mesh.Gamma` / `mesh.Gamma_N`
+    - Handles PETSc API change in v3.22.0 (function pointer signature)
+  - PETSc patch for internal boundary assembly in parallel (`plexfem-internal-boundary-ownership-fix.patch`):
+    - Ghost facet filtering in boundary integral, residual, and Jacobian paths
+    - Part-consistent assembly (`support[key.part]`) with support-size guards
+    - Fixes rank-dependent L2 norms for internal boundary natural BCs (issue #77)
+  - MPI regression test: `tests/parallel/test_0765_internal_boundary_integral_mpi.py`
+  - Boundary integral tests: `tests/test_0502_boundary_integrals.py`
 
 ## 2025-12-21
 
