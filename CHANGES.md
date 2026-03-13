@@ -1,5 +1,19 @@
 # CHANGES: Underworld3
 
+## 2026-03-13
+
+  - New `uw.maths.BdIntegral` for boundary and surface integrals:
+    - Wraps PETSc `DMPlexComputeBdIntegral` with MPI Allreduce and units support
+    - Works on external boundaries, internal boundaries (`AnnulusInternalBoundary`, etc.)
+    - Integrand can reference outward unit normal via `mesh.Gamma` / `mesh.Gamma_N`
+    - Handles PETSc API change in v3.22.0 (function pointer signature)
+  - PETSc patch for internal boundary assembly in parallel (`plexfem-internal-boundary-ownership-fix.patch`):
+    - Ghost facet filtering in boundary integral, residual, and Jacobian paths
+    - Part-consistent assembly (`support[key.part]`) with support-size guards
+    - Fixes rank-dependent L2 norms for internal boundary natural BCs (issue #77)
+  - MPI regression test: `tests/parallel/test_0765_internal_boundary_integral_mpi.py`
+  - Boundary integral tests: `tests/test_0502_boundary_integrals.py`
+
 ## 2025-12-21
 
   - PETSc 3.24 compatibility verified (conda-forge petsc 3.24.2 works correctly)

@@ -91,6 +91,26 @@ clone_petsc() {
     echo "Clone complete."
 }
 
+apply_patches() {
+    echo "Applying UW3 patches to PETSc..."
+    cd "$PETSC_DIR"
+
+    # Fix ghost facet ownership + part-consistent assembly in boundary
+    # residual/integral/Jacobian paths (plexfem.c). Without this, internal
+    # boundary natural BCs produce rank-dependent results in parallel.
+    local patch="${SCRIPT_DIR}/patches/plexfem-internal-boundary-ownership-fix.patch"
+    if [ -f "$patch" ]; then
+        if git apply --check "$patch" 2>/dev/null; then
+            git apply "$patch"
+            echo "  Applied: plexfem-internal-boundary-ownership-fix.patch"
+        else
+            echo "  Skipped: plexfem-internal-boundary-ownership-fix.patch (already applied or conflict)"
+        fi
+    fi
+
+    echo "Patches complete."
+}
+
 configure_petsc() {
     echo "Configuring PETSc with AMR tools ($MPI_IMPL)..."
     cd "$PETSC_DIR"
@@ -197,6 +217,7 @@ show_help() {
     echo "  build     Build PETSc"
     echo "  test      Run PETSc tests"
     echo "  petsc4py  Build and install petsc4py"
+    echo "  patch     Apply UW3 patches to PETSc source"
     echo "  clean     Remove build for current MPI ($PETSC_ARCH)"
     echo "  clean-all Remove entire PETSc directory (all MPI builds)"
     echo "  help      Show this help"
@@ -210,6 +231,7 @@ show_help() {
 case "${1:-all}" in
     all)
         clone_petsc
+        apply_patches
         configure_petsc
         build_petsc
         build_petsc4py
@@ -229,6 +251,9 @@ case "${1:-all}" in
         ;;
     build)
         build_petsc
+        ;;
+    patch)
+        apply_patches
         ;;
     test)
         test_petsc
