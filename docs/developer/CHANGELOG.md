@@ -6,6 +6,32 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q1 (January – March)
 
+### Boundary Integral Support (March 2026)
+
+**New `uw.maths.BdIntegral` class** for boundary and surface integrals (closes #47). Wraps PETSc's `DMPlexComputeBdIntegral` with MPI Allreduce and units support. Works on external boundaries and internal boundaries (e.g. `AnnulusInternalBoundary`). Integrands can reference the outward unit normal via `mesh.Gamma`.
+
+- PETSc patch (`plexfem-internal-boundary-ownership-fix.patch`): fixes ghost facet ownership and part-consistent assembly in boundary residual, integral, and Jacobian paths. Resolves rank-dependent L2 norms for internal boundary natural BCs (fixes #77). Contributed by gthyagi.
+- C wrapper simplified: ghost filtering delegated to PETSc patch, wrapper retains MPI Allreduce only
+- 20 tests across external/internal boundaries, normal vectors, mesh variables
+- MPI regression test for internal boundary circumference
+
+**Files**: `petsc_compat.h`, `petsc_maths.pyx`, `petsc_extras.pxi`, `maths/__init__.py`, `petsc-custom/patches/`
+
+### Binder Image Fix (March 2026)
+
+**Fixed Dockerfile building from stale branch** (fixes #71). The binder Dockerfile hardcoded `uw3-release-candidate` as the clone branch, but the CI workflow triggers on `main` and `development` pushes. The image was missing recent dependencies (e.g. `python-xxhash`).
+
+- Dockerfile now uses `ARG UW3_BRANCH=development` instead of hardcoded branch
+- CI workflow passes the triggering branch name via `--build-arg`
+- Binder wizard script default updated to `development`
+
+### Worktree Symlink Safety (March 2026)
+
+**Prevented worktree symlinks from being accidentally committed**. The `./uw worktree create` command creates `.pixi` and `petsc-custom/petsc` symlinks that could be picked up by `git add -A`, breaking CI.
+
+- `.gitignore` patterns now match both directories and symlinks (removed trailing `/`)
+- `./uw worktree create` writes exclusions to the worktree's `.git/info/exclude`
+
 ### MeshVariable Data Cache Bug Fix (February 2026)
 
 **Self-validating `.data` cache**: Fixed a critical bug where the `.data` property could return stale (zero) values after PETSc DM rebuilds. When new MeshVariables are added to a mesh, PETSc requires a new DM — destroying and recreating all existing variables' local vectors (`_lvec`). The cached `_canonical_data` array (a NumPy view into the old `_lvec`) would silently read freed memory, returning zeros even though the solver correctly wrote results to the new vector.
@@ -21,7 +47,7 @@ This log tracks significant development work at a conceptual level, suitable for
 
 **Automated container build pipeline**: Implemented full GitHub Actions automation for Docker image builds and mybinder.org integration.
 
-- **Binder images** (`binder-image.yml`): Builds to GHCR on push to main/uw3-release-candidate/development
+- **Binder images** (`binder-image.yml`): Builds to GHCR on push to main/development
   - Triggers on Dockerfile, pixi.toml, Cython, or setup.py changes
   - Pushes to `ghcr.io/underworldcode/uw3-base:<branch>-slim`
   - Cross-repo dispatch updates launcher repository automatically
