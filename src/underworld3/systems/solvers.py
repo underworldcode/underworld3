@@ -11,6 +11,10 @@ SNES_Poisson
     Poisson/diffusion equation: :math:`\nabla \cdot (k \nabla T) = f`
 SNES_Darcy
     Darcy flow: pressure-driven flow through porous media
+SNES_TransientDarcy
+    Transient groundwater flow with constant storage
+SNES_Richards
+    Richards equation for variably-saturated porous media flow
 
 Vector Equations
 ----------------
@@ -546,6 +550,453 @@ class SNES_Darcy(SNES_Scalar):
     #     self._v_projector.uw_function = self.darcy_flux
     #     self._v_projector._setup_terms()  # _setup_pointwise_functions()  #
     #     super()._setup_terms()
+
+
+class SNES_TransientDarcy(SNES_Darcy):
+    r"""
+    Transient Darcy flow solver for time-dependent groundwater problems.
+
+    Solves the transient groundwater flow equation:
+
+    .. math::
+
+        S_s \frac{\partial h}{\partial t}
+        - \nabla \cdot \left[ K (\nabla h - \mathbf{s}) \right] = f
+
+    where :math:`S_s` is the specific storage (constant), :math:`K` is the
+    hydraulic conductivity, :math:`\mathbf{s}` is the body force (gravity),
+    and :math:`f` is a source/sink term.
+
+    Inherits velocity projection from :class:`SNES_Darcy`.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    h_Field : MeshVariable, optional
+        Mesh variable for hydraulic head.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity.
+    order : int, default=1
+        Time integration order (BDF/Adams-Moulton history depth).
+    theta : float, default=0.5
+        Implicit time weighting (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+    degree : int, default=2
+        Polynomial degree for finite element discretization.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
+
+    Attributes
+    ----------
+    storage : sympy.Expr
+        Specific storage :math:`S_s` (default 1).
+    delta_t : UWexpression
+        Current timestep.
+
+    See Also
+    --------
+    SNES_Darcy : Steady-state parent solver.
+    SNES_Richards : Nonlinear extension for unsaturated flow.
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        h_Field: Optional[uw.discretisation.MeshVariable] = None,
+        v_Field: Optional[uw.discretisation.MeshVariable] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        degree: int = 2,
+        verbose=False,
+        DuDt=None,
+        DFDt=None,
+    ):
+        super().__init__(mesh, h_Field, v_Field, degree, verbose, DuDt=DuDt, DFDt=DFDt)
+
+        self.theta = theta
+        self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
+        self._storage = sympy.sympify(1)
+        self.is_setup = False
+
+        if DuDt is None:
+            self.Unknowns.DuDt = Eulerian_DDt(
+                self.mesh,
+                h_Field,
+                vtype=uw.VarType.SCALAR,
+                degree=h_Field.degree,
+                continuous=h_Field.continuous,
+                varsymbol=h_Field.symbol,
+                verbose=verbose,
+                order=order,
+                smoothing=0.0,
+            )
+        else:
+            if order is not None and DuDt.order < order:
+                raise RuntimeError(
+                    f"DuDt supplied is order {DuDt.order} but order requested is {order}"
+                )
+            self.Unknowns.DuDt = DuDt
+
+        if DFDt is None:
+            self.Unknowns.DFDt = Symbolic_DDt(
+                sympy.Matrix([[0] * self.mesh.dim]),
+                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+                theta=theta,
+                order=order,
+            )
+        else:
+            self.Unknowns.DFDt = DFDt
+
+    # --- Properties ---
+
+    @property
+    def storage(self):
+        """Specific storage coefficient :math:`S_s`."""
+        return self._storage
+
+    @storage.setter
+    def storage(self, value):
+        self.is_setup = False
+        self._storage = sympy.sympify(value)
+
+    @property
+    def delta_t(self):
+        """Current timestep."""
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        if hasattr(value, "value"):
+            self._delta_t.sym = value.value
+        elif hasattr(value, "magnitude"):
+            self._delta_t.sym = value.magnitude
+        else:
+            self._delta_t.sym = value
+
+    @property
+    def DuDt(self):
+        return self.Unknowns.DuDt
+
+    @property
+    def DFDt(self):
+        return self.Unknowns.DFDt
+
+    # --- Template expressions (override Darcy's steady-state Templates) ---
+
+    @property
+    def F0(self):
+        """Pointwise storage + source: :math:`S_s \\dot{h} / \\Delta t - f`."""
+        f0 = expression(
+            r"f_0(h)",
+            -self.f + self.storage * self.DuDt.bdf() / self.delta_t,
+            "Transient Darcy storage + source term",
+        )
+        self._f0 = f0
+        return f0
+
+    @property
+    def F1(self):
+        """Pointwise flux: Adams-Moulton time-weighted Darcy flux."""
+        F1_val = expression(
+            r"\mathbf{F}_1(h)",
+            self.DFDt.adams_moulton_flux(),
+            "Transient Darcy flux (time-weighted)",
+        )
+        self._f1 = F1_val
+        return F1_val
+
+    # --- Timestep estimation ---
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r"""
+        Estimate a stable timestep based on diffusive CFL.
+
+        Returns
+        -------
+        float or pint.Quantity
+            Diffusive timestep :math:`\delta t = (\Delta x)^2 / K_{\max}`.
+        """
+        from mpi4py import MPI
+
+        K = self.constitutive_model.K
+
+        if isinstance(K, sympy.Expr) or hasattr(K, "sym"):
+            K_sym = K.sym if hasattr(K, "sym") else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym, np.zeros((1, self.mesh.dim))
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym), self.mesh._centroids, self.mesh.N
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            diffusivity = diffusivity.magnitude
+
+        diffusivity = float(np.asarray(diffusivity).max())
+
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+
+        min_dx = self.mesh.get_min_radius()
+
+        if diffusivity_glob != 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+        else:
+            dt_diff = np.inf
+
+        return _apply_unit_aware_scaling(np.squeeze(dt_diff), self.u, self.mesh)
+
+    # --- Solve ---
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep=None,
+        _force_setup: bool = False,
+        verbose=False,
+    ):
+        r"""
+        Solve the transient Darcy system for one timestep.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, optional
+            Start from zero initial guess (default True).
+        timestep : float, optional
+            Timestep size. Updates ``self.delta_t`` if provided.
+        _force_setup : bool, optional
+            Force re-setup of solver.
+        verbose : bool, optional
+            Print solver progress.
+        """
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Pre-solve: update history terms
+        self.DuDt.update_pre_solve(timestep, verbose=verbose)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose)
+
+        # Solve PDE (bypass SNES_Darcy.solve to avoid double setup/projection)
+        SNES_Scalar.solve(self, zero_init_guess, _force_setup)
+
+        # Invalidate cached data views
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
+        # Post-solve: shift history
+        self.DuDt.update_post_solve(timestep, verbose=verbose)
+        self.DFDt.update_post_solve(timestep, verbose=verbose)
+
+        # Velocity projection (inherited from Darcy)
+        self._v_projector.uw_function = self.darcy_flux
+        self._v_projector.solve(zero_init_guess)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return
+
+
+class SNES_Richards(SNES_TransientDarcy):
+    r"""
+    Richards equation solver for variably-saturated porous media flow.
+
+    Two formulations are supported:
+
+    **Mixed form** (mass-conservative, preferred) — set ``water_content``:
+
+    .. math::
+
+        \frac{\partial \theta}{\partial t}
+        - \nabla \cdot \left[ K(\psi) (\nabla \psi - \mathbf{s}) \right] = f
+
+    discretised as :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`,
+    which is exactly conservative by construction (Celia et al., 1990).
+
+    **Head-based form** (backward compatible) — set ``capacity``:
+
+    .. math::
+
+        C(\psi) \frac{\partial \psi}{\partial t}
+        - \nabla \cdot \left[ K(\psi) (\nabla \psi - \mathbf{s}) \right] = f
+
+    where :math:`C(\psi) = d\theta/d\psi` is the specific moisture capacity.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    psi_Field : MeshVariable, optional
+        Mesh variable for pressure head :math:`\psi`.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity.
+    order : int, default=1
+        Time integration order.
+    theta : float, default=0.5
+        Implicit time weighting.
+    degree : int, default=2
+        Polynomial degree.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
+
+    Attributes
+    ----------
+    water_content : sympy.Expr or None
+        Water content function :math:`\theta(\psi)` for the mixed form.
+        When set, the storage term uses
+        :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`.
+        Takes precedence over ``capacity`` if both are set.
+    capacity : sympy.Expr
+        Specific moisture capacity :math:`C(\psi)` for the head-based form.
+        Used only when ``water_content`` is None.
+    psi : MeshVariable
+        Alias for ``self.u`` (pressure head).
+
+    See Also
+    --------
+    SNES_TransientDarcy : Linear parent solver.
+    underworld3.utilities.retention_curves : Van Genuchten and Gardner functions.
+
+    Examples
+    --------
+    Mixed form (preferred):
+
+    >>> from underworld3.utilities.retention_curves import (
+    ...     van_genuchten_theta, van_genuchten_K,
+    ... )
+    >>> richards = uw.systems.Richards(mesh, psi_Field=psi, v_Field=v)
+    >>> richards.constitutive_model = uw.constitutive_models.DarcyFlowModel
+    >>> richards.constitutive_model.Parameters.permeability = van_genuchten_K(
+    ...     psi.sym[0], Ks=1e-4, alpha=3.35, n=2.0,
+    ... )
+    >>> richards.water_content = van_genuchten_theta(
+    ...     psi.sym[0], theta_r=0.045, theta_s=0.43, alpha=3.35, n=2.0,
+    ... )
+
+    Head-based form (backward compatible):
+
+    >>> from underworld3.utilities.retention_curves import van_genuchten_C
+    >>> richards.capacity = van_genuchten_C(
+    ...     psi.sym[0], theta_r=0.045, theta_s=0.43, alpha=3.35, n=2.0,
+    ... )
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_Field: Optional[uw.discretisation.MeshVariable] = None,
+        v_Field: Optional[uw.discretisation.MeshVariable] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        degree: int = 2,
+        verbose=False,
+        DuDt=None,
+        DFDt=None,
+    ):
+        super().__init__(
+            mesh, psi_Field, v_Field, order, theta, degree, verbose, DuDt, DFDt
+        )
+        self._capacity = sympy.sympify(1)
+        self._water_content = None  # None → head-based form; set → mixed form
+
+    @property
+    def water_content(self):
+        r"""Water content function :math:`\theta(\psi)` for the mixed form.
+
+        When set, the storage term uses
+        :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`
+        instead of :math:`C(\psi) \cdot (\psi^{n+1} - \psi^n) / \Delta t`,
+        giving exact mass conservation (Celia et al., 1990).
+
+        The expression should be a SymPy function of ``psi.sym[0]``.
+        The Jacobian :math:`\partial\theta/\partial\psi = C(\psi)` is
+        computed automatically by PETSc (finite-difference colouring),
+        so there is no need to provide :math:`C(\psi)` separately.
+        """
+        return self._water_content
+
+    @water_content.setter
+    def water_content(self, value):
+        self.is_setup = False
+        self._water_content = sympy.sympify(value) if value is not None else None
+
+    @property
+    def capacity(self):
+        r"""Specific moisture capacity :math:`C(\psi) = d\theta/d\psi`.
+
+        Used only when ``water_content`` is None (head-based form).
+        Typically a nonlinear SymPy expression depending on ``psi.sym[0]``.
+        """
+        return self._capacity
+
+    @capacity.setter
+    def capacity(self, value):
+        self.is_setup = False
+        self._capacity = sympy.sympify(value)
+
+    @property
+    def psi(self):
+        """Alias for ``self.u`` (pressure head)."""
+        return self.u
+
+    @property
+    def F0(self):
+        r"""Pointwise storage + source term.
+
+        Mixed form: :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t - f`
+
+        Head-based form: :math:`C(\psi) (\psi^{n+1} - \psi^n) / \Delta t - f`
+        """
+        if self._water_content is not None:
+            # Mixed (mass-conservative) form:
+            # θ(ψ^{n+1}) is self._water_content (already in terms of psi.sym[0])
+            # θ(ψ^n) is water_content with psi.sym[0] → psi_star[0].sym[0]
+            psi_sym = self.psi.sym[0]
+            psi_star_sym = self.DuDt.psi_star[0].sym[0]
+            theta_new = self._water_content
+            theta_old = self._water_content.subs(psi_sym, psi_star_sym)
+            storage_term = sympy.Matrix([[theta_new - theta_old]]) / self.delta_t
+        else:
+            # Head-based form (backward compatible)
+            storage_term = self.capacity * self.DuDt.bdf() / self.delta_t
+
+        f0 = expression(
+            r"f_0(\psi)",
+            -self.f + storage_term,
+            "Richards storage + source term",
+        )
+        self._f0 = f0
+        return f0
 
 
 ## --------------------------------
@@ -2393,7 +2844,7 @@ class SNES_Diffusion(SNES_Scalar):
         """Pointwise source term including time derivative."""
         f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
-            -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
+            -self.f + self.DuDt.bdf() / self.delta_t,
             "Diffusion pointwise force term: f_0(u)",
         )
 
@@ -2595,15 +3046,13 @@ class SNES_Diffusion(SNES_Scalar):
 
         super().solve(zero_init_guess, _force_setup)
 
+        # Invalidate cached data views - PETSc may have replaced underlying buffers
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
         self.DuDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
-
-        # if isinstance(self.DFDt, Eulerian_DDt):
-        #     for i in range(order):
-        #         ### have to substitute the unknown history term into the symbolic flux term
-        #         self.DFDt.psi_star[i].subs({self.DuDt.psi_fn:self.DuDt.psi_star[i]})
-
-        # self._flux_star =  self._flux.copy()
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
