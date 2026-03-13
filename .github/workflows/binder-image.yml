@@ -8,7 +8,7 @@ name: "GHCR: Binder Base Image"
 
 on:
   push:
-    branches: [main, development]
+    branches: [main, development, 'release/*']
     tags: ['v*']  # Build on release tags (v3.0.0, v3.1.0, etc.)
     paths:
       # Only rebuild when these files change (Cython/dependencies require rebuild)
@@ -49,13 +49,18 @@ jobs:
 
       - name: Extract ref name and type
         run: |
-          REF_NAME=${GITHUB_REF##*/}
-          echo "REF_NAME=${REF_NAME}" >> $GITHUB_ENV
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "IS_RELEASE=true" >> $GITHUB_ENV
+            REF_NAME=${GITHUB_REF#refs/tags/}
+            IS_RELEASE=true
           else
-            echo "IS_RELEASE=false" >> $GITHUB_ENV
+            REF_NAME=${GITHUB_REF#refs/heads/}
+            IS_RELEASE=false
           fi
+          # Docker tags cannot contain slashes — sanitize for image tagging
+          DOCKER_TAG=$(echo "$REF_NAME" | tr '/' '-')
+          echo "REF_NAME=${REF_NAME}" >> $GITHUB_ENV
+          echo "DOCKER_TAG=${DOCKER_TAG}" >> $GITHUB_ENV
+          echo "IS_RELEASE=${IS_RELEASE}" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -68,7 +73,7 @@ jobs:
           build-args: |
             UW3_BRANCH=${{ env.REF_NAME }}
           tags: |
-            ghcr.io/underworldcode/uw3-base:${{ env.REF_NAME }}-slim
+            ghcr.io/underworldcode/uw3-base:${{ env.DOCKER_TAG }}-slim
             ${{ env.IS_RELEASE == 'true' && 'ghcr.io/underworldcode/uw3-base:latest-slim' || '' }}
 
       # Trigger launcher repo to update/create its branch
@@ -82,4 +87,4 @@ jobs:
           token: ${{ secrets.LAUNCHER_PAT }}
           repository: underworldcode/uw3-binder-launcher
           event-type: image-updated
-          client-payload: '{"ref": "${{ env.REF_NAME }}", "is_release": "${{ env.IS_RELEASE }}"}'
+          client-payload: '{"ref": "${{ env.DOCKER_TAG }}", "is_release": "${{ env.IS_RELEASE }}"}'

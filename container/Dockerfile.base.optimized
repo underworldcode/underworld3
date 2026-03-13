@@ -6,7 +6,7 @@
 FROM ubuntu:24.04 AS builder
 
 # Branch to clone and build (set via --build-arg in CI)
-ARG UW3_BRANCH=development
+ARG UW3_BRANCH=release/0.99
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -248,7 +248,7 @@ ENV VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow
 EXPOSE 8888
 
 # Default branch to pull (can be overridden by launcher Dockerfile)
-ARG UW3_BRANCH=development
+ARG UW3_BRANCH=release/0.99
 ENV UW3_BRANCH=${UW3_BRANCH}
 
 # Create minimal start script - launch jupyter directly (no pixi overhead)
