@@ -8,7 +8,7 @@ name: "GHCR: Binder Base Image"
 
 on:
   push:
-    branches: [main, development, 'release/*']
+    branches: [main, development]
     tags: ['v*']  # Build on release tags (v3.0.0, v3.1.0, etc.)
     paths:
       # Only rebuild when these files change (Cython/dependencies require rebuild)
