@@ -5,6 +5,9 @@
 
 FROM ubuntu:24.04 AS builder
 
+# Branch to clone and build (set via --build-arg in CI)
+ARG UW3_BRANCH=development
+
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -27,7 +30,7 @@ RUN curl -fsSL https://pixi.sh/install.sh | sh
 ENV PATH="/home/jovyan/.pixi/bin:$PATH"
 
 # Clone underworld3 with shallow clone (depth 1 keeps .git small ~5MB vs 356MB)
-RUN git clone --single-branch --branch uw3-release-candidate --depth 1 \
+RUN git clone --single-branch --branch ${UW3_BRANCH} --depth 1 \
     https://github.com/underworldcode/underworld3.git && \
     cd underworld3 && \
     pixi install -e runtime && \
@@ -245,7 +248,8 @@ ENV VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow
 EXPOSE 8888
 
 # Default branch to pull (can be overridden by launcher Dockerfile)
-ENV UW3_BRANCH=uw3-release-candidate
+ARG UW3_BRANCH=development
+ENV UW3_BRANCH=${UW3_BRANCH}
 
 # Create minimal start script - launch jupyter directly (no pixi overhead)
 # The environment is pre-built, just need to set PATH and run

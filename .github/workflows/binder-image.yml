@@ -65,6 +65,8 @@ jobs:
           push: true
           platforms: linux/amd64
           no-cache: ${{ inputs.force_rebuild || false }}
+          build-args: |
+            UW3_BRANCH=${{ env.REF_NAME }}
           tags: |
             ghcr.io/underworldcode/uw3-base:${{ env.REF_NAME }}-slim
             ${{ env.IS_RELEASE == 'true' && 'ghcr.io/underworldcode/uw3-base:latest-slim' || '' }}
