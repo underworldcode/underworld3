@@ -941,6 +941,20 @@ worktree_create() {
         echo -e "    ${GREEN}✓${NC} .pixi-env copied ($(cat "$main_repo/.pixi-env"))"
     fi
 
+    # 5. Exclude symlinks from git tracking in this worktree.
+    # Without this, "git add -A" or "git add ." can accidentally commit
+    # these machine-local symlinks, breaking CI.
+    local git_dir
+    git_dir=$(git -C "$wt_path" rev-parse --git-dir)
+    local exclude_file="$git_dir/info/exclude"
+    mkdir -p "$(dirname "$exclude_file")"
+    for entry in .pixi petsc-custom/petsc .pixi-env; do
+        if ! grep -qxF "$entry" "$exclude_file" 2>/dev/null; then
+            echo "$entry" >> "$exclude_file"
+        fi
+    done
+    echo -e "    ${GREEN}✓${NC} git exclude updated (symlinks won't be committed)"
+
     echo ""
     echo -e "${GREEN}${BOLD}Worktree ready!${NC}"
     echo ""

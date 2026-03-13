@@ -250,6 +250,9 @@ debug_*.py
 
 # Visualization output files (generated during notebook execution)
 docs/beginner/tutorials/html5/*.html
-petsc-custom/petsc/
+# Pixi environment (directory in main repo, symlink in worktrees)
+.pixi
 .pixi-env
+# PETSc build (directory in main repo, symlink in worktrees)
+petsc-custom/petsc
 Untitled*.ipynb
