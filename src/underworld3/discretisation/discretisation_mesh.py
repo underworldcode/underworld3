@@ -1820,45 +1820,57 @@ class Mesh(Stateful, uw_object):
         meshVars: Optional[list] = [],
         outputPath: Optional[str] = "",
     ):
-        """
+        """Save the mesh and mesh variables to HDF5 with XDMF.
 
-        Use PETSc to save the mesh and mesh vars in a h5 and xdmf file.
+        This is a convenience wrapper around ``write_timestep()`` that
+        provides the simpler interface used by earlier Underworld3 code.
+        Output uses the same per-variable file layout and XDMF generation
+        (including vertex/cell compatibility groups, field projection, and
+        tensor repacking) as ``write_timestep()``.
 
         Parameters
         ----------
-        meshVars:
-            List of UW mesh variables to save. If left empty then just the mesh is saved.
+        meshVars :
+            List of UW mesh variables to save. If left empty then just
+            the mesh is saved.
         index :
-            An index which might correspond to the timestep or output number (for example).
+            An index which might correspond to the timestep or output
+            number (for example).
         outputPath :
-            Path to save the data. If left empty it will save the data in the current working directory.
+            Path to save the data. If left empty it will save the data
+            in the current working directory.
         """
 
-        if meshVars != None and not isinstance(meshVars, list):
+        if meshVars is not None and not isinstance(meshVars, list):
             raise RuntimeError("`meshVars` does not appear to be a list.")
 
-        from underworld3.utilities import generateXdmf
+        # Split outputPath into directory and filename base for write_timestep().
+        # Old callers pass outputPath like './output/' or './output/run_name'.
+        import os
 
-        ### save mesh vars
-        fname = f"./{outputPath}{'_step_'}{index:05d}.h5"
-        xfname = f"./{outputPath}{'_step_'}{index:05d}.xdmf"
-        #### create petsc viewer
-        viewer = PETSc.ViewerHDF5().createHDF5(
-            fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD
+        outputPath = outputPath or ""
+        if outputPath.endswith(os.sep) or outputPath.endswith("/"):
+            # Directory only — use 'checkpoint' as the file base name
+            directory = outputPath
+            filename = "checkpoint"
+        elif os.sep in outputPath or "/" in outputPath:
+            # Path with filename component
+            directory = os.path.dirname(outputPath)
+            filename = os.path.basename(outputPath)
+        else:
+            # Bare name, no directory
+            directory = ""
+            filename = outputPath if outputPath else "checkpoint"
+
+        self.write_timestep(
+            filename=filename,
+            index=index,
+            outputPath=directory,
+            meshVars=meshVars if meshVars is not None else [],
+            swarmVars=[],
+            meshUpdates=False,
+            create_xdmf=True,
         )
-
-        viewer(self.dm)
-
-        ### Empty meshVars will save just the mesh
-        if meshVars != None:
-            for var in meshVars:
-                var._sync_lvec_to_gvec()
-                viewer(var._gvec)
-
-        viewer.destroy()
-
-        if uw.mpi.rank == 0:
-            generateXdmf(fname, xfname)
 
     @timing.routine_timer_decorator
     def write_checkpoint(
