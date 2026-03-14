@@ -52,15 +52,18 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             REF_NAME=${GITHUB_REF#refs/tags/}
             IS_RELEASE=true
+            REF_TYPE=tag
           else
             REF_NAME=${GITHUB_REF#refs/heads/}
             IS_RELEASE=false
+            REF_TYPE=branch
           fi
           # Docker tags cannot contain slashes — sanitize for image tagging
           DOCKER_TAG=$(echo "$REF_NAME" | tr '/' '-')
           echo "REF_NAME=${REF_NAME}" >> $GITHUB_ENV
           echo "DOCKER_TAG=${DOCKER_TAG}" >> $GITHUB_ENV
           echo "IS_RELEASE=${IS_RELEASE}" >> $GITHUB_ENV
+          echo "REF_TYPE=${REF_TYPE}" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -87,4 +90,4 @@ jobs:
           token: ${{ secrets.LAUNCHER_PAT }}
           repository: underworldcode/uw3-binder-launcher
           event-type: image-updated
-          client-payload: '{"branch": "${{ env.DOCKER_TAG }}", "ref_type": "${{ env.IS_RELEASE == 'true' && 'tag' || 'branch' }}"}'
+          client-payload: '{"branch": "${{ env.DOCKER_TAG }}", "ref_type": "${{ env.REF_TYPE }}"}'
