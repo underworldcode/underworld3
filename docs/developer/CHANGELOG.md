@@ -6,6 +6,36 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q1 (January – March)
 
+### v3.0.0 Release (March 2026)
+
+**Underworld3 v3.0.0 released**: Merged 398 commits from development to main. Major release incorporating 18 months of work since the JOSS v0.99 publication, including units system overhaul, symbol disambiguation, boundary integrals, mathematical mixin, platform-conditional MPI, and comprehensive CI/CD automation.
+
+- Tagged `v0.99` at previous main HEAD (pixi-compatible JOSS snapshot) for binder compatibility
+- Deleted obsolete `uw3-release-candidate` branch
+- Cleaned up 10 merged feature/bugfix branches
+
+### Binder Infrastructure Overhaul (March 2026)
+
+**Versioned binder links** with full CI automation for tag-based releases.
+
+- Four launcher branches: `v0.99`, `v3.0.0`, `main`, `development` — each with frozen Dockerfile
+- CI workflow handles `v*` tag builds with automatic launcher branch creation via `repository_dispatch`
+- Manual dispatch overrides (`uw3_branch`, `image_tag`) for building images from old tags
+- Dockerfile made version-resilient: versioned lib subdirectories (vtk-X.Y, openvino-X.Y.Z) use wildcards instead of hardcoded paths
+- Launcher dispatch payload fixed: field names now match target workflow (`branch`/`ref_type`)
+- README badges updated with three versioned binder launch links
+
+**Files**: `binder-image.yml`, `Dockerfile.base.optimized`, `binder_wizard.py`, `containers.md`
+
+### Checkpoint XDMF Fix (March 2026)
+
+**`petsc_save_checkpoint()` now uses modern XDMF output** (fixes #80). Previously used legacy `generateXdmf()` which missed vertex/cell compatibility groups, field projection (P2→P1), and tensor repacking for ParaView.
+
+- Refactored as thin wrapper around `write_timestep()` — single checkpoint code path
+- Output file layout changes from single HDF5 to per-variable files (consistent with `write_timestep()`)
+
+**Files**: `discretisation_mesh.py`
+
 ### Boundary Integral Support (March 2026)
 
 **New `uw.maths.BdIntegral` class** for boundary and surface integrals (closes #47). Wraps PETSc's `DMPlexComputeBdIntegral` with MPI Allreduce and units support. Works on external boundaries and internal boundaries (e.g. `AnnulusInternalBoundary`). Integrands can reference the outward unit normal via `mesh.Gamma`.

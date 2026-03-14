@@ -1,5 +1,22 @@
 # CHANGES: Underworld3
 
+## 2026-03-14
+
+  - **Release v3.0.0**: Merged development (398 commits) to main, tagged v3.0.0
+  - **Release v0.99**: Tagged pixi-compatible snapshot of previous main for JOSS compatibility
+  - Binder infrastructure overhaul:
+    - Four versioned binder links: v0.99, v3.0.0, main, development
+    - CI workflow handles nested branch names and `v*` tag builds
+    - Manual dispatch overrides (`uw3_branch`, `image_tag`) for building old tags
+    - Launcher dispatch payload fixed (field name mismatch prevented branch creation)
+    - Dockerfile made resilient to different dependency versions (no hardcoded paths)
+    - Deleted obsolete `uw3-release-candidate` branch
+  - README updated: versioned binder badges, fixed CI badge filenames (.yml → .yaml)
+  - `petsc_save_checkpoint()` now delegates to `write_timestep()` (fixes #80):
+    - Gains vertex/cell compat groups, field projection, tensor repacking
+    - Single checkpoint code path for easier maintenance
+  - Cleaned up 10 merged feature/bugfix branches
+
 ## 2026-03-13
 
   - New `uw.maths.BdIntegral` for boundary and surface integrals (closes #47):
