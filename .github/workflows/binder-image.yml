@@ -87,4 +87,4 @@ jobs:
           token: ${{ secrets.LAUNCHER_PAT }}
           repository: underworldcode/uw3-binder-launcher
           event-type: image-updated
-          client-payload: '{"ref": "${{ env.DOCKER_TAG }}", "is_release": "${{ env.IS_RELEASE }}"}'
+          client-payload: '{"branch": "${{ env.DOCKER_TAG }}", "ref_type": "${{ env.IS_RELEASE == 'true' && 'tag' || 'branch' }}"}'
