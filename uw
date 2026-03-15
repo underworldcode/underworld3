@@ -165,7 +165,10 @@ run_build() {
     echo "$current_target" > "$petsc_marker"
 
     echo "  Building underworld3..."
-    $PIXI run -e "$env" pip install . --no-build-isolation || {
+    # --no-cache-dir: UW3 is always version 0.0.0, so pip's wheel cache
+    # treats every build as "already cached" and silently reuses stale code.
+    # This flag forces pip to rebuild from source every time.
+    $PIXI run -e "$env" pip install . --no-build-isolation --no-cache-dir || {
         echo -e "${YELLOW}underworld3 build failed${NC}"
         exit 1
     }
