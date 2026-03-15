@@ -229,14 +229,9 @@ Underworld development team with AI support from [Claude Code](https://claude.co
 - Changes go to `.pixi/envs/default/lib/python3.12/site-packages/underworld3/`
 - Verify with `uw.model.__file__`
 
-**⚠️ STALE BUILD CACHE**: If `./uw build` succeeds but Python still uses old code
-(e.g. a new parameter is "unknown"), pip's wheel cache is stale. Fix with:
-```bash
-rm -rf build/lib.* build/bdist.*
-pixi run -e default pip install --no-build-isolation --force-reinstall --no-deps .
-```
-This is the most common build issue — `./uw build` reuses cached wheels when the
-version number hasn't changed. Always verify changes are installed before debugging.
+**Note**: `./uw build` uses `--no-cache-dir` to prevent pip from reusing stale
+wheels (UW3 is always version `0.0.0`). If you still suspect stale code, clean
+the build directory: `rm -rf build/lib.* build/bdist.*` then rebuild.
 
 ### Test Quality Principles
 **New tests must be validated before making code changes to fix them!**
@@ -444,6 +439,22 @@ velocity.norm()         # Magnitude
 ---
 
 ## Coding Conventions
+
+### Prefer Glob and Grep Over find
+**Use the Glob and Grep tools instead of `find` in Bash.**
+- `Glob` handles file pattern matching (e.g., `**/*.py`, `src/**/*.pyx`)
+- `Grep` handles content search (e.g., searching for class definitions, imports)
+- Both are faster, safer, and give the user better visibility than shell `find`
+- `find` with `-exec`, `-execdir`, or `-delete` can execute arbitrary commands — avoid it
+- Only fall back to `find` via Bash if Glob/Grep genuinely cannot express the query
+
+### Desktop Notifications for Background Monitoring
+When using CronCreate for background monitoring (CI status, issues, etc.), use
+platform-appropriate notification commands. Both are in the allowed tools list:
+- **macOS**: `osascript -e 'display notification "message" with title "title" sound name "Glass"'`
+- **Linux**: `notify-send "title" "message"`
+
+Be quiet when everything is fine — only notify when something needs attention.
 
 ### Plan File Naming Policy
 **Plan files must have descriptive names that indicate their content.**

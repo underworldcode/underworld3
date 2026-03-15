@@ -617,6 +617,74 @@ run_setup() {
         fi
     fi
 
+    # Optional: Configure Claude Code permissions for unattended monitoring
+    echo ""
+    echo -e "${BOLD}Claude Code Permissions (Optional)${NC}"
+    echo "  Configure allowed tools for Claude Code sessions, including permissions"
+    echo "  for background monitoring (CI checks, issue tracking, notifications)."
+    echo "  Adds safe defaults to ~/.claude/settings.json."
+    echo ""
+    read -p "Configure Claude Code permissions? [y/N]: " config_perms
+    config_perms=${config_perms:-n}
+
+    if [ "$config_perms" = "y" ] || [ "$config_perms" = "Y" ]; then
+        local settings_file="$HOME/.claude/settings.json"
+        mkdir -p "$HOME/.claude"
+
+        # Use Python to safely merge permissions into settings.json
+        $PIXI run -e "$new_env" python -c "
+import json, os, sys
+
+settings_file = os.path.expanduser('~/.claude/settings.json')
+
+# Load existing settings or start fresh
+settings = {}
+if os.path.exists(settings_file):
+    with open(settings_file) as f:
+        settings = json.load(f)
+
+# Ensure permissions.allow exists
+settings.setdefault('permissions', {})
+settings['permissions'].setdefault('allow', [])
+allow = settings['permissions']['allow']
+
+# Permissions for development and unattended monitoring
+required = [
+    'Bash(git *)',
+    'Bash(gh *)',
+    'Bash(pixi *)',
+    'Bash(./uw *)',
+    'Bash(python *)',
+    'Bash(sleep *)',
+    \"Bash(osascript -e 'display notification*')\",
+    'Bash(notify-send *)',
+    'Edit',
+    'Write',
+    'Agent',
+]
+
+added = []
+for perm in required:
+    if perm not in allow:
+        allow.append(perm)
+        added.append(perm)
+
+with open(settings_file, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+
+if added:
+    print(f'Added {len(added)} permission(s):')
+    for p in added:
+        print(f'  + {p}')
+else:
+    print('All permissions already configured.')
+"
+        echo ""
+        echo -e "  ${GREEN}✓${NC} Claude Code permissions updated"
+        echo "  Includes: git, gh, pixi, build tools, desktop notifications (macOS + Linux)"
+    fi
+
     echo ""
     echo -e "${GREEN}${BOLD}Setup complete!${NC}"
     echo ""
