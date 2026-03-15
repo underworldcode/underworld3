@@ -300,36 +300,46 @@ def evaluate_pure_sympy(expr, coords, coord_symbols=None):
         expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
 
     # =========================================================================
-    # STEP 2: Substitute all UWCoordinate atoms with their underlying BaseScalar
-    # This must happen AFTER unwrapping so we catch ALL UWCoordinates,
-    # including those that were hidden inside UWexpressions
+    # STEP 2: Canonicalize all coordinate symbols to Dummy symbols.
+    #
+    # UWCoordinate subclasses BaseScalar with custom __eq__/__hash__, which
+    # causes subs() to miss instances when SymPy's internal caching creates
+    # multiple UWCoordinate objects for the same coordinate. Using Dummy
+    # symbols with xreplace (direct tree traversal) avoids identity issues.
+    # This mirrors the approach in _function.pyx _lambdify_and_evaluate().
     # =========================================================================
 
-    uw_coords = list(expr.atoms(UWCoordinate))
-    if uw_coords:
-        coord_subs = {uc: uc._original_base_scalar for uc in uw_coords}
-        expr = expr.subs(coord_subs)
+    coord_dummies = [sympy.Dummy(f"_coord_{i}") for i in range(n_dims)]
 
-    # =========================================================================
-    # STEP 3: Now extract coord_symbols from the fully processed expression
-    # This happens AFTER unwrapping and substitution so we see ALL coordinates
-    # =========================================================================
+    if coord_symbols is not None:
+        # Caller provided coord_symbols — replace them with dummies
+        coord_symbols = tuple(coord_symbols) if isinstance(coord_symbols, (list, tuple)) else (coord_symbols,)
+        dummy_subs = {}
+        for cs in coord_symbols:
+            if isinstance(cs, sympy.vector.scalar.BaseScalar):
+                idx = cs._id[0]
+                if idx < n_dims:
+                    dummy_subs[cs] = coord_dummies[idx]
+        if dummy_subs:
+            expr = expr.xreplace(dummy_subs)
+        coord_symbols = tuple(coord_dummies[:n_dims])
+    else:
+        # No coord_symbols provided — collect from the expression
+        dummy_subs = {}
+        for sym in expr.free_symbols:
+            if isinstance(sym, sympy.vector.scalar.BaseScalar):
+                idx = sym._id[0]
+                if idx < n_dims:
+                    dummy_subs[sym] = coord_dummies[idx]
 
-    if coord_symbols is None:
-        # Extract BaseScalar atoms from the processed expression
-        base_scalars = list(expr.atoms(sympy.vector.scalar.BaseScalar))
-
-        if base_scalars:
-            # We have mesh coordinates - sort them by their string representation
-            # to get consistent ordering (N.x, N.y, N.z)
-            coord_symbols = tuple(sorted(base_scalars, key=str)[:n_dims])
-
+        if dummy_subs:
+            expr = expr.xreplace(dummy_subs)
+            coord_symbols = tuple(coord_dummies[:n_dims])
         else:
-            # Pure sympy.Symbol - extract Symbol atoms from expression
+            # No BaseScalar symbols — try plain sympy.Symbol
             symbol_atoms = list(expr.atoms(sympy.Symbol))
 
             if symbol_atoms:
-                # Try to match common coordinate names first for better ordering
                 coord_names = ['x', 'y', 'z', 'r', 'theta', 'phi']
                 coord_symbols_list = []
 
@@ -341,34 +351,26 @@ def evaluate_pure_sympy(expr, coords, coord_symbols=None):
                             break
 
                 if len(coord_symbols_list) < n_dims:
-                    # Add remaining symbols in alphabetical order
                     remaining = [s for s in symbol_atoms if s not in coord_symbols_list]
                     coord_symbols_list.extend(sorted(remaining, key=str)[:n_dims - len(coord_symbols_list)])
 
                 coord_symbols = tuple(coord_symbols_list[:n_dims])
             else:
-                # No symbols found - expression might be constant after unwrapping
                 free_after = expr.free_symbols
                 if len(free_after) == 0:
-                    # Became constant after unwrapping
                     const_val = float(expr.evalf())
                     return np.full((n_points, 1, 1), const_val)
                 raise ValueError("No coordinate symbols found in expression")
-    else:
-        # Convert to tuple if needed
-        coord_symbols = tuple(coord_symbols) if isinstance(coord_symbols, (list, tuple)) else (coord_symbols,)
 
     # =========================================================================
-    # STEP 4: Final validation - check for any remaining non-coordinate symbols
+    # STEP 3: Final validation - check for any remaining non-coordinate symbols
     # =========================================================================
 
     remaining_symbols = expr.free_symbols - set(coord_symbols)
     if remaining_symbols:
-        # Check if they're UWexpressions we missed (shouldn't happen after unwrap)
         non_coord_params = set()
         for sym in remaining_symbols:
             if isinstance(sym, UWexpression):
-                # Try to unwrap it
                 expr = _unwrap_for_compilation(expr, keep_constants=False, return_self=False)
                 break
             elif not isinstance(sym, (sympy.vector.scalar.BaseScalar, UWCoordinate)):
