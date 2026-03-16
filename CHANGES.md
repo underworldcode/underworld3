@@ -1,5 +1,43 @@
 # CHANGES: Underworld3
 
+## 2026-03-14
+
+  - **Release v3.0.0**: Merged development (398 commits) to main, tagged v3.0.0
+  - **Release v0.99**: Tagged pixi-compatible snapshot of previous main for JOSS compatibility
+  - Binder infrastructure overhaul:
+    - Four versioned binder links: v0.99, v3.0.0, main, development
+    - CI workflow handles nested branch names and `v*` tag builds
+    - Manual dispatch overrides (`uw3_branch`, `image_tag`) for building old tags
+    - Launcher dispatch payload fixed (field name mismatch prevented branch creation)
+    - Dockerfile made resilient to different dependency versions (no hardcoded paths)
+    - Deleted obsolete `uw3-release-candidate` branch
+  - README updated: versioned binder badges, fixed CI badge filenames (.yml → .yaml)
+  - `petsc_save_checkpoint()` now delegates to `write_timestep()` (fixes #80):
+    - Gains vertex/cell compat groups, field projection, tensor repacking
+    - Single checkpoint code path for easier maintenance
+  - Cleaned up 10 merged feature/bugfix branches
+
+## 2026-03-13
+
+  - New `uw.maths.BdIntegral` for boundary and surface integrals (closes #47):
+    - Wraps PETSc `DMPlexComputeBdIntegral` with MPI Allreduce and units support
+    - Works on external boundaries, internal boundaries (`AnnulusInternalBoundary`, etc.)
+    - Integrand can reference outward unit normal via `mesh.Gamma` / `mesh.Gamma_N`
+    - Handles PETSc API change in v3.22.0 (function pointer signature)
+  - PETSc patch for internal boundary assembly in parallel (fixes #77):
+    - `plexfem-internal-boundary-ownership-fix.patch`
+    - Ghost facet filtering in boundary integral, residual, and Jacobian paths
+    - Part-consistent assembly (`support[key.part]`) with support-size guards
+    - Fixes rank-dependent L2 norms for internal boundary natural BCs
+  - MPI regression test: `tests/parallel/test_0765_internal_boundary_integral_mpi.py`
+  - Boundary integral tests: `tests/test_0502_boundary_integrals.py`
+  - Fixed binder image building from stale branch (fixes #71):
+    - Dockerfile now uses build-arg for branch instead of hardcoded `uw3-release-candidate`
+    - CI workflow passes triggering branch name to Docker build
+  - Prevented worktree symlinks from being accidentally committed:
+    - `.gitignore` patterns match both directories and symlinks
+    - `./uw worktree create` writes exclusions to `.git/info/exclude`
+
 ## 2025-12-21
 
   - PETSc 3.24 compatibility verified (conda-forge petsc 3.24.2 works correctly)

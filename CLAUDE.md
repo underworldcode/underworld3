@@ -198,16 +198,20 @@ worktree changes, the worktree edits will not be active. Always:
 2. `./uw build`
 3. Run your code / tests from there
 
-### AI-Assisted Commit Attribution
-When committing code developed with AI assistance, end the commit message with:
+### AI-Assisted Attribution (Commits and PRs)
+When committing code or creating pull requests with AI assistance, end the
+message/body with:
 
 ```
-Underworld development team with AI support from Claude Code
+Underworld development team with AI support from [Claude Code](https://claude.com/claude-code)
 ```
+
+(In commit messages, use the plain-text form without the markdown link.)
 
 **Do NOT use**:
 - `Co-Authored-By:` with a noreply email (useless for soliciting responses)
 - Generic AI attribution without team context
+- Emoji in PR descriptions
 
 ---
 
@@ -220,10 +224,14 @@ Underworld development team with AI support from Claude Code
 - Requires complete rebuild (~1 hour) if relocated
 
 ### Rebuild After Source Changes
-**After modifying source files, always run `pixi run underworld-build`!**
+**After modifying source files, always run `./uw build`!**
 - Underworld3 is installed as a package in the pixi environment
 - Changes go to `.pixi/envs/default/lib/python3.12/site-packages/underworld3/`
 - Verify with `uw.model.__file__`
+
+**Note**: `./uw build` uses `--no-cache-dir` to prevent pip from reusing stale
+wheels (UW3 is always version `0.0.0`). If you still suspect stale code, clean
+the build directory: `rm -rf build/lib.* build/bdist.*` then rebuild.
 
 ### Test Quality Principles
 **New tests must be validated before making code changes to fix them!**
@@ -432,6 +440,22 @@ velocity.norm()         # Magnitude
 
 ## Coding Conventions
 
+### Prefer Glob and Grep Over find
+**Use the Glob and Grep tools instead of `find` in Bash.**
+- `Glob` handles file pattern matching (e.g., `**/*.py`, `src/**/*.pyx`)
+- `Grep` handles content search (e.g., searching for class definitions, imports)
+- Both are faster, safer, and give the user better visibility than shell `find`
+- `find` with `-exec`, `-execdir`, or `-delete` can execute arbitrary commands — avoid it
+- Only fall back to `find` via Bash if Glob/Grep genuinely cannot express the query
+
+### Desktop Notifications for Background Monitoring
+When using CronCreate for background monitoring (CI status, issues, etc.), use
+platform-appropriate notification commands. Both are in the allowed tools list:
+- **macOS**: `osascript -e 'display notification "message" with title "title" sound name "Glass"'`
+- **Linux**: `notify-send "title" "message"`
+
+Be quiet when everything is fine — only notify when something needs attention.
+
 ### Plan File Naming Policy
 **Plan files must have descriptive names that indicate their content.**
 
@@ -534,10 +558,10 @@ When working on specific subsystems, these documents provide detailed guidance.
 
 ## Quick Reference
 
-### Pixi Commands
+### Build & Test Commands
 ```bash
-pixi run underworld-build    # Rebuild after source changes
-pixi run underworld-test     # Run test suite
+./uw build                   # Rebuild after source changes (preferred)
+./uw test                    # Run test suite
 pixi run -e default python   # Run Python in environment
 ```
 

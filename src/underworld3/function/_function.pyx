@@ -502,6 +502,12 @@ def global_evaluate_nd(   expr,
     evaluation_swarm.dm.migrate(remove_sent_points=True)
     uw.mpi.barrier()
 
+    # Invalidate cached data after bare-bones dm.migrate —
+    # particle count and values changed but Swarm.migrate() was bypassed.
+    evaluation_swarm._particle_coordinates._canonical_data = None
+    for var in evaluation_swarm._vars.values():
+        if hasattr(var, "_canonical_data"):
+            var._canonical_data = None
 
     index = original_index.array[:,0,0]
 

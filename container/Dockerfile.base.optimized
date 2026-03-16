@@ -5,6 +5,9 @@
 
 FROM ubuntu:24.04 AS builder
 
+# Branch to clone and build (set via --build-arg in CI)
+ARG UW3_BRANCH=release/0.99
+
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -27,7 +30,7 @@ RUN curl -fsSL https://pixi.sh/install.sh | sh
 ENV PATH="/home/jovyan/.pixi/bin:$PATH"
 
 # Clone underworld3 with shallow clone (depth 1 keeps .git small ~5MB vs 356MB)
-RUN git clone --single-branch --branch uw3-release-candidate --depth 1 \
+RUN git clone --single-branch --branch ${UW3_BRANCH} --depth 1 \
     https://github.com/underworldcode/underworld3.git && \
     cd underworld3 && \
     pixi install -e runtime && \
@@ -95,6 +98,7 @@ RUN rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/conda-meta
 RUN mkdir -p /home/jovyan/lib-split/llvm && \
     mkdir -p /home/jovyan/lib-split/vtk && \
     mkdir -p /home/jovyan/lib-split/other-large && \
+    mkdir -p /home/jovyan/lib-split/versioned && \
     mkdir -p /home/jovyan/lib-split/remaining
 
 # Move LLVM libraries (~355MB)
@@ -113,6 +117,11 @@ RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
     mv libopenvino*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
     mv libQt*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true && \
     mv libicu*.so* /home/jovyan/lib-split/other-large/ 2>/dev/null || true
+
+# Move versioned subdirectories (vtk-X.Y, openvino-X.Y.Z) — names vary by env
+RUN cd /home/jovyan/underworld3/.pixi/envs/runtime/lib && \
+    mv vtk-* /home/jovyan/lib-split/versioned/ 2>/dev/null || true && \
+    mv openvino-* /home/jovyan/lib-split/versioned/ 2>/dev/null || true
 
 # =============================================================================
 # Final stage
@@ -179,9 +188,8 @@ COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/ru
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/qt6 /home/jovyan/underworld3/.pixi/envs/runtime/lib/qt6
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/dri /home/jovyan/underworld3/.pixi/envs/runtime/lib/dri
 
-# Layer 5b: VTK and openvino directories (~140MB)
-COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/vtk-9.5 /home/jovyan/underworld3/.pixi/envs/runtime/lib/vtk-9.5
-COPY --from=builder --chown=jovyan:jovyan /home/jovyan/underworld3/.pixi/envs/runtime/lib/openvino-2025.2.0 /home/jovyan/underworld3/.pixi/envs/runtime/lib/openvino-2025.2.0
+# Layer 5b: Versioned subdirectories (vtk-X.Y, openvino-X.Y.Z — names vary by env)
+COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/versioned /home/jovyan/underworld3/.pixi/envs/runtime/lib/
 
 # Layer 5c: LLVM/Clang libraries moved to split dir (~350MB)
 COPY --from=builder --chown=jovyan:jovyan /home/jovyan/lib-split/llvm /home/jovyan/underworld3/.pixi/envs/runtime/lib/
@@ -245,7 +253,8 @@ ENV VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow
 EXPOSE 8888
 
 # Default branch to pull (can be overridden by launcher Dockerfile)
-ENV UW3_BRANCH=uw3-release-candidate
+ARG UW3_BRANCH=release/0.99
+ENV UW3_BRANCH=${UW3_BRANCH}
 
 # Create minimal start script - launch jupyter directly (no pixi overhead)
 # The environment is pre-built, just need to set PATH and run

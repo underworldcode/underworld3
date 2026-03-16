@@ -1,0 +1,162 @@
+diff --git a/src/dm/impls/plex/plexfem.c b/src/dm/impls/plex/plexfem.c
+index 0299f569070..1f07f49f60f 100644
+--- a/src/dm/impls/plex/plexfem.c
++++ b/src/dm/impls/plex/plexfem.c
+@@ -2874,6 +2874,24 @@ PetscErrorCode DMPlexComputeBdIntegral(DM dm, Vec X, DMLabel label, PetscInt num
+   PetscCall(DMPlexGetDepthLabel(dm, &depthLabel));
+   PetscCall(DMGetDimension(dm, &dim));
+   PetscCall(DMLabelGetStratumIS(depthLabel, dim - 1, &facetIS));
++  /* Filter out ghost facets (SF leaves) so each facet contributes once */
++  if (facetIS) {
++    PetscSF          sf;
++    PetscInt         nleaves;
++    const PetscInt  *leaves;
++
++    PetscCall(DMGetPointSF(dm, &sf));
++    PetscCall(PetscSFGetGraph(sf, NULL, &nleaves, &leaves, NULL));
++    if (nleaves > 0 && leaves) {
++      IS leafIS, ownedFacetIS;
++
++      PetscCall(ISCreateGeneral(PETSC_COMM_SELF, nleaves, leaves, PETSC_USE_POINTER, &leafIS));
++      PetscCall(ISDifference(facetIS, leafIS, &ownedFacetIS));
++      PetscCall(ISDestroy(&leafIS));
++      PetscCall(ISDestroy(&facetIS));
++      facetIS = ownedFacetIS;
++    }
++  }
+   PetscCall(DMGetLocalSection(dm, &section));
+   PetscCall(PetscSectionGetNumFields(section, &Nf));
+   /* Get local solution with boundary values */
+@@ -4961,6 +4979,28 @@ PetscErrorCode DMPlexComputeBdResidualSingleByKey(DM dm, PetscWeakForm wf, Petsc
+       PetscCall(ISDestroy(&pointIS));
+       pointIS = isectIS;
+     }
++    if (key.part > 0) {
++      IS              filteredIS = NULL;
++      const PetscInt *allPoints;
++      PetscInt       *keptPoints = NULL;
++      PetscInt        nAllFaces, nKept = 0, fidx;
++
++      PetscCall(ISGetLocalSize(pointIS, &nAllFaces));
++      PetscCall(ISGetIndices(pointIS, &allPoints));
++      PetscCall(PetscMalloc1(nAllFaces, &keptPoints));
++      for (fidx = 0; fidx < nAllFaces; ++fidx) {
++        const PetscInt point = allPoints[fidx];
++        PetscInt       supportSize;
++
++        PetscCall(DMPlexGetSupportSize(dm, point, &supportSize));
++        if (supportSize <= key.part) continue;
++        keptPoints[nKept++] = point;
++      }
++      PetscCall(ISRestoreIndices(pointIS, &allPoints));
++      PetscCall(ISDestroy(&pointIS));
++      PetscCall(ISCreateGeneral(PETSC_COMM_SELF, nKept, keptPoints, PETSC_OWN_POINTER, &filteredIS));
++      pointIS = filteredIS;
++    }
+     PetscCall(ISGetLocalSize(pointIS, &numFaces));
+     PetscCall(ISGetIndices(pointIS, &points));
+     PetscCall(PetscMalloc4(numFaces * totDim, &u, (locX_t ? (size_t)numFaces * totDim : 0), &u_t, numFaces * totDim, &elemVec, (locA ? (size_t)numFaces * totDimAux : 0), &a));
+@@ -4978,21 +5018,24 @@ PetscErrorCode DMPlexComputeBdResidualSingleByKey(DM dm, PetscWeakForm wf, Petsc
+     for (face = 0; face < numFaces; ++face) {
+       const PetscInt point = points[face], *support;
+       PetscScalar   *x     = NULL;
+-      PetscInt       i;
++      PetscInt       i, supportSize, cell;
+ 
+       PetscCall(DMPlexGetSupport(dm, point, &support));
+-      PetscCall(DMPlexVecGetClosure(plex, section, locX, support[0], NULL, &x));
++      PetscCall(DMPlexGetSupportSize(dm, point, &supportSize));
++      PetscCheck(supportSize > key.part, PetscObjectComm((PetscObject)dm), PETSC_ERR_ARG_OUTOFRANGE, "Boundary point %" PetscInt_FMT " has support size %" PetscInt_FMT " but requested part %" PetscInt_FMT, point, supportSize, key.part);
++      cell = support[key.part];
++      PetscCall(DMPlexVecGetClosure(plex, section, locX, cell, NULL, &x));
+       for (i = 0; i < totDim; ++i) u[face * totDim + i] = x[i];
+-      PetscCall(DMPlexVecRestoreClosure(plex, section, locX, support[0], NULL, &x));
++      PetscCall(DMPlexVecRestoreClosure(plex, section, locX, cell, NULL, &x));
+       if (locX_t) {
+-        PetscCall(DMPlexVecGetClosure(plex, section, locX_t, support[0], NULL, &x));
++        PetscCall(DMPlexVecGetClosure(plex, section, locX_t, cell, NULL, &x));
+         for (i = 0; i < totDim; ++i) u_t[face * totDim + i] = x[i];
+-        PetscCall(DMPlexVecRestoreClosure(plex, section, locX_t, support[0], NULL, &x));
++        PetscCall(DMPlexVecRestoreClosure(plex, section, locX_t, cell, NULL, &x));
+       }
+       if (locA) {
+         PetscInt subp;
+ 
+-        PetscCall(DMGetEnclosurePoint(plexA, dm, encAux, support[0], &subp));
++        PetscCall(DMGetEnclosurePoint(plexA, dm, encAux, cell, &subp));
+         PetscCall(DMPlexVecGetClosure(plexA, sectionAux, locA, subp, NULL, &x));
+         for (i = 0; i < totDimAux; ++i) a[face * totDimAux + i] = x[i];
+         PetscCall(DMPlexVecRestoreClosure(plexA, sectionAux, locA, subp, NULL, &x));
+@@ -5028,10 +5071,13 @@ PetscErrorCode DMPlexComputeBdResidualSingleByKey(DM dm, PetscWeakForm wf, Petsc
+     }
+     for (face = 0; face < numFaces; ++face) {
+       const PetscInt point = points[face], *support;
++      PetscInt       supportSize;
+ 
+       if (mesh->printFEM > 1) PetscCall(DMPrintCellVector(point, name, totDim, &elemVec[face * totDim]));
+       PetscCall(DMPlexGetSupport(plex, point, &support));
+-      PetscCall(DMPlexVecSetClosure(plex, NULL, locF, support[0], &elemVec[face * totDim], ADD_ALL_VALUES));
++      PetscCall(DMPlexGetSupportSize(dm, point, &supportSize));
++      PetscCheck(supportSize > key.part, PetscObjectComm((PetscObject)dm), PETSC_ERR_ARG_OUTOFRANGE, "Boundary point %" PetscInt_FMT " has support size %" PetscInt_FMT " but requested part %" PetscInt_FMT, point, supportSize, key.part);
++      PetscCall(DMPlexVecSetClosure(plex, NULL, locF, support[key.part], &elemVec[face * totDim], ADD_ALL_VALUES));
+     }
+     PetscCall(DMSNESRestoreFEGeom(coordField, pointIS, qGeom, PETSC_TRUE, &fgeom));
+     PetscCall(PetscQuadratureDestroy(&qGeom));
+@@ -5113,6 +5159,24 @@ static PetscErrorCode DMPlexComputeBdResidual_Internal(DM dm, Vec locX, Vec locX
+   PetscCall(DMPlexGetDepthLabel(dm, &depthLabel));
+   PetscCall(DMGetDimension(dm, &dim));
+   PetscCall(DMLabelGetStratumIS(depthLabel, dim - 1, &facetIS));
++  /* Filter out ghost facets (SF leaves) so each facet contributes once */
++  if (facetIS) {
++    PetscSF          sf;
++    PetscInt         nleaves;
++    const PetscInt  *leaves;
++
++    PetscCall(DMGetPointSF(dm, &sf));
++    PetscCall(PetscSFGetGraph(sf, NULL, &nleaves, &leaves, NULL));
++    if (nleaves > 0 && leaves) {
++      IS leafIS, ownedFacetIS;
++
++      PetscCall(ISCreateGeneral(PETSC_COMM_SELF, nleaves, leaves, PETSC_USE_POINTER, &leafIS));
++      PetscCall(ISDifference(facetIS, leafIS, &ownedFacetIS));
++      PetscCall(ISDestroy(&leafIS));
++      PetscCall(ISDestroy(&facetIS));
++      facetIS = ownedFacetIS;
++    }
++  }
+   PetscCall(PetscDSGetNumBoundary(prob, &numBd));
+   for (bd = 0; bd < numBd; ++bd) {
+     PetscWeakForm           wf;
+@@ -6117,13 +6181,31 @@ static PetscErrorCode DMPlexComputeBdJacobian_Internal(DM dm, Vec locX, Vec locX
+   PetscInt dim, numBd, bd;
+   DMLabel  depthLabel;
+   DMField  coordField = NULL;
+-  IS       facetIS;
++  IS       facetIS    = NULL;
+ 
+   PetscFunctionBegin;
+   PetscCall(DMGetDS(dm, &prob));
+   PetscCall(DMPlexGetDepthLabel(dm, &depthLabel));
+   PetscCall(DMGetDimension(dm, &dim));
+   PetscCall(DMLabelGetStratumIS(depthLabel, dim - 1, &facetIS));
++  /* Filter out ghost facets (SF leaves) so each facet contributes once */
++  if (facetIS) {
++    PetscSF          sf;
++    PetscInt         nleaves;
++    const PetscInt  *leaves;
++
++    PetscCall(DMGetPointSF(dm, &sf));
++    PetscCall(PetscSFGetGraph(sf, NULL, &nleaves, &leaves, NULL));
++    if (nleaves > 0 && leaves) {
++      IS leafIS, ownedFacetIS;
++
++      PetscCall(ISCreateGeneral(PETSC_COMM_SELF, nleaves, leaves, PETSC_USE_POINTER, &leafIS));
++      PetscCall(ISDifference(facetIS, leafIS, &ownedFacetIS));
++      PetscCall(ISDestroy(&leafIS));
++      PetscCall(ISDestroy(&facetIS));
++      facetIS = ownedFacetIS;
++    }
++  }
+   PetscCall(PetscDSGetNumBoundary(prob, &numBd));
+   PetscCall(DMGetCoordinateField(dm, &coordField));
+   for (bd = 0; bd < numBd; ++bd) {

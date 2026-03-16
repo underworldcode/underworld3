@@ -386,6 +386,10 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         """Global PETSc vector."""
         return self._base_var._gvec
 
+    def _sync_lvec_to_gvec(self):
+        """Synchronize local PETSc vector to global PETSc vector."""
+        return self._base_var._sync_lvec_to_gvec()
+
     # === MATHEMATICAL SYMBOL ===
 
     @property

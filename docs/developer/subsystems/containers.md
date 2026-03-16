@@ -54,7 +54,7 @@ ghcr.io/underworldcode/uw3-base:<branch>-slim
 ghcr.io/underworldcode/uw3-base:latest-slim
 ```
 
-Branch-specific tags (`main-slim`, `development-slim`) enable testing different versions.
+Branch-specific tags (`release-0.99-slim`, `main-slim`, `development-slim`) enable selecting specific versions. The default is the latest release branch.
 
 ### Build Triggers
 
@@ -90,10 +90,12 @@ uw3-binder-launcher/
 
 **Branch Mapping**:
 
-| Launcher Branch | UW3 Branch | Binder URL |
-|-----------------|------------|------------|
-| `main` | `main` | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main` |
-| `development` | `development` | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development` |
+| Launcher Branch | UW3 Source | Binder URL | Purpose |
+|-----------------|------------|------------|---------|
+| `v0.99` | tag `v0.99` | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/v0.99` | **Default** — stable JOSS release |
+| `v3.0.0` | tag `v3.0.0` | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/v3.0.0` | Current release |
+| `main` | `main` branch | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/main` | Latest tagged release |
+| `development` | `development` branch | `mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development` | Bleeding edge |
 
 ### Automation Pipeline
 

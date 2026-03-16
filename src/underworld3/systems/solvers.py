@@ -178,16 +178,6 @@ class SNES_Poisson(SNES_Scalar):
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
 
-    Attributes
-    ----------
-    u : MeshVariable
-        The unknown scalar field.
-    constitutive_model : DiffusionModel
-        Provides the diffusivity tensor :math:`\kappa`. Set to one of the
-        scalar ``uw.constitutive_models`` classes. Can be constant, spatially
-        varying, non-linear, or anisotropic.
-    f : sympy.Expr
-        Volumetric source term.
     """
 
     @timing.routine_timer_decorator
@@ -378,17 +368,6 @@ class SNES_Darcy(SNES_Scalar):
         Time derivative operator for the unknown.
     DFDt : optional
         Time derivative operator for the flux.
-
-    Attributes
-    ----------
-    h : MeshVariable
-        The hydraulic head unknown.
-    v : MeshVariable
-        The Darcy velocity field.
-    s : sympy.Expr
-        Source term for pressure gradients (e.g., :math:`\rho g`).
-    Ss : sympy.Expr
-        Specific storage coefficient.
 
     Notes
     -----
@@ -627,23 +606,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         Material derivative operator for velocity (used in derived classes).
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Material derivative operator for flux (used in viscoelastic models).
-
-    Attributes
-    ----------
-    u : MeshVariable
-        The velocity field (accessed via ``solver.Unknowns.u``).
-    p : MeshVariable
-        The pressure field (accessed via ``solver.Unknowns.p``).
-    bodyforce : UWexpression
-        Volumetric body force vector :math:`\mathbf{f}`.
-    constitutive_model : ConstitutiveModel
-        Viscosity model providing the stress-strain relationship.
-    penalty : UWexpression
-        Augmented Lagrangian penalty parameter :math:`\lambda`.
-    saddle_preconditioner : sympy.Expr
-        Preconditioner for the saddle point system (default: :math:`1/\eta`).
-    constraints : sympy.Matrix
-        Constraint equation(s), default is :math:`\nabla \cdot \mathbf{u}`.
 
     Notes
     -----
@@ -1216,19 +1178,6 @@ class SNES_VE_Stokes(SNES_Stokes):
     DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator (may be used in child classes).
 
-    Attributes
-    ----------
-    u : MeshVariable
-        Velocity field unknown :math:`\mathbf{u}`.
-    p : MeshVariable
-        Pressure field unknown :math:`p`.
-    bodyforce : sympy.Expr
-        Body force term :math:`\mathbf{f}`.
-    penalty : float
-        Augmented Lagrangian penalty parameter :math:`\lambda`.
-    saddle_preconditioner : sympy.Expr
-        Preconditioner for saddle point system (default: :math:`1/\eta`).
-
     Notes
     -----
     - The viscosity tensor :math:`\boldsymbol{\eta}` is set via the
@@ -1404,13 +1353,6 @@ class SNES_Projection(SNES_Scalar):
     verbose : bool, default=False
         Enable verbose output.
 
-    Attributes
-    ----------
-    uw_function : sympy.Expr
-        The function :math:`\tilde{f}` to project.
-    smoothing : float
-        The regularization parameter :math:`\alpha`.
-
     See Also
     --------
     SNES_Vector_Projection : Vector field projection.
@@ -1534,13 +1476,6 @@ class SNES_Vector_Projection(SNES_Vector):
         Polynomial degree for the finite element space.
     verbose : bool, default=False
         Enable verbose output.
-
-    Attributes
-    ----------
-    uw_function : sympy.Matrix
-        The vector function :math:`\tilde{\mathbf{f}}` to project.
-    smoothing : float
-        The regularization parameter :math:`\alpha`.
 
     See Also
     --------
@@ -1834,13 +1769,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         Time derivative operator for the unknown.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
-
-    Attributes
-    ----------
-    u : MeshVariable
-        The scalar unknown.
-    f : sympy.Expr
-        Volumetric source term.
 
     Notes
     -----
@@ -2345,13 +2273,6 @@ class SNES_Diffusion(SNES_Scalar):
     DFDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
         Time derivative operator for the flux.
 
-    Attributes
-    ----------
-    u : MeshVariable
-        The scalar unknown.
-    f : sympy.Expr
-        Volumetric source term.
-
     Notes
     -----
     - The diffusivity :math:`\kappa` is set via the ``constitutive_model`` property
@@ -2736,17 +2657,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         Time derivative operator for velocity.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for stress.
-
-    Attributes
-    ----------
-    u : MeshVariable
-        Velocity field unknown.
-    p : MeshVariable
-        Pressure field unknown.
-    rho : sympy.Expr
-        Fluid density.
-    bodyforce : sympy.Expr
-        Body force term :math:`\mathbf{f}`.
 
     Notes
     -----

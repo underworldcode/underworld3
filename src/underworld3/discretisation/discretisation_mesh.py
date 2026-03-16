@@ -176,17 +176,6 @@ class Mesh(Stateful, uw_object):
     verbose : bool, optional
         Print mesh construction information.
 
-    Attributes
-    ----------
-    N : sympy.vector.CoordSys3D
-        SymPy coordinate system for symbolic expressions.
-    X : UWCoordinate tuple
-        Coordinate variables (x, y, z) for use in expressions.
-    dim : int
-        Spatial dimension of the mesh.
-    dm : PETSc.DMPlex
-        Underlying PETSc distributed mesh object.
-
     Examples
     --------
     Meshes are typically created via the meshing module::
@@ -1775,13 +1764,22 @@ class Mesh(Stateful, uw_object):
         meshVars: Optional[list] = [],
         swarmVars: Optional[list] = [],
         meshUpdates: bool = False,
+        create_xdmf: bool = True,
     ):
         """
-        Write the selected mesh, variables and swarm variables (as proxies) for later visualisation.
-        An xdmf file is generated and the overall package can then be read by paraview or pyvista.
-        Vertex values (on the mesh points) are stored for all variables regardless of their interpolation order
-        """
+        Write mesh and selected variables for visualisation output.
 
+        This writes:
+        - one mesh HDF5 file (shared/static or per-step, depending on ``meshUpdates``)
+        - one HDF5 file per mesh variable
+        - optional proxy files for swarm variables
+        - optional XDMF file linking all output files
+
+        When ``create_xdmf=True`` (the default), variable files also include
+        ParaView-compatible groups (``/vertex_fields`` or ``/cell_fields``),
+        and an XDMF file is generated on rank 0.
+
+        """
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
         options.setValue("viewer_hdf5_collective", False)
@@ -1814,19 +1812,22 @@ class Mesh(Stateful, uw_object):
                 self.write(mesh_file)
 
         else:
-            self.write(output_base_name + f".mesh.{index:05}.h5")
+            mesh_file = output_base_name + f".mesh.{index:05}.h5"
+            self.write(mesh_file)
 
         if meshVars is not None:
             for var in meshVars:
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
                 var.write(save_location)
+                if create_xdmf:
+                    _write_compat_groups(self, var, save_location)
 
         if swarmVars is not None:
             for svar in swarmVars:
                 save_location = output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
                 svar.write_proxy(save_location)
 
-        if uw.mpi.rank == 0:
+        if create_xdmf and uw.mpi.rank == 0:
             checkpoint_xdmf(
                 output_base_name,
                 meshUpdates,
@@ -1844,45 +1845,57 @@ class Mesh(Stateful, uw_object):
         meshVars: Optional[list] = [],
         outputPath: Optional[str] = "",
     ):
-        """
+        """Save the mesh and mesh variables to HDF5 with XDMF.
 
-        Use PETSc to save the mesh and mesh vars in a h5 and xdmf file.
+        This is a convenience wrapper around ``write_timestep()`` that
+        provides the simpler interface used by earlier Underworld3 code.
+        Output uses the same per-variable file layout and XDMF generation
+        (including vertex/cell compatibility groups, field projection, and
+        tensor repacking) as ``write_timestep()``.
 
         Parameters
         ----------
-        meshVars:
-            List of UW mesh variables to save. If left empty then just the mesh is saved.
+        meshVars :
+            List of UW mesh variables to save. If left empty then just
+            the mesh is saved.
         index :
-            An index which might correspond to the timestep or output number (for example).
+            An index which might correspond to the timestep or output
+            number (for example).
         outputPath :
-            Path to save the data. If left empty it will save the data in the current working directory.
+            Path to save the data. If left empty it will save the data
+            in the current working directory.
         """
 
-        if meshVars != None and not isinstance(meshVars, list):
+        if meshVars is not None and not isinstance(meshVars, list):
             raise RuntimeError("`meshVars` does not appear to be a list.")
 
-        from underworld3.utilities import generateXdmf
+        # Split outputPath into directory and filename base for write_timestep().
+        # Old callers pass outputPath like './output/' or './output/run_name'.
+        import os
 
-        ### save mesh vars
-        fname = f"./{outputPath}{'_step_'}{index:05d}.h5"
-        xfname = f"./{outputPath}{'_step_'}{index:05d}.xdmf"
-        #### create petsc viewer
-        viewer = PETSc.ViewerHDF5().createHDF5(
-            fname, mode=PETSc.Viewer.Mode.WRITE, comm=PETSc.COMM_WORLD
+        outputPath = outputPath or ""
+        if outputPath.endswith(os.sep) or outputPath.endswith("/"):
+            # Directory only — use 'checkpoint' as the file base name
+            directory = outputPath
+            filename = "checkpoint"
+        elif os.sep in outputPath or "/" in outputPath:
+            # Path with filename component
+            directory = os.path.dirname(outputPath)
+            filename = os.path.basename(outputPath)
+        else:
+            # Bare name, no directory
+            directory = ""
+            filename = outputPath if outputPath else "checkpoint"
+
+        self.write_timestep(
+            filename=filename,
+            index=index,
+            outputPath=directory,
+            meshVars=meshVars if meshVars is not None else [],
+            swarmVars=[],
+            meshUpdates=False,
+            create_xdmf=True,
         )
-
-        viewer(self.dm)
-
-        ### Empty meshVars will save just the mesh
-        if meshVars != None:
-            for var in meshVars:
-                var._sync_lvec_to_gvec()
-                viewer(var._gvec)
-
-        viewer.destroy()
-
-        if uw.mpi.rank == 0:
-            generateXdmf(fname, xfname)
 
     @timing.routine_timer_decorator
     def write_checkpoint(
@@ -2997,13 +3010,12 @@ class Mesh(Stateful, uw_object):
                         print(f"[{uw.mpi.rank}] Notifying surface '{surface.name}' (marking distance stale)...", flush=True)
                     surface._on_mesh_adapted(self)
 
-        # Capture current variable data, excluding only the metric field
-        # (which becomes invalid after adaptation)
-        # All other variables (including surface distance fields) are reinitialized
+        # Capture all user-supplied variables for reinitialization on the new mesh.
+        # The metric field is included — it's a user-created variable that may
+        # have external references and be reused in subsequent adaptation cycles.
         old_vars_data = {}
-        metric_name = metric_field.name if hasattr(metric_field, 'name') else None
         for var_name, var in self._vars.items():
-            if var is not None and var_name != metric_name:
+            if var is not None:
                 old_vars_data[var_name] = var
 
         # Stack boundary labels for adaptation
@@ -3090,27 +3102,26 @@ class Mesh(Stateful, uw_object):
             # Rebuild coordinate navigation
             self.nuke_coords_and_rebuild(verbose=False)
 
+        # Destroy ALL old vectors upfront before reinitializing any variable.
+        # This is critical because _setup_ds() iterates mesh._vars to backup/restore
+        # data — if some variables still hold lvecs with stale field_ids from the
+        # pre-adaptation DM, createSubDM will fail on the new DM.  (Fixes #48)
+        for old_var in old_vars_data.values():
+            if old_var._lvec is not None:
+                old_var._lvec.destroy()
+                old_var._lvec = None
+            if old_var._gvec is not None:
+                old_var._gvec.destroy()
+                old_var._gvec = None
+            if hasattr(old_var, '_canonical_data'):
+                old_var._canonical_data = None
+            if hasattr(old_var, '_cached_data_array'):
+                old_var._cached_data_array = None
+
         # Reinitialize MeshVariables on the new mesh
         # Note: Variables are reset to zero. Users should reinitialize with data.
         for var_name, old_var in old_vars_data.items():
             try:
-                # Destroy old vectors
-                if old_var._lvec is not None:
-                    old_var._lvec.destroy()
-                    old_var._lvec = None
-                if old_var._gvec is not None:
-                    old_var._gvec.destroy()
-                    old_var._gvec = None
-
-                # Eagerly invalidate cached data arrays. The .data property also
-                # self-validates via _lvec identity check, but clearing here avoids
-                # unnecessary recreation on next access.
-                if hasattr(old_var, '_canonical_data'):
-                    old_var._canonical_data = None
-                if hasattr(old_var, '_cached_data_array'):
-                    old_var._cached_data_array = None
-
-                # Re-setup the variable on the new mesh
                 old_var._setup_ds()
                 old_var._set_vec(available=True)
 
@@ -3130,12 +3141,6 @@ class Mesh(Stateful, uw_object):
                 if verbose:
                     print(f"[{uw.mpi.rank}] Solver marked for rebuild", flush=True)
 
-        # Remove only the metric field from mesh._vars
-        # (it was specific to the pre-adaptation mesh and is now invalid)
-        # Surface distance variables stay - they're just marked stale and will recompute
-        if metric_name and metric_name in self._vars:
-            del self._vars[metric_name]
-
         # Clear caches
         self._evaluation_hash = None
         self._evaluation_interpolated_results = None
@@ -3150,6 +3155,57 @@ class Mesh(Stateful, uw_object):
 
 ## This is a temporary replacement for the PETSc xdmf generator
 ## Simplified to allow us to decide how we want to checkpoint
+
+
+def _write_compat_groups(mesh, var, var_h5_path):
+    """Write ``/vertex_fields/`` or ``/cell_fields/`` compatibility groups.
+
+    Uses ``uw.function.write_vertices_to_viewer`` (PETSc interpolation +
+    ViewerHDF5) for continuous variables, and
+    ``uw.function.write_cell_field_to_viewer`` for cell/DG-0 variables.
+    PETSc handles all parallel I/O natively.
+
+    Vertex coordinates are also written to ``/vertex_fields/coordinates``
+    for XDMF compatibility.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The parent mesh.
+    var : MeshVariable
+        The variable whose data has already been written to *var_h5_path*
+        by ``var.write()`` (so ``var._gvec`` is up-to-date).
+    var_h5_path : str
+        Path to the HDF5 file (already contains ``/fields/<name>``).
+    """
+    import underworld3 as uw
+
+    is_cell = (not var.continuous) or (var.degree == 0)
+    group = "cell_fields" if is_cell else "vertex_fields"
+
+    # Some PETSc versions (3.21+) write /vertex_fields/ or /cell_fields/
+    # automatically during var.write().  Remove any pre-existing group so
+    # that our compat writer can create it afresh (otherwise PETSc error 76
+    # on duplicate dataset).
+    import h5py
+
+    if uw.mpi.rank == 0:
+        with h5py.File(var_h5_path, "a") as f:
+            if group in f:
+                del f[group]
+    uw.mpi.barrier()
+
+    viewer = PETSc.ViewerHDF5().create(
+        var_h5_path, "a", comm=PETSc.COMM_WORLD,
+    )
+
+    if is_cell:
+        uw.function.write_cell_field_to_viewer(var, viewer)
+    else:
+        uw.function.write_vertices_to_viewer(var, viewer)
+        uw.function.write_coordinates_to_viewer(mesh, viewer)
+
+    viewer.destroy()
 
 
 def checkpoint_xdmf(
@@ -3265,34 +3321,53 @@ def checkpoint_xdmf(
 
     ## The mesh Var attributes
 
-    def get_cell_field_size(h5_filename, mesh_var):
-        try:
-            with h5py.File(h5_filename, "r") as f:
-                size = f[f"cell_fields/{mesh_var.clean_name}_{mesh_var.clean_name}"].shape[0]
-            return size
-        except:
-            with h5py.File(h5_filename, "r") as f:
-                size = f[f"fields/{mesh_var.clean_name}"].shape[0]
-            return size
+    def get_field_info(h5_filename, mesh_var, center):
+        """
+        Return (num_items, num_components, dataset_path) for a mesh variable.
+        Prefers vertex/cell compatibility groups, falls back to /fields layout.
+        """
+        compat_name = f"{mesh_var.clean_name}_{mesh_var.clean_name}"
+        candidates = []
+
+        if center == "Cell":
+            candidates = [f"cell_fields/{compat_name}", f"fields/{mesh_var.clean_name}"]
+        else:
+            candidates = [f"vertex_fields/{compat_name}", f"fields/{mesh_var.clean_name}"]
+
+        with h5py.File(h5_filename, "r") as f:
+            for path in candidates:
+                if path in f:
+                    shp = f[path].shape
+                    if len(shp) == 1:
+                        return shp[0], 1, path
+                    return shp[0], shp[1], path
+
+        raise RuntimeError(
+            f"Could not locate data for variable '{mesh_var.clean_name}' in {h5_filename}"
+        )
 
     attributes = ""
     for var in meshVars:
         var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
 
-        if var.num_components == 1:
-            variable_type = "Scalar"
-        else:
-            variable_type = "Vector"
-
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
         if not getattr(var, "continuous") or getattr(var, "degree") == 0:
             center = "Cell"
-            numItems = get_cell_field_size(var_filename, var)
-            field_group = "cell_fields"
         else:
             center = "Node"
-            numItems = numVertices
-            field_group = "vertex_fields"
+        numItems, numComponents, dataset_path = get_field_info(var_filename, var, center)
+
+        # Use variable type when available, but reflect actual stored component count.
+        if hasattr(var, "vtype") and var.vtype in (
+            uw.VarType.TENSOR,
+            uw.VarType.SYM_TENSOR,
+            uw.VarType.MATRIX,
+        ):
+            variable_type = "Tensor"
+        elif numComponents == 1:
+            variable_type = "Scalar"
+        else:
+            variable_type = "Vector"
 
         var_attribute = f"""
         <Attribute
@@ -3300,20 +3375,20 @@ def checkpoint_xdmf(
            Type="{variable_type}"
            Center="{center}">
           <DataItem ItemType="HyperSlab"
-                Dimensions="1 {numItems} {var.num_components}"
+                Dimensions="1 {numItems} {numComponents}"
                 Type="HyperSlab">
             <DataItem
                Dimensions="3 3"
                Format="XML">
               0 0 0
               1 1 1
-              1 {numItems} {var.num_components}
+              1 {numItems} {numComponents}
             </DataItem>
             <DataItem
                DataType="Float" Precision="8"
-               Dimensions="1 {numItems} {var.num_components}"
+               Dimensions="1 {numItems} {numComponents}"
                Format="HDF">
-              &{var.clean_name+"_Data"};:/{field_group}/{var.clean_name+"_"+var.clean_name}
+              &{var.clean_name+"_Data"};:/{dataset_path}
             </DataItem>
           </DataItem>
         </Attribute>
