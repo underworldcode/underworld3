@@ -643,6 +643,11 @@ COMMANDS
     Worktrees share the main repo's pixi environment and PETSc build.
     Once inside a worktree shell, ./uw build installs from that source.
 
+  Workflows:
+    workflow list                     Show available workflow packages
+    workflow init <name> [dir]        Scaffold a workflow into a working directory
+                                      Copies starter notebooks, configs, creates output dirs
+
   Diagnostics:
     doctor              Check for configuration issues (PETSc mismatch, etc.)
     status              Check for updates on GitHub (without pulling)
@@ -1174,6 +1179,29 @@ case "${1:-}" in
                 echo "  shell <name>             Start a shell in the worktree"
                 echo "  list                     List worktrees (default)"
                 echo "  remove <name>            Remove a worktree"
+                ;;
+        esac
+        ;;
+    workflow)
+        shift
+        case "${1:-list}" in
+            list)
+                shift 2>/dev/null || true
+                $PIXI run -e "$(get_env)" python -m underworld3.workflows.scaffold list --repo-root "$SCRIPT_DIR" "$@"
+                ;;
+            init)
+                shift
+                $PIXI run -e "$(get_env)" python -m underworld3.workflows.scaffold init --repo-root "$SCRIPT_DIR" "$@"
+                ;;
+            *)
+                echo "Usage: ./uw workflow <command>"
+                echo ""
+                echo "Commands:"
+                echo "  list                     Show available workflow packages"
+                echo "  init <name> [dir]        Scaffold a workflow into a working directory"
+                echo ""
+                echo "Options (init):"
+                echo "  --force                  Overwrite existing files"
                 ;;
         esac
         ;;

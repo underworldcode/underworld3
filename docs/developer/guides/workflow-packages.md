@@ -137,7 +137,26 @@ dependencies = [
 
 [project.optional-dependencies]
 geo = ["geopandas", "stripy"]
+
+[project.entry-points."underworld3.workflows"]
+hydrogen = "uw3_hydrogen:workflow_info"
 ```
+
+The entry point registers the workflow for discovery by `./uw workflow list`.
+The callable must return a dict with `"description"` and `"scaffold_dir"`:
+
+```python
+# In uw3_hydrogen/__init__.py
+def workflow_info():
+    from pathlib import Path
+    return {
+        "description": "Hydrogen exploration workflow",
+        "scaffold_dir": Path(__file__).parent / "scaffold",
+    }
+```
+
+The `scaffold/` directory should contain starter files (notebooks, configs)
+that get copied to the user's working directory.
 
 Install: `pip install uw3-hydrogen` or `pixi add --pypi uw3-hydrogen`.
 
@@ -197,6 +216,53 @@ mesh = hydrogen.create_mesh(config)
 stokes = hydrogen.setup_stokes(mesh, config)
 stokes.solve()
 ```
+
+## Scaffolding workflows
+
+`pip install` puts code in site-packages but cannot create user-space working
+files — editable notebooks, config files, output directories.  The scaffold
+command copies starter files into a user-specified directory.
+
+### CLI (via `./uw`)
+
+```bash
+./uw workflow list                     # Show available workflows
+./uw workflow init convection          # Scaffold into ./convection/
+./uw workflow init h2ex ./my-project   # Scaffold into ./my-project/h2ex/
+./uw workflow init hydrogen . --force  # Overwrite existing files
+```
+
+### Python API
+
+```python
+from underworld3.workflows import list_workflows, init_workflow
+
+workflows = list_workflows()
+init_workflow("convection", target_dir="./my-study")
+```
+
+### What gets created
+
+```
+my-project/
+    h2ex/
+        config.py        # Editable copy of workflow config
+        notebook.py      # Editable copy of workflow notebook
+        params.yaml      # Default parameters (auto-generated)
+        output/          # Empty output directory
+        README.md        # Overview and instructions
+```
+
+### Discovery
+
+Workflows are discovered from two sources:
+
+1. **Builtin examples** in the Underworld3 repo (`docs/examples/workflows/`)
+   — available when running via `./uw workflow`.
+2. **External pip-installed packages** registered via entry points
+   (`underworld3.workflows` group) — always available.
+
+External packages override builtins if names collide.
 
 ## `WorkflowConfig` API reference
 

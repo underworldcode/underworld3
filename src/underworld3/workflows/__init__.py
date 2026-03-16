@@ -12,6 +12,26 @@ from ._products import WorkflowProducts
 from ._utils import check_dependencies, parse_quantity, show_source, workflow_step
 
 
+def list_workflows(repo_root=None):
+    """Discover all available workflows (builtin + external).
+
+    See :mod:`underworld3.workflows.scaffold` for details.
+    """
+    from .scaffold import list_workflows as _list_workflows
+
+    return _list_workflows(repo_root)
+
+
+def init_workflow(name, target_dir=".", repo_root=None, force=False):
+    """Scaffold a workflow into a target directory.
+
+    See :mod:`underworld3.workflows.scaffold` for details.
+    """
+    from .scaffold import init_workflow as _init_workflow
+
+    return _init_workflow(name, target_dir=target_dir, repo_root=repo_root, force=force)
+
+
 def view(module):
     """Display the workflow steps defined in *module*.
 
@@ -127,6 +147,8 @@ __all__ = [
     "WorkflowConfig",
     "WorkflowProducts",
     "check_dependencies",
+    "init_workflow",
+    "list_workflows",
     "parse_quantity",
     "show_source",
     "workflow_step",
