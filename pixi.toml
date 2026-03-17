@@ -242,6 +242,18 @@ petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 platforms = ["linux-64"]
 
 # ============================================
+# GADI CLUSTER FEATURE
+# ============================================
+# For NCI Gadi HPC (CentOS, module OpenMPI + HDF5, PBS Pro)
+# Pure Python only — base dependencies cover all pure-Python needs.
+# mpi4py, h5py, petsc, petsc4py are built from source against
+# Gadi's module OpenMPI and HDF5 using gadi_install_pixi.sh.
+# See: install-scripts/uw3-hpc-install-scripts/gadi_install_pixi.sh
+
+[feature.gadi]
+platforms = ["linux-64"]
+
+# ============================================
 # RUNTIME FEATURE (for tutorials/examples)
 # ============================================
 # Visualization and interactive computing
@@ -328,3 +340,7 @@ amr-openmpi-dev = { features = ["amr-openmpi", "runtime", "dev"], solve-group = 
 # --- Kaiju Cluster Track (linux-64 only) ---
 # Pure Python from pixi; MPI/PETSc/h5py built from source against spack OpenMPI
 kaiju = { features = ["kaiju"], solve-group = "kaiju" }
+
+# --- Gadi Cluster Track (linux-64 only) ---
+# Pure Python from pixi; MPI/PETSc/h5py built from source against Gadi modules
+gadi = { features = ["gadi"], solve-group = "gadi" }
