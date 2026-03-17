@@ -137,6 +137,7 @@ configure_petsc() {
         --with-cc="${MPI_DIR}/bin/mpicc" \
         --with-cxx="${MPI_DIR}/bin/mpicxx" \
         --with-fc="${MPI_DIR}/bin/mpifort" \
+        --ignoreLinkOutput=1 \
         --with-debugging=0 \
         --COPTFLAGS="-g -O3" --CXXOPTFLAGS="-g -O3" --FOPTFLAGS="-g -O3" \
         --with-shared-libraries=1 \
