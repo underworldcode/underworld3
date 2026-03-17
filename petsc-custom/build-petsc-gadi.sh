@@ -117,7 +117,7 @@ configure_petsc() {
         echo "Error: MPI_DIR is not set. Source gadi_install_pixi.sh first."
         exit 1
     fi
-    export LD_LIBRARY_PATH="${MPI_DIR}/lib:${LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH="${MPI_DIR}/lib:/apps/ucc/1.3.0/lib:/usr/lib64:${LD_LIBRARY_PATH}"
 
     # Unset ALL conda/pixi compiler and build variables.
     # The pixi gadi env ships a full conda toolchain (x86_64-conda-linux-gnu-*)
@@ -137,7 +137,6 @@ configure_petsc() {
         --with-cc="${MPI_DIR}/bin/mpicc" \
         --with-cxx="${MPI_DIR}/bin/mpicxx" \
         --with-fc="${MPI_DIR}/bin/mpifort" \
-        --ignoreLinkOutput=1 \
         --with-debugging=0 \
         --COPTFLAGS="-g -O3" --CXXOPTFLAGS="-g -O3" --FOPTFLAGS="-g -O3" \
         --with-shared-libraries=1 \
