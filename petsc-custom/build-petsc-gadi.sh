@@ -111,6 +111,11 @@ configure_petsc() {
     #   MPI:        from Gadi module — MPI_DIR derived from which mpicc
     #   petsc4py:   built during configure
     MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
+    export LD_LIBRARY_PATH="${MPI_DIR}/lib:${LD_LIBRARY_PATH}"
+
+    # Unset conda/pixi compiler variables that interfere with mpicc
+    unset CC CXX FC F77 AR CFLAGS CXXFLAGS FFLAGS LDFLAGS
+
     python3 ./configure \
         --with-petsc-arch="${PETSC_ARCH}" \
         --with-mpi-dir="${MPI_DIR}" \
