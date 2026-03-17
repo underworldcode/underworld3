@@ -110,15 +110,33 @@ configure_petsc() {
     #   BLAS/LAPACK: from Gadi system (not downloaded)
     #   MPI:        from Gadi module — MPI_DIR derived from which mpicc
     #   petsc4py:   built during configure
-    MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
+    # MPI_DIR is set by load_env() via module load — trust it directly.
+    # Do NOT recompute from 'which mpicc': conda's PATH may resolve to the
+    # pixi env's bin instead of the Gadi OpenMPI bin.
+    if [ -z "${MPI_DIR}" ]; then
+        echo "Error: MPI_DIR is not set. Source gadi_install_pixi.sh first."
+        exit 1
+    fi
     export LD_LIBRARY_PATH="${MPI_DIR}/lib:${LD_LIBRARY_PATH}"
 
-    # Unset conda/pixi compiler variables that interfere with mpicc
-    unset CC CXX FC F77 AR CFLAGS CXXFLAGS FFLAGS LDFLAGS
+    # Unset ALL conda/pixi compiler and build variables.
+    # The pixi gadi env ships a full conda toolchain (x86_64-conda-linux-gnu-*)
+    # that interferes with OpenMPI wrappers and PETSc configure.
+    unset CC CXX FC F77 F90 CPP AR RANLIB
+    unset CFLAGS CXXFLAGS FFLAGS CPPFLAGS LDFLAGS
+
+    # Force mpicc/mpicxx/mpifort to use the system compilers, not conda's gcc.
+    # Conda's gcc uses conda's bundled linker which cannot find Gadi-specific
+    # libs that OpenMPI depends on (libucc from UCX, libnl_3 from netlink).
+    export OMPI_CC=/usr/bin/gcc
+    export OMPI_CXX=/usr/bin/g++
+    export OMPI_FC=/usr/bin/gfortran
 
     python3 ./configure \
         --with-petsc-arch="${PETSC_ARCH}" \
-        --with-mpi-dir="${MPI_DIR}" \
+        --with-cc="${MPI_DIR}/bin/mpicc" \
+        --with-cxx="${MPI_DIR}/bin/mpicxx" \
+        --with-fc="${MPI_DIR}/bin/mpifort" \
         --with-debugging=0 \
         --COPTFLAGS="-g -O3" --CXXOPTFLAGS="-g -O3" --FOPTFLAGS="-g -O3" \
         --with-shared-libraries=1 \
