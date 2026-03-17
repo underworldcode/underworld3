@@ -108,10 +108,12 @@ configure_petsc() {
     #   HDF5:       from Gadi module (not downloaded)
     #   cmake:      from Gadi module (not downloaded)
     #   BLAS/LAPACK: from Gadi system (not downloaded)
-    #   MPI:        from Gadi module (not downloaded)
+    #   MPI:        from Gadi module — MPI_DIR derived from which mpicc
     #   petsc4py:   built during configure
+    MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
     python3 ./configure \
         --with-petsc-arch="${PETSC_ARCH}" \
+        --with-mpi-dir="${MPI_DIR}" \
         --with-debugging=0 \
         --COPTFLAGS="-g -O3" --CXXOPTFLAGS="-g -O3" --FOPTFLAGS="-g -O3" \
         --with-shared-libraries=1 \
