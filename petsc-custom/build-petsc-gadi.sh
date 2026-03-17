@@ -126,13 +126,18 @@ configure_petsc() {
     unset CFLAGS CXXFLAGS FFLAGS CPPFLAGS LDFLAGS
 
     # Force mpicc/mpicxx/mpifort to use the system compilers, not conda's gcc.
-    # Conda's gcc uses conda's bundled linker which cannot find Gadi-specific
-    # libs that OpenMPI depends on (libucc from UCX, libnl_3 from netlink).
     export OMPI_CC=/usr/bin/gcc
     export OMPI_CXX=/usr/bin/g++
     export OMPI_FC=/usr/bin/gfortran
 
-    python3 ./configure \
+    # Capture pixi's python3 BEFORE reordering PATH.
+    # Then put system bin dirs first so the system linker (/usr/bin/ld) is
+    # found before conda's ld — conda's ld cannot find Gadi-specific libs
+    # (hcoll, ucc, libnl) that OpenMPI was built against.
+    _PIXI_PYTHON="$(which python3)"
+    export PATH="/usr/bin:/usr/local/bin:${MPI_DIR}/bin:${PATH}"
+
+    "${_PIXI_PYTHON}" ./configure \
         --with-petsc-arch="${PETSC_ARCH}" \
         --with-cc="${MPI_DIR}/bin/mpicc" \
         --with-cxx="${MPI_DIR}/bin/mpicxx" \
