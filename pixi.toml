@@ -253,6 +253,12 @@ platforms = ["linux-64"]
 [feature.gadi]
 platforms = ["linux-64"]
 
+[feature.gadi.dependencies]
+# patchelf is needed to fix h5py RPATH order after source build:
+# meson embeds the conda env lib dir before Gadi's HDF5 in RPATH,
+# so we use patchelf post-install to move HDF5_DIR to the front.
+patchelf = "*"
+
 # ============================================
 # RUNTIME FEATURE (for tutorials/examples)
 # ============================================
