@@ -2739,18 +2739,30 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         # If DuDt is not provided, then we can build a SLCN version
         if self.Unknowns.DuDt is None:
-            self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
+            # self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
+            #     self.mesh,
+            #     self.u.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
+            #     self.u.sym,
+            #     vtype=uw.VarType.VECTOR,
+            #     degree=self.u.degree,
+            #     continuous=self.u.continuous,
+            #     varsymbol=self.u.symbol,
+            #     verbose=self.verbose,
+            #     bcs=self.essential_bcs,
+            #     order=self._order,
+            #     smoothing=0.0001,
+            # )
+            self.Unknowns.DuDt = uw.systems.Eulerian_DDt(
                 self.mesh,
-                self.u.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
                 self.u.sym,
-                vtype=uw.VarType.VECTOR,
+                vtype=self.u.vtype,
                 degree=self.u.degree,
                 continuous=self.u.continuous,
+                V_fn=self.u.sym,
                 varsymbol=self.u.symbol,
-                verbose=self.verbose,
-                bcs=self.essential_bcs,
                 order=self._order,
-                smoothing=0.0001,
+                smoothing=0.0,
+                verbose=self.verbose,
             )
 
         # F (at least for N-S) is a nodal point variable so there is no benefit
@@ -2760,19 +2772,33 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # Maybe u.degree-1. The scalar equivalent seems to show
         # little benefit from specific choices here other than
         # discontinuous flux variables amplifying instabilities.
+        if self.Unknowns.DFDt is None:
+            # self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+            #     self.mesh,
+            #     sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            #     self.u.sym,
+            #     vtype=uw.VarType.SYM_TENSOR,
+            #     degree=self.u.degree,
+            #     continuous=self.u.continuous,
+            #     varsymbol=rf"{{ F[ {self.u.symbol} ] }}",
+            #     verbose=self.verbose,
+            #     bcs=None,
+            #     order=self._order,
+            # )
+            self.Unknowns.DFDt = uw.systems.ddt.Eulerian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                vtype=uw.VarType.SYM_TENSOR,
+                degree=self.u.degree,
+                continuous=self.u.continuous,
+                varsymbol=rf"{{ F[ {self.u.symbol} ] }}",
+                bcs=None,
+                order=self._order,
+                smoothing=0.0,
+                verbose=self.verbose,
+            )
 
-        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
-            self.mesh,
-            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-            self.u.sym,
-            vtype=uw.VarType.SYM_TENSOR,
-            degree=self.u.degree,
-            continuous=self.u.continuous,
-            varsymbol=rf"{{ F[ {self.u.symbol} ] }}",
-            verbose=self.verbose,
-            bcs=None,
-            order=self._order,
-        )
+
 
         ## Add in the history terms provided ...
 
