@@ -127,7 +127,10 @@ configure_petsc() {
             ln -sf "${MPI_DIR}/lib/libmpi_${_lib}_GNU.so" "${_mpi_gnu_dir}/libmpi_${_lib}.so"
     done
 
+    # LD_LIBRARY_PATH = runtime search path (dynamic loader)
+    # LIBRARY_PATH    = link-time search path (ld resolves -lmpi_usempif08 etc.)
     export LD_LIBRARY_PATH="${_mpi_gnu_dir}:${MPI_DIR}/lib:/apps/ucc/1.3.0/lib:/usr/lib64:${LD_LIBRARY_PATH}"
+    export LIBRARY_PATH="${_mpi_gnu_dir}:${LIBRARY_PATH}"
 
     # Unset ALL conda/pixi compiler and build variables.
     # The pixi gadi env ships a full conda toolchain (x86_64-conda-linux-gnu-*)
