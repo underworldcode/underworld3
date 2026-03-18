@@ -142,6 +142,10 @@ configure_petsc() {
     export OMPI_CC=/usr/bin/gcc
     export OMPI_CXX=/usr/bin/g++
     export OMPI_FC=/usr/bin/gfortran
+    # Gadi's OpenMPI puts Fortran headers in a compiler-tagged subdirectory
+    # (include/GNU/) rather than include/ directly. OMPI_FCFLAGS adds extra
+    # flags to the mpifort wrapper so mpif.h and .mod files are found.
+    export OMPI_FCFLAGS="-I${MPI_DIR}/include/GNU"
 
     # Capture pixi's python3 BEFORE reordering PATH.
     # Then put system bin dirs first so the system linker (/usr/bin/ld) is
