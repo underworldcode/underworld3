@@ -106,29 +106,16 @@ apply_patches() {
     echo "Patches complete."
 }
 
-configure_petsc() {
-    echo "Configuring PETSc with AMR tools..."
-    cd "$PETSC_DIR"
-
-    # Downloads and builds:
-    #   AMR:        mmg, parmmg, pragmatic, eigen
-    #   Solvers:    mumps, scalapack, slepc, superlu, superlu_dist, hypre
-    #   Partitions: metis, parmetis, ptscotch (patched for C23)
-    #   Mesh:       ctetgen, triangle, zlib
-    #   BLAS/LAPACK: fblaslapack (Gadi has system BLAS/LAPACK but auto-detection
-    #                fails due to PATH/env manipulation required for OpenMPI)
-    #   HDF5:       from Gadi module (not downloaded)
-    #   cmake:      from Gadi module (not downloaded)
-    #   BLAS/LAPACK: from Gadi system (not downloaded)
-    #   MPI:        from Gadi module — MPI_DIR derived from which mpicc
-    #   petsc4py:   built during configure
+setup_gadi_build_env() {
+    # Shared environment setup required for both configure and build.
+    # Must be called before any compile/link step.
+    #
     # MPI_DIR is set by load_env() via module load — trust it directly.
-    # Do NOT recompute from 'which mpicc': conda's PATH may resolve to the
-    # pixi env's bin instead of the Gadi OpenMPI bin.
     if [ -z "${MPI_DIR}" ]; then
         echo "Error: MPI_DIR is not set. Source gadi_install_pixi.sh first."
         exit 1
     fi
+
     # Create symlinks for Gadi's compiler-tagged Fortran MPI libs.
     # mpifort --showme refers to libmpi_usempif08 etc. (no compiler tag),
     # but Gadi only ships _GNU, _Intel, _nvidia variants. Symlink GNU → untagged.
@@ -146,7 +133,7 @@ configure_petsc() {
 
     # Unset ALL conda/pixi compiler and build variables.
     # The pixi gadi env ships a full conda toolchain (x86_64-conda-linux-gnu-*)
-    # that interferes with OpenMPI wrappers and PETSc configure.
+    # that interferes with OpenMPI wrappers and PETSc configure/build.
     unset CC CXX FC F77 F90 CPP AR RANLIB
     unset CFLAGS CXXFLAGS FFLAGS CPPFLAGS LDFLAGS
 
@@ -156,15 +143,34 @@ configure_petsc() {
     export OMPI_FC=/usr/bin/gfortran
     # Gadi's OpenMPI puts Fortran headers in a compiler-tagged subdirectory
     # (include/GNU/) rather than include/ directly. OMPI_FCFLAGS adds extra
-    # flags to the mpifort wrapper so mpif.h and .mod files are found.
+    # flags to the mpifort wrapper so mpif.h and mpi.mod are found.
     export OMPI_FCFLAGS="-I${MPI_DIR}/include/GNU"
 
-    # Capture pixi's python3 BEFORE reordering PATH.
-    # Then put system bin dirs first so the system linker (/usr/bin/ld) is
+    # Put system bin dirs first so the system linker (/usr/bin/ld) is
     # found before conda's ld — conda's ld cannot find Gadi-specific libs
     # (hcoll, ucc, libnl) that OpenMPI was built against.
-    _PIXI_PYTHON="$(which python3)"
     export PATH="/usr/bin:/usr/local/bin:${MPI_DIR}/bin:${PATH}"
+}
+
+configure_petsc() {
+    echo "Configuring PETSc with AMR tools..."
+    cd "$PETSC_DIR"
+
+    # Downloads and builds:
+    #   AMR:        mmg, parmmg, pragmatic, eigen
+    #   Solvers:    mumps, scalapack, slepc, superlu, superlu_dist, hypre
+    #   Partitions: metis, parmetis, ptscotch (patched for C23)
+    #   Mesh:       ctetgen, triangle, zlib
+    #   BLAS/LAPACK: fblaslapack (Gadi has system BLAS/LAPACK but auto-detection
+    #                fails due to PATH/env manipulation required for OpenMPI)
+    #   HDF5:       from Gadi module (not downloaded)
+    #   cmake:      from Gadi module (not downloaded)
+    #   MPI:        from Gadi module — MPI_DIR derived from which mpicc
+    #   petsc4py:   built during configure
+
+    # Capture pixi's python3 BEFORE setup_gadi_build_env reorders PATH.
+    _PIXI_PYTHON="$(which python3)"
+    setup_gadi_build_env
 
     "${_PIXI_PYTHON}" ./configure \
         --with-petsc-arch="${PETSC_ARCH}" \
@@ -210,6 +216,7 @@ build_petsc() {
 
     export PETSC_DIR
     export PETSC_ARCH
+    setup_gadi_build_env
 
     make all
     echo "PETSc build complete."
@@ -221,6 +228,7 @@ test_petsc() {
 
     export PETSC_DIR
     export PETSC_ARCH
+    setup_gadi_build_env
 
     make check
     echo "PETSc tests complete."
