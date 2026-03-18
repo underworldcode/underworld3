@@ -65,14 +65,24 @@ echo "HDF5_DIR:   $HDF5_DIR"
 echo "=========================================="
 
 clone_petsc() {
-    if [ -d "$PETSC_DIR" ]; then
+    # Resolve symlink so git clone always writes to the real path.
+    # git clone can replace a symlink-to-empty-dir with a real directory,
+    # which defeats the gdata→scratch symlink approach.
+    local _clone_target
+    if [ -L "$PETSC_DIR" ]; then
+        _clone_target="$(readlink -f "$PETSC_DIR")"
+    else
+        _clone_target="$PETSC_DIR"
+    fi
+
+    if [ -f "${_clone_target}/configure" ]; then
         echo "PETSc directory already exists. Skipping clone."
         echo "To force fresh clone, run: ./build-petsc-gadi.sh clean"
         return 0
     fi
 
     echo "Cloning PETSc release branch..."
-    git clone -b release https://gitlab.com/petsc/petsc.git "$PETSC_DIR"
+    git clone -b release https://gitlab.com/petsc/petsc.git "${_clone_target}"
     echo "Clone complete."
 }
 
@@ -105,6 +115,8 @@ configure_petsc() {
     #   Solvers:    mumps, scalapack, slepc, superlu, superlu_dist, hypre
     #   Partitions: metis, parmetis, ptscotch (patched for C23)
     #   Mesh:       ctetgen, triangle, zlib
+    #   BLAS/LAPACK: fblaslapack (Gadi has system BLAS/LAPACK but auto-detection
+    #                fails due to PATH/env manipulation required for OpenMPI)
     #   HDF5:       from Gadi module (not downloaded)
     #   cmake:      from Gadi module (not downloaded)
     #   BLAS/LAPACK: from Gadi system (not downloaded)
@@ -169,6 +181,7 @@ configure_petsc() {
         --with-pragmatic=1 \
         --with-petsc4py=1 \
         --with-x=0 \
+        --download-fblaslapack=1 \
         --download-zlib=1 \
         --download-eigen=1 \
         --download-metis=1 \
