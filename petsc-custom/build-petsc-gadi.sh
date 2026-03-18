@@ -117,7 +117,17 @@ configure_petsc() {
         echo "Error: MPI_DIR is not set. Source gadi_install_pixi.sh first."
         exit 1
     fi
-    export LD_LIBRARY_PATH="${MPI_DIR}/lib:/apps/ucc/1.3.0/lib:/usr/lib64:${LD_LIBRARY_PATH}"
+    # Create symlinks for Gadi's compiler-tagged Fortran MPI libs.
+    # mpifort --showme refers to libmpi_usempif08 etc. (no compiler tag),
+    # but Gadi only ships _GNU, _Intel, _nvidia variants. Symlink GNU → untagged.
+    local _mpi_gnu_dir="${SCRIPT_DIR}/mpi-gadi-gnu-libs"
+    mkdir -p "${_mpi_gnu_dir}"
+    for _lib in usempif08 usempi_ignore_tkr mpifh; do
+        [ ! -f "${_mpi_gnu_dir}/libmpi_${_lib}.so" ] && \
+            ln -sf "${MPI_DIR}/lib/libmpi_${_lib}_GNU.so" "${_mpi_gnu_dir}/libmpi_${_lib}.so"
+    done
+
+    export LD_LIBRARY_PATH="${_mpi_gnu_dir}:${MPI_DIR}/lib:/apps/ucc/1.3.0/lib:/usr/lib64:${LD_LIBRARY_PATH}"
 
     # Unset ALL conda/pixi compiler and build variables.
     # The pixi gadi env ships a full conda toolchain (x86_64-conda-linux-gnu-*)
