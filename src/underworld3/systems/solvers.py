@@ -2737,29 +2737,19 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         ### sets up DuDt and DFDt
         ## ._setup_history_terms()
 
-        # If DuDt is not provided, then we can build a SLCN version
+        # If DuDt is not provided, build it here. We prefer the Eulerian_DDt
+        # formulation over the SemiLagrangian alternative to keep the solver
+        # initialisation simpler and easier to maintain.
         if self.Unknowns.DuDt is None:
-            # self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
-            #     self.mesh,
-            #     self.u.sym,  # Symbolic expression - SemiLagrangian evaluates this at each update
-            #     self.u.sym,
-            #     vtype=uw.VarType.VECTOR,
-            #     degree=self.u.degree,
-            #     continuous=self.u.continuous,
-            #     varsymbol=self.u.symbol,
-            #     verbose=self.verbose,
-            #     bcs=self.essential_bcs,
-            #     order=self._order,
-            #     smoothing=0.0001,
-            # )
             self.Unknowns.DuDt = uw.systems.Eulerian_DDt(
                 self.mesh,
-                self.u.sym,
+                self.u,
                 vtype=self.u.vtype,
                 degree=self.u.degree,
                 continuous=self.u.continuous,
                 V_fn=self.u.sym,
                 varsymbol=self.u.symbol,
+                bcs=self.essential_bcs,
                 order=self._order,
                 smoothing=0.0,
                 verbose=self.verbose,
