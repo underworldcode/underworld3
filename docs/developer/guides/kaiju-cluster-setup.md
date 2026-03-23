@@ -24,9 +24,9 @@ Pixi manages the Python environment consistently with the developer's local mach
 The key constraint is that **anything linked against MPI must use the same MPI as Slurm**. This means `mpi4py`, `h5py`, PETSc, and `petsc4py` are built from source against Spack's OpenMPI — not from conda-forge (which bundles MPICH).
 
 ```
-pixi kaiju env  → Python 3.12, sympy, scipy, pint, pydantic, ...  (conda-forge, no MPI)
-spack           → openmpi@4.1.6                                    (cluster MPI)
-source build    → mpi4py, PETSc+AMR+petsc4py, h5py                (linked to spack MPI)
+pixi hpc env  → Python 3.12, sympy, scipy, pint, pydantic, ...  (conda-forge, no MPI)
+spack         → openmpi@4.1.6                                    (cluster MPI)
+source build  → mpi4py, PETSc+AMR+petsc4py, h5py                (linked to spack MPI)
 ```
 
 ---
@@ -78,7 +78,7 @@ This runs the following steps in order:
 |------|----------|------|
 | Install pixi | `setup_pixi` | ~1 min |
 | Clone Underworld3 | `clone_uw3` | ~1 min |
-| Install pixi kaiju env | `install_pixi_env` | ~3 min |
+| Install pixi hpc env | `install_pixi_env` | ~3 min |
 | Build mpi4py from source | `install_mpi4py` | ~2 min |
 | Build PETSc + AMR tools | `install_petsc` | ~1 hour |
 | Build MPI-enabled h5py | `install_h5py` | ~2 min |
@@ -94,7 +94,7 @@ install_petsc       # run just one step
 
 ### What PETSc builds
 
-PETSc is compiled from source (`petsc-custom/build-petsc-kaiju.sh`) with:
+PETSc is compiled from source (`petsc-custom/build-petsc.sh` with `UW_CLUSTER=kaiju`) with:
 
 - **AMR tools**: mmg, parmmg, pragmatic, eigen, bison
 - **Solvers**: mumps, scalapack, slepc
@@ -117,7 +117,7 @@ source ~/install_scripts/uw3_install_kaiju_amr.sh
 
 This:
 1. Loads `spack openmpi@4.1.6`
-2. Activates the pixi `kaiju` environment via `pixi shell-hook`
+2. Activates the pixi `hpc` environment via `pixi shell-hook`
 3. Sets `PETSC_DIR`, `PETSC_ARCH`, and `PYTHONPATH` for petsc4py
 4. Sets `PMIX_MCA_psec=native` and `OMPI_MCA_btl_tcp_if_include=eno1`
 
