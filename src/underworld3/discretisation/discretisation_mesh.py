@@ -656,6 +656,11 @@ class Mesh(Stateful, uw_object):
         self._lvec = None
         self.petsc_fe = None
 
+        # Rigid-body rotation null modes for this geometry.
+        # Mesh factories override this for closed surfaces (annulus, sphere).
+        # Each entry is a SymPy Matrix velocity field in mesh coordinates.
+        self._nullspace_rotations = []
+
         self.degree = degree
         self.qdegree = qdegree
 
@@ -1496,6 +1501,31 @@ class Mesh(Stateful, uw_object):
     def CoordinateSystem(self) -> CoordinateSystem:
         r"""Alias for :attr:`X` (the coordinate system object)."""
         return self._CoordinateSystem
+
+    @property
+    def nullspace_rotations(self):
+        """Symbolic velocity fields for rigid-body rotation null modes.
+
+        Returns a list of SymPy Matrix expressions in mesh Cartesian
+        coordinates. Empty for meshes with no rotation nullspace (boxes,
+        wedge segments with walls). Set by mesh factory functions for
+        closed surfaces (annulus, spherical shell, etc.).
+
+        Each entry represents a rigid rotation: v = omega x r.
+
+        Returns
+        -------
+        list of sympy.Matrix
+            Velocity fields for each independent rotation mode.
+
+        Examples
+        --------
+        >>> annulus = uw.meshing.Annulus(...)
+        >>> annulus.nullspace_rotations  # [Matrix([-y, x])]
+        >>> shell = uw.meshing.SphericalShell(...)
+        >>> shell.nullspace_rotations   # 3 rotation matrices
+        """
+        return self._nullspace_rotations
 
     @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
