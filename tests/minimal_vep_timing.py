@@ -53,7 +53,6 @@ stokes.petsc_options["ksp_type"] = "fgmres"
 print(f"BCs set: {time.time() - t0:.1f}s")
 
 # --- First solve (includes JIT compilation) ---
-# Set dt_elastic explicitly to work around elastic_dt alias bug in VE_Stokes.solve()
 t1 = time.time()
 stokes.solve(timestep=0.02, zero_init_guess=True)
 print(f"First solve (incl JIT): {time.time() - t1:.1f}s")

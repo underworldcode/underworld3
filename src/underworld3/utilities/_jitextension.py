@@ -35,6 +35,10 @@ _ext_dict = {}
 # Per-function cache: maps (fn_hash, sig_type) -> _CachedFn
 _fn_cache = {}
 
+# Monotonic counter for unique partial-compilation module names
+_partial_compile_counter = 0
+
+
 
 @dataclass
 class _CachedFn:
@@ -463,33 +467,45 @@ def getext(
         )
 
     # ── Fast path: whole-bundle cache hit ──────────────────────────────────
-    if jitname in _ext_dict and cache:
-        if verbose and underworld3.mpi.rank == 0:
-            print(f"JIT compiled module cached ... {jitname} ", flush=True)
+    # Check both the module cache (all functions compiled together) and
+    # the assembled cache (PtrContainer built from per-function hits).
+    if cache:
+        if jitname in _ext_dict:
+            if verbose and underworld3.mpi.rank == 0:
+                print(f"JIT compiled module cached ... {jitname} ", flush=True)
 
-        module = _ext_dict[jitname]
-        ptrobj = module.getptrobj()
+            module = _ext_dict[jitname]
+            ptrobj = module.getptrobj()
 
-        i_res = {fn: i for i, fn in enumerate(callbacks.residual)}
-        i_ebc = {fn: i for i, fn in enumerate(callbacks.bcs)}
-        i_jac = {fn: i for i, fn in enumerate(callbacks.jacobian)}
-        i_bd_res = {fn: i for i, fn in enumerate(callbacks.bd_residual)}
-        i_bd_jac = {fn: i for i, fn in enumerate(callbacks.bd_jacobian)}
+            i_res = {fn: i for i, fn in enumerate(callbacks.residual)}
+            i_ebc = {fn: i for i, fn in enumerate(callbacks.bcs)}
+            i_jac = {fn: i for i, fn in enumerate(callbacks.jacobian)}
+            i_bd_res = {fn: i for i, fn in enumerate(callbacks.bd_residual)}
+            i_bd_jac = {fn: i for i, fn in enumerate(callbacks.bd_jacobian)}
 
-        extn_fn_dict = namedtuple(
-            "Functions", ["res", "jac", "ebc", "bd_res", "bd_jac"],
-        )
-        return _GextResult(
-            ptrobj,
-            extn_fn_dict(i_res, i_jac, i_ebc, i_bd_res, i_bd_jac),
-            constants_manifest,
-        )
+            extn_fn_dict = namedtuple(
+                "Functions", ["res", "jac", "ebc", "bd_res", "bd_jac"],
+            )
+            return _GextResult(
+                ptrobj,
+                extn_fn_dict(i_res, i_jac, i_ebc, i_bd_res, i_bd_jac),
+                constants_manifest,
+            )
+
+        # Note: _assembled_cache is not used here because fn_dicts maps
+        # expression objects by identity. The caller's self._u_f0 may be a
+        # new object with the same structure, which won't match cached keys.
+        # The per-function cache still avoids recompilation; this just means
+        # the PtrContainer assembly runs each time (cheap: pointer copies only).
 
     # ── Per-function cache: check which individual functions are cached ──
     # Build a hashable key for the constants manifest so it's part of
     # every per-function hash (ensures constants[i] means the same thing).
+    # Use expr.name (value-independent symbol identity) rather than str(expr)
+    # which may include current values and defeat the constants[] mechanism.
     constants_manifest_key = tuple(
-        (str(expr), idx) for idx, expr in constants_manifest
+        (getattr(expr, 'name', type(expr).__name__), idx)
+        for idx, expr in constants_manifest
     )
 
     # Compute per-function hashes for each expression, grouped by sig_type
@@ -550,8 +566,10 @@ def getext(
             bd_jacobian=tuple(new_by_type["bd_jacobian"]),
         )
 
-        # Compile the new functions
-        new_jitname = abs(hash((jitname, "partial", n_new, time.time())))
+        # Compile the new functions — use monotonic counter for unique names
+        global _partial_compile_counter
+        _partial_compile_counter += 1
+        new_jitname = f"{jitname}_partial_{_partial_compile_counter}"
         _createext(
             new_jitname,
             mesh,
@@ -567,6 +585,7 @@ def getext(
         new_ptr = new_module.getptrobj()
 
         # Register each new function in the per-function cache
+        # (only when caching is enabled — cache=False should not pollute)
         for sig_type in _SIG_TYPES:
             for local_idx, slot_idx in enumerate(new_slot_map[sig_type]):
                 key = (sig_type, slot_idx)
@@ -577,12 +596,13 @@ def getext(
                     sig_type=sig_type,
                     index=local_idx,
                 )
-                _fn_cache[cache_key] = entry
+                if cache:
+                    _fn_cache[cache_key] = entry
                 cached_hits[key] = entry
 
     # Also register the full bundle in _ext_dict if ALL functions were new
-    # (common case: first compile of a solver)
-    if n_new > 0 and n_hits == 0:
+    # (common case: first compile of a solver) — only when caching enabled.
+    if cache and n_new > 0 and n_hits == 0:
         _ext_dict[jitname] = _ext_dict[new_jitname]
 
     # ── Assemble PtrContainer from cached function pointers ─────────────

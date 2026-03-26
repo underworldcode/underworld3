@@ -1,6 +1,19 @@
-from libc.stdlib cimport malloc
+from libc.stdlib cimport malloc, free
 
 cdef class PtrContainer:
+
+    def __dealloc__(self):
+        """Free allocated function pointer arrays."""
+        if self.fns_residual != NULL:
+            free(self.fns_residual)
+        if self.fns_bcs != NULL:
+            free(self.fns_bcs)
+        if self.fns_jacobian != NULL:
+            free(self.fns_jacobian)
+        if self.fns_bd_residual != NULL:
+            free(self.fns_bd_residual)
+        if self.fns_bd_jacobian != NULL:
+            free(self.fns_bd_jacobian)
 
     cpdef allocate(self, int n_res, int n_bcs, int n_jac, int n_bd_res, int n_bd_jac):
         """Allocate function pointer arrays of the given sizes."""
