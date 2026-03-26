@@ -10,8 +10,8 @@
 # Cluster-specific differences:
 #
 #   Aspect        local                    kaiju             gadi
-#   PETSC_ARCH    petsc-4-uw-{mpich,       petsc-4-uw        arch-linux-c-opt
-#                   openmpi}
+#   PETSC_ARCH    petsc-4-uw-{mpich,       petsc-4-uw-       petsc-4-uw-
+#                   openmpi}               openmpi           openmpi
 #   MPI           pixi env                 spack (PATH)      module (PATH)
 #   HDF5          pixi env                 download          module ($HDF5_DIR)
 #   BLAS/LAPACK   auto                     download          download (auto fails)
@@ -107,7 +107,7 @@ EOF
         fi
         MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
         MPI_IMPL="openmpi"
-        PETSC_ARCH="petsc-4-uw"
+        PETSC_ARCH="petsc-4-uw-openmpi"
         ;;
 
     gadi)
@@ -128,7 +128,7 @@ EOF
         fi
         MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
         MPI_IMPL="openmpi"
-        PETSC_ARCH="arch-linux-c-opt"
+        PETSC_ARCH="petsc-4-uw-openmpi"
         ;;
 
     *)

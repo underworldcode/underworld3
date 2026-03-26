@@ -114,7 +114,7 @@ guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
 guides/BINDER_CONTAINER_SETUP
-guides/kaiju-cluster-setup
+guides/hpc-cluster-setup
 ```
 
 ```{toctree}

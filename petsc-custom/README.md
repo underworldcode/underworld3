@@ -69,7 +69,7 @@ petsc-custom/
 ├── build-petsc.sh      # Build script
 ├── README.md           # This file
 └── petsc/              # PETSc source and build (created by build)
-    ├── petsc-4-uw/     # Build output (PETSC_ARCH)
+    ├── petsc-4-uw-openmpi/     # Build output (PETSC_ARCH, example)
     └── src/
         └── binding/
             └── petsc4py/
@@ -86,5 +86,5 @@ petsc-custom/
 The AMR environment automatically sets:
 ```bash
 PETSC_DIR=$PIXI_PROJECT_ROOT/petsc-custom/petsc
-PETSC_ARCH=petsc-4-uw
+PETSC_ARCH=petsc-4-uw-openmpi
 ```
