@@ -77,6 +77,7 @@ def _run_ve_shear(order, n_steps, dt_over_tr):
     stokes.constitutive_model.Parameters.shear_viscosity_0 = ETA
     stokes.constitutive_model.Parameters.shear_modulus = MU
     stokes.constitutive_model.Parameters.dt_elastic = dt
+    # bdf_blend auto-detects: 1.0 for pure VE, 0.75 for VEP
 
     stokes.add_dirichlet_bc((V0, 0.0), "Top")
     stokes.add_dirichlet_bc((-V0, 0.0), "Bottom")
@@ -94,7 +95,7 @@ def _run_ve_shear(order, n_steps, dt_over_tr):
 
     time = 0.0
     for step in range(n_steps):
-        stokes.solve(zero_init_guess=False, evalf=False)
+        stokes.solve(timestep=dt, zero_init_guess=False, evalf=False)
         time += dt
 
         # Read stress from solver.tau — the actual projected stress

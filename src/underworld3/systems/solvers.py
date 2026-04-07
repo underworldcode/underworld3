@@ -224,7 +224,7 @@ class SNES_Poisson(SNES_Scalar):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: sympy.simplify(self.constitutive_model.flux.T),
+        lambda self: self.constitutive_model.flux.T,
         r"""Diffusive flux term for the Poisson equation (pointwise).
 
         The $\mathbf{F}_1$ vector represents the flux $k \nabla u$
@@ -687,6 +687,169 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         return
 
+    def _create_stress_history_ddt(self, order=2):
+        """Create DFDt for stress history tracking (VE/VEP models).
+
+        Called automatically when a constitutive model with
+        ``requires_stress_history = True`` is assigned. Can also be called
+        explicitly to pre-create the DFDt with a specific order.
+        """
+        if self.Unknowns.DFDt is not None:
+            return  # already created
+
+        self._order = order
+        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+            self.mesh,
+            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            self.u.sym,
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self.u.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+            verbose=self.verbose,
+            bcs=None,
+            order=order,
+            smoothing=0.0001,
+        )
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose=False,
+        evalf=False,
+        order=None,
+        picard: int = 0,
+    ):
+        """Solve the Stokes system, with optional viscoelastic stress history.
+
+        When a constitutive model with stress history is active (DFDt is not None),
+        the solve includes pre/post hooks for advecting stress history, updating
+        BDF coefficients, and projecting the actual stress after the solve.
+
+        Parameters
+        ----------
+        zero_init_guess : bool
+            If True, use zero initial guess. Otherwise use current field values.
+        timestep : float, optional
+            Advection timestep. Required when stress history is active.
+        _force_setup : bool
+            Force rebuild of pointwise functions.
+        verbose : bool
+            Enable verbose output.
+        evalf : bool
+            Force numerical evaluation during history updates.
+        order : int, optional
+            Override the VE time integration order.
+        picard : int, default=0
+            Number of Picard iterations before switching to Newton.
+            Picard uses a simplified Jacobian and can help convergence
+            for strongly nonlinear problems like VEP at yield onset.
+        """
+
+        has_stress_history = self.Unknowns.DFDt is not None
+
+        if has_stress_history:
+            if timestep is None:
+                raise ValueError(
+                    "timestep is required for viscoelastic solve. "
+                    "Call stokes.solve(timestep=dt)"
+                )
+
+            # dt_elastic must always equal the solve timestep. The constitutive
+            # model's VE formulas (eta_eff, stress history terms) all reference
+            # Parameters.dt_elastic. If it differs from the actual timestep,
+            # the stress computation is inconsistent with the time integration.
+            self.constitutive_model.Parameters.dt_elastic = timestep
+
+            if order is None or order > self._order:
+                order = self._order
+
+            if _force_setup:
+                self.is_setup = False
+
+            # Re-setup when effective_order changes (DDt history ramp-up)
+            _current_eff_order = self.constitutive_model.effective_order
+            if not hasattr(self, '_prev_effective_order'):
+                self._prev_effective_order = None
+            if _current_eff_order != self._prev_effective_order:
+                self.is_setup = False
+                self.constitutive_model._solver_is_setup = False
+            self._prev_effective_order = _current_eff_order
+
+            if not self.constitutive_model._solver_is_setup:
+                self.is_setup = False
+                self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+            if not self.is_setup:
+                self._setup_pointwise_functions(verbose)
+                self._setup_discretisation(verbose)
+                self._setup_solver(verbose)
+
+            # 1. ADVECT stress history along characteristics
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - advect stress history", flush=True)
+
+            self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
+                                       store_result=False)
+            self.constitutive_model._update_bdf_coefficients()
+
+            # 2. SOLVE
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - solve", flush=True)
+
+            super().solve(
+                zero_init_guess,
+                _force_setup=_force_setup,
+                verbose=verbose,
+                picard=picard,
+            )
+
+            # 3. PROJECT actual stress and SHIFT history
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - store stress and shift history", flush=True)
+
+            import numpy as np
+
+            _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
+
+            self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
+            self.DFDt._psi_star_projection_solver.smoothing = 0.0
+            self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+
+            for i in range(self.DFDt.order - 1, 0, -1):
+                if i == 1:
+                    self.DFDt.psi_star[i].array[...] = _advected_sigma_star
+                else:
+                    self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
+
+            self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+            self.is_setup = True
+            self.constitutive_model._solver_is_setup = True
+
+        else:
+            # Plain Stokes — no stress history
+            super().solve(
+                zero_init_guess,
+                _force_setup=_force_setup,
+                verbose=verbose,
+            )
+
+    @property
+    def tau(self):
+        r"""Deviatoric stress from the most recent solve.
+
+        When stress history is active (VEP), returns ``psi_star[0]`` which
+        contains the actual projected stress. Otherwise falls through to the
+        base class lazy projection.
+        """
+        if self.Unknowns.DFDt is not None:
+            return self.DFDt.psi_star[0]
+        return super().tau
+
     # =========================================================================
     # PETSc Residual Templates
     # These define the weak form terms assembled by PETSc's finite element system.
@@ -705,7 +868,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: sympy.simplify(
+        lambda self: (
             self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
         ),
         r"""Velocity equation flux/stress term (pointwise).
@@ -718,7 +881,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     PF0 = Template(
         r"\mathbf{h}_0\left( \mathbf{p} \right)",
-        lambda self: sympy.simplify(sympy.Matrix((self.constraints))),
+        lambda self: sympy.Matrix((self.constraints)),
         r"""Pressure equation constraint term (continuity).
 
         The $h_0$ term enforces the incompressibility constraint
@@ -1126,72 +1289,26 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
 
 class SNES_VE_Stokes(SNES_Stokes):
-    r"""
-    Viscoelastic Stokes equation solver.
+    r"""Viscoelastic Stokes solver (backward-compatibility wrapper).
 
-    Provides a discrete representation of the Stokes flow equations with
-    incompressibility (or near-incompressibility) constraint and a flux
-    history term for viscoelastic modelling. Inherits from :class:`SNES_Stokes`.
+    .. deprecated::
+        Use ``uw.systems.Stokes`` directly with a
+        ``ViscoElasticPlasticFlowModel`` constitutive model. The Stokes
+        solver now creates stress history infrastructure automatically
+        when the constitutive model requires it.
 
-    Momentum equation:
-
-    .. math::
-
-        -\nabla \cdot \underbrace{\left[ \boldsymbol{\tau} - p \mathbf{I}
-        \right]}_{\mathbf{F}} = \underbrace{\mathbf{f}}_{\mathbf{h}}
-
-    Continuity equation:
-
-    .. math::
-
-        \underbrace{\nabla \cdot \mathbf{u}}_{\mathbf{h}_p} = 0
-
-    The flux term is a deviatoric stress :math:`\boldsymbol{\tau}` related
-    to velocity gradients :math:`\nabla \mathbf{u}` through a viscosity
-    tensor :math:`\eta`, plus a volumetric (pressure) part :math:`p`:
-
-    .. math::
-
-        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}
-        \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
-
-    The constraint equation :math:`\mathbf{h}_p = 0` is incompressible flow
-    by default but can be set to any function of :math:`\mathbf{u}` and
-    :math:`\nabla \cdot \mathbf{u}`.
+    This wrapper pre-creates the DFDt with a specific ``order`` parameter,
+    which is useful when you want to control the BDF order before assigning
+    the constitutive model.
 
     Parameters
     ----------
     mesh : Mesh
         The computational mesh.
-    velocityField : MeshVariable, optional
-        Mesh variable for velocity. Created automatically if not provided.
-    pressureField : MeshVariable, optional
-        Mesh variable for pressure. Created automatically if not provided.
-    degree : int, default=2
-        Polynomial degree for velocity elements.
     order : int, default=2
-        Order parameter (typically same as degree).
-    p_continuous : bool, default=True
-        If False, use discontinuous pressure elements.
-    verbose : bool, default=False
-        Enable verbose output.
-    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
-        Time derivative operator (may be used in child classes).
-
-    Notes
-    -----
-    - The viscosity tensor :math:`\boldsymbol{\eta}` is set via the
-      ``constitutive_model`` property
-    - For viscoelastic problems, the flux term contains stress history
-      tracked on a particle swarm
-    - Augmented Lagrangian approach adds :math:`\lambda \nabla \cdot \mathbf{u}`
-      to penalize incompressibility
-    - Pressure element order determines mixed FEM integration order
-
-    See Also
-    --------
-    SNES_Stokes : Base Stokes solver.
-    uw.constitutive_models.ViscoElasticPlasticFlowModel : Constitutive model for VE flow.
+        BDF time integration order for stress history.
+    **kwargs
+        All other arguments are passed to :class:`SNES_Stokes`.
     """
 
     instances = 0
@@ -1205,12 +1322,9 @@ class SNES_VE_Stokes(SNES_Stokes):
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: Optional[bool] = False,
-        # DuDt Not used in VE, but may be in child classes
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
-
-        # Stokes is parent (will not build DuDt or DFDt)
         super().__init__(
             mesh,
             velocityField,
@@ -1222,22 +1336,8 @@ class SNES_VE_Stokes(SNES_Stokes):
             DFDt=DFDt,
         )
 
-        self._order = order  # VE time-order
-
-        if self.Unknowns.DFDt is None:
-            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                vtype=uw.VarType.SYM_TENSOR,
-                degree=self.u.degree - 1,
-                continuous=True,
-                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
-                verbose=self.verbose,
-                bcs=None,
-                order=self._order,
-                smoothing=0.0001,
-            )
+        # Pre-create DFDt so it's available before constitutive model is set
+        self._create_stress_history_ddt(order=order)
 
         return
 
@@ -1245,160 +1345,6 @@ class SNES_VE_Stokes(SNES_Stokes):
     def delta_t(self):
         """Elastic timestep from the constitutive model."""
         return self.constitutive_model.Parameters.dt_elastic
-
-    @property
-    def tau(self):
-        r"""Deviatoric stress from the most recent solve (stored in history).
-
-        For VE_Stokes, the stress is projected into ``psi_star[0]`` after
-        each solve. This override returns that variable directly — no
-        additional projection needed.
-
-        Returns
-        -------
-        MeshVariable
-            The stress history variable containing the actual deviatoric
-            stress from the most recent solve.
-        """
-        return self.DFDt.psi_star[0]
-
-    ## Solver needs to update the stress history terms as well as call the SNES solve:
-
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        _force_setup: bool = False,
-        verbose=False,
-        evalf=False,
-        order=None,
-    ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        """
-
-        if order is None or order > self._order:
-            order = self._order
-
-        if timestep is None:
-            timestep = self.delta_t.sym
-
-        # dt_elastic is a constitutive parameter (relaxation timescale) —
-        # never overwritten by solve(). The advection timestep (for departure
-        # point tracing) and the elastic relaxation timescale are independent.
-
-        if _force_setup:
-            self.is_setup = False
-
-        # Re-setup when effective_order changes (e.g. DDt history ramp-up
-        # from order 1 to order 2). The JIT-compiled pointwise functions
-        # depend on the order used in the constitutive model.
-        _current_eff_order = self.constitutive_model.effective_order
-        if not hasattr(self, '_prev_effective_order'):
-            self._prev_effective_order = None
-        if _current_eff_order != self._prev_effective_order:
-            self.is_setup = False
-            self.constitutive_model._solver_is_setup = False
-        self._prev_effective_order = _current_eff_order
-
-        if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
-
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        # --- Stress history management via standard DDt pathway ---
-        #
-        # update_pre_solve(advect_only=True) performs:
-        #   1. History shift: psi_star[i] ← psi_star[i-1]
-        #   2. Skip psi_fn evaluation (psi_star[0] already has projected stress)
-        #   3. Advect all history levels to upstream positions along characteristics
-        #
-        # After this: psi_star[0] = σ* (previous stress at upstream),
-        #             psi_star[1] = σ** (stress from 2 steps ago, double-traced).
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VE Stokes solver - advect stress history", flush=True)
-
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
-                                   store_result=False)
-
-        # Update BDF coefficients from current dt_elastic and DDt history.
-        # These are UWexpressions that route through PetscDS constants[],
-        # so the compiled pointwise functions pick up the new values without
-        # JIT recompilation.
-        self.constitutive_model._update_bdf_coefficients()
-
-        # 2. SOLVE: PETSc uses the advected σ*, σ** via the constitutive model
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VE Stokes solver - solve Stokes flow", flush=True)
-
-        super().solve(
-            zero_init_guess,
-            _force_setup=_force_setup,
-            verbose=verbose,
-            picard=0,
-        )
-
-        # 3. STORE ACTUAL STRESS and SHIFT HISTORY.
-        #
-        #    After advection + solve:
-        #      psi_star[0] = advected σ*  (used by the solver)
-        #      psi_star[1] = advected σ** (used by the solver)
-        #
-        #    We need to:
-        #    a) Project actual stress → psi_star[0] (while σ*, σ** are intact)
-        #    b) Save the advected σ* into psi_star[1] for next step's σ**
-        #       (chained characteristic tracing)
-        #
-        #    The projection reads psi_star[0..1] via stress_deviator, so we
-        #    must project BEFORE shifting. Then save the advected σ* and
-        #    overwrite psi_star[0] with the projected stress.
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VE Stokes solver - store stress and shift history", flush=True)
-
-        import numpy as np
-
-        # Save advected σ* before projection modifies psi_star[0]
-        _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
-
-        # Project actual stress into psi_star[0].
-        # Uses the constitutive formula so that σ* and σ** from psi_star
-        # are read correctly during projection.
-        self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
-        self.DFDt._psi_star_projection_solver.smoothing = 0.0
-        self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
-
-        # Now psi_star[0] = projected τ (actual stress from this solve).
-        # Shift history: psi_star[i] ← previous psi_star[i-1] (advected values).
-        # psi_star[1] gets the advected σ* (saved before projection).
-        # Higher levels shift down the chain.
-        for i in range(self.DFDt.order - 1, 0, -1):
-            if i == 1:
-                self.DFDt.psi_star[i].array[...] = _advected_sigma_star
-            else:
-                self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
-
-        # 5. BOOKKEEPING
-
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
-
-        return
 
 
 class SNES_Projection(SNES_Scalar):
@@ -2478,7 +2424,7 @@ class SNES_Diffusion(SNES_Scalar):
         """Pointwise source term including time derivative."""
         f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
-            -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
+            -self.f + self.DuDt.bdf() / self.delta_t,
             "Diffusion pointwise force term: f_0(u)",
         )
 
@@ -2918,7 +2864,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         f0 = expression(
             r"\mathbf{F}_1\left( \mathbf{p} \right)",
-            sympy.simplify(sympy.Matrix((self.constraints))),
+            sympy.Matrix((self.constraints)),
             "NStokes pointwise flux term: f_0(p)",
         )
 

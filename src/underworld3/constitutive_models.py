@@ -579,6 +579,25 @@ class Constitutive_Model(uw_object):
 
         return
 
+    @property
+    def requires_stress_history(self):
+        """Whether this model needs DFDt stress history tracking.
+
+        Models that return True require a solver with stress history
+        management (e.g. VE_Stokes). Assigning such a model to a plain
+        Stokes solver will raise an error.
+        """
+        return False
+
+    @property
+    def plastic_fraction(self):
+        """Fraction of strain rate that is plastic (0 for non-plastic models).
+
+        Returns a sympy expression that can be evaluated post-solve via
+        ``uw.function.evaluate(cm.plastic_fraction, coords)``.
+        """
+        return sympy.Integer(0)
+
     def _build_c_tensor(self):
         """Return the identity tensor of appropriate rank (e.g. for projections)"""
 
@@ -752,6 +771,11 @@ class ViscousFlowModel(Constitutive_Model):
         # ddu = self.Unknowns.u.sym.jacobian(mesh.CoordinateSystem.N)
         # edot = (ddu + ddu.T) / 2
         # return edot
+
+    @property
+    def plastic_fraction(self):
+        """Fraction of strain rate that is plastic: 1 - η_vp / η_viscous."""
+        return sympy.Max(0, 1 - self.viscosity / self.Parameters.shear_viscosity_0)
 
     def _build_c_tensor(self):
         """For this constitutive law, we expect just a viscosity function"""
@@ -1086,6 +1110,14 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         )
 
         self._order = order
+        self._yield_mode = "smooth"  # "min", "harmonic", "smooth", or "softmin"
+        self._yield_softness = 0.5  # δ parameter for "softmin" mode
+        self._bdf_blend = None  # auto: 1.0 for VE, 0.75 for VEP
+
+        # Timestep — set by the solver before each solve(). Not a user parameter.
+        # Initialised to oo (viscous limit). The solver overwrites this with the
+        # actual timestep on every call to solve(timestep=dt).
+        self._dt = expression(r"{\Delta t}", sympy.oo, "Timestep (set by solver)")
 
         # BDF coefficients as UWexpressions — route through PetscDS constants[].
         # Updated each step by _update_bdf_coefficients() before solve.
@@ -1128,12 +1160,23 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             units="Pa",
         )
 
-        dt_elastic = api_tools.Parameter(
-            R"{\Delta t_{e}}",
-            lambda inner_self: sympy.oo,
-            "Elastic timestep",
-            units="s",
-        )
+        @property
+        def dt_elastic(inner_self):
+            """Timestep for VE formulas. Set by the solver, not a user parameter.
+
+            Returns the UWexpression that the solver updates before each solve.
+            This flows through PetscDS constants[] so the JIT-compiled pointwise
+            functions always see the current timestep.
+            """
+            return inner_self._owning_model._dt
+
+        @dt_elastic.setter
+        def dt_elastic(inner_self, value):
+            """Allow the solver to set dt via Parameters.dt_elastic = timestep."""
+            if hasattr(value, 'sym'):
+                inner_self._owning_model._dt.sym = value.sym
+            else:
+                inner_self._owning_model._dt.sym = value
 
         shear_viscosity_min = api_tools.Parameter(
             R"{\eta_{\textrm{min}}}",
@@ -1239,9 +1282,33 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @order.setter
     def order(self, value):
-        """Set the time integration order."""
+        """Set the time integration order.
+
+        If the model is already attached to a solver with a DFDt, this will
+        warn if the DFDt was created with a lower order (since it can't be
+        changed after creation — the DFDt allocates history buffers at init).
+        """
         self._order = value
         self._reset()
+
+        # Propagate to connected solver if present
+        solver = getattr(self.Parameters, '_solver', None)
+        if solver is not None:
+            ddt = getattr(solver.Unknowns, 'DFDt', None)
+            if ddt is not None and ddt.order < value:
+                import warnings
+                warnings.warn(
+                    f"Setting order={value} but the solver's DFDt was already "
+                    f"created with order={ddt.order}. The DFDt order cannot be "
+                    f"changed after creation. To use order={value}, create the "
+                    f"model with the desired order before assigning to the solver:\n"
+                    f"  cm = ViscoElasticPlasticFlowModel(stokes.Unknowns, order={value})\n"
+                    f"  stokes.constitutive_model = cm",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            elif ddt is not None:
+                solver._order = value
         return
 
     @property
@@ -1257,6 +1324,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             return min(self._order, self.Unknowns.DFDt.effective_order)
         return self._order
 
+    # Maximum timestep ratio (dt_new / dt_old) for which BDF-2+ is safe.
+    # Beyond this, fall back to BDF-1 to avoid negative-stress extrapolation
+    # when stress history is non-smooth (e.g. yield events).
+    _max_dt_ratio_for_higher_order = 2.0
+
     def _update_bdf_coefficients(self):
         """Update BDF coefficient UWexpressions from current dt_elastic and DDt history.
 
@@ -1264,16 +1336,44 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         correct coefficients to the compiled pointwise functions. The coefficient
         UWexpressions (_bdf_c0..c3) are referenced symbolically in ve_effective_viscosity,
         E_eff, and stress() — their numeric values flow through PetscDSSetConstants.
+
+        When the timestep ratio exceeds ``_max_dt_ratio_for_higher_order``,
+        BDF-2+ coefficients can cause negative stress extrapolation if the
+        stress history is non-smooth (e.g. after a yield event). In this case
+        we fall back to BDF-1 coefficients for safety.
         """
+        order = self.effective_order
+
         if self.Unknowns is not None and self.Unknowns.DFDt is not None:
             dt_current = self.Parameters.dt_elastic
             if hasattr(dt_current, 'sym'):
                 dt_current = dt_current.sym
-            coeffs = _bdf_coefficients(
-                self.effective_order, dt_current, self.Unknowns.DFDt._dt_history
-            )
+
+            # Guard: fall back to BDF-1 when timestep increases too rapidly
+            dt_history = self.Unknowns.DFDt._dt_history
+            if order >= 2 and len(dt_history) > 0 and dt_history[0] is not None:
+                try:
+                    ratio = float(dt_current) / float(dt_history[0])
+                    if ratio > self._max_dt_ratio_for_higher_order:
+                        order = 1
+                except (TypeError, ZeroDivisionError):
+                    pass  # symbolic dt — can't evaluate, keep requested order
+
+            coeffs = _bdf_coefficients(order, dt_current, dt_history)
+
+            # Blend with O1 coefficients for stability
+            # 0 = pure O1, 0.5 = balanced (default), 1 = pure requested order
+            alpha = self.bdf_blend  # property resolves None → auto-detect
+            if 0 < alpha < 1 and order >= 2:
+                coeffs_o1 = _bdf_coefficients(1, dt_current, dt_history)
+                while len(coeffs_o1) < len(coeffs):
+                    coeffs_o1.append(sympy.Integer(0))
+                coeffs = [
+                    (1 - alpha) * c1 + alpha * ck
+                    for c1, ck in zip(coeffs_o1, coeffs)
+                ]
         else:
-            coeffs = _bdf_coefficients(self.effective_order, None, [])
+            coeffs = _bdf_coefficients(order, None, [])
 
         # Pad to length 4
         while len(coeffs) < 4:
@@ -1348,12 +1448,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def viscosity(self):
         r"""Effective viscosity combining visco-elastic and plastic limits.
 
-        Returns :math:`\min(\eta_{\mathrm{ve}}, \tau_y / 2\dot{\varepsilon}_{II})`.
-        """
-        # detect if values we need are defined or are placeholder symbols
+        The yield mode controls how η_ve and η_pl are combined:
 
-        ## Do we want this to be an expression of its own ? If so, define above in __init__() and
-        ## make sure it is updated in this call, rather than being replaced.
+        - ``"smooth"`` (default): corrected harmonic ``η_ve·(1+f)/(1+f+f²)``
+          where ``f = η_ve/η_pl``. Converges to η_pl at deep yielding,
+          no Min/Max discontinuities.
+        - ``"harmonic"``: ``1/(1/η_ve + 1/η_pl)``. Smooth but undershoots τ_y
+          when η_ve is small relative to η_pl.
+        - ``"min"``: sharp ``Min(η_ve, η_pl)``. Exact yield stress but can
+          cause SNES divergence with higher-order BDF time integration.
+        """
 
         inner_self = self.Parameters
 
@@ -1364,21 +1468,44 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         if self.is_viscoplastic:
             vp_effective_viscosity = self._plastic_effective_viscosity
-            effective_viscosity = sympy.Min(effective_viscosity, vp_effective_viscosity)
+            if self._yield_mode == "harmonic":
+                effective_viscosity = 1 / (1 / effective_viscosity + 1 / vp_effective_viscosity)
+            elif self._yield_mode == "smooth":
+                # Corrected harmonic: cancels the excess 1/η_ve contribution
+                # at deep yielding while staying smooth everywhere.
+                #   η_eff = η_ve · (1+f) / (1 + f + f²)
+                # where f = η_ve/η_pl measures yield overshoot.
+                #
+                # f → 0 (elastic): η_eff → η_ve   (no correction)
+                # f → ∞ (yielding): η_eff → η_pl  (exact yield)
+                # No Min/Max — just arithmetic. Continuous derivatives.
+                f = effective_viscosity / vp_effective_viscosity
+                effective_viscosity = effective_viscosity * (1 + f) / (1 + f + f**2)
+            elif self._yield_mode == "softmin":
+                # Smooth approximation to Min(η_ve, η_pl):
+                #   η_eff = η_ve / g(f)
+                #   g(f) = (1+f)/2 + √((f-1)² + δ²)/2  ≈ max(1, f)
+                # where f = η_ve/η_pl and δ = yield_softness.
+                # Approaches exact Min as δ→0. No Min/Max in expression.
+                delta = self._yield_softness
+                f = effective_viscosity / vp_effective_viscosity
+                g = (1 + f) / 2 + sympy.sqrt((f - 1)**2 + delta**2) / 2
+                effective_viscosity = effective_viscosity / g
+            else:
+                effective_viscosity = sympy.Min(effective_viscosity, vp_effective_viscosity)
 
-            ## Why is it p**2 here ?
-            # p = self.plastic_correction()
-            # effective_viscosity *= 2 * p**2 / (1 + p**2)
-
-            # effective_viscosity *= self.plastic_correction()
-
-        # If we want to apply limits to the viscosity but see caveat above
+        # Apply viscosity floor — but skip for smooth/harmonic yield modes
+        # where the outer Max creates a nested Min/Max that breaks the
+        # BDF-2 Jacobian. Those modes are already smooth and bounded.
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
-            return sympy.Max(
-                effective_viscosity,
-                inner_self.shear_viscosity_min,
-            )
+            if self.is_viscoplastic and self._yield_mode in ("harmonic", "smooth", "softmin"):
+                return effective_viscosity
+            else:
+                return sympy.Max(
+                    effective_viscosity,
+                    inner_self.shear_viscosity_min,
+                )
 
         else:
             return effective_viscosity
@@ -1512,11 +1639,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return stress
 
     def stress(self):
-        """viscoelastic stress projection (no plastic response)"""
+        """Viscoelastic(-plastic) deviatoric stress for the weak form."""
 
         edot = self.grad_u
-
-        # This is a scalar viscosity ...
 
         stress = 2 * self.viscosity * edot
 
@@ -1526,7 +1651,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
                 bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
 
-                # History contribution: 2·η_eff · (-Σ cᵢ·σ_star[i-1]) / (2·μ·dt)
                 for i in range(self.Unknowns.DFDt.order):
                     stress += 2 * self.viscosity * (
                         -bdf_cs[i] * self.Unknowns.DFDt.psi_star[i].sym / (2 * mu_dt)
@@ -1589,6 +1713,77 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         )
 
     @property
+    def yield_mode(self):
+        r"""How to combine VE and plastic viscosities.
+
+        ``"smooth"`` (default): corrected harmonic —
+            ``η_ve · (1+f) / (1+f+f²)`` where ``f = η_ve/η_pl``.
+            Smooth, no Min/Max. Best balance of accuracy and robustness.
+        ``"softmin"``: smooth approximation to Min —
+            ``η_ve / g(f)`` where ``g(f) ≈ max(1, f)`` with smoothing
+            parameter δ (``yield_softness``, default 0.5).
+            Closer to exact yield than ``"smooth"`` but less robust.
+        ``"harmonic"``: parallel blending — ``1/(1/η_ve + 1/η_pl)``.
+            Smooth but undershoots τ_y for soft materials.
+        ``"min"``: sharp cutoff — ``Min(η_ve, η_pl)``.
+            Exact yield but can cause SNES divergence with BDF-2.
+        """
+        return self._yield_mode
+
+    @yield_mode.setter
+    def yield_mode(self, value):
+        if value not in ("min", "harmonic", "smooth", "softmin"):
+            raise ValueError(f"yield_mode must be 'min', 'harmonic', 'smooth', or 'softmin', got '{value}'")
+        self._yield_mode = value
+        self._reset()
+
+    @property
+    def yield_softness(self):
+        r"""Regularisation parameter δ for ``"softmin"`` yield mode.
+
+        Controls how closely the soft minimum approximates the sharp Min.
+        Smaller values → sharper yield (closer to Min, less robust).
+        Larger values → smoother transition (more robust, lower stress).
+
+        Default 0.5. Only used when ``yield_mode == "softmin"``.
+        """
+        return self._yield_softness
+
+    @yield_softness.setter
+    def yield_softness(self, value):
+        self._yield_softness = value
+        self._reset()
+
+    @property
+    def bdf_blend(self):
+        r"""Blending parameter α for BDF history coefficients.
+
+        Blends O1 and O2 BDF coefficients: ``c = (1-α)·c_O1 + α·c_O2``.
+
+        - ``α = 0``: pure BDF-1 (most stable, first-order accurate)
+        - ``α = 0.75``: default for VEP (stable, near-optimal accuracy)
+        - ``α = 1``: pure BDF-2 (default for pure VE, second-order accurate)
+        - ``None`` (default): auto-detect — 1.0 for VE, 0.75 for VEP
+        """
+        if self._bdf_blend is None:
+            return 0.75 if self.is_viscoplastic else 1.0
+        return self._bdf_blend
+
+    @bdf_blend.setter
+    def bdf_blend(self, value):
+        self._bdf_blend = value
+
+    @property
+    def requires_stress_history(self):
+        """VEP models always require stress history tracking."""
+        return True
+
+    @property
+    def plastic_fraction(self):
+        """Fraction of strain rate that is plastic: 1 - η_vep / η_ve."""
+        return sympy.Max(0, 1 - self.viscosity / self.Parameters.ve_effective_viscosity.sym)
+
+    @property
     def is_elastic(self):
         """True if elastic behavior is active (finite dt_elastic and shear_modulus)."""
         # If any of these is not defined, elasticity is switched off
@@ -1604,7 +1799,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     @property
     def is_viscoplastic(self):
         """True if plastic yielding is active (finite yield_stress)."""
-        if self.Parameters.yield_stress == sympy.oo:
+        if self.Parameters.yield_stress.sym is sympy.oo:
             return False
 
         return True
@@ -2184,7 +2379,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
                         lambda_mat[i, j, k, l] = val
 
-        lambda_mat = sympy.simplify(uw.maths.tensor.rank4_to_mandel(lambda_mat, d))
+        lambda_mat = uw.maths.tensor.rank4_to_mandel(lambda_mat, d)
 
         self._c = uw.maths.tensor.mandel_to_rank4(lambda_mat, d)
 

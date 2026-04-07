@@ -126,8 +126,7 @@ run_build() {
         # Step 2: Check/build petsc4py
         if ! petsc4py_installed "$env"; then
             echo "  Installing petsc4py for $env..."
-            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && \
-             $PIXI run -e "$env" pip install . --no-build-isolation) || {
+            $PIXI run -e "$env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation || {
                 echo -e "${YELLOW}petsc4py build failed${NC}"
                 exit 1
             }
@@ -170,8 +169,10 @@ run_build() {
     echo "  Building underworld3..."
     # --no-cache-dir: UW3 is always version 0.0.0, so pip's wheel cache
     # treats every build as "already cached" and silently reuses stale code.
-    # This flag forces pip to rebuild from source every time.
-    $PIXI run -e "$env" pip install . --no-build-isolation --no-cache-dir || {
+    # --force-reinstall: pip also skips reinstalling .py files if it thinks
+    # the package is already installed at the same version. This ensures
+    # all source files (not just compiled .pyx) are copied to site-packages.
+    $PIXI run -e "$env" pip install . --no-build-isolation --no-cache-dir --force-reinstall || {
         echo -e "${YELLOW}underworld3 build failed${NC}"
         exit 1
     }
@@ -633,7 +634,7 @@ run_setup() {
         if petsc_built; then
             echo -e "${GREEN}✓ Custom PETSc already built${NC}"
             echo "Installing petsc4py..."
-            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && $PIXI run -e "$new_env" python setup.py install) 2>/dev/null
+            $PIXI run -e "$new_env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation 2>/dev/null
         else
             echo -e "${YELLOW}Custom PETSc needs to be built (~1 hour)${NC}"
             read -p "Build now? [y/N]: " build_now
@@ -1067,6 +1068,20 @@ worktree_create() {
         ln -s "$main_repo/.pixi" "$wt_path/.pixi"
         echo -e "    ${YELLOW}✓${NC} .pixi → main repo (shared fallback)"
     }
+
+    # 4b. Install petsc4py for AMR environments
+    # petsc4py is built from source (not a conda package), so pixi install
+    # doesn't include it. We install from the shared PETSc build.
+    # IMPORTANT: Don't cd into the petsc source dir — pixi resolves the
+    # project from the real working directory, so cd'ing through a symlink
+    # into the main repo makes pixi install into the wrong environment.
+    if is_amr_env "$env" && [ -d "$wt_path/petsc-custom/petsc/src/binding/petsc4py" ]; then
+        echo "  Installing petsc4py for $env..."
+        (cd "$wt_path" && $PIXI run -e "$env" pip install \
+            "$wt_path/petsc-custom/petsc/src/binding/petsc4py" --no-build-isolation 2>/dev/null) && \
+            echo -e "    ${GREEN}✓${NC} petsc4py installed" || \
+            echo -e "    ${YELLOW}⚠${NC} petsc4py install failed — run ./uw build from the worktree"
+    fi
 
     # 5. Exclude local files from git tracking in this worktree.
     local git_dir

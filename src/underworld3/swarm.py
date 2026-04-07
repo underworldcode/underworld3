@@ -2147,7 +2147,7 @@ class IndexSwarmVariable(SwarmVariable):
         if len(funcsList) != self.indices:
             raise RuntimeError("Error input for createMask() - wrong length of input")
 
-        symo = sympy.simplify(0)
+        symo = sympy.S.Zero
         for i in range(self.indices):
             symo += funcsList[i] * self._MaskArray[i]
 

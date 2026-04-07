@@ -173,15 +173,26 @@ PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
 {
     PetscSection  section;
     PetscInt      Nf;
+    PetscInt      localCount = 0;
 
     PetscFunctionBeginUser;
 
     PetscCall(DMGetLocalSection(dm, &section));
     PetscCall(PetscSectionGetNumFields(section, &Nf));
 
-    // If label is NULL (boundary not present on this rank), contribute 0
-    // but still participate in the MPI Allreduce to avoid hangs.
-    if (!label) {
+    // If the label is NULL or the requested boundary has no local entities on
+    // this rank, contribute 0 but still participate in the MPI Allreduce to
+    // avoid hangs. Parallel DMPlex boundary assembly can deadlock if some
+    // ranks enter with an empty local stratum.
+    if (label) {
+        for (PetscInt i = 0; i < numVals; ++i) {
+            PetscInt stratumSize = 0;
+            PetscCall(DMLabelGetStratumSize(label, vals[i], &stratumSize));
+            localCount += stratumSize;
+        }
+    }
+
+    if (!label || localCount == 0) {
         PetscScalar zero = 0.0;
         PetscCallMPI(MPIU_Allreduce(&zero, result, 1, MPIU_SCALAR, MPIU_SUM,
                                     PetscObjectComm((PetscObject)dm)));

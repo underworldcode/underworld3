@@ -52,7 +52,7 @@ def test_stokes_boxmesh(mesh):
     )
     p = uw.discretisation.MeshVariable(r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
 
-    stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
+    stokes = uw.systems.VE_Stokes(mesh, velocityField=u, pressureField=p, order=1)
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
     stokes.constitutive_model.Parameters.shear_modulus = 1
@@ -101,7 +101,7 @@ def test_stokes_boxmesh(mesh):
         stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Front")
         stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Back")
 
-    stokes.solve()
+    stokes.solve(timestep=0.1)
 
     print(f"Mesh dimensions {mesh.dim}", flush=True)
     stokes.dm.ds.view()
@@ -229,7 +229,7 @@ def test_stokes_boxmesh_bc_failure(mesh):
     )
     p = uw.discretisation.MeshVariable(r"mathbf{p}", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
 
-    stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p)
+    stokes = uw.systems.VE_Stokes(mesh, velocityField=u, pressureField=p, order=1)
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
     stokes.constitutive_model.Parameters.shear_modulus = 1
@@ -275,7 +275,7 @@ def test_stokes_boxmesh_bc_failure(mesh):
         stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Front")
         stokes.add_dirichlet_bc((sympy.oo, 0.0, sympy.oo), "Back")
 
-    stokes.solve()
+    stokes.solve(timestep=0.1)
 
     print(f"Mesh dimensions {mesh.dim}", flush=True)
     stokes.dm.ds.view()

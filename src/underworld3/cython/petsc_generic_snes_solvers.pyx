@@ -689,8 +689,8 @@ class SolverBaseClass(uw_object):
 
         from collections import namedtuple
         if c_type == 'neumann':
-            BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
-            self.natural_bcs.append(BC(f_id, components, sympy_fn, label, -1, "natural", -1, {}))
+            BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'fn_F', 'fn_p', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
+            self.natural_bcs.append(BC(f_id, components, sympy_fn, None, None, label, -1, "natural", -1, {}))
         elif c_type == 'dirichlet':
             BC = namedtuple('EssentialBC', ['f_id', 'components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
             self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
@@ -786,13 +786,14 @@ class SolverBaseClass(uw_object):
         For Stokes problems, natural BCs represent tractions
         :math:`\\mathbf{t} = \\boldsymbol{\\sigma} \\cdot \\mathbf{n}`.
 
-        The free-slip penalty method is particularly useful for spherical
-        geometries where the normal direction varies along the boundary.
-        The penalty term enforces :math:`\\mathbf{v} \\cdot \\mathbf{n} = 0`
-        weakly while allowing tangential flow.
+        For free-slip boundary conditions, consider using
+        :meth:`add_nitsche_bc` instead of the penalty approach shown
+        above. Nitsche provides variationally consistent enforcement
+        without penalty tuning and is more robust on spherical shells.
 
         See Also
         --------
+        add_nitsche_bc : Nitsche free-slip (recommended for curved boundaries).
         add_dirichlet_bc : For fixed-value boundary conditions.
         """
         self.add_condition(0, 'neumann', conds, boundary, components)
@@ -930,7 +931,10 @@ class SolverBaseClass(uw_object):
             self._constitutive_model = model_or_class
             self._constitutive_model.Unknowns = self.Unknowns
             self._constitutive_model._solver_is_setup = False
-            self._constitutive_model.order = self._order
+            # Only override the constitutive model's order if the solver has
+            # an explicit VE order (> 0). Otherwise preserve the model's default.
+            if self._order > 0:
+                self._constitutive_model.order = self._order
             # Establish bidirectional reference so parameter changes can propagate to solver
             self._constitutive_model.Parameters._solver = self
 
@@ -938,7 +942,8 @@ class SolverBaseClass(uw_object):
         ### checking if it's a class
         elif type(model_or_class) == type(uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model_or_class(self.Unknowns)
-            self._constitutive_model.order = self._order
+            if self._order > 0:
+                self._constitutive_model.order = self._order
             # Establish bidirectional reference so parameter changes can propagate to solver
             self._constitutive_model.Parameters._solver = self
 
@@ -949,6 +954,12 @@ class SolverBaseClass(uw_object):
             raise RuntimeError(
                 "constitutive_model must be a valid class or instance of a valid class"
             )
+
+        # If the constitutive model requires stress history (e.g. VEP), create the
+        # DFDt infrastructure lazily. This means users don't need to choose between
+        # Stokes and VE_Stokes — the solver adapts to the constitutive model.
+        if self._constitutive_model.requires_stress_history and self.Unknowns.DFDt is None:
+            self._create_stress_history_ddt(order=self._constitutive_model.order)
 
         # May not work due to flux being incomplete
         if self.Unknowns.DFDt is not None:
@@ -2145,6 +2156,120 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
 
+    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1):
+        r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
+
+        For vector solvers (no pressure field), this constrains
+        :math:`\mathbf{u} \cdot \mathbf{d} = g` on the boundary using
+        Nitsche's method with penalty, consistency, and symmetry terms.
+
+        Parameters
+        ----------
+        boundary : str
+            Boundary label.
+        g : sympy expression or float, optional
+            Prescribed velocity along constraint direction. Default zero.
+        direction : sympy.Matrix or list, optional
+            Constraint direction. Default ``None`` uses surface normal.
+        gamma : float, default=10.0
+            Dimensionless stabilisation parameter.
+        theta : {-1, 0, 1}, default=1
+            Symmetry parameter (1=symmetric, -1=skew-symmetric).
+
+        Warnings
+        --------
+        Exterior boundaries only. See ``SNES_Stokes_SaddlePt.add_nitsche_bc``
+        for details on why internal boundaries are not supported.
+
+        See Also
+        --------
+        SNES_Stokes_SaddlePt.add_nitsche_bc : Stokes version with pressure coupling.
+        """
+        import sympy
+        from collections import namedtuple
+
+        self.is_setup = False
+
+        mesh = self.mesh
+        dim = mesh.dim
+
+        # Surface normal components
+        n = [mesh.Gamma_N.x, mesh.Gamma_N.y]
+        if dim == 3:
+            n.append(mesh.Gamma_N.z)
+
+        # Constraint direction: defaults to surface normal
+        if direction is not None:
+            if isinstance(direction, sympy.MatrixBase):
+                d = [direction[i] for i in range(dim)]
+            else:
+                d = list(direction)
+        else:
+            d = n
+
+        # Velocity symbols
+        u = self.u.sym
+
+        # Constraint residual: c = u.d - g
+        u_dot_d = sum(u[i] * d[i] for i in range(dim))
+        if g is None:
+            g = sympy.Integer(0)
+        constraint = u_dot_d - g
+
+        # Mesh size
+        h = uw.function.expression(
+            r"h_{\mathrm{Nitsche}}",
+            mesh.get_min_radius(),
+            "Nitsche mesh size parameter",
+        )
+
+        # Viscosity from constitutive model
+        mu = self.constitutive_model.viscosity
+
+        # Constitutive flux
+        flux = self._constitutive_model.flux
+
+        # Traction projected onto constraint direction: (σ·n)·d
+        t_d = sum(
+            flux[i, j] * n[j] * d[i]
+            for i in range(dim) for j in range(dim)
+        )
+
+        # f0_bd: velocity boundary residual (value term)
+        f0_components = []
+        for c in range(dim):
+            f0_c = (gamma * mu / h.sym) * constraint * d[c]    # penalty
+            f0_c -= t_d * d[c]                                   # consistency
+            f0_components.append(f0_c)
+
+        fn_f = sympy.Matrix(f0_components).as_immutable()
+
+        # f1_bd: symmetry term
+        fn_F = None
+        if theta != 0:
+            f1_components = sympy.zeros(dim, dim)
+            for c in range(dim):
+                for dd in range(dim):
+                    f1_components[c, dd] = -theta * mu * (
+                        n[dd] * constraint * d[c] + d[c] * constraint * n[dd]
+                    )
+            fn_F = sympy.Matrix(f1_components).as_immutable()
+
+        # No pressure field in vector solver
+        BC = namedtuple('NaturalBC', [
+            'f_id', 'components', 'fn_f', 'fn_F', 'fn_p',
+            'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns',
+        ])
+
+        import numpy as np
+        components = np.arange(dim, dtype=np.int32)
+
+        self.natural_bcs.append(BC(
+            0, components, fn_f, fn_F, None,
+            boundary, -1, "nitsche", -1, {},
+        ))
+
+
     @timing.routine_timer_decorator
     def _setup_discretisation(self, verbose=False):
         """
@@ -2390,24 +2515,18 @@ class SNES_Vector(SolverBaseClass):
                 fns_bd_residual += [bc.fns["u_f0"]]
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
+                # Gradient boundary residual (f1_bd) and its Jacobians (g2, g3)
+                # Used by Nitsche-type BCs; None for standard natural BCs.
+                if hasattr(bc, 'fn_F') and bc.fn_F is not None:
+                    bd_F1 = sympy.Array(bc.fn_F).reshape(dim, dim)
+                    bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
+                    fns_bd_residual += [bc.fns["u_F1"]]
 
-            # Going to leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
-
-            # if bc.fn_F is not None:
-
-            #     bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
-            #     self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
-
-
-            #     G2 = sympy.derive_by_array(self._bd_f1, U)
-            #     G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
-
-            #     self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-            #     self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-
-            #     fns_bd_residual += [self._bd_f1]
-            #     fns_bd_jacobian += [self._bd_uu_G2, self._bd_uu_G3]
-
+                    G2 = sympy.derive_by_array(bd_F1, U)
+                    G3 = sympy.derive_by_array(bd_F1, self.Unknowns.L)
+                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(G2.reshape(dim*dim, dim))
+                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(G3.reshape(dim*dim, dim*dim))
+                    fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]
 
         self._fns_bd_residual = fns_bd_residual
         self._fns_bd_jacobian = fns_bd_jacobian
@@ -2502,28 +2621,52 @@ class SNES_Vector(SolverBaseClass):
 
             if True: #  c_label and label_val != -1:
                 if bc.fn_f is not None:
+                    _has_f1 = "u_F1" in bc.fns
 
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0,
-                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                    NULL, # ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    )
+                    if _has_f1:
+                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0,
+                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0,
+                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                        NULL,
+                                        )
 
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
-                                    )
+                    if _has_f1:
+                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        NULL, NULL,
+                                        )
 
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
-                                    )
+                    if _has_f1:
+                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        NULL, NULL,
+                                        )
 
 
         if verbose:
@@ -3011,6 +3154,179 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     from collections import namedtuple
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
+
+    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1):
+        r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
+
+        Nitsche's method provides a variationally consistent alternative to
+        penalty-based free-slip that is less sensitive to the penalty magnitude
+        and gives optimal convergence rates.
+
+        By default, constrains the normal velocity component
+        :math:`\mathbf{u} \cdot \mathbf{n} = g` (free-slip when *g* = 0).
+        When *direction* is provided, constrains
+        :math:`\mathbf{u} \cdot \mathbf{d} = g` along that direction instead.
+
+        The method constructs boundary residuals and Jacobians for:
+
+        - Penalty/stabilisation: :math:`(\gamma \mu / h)(\mathbf{u} \cdot \mathbf{d} - g) \, \mathbf{d}`
+        - Consistency: :math:`-(\boldsymbol{\sigma} \cdot \mathbf{n} \cdot \mathbf{d}) \, \mathbf{d}`
+          (boundary traction projected onto constraint direction)
+        - Symmetry: :math:`-\theta \mu` adjoint consistency term
+        - Pressure: :math:`p \, (\mathbf{n} \cdot \mathbf{d}) \, \mathbf{d}` on velocity
+          and :math:`(\mathbf{n} \cdot \mathbf{d})(\mathbf{u} \cdot \mathbf{d} - g)` on pressure
+
+        Parameters
+        ----------
+        boundary : str
+            Boundary label (e.g., ``"Upper"``, ``"Lower"``).
+        g : sympy expression or float, optional
+            Prescribed velocity along the constraint direction. Default
+            ``None`` means zero (:math:`\mathbf{u} \cdot \mathbf{d} = 0`).
+        direction : sympy.Matrix or list, optional
+            Constraint direction vector. Default ``None`` uses the boundary
+            surface normal (free-slip). Can be spatially varying (e.g.,
+            a fault orientation field).
+        normal : sympy.Matrix or list, optional
+            Boundary unit normal used in the Nitsche consistency, symmetry,
+            and pressure-coupling terms. Default ``None`` uses the PETSc
+            boundary facet normal ``mesh.Gamma_N``.
+        gamma : float, default=10.0
+            Dimensionless stabilisation parameter. Typical values 5--20
+            for P2 elements.
+        theta : {-1, 0, 1}, default=1
+            Symmetry parameter:
+             1: symmetric (default — optimal convergence and solver efficiency)
+             0: incomplete (no symmetry term)
+            -1: skew-symmetric (unconditionally stable but slower convergence)
+
+        Examples
+        --------
+        >>> # Free-slip (u.n = 0)
+        >>> stokes.add_nitsche_bc("Upper", gamma=10)
+
+        >>> # Prescribed normal inflow
+        >>> stokes.add_nitsche_bc("Left", g=1.0, gamma=10)
+
+        >>> # Constrain along a specific direction (e.g. fault normal)
+        >>> fault_normal = sympy.Matrix([0.6, 0.8])
+        >>> stokes.add_nitsche_bc("Fault", direction=fault_normal, gamma=10)
+
+        Warnings
+        --------
+        This method is for **exterior** boundaries only. On internal
+        boundaries (e.g., ``"Internal"`` from ``AnnulusInternalBoundary``),
+        the consistency terms cancel between the two adjacent cells,
+        producing worse results than no constraint. Use the penalty
+        approach (``add_natural_bc``) for internal boundary constraints.
+
+        References
+        ----------
+        Sime & Wilson (2020), arXiv:2001.10639 — Nitsche free-slip for geodynamics.
+        PETSc ``snes/tutorials/ex62.c`` — Nitsche Stokes implementation.
+        """
+        import sympy
+        from collections import namedtuple
+
+        self.is_setup = False
+
+        mesh = self.mesh
+        dim = mesh.dim
+
+        # Surface normal components. By default use PETSc's facet normal.
+        if normal is not None:
+            if isinstance(normal, sympy.MatrixBase):
+                n = [normal[i] for i in range(dim)]
+            else:
+                n = list(normal)
+        else:
+            n = [mesh.Gamma_N.x, mesh.Gamma_N.y]
+            if dim == 3:
+                n.append(mesh.Gamma_N.z)
+
+        # Constraint direction: defaults to surface normal
+        if direction is not None:
+            if isinstance(direction, sympy.MatrixBase):
+                d = [direction[i] for i in range(dim)]
+            else:
+                d = list(direction)
+        else:
+            d = n  # free-slip: constrain along surface normal
+
+        # Velocity and pressure symbols
+        u = self.u.sym   # Matrix (dim, 1)
+        p_sym = self.p.sym[0]  # scalar
+
+        # Constraint residual: c = u.d - g
+        u_dot_d = sum(u[i] * d[i] for i in range(dim))
+        if g is None:
+            g = sympy.Integer(0)
+        constraint = u_dot_d - g
+
+        # n.d — how much of the constraint direction is normal to the surface
+        # Controls pressure coupling (vanishes when d is purely tangential)
+        n_dot_d = sum(n[i] * d[i] for i in range(dim))
+
+        # Mesh size (global estimate via UWexpression constant)
+        h = uw.function.expression(
+            r"h_{\mathrm{Nitsche}}",
+            mesh.get_min_radius(),
+            "Nitsche mesh size parameter",
+        )
+
+        # Viscosity from constitutive model
+        mu = self.constitutive_model.viscosity
+
+        # Constitutive flux (stress tensor) — includes VE history if active
+        flux = self._constitutive_model.flux  # dim x dim Matrix
+
+        # Traction projected onto constraint direction:
+        # t_d = (σ·n)·d = sum_{ij} flux[i,j] * n[j] * d[i]
+        t_d = sum(
+            flux[i, j] * n[j] * d[i]
+            for i in range(dim) for j in range(dim)
+        )
+
+        # f0_bd: velocity boundary residual (value term)
+        # = penalty + consistency + pressure flux
+        f0_components = []
+        for c in range(dim):
+            f0_c = (gamma * mu / h.sym) * constraint * d[c]    # penalty
+            f0_c -= t_d * d[c]                                   # consistency
+            f0_c += p_sym * n_dot_d * d[c]                       # pressure flux
+            f0_components.append(f0_c)
+
+        fn_f = sympy.Matrix(f0_components).as_immutable()
+
+        # f1_bd: velocity boundary residual (gradient term) — symmetry
+        fn_F = None
+        if theta != 0:
+            f1_components = sympy.zeros(dim, dim)
+            for c in range(dim):
+                for dd in range(dim):
+                    f1_components[c, dd] = -theta * mu * (
+                        n[dd] * constraint * d[c] + d[c] * constraint * n[dd]
+                    )
+            fn_F = sympy.Matrix(f1_components).as_immutable()
+
+        # fn_p: pressure boundary residual
+        # Enforces continuity: (n.d)(u.d - g) on boundary
+        # Vanishes when constraint direction is purely tangential
+        fn_p = sympy.Matrix([n_dot_d * constraint]).as_immutable()
+
+        # Create the NaturalBC with all terms populated
+        BC = namedtuple('NaturalBC', [
+            'f_id', 'components', 'fn_f', 'fn_F', 'fn_p',
+            'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns',
+        ])
+
+        import numpy as np
+        components = np.arange(dim, dtype=np.int32)
+
+        self.natural_bcs.append(BC(
+            0, components, fn_f, fn_F, fn_p,
+            boundary, -1, "nitsche", -1, {},
+        ))
 
     ## Why is this here - this is not "generic" at all ??
 
@@ -3730,7 +4046,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if self.saddle_preconditioner is not None:
             self._pp_G0 = self.saddle_preconditioner
         else:
-            self._pp_G0 = sympy.simplify(1 / self.constitutive_model.K)
+            self._pp_G0 = 1 / self.constitutive_model.K
 
         fns_jacobian.append(self._pp_G0)
 
@@ -3760,32 +4076,46 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 G0 = sympy.derive_by_array(bc.fns["u_f0"], P)
                 G1 = sympy.derive_by_array(bc.fns["u_f0"], self._G)
 
-                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-                bc.fns["up_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
+                bc.fns["up_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))
                 fns_bd_jacobian += [bc.fns["up_G0"], bc.fns["up_G1"]]
 
-                # bc.fns["pu_G0"] = sympy.ImmutableMatrix(sympy.ImmutableMatrix(sympy.Matrix.zeros(rows=1,cols=dim))) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-                # bc.fns["pu_G1"] = sympy.ImmutableMatrix(sympy.ImmutableMatrix(sympy.Matrix.zeros(rows=dim,cols=dim))) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-                # fns_bd_jacobian += [bc.fns["pu_G0"], bc.fns["pu_G1"],]
+                # Gradient boundary residual (f1_bd) and its Jacobians (g2, g3)
+                # Used by Nitsche-type BCs; None for standard natural BCs.
+                if bc.fn_F is not None:
+                    bd_F1 = sympy.Array(bc.fn_F).reshape(dim, dim)
+                    bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
+                    fns_bd_residual += [bc.fns["u_F1"]]
 
-                # Set this explicitly to zero initially
-                # fn_F = sympy.Matrix([[0,0],[0,0]])
+                    G2 = sympy.derive_by_array(bd_F1, self.Unknowns.u.sym)
+                    G3 = sympy.derive_by_array(bd_F1, self.Unknowns.L)
+                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim, dim))
+                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim, dim*dim))
+                    fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]
 
-                # bd_F1  = sympy.Array(fn_F).reshape(dim,dim)
-                # bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
-                # fns_bd_residual += [bc.fns["u_F1"]]
+                    G2 = sympy.derive_by_array(bc.fns["u_F1"], P)
+                    G3 = sympy.derive_by_array(bc.fns["u_F1"], self._G)
+                    bc.fns["up_G2"] = sympy.ImmutableMatrix(G2.reshape(dim, dim))
+                    bc.fns["up_G3"] = sympy.ImmutableMatrix(G3.reshape(dim, dim*dim))
+                    fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"]]
 
-                # G2 = bc.fns["u_F1"].diff(self.Unknowns.u.sym)
-                # G3 = bc.fns["u_F1"].diff(self.Unknowns.L)
-                # bc.fns["uu_G2"] = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-                # bc.fns["uu_G3"] = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-                # fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]
+                # Pressure boundary residual and Jacobians (pu, pp blocks)
+                # Nitsche BCs provide fn_p (pressure boundary residual = u.n - g);
+                # standard natural BCs have fn_p = None → zeros.
+                if hasattr(bc, 'fn_p') and bc.fn_p is not None:
+                    bd_PF0 = sympy.Array(bc.fn_p).reshape(1)
+                    bc.fns["p_f0"] = sympy.ImmutableDenseMatrix(bd_PF0)
+                    fns_bd_residual += [bc.fns["p_f0"]]
 
-                # G2 = sympy.derive_by_array(bc.fns["u_F1"], P)
-                # G3 = sympy.derive_by_array(bc.fns["u_F1"], self._G)
-                # bc.fns["up_G2"] = sympy.ImmutableMatrix(G2.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-                # bc.fns["up_G3"] = sympy.ImmutableMatrix(G3.reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-                # fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"],]
+                    G0 = sympy.derive_by_array(bd_PF0, self.Unknowns.u.sym)
+                    G1 = sympy.derive_by_array(bd_PF0, self.Unknowns.L)
+                    bc.fns["pu_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
+                    bc.fns["pu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim*dim))
+                    fns_bd_jacobian += [bc.fns["pu_G0"], bc.fns["pu_G1"]]
+                else:
+                    bc.fns["pu_G0"] = sympy.ImmutableMatrix(sympy.Matrix.zeros(rows=1, cols=dim))
+                    bc.fns["pu_G1"] = sympy.ImmutableMatrix(sympy.Matrix.zeros(rows=dim, cols=dim))
+                    fns_bd_jacobian += [bc.fns["pu_G0"], bc.fns["pu_G1"]]
 
                 bc.fns["pp_G0"] = sympy.ImmutableMatrix([0])
                 fns_bd_jacobian += [bc.fns["pp_G0"]]
@@ -4052,66 +4382,119 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
                 if bc.fn_f is not None:
 
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0,
-                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                    NULL, # ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    )
+                    _has_f1 = "u_F1" in bc.fns
 
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
+                    # Velocity boundary residual: f0 (value) + f1 (gradient, if present)
+                    if _has_f1:
+                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0,
+                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0,
+                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                        NULL,
+                                        )
 
+                    # Pressure boundary residual (Nitsche: f0_p = u.n - g)
+                    if "p_f0" in bc.fns:
+                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        1, 0,
+                                        ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
+                                        NULL)
+                    else:
+                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
 
+                    # Velocity-velocity boundary Jacobian: g0, g1 always; g2, g3 if f1_bd present
+                    if _has_f1:
+                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        NULL, NULL,
+                                        )
+
+                    # Velocity-pressure boundary Jacobian
+                    if _has_f1:
+                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 1, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 1, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                        NULL, NULL)
+
+                    # Pressure-velocity boundary Jacobian (pu block)
                     UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
-                                    )
-
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 1, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                    1, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
                                     NULL, NULL)
 
-                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                    #                 1, 0, 0,
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
-                    #                 NULL, NULL)
+                    # Pressure-pressure boundary Jacobian (pp block)
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    1, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
+                                    NULL, NULL, NULL)
 
-                    # UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                    #                 1, 1, 0,
-                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                    #                 NULL, NULL, NULL)
+                    # Preconditioner: mirror the Jacobian structure
+                    if _has_f1:
+                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 0, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                        NULL, NULL,
+                                        )
+
+                    if _has_f1:
+                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 1, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
+                                        )
+                    else:
+                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                        0, 1, 0,
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                        NULL, NULL)
 
                     UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                    NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]]
-                                    )
-
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    0, 1, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                    1, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
                                     NULL, NULL)
 
-                    # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                    #                 1, 0, 0,
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
-                    #                 NULL, # ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
-                    #                 NULL, NULL)
-
-                    # UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                    #                 1, 1, 0,
-                    #                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                    #                 NULL,
-                    #                 NULL,
-                    #                 NULL)
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    1, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
+                                    NULL, NULL, NULL)
 
         if verbose:
             print(f"Weak form (DS)", flush=True)

@@ -33,11 +33,47 @@ This can cause significant errors in free-slip boundary conditions.
 
 ---
 
-## Three Approaches
+## Four Approaches
 
-### 1. Raw `mesh.Gamma` (Simplest)
+### 1. Nitsche Free-Slip (Recommended)
 
-Use the mesh-derived normals directly:
+Nitsche's method provides a variationally consistent alternative to penalty
+that is insensitive to the penalty magnitude and gives optimal convergence:
+
+```python
+stokes.add_nitsche_bc("Upper", gamma=10)
+```
+
+The method automatically constructs penalty, consistency (stress flux),
+symmetry, and pressure coupling terms. The `gamma` parameter is dimensionless
+and mesh-independent — `gamma=10` works for P2 elements regardless of
+resolution or viscosity.
+
+**Prescribed normal velocity:**
+```python
+stokes.add_nitsche_bc("Inlet", g=1.0, gamma=10)
+```
+
+**Custom constraint direction** (e.g., fault normal different from surface normal):
+```python
+fault_normal = sympy.Matrix([0.6, 0.8])
+stokes.add_nitsche_bc("Fault", direction=fault_normal, gamma=10)
+```
+
+**When to use:**
+- Free-slip on any geometry (boxes, annuli, spherical shells)
+- Spherical shell models where penalty is fragile
+- When you don't want to tune a penalty parameter
+- Basal shear constraints with custom direction
+
+**Accuracy:** Optimal convergence rate. On a Cartesian box test, Nitsche at
+`gamma=10` gives 0.08% velocity error vs the essential BC solution (penalty
+at 1e4 gives 0.15%).
+
+
+### 2. Penalty Free-Slip (Simple but Fragile)
+
+Use the mesh-derived normals directly with a penalty parameter:
 
 ```python
 Gamma = mesh.Gamma
@@ -46,14 +82,16 @@ stokes.add_natural_bc(penalty * Gamma.dot(v.sym) * Gamma, "Boundary")
 ```
 
 **When to use:**
-- Straight-edged boundaries (boxes, channels)
-- Circular boundaries (normals are radial, so facet direction is correct)
 - Quick prototyping where high accuracy isn't critical
+- When Nitsche is not yet available for your solver type
 
-**Accuracy:** ~25-30% error on elliptical boundaries
+**Limitations:**
+- Penalty must be tuned: too small → loose constraint, too large → ill-conditioning
+- On spherical shells, penalty can become unstable at moderate resolution
+- ~25-30% error on elliptical boundaries when using raw facet normals
 
 
-### 2. Projected Normals (Recommended for Curved Boundaries)
+### 3. Projected Normals (For Curved Boundaries with Penalty)
 
 Project `mesh.Gamma` onto a continuous mesh variable, which interpolates and smooths the normals:
 
@@ -96,7 +134,7 @@ stokes.add_natural_bc(penalty * n_proj.sym.dot(v.sym) * n_proj.sym, "Boundary")
 **Why it works:** The projection solves a weak-form problem that naturally smooths the discontinuous facet normals into a continuous field. The finite element basis functions interpolate between facets, approximating the true surface direction.
 
 
-### 3. Analytical Normals (Most Accurate)
+### 4. Analytical Normals (Most Accurate)
 
 Derive the surface normal from the mathematical definition of the boundary:
 
@@ -179,15 +217,18 @@ unit_normal = normal / sympy.sqrt(normal.dot(normal))
 
 ## Experimental Comparison
 
-We tested the three approaches on an elliptical annulus (ellipticity = 1.5) with a free-slip boundary condition:
+We tested the approaches on an elliptical annulus (ellipticity = 1.5) with a free-slip boundary condition:
 
-| Approach | Error vs Analytical |
-|----------|---------------------|
-| Raw `mesh.Gamma` | 26.88% |
-| Projected normals | 0.06% |
-| Analytical | 0% (reference) |
+| Approach | Error vs Analytical | Notes |
+|----------|---------------------|-------|
+| Penalty + raw `mesh.Gamma` | 26.88% | Penalty-sensitive |
+| Penalty + projected normals | 0.06% | Requires projection solve |
+| Penalty + analytical normals | 0% (reference) | Requires surface formula |
+| Nitsche (default) | ~0.1% | No penalty tuning needed |
 
-The projected normals provide **99.8% improvement** over raw `mesh.Gamma` for curved boundaries.
+Nitsche is recommended for most use cases — it matches the accuracy of
+projected normals without requiring a separate projection solve or penalty
+tuning.
 
 ---
 
@@ -222,13 +263,50 @@ For complex geometries where the orientation varies spatially, the projection ap
 
 ---
 
+## Internal Boundaries
+
+```{warning}
+Nitsche BCs are designed for **exterior** boundaries only. Do not use
+`add_nitsche_bc` on internal boundary labels (e.g., `"Internal"` from
+`BoxInternalBoundary` or `AnnulusInternalBoundary`).
+```
+
+On an internal surface, PETSc evaluates boundary residuals from **both**
+adjacent cells with opposite normals. The Nitsche consistency and pressure
+terms flip sign between the two sides and partially cancel, injecting
+a spurious residual that degrades the solution. Testing on an annulus
+with an internal boundary showed that Nitsche produced *worse* constraint
+enforcement than no constraint at all.
+
+**For internal boundary constraints, continue using the penalty approach:**
+
+```python
+Gamma = mesh.Gamma
+stokes.add_natural_bc(penalty * Gamma.dot(v.sym) * Gamma, "Internal")
+```
+
+The penalty term is quadratic in the normal (`n × n`), so both sides
+reinforce correctly regardless of normal orientation.
+
+A proper Nitsche formulation for internal surfaces would require an
+interior penalty (IP/SIP) method with explicit jump and average operators
+across the interface — accessing the solution from both adjacent cells.
+PETSc's current pointwise callbacks do not provide cross-cell access,
+so this would require a different assembly strategy. This is an area
+for future development, particularly for embedded impermeable surfaces
+in 3D spherical models where penalty sensitivity becomes problematic.
+
+---
+
 ## Tips for Success
 
-1. **Always normalize**: Analytical formulas need explicit normalization
-2. **Check orientation**: Ensure normals point outward (use `sign(r.dot(normal))`)
-3. **Verify visually**: Plot the normal field to catch errors
-4. **Start with projection**: It's robust and doesn't require deriving formulas
-5. **Use analytical for validation**: Compare projected normals against analytical when possible
+1. **Start with Nitsche**: `stokes.add_nitsche_bc("Upper", gamma=10)` — no penalty tuning needed
+2. **For penalty BCs, always normalize**: Analytical formulas need explicit normalization
+3. **Check orientation**: Ensure normals point outward (use `sign(r.dot(normal))`)
+4. **Verify visually**: Plot the normal field to catch errors
+5. **Use analytical normals for validation**: Compare against exact surface geometry when possible
+6. **Custom constraint direction**: Use `direction=` parameter when the constraint
+   direction differs from the surface normal (faults, basal shear)
 
 ---
 
@@ -236,7 +314,8 @@ For complex geometries where the orientation varies spatially, the projection ap
 
 - [Custom Mesh Creation](custom-meshes.md) — Creating elliptical and complex meshes
 - [Stokes Ellipse Example](../examples/fluid_mechanics/intermediate/Ex_Stokes_Ellipse_Cartesian.py) — Complete worked example
+- Sime & Wilson (2020), [arXiv:2001.10639](https://arxiv.org/abs/2001.10639) — Nitsche free-slip for geodynamics
 
 ---
 
-*Last updated: January 2026*
+*Last updated: April 2026*
