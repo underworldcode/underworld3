@@ -293,6 +293,7 @@ configure_petsc() {
                 --download-cmake=1 \
                 --download-bison=1 \
                 --with-petsc4py=1 \
+                --with-slepc4py=1 \
                 --with-make-np=40
             ;;
         gadi)
@@ -304,6 +305,7 @@ configure_petsc() {
                 --with-hdf5-dir="${HDF5_DIR}" \
                 --download-fblaslapack=1 \
                 --with-petsc4py=1 \
+                --with-slepc4py=1 \
                 --with-make-np=40 \
                 --with-shared-libraries=1 \
                 --with-cxx-dialect=C++11 \
