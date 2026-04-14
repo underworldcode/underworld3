@@ -812,6 +812,16 @@ def plot_vector(
     None
         This function does not return any value. It displays the vector field on the mesh in a PyVista
         window and optionally saves a screenshot.
+
+    Notes
+    -----
+    When the model uses physical units, arrows are drawn in the mesh
+    coordinate space. A velocity of 1 cm/yr on a mesh in meters
+    (extent ~1e6) produces arrows of length ~3e-10 in mesh units —
+    effectively invisible. Adjust ``vmag`` to compensate::
+
+        # Scale arrows to ~5% of mesh extent
+        vmag = 0.05 * mesh_extent / max_velocity
     """
 
     import sympy
