@@ -121,21 +121,30 @@ cdef class CachedDMInterpolationInfo:
             DMInterpolationDestroy(&self._ipInfo)
             raise RuntimeError(f"DMInterpolationSetDof failed with error {ierr}")
 
-        # Add interpolation points - use contiguous array's data pointer
-        cdef double[:, ::1] coords_view = np.ascontiguousarray(self.coords)
-        ierr = DMInterpolationAddPoints(self._ipInfo, n_points, &coords_view[0, 0])
-        if ierr != 0:
-            DMInterpolationDestroy(&self._ipInfo)
-            raise RuntimeError(f"DMInterpolationAddPoints failed with error {ierr}")
-
-        # Set up with cell hints
-        # Extract PETSc DM from mesh
+        # Declare typed memoryviews at function scope (Cython requirement)
+        cdef double[:, ::1] coords_view
+        cdef long[::1] cells_view
         cdef DM dm_obj = mesh.dm
         cdef PetscDM dm = dm_obj.dm
 
-        # Extract cell hints as size_t array
-        cdef long[::1] cells_view = np.ascontiguousarray(self.cells)
-        ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 0, <size_t*> &cells_view[0])
+        # Add interpolation points (guard against empty arrays)
+        if n_points > 0:
+            coords_view = np.ascontiguousarray(self.coords)
+            ierr = DMInterpolationAddPoints(self._ipInfo, n_points, &coords_view[0, 0])
+            if ierr != 0:
+                DMInterpolationDestroy(&self._ipInfo)
+                raise RuntimeError(f"DMInterpolationAddPoints failed with error {ierr}")
+
+        # Set up — calls DMLocatePoints which is COLLECTIVE on the mesh DM.
+        # All ranks must call this, even with zero local points.
+        # ignoreOutsideDomain=1: PETSc silently skips points it cannot locate
+        # rather than crashing. This is essential — points_in_domain() uses a
+        # kd-tree heuristic that can misclassify distant points as interior.
+        if n_points > 0:
+            cells_view = np.ascontiguousarray(self.cells)
+            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, <size_t*> &cells_view[0])
+        else:
+            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, NULL)
         if ierr != 0:
             DMInterpolationDestroy(&self._ipInfo)
             raise RuntimeError(f"DMInterpolationSetUp_UW failed with error {ierr}")

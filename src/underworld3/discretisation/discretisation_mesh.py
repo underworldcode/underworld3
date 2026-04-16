@@ -2625,11 +2625,19 @@ class Mesh(Stateful, uw_object):
                 control_points_list.append(inside_control_point)
                 control_point_sign_list.append(1)
 
-        control_point_kdtree = uw.kdtree.KDTree(numpy.array(control_points_list))
+        control_points_array = numpy.array(control_points_list)
+        control_point_kdtree = uw.kdtree.KDTree(control_points_array)
         control_point_sign = numpy.array(control_point_sign_list)
 
         self.boundary_face_control_points_kdtree = control_point_kdtree
         self.boundary_face_control_points_sign = control_point_sign
+
+        # Domain bounding radius (squared): distance from centroid to farthest
+        # control point. Points beyond this distance from their nearest control
+        # point cannot be inside the domain.
+        domain_centroid = control_points_array.mean(axis=0)
+        radii_sq = numpy.sum((control_points_array - domain_centroid) ** 2, axis=1)
+        self._domain_radius_squared = float(radii_sq.max())
 
         return
 
@@ -2668,10 +2676,16 @@ class Mesh(Stateful, uw_object):
         dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
             model_points, k=1, sqr_dists=True
         )
+        dist2 = numpy.asarray(dist2).ravel()  # kd-tree returns (n,1) for k=1
         in_or_not = self.boundary_face_control_points_sign[closest_control_points_ext] > 0
 
-        ## This choice of distance needs some more thought
+        # Points very far from the nearest boundary face are definitely exterior.
+        # The sign heuristic only works for points within the domain's neighbourhood;
+        # beyond that, "nearest control point" is arbitrary.
+        far_from_domain = dist2 > self._domain_radius_squared
+        in_or_not[far_from_domain] = False
 
+        # Points close to the boundary need the expensive cell-location check
         near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
         near_boundary_points = model_points[near_boundary]
 

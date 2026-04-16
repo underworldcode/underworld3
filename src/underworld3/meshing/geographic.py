@@ -329,21 +329,6 @@ def RegionalSphericalBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-    ## This needs a side-boundary capture routine as well
-
-    def sphere_return_coords_to_bounds(coords):
-        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
-
-        outside = Rsq > radiusOuter**2
-        inside = Rsq < radiusInner**2
-
-        ## Note these numbers should not be hard-wired
-
-        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
-        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
-
-        return coords
-
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -766,6 +751,42 @@ def RegionalGeographicBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    def geographic_return_coords_to_bounds(coords):
+        """Clamp Cartesian coordinates to the geographic domain bounds.
+
+        Converts to geographic (lon, lat, depth), clamps each to the
+        mesh's known ranges, and converts back to Cartesian. Small
+        overshoot due to topography or mesh curvature is handled
+        gracefully by the interior/exterior split in evaluate_nd.
+
+        Coords must be in the mesh's internal coordinate system
+        (nondimensional if scaling is active, km otherwise).
+        """
+        from underworld3.coordinates import cartesian_to_geographic
+
+        # Work with raw numpy float arrays — coords may be UnitAwareArray
+        raw = np.asarray(coords, dtype=np.float64)
+
+        lon, lat, depth = cartesian_to_geographic(
+            raw[:, 0], raw[:, 1], raw[:, 2], float(a), float(b)
+        )
+
+        # Ensure plain float arrays for clip
+        lon = np.asarray(lon, dtype=np.float64)
+        lat = np.asarray(lat, dtype=np.float64)
+        depth = np.asarray(depth, dtype=np.float64)
+
+        np.clip(lon, lon_min, lon_max, out=lon)
+        np.clip(lat, lat_min, lat_max, out=lat)
+        np.clip(depth, float(depth_min) * 1.01, float(depth_max) * 0.99, out=depth)
+
+        x, y, z = geographic_to_cartesian(lon, lat, depth, a, b)
+        coords[:, 0] = x
+        coords[:, 1] = y
+        coords[:, 2] = z
+
+        return coords
+
     # Load mesh on all ranks
     new_mesh = Mesh(
         uw_filename,
@@ -779,6 +800,7 @@ def RegionalGeographicBox(
         refinement=refinement,
         coarsening=coarsening,
         coordinate_system_type=CoordinateSystemType.GEOGRAPHIC,
+        return_coords_to_bounds=geographic_return_coords_to_bounds,
         verbose=verbose,
     )
 

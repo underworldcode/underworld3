@@ -484,13 +484,15 @@ def global_evaluate_nd(   expr,
 
     index = original_index.array[:,0,0]
     ranks = original_rank.array[:,0,0]
+    n_input_points = coords_array.shape[0]
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
     local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
     values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
 
-    data_container.array[...] = values[...]
-    is_extrapolated.array[:,0,0] = extrapolated[:]
+    if local_coords.shape[0] > 0:
+        data_container.array[...] = values[...]
+        is_extrapolated.array[:,0,0] = extrapolated[:]
 
     # set rank to old values and migrate back
     evaluation_swarm._rank_var.array[...] = original_rank.array[...]
@@ -509,13 +511,17 @@ def global_evaluate_nd(   expr,
         if hasattr(var, "_canonical_data"):
             var._canonical_data = None
 
-    index = original_index.array[:,0,0]
+    # Pre-allocate with NaN so the shape is always correct. If any points
+    # are lost during the migration round-trip, they remain NaN rather than
+    # causing a shape mismatch or returning uninitialised data.
+    return_value = np.full((n_input_points,) + expr_shape, np.nan, dtype=np.double)
+    return_mask = np.full((n_input_points, 1, 1), True, dtype=bool)
 
-    return_value = np.empty_like(data_container.array[...])
-    return_value[index,:,:] =  data_container.array[:,:,:]
-
-    return_mask = np.empty_like(is_extrapolated.array[...], dtype=bool)
-    return_mask[index] =  is_extrapolated.array[:]
+    n_returned = original_index.array.shape[0]
+    if n_returned > 0:
+        index = original_index.array[:, 0, 0].astype(int)
+        return_value[index, :, :] = data_container.array[:, :, :]
+        return_mask[index] = is_extrapolated.array[:]
 
     if not check_extrapolated:
         return return_value
@@ -845,6 +851,12 @@ def evaluate_nd(   expr,
                             )
 
     else:
+        # CRITICAL: update_lvec() calls dm.globalToLocal() which is COLLECTIVE.
+        # It MUST be called by ALL ranks before any rank enters petsc_interpolate,
+        # because ranks with zero interior points would skip petsc_interpolate
+        # (and its internal update_lvec call), deadlocking the ranks that do enter.
+        mesh.update_lvec()
+
         in_or_not = mesh.points_in_domain(coords_array, strict_validation=False)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
@@ -985,18 +997,11 @@ def petsc_interpolate(   expr,
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
-    # Early return for empty coordinate arrays (SECOND CHECK - top-level function)
-    # CRITICAL: Avoid lambdify errors with LaTeX variable names when coords is empty
-    # This handles cases where empty arrays pass through from evaluate_nd
-    if len(coords) == 0:
-        # Determine output shape based on expression type
-        try:
-            expr_shape = expr.shape
-            # Return empty array with correct shape: (0, rows, cols)
-            return np.empty([0] + list(expr_shape), dtype=np.double)
-        except AttributeError:
-            # Scalar expression - return (0,) shaped array
-            return np.empty([0], dtype=np.double)
+    # NOTE: Do NOT early-return for empty coords here. petsc_interpolate
+    # calls DMLocatePoints which is COLLECTIVE on the mesh DM communicator.
+    # If some ranks skip it (empty coords) while others enter it, MPI deadlocks.
+    # Empty coords are handled inside interpolate_vars_on_mesh after the
+    # collective operations complete.
 
     ## Substitute any UWExpressions for their values before calculation
     ## NOTE: We use _unwrap_expressions directly (not fn_substitute_expressions) to avoid
@@ -1094,11 +1099,9 @@ def petsc_interpolate(   expr,
         # Make coords contiguous for caching and C access
         coords = np.ascontiguousarray(coords)
 
-        # Early return for empty coordinate arrays
-        # CRITICAL: Avoid DMInterpolation setup with zero points
-        if len(coords) == 0:
-            # Return empty array with correct shape: (0, dofcount)
-            return np.empty([0, dofcount], dtype=np.double)
+        # NOTE: No early return for empty coords here. DMLocatePoints
+        # (inside DMInterpolationSetUp_UW) is COLLECTIVE on the mesh DM
+        # communicator. All ranks must participate, even with zero points.
 
         # === DMInterpolation CACHING ===
         # Declare variables at function scope (Cython requirement)
@@ -1127,6 +1130,7 @@ def petsc_interpolate(   expr,
             cells = mesh.get_closest_cells(coords)
 
             # Create and set up DMInterpolation structure (EXPENSIVE)
+            # This calls DMLocatePoints which is COLLECTIVE — all ranks must enter.
             try:
                 # coords is already np.ndarray type (function signature ensures this)
                 cached_info.create_structure(mesh, coords, cells, dofcount)
