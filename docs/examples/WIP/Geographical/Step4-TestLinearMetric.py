@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# %%
 """
 Step 4: Test Mesh Adaptation with Linear Metric Gradient
 

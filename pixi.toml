@@ -230,24 +230,6 @@ petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
 petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 
 # ============================================
-# HPC CLUSTER FEATURE
-# ============================================
-# For HPC clusters (Kaiju, Gadi, etc.) running linux-64.
-# Pure Python only — base dependencies cover all pure-Python needs.
-# mpi4py, h5py, petsc, petsc4py are built from source against the
-# cluster's MPI using petsc-custom/build-petsc.sh (UW_CLUSTER auto-detected).
-# See: docs/developer/guides/kaiju-cluster-setup.md
-
-[feature.hpc]
-platforms = ["linux-64"]
-
-[feature.hpc.dependencies]
-# patchelf is needed on Gadi to fix h5py RPATH order after source build:
-# meson embeds the conda env lib dir before Gadi's HDF5 in RPATH,
-# so we use patchelf post-install to move HDF5_DIR to the front.
-patchelf = "*"
-
-# ============================================
 # RUNTIME FEATURE (for tutorials/examples)
 # ============================================
 # Visualization and interactive computing
@@ -330,8 +312,3 @@ openmpi-dev   = { features = ["conda-petsc-openmpi", "runtime", "dev"], solve-gr
 
 amr-openmpi     = { features = ["amr-openmpi"], solve-group = "amr-openmpi" }
 amr-openmpi-dev = { features = ["amr-openmpi", "runtime", "dev"], solve-group = "amr-openmpi" }
-
-# --- HPC Cluster Track (linux-64 only) ---
-# Pure Python from pixi; MPI/PETSc/h5py built from source against cluster MPI.
-# UW_CLUSTER (or hostname) selects kaiju/gadi config in build-petsc.sh.
-hpc = { features = ["hpc"], solve-group = "hpc" }

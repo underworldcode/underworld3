@@ -536,11 +536,11 @@ class SNES_Darcy(SNES_Scalar):
 
         super().solve(zero_init_guess, _force_setup)
 
-        # Now solve flow field
+        # Now solve flow field: v = -flux = -K(grad(h) - s)
 
         # self._v_projector.petsc_options["snes_rtol"] = 1.0e-6
         # self._v_projector.petsc_options.delValue("ksp_monitor")
-        self._v_projector.uw_function = self.darcy_flux
+        self._v_projector.uw_function = -self.darcy_flux
         self._v_projector.solve(zero_init_guess)
 
         return

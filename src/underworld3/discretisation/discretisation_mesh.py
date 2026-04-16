@@ -359,6 +359,18 @@ class Mesh(Stateful, uw_object):
                 except KeyError:
                     pass
 
+                # Restore ellipsoid with quantities for geographic meshes
+                self._checkpoint_ellipsoid = None
+                try:
+                    json_str = f["metadata"].attrs["ellipsoid"]
+                    ellipsoid_raw = json.loads(json_str)
+                    for k, v in ellipsoid_raw.items():
+                        if isinstance(v, dict) and "value" in v and "unit" in v:
+                            ellipsoid_raw[k] = uw.quantity(v["value"], v["unit"])
+                    self._checkpoint_ellipsoid = ellipsoid_raw
+                except KeyError:
+                    pass
+
                 f.close()
 
                 # This needs to be done when reading a dm from a checkpoint
@@ -614,6 +626,13 @@ class Mesh(Stateful, uw_object):
 
         # Now add the appropriate coordinate system for the mesh's natural geometry
         # This step will usually over-write the defaults we just defined
+        #
+        # For geographic meshes loaded from checkpoint, pre-set the ellipsoid
+        # so the CoordinateSystem __init__ picks it up (it checks for
+        # self.ellipsoid before defaulting to WGS84).
+        if hasattr(self, "_checkpoint_ellipsoid") and self._checkpoint_ellipsoid is not None:
+            self._checkpoint_ellipsoid_pending = self._checkpoint_ellipsoid
+
         self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
 
         # This was in the _jit extension but ... if
@@ -2095,6 +2114,19 @@ class Mesh(Stateful, uw_object):
                     "value": self.CoordinateSystemType.value,
                 }
                 g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
+
+                # Add ellipsoid metadata for geographic meshes
+                if hasattr(self.CoordinateSystem, "ellipsoid"):
+                    ellipsoid_ser = {}
+                    for k, v in self.CoordinateSystem.ellipsoid.items():
+                        if hasattr(v, "to"):  # uw.quantity
+                            ellipsoid_ser[k] = {
+                                "value": float(v.magnitude),
+                                "unit": str(v.units),
+                            }
+                        else:
+                            ellipsoid_ser[k] = v
+                    g.attrs["ellipsoid"] = json.dumps(ellipsoid_ser)
 
                 # Add coordinate units metadata
                 if hasattr(self, "coordinate_units"):

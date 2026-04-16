@@ -2,7 +2,7 @@
 r"""
 # H2Ex Fault-Controlled Flow — Product-Aware Workflow
 
-**PHYSICS:** crustal fluid flow through fault zones
+**PHYSICS:** crustal fluid flow through fault zones → surface accumulation
 
 **DIFFICULTY:** advanced
 
@@ -10,22 +10,30 @@ r"""
 
 ## Description
 
-Demonstrates the **product-aware workflow pattern** where expensive serial
-steps (mesh creation, fault loading, adaptation) produce named products
-that are saved to disk and reloaded for parameter studies.
+Demonstrates the **product-aware workflow pattern** for hydrogen exploration.
+The full pipeline:
+
+1. Build geographic mesh and load fault surfaces
+2. Adapt mesh near faults
+3. Solve stress with TransverseIsotropic rheology → strain rate
+4. Solve reference stress (no faults) → background strain rate
+5. Compute permeability from strain-rate delta
+6. Solve Darcy flow with computed permeability
+7. Advect tracers → surface accumulation heat map
 
 Two usage patterns:
 
 - **Pattern A (full serial):** Build everything from scratch, save products.
 - **Pattern B (product reload):** Load pre-built mesh and faults, vary
-  rheology or boundary conditions without repeating the expensive steps.
+  stress azimuth or fault weakness without repeating the expensive steps.
 
 ## Key Concepts
 
 - `WorkflowProducts` for make-like persistence
 - `produces`/`requires` metadata on workflow steps for DAG visualisation
 - Geographic mesh with fault-adaptive refinement
-- Anisotropic rheology via fault influence fields
+- Anisotropic rheology via TransverseIsotropicFlowModel
+- Piecewise permeability from strain-rate anomaly
 """
 
 # %%
@@ -49,9 +57,11 @@ All tunable parameters for the H2Ex workflow.
 
 # %%
 config = h2ex.H2ExConfig(
-    adapt=False,              # Set True for mesh adaptation (requires MMG)
-    rheology="isoviscous",    # "isoviscous" for fast smoke test
-    num_elements=(8, 8, 4),   # Coarse for demonstration
+    adapt=False,                # Set True for mesh adaptation (requires MMG)
+    num_elements=(8, 8, 4),     # Coarse for demonstration
+    stress_azimuth_deg=0.0,     # E-W stress orientation
+    fault_weakness=1e-5,        # Strong fault anisotropy
+    max_advection_steps=100,    # Reduced for smoke test
 )
 
 config.view()
@@ -76,7 +86,7 @@ os.makedirs(config.output_dir, exist_ok=True)
 config.save_yaml(f"{config.output_dir}/params.yaml")
 
 config2 = h2ex.H2ExConfig.from_yaml(f"{config.output_dir}/params.yaml")
-assert config2.rheology == config.rheology
+assert config2.stress_azimuth_deg == config.stress_azimuth_deg
 uw.pprint("YAML round-trip OK")
 
 # %% [markdown]
@@ -107,7 +117,6 @@ model = config.setup_model()
 
 # %%
 mesh = h2ex.create_mesh(config)
-uw.pprint(f"Mesh: {mesh.elements_count} elements")
 
 # %% [markdown]
 """
@@ -120,7 +129,6 @@ without fault-controlled features.
 
 # %%
 surfaces = h2ex.load_and_build_faults(mesh, config)
-uw.pprint(f"Fault surfaces: {len(surfaces.surfaces)}")
 
 # %% [markdown]
 """
@@ -135,10 +143,10 @@ mesh = h2ex.adapt_mesh(mesh, surfaces, config)
 
 # %% [markdown]
 """
-### Save products
+### Save mesh products
 
 These are the expensive-to-compute objects.  Save them so Pattern B
-can skip straight to solver setup.
+can skip straight to the stress calculation.
 """
 
 # %%
@@ -146,31 +154,60 @@ products.save("mesh", mesh)
 if len(surfaces.surfaces) > 0:
     products.save("fault_surfaces", surfaces)
 
-# Check what we saved
 products.list()
 
 # %% [markdown]
 """
-## 4. Solver Setup
+## 4. Stress Calculations
+
+Solve the Stokes equation twice:
+- Once with fault weakness → strain rate on faults
+- Once without faults → reference strain rate
 """
 
 # %%
-stokes, v, p = h2ex.create_stokes(mesh, config)
-fields = h2ex.setup_rheology(stokes, surfaces, mesh, config)
-h2ex.set_boundary_conditions(stokes, mesh, config)
+stokes, strain_rate = h2ex.solve_stress(mesh, surfaces, config)
+
+# %%
+strain_rate_ref = h2ex.solve_reference_stress(mesh, config)
 
 # %% [markdown]
 """
-## 5. Solve
+## 5. Permeability
+
+Compute permeability from the strain-rate delta (fault - reference).
+Positive delta → enhanced permeability.
 """
 
 # %%
-stokes.solve(zero_init_guess=True)
-uw.pprint(f"Solved.  v_max = {v.max()}")
+permeability = h2ex.compute_permeability(mesh, strain_rate, strain_rate_ref, config)
 
 # %% [markdown]
 """
-## 6. Product Status
+## 6. Darcy Flow
+
+Solve steady-state Darcy flow with the computed permeability.
+Source at depth drives fluid upward through fault conduits.
+"""
+
+# %%
+darcy, v_darcy, p_darcy = h2ex.solve_darcy(mesh, permeability, config)
+
+# %% [markdown]
+"""
+## 7. Tracer Advection
+
+Seed tracers throughout the domain and advect them in the
+negative Darcy velocity.  Stopped at the surface, they form
+an accumulation heat map.
+"""
+
+# %%
+accumulation = h2ex.advect_tracers(mesh, v_darcy, config)
+
+# %% [markdown]
+"""
+## 8. Product Status
 
 Cross-reference the workflow's product metadata against what's on disk.
 """
@@ -180,7 +217,7 @@ products.status(h2ex)
 
 # %% [markdown]
 """
-## 7. Pattern B — Reload Products for Parameter Study
+## 9. Pattern B — Reload Products for Parameter Study
 
 In a separate session (or a second run), load pre-built products and
 vary only the downstream parameters.
@@ -193,37 +230,42 @@ vary only the downstream parameters.
 # mesh = products.load("mesh")
 # surfaces = products.load("fault_surfaces", mesh=mesh)
 #
-# # Change rheology without rebuilding the mesh
-# config.rheology = "anisotropic"
-# config.eta_1_ratio = 0.01  # More extreme contrast
+# # Change stress orientation without rebuilding the mesh
+# config.stress_azimuth_deg = 45.0
 #
-# stokes, v, p = h2ex.create_stokes(mesh, config)
-# fields = h2ex.setup_rheology(stokes, surfaces, mesh, config)
-# h2ex.set_boundary_conditions(stokes, mesh, config)
-# stokes.solve(zero_init_guess=True)
+# stokes, strain_rate = h2ex.solve_stress(mesh, surfaces, config)
+# strain_rate_ref = h2ex.solve_reference_stress(mesh, config)
+# permeability = h2ex.compute_permeability(mesh, strain_rate, strain_rate_ref, config)
+# darcy, v_darcy, p_darcy = h2ex.solve_darcy(mesh, permeability, config)
+# accumulation = h2ex.advect_tracers(mesh, v_darcy, config)
 
 # %% [markdown]
 """
-## 8. Visualization (optional)
+## 10. Visualization (optional)
 """
 
 # %%
 uw.pause("Waiting before visualisation")
 
 # %%
-h2ex.plot_results(mesh, stokes, surfaces=surfaces, config=config)
+h2ex.plot_results(mesh, v_darcy, surfaces=surfaces, config=config)
 
 # %% [markdown]
 """
 ## Summary
 
-This notebook demonstrates the product-aware workflow pattern:
+This notebook demonstrates the full H2Ex pipeline:
 
-1. **H2ExConfig** — validated, serializable parameters for fault-controlled flow
-2. **WorkflowProducts** — make-like persistence (save, load, exists, status)
-3. **DAG metadata** — `produces`/`requires` on each step, visible in `view()`
-4. **Two patterns** — full serial build vs product-reload for parameter studies
+1. **Mesh preparation** — geographic mesh, fault loading, adaptation
+2. **Stress calculation** — TransverseIsotropic with oriented BCs
+3. **Permeability** — derived from strain-rate anomaly
+4. **Darcy flow** — driven by source at depth
+5. **Accumulation** — tracers advected to surface, density heat map
 
-The key insight: expensive setup (mesh, faults, adaptation) runs once,
-cheap-to-vary steps (rheology, BCs, solve) run many times.
+The product-aware pattern (save/load/status) enables:
+
+- **Parameter studies**: vary `stress_azimuth_deg` or `fault_weakness`
+  without rebuilding the mesh
+- **Reproducibility**: YAML config + products directory captures the full state
+- **DAG visualization**: `view()` shows step dependencies
 """

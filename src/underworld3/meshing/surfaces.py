@@ -1690,8 +1690,11 @@ class Surface:
 
         # --- Build 3D points for each depth layer ---
         if is_geographic:
-            a_km = ellipsoid["a"]
-            b_km = ellipsoid["b"]
+            # Extract km floats — ellipsoid["a"] is uw.quantity when units active
+            a_raw = ellipsoid["a"]
+            b_raw = ellipsoid["b"]
+            a_km = float(a_raw.to("km").magnitude) if hasattr(a_raw, "to") else float(a_raw)
+            b_km = float(b_raw.to("km").magnitude) if hasattr(b_raw, "to") else float(b_raw)
             from underworld3.coordinates import geographic_to_cartesian
 
             all_points_km = []

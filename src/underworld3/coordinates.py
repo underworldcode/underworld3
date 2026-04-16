@@ -533,18 +533,21 @@ class GeographicCoordinateAccessor:
         x, y, z = dm_coords[:, 0], dm_coords[:, 1], dm_coords[:, 2]
 
         # Get ellipsoid parameters
-        # Use nondimensional if available (when mesh created with units)
-        # Otherwise use raw km values
+        # ellipsoid["a"] is uw.quantity when units active, float (km) when not.
+        # DM coordinates are nondimensional, so nondimensionalise to match.
         ellipsoid = self.cs.ellipsoid
-        if "a_nd" in ellipsoid and "b_nd" in ellipsoid:
-            # Units were active - use nondimensional ellipsoid
-            a = ellipsoid["a_nd"]
-            b = ellipsoid["b_nd"]
+        a_raw = ellipsoid["a"]
+        b_raw = ellipsoid["b"]
+        if hasattr(a_raw, "to"):
+            # Units active — nondimensionalise
+            import underworld3 as uw
+            a = float(uw.non_dimensionalise(a_raw))
+            b = float(uw.non_dimensionalise(b_raw))
             self._nondimensional = True
         else:
-            # No units - use km values
-            a = ellipsoid["a"]
-            b = ellipsoid["b"]
+            # No units — km floats
+            a = float(a_raw)
+            b = float(b_raw)
             self._nondimensional = False
 
         # Convert to geographic using our utility function
@@ -728,14 +731,16 @@ class GeographicCoordinateAccessor:
         >>> tomo_depth = np.array([10.0, 20.0, 30.0])  # km or nondimensional
         >>> x, y, z = mesh.geo.to_cartesian(tomo_lon, tomo_lat, tomo_depth)
         """
-        # Use nondimensional ellipsoid if available
+        # Nondimensionalise ellipsoid for numeric coordinate conversion
         ellipsoid = self.cs.ellipsoid
-        if "a_nd" in ellipsoid and "b_nd" in ellipsoid:
-            a = ellipsoid["a_nd"]
-            b = ellipsoid["b_nd"]
+        a_raw, b_raw = ellipsoid["a"], ellipsoid["b"]
+        if hasattr(a_raw, "to"):
+            import underworld3 as uw
+            a = float(uw.non_dimensionalise(a_raw))
+            b = float(uw.non_dimensionalise(b_raw))
         else:
-            a = ellipsoid["a"]
-            b = ellipsoid["b"]
+            a = float(a_raw)
+            b = float(b_raw)
         return geographic_to_cartesian(lon, lat, depth, a, b)
 
     def from_cartesian(self, x, y, z):
@@ -768,14 +773,16 @@ class GeographicCoordinateAccessor:
         >>> x, y, z = mesh.data[:, 0], mesh.data[:, 1], mesh.data[:, 2]
         >>> lon, lat, depth = mesh.geo.from_cartesian(x, y, z)
         """
-        # Use nondimensional ellipsoid if available
+        # Nondimensionalise ellipsoid for numeric coordinate conversion
         ellipsoid = self.cs.ellipsoid
-        if "a_nd" in ellipsoid and "b_nd" in ellipsoid:
-            a = ellipsoid["a_nd"]
-            b = ellipsoid["b_nd"]
+        a_raw, b_raw = ellipsoid["a"], ellipsoid["b"]
+        if hasattr(a_raw, "to"):
+            import underworld3 as uw
+            a = float(uw.non_dimensionalise(a_raw))
+            b = float(uw.non_dimensionalise(b_raw))
         else:
-            a = ellipsoid["a"]
-            b = ellipsoid["b"]
+            a = float(a_raw)
+            b = float(b_raw)
         return cartesian_to_geographic(x, y, z, a, b)
 
     def points_to_cartesian(self, points_geo):
@@ -1588,9 +1595,12 @@ class CoordinateSystem:
 
             self.type = "Geographic"
 
-            # Store ellipsoid parameters (will be set by mesh creation function)
-            # Default to WGS84 if not specified
-            if not hasattr(self, "ellipsoid"):
+            # Store ellipsoid parameters.
+            # Priority: checkpoint-restored ellipsoid > already set > WGS84 default
+            if hasattr(self.mesh, "_checkpoint_ellipsoid_pending") and self.mesh._checkpoint_ellipsoid_pending is not None:
+                self.ellipsoid = self.mesh._checkpoint_ellipsoid_pending
+                self.mesh._checkpoint_ellipsoid_pending = None
+            elif not hasattr(self, "ellipsoid"):
                 self.ellipsoid = ELLIPSOIDS["WGS84"].copy()
 
             # _X already contains UWCoordinates, _x is a copy for the "lowercase" alias
@@ -1636,7 +1646,9 @@ class CoordinateSystem:
             lat_approx = sympy.atan2(z, rxy) * 180 / sympy.pi
 
             # Depth (simplified - proper depth calculated in accessor)
-            depth_approx = self.ellipsoid["a"] - r
+            # self.ellipsoid["a"] is uw.quantity when units active, float when not
+            a_sym = expression(r"a_{ellipsoid}", self.ellipsoid["a"], "Semi-major axis")
+            depth_approx = a_sym - r
 
             # Geographic coordinate expressions (approximations for symbolic work)
             lambda_lon = expression(R"\lambda_{lon}", lon_deg, "Longitude (degrees East)")
@@ -1654,8 +1666,8 @@ class CoordinateSystem:
             # This matters at regional scales (10-100 km) where the difference
             # between geodetic and geocentric latitude (~10 arcmin) is significant.
 
-            a = sympy.sympify(self.ellipsoid["a"])
-            b = sympy.sympify(self.ellipsoid["b"])
+            a = expression(r"a_{ellipsoid}", self.ellipsoid["a"], "Semi-major axis")
+            b = expression(r"b_{ellipsoid}", self.ellipsoid["b"], "Semi-minor axis")
 
             # Geodetic normal components (gradient of ellipsoid equation)
             # ∇F = (2x/a², 2y/a², 2z/b²) - we drop the factor of 2 since we normalize

@@ -52,39 +52,63 @@ uw.timing.start()
 
 
 # %% [markdown]
-# ## 2. Load Fault Point Cloud
+# ## 2. Load Fault Trace Data
 #
-# The fault data is stored as an NPZ file with:
-# - `arr_0`: geographic coordinates (lon, lat, depth_m, dip, fault_id, segment_id)
+# The canonical fault data is a CSV with columns:
+# `Lon, Lat, Depth, Dip Angle at depth, Name, id, Description`
 #
-# Column 4 (`fault_id`) is a composite float like `11.3` where the integer part
+# The `Name` column is a composite float (e.g. `11.3`) where the integer part
 # groups related faults and the fractional part identifies individual segments
-# digitised by the operator.  Each unique `fault_id` is an independent trace
+# digitised by the operator.  Each unique `Name` is an independent trace
 # that should be processed separately.
 #
-# `Surface.from_trace()` interpolates each trace to a target resolution and
-# extrudes it to depth, producing a well-conditioned triangulated surface.
+# `Surface.from_trace()` takes these surface traces and extrudes them to depth,
+# producing well-conditioned triangulated surfaces — replacing the earlier
+# pre-processed NPZ intermediate.
 
 # %%
-fault_data = np.load("Structures/faults_as_swarm_points_xyz.npz")
-geo_coords = fault_data["arr_0"]
+import csv
+from pathlib import Path
 
-lon = geo_coords[:, 0]
-lat = geo_coords[:, 1]
-depth_m = geo_coords[:, 2]  # meters, negative (below surface)
-dip = geo_coords[:, 3]
-fault_id = geo_coords[:, 4]  # composite: e.g. 11.3 = fault 11, segment 3
+# Look for the CSV in several locations
+_csv_name = "CombinedInferredFaults_2025_04_22.csv"
+_search_paths = [
+    Path("Structures") / _csv_name,                                          # local
+    Path.home() / "Library/CloudStorage/Box-Box/+Claude/H2Ex-Data/Structures" / _csv_name,  # Box (macOS)
+    Path.home() / "Box/+Claude/H2Ex-Data/Structures" / _csv_name,            # Box (alias)
+]
+_csv_path = next((p for p in _search_paths if p.exists()), None)
+if _csv_path is None:
+    raise FileNotFoundError(
+        f"Cannot find {_csv_name} in any of:\n" +
+        "\n".join(f"  {p}" for p in _search_paths)
+    )
 
-# Each unique fault_id is an independent digitised segment
-unique_fault_ids = np.unique(np.round(fault_id, 4))
+# Parse CSV into structured arrays — no pandas dependency
+_rows = []
+with open(_csv_path) as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        _rows.append(row)
 
-print(f"Loaded {len(lon)} fault points across {len(unique_fault_ids)} segments")
-print(f"Geographic extent: lon=[{lon.min():.2f}, {lon.max():.2f}], "
-      f"lat=[{lat.min():.2f}, {lat.max():.2f}]")
-print(f"Depth range: {depth_m.min()/1000:.0f} to {depth_m.max()/1000:.0f} km")
+# Build arrays from parsed rows
+fault_lon   = np.array([float(r["Lon"]) for r in _rows])
+fault_lat   = np.array([float(r["Lat"]) for r in _rows])
+fault_depth = np.array([float(r["Depth"]) for r in _rows])
+fault_dip   = np.array([float(r["Dip Angle at depth"]) for r in _rows])
+fault_name  = np.array([float(r["Name"]) for r in _rows])
+fault_desc  = [r["Description"].strip() for r in _rows]
+
+unique_fault_ids = np.unique(fault_name)
+
+print(f"Loaded {len(fault_lon)} fault trace points from {_csv_path.name}")
+print(f"Geographic extent: lon=[{fault_lon.min():.2f}, {fault_lon.max():.2f}], "
+      f"lat=[{fault_lat.min():.2f}, {fault_lat.max():.2f}]")
+print(f"Depth range: {fault_depth.min():.0f} to {fault_depth.max():.0f} km")
+print(f"Fault segments: {len(unique_fault_ids)}")
 
 # %% [markdown]
-# ## 4. Create Geographic Mesh
+# ## 3. Create Geographic Mesh
 #
 # `RegionalGeographicBox` creates a mesh with WGS84 ellipsoidal geometry.
 # With units active, mesh coordinates are nondimensional Cartesian (÷ L_ref).
@@ -103,7 +127,7 @@ mesh = uw.meshing.RegionalGeographicBox(
 print(f"Mesh: {mesh.dim}D, {mesh.X.coords.shape[0]} nodes")
 
 # %% [markdown]
-# ## 5. Create Fault Surfaces
+# ## 4. Create Fault Surfaces
 #
 # `Surface.from_trace()` takes each fault's surface trace (lon, lat),
 # interpolates it to ~3 km resolution, and extrudes to depth with a
@@ -119,41 +143,33 @@ print(f"Mesh: {mesh.dim}D, {mesh.X.coords.shape[0]} nodes")
 fault_surfaces = {}
 
 for fid in unique_fault_ids:
-    mask = np.abs(np.round(fault_id, 4) - fid) < 1e-6
-    pts = geo_coords[mask]
-
-    # Extract surface trace (depth ≈ 0 layer)
-    surface_mask = np.abs(pts[:, 2]) < 100  # within 100 m of surface
-    if surface_mask.sum() < 2:
+    mask = fault_name == fid
+    if mask.sum() < 2:
         continue
 
-    trace = pts[surface_mask][:, :2]  # (lon, lat)
-    depth_km_max = abs(pts[:, 2].min()) / 1000.0
-
-    # Dip angle for this segment (degrees from horizontal)
-    segment_dip = float(np.median(pts[:, 3]))
-
-    # Detect depth spacing from the data
-    unique_depths = np.unique(np.round(pts[:, 2] / 1000, 1))
-    ds_km = float(np.median(np.abs(np.diff(np.sort(unique_depths))))) if len(unique_depths) > 1 else 5.0
+    trace = np.column_stack([fault_lon[mask], fault_lat[mask]])  # (N, 2)
+    depth_km = float(fault_depth[mask][0])
+    segment_dip = float(fault_dip[mask][0])
+    description = fault_desc[np.argmax(mask)]  # first matching description
 
     name = f"fault_{fid}"
     s = uw.meshing.Surface.from_trace(
         name, mesh, trace,
-        depth_range=(uw.quantity(0, "km"), uw.quantity(depth_km_max, "km")),
-        depth_spacing=uw.quantity(ds_km, "km"),
+        depth_range=(uw.quantity(0, "km"), uw.quantity(depth_km, "km")),
+        depth_spacing=uw.quantity(5, "km"),
         trace_resolution=uw.quantity(3, "km"),
         dip=segment_dip,
         dip_direction="right",
         symbol=f"F{fid}",
     )
-    print(f"  {name}: dip={segment_dip:.0f}°, {s.n_vertices} vertices, {s.n_triangles} triangles")
+    print(f"  {name} ({description}): dip={segment_dip:.0f}°, depth={depth_km:.0f} km, "
+          f"{s.n_vertices} vertices, {s.n_triangles} triangles")
     fault_surfaces[fid] = s
 
 print(f"\nCreated {len(fault_surfaces)} fault surfaces")
 
 # %% [markdown]
-# ## 6. Build Refinement Metric and Adapt Mesh
+# ## 5. Build Refinement Metric and Adapt Mesh
 #
 # `SurfaceCollection.refinement_metric()` computes a single combined metric
 # using the minimum unsigned distance across all surfaces.  This creates only
@@ -178,7 +194,7 @@ mesh.adapt(combined_metric, verbose=True)
 print(f"After adaptation:  {mesh.X.coords.shape[0]} nodes")
 
 # %% [markdown]
-# ## 7. Set Up Stokes Solver
+# ## 6. Set Up Stokes Solver
 
 # %%
 v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2,
@@ -298,23 +314,179 @@ stokes.add_natural_bc(penalty * unit_north.dot(v.sym) * unit_north, "North")
 stokes.add_natural_bc(penalty * unit_north.dot(v.sym) * unit_north, "South")
 
 # %% [markdown]
-# ## 8. Solve
+# ## 7. Solve
 
 # %%
-stokes.solve(verbose=False, debug=False)
+stokes.solve(verbose=False)
 
 print(f"Rheology: {RHEOLOGY}")
+print(f"  v DOFs: {v.coords.shape[0] * mesh.dim}")
 print(f"  |v|_max = {np.abs(v.data).max():.4f}")
 print(f"  |p|_max = {np.abs(p.data).max():.4f}")
 
-# %%
-uw.timing.print_summary()
+# %% [markdown]
+# ## 8. Strain Rate Projection
+#
+# Project the second invariant of the strain rate tensor to a P1 field.
+# This is a scalar measure of deformation intensity at each node.
 
 # %%
-uw.pause("visualise when ready")
+strain_rate = uw.discretisation.MeshVariable(
+    "eps", mesh, 1, degree=1, varsymbol=r"\dot\varepsilon"
+)
+
+proj = uw.systems.Projection(mesh, strain_rate)
+proj.uw_function = stokes.constitutive_model.Unknowns.Einv2
+proj.smoothing = 1.0e-6
+proj.solve()
+
+print(f"Strain rate invariant: [{strain_rate.data.min():.4e}, {strain_rate.data.max():.4e}]")
 
 # %% [markdown]
-# ## 9. Visualization
+# ## 9. Reference Stress (No Faults)
+#
+# Solve the same BCs with isotropic (uniform) viscosity to get the
+# background strain rate.  The **anomaly** (fault minus reference) reveals
+# where faults concentrate or shadow deformation.
+
+# %%
+v_ref = uw.discretisation.MeshVariable("v_ref", mesh, mesh.dim, degree=2,
+                                        varsymbol=r"\mathbf{v}_{ref}", units="cm/yr")
+p_ref = uw.discretisation.MeshVariable("p_ref", mesh, 1, degree=1,
+                                        varsymbol="p_{ref}", units="MPa")
+
+stokes_ref = uw.systems.Stokes(mesh, velocityField=v_ref, pressureField=p_ref)
+stokes_ref.petsc_options["snes_monitor"] = None
+stokes_ref.petsc_options["ksp_monitor"] = None
+stokes_ref.petsc_options["snes_type"] = "newtonls"
+stokes_ref.petsc_options["ksp_type"] = "fgmres"
+stokes_ref.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+stokes_ref.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+
+# Isotropic: uniform viscosity (same eta_0, no fault weakness)
+stokes_ref.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes_ref.constitutive_model.Parameters.shear_viscosity_0 = eta_0
+stokes_ref.saddle_preconditioner = 1.0 / uw.non_dimensionalise(eta_0)
+
+# Same BCs as the fault solve
+stokes_ref.add_natural_bc(penalty * unit_down.dot(v_ref.sym) * unit_down, "Bottom")
+stokes_ref.add_natural_bc(penalty * (unit_east.dot(v_ref.sym) + V0_nd) * unit_east, "East")
+stokes_ref.add_natural_bc(penalty * (unit_east.dot(v_ref.sym) - V0_nd) * unit_east, "West")
+stokes_ref.add_natural_bc(penalty * unit_north.dot(v_ref.sym) * unit_north, "North")
+stokes_ref.add_natural_bc(penalty * unit_north.dot(v_ref.sym) * unit_north, "South")
+
+stokes_ref.solve(verbose=False)
+print(f"Reference solve: |v_ref|_max = {np.abs(v_ref.data).max():.4f}")
+
+# Project reference strain rate
+strain_rate_ref = uw.discretisation.MeshVariable(
+    "eps_ref", mesh, 1, degree=1, varsymbol=r"\dot\varepsilon_{ref}"
+)
+proj_ref = uw.systems.Projection(mesh, strain_rate_ref)
+proj_ref.uw_function = stokes_ref.constitutive_model.Unknowns.Einv2
+proj_ref.smoothing = 1.0e-6
+proj_ref.solve()
+
+print(f"Reference strain rate: [{strain_rate_ref.data.min():.4e}, {strain_rate_ref.data.max():.4e}]")
+
+# %% [markdown]
+# ## 10. Permeability from Strain-Rate Anomaly
+#
+# Permeability is only modified **near faults** — the fault influence weight
+# (Gaussian, ~1 on faults, ~0 far away) masks the strain-rate delta so
+# background regions keep unit permeability.
+#
+# Within the fault zone, positive delta (strain concentration) enhances
+# permeability; negative delta (strain shadow) reduces it.  The log₁₀(k)
+# is blended by the fault weight for a smooth transition.
+
+# %%
+permeability = uw.discretisation.MeshVariable(
+    "perm", mesh, 1, degree=1, varsymbol=r"\kappa"
+)
+
+delta = strain_rate.data[:, 0] - strain_rate_ref.data[:, 0]
+w = fault_weight.data[:, 0]
+
+# Only modify permeability where faults have significant influence
+WEIGHT_THRESHOLD = 0.1
+near_fault = w > WEIGHT_THRESHOLD
+
+delta_near = delta[near_fault]
+q25 = np.percentile(delta_near, 25)
+q75 = np.percentile(delta_near, 75)
+
+log_perm = np.zeros_like(delta)  # background = 10^0 = 1
+
+# Only the tails: upper quartile enhanced, lower quartile reduced
+log_perm[near_fault & (delta > q75)] = 1
+log_perm[near_fault & (delta < q25)] = -1
+
+# Blend by fault weight for smooth transition
+permeability.data[:, 0] = np.power(10.0, log_perm * w)
+
+print(f"Strain-rate delta: [{delta.min():.4e}, {delta.max():.4e}]")
+print(f"Near-fault quartiles: q25={q25:.1f}, q75={q75:.1f}")
+print(f"Permeability: [{permeability.data[:,0].min():.2e}, {permeability.data[:,0].max():.2e}]")
+print(f"  Enhanced (k>1): {(permeability.data[:,0] > 1.01).sum()}")
+print(f"  Reduced  (k<1): {(permeability.data[:,0] < 0.99).sum()}")
+
+# %% [markdown]
+# ## 11. Darcy Flow
+#
+# Solve steady-state Darcy flow with the fault-derived permeability field.
+# A pressure source at depth drives fluid upward; the surface is free-draining
+# ($h = 0$).  Gravity acts radially inward (downward on the geographic mesh).
+
+# %%
+import sympy
+
+h_darcy = uw.discretisation.MeshVariable(
+    "h_darcy", mesh, 1, degree=2, varsymbol=r"h_d"
+)
+v_darcy = uw.discretisation.MeshVariable(
+    "v_darcy", mesh, mesh.dim, degree=1, continuous=True, varsymbol=r"\mathbf{v}_d"
+)
+
+darcy = uw.systems.SteadyStateDarcy(mesh, h_Field=h_darcy, v_Field=v_darcy)
+darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
+darcy.constitutive_model.Parameters.permeability = permeability.sym[0]
+
+# Free-draining top surface
+darcy.add_essential_bc(0.0, "Surface")
+
+# Source at depth > 30 km — both sides carry units, JIT nondimensionalises
+depth_sym = geo[2]  # = a_ellipsoid - r (unit-aware)
+source_depth = uw.expression(r"d_{source}", uw.quantity(30, "km"), "source depth threshold")
+
+darcy.f = sympy.Piecewise(
+    (10.0, depth_sym > source_depth),
+    (0.0, True),
+)
+
+# Gravity: s = unit_down (dimensionless, consistent with head formulation).
+# At hydrostatic equilibrium grad(h) = unit_down, so v = -K(grad(h) - s) = 0.
+# Overpressure from the source breaks equilibrium → drives flow through faults.
+darcy.constitutive_model.Parameters.s = unit_down
+
+darcy.petsc_options["snes_monitor"] = None
+darcy.tolerance = 1.0e-3
+darcy._v_projector.tolerance = 1.0e-3
+darcy._v_projector.smoothing = 0.0
+
+print("Solving Darcy flow...")
+darcy.solve()
+print(f"  |h|_max = {np.abs(h_darcy.data).max():.4e}")
+print(f"  |v_darcy|_max = {np.abs(v_darcy.data).max():.4e}")
+
+# %% [markdown]
+# ## 12. Visualization
+#
+# Overview plots: strain rate anomaly, permeability field, and Darcy velocity
+# with fault surfaces overlaid.
+
+# %%
+uw.timing.print_summary()
 
 # %%
 import pyvista as pv
@@ -324,45 +496,62 @@ pvmesh = vis.mesh_to_pv_mesh(mesh)
 
 pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym)
 pvmesh.point_data["Vmag"] = vis.scalar_fn_to_pv_points(pvmesh, v.sym.dot(v.sym))
-pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p.sym)
-# simplify=False is CRITICAL — sympy.simplify() hangs on geographic basis vectors
-pvmesh.point_data["N"] = vis.vector_fn_to_pv_points(pvmesh, unit_north, simplify=False)
-pvmesh.point_data["E"] = vis.vector_fn_to_pv_points(pvmesh, unit_east, simplify=False)
-pvmesh.point_data["Z"] = vis.vector_fn_to_pv_points(pvmesh, unit_down, simplify=False)
+pvmesh.point_data["eps"] = vis.scalar_fn_to_pv_points(pvmesh, strain_rate.sym)
+pvmesh.point_data["eps_ref"] = vis.scalar_fn_to_pv_points(pvmesh, strain_rate_ref.sym)
+pvmesh.point_data["delta_eps"] = pvmesh.point_data["eps"] - pvmesh.point_data["eps_ref"]
+pvmesh.point_data["log_perm"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(permeability.sym[0], 10))
+pvmesh.point_data["h_darcy"] = vis.scalar_fn_to_pv_points(pvmesh, h_darcy.sym)
+pvmesh.point_data["Vd"] = vis.vector_fn_to_pv_points(pvmesh, v_darcy.sym)
+pvmesh.point_data["Vd_mag"] = np.linalg.norm(pvmesh.point_data["Vd"], axis=1)
 
 if RHEOLOGY != "isoviscous":
-    pvmesh.point_data["fault_n"] = vis.vector_fn_to_pv_points(pvmesh, fault_normal.sym)
-    pvmesh.point_data["fault_id"] = vis.scalar_fn_to_pv_points(pvmesh, fault_id_var.sym)
     pvmesh.point_data["fault_dist"] = vis.scalar_fn_to_pv_points(pvmesh, nearest_dist.sym)
     pvmesh.point_data["fault_w"] = vis.scalar_fn_to_pv_points(pvmesh, fault_weight.sym)
 
-# %%
-pl = pv.Plotter(window_size=(750, 750))
-
-pl.add_mesh(pvmesh, cmap="coolwarm", scalars="Vmag", style="wireframe")
-pl.add_mesh(pvmesh, cmap="coolwarm", scalars="fault_dist", style="surface", opacity=0.5)
-
-pl.add_arrows(pvmesh.points, pvmesh.point_data["V"], mag=2e13, color="Blue")
-# pl.add_arrows(pvmesh.points, pvmesh.point_data["fault_n"], mag=1e4, color="Red", opacity=0.33)
-
-# Add fault surfaces with distinct colours
+# Fault surface meshes
 fault_colors = [
     "Red", "Orange", "Blue", "Green", "Purple",
     "Cyan", "Yellow", "Magenta", "Lime", "Pink",
 ]
+
+# %%
+# Darcy flow + fault overlay
+pl = pv.Plotter(window_size=(1000, 800))
+
+pl.add_mesh(pvmesh, scalars="Vd_mag", cmap="viridis", opacity=0.3, show_edges=False)
+pl.add_arrows(pvmesh.points, pvmesh.point_data["Vd"], mag=5e-3, color="Blue", opacity=0.5)
+
 for i, (sid, surface) in enumerate(fault_surfaces.items()):
     if surface.pv_mesh is not None:
         pl.add_mesh(
             surface.pv_mesh,
             style="surface",
             color=fault_colors[i % len(fault_colors)],
-            opacity=1.0,
+            opacity=0.7,
             show_edges=True,
-            label=f"fault_{sid}",
         )
 
+pl.add_title("Darcy Flow with Fault-Controlled Permeability")
 pl.show()
 
 # %%
+# Permeability field
+pl2 = pv.Plotter(window_size=(1000, 800))
+
+pl2.add_mesh(pvmesh, scalars="log_perm", cmap="RdYlBu_r", opacity=0.5, show_edges=False,
+             scalar_bar_args={"title": "log10(k)"})
+
+for i, (sid, surface) in enumerate(fault_surfaces.items()):
+    if surface.pv_mesh is not None:
+        pl2.add_mesh(
+            surface.pv_mesh,
+            style="surface",
+            color=fault_colors[i % len(fault_colors)],
+            opacity=0.7,
+            show_edges=True,
+        )
+
+pl2.add_title("Permeability (log10 scale)")
+pl2.show()
 
 # %%

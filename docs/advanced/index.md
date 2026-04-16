@@ -23,12 +23,6 @@ Implement advanced material models and constitutive laws.
 
 **[→ Complex Rheologies](complex-rheologies.md)**
 
-### VEP with Transverse Isotropy for Fault Mechanics
-Viscoelastic-plastic rheology with anisotropic weak planes and resolved
-fault-plane yield for modelling fault zones.
-
-**[→ VEP + Transverse Isotropy](vep-transverse-isotropy-faults.md)**
-
 ### Custom Meshes
 Create complex geometries with gmsh for research problems.
 
@@ -44,10 +38,10 @@ Dynamic remeshing and adaptive refinement strategies.
 
 **[→ Mesh Adaptation](mesh-adaptation.md)**
 
-### Porous Media Flow
-Darcy flow, Richards equation, and variably-saturated groundwater modelling.
+### H2Ex Workflow
+Fault-controlled hydrogen exploration: stress, permeability, and Darcy flow.
 
-**[→ Porous Media Flow](porous-flow.md)**
+**[→ H2Ex Workflow](h2ex-workflow.md)**
 
 ### Troubleshooting
 Common issues, debugging strategies, and solutions.
@@ -80,11 +74,10 @@ Ready to contribute to Underworld3?
 parallel-computing
 performance
 complex-rheologies
-vep-transverse-isotropy-faults
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
-porous-flow
+h2ex-workflow
 troubleshooting
 api-patterns
 SWARM-INTEGRATION-STATISTICS

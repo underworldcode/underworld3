@@ -570,50 +570,27 @@ def RegionalGeographicBox(
             "Use str name, (a, b) tuple, True for WGS84, or False for sphere."
         )
 
-    # Get ellipsoid parameters (in km)
+    # Get ellipsoid parameters (raw km floats from ELLIPSOIDS dict)
     a_km = ellipsoid_dict["a"]
     b_km = ellipsoid_dict["b"]
 
-    # Nondimensionalize ellipsoid if units active
     if units_active:
-        # Get reference length in km
-        ref_length = model.get_fundamental_scales().get("length")
-        if ref_length is not None:
-            # Convert reference length to km
-            if hasattr(ref_length, "to"):
-                L_ref_km = float(ref_length.to("km").magnitude)
-            elif hasattr(ref_length, "magnitude"):
-                # Assume it's in base SI (meters)
-                L_ref_km = float(ref_length.magnitude) / 1000.0
-            else:
-                L_ref_km = float(ref_length) / 1000.0
+        # Store as quantities — the units system handles nondimensionalisation
+        # downstream (symbolic expressions via JIT, numeric via non_dimensionalise)
+        ellipsoid_dict["a"] = uw.quantity(a_km, "km")
+        ellipsoid_dict["b"] = uw.quantity(b_km, "km")
 
-            # Nondimensional ellipsoid parameters
-            a_nd = a_km / L_ref_km
-            b_nd = b_km / L_ref_km
-
-            # Store both in ellipsoid dict
-            ellipsoid_dict["a_nd"] = a_nd
-            ellipsoid_dict["b_nd"] = b_nd
-            ellipsoid_dict["L_ref_km"] = L_ref_km
-
-            # Use nondimensional values for mesh generation
-            a = a_nd
-            b = b_nd
-            depth_min = depth_min_nd
-            depth_max = depth_max_nd
-        else:
-            # No reference length available - use km
-            a = a_km
-            b = b_km
-            depth_min = depth_min_nd
-            depth_max = depth_max_nd
+        # For mesh generation (gmsh addPoint), use nondimensional floats
+        a = float(uw.non_dimensionalise(ellipsoid_dict["a"]))
+        b = float(uw.non_dimensionalise(ellipsoid_dict["b"]))
+        depth_min = float(depth_min_nd)
+        depth_max = float(depth_max_nd)
     else:
-        # No units - use km directly
+        # No units — keep as km floats
         a = a_km
         b = b_km
-        depth_min = depth_min_nd
-        depth_max = depth_max_nd
+        depth_min = float(depth_min_nd)
+        depth_max = float(depth_max_nd)
 
     # Unpack element counts (angles already processed above)
     numLon, numLat, numDepth = numElements

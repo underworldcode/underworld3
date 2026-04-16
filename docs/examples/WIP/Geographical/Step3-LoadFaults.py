@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# %%
 """
 Step 3: Load Fault Surfaces
 
