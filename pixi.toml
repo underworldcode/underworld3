@@ -230,6 +230,45 @@ petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
 petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 
 # ============================================
+# CUSTOM PETSC (AMR) — debug build
+# ============================================
+# Debug PETSc build (--with-debugging=1, -g -O0) for issue investigation.
+# Uses the same conda deps as amr but points to a separate PETSC_ARCH
+# so the optimised build is untouched.
+#
+# Setup:
+#   cd petsc-custom/petsc
+#   pixi run -e amr-debug python3 ./configure \
+#       --with-petsc-arch=petsc-4-uw-openmpi-debug --with-debugging=1 \
+#       --with-mpi-dir="$CONDA_PREFIX" --with-hdf5=0 \
+#       --download-mpich=0 --download-openmpi=0 --download-mpi4py=0 \
+#       --with-petsc4py=0 --with-x=0 --with-pragmatic=0 --with-slepc=0 \
+#       "--COPTFLAGS=-g -O0" "--CXXOPTFLAGS=-g -O0" "--FOPTFLAGS=-g -O0"
+#   make PETSC_DIR=$(pwd) PETSC_ARCH=petsc-4-uw-openmpi-debug all
+
+[feature.amr-debug.activation.env]
+PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
+PETSC_ARCH = "petsc-4-uw-openmpi-debug"
+
+# ============================================
+# HPC CLUSTER FEATURE
+# ============================================
+# For HPC clusters (Kaiju, Gadi, etc.) running linux-64.
+# Pure Python only — base dependencies cover all pure-Python needs.
+# mpi4py, h5py, petsc, petsc4py are built from source against the
+# cluster's MPI using petsc-custom/build-petsc.sh (UW_CLUSTER auto-detected).
+# See: docs/developer/guides/kaiju-cluster-setup.md
+
+[feature.hpc]
+platforms = ["linux-64"]
+
+[feature.hpc.dependencies]
+# patchelf is needed on Gadi to fix h5py RPATH order after source build:
+# meson embeds the conda env lib dir before Gadi's HDF5 in RPATH,
+# so we use patchelf post-install to move HDF5_DIR to the front.
+patchelf = "*"
+
+# ============================================
 # RUNTIME FEATURE (for tutorials/examples)
 # ============================================
 # Visualization and interactive computing
@@ -299,6 +338,9 @@ amr         = { features = ["amr"], solve-group = "amr" }
 amr-runtime = { features = ["amr", "runtime"], solve-group = "amr" }
 amr-dev     = { features = ["amr", "runtime", "dev"], solve-group = "amr" }
 
+# --- Debug PETSc (issue investigation, isolated from optimised build) ---
+amr-debug   = { features = ["amr", "amr-debug", "runtime", "dev"], solve-group = "amr" }
+
 # --- Explicit MPICH (override for macOS, or when MPICH is required) ---
 mpich       = { features = ["conda-petsc-mpich"], solve-group = "mpich" }
 mpich-dev   = { features = ["conda-petsc-mpich", "runtime", "dev"], solve-group = "mpich" }
@@ -312,3 +354,8 @@ openmpi-dev   = { features = ["conda-petsc-openmpi", "runtime", "dev"], solve-gr
 
 amr-openmpi     = { features = ["amr-openmpi"], solve-group = "amr-openmpi" }
 amr-openmpi-dev = { features = ["amr-openmpi", "runtime", "dev"], solve-group = "amr-openmpi" }
+
+# --- HPC Cluster Track (linux-64 only) ---
+# Pure Python from pixi; MPI/PETSc/h5py built from source against cluster MPI.
+# UW_CLUSTER (or hostname) selects kaiju/gadi config in build-petsc.sh.
+hpc = { features = ["hpc"], solve-group = "hpc" }

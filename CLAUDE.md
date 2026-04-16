@@ -140,22 +140,23 @@ This keeps feature branches independent and makes cross-pollination of fixes str
 **Use a worktree for any multi-file change** (docs cleanup, refactoring, features).
 Multiple Claude sessions sharing one working directory will overwrite each other's work.
 
-Worktrees share the main repo's pixi environment and PETSc build via symlinks —
-there is one set of dependencies, not one per worktree. `./uw build` from inside
-a worktree installs that worktree's source into the shared environment.
+Each worktree gets its **own pixi environment** (isolated site-packages, own
+compiled extensions). Only PETSc is shared via symlink (non-relocatable,
+expensive to rebuild). `./uw build` from inside a worktree installs that
+worktree's source into the worktree's own environment.
 
 **Full documentation**: `docs/developer/guides/branching-strategy.md` (Git Worktrees section)
 
 #### Creating and using a worktree
 
 ```bash
-# Create — resets to development, sets up symlinks, names the branch
+# Create — own .pixi env, shared PETSc, names the branch
 ./uw worktree create <name>              # → feature/<name>
 ./uw worktree create <name> bugfix       # → bugfix/<name>
 
 # Work — drops you into a shell cd'd to the worktree
 ./uw worktree shell <name>
-./uw build           # builds from THIS source into the shared env
+./uw build           # builds from THIS source into THIS worktree's env
 ./uw test            # runs tests
 exit                 # leave
 
@@ -175,9 +176,8 @@ git checkout origin/<branch> -- path/to/file
 
 #### Important: always build and run from inside the worktree
 
-Because there is one shared environment, `./uw build` installs whichever source
-tree you run it from. If you build from the main repo then run code expecting
-worktree changes, the worktree edits will not be active. Always:
+Each worktree has its own pixi environment. `./uw build` installs into the
+environment of whichever worktree (or main repo) you run it from. Always:
 
 1. `./uw worktree shell <name>` (or `cd` into the worktree)
 2. `./uw build`
@@ -211,12 +211,39 @@ Underworld development team with AI support from [Claude Code](https://claude.co
 ### Rebuild After Source Changes
 **After modifying source files, always run `./uw build`!**
 - Underworld3 is installed as a package in the pixi environment
-- Changes go to `.pixi/envs/default/lib/python3.12/site-packages/underworld3/`
-- Verify with `uw.model.__file__`
+- Changes go to `.pixi/envs/<env>/lib/python3.12/site-packages/underworld3/`
+- Verify with `uw.__file__` (should show site-packages path, NOT `src/`)
 
 **Note**: `./uw build` uses `--no-cache-dir` to prevent pip from reusing stale
 wheels (UW3 is always version `0.0.0`). If you still suspect stale code, clean
 the build directory: `rm -rf build/lib.* build/bdist.*` then rebuild.
+
+### NEVER Use Editable Installs
+**DO NOT use `pip install -e .` (editable/development mode)!**
+This is a hard rule — there are no exceptions.
+
+Editable installs create `.pth` files and `.so` symlinks in the source tree that:
+- **Contaminate all pixi environments** sharing the same source directory
+- **Break worktree isolation** (worktrees share pixi envs via symlinks)
+- **Persist after uninstall** — stale `.pth` files redirect Python imports to `src/`
+  even after a proper `./uw build`, causing import errors or wrong library loading
+- **Mix debug/release builds** — `.so` compiled against one PETSc arch get loaded
+  by environments expecting another, causing `dlopen` symbol errors
+
+Always use `./uw build` which runs `pip install .` (non-editable). If `./uw build`
+is not available, use `pixi run -e <env> pip install . --no-build-isolation --no-cache-dir`.
+
+**Recovery from editable install contamination:**
+```bash
+# Remove stale .pth files from ALL environments
+find .pixi/envs -name "__editable__*underworld*" -delete
+# Remove .so from source tree (they belong in site-packages)
+find src/underworld3 -name "*.so" -delete
+# Clean build cache
+rm -rf build/
+# Rebuild properly
+./uw build
+```
 
 ### Test Quality Principles
 **New tests must be validated before making code changes to fix them!**

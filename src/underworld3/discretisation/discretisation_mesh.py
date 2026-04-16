@@ -128,22 +128,18 @@ def _from_plexh5(
     if comm == None:
         comm = PETSc.COMM_WORLD
 
-    viewer = PETSc.ViewerHDF5().create(filename, "r", comm=comm)
+    # Use createFromFile for a single-call load (issue #96: the separate
+    # topologyLoad + coordinatesLoad + labelsLoad pipeline leaves the
+    # coordinate DM in a state that DMPlexComputeBdIntegral cannot handle).
+    h5plex = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=comm)
 
-    # h5plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
-    h5plex = PETSc.DMPlex().create(comm=comm)
-    sf0 = h5plex.topologyLoad(viewer)
-    h5plex.coordinatesLoad(viewer, sf0)
-    h5plex.labelsLoad(viewer, sf0)
-
-    # Do this as well
     h5plex.setName("uw_mesh")
     h5plex.markBoundaryFaces("All_Boundaries", 1001)
 
     if not return_sf:
         return h5plex
     else:
-        return sf0, h5plex
+        return h5plex.getPointSF(), h5plex
 
 
 class Mesh(Stateful, uw_object):
@@ -1188,11 +1184,25 @@ class Mesh(Stateful, uw_object):
 
         if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
             self.dm.projectCoordinates(self.petsc_fe)
+        elif hasattr(self.dm, "createCoordinateSpace"):
+            # Use createCoordinateSpace rather than setCoordinateDisc.
+            # setCoordinateDisc with a user-created FE leaves the coordinate
+            # dual space without proper point subspaces, causing
+            # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
+            # createCoordinateSpace builds the FE internally with correct
+            # subspace initialisation.
+            self.dm.createCoordinateSpace(self.degree, False, True)
+
+            # Issue #96 fix: Force coordinate field creation and strip
+            # boundary labels from the coordinate DM. createCoordinateSpace
+            # clears the coordinate field cache. Without this, BdIntegral
+            # lazily recreates the field by cloning mesh.dm (with boundary
+            # labels), causing DMCompleteBCLabels_Internal MPI errors.
+            from underworld3.cython.petsc_maths import dm_force_coordinate_field
+            dm_force_coordinate_field(self.dm)
         elif PETSc.Sys.getVersion() >= (3, 24, 0):
-            # PETSc 3.24+ added 'localized' parameter (for DG coordinate spaces)
             self.dm.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
         else:
-            # PETSc 3.21-3.23: older signature without localized parameter
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
         if verbose and uw.mpi.rank == 0:
@@ -1237,7 +1247,9 @@ class Mesh(Stateful, uw_object):
             self._search_lengths,
         ) = self._get_mesh_sizes()
 
-        self.dm.copyDS(self.dm_hierarchy[-1])
+        # Skip self-copy when hierarchy is trivial (issue #96 investigation)
+        if self.dm is not self.dm_hierarchy[-1]:
+            self.dm.copyDS(self.dm_hierarchy[-1])
 
         if verbose and uw.mpi.rank == 0:
             print(

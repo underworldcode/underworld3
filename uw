@@ -167,13 +167,38 @@ run_build() {
     echo "$current_target" > "$petsc_marker"
 
     echo "  Building underworld3..."
+    # Determine the ACTUAL site-packages that Python will search.
+    # pip may resolve a different path (e.g. through worktree symlinks),
+    # so we ask Python directly and install with --target.
+    local site_packages
+    site_packages=$($PIXI run -e "$env" python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+    if [ -z "$site_packages" ]; then
+        echo -e "${YELLOW}Could not determine site-packages path${NC}"
+        exit 1
+    fi
+
+    # Remove any stale editable install markers (pip install -e leaves .pth files
+    # that redirect imports to the source tree, breaking environment isolation)
+    find "$site_packages" -maxdepth 1 -name "__editable__*underworld*" -delete 2>/dev/null
+
+    # Remove any stale .so from the source tree (left by editable installs)
+    find "$SCRIPT_DIR/src/underworld3" -name "*.so" -delete 2>/dev/null
+
     # --no-cache-dir: UW3 is always version 0.0.0, so pip's wheel cache
     # treats every build as "already cached" and silently reuses stale code.
-    # --force-reinstall: pip also skips reinstalling .py files if it thinks
-    # the package is already installed at the same version. This ensures
-    # all source files (not just compiled .pyx) are copied to site-packages.
-    $PIXI run -e "$env" pip install . --no-build-isolation --no-cache-dir --force-reinstall || {
+    # --target: install to where Python ACTUALLY looks, not where pip thinks.
+    # NEVER use -e (editable) — it breaks worktree and environment isolation.
+    $PIXI run -e "$env" pip install . --no-build-isolation --no-cache-dir \
+        --upgrade --target="$site_packages" || {
         echo -e "${YELLOW}underworld3 build failed${NC}"
+        exit 1
+    }
+
+    # Verify the install is importable
+    $PIXI run -e "$env" python -c "import underworld3" 2>/dev/null || {
+        echo -e "${YELLOW}underworld3 installed but cannot be imported!${NC}"
+        echo "  site-packages: $site_packages"
+        echo "  Check for stale .pth files or .so mismatches."
         exit 1
     }
 
@@ -833,7 +858,7 @@ COMMANDS
     type-check          Run mypy
 
   Worktrees:
-    worktree create <name> [prefix]   Create worktree (symlinks .pixi + PETSc)
+    worktree create <name> [prefix]   Create worktree (own .pixi, shared PETSc)
     worktree shell <name>             Start shell in worktree directory
     worktree list                     List worktrees with status
     worktree remove <name>            Remove worktree and branch
@@ -978,9 +1003,9 @@ run_update() {
 
 # ── Worktree management ──────────────────────────────────────────────
 #
-# Worktrees share the main repo's pixi environment and PETSc build
-# via symlinks.  `./uw build` from inside a worktree installs the
-# worktree's source into the shared env.
+# Each worktree gets its OWN pixi environment (isolated site-packages).
+# Only PETSc is shared via symlink (non-relocatable, expensive to rebuild).
+# `./uw build` from inside a worktree installs into that worktree's env.
 
 WORKTREE_ROOT="$SCRIPT_DIR/.claude/worktrees"
 
@@ -1058,15 +1083,16 @@ worktree_create() {
         echo -e "    ${GREEN}✓${NC} .pixi-env copied ($(cat "$main_repo/.pixi-env"))"
     fi
 
-    # Install pixi environment (own copy, not symlinked)
+    # Install pixi environment (own copy — NEVER symlink)
     local env=$(cat "$wt_path/.pixi-env" 2>/dev/null || echo "runtime")
     echo "  Installing pixi environment ($env) — this may take a moment..."
     (cd "$wt_path" && $PIXI install -e "$env" 2>/dev/null) && \
         echo -e "    ${GREEN}✓${NC} .pixi/ installed (isolated)" || {
-        echo -e "    ${YELLOW}pixi install failed — falling back to symlink${NC}"
-        rm -rf "$wt_path/.pixi"
-        ln -s "$main_repo/.pixi" "$wt_path/.pixi"
-        echo -e "    ${YELLOW}✓${NC} .pixi → main repo (shared fallback)"
+        echo -e "    ${RED}pixi install failed for worktree${NC}"
+        echo -e "    The worktree requires its own pixi environment."
+        echo -e "    Fix the pixi install error above, then run:"
+        echo -e "      cd $wt_path && pixi install -e $env"
+        exit 1
     }
 
     # 4b. Install petsc4py for AMR environments

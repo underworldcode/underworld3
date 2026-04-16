@@ -15,6 +15,22 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMPlexComputeCellwiseIntegralFEM( PetscDM, PetscVec, PetscVec, void* )
 
 
+def dm_force_coordinate_field(dm):
+    """Force coordinate field creation and strip boundary labels from the
+    coordinate DM.  Must be called after createCoordinateSpace and after
+    boundary labels have been added to mesh.dm.
+
+    Issue #96: DMClone (inside createCoordinateSpace) copies ALL labels from
+    mesh.dm to the coordinate DM.  When DMPlexComputeBdIntegral later lazily
+    recreates the coordinate field, DMCompleteBCLabels_Internal fails with
+    MPI errors on the boundary labels.  This function forces the coordinate
+    field to be created NOW and strips the labels so the cached field is used
+    instead of being lazily recreated.
+    """
+    cdef DM c_dm = dm
+    CHKERRQ(UW_DMForceCoordinateField(c_dm.dm))
+
+
 class Integral:
     """
     The `Integral` class constructs the volume integral

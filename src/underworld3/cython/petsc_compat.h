@@ -129,6 +129,42 @@ PetscErrorCode UW_PetscDSViewBdWF(PetscDS ds, PetscInt bd)
     return 1;
 }
 
+// Issue #96 fix: Force coordinate field creation on a DM and strip
+// boundary labels from the coordinate DM so they don't cause MPI errors
+// in DMCompleteBCLabels_Internal during lazy coordinate field recreation.
+//
+// Must be called AFTER createCoordinateSpace and AFTER labels are added.
+// The coordinate field is created NOW (while we can clean the coord DM)
+// and cached, preventing PETSc from lazily recreating it later.
+PetscErrorCode UW_DMForceCoordinateField(DM dm)
+{
+    DMField        coordField;
+    DM             cdm;
+    PetscInt       numLabels, i;
+
+    PetscFunctionBeginUser;
+
+    // Force coordinate field creation (triggers DMCreateCoordinateField_Plex)
+    PetscCall(DMGetCoordinateField(dm, &coordField));
+
+    // Now strip non-essential labels from the coordinate DM
+    // (DMClone copied all of mesh.dm's labels, including boundary labels)
+    PetscCall(DMGetCoordinateDM(dm, &cdm));
+    PetscCall(DMGetNumLabels(cdm, &numLabels));
+    for (i = numLabels - 1; i >= 0; --i) {
+        const char *name;
+        PetscBool   isDepth, isCelltype;
+        PetscCall(DMGetLabelName(cdm, i, &name));
+        PetscCall(PetscStrcmp(name, "depth", &isDepth));
+        PetscCall(PetscStrcmp(name, "celltype", &isCelltype));
+        if (!isDepth && !isCelltype) {
+            PetscCall(DMRemoveLabel(cdm, name, NULL));
+        }
+    }
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 // Set the time value on a DM. This is passed as `petsc_t` to all
 // pointwise residual and Jacobian functions during assembly.
 // PETSc stores this internally but petsc4py doesn't expose it.
