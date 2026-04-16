@@ -39,6 +39,16 @@ cd petsc-custom
 ./build-petsc.sh clean     # Remove everything
 ```
 
+## PETSc Patches
+
+`build-petsc.sh` automatically applies UW3 patches from `petsc-custom/patches/` after cloning:
+
+- **`plexfem-internal-boundary-ownership-fix.patch`** — Fixes ghost facet
+  ownership and part-consistent assembly in PETSc's boundary residual, integral,
+  and Jacobian paths. Required for correct internal boundary natural BCs in
+  parallel. See `patches/PETSC_MR_DESCRIPTION_INTERNAL_BOUNDARY_OWNERSHIP.md`
+  for details.
+
 ## What Gets Installed
 
 The build downloads and compiles:
@@ -59,7 +69,7 @@ petsc-custom/
 ├── build-petsc.sh      # Build script
 ├── README.md           # This file
 └── petsc/              # PETSc source and build (created by build)
-    ├── petsc-4-uw/     # Build output (PETSC_ARCH)
+    ├── petsc-4-uw-openmpi/     # Build output (PETSC_ARCH, example)
     └── src/
         └── binding/
             └── petsc4py/
@@ -76,5 +86,5 @@ petsc-custom/
 The AMR environment automatically sets:
 ```bash
 PETSC_DIR=$PIXI_PROJECT_ROOT/petsc-custom/petsc
-PETSC_ARCH=petsc-4-uw
+PETSC_ARCH=petsc-4-uw-openmpi
 ```

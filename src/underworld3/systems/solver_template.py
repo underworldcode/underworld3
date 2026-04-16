@@ -162,7 +162,7 @@ class SNES_MyEquation(SNES_Scalar):
 
         F1_val = expression(
             r"\mathbf{F}_1\left( u, \nabla u \right)",
-            sympy.simplify(flux),
+            flux,
             "MyEquation pointwise flux term: $F_1(u, \\nabla u)$",
         )
 

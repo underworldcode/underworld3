@@ -16,16 +16,25 @@ This makes scripts portable between interactive development and HPC batch execut
 
 ## Basic Usage
 
+The recommended pattern is to define default values as **named constants** before
+the `uw.Params` block.  This separates "what are the defaults" (easy to find and
+edit in a notebook) from "how are they validated and overridden" (the `uw.Params`
+machinery).
+
 ```python
 import underworld3 as uw
 
-# Define parameters with defaults
+# --- Default values (edit these in a notebook) ---
+RESOLUTION  = 0.05     # cell size for mesh
+DIFFUSIVITY = 1.0      # material property
+MAX_STEPS   = 100      # solver iterations
+
 params = uw.Params(
-    uw_resolution = 0.05,    # Cell size for mesh
-    uw_diffusivity = 1.0,    # Material property
-    uw_max_steps = 100,      # Integer parameter
-    uw_verbose = True,       # Boolean flag
-    uw_solver = "mumps",     # String option
+    uw_resolution  = RESOLUTION,
+    uw_diffusivity = DIFFUSIVITY,
+    uw_max_steps   = MAX_STEPS,
+    uw_verbose     = True,        # Boolean flag
+    uw_solver      = "mumps",     # String option
 )
 
 # Use in your model
@@ -48,6 +57,35 @@ python script.py -uw_resolution 0.025 -uw_solver superlu_dist
 
 # Works with mpirun
 mpirun -np 4 python script.py -uw_resolution 0.01
+```
+
+### Why Single-Dash Options?
+
+Underworld uses **PETSc-style** command-line options, not Python's standard `argparse`
+conventions. The key differences:
+
+| Convention | Long option | Short option | Word separator |
+|------------|-------------|--------------|----------------|
+| **PETSc** (Underworld) | `-uw_resolution` | — | underscore `_` |
+| **argparse** (Python) | `--resolution` | `-r` | hyphen `-` |
+
+Underworld inherits PETSc's options database, which uses a **single dash** followed
+by a descriptive name with **underscores**. This is by design:
+
+- PETSc solver options (e.g., `-ksp_type gmres`, `-pc_type lu`) use this format
+- Underworld user parameters share the same options database
+- The `uw_` prefix prevents collisions with PETSc's own options
+
+This means standard Python option parsers (argparse, click) do **not** support this
+style of options by default and may require custom handling if you try to parse
+`-uw_*` flags yourself. Use `uw.Params` instead — it reads from PETSc's options
+database automatically.
+
+```{tip}
+If you're writing a wrapper script that also needs argparse-style options,
+parse those with argparse first (for example using `parse_known_args`),
+then pass only the remaining/unparsed arguments to PETSc via
+`petsc4py.init(remaining_argv)` before importing underworld.
 ```
 
 ### Notebook Override
@@ -174,22 +212,30 @@ Example:
 ```python
 import underworld3 as uw
 
+# --- Default values (edit these in a notebook) ---
+CELL_SIZE      = 50.0   # km – target cell size
+DEPTH          = 660.0  # km – model depth
+VISCOSITY      = 1e21   # Pa·s – reference viscosity
+DENSITY_DIFF   = 50.0   # kg/m³ – density contrast
+MAX_ITERATIONS = 50
+TOLERANCE      = 1e-6
+
 # Define all configurable parameters at the top
 params = uw.Params(
     # Mesh parameters
-    uw_cell_size = uw.Param(50.0, units="km",
+    uw_cell_size = uw.Param(CELL_SIZE, units="km",
                             bounds=(10, 200),
                             description="Target cell size"),
-    uw_depth = uw.Param(660.0, units="km",
+    uw_depth = uw.Param(DEPTH, units="km",
                         description="Model depth"),
 
     # Physical properties
-    uw_viscosity = uw.Param(1e21, units="Pa*s"),
-    uw_density_diff = uw.Param(50.0, units="kg/m^3"),
+    uw_viscosity = uw.Param(VISCOSITY, units="Pa*s"),
+    uw_density_diff = uw.Param(DENSITY_DIFF, units="kg/m^3"),
 
     # Solver settings
-    uw_max_iterations = 50,
-    uw_tolerance = 1e-6,
+    uw_max_iterations = MAX_ITERATIONS,
+    uw_tolerance = TOLERANCE,
 )
 
 # Show help (useful at script start)
@@ -221,6 +267,47 @@ mpirun -np 256 python convection.py \
     -uw_viscosity "5e20 Pa*s" \
     -uw_max_iterations 100
 ```
+
+## Using Parameters with Solvers: Expressions
+
+When passing parameters to solver constitutive models, wrap them in
+`uw.expression()`. This creates a named symbolic container that the JIT
+compiler can update efficiently — changing the value between time steps
+does **not** trigger recompilation of the C extension.
+
+```python
+import underworld3 as uw
+
+# Define parameters
+VISCOSITY = 1e21      # Named constant
+MODULUS = 1e10        # Named constant
+DT = 0.01            # Timestep
+
+params = uw.Params(
+    uw_viscosity = VISCOSITY,
+    uw_modulus = MODULUS,
+)
+
+# Wrap in expressions for solver use
+eta = uw.expression("eta", params.uw_viscosity)
+mu = uw.expression("mu", params.uw_modulus)
+dt_e = uw.expression("dt_e", DT)
+
+# Pass expressions to constitutive model
+stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+stokes.constitutive_model.Parameters.shear_modulus = mu
+stokes.constitutive_model.Parameters.dt_elastic = dt_e
+
+# Time-stepping: change dt without recompilation
+for step in range(100):
+    dt_e.sym = compute_new_timestep()  # Updates value, ~0ms
+    stokes.solve()                      # No JIT rebuild needed
+```
+
+Without expressions, changing a solver parameter between steps requires
+setting `_force_setup=True` on the solve call, which triggers a full JIT
+recompilation (~5–15 seconds). With expressions, parameter updates go
+through PETSc's `constants[]` array and cost essentially nothing.
 
 ## Angle Units
 

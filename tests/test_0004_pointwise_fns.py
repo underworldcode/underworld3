@@ -14,7 +14,7 @@ import os, shutil
 import numpy as np
 import sympy
 
-from underworld3.utilities._jitextension import getext
+from underworld3.utilities._jitextension import getext, JITCallbackSet
 
 
 # build a small mesh - we'll load up a simple problem and then see what functions are loaded
@@ -62,13 +62,15 @@ def test_getext_simple():
     bd_jac_fn = sympy.ImmutableDenseMatrix([sympy.sympify(1), sympy.sympify(2)])
 
     with uw.utilities.CaptureStdout(split=True) as captured_setup_solver:
-        compiled_extns, dictionaries = getext(
+        _getext_result = getext(
             mesh,
-            [res_fn, res_fn],
-            [jac_fn],
-            [bc_fn],
-            [bd_res_fn],
-            [bd_jac_fn],
+            JITCallbackSet(
+                residual=(res_fn, res_fn),
+                bcs=(bc_fn,),
+                jacobian=(jac_fn,),
+                bd_residual=(bd_res_fn,),
+                bd_jacobian=(bd_jac_fn,),
+            ),
             mesh.vars.values(),
             verbose=True,
             debug=True,
@@ -107,13 +109,15 @@ def test_getext_sympy_fns():
     )
 
     with uw.utilities.CaptureStdout(split=True) as captured_setup_solver:
-        compiled_extns, dictionaries = getext(
+        _getext_result = getext(
             mesh,
-            [res_fn, res_fn],
-            [jac_fn],
-            [bc_fn],
-            [bd_res_fn],
-            [bd_jac_fn],
+            JITCallbackSet(
+                residual=(res_fn, res_fn),
+                bcs=(bc_fn,),
+                jacobian=(jac_fn,),
+                bd_residual=(bd_res_fn,),
+                bd_jacobian=(bd_jac_fn,),
+            ),
             mesh.vars.values(),
             verbose=True,
             debug=True,
@@ -161,13 +165,15 @@ def test_getext_meshVar():
     )
 
     with uw.utilities.CaptureStdout(split=True) as captured_setup_solver:
-        compiled_extns, dictionaries = getext(
+        _getext_result = getext(
             mesh,
-            [res_fn, res_fn],
-            [jac_fn],
-            [bc_fn],
-            [bd_res_fn],
-            [bd_jac_fn],
+            JITCallbackSet(
+                residual=(res_fn, res_fn),
+                bcs=(bc_fn,),
+                jacobian=(jac_fn,),
+                bd_residual=(bd_res_fn,),
+                bd_jacobian=(bd_jac_fn,),
+            ),
             mesh.vars.values(),
             verbose=True,
             debug=True,

@@ -21,6 +21,14 @@ on:
       - 'setup.py'
   workflow_dispatch:
     inputs:
+      uw3_branch:
+        description: 'UW3 branch/tag to clone and build (e.g. v0.99, development). Leave empty to use the triggering branch.'
+        type: string
+        default: ''
+      image_tag:
+        description: 'Docker image tag override (e.g. v0.99). Leave empty to derive from branch. Sets IS_RELEASE=true if starts with v.'
+        type: string
+        default: ''
       force_rebuild:
         description: 'Force full rebuild (no cache)'
         type: boolean
@@ -49,13 +57,36 @@ jobs:
 
       - name: Extract ref name and type
         run: |
-          REF_NAME=${GITHUB_REF##*/}
-          echo "REF_NAME=${REF_NAME}" >> $GITHUB_ENV
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "IS_RELEASE=true" >> $GITHUB_ENV
+            REF_NAME=${GITHUB_REF#refs/tags/}
+            IS_RELEASE=true
+            REF_TYPE=tag
           else
-            echo "IS_RELEASE=false" >> $GITHUB_ENV
+            REF_NAME=${GITHUB_REF#refs/heads/}
+            IS_RELEASE=false
+            REF_TYPE=branch
           fi
+
+          # Apply manual dispatch overrides
+          if [[ -n "${{ inputs.uw3_branch }}" ]]; then
+            REF_NAME="${{ inputs.uw3_branch }}"
+          fi
+          if [[ -n "${{ inputs.image_tag }}" ]]; then
+            DOCKER_TAG="${{ inputs.image_tag }}"
+            # Tags starting with v are releases
+            if [[ "$DOCKER_TAG" == v* ]]; then
+              IS_RELEASE=true
+              REF_TYPE=tag
+            fi
+          else
+            # Docker tags cannot contain slashes — sanitize for image tagging
+            DOCKER_TAG=$(echo "$REF_NAME" | tr '/' '-')
+          fi
+
+          echo "REF_NAME=${REF_NAME}" >> $GITHUB_ENV
+          echo "DOCKER_TAG=${DOCKER_TAG}" >> $GITHUB_ENV
+          echo "IS_RELEASE=${IS_RELEASE}" >> $GITHUB_ENV
+          echo "REF_TYPE=${REF_TYPE}" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -65,8 +96,10 @@ jobs:
           push: true
           platforms: linux/amd64
           no-cache: ${{ inputs.force_rebuild || false }}
+          build-args: |
+            UW3_BRANCH=${{ env.REF_NAME }}
           tags: |
-            ghcr.io/underworldcode/uw3-base:${{ env.REF_NAME }}-slim
+            ghcr.io/underworldcode/uw3-base:${{ env.DOCKER_TAG }}-slim
             ${{ env.IS_RELEASE == 'true' && 'ghcr.io/underworldcode/uw3-base:latest-slim' || '' }}
 
       # Trigger launcher repo to update/create its branch
@@ -80,4 +113,4 @@ jobs:
           token: ${{ secrets.LAUNCHER_PAT }}
           repository: underworldcode/uw3-binder-launcher
           event-type: image-updated
-          client-payload: '{"ref": "${{ env.REF_NAME }}", "is_release": "${{ env.IS_RELEASE }}"}'
+          client-payload: '{"branch": "${{ env.DOCKER_TAG }}", "ref_type": "${{ env.REF_TYPE }}"}'

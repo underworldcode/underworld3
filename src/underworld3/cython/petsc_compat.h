@@ -129,6 +129,21 @@ PetscErrorCode UW_PetscDSViewBdWF(PetscDS ds, PetscInt bd)
     return 1;
 }
 
+// Set the time value on a DM. This is passed as `petsc_t` to all
+// pointwise residual and Jacobian functions during assembly.
+// PETSc stores this internally but petsc4py doesn't expose it.
+PetscErrorCode UW_DMSetTime(DM dm, PetscReal time)
+{
+    // DMSetOutputSequenceNumber stores (step, time) on the DM.
+    // The time component is what DMPlexComputeResidual_Internal
+    // passes as petsc_t to the pointwise functions.
+    PetscInt step;
+    PetscReal old_time;
+    PetscCall(DMGetOutputSequenceNumber(dm, &step, &old_time));
+    PetscCall(DMSetOutputSequenceNumber(dm, step, time));
+    return PETSC_SUCCESS;
+}
+
 PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 {
 
@@ -137,4 +152,73 @@ PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 #else
     return DMPlexSetSNESLocalFEM(dm, flag, NULL);
 #endif
+}
+
+// Simplified wrapper for DMPlexComputeBdIntegral.
+// Takes a single boundary pointwise function (for field 0) instead of an Nf-element array.
+//
+// PETSc's DMPlexComputeBdIntegral returns only the local contribution (no MPI
+// reduction), so this wrapper adds an Allreduce to produce the global integral.
+//
+// IMPORTANT: DMPlexComputeBdIntegral is collective (it calls DMGlobalToLocal
+// internally). All ranks MUST call it, even if their local boundary stratum is
+// empty — PETSc handles empty strata gracefully (skips the per-face loop).
+// Skipping the call on empty ranks causes a deadlock because the other ranks
+// block inside DMGlobalToLocal waiting for the missing participants.
+//
+// Ghost facet filtering is handled by our PETSc patch
+// (plexfem-internal-boundary-ownership-fix.patch) which filters SF leaves
+// inside DMPlexComputeBdIntegral, DMPlexComputeBdResidual_Internal, and
+// DMPlexComputeBdJacobian_Internal. The patch also fixes part-consistent
+// assembly (support[key.part]) for internal boundary residuals/Jacobians.
+PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
+                                          DMLabel label, PetscInt numVals, const PetscInt vals[],
+                                          void (*func)(UW_SIG_F0),
+                                          PetscScalar *result,
+                                          void *ctx)
+{
+    PetscSection  section;
+    PetscInt      Nf;
+
+    PetscFunctionBeginUser;
+
+    PetscCall(DMGetLocalSection(dm, &section));
+    PetscCall(PetscSectionGetNumFields(section, &Nf));
+
+    // NULL label means no boundary was found at all — no rank has work.
+    // Safe to return early since no rank enters the collective PETSc call.
+    if (!label) {
+        *result = 0.0;
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+
+    // Build Nf-element function pointer array (only field 0 has a callback)
+    void (**funcs)(UW_SIG_F0);
+    PetscCall(PetscCalloc1(Nf, &funcs));
+    funcs[0] = func;
+
+    PetscScalar *integral;
+    PetscCall(PetscCalloc1(Nf, &integral));
+
+    // All ranks must call DMPlexComputeBdIntegral — it is collective.
+    // Ranks with empty local strata will simply contribute 0.
+    // PETSc changed DMPlexComputeBdIntegral signature in v3.22.0:
+    //   <= 3.21.x: void (*func)(...)     — single function pointer
+    //   >= 3.22.0: void (**funcs)(...)    — array of Nf function pointers
+#if PETSC_VERSION_GE(3, 22, 0)
+    PetscCall(DMPlexComputeBdIntegral(dm, X, label, numVals, vals, funcs, integral, ctx));
+#else
+    PetscCall(DMPlexComputeBdIntegral(dm, X, label, numVals, vals, funcs[0], integral, ctx));
+#endif
+
+    // MPI reduction — sum local owned contributions across all ranks
+    PetscScalar global_val;
+    PetscCallMPI(MPIU_Allreduce(&integral[0], &global_val, 1, MPIU_SCALAR, MPIU_SUM,
+                                PetscObjectComm((PetscObject)dm)));
+    *result = global_val;
+
+    PetscCall(PetscFree(funcs));
+    PetscCall(PetscFree(integral));
+
+    PetscFunctionReturn(PETSC_SUCCESS);
 }

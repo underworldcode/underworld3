@@ -428,13 +428,13 @@ The JIT compilation system needs to:
 1. Identify SymPy Function atoms in expressions
 2. Map them to PETSc vector components
 3. Generate C code with appropriate substitutions
+4. Allow constant parameters to change without recompilation
 
 ## The Solution: Transparent SymPy Objects
 
 The mathematical object system preserves JIT compatibility by ensuring all operations return pure SymPy objects:
 
 ```python
-
 # User writes natural syntax
 momentum = density * velocity
 
@@ -447,22 +447,49 @@ atoms = momentum.atoms(sympy.Function)  # Finds V_0, V_1
 # Maps to velocity.fn for PETSc substitution
 ```
 
-## Expression Unwrapping
+## Expression Unwrapping and Constants
 
-The `unwrap()` function resolves nested expressions before compilation:
+The JIT compiler performs a **two-phase unwrap** on expressions:
+
+1. **Phase 1 — Constants extraction**: `UWexpression` atoms that resolve to
+   pure numbers (no spatial/field dependencies) are replaced with
+   `_JITConstant` symbols that render as `constants[i]` in C code.
+
+2. **Phase 2 — Full unwrap**: Remaining `UWexpression` atoms are expanded
+   to their numerical values and baked into the C code.
 
 ```python
-
 # Expression with nested UWexpressions
 complex_expr = alpha * (temperature - T0) * velocity
 
-# unwrap() substitutes all UWexpression.sym values
-unwrapped = unwrap(complex_expr)
-# Result: 2e-5 * (T(x,y,z) - 293) * Matrix([[V_0(x,y,z)], [V_1(x,y,z)]])
+# Phase 1: alpha and T0 are constants → constants[0], constants[1]
+# Phase 2: temperature and velocity are field variables → petsc_a[], petsc_u[]
 
-# JIT compilation proceeds normally
-compiled = uw.systems.compile(unwrapped)
+# Generated C code:
+#   result = constants[0] * (petsc_a[0] - constants[1]) * petsc_u[0];
 ```
+
+This means **changing `alpha` or `T0` between solves does not require
+recompilation** — only `PetscDSSetConstants()` is called (~0ms vs ~10s).
+
+## Why Use UWexpressions for Solver Parameters
+
+**UWexpressions are the preferred way to define solver parameters.**
+Using raw numbers forces recompilation when values change:
+
+```python
+# PREFERRED — expression parameter, efficient for time-stepping
+eta = uw.expression("eta", 1e21)
+stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+# Changing eta.sym later → no recompilation
+
+# AVOID for time-varying parameters — raw number, requires rebuild
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1e21
+# Changing this later → full JIT rebuild (~10s)
+```
+
+This is particularly important for viscoelastic and Navier-Stokes
+solvers where parameters like `dt_elastic` change every time step.
 
 # Migration from Legacy Patterns
 

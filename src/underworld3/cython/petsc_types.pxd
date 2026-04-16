@@ -22,21 +22,21 @@ ctypedef void(*PetscDSResidualFn)(PetscInt, PetscInt, PetscInt,
 ctypedef void (*PetscDSJacobianFn)(PetscInt, PetscInt, PetscInt,
                             const PetscInt*, const PetscInt*, const PetscScalar*, const PetscScalar*, const PetscScalar*,
                             const PetscInt*, const PetscInt*, const PetscScalar*, const PetscScalar*, const PetscScalar*,
-                            PetscReal,       PetscReal,       const PetscReal*,   PetscInt,           const PetscScalar*, 
+                            PetscReal,       PetscReal,       const PetscReal*,   PetscInt,           const PetscScalar*,
                             PetscScalar*)
 
 ctypedef void(*PetscDSBdResidualFn)(
                             PetscInt,        PetscInt,        PetscInt,
                             const PetscInt*, const PetscInt*, const PetscScalar*, const PetscScalar*, const PetscScalar*,
                             const PetscInt*, const PetscInt*, const PetscScalar*, const PetscScalar*, const PetscScalar*,
-                            PetscReal,       const PetscReal*,const PetscReal*,   PetscInt, const     PetscScalar*,       
+                            PetscReal,       const PetscReal*,const PetscReal*,   PetscInt, const     PetscScalar*,
                             PetscScalar* )
 
 ctypedef void (*PetscDSBdJacobianFn)(
                             PetscInt,           PetscInt,        PetscInt,
                             const PetscInt*,    const PetscInt*, const PetscScalar*, const PetscScalar*, const PetscScalar*,
                             const PetscInt*,    const PetscInt*, const PetscScalar*, const PetscScalar*, const PetscScalar*,
-                            PetscReal,          PetscReal,       const PetscReal*,   const PetscReal*,   PetscInt,           
+                            PetscReal,          PetscReal,       const PetscReal*,   const PetscReal*,   PetscInt,
                             const PetscScalar*, PetscScalar* )
 
 
@@ -47,4 +47,9 @@ cdef class PtrContainer:
     cdef PetscDSBdResidualFn*  fns_bd_residual
     cdef PetscDSBdJacobianFn*  fns_bd_jacobian
 
-
+    cpdef allocate(self, int n_res, int n_bcs, int n_jac, int n_bd_res, int n_bd_jac)
+    cpdef copy_residual_from(self, int dst, PtrContainer src, int src_idx)
+    cpdef copy_bcs_from(self, int dst, PtrContainer src, int src_idx)
+    cpdef copy_jacobian_from(self, int dst, PtrContainer src, int src_idx)
+    cpdef copy_bd_residual_from(self, int dst, PtrContainer src, int src_idx)
+    cpdef copy_bd_jacobian_from(self, int dst, PtrContainer src, int src_idx)

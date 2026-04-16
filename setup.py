@@ -142,17 +142,22 @@ def configure():
 
     LIBRARIES += ["petsc"]
 
-    # set CC compiler to be PETSc's compiler.
-    # This ought include mpi's details, ie mpicc --showme,
-    # needed to compile UW cython extensions
-    compiler = ""
+    # Set C and C++ compilers to PETSc's toolchain so the UW extensions
+    # build with the same compiler family and MPI wrappers as PETSc.
+    cc = ""
+    cxx = ""
     with open(petscvars, "r") as f:
         for line in f:
             line = line.strip()
             if line.startswith("CC ="):
-                compiler = line.split("=", 1)[1].strip()
-    # print(f"***\n The c compiler is: {compiler}\n*****")
-    os.environ["CC"] = compiler
+                cc = line.split("=", 1)[1].strip()
+            elif line.startswith("CXX ="):
+                cxx = line.split("=", 1)[1].strip()
+    # print(f"***\n The c compiler is: {cc}\n*****")
+    if cc:
+        os.environ["CC"] = cc
+    if cxx:
+        os.environ["CXX"] = cxx
 
     # PETSc for Python
     INCLUDE_DIRS += [petsc4py.get_include()]

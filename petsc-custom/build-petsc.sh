@@ -2,103 +2,335 @@
 #
 # Build PETSc with adaptive mesh refinement (AMR) tools
 #
-# This script builds a custom PETSc installation with:
-# - pragmatic: anisotropic mesh adaptation
-# - mmg: surface/volume mesh adaptation
-# - parmmg: parallel mesh adaptation
-# - slepc: eigenvalue solvers
-# - mumps: direct solver
+# Supports three build targets, auto-detected from hostname or UW_CLUSTER env var:
+#   local  — macOS/Linux developer machine (pixi env for MPI and HDF5)
+#   kaiju  — Kaiju cluster (Rocky Linux 8, Spack OpenMPI, no system HDF5/cmake/BLAS)
+#   gadi   — NCI Gadi (CentOS, module OpenMPI + HDF5, PBS Pro)
 #
-# Build time: ~1 hour on Apple Silicon
+# Cluster-specific differences:
+#
+#   Aspect        local                    kaiju             gadi
+#   PETSC_ARCH    petsc-4-uw-{mpich,       petsc-4-uw-       petsc-4-uw-
+#                   openmpi}               openmpi           openmpi
+#   MPI           pixi env                 spack (PATH)      module (PATH)
+#   HDF5          pixi env                 download          module ($HDF5_DIR)
+#   BLAS/LAPACK   auto                     download          download (auto fails)
+#   cmake         pixi env                 download          module
+#   bison         download                 download          system
+#   petsc4py      separate step            with-petsc4py=1   with-petsc4py=1
+#   extra flags   —                        —                 superlu, hypre, ...
+#
+# Override auto-detection: export UW_CLUSTER=local|kaiju|gadi
 #
 # Usage:
-#   ./build-petsc.sh          # Full build (clone, configure, build)
+#   ./build-petsc.sh           # Full build (clone, patch, configure, build)
 #   ./build-petsc.sh configure # Just reconfigure
 #   ./build-petsc.sh build     # Just build (after configure)
-#   ./build-petsc.sh petsc4py  # Just build petsc4py
-#   ./build-petsc.sh clean     # Remove PETSc directory
+#   ./build-petsc.sh petsc4py  # Build petsc4py separately (local only)
+#   ./build-petsc.sh patch     # Apply UW3 patches
+#   ./build-petsc.sh test      # Run PETSc tests
+#   ./build-petsc.sh clean     # Remove build for current arch
+#   ./build-petsc.sh clean-all # Remove entire PETSc directory
+#   ./build-petsc.sh help      # Show this help
 #
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PETSC_DIR="${SCRIPT_DIR}/petsc"
-PETSC_ARCH="petsc-4-uw"
 
-# Detect active pixi environment (robust)
-if [ -z "$PIXI_PROJECT_ROOT" ]; then
-    echo "Error: This script must be run from within a pixi environment"
-    echo "Use: pixi run -e <env> ./build-petsc.sh"
-    exit 1
-fi
+# ── Cluster detection ─────────────────────────────────────────────────────────
+detect_cluster() {
+    if [ -n "${UW_CLUSTER}" ]; then
+        echo "${UW_CLUSTER}"; return
+    fi
+    local hn
+    hn="$(hostname -f 2>/dev/null || hostname)"
+    case "${hn}" in
+        *.gadi.nci.org.au|gadi-*) echo "gadi" ;;
+        kaiju*)                    echo "kaiju" ;;
+        *)                         echo "local" ;;
+    esac
+}
 
-PIXI_ENV="$(python3 - <<'EOF'
+CLUSTER="$(detect_cluster)"
+
+# ── Cluster-specific configuration ───────────────────────────────────────────
+# Sets PETSC_ARCH, MPI_IMPL, and cluster-specific variables (PIXI_ENV, MPI_DIR,
+# HDF5_DIR). Also validates that the required environment is active.
+
+case "${CLUSTER}" in
+    local)
+        if [ -z "$PIXI_PROJECT_ROOT" ]; then
+            echo "Error: This script must be run from within a pixi environment"
+            echo "Use: pixi run -e <env> ./build-petsc.sh"
+            exit 1
+        fi
+
+        PIXI_ENV="$(python3 - <<'EOF'
 import sys, pathlib
 print(pathlib.Path(sys.executable).resolve().parents[1])
 EOF
 )"
 
+        _detect_local_mpi() {
+            local mpi_version
+            mpi_version=$(python3 -c "from mpi4py import MPI; print(MPI.Get_library_version())" 2>/dev/null || echo "")
+            if echo "$mpi_version" | grep -qi "open mpi"; then
+                echo "openmpi"
+            elif echo "$mpi_version" | grep -qi "mpich"; then
+                echo "mpich"
+            else
+                local mpicc_out
+                mpicc_out=$("$PIXI_ENV/bin/mpicc" --version 2>&1 || echo "")
+                if echo "$mpicc_out" | grep -qi "open mpi"; then
+                    echo "openmpi"
+                else
+                    echo "mpich"
+                fi
+            fi
+        }
+
+        MPI_IMPL=$(_detect_local_mpi)
+        PETSC_ARCH="petsc-4-uw-${MPI_IMPL}"
+        ;;
+
+    kaiju)
+        if ! command -v mpicc &>/dev/null; then
+            echo "Error: mpicc not found. Load spack OpenMPI first:"
+            echo "  spack load openmpi@4.1.6"
+            exit 1
+        fi
+        if ! echo "${PATH}" | tr ':' '\n' | grep -q "\.pixi/envs/hpc/bin"; then
+            echo "Error: must be run inside the pixi hpc environment"
+            echo "  source kaiju_install_user.sh   (activates env via pixi shell-hook)"
+            exit 1
+        fi
+        MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
+        MPI_IMPL="openmpi"
+        PETSC_ARCH="petsc-4-uw-openmpi"
+        ;;
+
+    gadi)
+        if ! command -v mpicc &>/dev/null; then
+            echo "Error: mpicc not found. Load Gadi OpenMPI module first:"
+            echo "  module load openmpi/4.1.7"
+            exit 1
+        fi
+        if [ -z "${HDF5_DIR}" ]; then
+            echo "Error: HDF5_DIR is not set. Load Gadi HDF5 module first:"
+            echo "  module load hdf5/1.12.2p"
+            exit 1
+        fi
+        if ! echo "${PATH}" | tr ':' '\n' | grep -q "\.pixi/envs/hpc/bin"; then
+            echo "Error: must be run inside the pixi hpc environment"
+            echo "  source gadi_install_shared.sh   (activates env via pixi shell-hook)"
+            exit 1
+        fi
+        MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
+        MPI_IMPL="openmpi"
+        PETSC_ARCH="petsc-4-uw-openmpi"
+        ;;
+
+    *)
+        echo "Unknown cluster: ${CLUSTER}"
+        echo "Set UW_CLUSTER=local|kaiju|gadi to override auto-detection"
+        exit 1
+        ;;
+esac
+
 echo "=========================================="
 echo "PETSc AMR Build Script"
 echo "=========================================="
-echo "PETSC_DIR:  $PETSC_DIR"
-echo "PETSC_ARCH: $PETSC_ARCH"
-echo "PIXI_ENV:   $PIXI_ENV"
+echo "CLUSTER:    ${CLUSTER}"
+echo "PETSC_DIR:  ${PETSC_DIR}"
+echo "PETSC_ARCH: ${PETSC_ARCH}"
+echo "MPI:        ${MPI_IMPL}"
+if [ "${CLUSTER}" = "local" ]; then
+    echo "PIXI_ENV:   ${PIXI_ENV}"
+else
+    echo "MPI_DIR:    ${MPI_DIR}"
+fi
+[ "${CLUSTER}" = "gadi" ] && echo "HDF5_DIR:   ${HDF5_DIR}"
 echo "=========================================="
 
+# ── Gadi-specific: build environment setup ───────────────────────────────────
+# Handles compiler-tagged Fortran MPI libs and conda toolchain interference.
+# Must be called before any compile/link step on Gadi.
+setup_gadi_build_env() {
+    if [ -z "${MPI_DIR}" ]; then
+        echo "Error: MPI_DIR is not set. Source gadi_install_shared.sh first."
+        exit 1
+    fi
+
+    # Create symlinks for Gadi's compiler-tagged Fortran MPI libs.
+    # mpifort --showme refers to libmpi_usempif08 etc. (no compiler tag),
+    # but Gadi only ships _GNU, _Intel, _nvidia variants.
+    local _mpi_gnu_dir="${SCRIPT_DIR}/mpi-gadi-gnu-libs"
+    mkdir -p "${_mpi_gnu_dir}"
+    for _lib in usempif08 usempi_ignore_tkr mpifh; do
+        [ ! -f "${_mpi_gnu_dir}/libmpi_${_lib}.so" ] && \
+            ln -sf "${MPI_DIR}/lib/libmpi_${_lib}_GNU.so" "${_mpi_gnu_dir}/libmpi_${_lib}.so"
+    done
+
+    # LD_LIBRARY_PATH = runtime search path (dynamic loader)
+    # LIBRARY_PATH    = link-time search path (ld resolves -lmpi_usempif08 etc.)
+    export LD_LIBRARY_PATH="${_mpi_gnu_dir}:${MPI_DIR}/lib:/apps/ucc/1.3.0/lib:/usr/lib64:${LD_LIBRARY_PATH}"
+    export LIBRARY_PATH="${_mpi_gnu_dir}:${LIBRARY_PATH}"
+
+    # Unset conda/pixi compiler vars that interfere with OpenMPI wrappers.
+    # The pixi hpc env ships a full conda toolchain (x86_64-conda-linux-gnu-*)
+    # that conflicts with system compilers required by Gadi's OpenMPI.
+    unset CC CXX FC F77 F90 CPP AR RANLIB
+    unset CFLAGS CXXFLAGS FFLAGS CPPFLAGS LDFLAGS
+
+    # Force MPI wrappers to use system compilers, not conda's gcc
+    export OMPI_CC=/usr/bin/gcc
+    export OMPI_CXX=/usr/bin/g++
+    export OMPI_FC=/usr/bin/gfortran
+    # Gadi puts Fortran MPI headers in a compiler-tagged subdirectory (include/GNU/)
+    export OMPI_FCFLAGS="-I${MPI_DIR}/include/GNU"
+
+    # Put system bin dirs first so the system linker (/usr/bin/ld) wins over
+    # conda's ld — conda's ld cannot find Gadi-specific libs (hcoll, ucc, libnl).
+    export PATH="/usr/bin:/usr/local/bin:${MPI_DIR}/bin:${PATH}"
+}
+
 clone_petsc() {
-    if [ -d "$PETSC_DIR" ]; then
+    # For Gadi: resolve symlink before cloning. git clone replaces a
+    # symlink-to-empty-dir with a real directory, defeating the
+    # gdata→scratch symlink approach used to avoid inode quota limits.
+    local _clone_target="${PETSC_DIR}"
+    if [ "${CLUSTER}" = "gadi" ] && [ -L "${PETSC_DIR}" ]; then
+        _clone_target="$(readlink -f "${PETSC_DIR}")"
+    fi
+
+    if [ -f "${_clone_target}/configure" ]; then
         echo "PETSc directory already exists. Skipping clone."
-        echo "To force fresh clone, run: ./build-petsc.sh clean"
+        echo "To force fresh clone, run: $0 clean-all"
         return 0
     fi
 
     echo "Cloning PETSc release branch..."
-    git clone -b release https://gitlab.com/petsc/petsc.git "$PETSC_DIR"
+    git clone -b release https://gitlab.com/petsc/petsc.git "${_clone_target}"
     echo "Clone complete."
 }
 
-configure_petsc() {
-    echo "Configuring PETSc with AMR tools..."
+apply_patches() {
+    echo "Applying UW3 patches to PETSc..."
     cd "$PETSC_DIR"
 
-    # Configure with adaptive mesh refinement tools
-    # Downloads: bison, eigen, metis, mmg, mumps, parmetis, parmmg,
-    #            pragmatic, ptscotch, scalapack, slepc
-    # Uses system: MPI (from pixi), HDF5 (from pixi)
-    python3 ./configure \
-        --with-petsc-arch="$PETSC_ARCH" \
-        --download-bison \
-        --download-eigen \
-        --download-metis \
-        --download-mmg \
-        --download-mumps \
-        --download-parmetis \
-        --download-parmmg \
-        --download-pragmatic \
-        --download-ptscotch="${SCRIPT_DIR}/patches/scotch-7.0.10-c23-fix.tar.gz" \
-        --download-scalapack \
-        --download-slepc \
-        --with-debugging=0 \
-        --with-hdf5=1 \
-        --with-pragmatic=1 \
-        --with-x=0 \
-        --with-mpi-dir="$PIXI_ENV" \
-        --with-hdf5-dir="$PIXI_ENV" \
-        --download-hdf5=0 \
-        --download-mpich=0 \
-        --download-mpi4py=0 \
-        --with-petsc4py=0
+    # Fix ghost facet ownership + part-consistent assembly in boundary
+    # residual/integral/Jacobian paths (plexfem.c). Without this, internal
+    # boundary natural BCs produce rank-dependent results in parallel.
+    local patch="${SCRIPT_DIR}/patches/plexfem-internal-boundary-ownership-fix.patch"
+    if [ -f "$patch" ]; then
+        if git apply --check "$patch" 2>/dev/null; then
+            git apply "$patch"
+            echo "  Applied: plexfem-internal-boundary-ownership-fix.patch"
+        else
+            echo "  Skipped: plexfem-internal-boundary-ownership-fix.patch (already applied or conflict)"
+        fi
+    fi
+
+    echo "Patches complete."
+}
+
+configure_petsc() {
+    echo "Configuring PETSc with AMR tools (${CLUSTER})..."
+    cd "$PETSC_DIR"
+
+    # Capture pixi's python3 BEFORE setup_gadi_build_env reorders PATH.
+    local _python="python3"
+    if [ "${CLUSTER}" = "gadi" ]; then
+        _python="$(which python3)"
+        setup_gadi_build_env
+    fi
+
+    # Flags shared across all clusters.
+    # Downloads and builds:
+    #   AMR:          mmg, parmmg, pragmatic, eigen
+    #   Solvers:      mumps, scalapack, slepc
+    #   Partitioners: metis, parmetis, ptscotch (patched for C23)
+    # Uses pixi env (local):  MPI (amr/amr-mpich/amr-openmpi), HDF5
+    # Downloads (kaiju):      HDF5, BLAS/LAPACK, cmake, bison
+    # Uses module (gadi):     MPI (openmpi/4.1.7), HDF5 ($HDF5_DIR)
+    local -a _common=(
+        --with-petsc-arch="${PETSC_ARCH}"
+        --with-debugging=0
+        --with-pragmatic=1
+        --with-x=0
+        --download-eigen=1
+        --download-metis=1
+        --download-mmg=1
+        "--download-mmg-cmake-arguments=-DMMG_INSTALL_PRIVATE_HEADERS=ON -DUSE_SCOTCH=OFF"
+        --download-mumps=1
+        --download-parmetis=1
+        --download-parmmg=1
+        --download-pragmatic=1
+        "--download-ptscotch=${SCRIPT_DIR}/patches/scotch-7.0.10-c23-fix.tar.gz"
+        --download-scalapack=1
+        --download-slepc=1
+    )
+
+    case "${CLUSTER}" in
+        local)
+            "${_python}" ./configure "${_common[@]}" \
+                --with-mpi-dir="${PIXI_ENV}" \
+                --with-hdf5=1 \
+                --with-hdf5-dir="${PIXI_ENV}" \
+                --download-hdf5=0 \
+                --download-mpich=0 \
+                --download-openmpi=0 \
+                --download-mpi4py=0 \
+                --download-bison \
+                --with-petsc4py=0
+            ;;
+        kaiju)
+            "${_python}" ./configure "${_common[@]}" \
+                --with-mpi-dir="${MPI_DIR}" \
+                --download-hdf5=1 \
+                --download-fblaslapack=1 \
+                --download-cmake=1 \
+                --download-bison=1 \
+                --with-petsc4py=1 \
+		--with-slepc4py=1 \
+                --with-make-np=40
+            ;;
+        gadi)
+            "${_python}" ./configure "${_common[@]}" \
+                --with-cc="${MPI_DIR}/bin/mpicc" \
+                --with-cxx="${MPI_DIR}/bin/mpicxx" \
+                --with-fc="${MPI_DIR}/bin/mpifort" \
+                --with-hdf5=1 \
+                --with-hdf5-dir="${HDF5_DIR}" \
+                --download-fblaslapack=1 \
+                --with-petsc4py=1 \
+		--with-slepc4py=1 \
+                --with-make-np=40 \
+                --with-shared-libraries=1 \
+                --with-cxx-dialect=C++11 \
+                "--COPTFLAGS=-g -O3" "--CXXOPTFLAGS=-g -O3" "--FOPTFLAGS=-g -O3" \
+                --useThreads=0 \
+                --download-zlib=1 \
+                --download-superlu=1 \
+                --download-superlu_dist=1 \
+                --download-hypre=1 \
+                --download-ctetgen=1 \
+                --download-triangle=1
+            ;;
+    esac
 
     echo "Configure complete."
 }
 
 build_petsc() {
-    echo "Building PETSc..."
+    echo "Building PETSc (${CLUSTER})..."
     cd "$PETSC_DIR"
 
-    # Set environment for build
     export PETSC_DIR
     export PETSC_ARCH
+
+    [ "${CLUSTER}" = "gadi" ] && setup_gadi_build_env
 
     make all
     echo "PETSc build complete."
@@ -111,11 +343,18 @@ test_petsc() {
     export PETSC_DIR
     export PETSC_ARCH
 
+    [ "${CLUSTER}" = "gadi" ] && setup_gadi_build_env
+
     make check
     echo "PETSc tests complete."
 }
 
 build_petsc4py() {
+    if [ "${CLUSTER}" != "local" ]; then
+        echo "Note: petsc4py is built during configure on HPC clusters (--with-petsc4py=1). Skipping."
+        return 0
+    fi
+
     echo "Building petsc4py..."
     cd "$PETSC_DIR/src/binding/petsc4py"
 
@@ -128,7 +367,18 @@ build_petsc4py() {
 }
 
 clean_petsc() {
-    echo "Removing PETSc directory..."
+    local arch_dir="$PETSC_DIR/$PETSC_ARCH"
+    echo "Removing PETSc build for $PETSC_ARCH ($arch_dir)..."
+    if [ -d "$arch_dir" ]; then
+        rm -rf "$arch_dir"
+        echo "Cleaned $PETSC_ARCH."
+    else
+        echo "Nothing to clean for $PETSC_ARCH."
+    fi
+}
+
+clean_all() {
+    echo "Removing entire PETSc directory..."
     if [ -d "$PETSC_DIR" ]; then
         rm -rf "$PETSC_DIR"
         echo "Cleaned."
@@ -140,53 +390,58 @@ clean_petsc() {
 show_help() {
     echo "Usage: $0 [command]"
     echo ""
+    echo "Cluster: ${CLUSTER}  (override: export UW_CLUSTER=local|kaiju|gadi)"
+    echo "PETSC_ARCH: ${PETSC_ARCH}"
+    echo ""
     echo "Commands:"
-    echo "  (none)    Full build: clone, configure, build, petsc4py"
+    echo "  (none)    Full build: clone, patch, configure, build"
+    [ "${CLUSTER}" = "local" ] && echo "            (local: also runs petsc4py separately)"
     echo "  clone     Clone PETSc repository"
+    echo "  patch     Apply UW3 patches to PETSc source"
     echo "  configure Configure PETSc with AMR tools"
     echo "  build     Build PETSc"
     echo "  test      Run PETSc tests"
-    echo "  petsc4py  Build and install petsc4py"
-    echo "  clean     Remove PETSc directory"
+    echo "  petsc4py  Build and install petsc4py (local only)"
+    echo "  clean     Remove build for current arch (${PETSC_ARCH})"
+    echo "  clean-all Remove entire PETSc directory (all builds)"
     echo "  help      Show this help"
+    if [ "${CLUSTER}" = "local" ]; then
+        echo ""
+        echo "MPICH and OpenMPI builds co-exist. To build both:"
+        echo "  pixi run -e amr         ./petsc-custom/build-petsc.sh"
+        echo "  pixi run -e amr-openmpi ./petsc-custom/build-petsc.sh"
+    fi
 }
 
-# Main entry point
+# ── Main entry point ──────────────────────────────────────────────────────────
 case "${1:-all}" in
     all)
         clone_petsc
+        apply_patches
         configure_petsc
         build_petsc
-        build_petsc4py
+        if [ "${CLUSTER}" = "local" ]; then
+            build_petsc4py
+        fi
         echo ""
         echo "=========================================="
-        echo "PETSc AMR build complete!"
-        echo "Set these environment variables:"
-        echo "  export PETSC_DIR=$PETSC_DIR"
-        echo "  export PETSC_ARCH=$PETSC_ARCH"
+        echo "PETSc AMR build complete! (${CLUSTER}, ${MPI_IMPL})"
+        echo "  PETSC_DIR=${PETSC_DIR}"
+        echo "  PETSC_ARCH=${PETSC_ARCH}"
+        if [ "${CLUSTER}" != "local" ]; then
+            echo "  export PYTHONPATH=\$PETSC_DIR/\$PETSC_ARCH/lib:\$PYTHONPATH"
+        fi
         echo "=========================================="
         ;;
-    clone)
-        clone_petsc
-        ;;
-    configure)
-        configure_petsc
-        ;;
-    build)
-        build_petsc
-        ;;
-    test)
-        test_petsc
-        ;;
-    petsc4py)
-        build_petsc4py
-        ;;
-    clean)
-        clean_petsc
-        ;;
-    help|--help|-h)
-        show_help
-        ;;
+    clone)     clone_petsc ;;
+    patch)     apply_patches ;;
+    configure) configure_petsc ;;
+    build)     build_petsc ;;
+    test)      test_petsc ;;
+    petsc4py)  build_petsc4py ;;
+    clean)     clean_petsc ;;
+    clean-all) clean_all ;;
+    help|--help|-h) show_help ;;
     *)
         echo "Unknown command: $1"
         show_help

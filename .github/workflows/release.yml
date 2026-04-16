@@ -1,0 +1,68 @@
+name: Create GitHub Release
+
+# Creates a GitHub Release when a version tag is pushed.
+#
+# If a release notes file exists at docs/release-notes/vX.Y.Z.md,
+# it is used as the release body (published immediately).
+# If no notes file exists, a draft release is created instead —
+# someone must write the notes and publish manually.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+
+          # Detect pre-releases (alpha, beta, rc)
+          if [[ "$TAG_NAME" =~ (a|b|rc)[0-9]+ ]]; then
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          else
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+          fi
+
+      - name: Check for release notes file
+        id: notes
+        run: |
+          NOTES_FILE="docs/release-notes/${TAG_NAME}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "path=${NOTES_FILE}" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create release (with notes)
+        if: steps.notes.outputs.found == 'true'
+        run: |
+          gh release create "$TAG_NAME" \
+            --title "Underworld3 ${TAG_NAME}" \
+            --notes-file "${{ steps.notes.outputs.path }}" \
+            ${{ env.IS_PRERELEASE == 'true' && '--prerelease' || '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create draft release (no notes file)
+        if: steps.notes.outputs.found == 'false'
+        run: |
+          gh release create "$TAG_NAME" \
+            --title "Underworld3 ${TAG_NAME}" \
+            --draft \
+            --generate-notes \
+            --notes "$(printf '> **Release notes not yet written.**\n>\n> No file found at `docs/release-notes/%s.md`.\n> Please add release notes and publish this draft.\n\n---\n\n## Auto-generated commit log\n\n' "$TAG_NAME")$(gh api repos/${{ github.repository }}/releases/generate-notes -f tag_name="$TAG_NAME" --jq '.body' 2>/dev/null || echo 'See commit history for changes.')" \
+            ${{ env.IS_PRERELEASE == 'true' && '--prerelease' || '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

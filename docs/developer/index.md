@@ -114,6 +114,7 @@ guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
 guides/BINDER_CONTAINER_SETUP
+guides/hpc-cluster-setup
 ```
 
 ```{toctree}

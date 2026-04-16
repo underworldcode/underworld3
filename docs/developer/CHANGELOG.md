@@ -6,6 +6,62 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q1 (January – March)
 
+### v3.0.0 Release (March 2026)
+
+**Underworld3 v3.0.0 released**: Merged 398 commits from development to main. Major release incorporating 18 months of work since the JOSS v0.99 publication, including units system overhaul, symbol disambiguation, boundary integrals, mathematical mixin, platform-conditional MPI, and comprehensive CI/CD automation.
+
+- Tagged `v0.99` at previous main HEAD (pixi-compatible JOSS snapshot) for binder compatibility
+- Deleted obsolete `uw3-release-candidate` branch
+- Cleaned up 10 merged feature/bugfix branches
+
+### Binder Infrastructure Overhaul (March 2026)
+
+**Versioned binder links** with full CI automation for tag-based releases.
+
+- Four launcher branches: `v0.99`, `v3.0.0`, `main`, `development` — each with frozen Dockerfile
+- CI workflow handles `v*` tag builds with automatic launcher branch creation via `repository_dispatch`
+- Manual dispatch overrides (`uw3_branch`, `image_tag`) for building images from old tags
+- Dockerfile made version-resilient: versioned lib subdirectories (vtk-X.Y, openvino-X.Y.Z) use wildcards instead of hardcoded paths
+- Launcher dispatch payload fixed: field names now match target workflow (`branch`/`ref_type`)
+- README badges updated with three versioned binder launch links
+
+**Files**: `binder-image.yml`, `Dockerfile.base.optimized`, `binder_wizard.py`, `containers.md`
+
+### Checkpoint XDMF Fix (March 2026)
+
+**`petsc_save_checkpoint()` now uses modern XDMF output** (fixes #80). Previously used legacy `generateXdmf()` which missed vertex/cell compatibility groups, field projection (P2→P1), and tensor repacking for ParaView.
+
+- Refactored as thin wrapper around `write_timestep()` — single checkpoint code path
+- Output file layout changes from single HDF5 to per-variable files (consistent with `write_timestep()`)
+
+**Files**: `discretisation_mesh.py`
+
+### Boundary Integral Support (March 2026)
+
+**New `uw.maths.BdIntegral` class** for boundary and surface integrals (closes #47). Wraps PETSc's `DMPlexComputeBdIntegral` with MPI Allreduce and units support. Works on external boundaries and internal boundaries (e.g. `AnnulusInternalBoundary`). Integrands can reference the outward unit normal via `mesh.Gamma`.
+
+- PETSc patch (`plexfem-internal-boundary-ownership-fix.patch`): fixes ghost facet ownership and part-consistent assembly in boundary residual, integral, and Jacobian paths. Resolves rank-dependent L2 norms for internal boundary natural BCs (fixes #77). Contributed by gthyagi.
+- C wrapper simplified: ghost filtering delegated to PETSc patch, wrapper retains MPI Allreduce only
+- 20 tests across external/internal boundaries, normal vectors, mesh variables
+- MPI regression test for internal boundary circumference
+
+**Files**: `petsc_compat.h`, `petsc_maths.pyx`, `petsc_extras.pxi`, `maths/__init__.py`, `petsc-custom/patches/`
+
+### Binder Image Fix (March 2026)
+
+**Fixed Dockerfile building from stale branch** (fixes #71). The binder Dockerfile hardcoded `uw3-release-candidate` as the clone branch, but the CI workflow triggers on `main` and `development` pushes. The image was missing recent dependencies (e.g. `python-xxhash`).
+
+- Dockerfile now uses `ARG UW3_BRANCH=development` instead of hardcoded branch
+- CI workflow passes the triggering branch name via `--build-arg`
+- Binder wizard script default updated to `development`
+
+### Worktree Symlink Safety (March 2026)
+
+**Prevented worktree symlinks from being accidentally committed**. The `./uw worktree create` command creates `.pixi` and `petsc-custom/petsc` symlinks that could be picked up by `git add -A`, breaking CI.
+
+- `.gitignore` patterns now match both directories and symlinks (removed trailing `/`)
+- `./uw worktree create` writes exclusions to the worktree's `.git/info/exclude`
+
 ### MeshVariable Data Cache Bug Fix (February 2026)
 
 **Self-validating `.data` cache**: Fixed a critical bug where the `.data` property could return stale (zero) values after PETSc DM rebuilds. When new MeshVariables are added to a mesh, PETSc requires a new DM — destroying and recreating all existing variables' local vectors (`_lvec`). The cached `_canonical_data` array (a NumPy view into the old `_lvec`) would silently read freed memory, returning zeros even though the solver correctly wrote results to the new vector.
@@ -21,7 +77,7 @@ This log tracks significant development work at a conceptual level, suitable for
 
 **Automated container build pipeline**: Implemented full GitHub Actions automation for Docker image builds and mybinder.org integration.
 
-- **Binder images** (`binder-image.yml`): Builds to GHCR on push to main/uw3-release-candidate/development
+- **Binder images** (`binder-image.yml`): Builds to GHCR on push to main/development
   - Triggers on Dockerfile, pixi.toml, Cython, or setup.py changes
   - Pushes to `ghcr.io/underworldcode/uw3-base:<branch>-slim`
   - Cross-repo dispatch updates launcher repository automatically

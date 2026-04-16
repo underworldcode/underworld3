@@ -14,30 +14,31 @@ Naming Convention:
     - Python: params.uw_mesh_resolution
     - CLI: -uw_mesh_resolution 0.025
 
-Example usage:
-    # Define parameters at top of notebook/script
+Recommended pattern:
+    Define default values as named constants BEFORE the Params block.
+    This makes defaults easy to find and adjust in a notebook, while
+    the Params block provides CLI override, units, and descriptions.
+
+    # --- Default values (edit these in a notebook) ---
+    ETA_0    = 1e21   # Pa·s – reference viscosity
+    CELL_SIZE = 50.0  # km – mesh cell size
+    MAX_STEPS = 100   # solver iterations
+
     params = uw.Params(
-        uw_mesh_resolution = 0.05,   # Cell size for mesh
-        uw_diffusivity = 1.0,        # Material property
-        uw_hot_temp = 100.0,         # Boundary temperature
+        uw_viscosity = uw.Param(ETA_0,     units="Pa*s", description="reference viscosity"),
+        uw_cell_size = uw.Param(CELL_SIZE, units="km",   description="mesh cell size"),
+        uw_max_steps = MAX_STEPS,
     )
 
     # Use in code:
-    mesh = uw.meshing.Box(cellSize=params.uw_mesh_resolution)
+    mesh = uw.meshing.Box(cellSize=params.uw_cell_size)
 
     # Override in notebook - just assign:
-    params.uw_mesh_resolution = 0.025
+    params.uw_cell_size = uw.quantity(25, "km")
 
     # Override from command line (flag matches Python name):
-    # python script.py -uw_mesh_resolution 0.025
-    # mpirun -np 4 python script.py -uw_diffusivity 2.0
-
-    # With units support:
-    params = uw.Params(
-        uw_cell_size = uw.Param(0.5, units="km", description="Mesh cell size"),
-        uw_viscosity = uw.Param(1e21, units="Pa*s"),
-    )
-    # CLI: python script.py -uw_cell_size 500m -uw_viscosity "1e22 Pa*s"
+    # python script.py -uw_cell_size 25km -uw_viscosity "1e22 Pa*s"
+    # mpirun -np 4 python script.py -uw_cell_size 10km
 """
 
 from enum import Enum

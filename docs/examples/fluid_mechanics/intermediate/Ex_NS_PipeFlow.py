@@ -1,351 +1,174 @@
 # %% [markdown]
 """
-# 🔬 NS PipeFlow
+# Navier-Stokes: Poiseuille (Pipe) Flow
 
-**PHYSICS:** fluid_mechanics  
-**DIFFICULTY:** intermediate  
-**MIGRATED:** From underworld3-documentation/Notebooks
+Transient development of parabolic flow between parallel plates driven by
+a uniform inlet velocity. The flow starts from rest and evolves toward
+the classical Poiseuille profile.
 
-## Description
-This example has been migrated from the original UW3 documentation.
-Additional documentation and parameter annotations will be added.
+This is a useful test case because:
 
-## Migration Notes
-- Original complexity preserved
-- Parameters to be extracted and annotated
-- Claude hints to be added in future update
-"""
+- The steady-state solution is known analytically
+- The transient spin-up exercises the time-derivative (DDt) machinery
+- The Reynolds number controls how quickly inertial effects appear
 
-# %% [markdown]
-"""
-## Original Code
-The following is the migrated code with minimal modifications.
+**Reference:** Cengel, Y. A. (2010). *Fluid Mechanics: Fundamentals
+and Applications*. Tata McGraw Hill.
+
+**Original example by** Juan Carlos Graciosa.
 """
 
 # %%
-# ---
-# jupyter:
-#   jupytext:
-#     cell_metadata_filter: -all
-#     custom_cell_magics: kql
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.11.2
-#   kernelspec:
-#     display_name: uw3-venv-run
-#     language: python
-#     name: python3
-# ---
-
-# %% [markdown]
-# # Navier Stokes benchmark: 2D pipe flow
-# By: Juan Carlos Graciosa 
-# &nbsp;
-# &nbsp;
-#
-# References:  
-# - https://www.fifty2.eu/innovation/planar-poiseuille-flow-2-d-in-preonlab/ 
-# - Cengel, Y. A. (2010). Fluid Mechanics: Fundamentals and Applications (SI Units). Tata McGraw Hill Education Private Limited.
-#
-
-# %%
-import os
-
-import petsc4py
 import underworld3 as uw
-from underworld3 import timing
-
 import numpy as np
 import sympy
-import argparse
-import pickle
 
-# parser = argparse.ArgumentParser()
-# parser.add_argument('-i', "--idx", type=int, required=True)
-# parser.add_argument('-p', "--prev", type=int, required=True) # set to 0 if no prev_res, 1 if there is
-# args = parser.parse_args()
+# %% [markdown]
+"""
+## Problem parameters
 
-# idx = args.idx
-# prev = args.prev
+Uniform flow enters from the left between no-slip walls (top and bottom).
+The right boundary is open (zero traction). The flow develops a parabolic
+profile whose centreline velocity is 1.5x the inlet velocity.
 
-idx = 0
-prev = 0
-
-
-# %%
-resolution = 16
-refinement = 0
-save_every = 200
-maxsteps = 1
-Cmax = 1            # target Courant number
-
-order = 1           # solver order
-tol = 1e-12         # solver tolerance (sets atol and rtol)
-
-use_dim = True      # True if using dimensionalised values; False otherwise
-case_num = 1
-
-mesh_type = "Pirr" # or Preg, Pirr, Quad
-qdeg = 3
-Vdeg = 2
-Pdeg = Vdeg - 1
-Pcont = False
+Try changing `RE` to see how inertia affects the spin-up. At Re = 10 the
+flow reaches steady state quickly; at Re = 1000 it takes much longer and
+the entrance effects extend further downstream.
+"""
 
 # %%
-expt_name = f"Pois-res{resolution}-order{order}-{mesh_type}-case{case_num}"
+# --- Physical parameters (dimensional) ---
+INLET_VELOCITY = 0.034          # m/s, uniform inlet
+DENSITY        = 910.0          # kg/m^3
+DYN_VISCOSITY  = 0.3094         # Pa.s
+HEIGHT         = 0.10           # m, channel height (2 * half-width)
+ASPECT_RATIO   = 8              # channel length / height
 
-outfile = f"{expt_name}_run{idx}"
-outdir = f"/scratch/el06/jg0883/Poiseuille/{expt_name}"
-
-# %%
-if prev == 0:
-    prev_idx = 0
-    infile = None
-else:
-    prev_idx = int(idx) - 1
-    infile = f"{expt_name}_run{prev_idx}"
-
-if uw.mpi.rank == 0 and uw.mpi.size > 1:
-    os.makedirs(f"{outdir}", exist_ok=True)
+RE = DENSITY * INLET_VELOCITY * HEIGHT / DYN_VISCOSITY  # ~ 10
+print(f"Reynolds number: {RE:.1f}")
 
 # %%
-# dimensionalized values of problem parameters
-# from reference
+# --- Mesh ---
+RESOLUTION = 16                 # elements across the channel height
+CELL_SIZE  = HEIGHT / RESOLUTION
 
-# velocity - m/s
-# fluid_rho - kg/m^3
-# dynamic viscosity - Pa.s
-if case_num == 1:       # Re = 10
-    vel_dim         = 0.034
-    fluid_rho_dim   = 910
-    dyn_visc_dim    = 0.3094
-elif case_num == 2:     # Re = 100
-    vel_dim         = 0.34
-    fluid_rho_dim   = 910
-    dyn_visc_dim    = 0.3094
-elif case_num == 3:     # Re = 1000
-    vel_dim         = 3.4
-    fluid_rho_dim   = 910
-    dyn_visc_dim    = 0.3094
-elif case_num == 4:     # Re = 10
-    vel_dim         = 1.
-    fluid_rho_dim   = 100
-    dyn_visc_dim    = 1
-elif case_num == 5:     # Re = 100
-    vel_dim         = 1
-    fluid_rho_dim   = 100
-    dyn_visc_dim    = 0.1
-elif case_num == 6:     # Re = 1000
-    vel_dim         = 1
-    fluid_rho_dim   = 100
-    dyn_visc_dim    = 0.01
-
-height_dim  = 2 * 0.05          # meters
-if case_num in [2,3, 5, 6]:          # Re = 1000
-    width_dim   = 10 * height_dim    # meters
-else:
-    #width_dim   = 6 * height_dim    # meters
-    width_dim   = 8 * height_dim    # meters
-
-kin_visc_dim  = dyn_visc_dim / fluid_rho_dim
-Re_num        = fluid_rho_dim * vel_dim * height_dim / dyn_visc_dim
-uw.pprint(f"Reynold's number: {Re_num}")
-    print(f"Dimensionalized velocity: {vel_dim}")
-    print(f"Dimensionalized height: {height_dim}")
-    print(f"Dimensionalized width: {width_dim}")
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(-0.5 * ASPECT_RATIO * HEIGHT, -0.5 * HEIGHT),
+    maxCoords=( 0.5 * ASPECT_RATIO * HEIGHT,  0.5 * HEIGHT),
+    cellSize=CELL_SIZE,
+    qdegree=3,
+    regular=False,
+)
 
 # %%
-if use_dim:
-    height  = height_dim
-    width   = width_dim
+v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=False)
 
-    vel     = vel_dim
+# %% [markdown]
+r"""
+## Solver setup
 
-    fluid_rho   = fluid_rho_dim
-    kin_visc    = kin_visc_dim
-    dyn_visc    = dyn_visc_dim
-else:
-    pass # perform non-dimensionalization here
+`NavierStokesSLCN` uses a Semi-Lagrangian Crank-Nicolson scheme for the
+inertial term $\rho \, Du/Dt$. The material derivative is computed by
+tracking particles upstream along characteristics (via a swarm).
 
-# %%
-minX, maxX = -0.5 * width, 0.5 * width
-minY, maxY = -0.5 * height, 0.5 * height
-
-uw.pprint("min X, max X:", minX, maxX)
-    print("min Y, max Y:", minY, maxY)
-    print("kinematic viscosity: ", kin_visc)
-    print("fluid density: ", fluid_rho)
-    print("dynamic viscosity: ", kin_visc * fluid_rho)
+The `order` parameter controls the time-integration accuracy (1 or 2).
+"""
 
 # %%
-# cell size calculation
-if mesh_type == "Preg":
-    meshbox = uw.meshing.UnstructuredSimplexBox( minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize = height / resolution, qdegree = qdeg, regular = True)
-elif mesh_type == "Pirr":
-    meshbox = uw.meshing.UnstructuredSimplexBox( minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize = height / resolution, qdegree = qdeg, regular = False)
-elif mesh_type == "Quad":
-    meshbox = uw.meshing.StructuredQuadBox( minCoords=(minX, minY), maxCoords=(maxX, maxY), elementRes = ((width/height) * resolution, resolution), qdegree = qdeg, regular = False)
-
-# %%
-if uw.mpi.size == 1 and uw.is_notebook:
-
-    import pyvista as pv
-    import underworld3.visualisation as vis
-
-    pvmesh = vis.mesh_to_pv_mesh(meshbox)
-
-    pl = pv.Plotter(window_size=(1000, 750))
-
-    # point sources at cell centres for streamlines
-
-    points = np.zeros((meshbox._centroids.shape[0], 3))
-    points[:, 0] = meshbox._centroids[:, 0]
-    points[:, 1] = meshbox._centroids[:, 1]
-    point_cloud = pv.PolyData(points)
-
-    pl.add_mesh(pvmesh,
-                edge_color="Black",
-                show_edges=True,
-                show_scalar_bar=False)
-
-    pl.show()
-
-# %%
-meshbox.dm.view()
-
-# %%
-v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree = Vdeg)
-p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree = Pdeg, continuous = Pcont)
-
-# %%
-if infile is None:
-    pass
-else:
-    uw.pprint(f"Reading: {infile}")
-
-    v_soln.read_timestep(data_filename = infile, data_name = "U", index = maxsteps, outputPath = outdir)
-    p_soln.read_timestep(data_filename = infile, data_name = "P", index = maxsteps, outputPath = outdir)
-
-# %%
-# Set solve options here (or remove default values
-# stokes.petsc_options.getAll()
-
 navier_stokes = uw.systems.NavierStokesSLCN(
-    meshbox,
-    velocityField = v_soln,
-    pressureField = p_soln,
-    rho = fluid_rho,
+    mesh,
+    velocityField=v_soln,
+    pressureField=p_soln,
+    rho=DENSITY,
+    order=1,
     verbose=False,
-    order=order)
+)
 
 navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-# Constant visc
-navier_stokes.constitutive_model.Parameters.viscosity = dyn_visc
-
+navier_stokes.constitutive_model.Parameters.viscosity = DYN_VISCOSITY
 navier_stokes.penalty = 0
 navier_stokes.bodyforce = sympy.Matrix([0, 0])
 
-# Velocity boundary conditions
-navier_stokes.add_dirichlet_bc((vel, 0.0), "Left")
+# Boundary conditions: inlet velocity on the left, no-slip top/bottom, open right
+navier_stokes.add_dirichlet_bc((INLET_VELOCITY, 0.0), "Left")
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "Top")
-# right is open
 
-navier_stokes.tolerance = tol
+navier_stokes.tolerance = 1e-6
 
-# %%
-# navier_stokes.petsc_options["snes_monitor"] = None
-# navier_stokes.petsc_options["snes_converged_reason"] = None
-# navier_stokes.petsc_options["snes_monitor_short"] = None
-# navier_stokes.petsc_options["ksp_monitor"] = None
+# %% [markdown]
+"""
+## Timestepping
 
-# navier_stokes.petsc_options["snes_type"] = "newtonls"
-# navier_stokes.petsc_options["ksp_type"] = "fgmres"
-
-# navier_stokes.petsc_options["snes_max_it"] = 50
-# navier_stokes.petsc_options["ksp_max_it"] = 50
-
-navier_stokes.petsc_options["snes_monitor"] = None
-navier_stokes.petsc_options["ksp_monitor"] = None
-
-navier_stokes.petsc_options["snes_type"] = "newtonls"
-navier_stokes.petsc_options["ksp_type"] = "fgmres"
-
-navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
-navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-
-navier_stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
-navier_stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
-navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
-navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
-
-# # gasm is super-fast ... but mg seems to be bulletproof
-# # gamg is toughest wrt viscosity
-
-# navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
-# navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
-# navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-
-# # # mg, multiplicative - very robust ... similar to gamg, additive
-
-navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
-navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
-navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
+The timestep is set from a CFL condition based on the minimum cell radius
+and the inlet velocity. We run enough steps to let the flow develop.
+"""
 
 # %%
-# set the timestep
-# for now, set it to be constant
-delta_x = meshbox.get_min_radius()
-max_vel = vel
+C_MAX   = 0.5                      # target Courant number
+NSTEPS  = 20                       # number of timesteps (increase for full spin-up)
 
-delta_t = Cmax*delta_x/max_vel
+delta_x = mesh.get_min_radius()
+delta_t = C_MAX * delta_x / INLET_VELOCITY
 
-uw.pprint(f"Min radius: {delta_x}")
-    print("Timestep used:", delta_t)
-
+print(f"Cell radius: {delta_x:.4e}")
+print(f"Timestep:    {delta_t:.4e}")
 
 # %%
-ts = 0
-timeVal =  np.zeros(maxsteps + 1)*np.nan      # time values
-elapsed_time = 0.0
+for step in range(NSTEPS):
+    navier_stokes.solve(timestep=delta_t, zero_init_guess=(step == 0))
+
+    if step % 5 == 0 or step == NSTEPS - 1:
+        # Sample centreline velocity at the outlet (x = max, y = 0)
+        vx_max = np.abs(v_soln.data[:, 0]).max()
+        print(f"step {step:3d}  |  max |vx| = {vx_max:.4e}")
+
+# %% [markdown]
+r"""
+## Compare with the analytic solution
+
+The fully-developed Poiseuille profile between plates at $y = \pm h/2$ is:
+
+$$u_x(y) = \frac{3}{2} \, U_{\mathrm{mean}} \left(1 - \frac{4 y^2}{h^2}\right)$$
+
+where $U_{\mathrm{mean}}$ is the mean (inlet) velocity. The centreline
+velocity is $\frac{3}{2} U_{\mathrm{mean}}$.
+"""
 
 # %%
-for step in range(0, maxsteps):
+# Sample the velocity along a vertical line near the outlet
+x_sample = 0.4 * ASPECT_RATIO * HEIGHT * 0.5  # near the outlet
+n_sample = 50
+y_sample = np.linspace(-0.5 * HEIGHT * 0.95, 0.5 * HEIGHT * 0.95, n_sample)
+sample_coords = np.column_stack([np.full(n_sample, x_sample), y_sample])
 
-    uw.pprint(f"Timestep: {step}")
+vx_numerical = uw.function.evaluate(v_soln.sym[0], sample_coords)
 
-    navier_stokes.solve(timestep = delta_t, zero_init_guess=True)
+# Analytic Poiseuille profile
+h = HEIGHT
+vx_analytic = 1.5 * INLET_VELOCITY * (1.0 - (2.0 * y_sample / h) ** 2)
 
-    elapsed_time += delta_t
-    timeVal[step] = elapsed_time
+# %%
+if uw.mpi.size == 1 and uw.is_notebook():
+    import matplotlib.pyplot as plt
 
-    uw.pprint("Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
+    fig, ax = plt.subplots(1, 1, figsize=(5, 4))
+    ax.plot(vx_analytic, y_sample / h, "k--", label="Analytic (steady)")
+    ax.plot(vx_numerical.flatten(), y_sample / h, "o", ms=4, label=f"UW3 (step {NSTEPS})")
+    ax.set_xlabel("$v_x$ (m/s)")
+    ax.set_ylabel("$y / h$")
+    ax.legend()
+    ax.set_title(f"Poiseuille flow, Re = {RE:.0f}")
+    plt.tight_layout()
+    plt.show()
 
-    if ts % save_every == 0 and ts > 0:
-        meshbox.write_timestep(
-            outfile,
-            meshUpdates=True,
-            meshVars=[p_soln, v_soln],
-            outputPath=outdir,
-            index =ts)
+# %% [markdown]
+"""
+## Things to try
 
-        with open(outdir + f"/{outfile}.pkl", "wb") as f:
-            pickle.dump([timeVal], f)
-
-    # update timestep
-    ts += 1
-
-# save after all iterations
-meshbox.write_timestep(
-    outfile,
-    meshUpdates=True,
-    meshVars=[p_soln, v_soln],
-    outputPath=outdir,
-    index =maxsteps)
-
-with open(outdir + f"/{outfile}.pkl", "wb") as f:
-    pickle.dump([timeVal], f)
+- Increase `NSTEPS` to see the profile converge to the analytic solution
+- Change `RE` by adjusting `INLET_VELOCITY` or `DYN_VISCOSITY`
+- Compare `order=1` vs `order=2` in the solver constructor
+- Increase `RESOLUTION` — does the solution remain stable at finer meshes?
+"""

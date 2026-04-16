@@ -83,6 +83,37 @@ class UnitAwareBaseScalar(BaseScalar):
         return self._units
 
 
+class TimeSymbol(sympy.Symbol):
+    """A sympy Symbol subclass that carries _ccodestr and _units for JIT.
+
+    Standard sympy Symbols are immutable and don't allow setting arbitrary
+    attributes. This subclass permits _ccodestr (for C code generation)
+    and _units (for dimensional analysis), following the same pattern as
+    UnitAwareBaseScalar for spatial coordinates.
+    """
+
+    _ccodestr = "petsc_t"
+    _units = None
+
+    def __new__(cls, name="t", **kwargs):
+        obj = super().__new__(cls, name, real=True, nonnegative=True, **kwargs)
+        return obj
+
+    @property
+    def units(self):
+        return self._units
+
+    @units.setter
+    def units(self, value):
+        self._units = value
+
+    def get_units(self):
+        return self._units
+
+    def _ccode(self, printer):
+        return self._ccodestr
+
+
 def create_unit_aware_coordinate_system(name, units=None):
     """
     Create a coordinate system with unit-aware coordinates.
@@ -206,6 +237,40 @@ def patch_coordinate_units(mesh):
         # during nondimensionalization (e.g., 10^12 for expressions with Gamma^2).
         # If _Gamma needs any units in the future, they should be explicitly
         # dimensionless (None), not inherited from mesh coordinates.
+
+        # Patch time coordinate with time units from the model
+        _patch_time_units(mesh)
+
+
+def _patch_time_units(mesh):
+    """
+    Patch mesh.t with time units from the model's scaling system.
+
+    If the model has a time scale defined, mesh.t gets those units.
+    Otherwise mesh.t remains dimensionless (._units = None).
+    """
+    if not hasattr(mesh, "_t"):
+        return
+
+    time_units = None
+    try:
+        import underworld3 as uw
+
+        model = uw.get_default_model()
+        if hasattr(model, "_fundamental_scales") and model._fundamental_scales:
+            scales = model._fundamental_scales
+            if "time" in scales:
+                time_scale = scales["time"]
+                if hasattr(time_scale, "units"):
+                    time_units = time_scale.units
+                elif hasattr(time_scale, "_pint_qty"):
+                    time_units = time_scale._pint_qty.units
+    except Exception:
+        pass
+
+    mesh._t._units = time_units
+    if not hasattr(mesh._t, "get_units"):
+        mesh._t.get_units = lambda: mesh._t._units
 
 
 def get_coordinate_units(coord):

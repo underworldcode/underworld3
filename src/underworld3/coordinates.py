@@ -305,22 +305,6 @@ class CoordinateSystemType(Enum):
     system type determines how vector calculus operators (gradient, divergence,
     curl) are computed.
 
-    Attributes
-    ----------
-    CARTESIAN : int
-        Standard Cartesian coordinates (x, y, z).
-    CYLINDRICAL2D : int
-        2D cylindrical/polar coordinates (r, theta).
-    POLAR : int
-        Alias for CYLINDRICAL2D.
-    CYLINDRICAL3D : int
-        3D cylindrical coordinates (r, theta, z).
-    SPHERICAL : int
-        Spherical coordinates (r, theta, phi).
-    GEOGRAPHIC : int
-        Ellipsoidal geographic coordinates (lon, lat, depth) for
-        Earth and planetary modeling.
-
     See Also
     --------
     underworld3.maths.vector_calculus : Operators for each coordinate system.
@@ -499,17 +483,6 @@ class GeographicCoordinateAccessor:
 
     Access via ``mesh.X.geo`` on GEOGRAPHIC meshes. Use ``.view()`` for a
     complete summary of available properties and methods.
-
-    Attributes
-    ----------
-    lon : ndarray
-        Longitude in degrees East (-180 to 180)
-    lat : ndarray
-        Geodetic latitude in degrees North (-90 to 90)
-    depth : ndarray
-        Depth below ellipsoid surface in km (positive downward)
-    coords : ndarray
-        Combined (N, 3) array: [lon, lat, depth]
 
     Examples
     --------
@@ -952,19 +925,6 @@ class SphericalCoordinateAccessor:
 
     Access via ``mesh.X.spherical`` on SPHERICAL or CYLINDRICAL2D meshes.
     Use ``.view()`` for a complete summary of available properties and methods.
-
-    Attributes
-    ----------
-    r : ndarray
-        Radial distance from origin
-    theta : ndarray
-        Angle in radians:
-        - 3D: Colatitude (0 at north pole, π at south pole)
-        - 2D: Polar angle from x-axis (standard θ)
-    phi : ndarray (3D only)
-        Longitude/azimuth in radians (-π to π). Not available for 2D meshes.
-    coords : ndarray
-        Combined array: [r, θ, φ] for 3D, [r, θ] for 2D
 
     Examples
     --------

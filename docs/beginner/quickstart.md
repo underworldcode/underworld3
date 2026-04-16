@@ -45,7 +45,7 @@ Or using the `./uw` wrapper for local parallel runs:
 ./uw mpirun -np 4 python3 Modelling_Script.py
 ```
 
-The main difference between notebook development and HPC is interactivity—particularly sending parameters at launch time. We use PETSc's command line parsing so notebooks can ingest runtime parameters when run as scripts.
+The main difference between notebook development and HPC is interactivity—particularly sending parameters at launch time. We use PETSc's command line parsing (single-dash options like `-uw_resolution`) so notebooks can ingest runtime parameters when run as scripts. See the [Parameters Guide](parameters.md) for details on the CLI convention.
 
 #### Parallel scaling / performance
 

@@ -502,6 +502,12 @@ def global_evaluate_nd(   expr,
     evaluation_swarm.dm.migrate(remove_sent_points=True)
     uw.mpi.barrier()
 
+    # Invalidate cached data after bare-bones dm.migrate —
+    # particle count and values changed but Swarm.migrate() was bypassed.
+    evaluation_swarm._particle_coordinates._canonical_data = None
+    for var in evaluation_swarm._vars.values():
+        if hasattr(var, "_canonical_data"):
+            var._canonical_data = None
 
     index = original_index.array[:,0,0]
 
@@ -542,6 +548,12 @@ def _project_to_work_variable(expr, mesh, smoothing=1e-6):
     import underworld3 as uw
 
     # Handle matrix expressions - need multi-component work variable
+    # TODO(BUG): This fails for dim×dim matrices (e.g. 2×2 stress tensor)
+    # because MeshVariable can't infer vtype from num_components=4 (flat int).
+    # Needs: pass num_components=(rows,cols) with vtype=TENSOR, and use
+    # Tensor_Projection instead of per-component scalar Projection.
+    # Currently, callers like SemiLagrangian.update_pre_solve fall back to
+    # their own projection solver via except-clause when this fails.
     if hasattr(expr, 'shape') and expr.shape != (1, 1):
         rows, cols = expr.shape
         n_components = rows * cols

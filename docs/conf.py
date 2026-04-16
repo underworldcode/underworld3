@@ -2,14 +2,68 @@
 # Unified build: User guides, tutorials, and API reference
 # NOTE: underworld3 is installed via 'pixi run build' before docs build
 
+import os
+import subprocess
+
+# =============================================================================
+# Version detection (from git tags via setuptools-scm)
+# =============================================================================
+
+def _get_version():
+    """Get version from setuptools-scm, falling back gracefully."""
+    try:
+        from setuptools_scm import get_version
+        return get_version(root=os.path.join(os.path.dirname(__file__), ".."))
+    except Exception:
+        return "0.0.0"
+
+def _get_binder_ref():
+    """Determine binder launcher ref from build context.
+
+    Priority: exact git tag > RTD version > git branch > fallback.
+    The returned value is used in binder URLs as the launcher repo ref.
+    """
+    repo_root = os.path.join(os.path.dirname(__file__), "..")
+
+    # 1. Exact git tag (release builds)
+    try:
+        tag = subprocess.check_output(
+            ["git", "describe", "--tags", "--exact-match"],
+            cwd=repo_root, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        return tag  # e.g. "v3.0.0"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # 2. ReadTheDocs version (set automatically by RTD)
+    rtd_version = os.environ.get("READTHEDOCS_VERSION")
+    if rtd_version and rtd_version not in ("latest", "stable"):
+        return rtd_version
+
+    # 3. Git branch name
+    try:
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_root, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        if branch == "main":
+            return "main"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # 4. Fallback
+    return "development"
+
+_full_version = _get_version()
+
 # =============================================================================
 # Project Information
 # =============================================================================
 project = 'Underworld3'
 copyright = '2025, Underworld Team'
 author = 'Underworld Team'
-version = '0.9'
-release = '0.9b'
+version = _full_version.split('+')[0]   # e.g. "3.0.1.dev5"
+release = _full_version.split('+')[0]
 
 # =============================================================================
 # Extensions
@@ -37,10 +91,23 @@ myst_enable_extensions = [
     "fieldlist",        # Field lists
     "tasklist",         # - [ ] task lists
     "attrs_inline",     # {#id .class}
+    "substitution",     # {{key}} substitutions in .md files
 ]
 
 # Allow dollar signs for math
 myst_dmath_double_inline = True
+
+# Dynamic substitutions — available in all MyST markdown files as {{key}}
+_binder_ref = _get_binder_ref()
+myst_substitutions = {
+    "binder_ref": _binder_ref,
+    "binder_badge": (
+        f"[![Binder](https://mybinder.org/badge_logo.svg)]"
+        f"(https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/"
+        f"{_binder_ref}?labpath=docs%2Fbeginner%2Ftutorials"
+        f"%2FNotebook_Index.ipynb)"
+    ),
+}
 
 # Source file types
 source_suffix = {
@@ -188,6 +255,8 @@ exclude_patterns = [
     'developer/ai-notes/**',
     # Skip examples (not needed for main docs)
     'examples/**',
+    # Skip myst_nb execution artifacts (regenerated each build)
+    'jupyter_execute/**',
 ]
 
 # =============================================================================

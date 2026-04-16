@@ -11,6 +11,10 @@ SNES_Poisson
     Poisson/diffusion equation: :math:`\nabla \cdot (k \nabla T) = f`
 SNES_Darcy
     Darcy flow: pressure-driven flow through porous media
+SNES_TransientDarcy
+    Transient groundwater flow with constant storage
+SNES_Richards
+    Richards equation for variably-saturated porous media flow
 
 Vector Equations
 ----------------
@@ -178,16 +182,6 @@ class SNES_Poisson(SNES_Scalar):
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
 
-    Attributes
-    ----------
-    u : MeshVariable
-        The unknown scalar field.
-    constitutive_model : DiffusionModel
-        Provides the diffusivity tensor :math:`\kappa`. Set to one of the
-        scalar ``uw.constitutive_models`` classes. Can be constant, spatially
-        varying, non-linear, or anisotropic.
-    f : sympy.Expr
-        Volumetric source term.
     """
 
     @timing.routine_timer_decorator
@@ -379,17 +373,6 @@ class SNES_Darcy(SNES_Scalar):
     DFDt : optional
         Time derivative operator for the flux.
 
-    Attributes
-    ----------
-    h : MeshVariable
-        The hydraulic head unknown.
-    v : MeshVariable
-        The Darcy velocity field.
-    s : sympy.Expr
-        Source term for pressure gradients (e.g., :math:`\rho g`).
-    Ss : sympy.Expr
-        Specific storage coefficient.
-
     Notes
     -----
     - The unknown is :math:`h`, the hydraulic head
@@ -569,6 +552,453 @@ class SNES_Darcy(SNES_Scalar):
     #     super()._setup_terms()
 
 
+class SNES_TransientDarcy(SNES_Darcy):
+    r"""
+    Transient Darcy flow solver for time-dependent groundwater problems.
+
+    Solves the transient groundwater flow equation:
+
+    .. math::
+
+        S_s \frac{\partial h}{\partial t}
+        - \nabla \cdot \left[ K (\nabla h - \mathbf{s}) \right] = f
+
+    where :math:`S_s` is the specific storage (constant), :math:`K` is the
+    hydraulic conductivity, :math:`\mathbf{s}` is the body force (gravity),
+    and :math:`f` is a source/sink term.
+
+    Inherits velocity projection from :class:`SNES_Darcy`.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    h_Field : MeshVariable, optional
+        Mesh variable for hydraulic head.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity.
+    order : int, default=1
+        Time integration order (BDF/Adams-Moulton history depth).
+    theta : float, default=0.5
+        Implicit time weighting (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+    degree : int, default=2
+        Polynomial degree for finite element discretization.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
+
+    Attributes
+    ----------
+    storage : sympy.Expr
+        Specific storage :math:`S_s` (default 1).
+    delta_t : UWexpression
+        Current timestep.
+
+    See Also
+    --------
+    SNES_Darcy : Steady-state parent solver.
+    SNES_Richards : Nonlinear extension for unsaturated flow.
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        h_Field: Optional[uw.discretisation.MeshVariable] = None,
+        v_Field: Optional[uw.discretisation.MeshVariable] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        degree: int = 2,
+        verbose=False,
+        DuDt=None,
+        DFDt=None,
+    ):
+        super().__init__(mesh, h_Field, v_Field, degree, verbose, DuDt=DuDt, DFDt=DFDt)
+
+        self.theta = theta
+        self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
+        self._storage = sympy.sympify(1)
+        self.is_setup = False
+
+        if DuDt is None:
+            self.Unknowns.DuDt = Eulerian_DDt(
+                self.mesh,
+                h_Field,
+                vtype=uw.VarType.SCALAR,
+                degree=h_Field.degree,
+                continuous=h_Field.continuous,
+                varsymbol=h_Field.symbol,
+                verbose=verbose,
+                order=order,
+                smoothing=0.0,
+            )
+        else:
+            if order is not None and DuDt.order < order:
+                raise RuntimeError(
+                    f"DuDt supplied is order {DuDt.order} but order requested is {order}"
+                )
+            self.Unknowns.DuDt = DuDt
+
+        if DFDt is None:
+            self.Unknowns.DFDt = Symbolic_DDt(
+                sympy.Matrix([[0] * self.mesh.dim]),
+                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+                theta=theta,
+                order=order,
+            )
+        else:
+            self.Unknowns.DFDt = DFDt
+
+    # --- Properties ---
+
+    @property
+    def storage(self):
+        """Specific storage coefficient :math:`S_s`."""
+        return self._storage
+
+    @storage.setter
+    def storage(self, value):
+        self.is_setup = False
+        self._storage = sympy.sympify(value)
+
+    @property
+    def delta_t(self):
+        """Current timestep."""
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self.is_setup = False
+        if hasattr(value, "value"):
+            self._delta_t.sym = value.value
+        elif hasattr(value, "magnitude"):
+            self._delta_t.sym = value.magnitude
+        else:
+            self._delta_t.sym = value
+
+    @property
+    def DuDt(self):
+        return self.Unknowns.DuDt
+
+    @property
+    def DFDt(self):
+        return self.Unknowns.DFDt
+
+    # --- Template expressions (override Darcy's steady-state Templates) ---
+
+    @property
+    def F0(self):
+        """Pointwise storage + source: :math:`S_s \\dot{h} / \\Delta t - f`."""
+        f0 = expression(
+            r"f_0(h)",
+            -self.f + self.storage * self.DuDt.bdf() / self.delta_t,
+            "Transient Darcy storage + source term",
+        )
+        self._f0 = f0
+        return f0
+
+    @property
+    def F1(self):
+        """Pointwise flux: Adams-Moulton time-weighted Darcy flux."""
+        F1_val = expression(
+            r"\mathbf{F}_1(h)",
+            self.DFDt.adams_moulton_flux(),
+            "Transient Darcy flux (time-weighted)",
+        )
+        self._f1 = F1_val
+        return F1_val
+
+    # --- Timestep estimation ---
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r"""
+        Estimate a stable timestep based on diffusive CFL.
+
+        Returns
+        -------
+        float or pint.Quantity
+            Diffusive timestep :math:`\delta t = (\Delta x)^2 / K_{\max}`.
+        """
+        from mpi4py import MPI
+
+        K = self.constitutive_model.K
+
+        if isinstance(K, sympy.Expr) or hasattr(K, "sym"):
+            K_sym = K.sym if hasattr(K, "sym") else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym, np.zeros((1, self.mesh.dim))
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym), self.mesh._centroids, self.mesh.N
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            diffusivity = diffusivity.magnitude
+
+        diffusivity = float(np.asarray(diffusivity).max())
+
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+
+        min_dx = self.mesh.get_min_radius()
+
+        if diffusivity_glob != 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+        else:
+            dt_diff = np.inf
+
+        return _apply_unit_aware_scaling(np.squeeze(dt_diff), self.u, self.mesh)
+
+    # --- Solve ---
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep=None,
+        _force_setup: bool = False,
+        verbose=False,
+    ):
+        r"""
+        Solve the transient Darcy system for one timestep.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, optional
+            Start from zero initial guess (default True).
+        timestep : float, optional
+            Timestep size. Updates ``self.delta_t`` if provided.
+        _force_setup : bool, optional
+            Force re-setup of solver.
+        verbose : bool, optional
+            Print solver progress.
+        """
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep
+
+        if not self.constitutive_model._solver_is_setup:
+            self.is_setup = False
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Pre-solve: update history terms
+        self.DuDt.update_pre_solve(timestep, verbose=verbose)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose)
+
+        # Solve PDE (bypass SNES_Darcy.solve to avoid double setup/projection)
+        SNES_Scalar.solve(self, zero_init_guess, _force_setup)
+
+        # Invalidate cached data views
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
+        # Post-solve: shift history
+        self.DuDt.update_post_solve(timestep, verbose=verbose)
+        self.DFDt.update_post_solve(timestep, verbose=verbose)
+
+        # Velocity projection (inherited from Darcy)
+        self._v_projector.uw_function = self.darcy_flux
+        self._v_projector.solve(zero_init_guess)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return
+
+
+class SNES_Richards(SNES_TransientDarcy):
+    r"""
+    Richards equation solver for variably-saturated porous media flow.
+
+    Two formulations are supported:
+
+    **Mixed form** (mass-conservative, preferred) — set ``water_content``:
+
+    .. math::
+
+        \frac{\partial \theta}{\partial t}
+        - \nabla \cdot \left[ K(\psi) (\nabla \psi - \mathbf{s}) \right] = f
+
+    discretised as :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`,
+    which is exactly conservative by construction (Celia et al., 1990).
+
+    **Head-based form** (backward compatible) — set ``capacity``:
+
+    .. math::
+
+        C(\psi) \frac{\partial \psi}{\partial t}
+        - \nabla \cdot \left[ K(\psi) (\nabla \psi - \mathbf{s}) \right] = f
+
+    where :math:`C(\psi) = d\theta/d\psi` is the specific moisture capacity.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    psi_Field : MeshVariable, optional
+        Mesh variable for pressure head :math:`\psi`.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity.
+    order : int, default=1
+        Time integration order.
+    theta : float, default=0.5
+        Implicit time weighting.
+    degree : int, default=2
+        Polynomial degree.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
+
+    Attributes
+    ----------
+    water_content : sympy.Expr or None
+        Water content function :math:`\theta(\psi)` for the mixed form.
+        When set, the storage term uses
+        :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`.
+        Takes precedence over ``capacity`` if both are set.
+    capacity : sympy.Expr
+        Specific moisture capacity :math:`C(\psi)` for the head-based form.
+        Used only when ``water_content`` is None.
+    psi : MeshVariable
+        Alias for ``self.u`` (pressure head).
+
+    See Also
+    --------
+    SNES_TransientDarcy : Linear parent solver.
+    underworld3.utilities.retention_curves : Van Genuchten and Gardner functions.
+
+    Examples
+    --------
+    Mixed form (preferred):
+
+    >>> from underworld3.utilities.retention_curves import (
+    ...     van_genuchten_theta, van_genuchten_K,
+    ... )
+    >>> richards = uw.systems.Richards(mesh, psi_Field=psi, v_Field=v)
+    >>> richards.constitutive_model = uw.constitutive_models.DarcyFlowModel
+    >>> richards.constitutive_model.Parameters.permeability = van_genuchten_K(
+    ...     psi.sym[0], Ks=1e-4, alpha=3.35, n=2.0,
+    ... )
+    >>> richards.water_content = van_genuchten_theta(
+    ...     psi.sym[0], theta_r=0.045, theta_s=0.43, alpha=3.35, n=2.0,
+    ... )
+
+    Head-based form (backward compatible):
+
+    >>> from underworld3.utilities.retention_curves import van_genuchten_C
+    >>> richards.capacity = van_genuchten_C(
+    ...     psi.sym[0], theta_r=0.045, theta_s=0.43, alpha=3.35, n=2.0,
+    ... )
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_Field: Optional[uw.discretisation.MeshVariable] = None,
+        v_Field: Optional[uw.discretisation.MeshVariable] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        degree: int = 2,
+        verbose=False,
+        DuDt=None,
+        DFDt=None,
+    ):
+        super().__init__(
+            mesh, psi_Field, v_Field, order, theta, degree, verbose, DuDt, DFDt
+        )
+        self._capacity = sympy.sympify(1)
+        self._water_content = None  # None → head-based form; set → mixed form
+
+    @property
+    def water_content(self):
+        r"""Water content function :math:`\theta(\psi)` for the mixed form.
+
+        When set, the storage term uses
+        :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`
+        instead of :math:`C(\psi) \cdot (\psi^{n+1} - \psi^n) / \Delta t`,
+        giving exact mass conservation (Celia et al., 1990).
+
+        The expression should be a SymPy function of ``psi.sym[0]``.
+        The Jacobian :math:`\partial\theta/\partial\psi = C(\psi)` is
+        computed automatically by PETSc (finite-difference colouring),
+        so there is no need to provide :math:`C(\psi)` separately.
+        """
+        return self._water_content
+
+    @water_content.setter
+    def water_content(self, value):
+        self.is_setup = False
+        self._water_content = sympy.sympify(value) if value is not None else None
+
+    @property
+    def capacity(self):
+        r"""Specific moisture capacity :math:`C(\psi) = d\theta/d\psi`.
+
+        Used only when ``water_content`` is None (head-based form).
+        Typically a nonlinear SymPy expression depending on ``psi.sym[0]``.
+        """
+        return self._capacity
+
+    @capacity.setter
+    def capacity(self, value):
+        self.is_setup = False
+        self._capacity = sympy.sympify(value)
+
+    @property
+    def psi(self):
+        """Alias for ``self.u`` (pressure head)."""
+        return self.u
+
+    @property
+    def F0(self):
+        r"""Pointwise storage + source term.
+
+        Mixed form: :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t - f`
+
+        Head-based form: :math:`C(\psi) (\psi^{n+1} - \psi^n) / \Delta t - f`
+        """
+        if self._water_content is not None:
+            # Mixed (mass-conservative) form:
+            # θ(ψ^{n+1}) is self._water_content (already in terms of psi.sym[0])
+            # θ(ψ^n) is water_content with psi.sym[0] → psi_star[0].sym[0]
+            psi_sym = self.psi.sym[0]
+            psi_star_sym = self.DuDt.psi_star[0].sym[0]
+            theta_new = self._water_content
+            theta_old = self._water_content.subs(psi_sym, psi_star_sym)
+            storage_term = sympy.Matrix([[theta_new - theta_old]]) / self.delta_t
+        else:
+            # Head-based form (backward compatible)
+            storage_term = self.capacity * self.DuDt.bdf() / self.delta_t
+
+        f0 = expression(
+            r"f_0(\psi)",
+            -self.f + storage_term,
+            "Richards storage + source term",
+        )
+        self._f0 = f0
+        return f0
+
+
 ## --------------------------------
 ## Stokes saddle point solver plus
 ## ancilliary functions - note that
@@ -627,23 +1057,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         Material derivative operator for velocity (used in derived classes).
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Material derivative operator for flux (used in viscoelastic models).
-
-    Attributes
-    ----------
-    u : MeshVariable
-        The velocity field (accessed via ``solver.Unknowns.u``).
-    p : MeshVariable
-        The pressure field (accessed via ``solver.Unknowns.p``).
-    bodyforce : UWexpression
-        Volumetric body force vector :math:`\mathbf{f}`.
-    constitutive_model : ConstitutiveModel
-        Viscosity model providing the stress-strain relationship.
-    penalty : UWexpression
-        Augmented Lagrangian penalty parameter :math:`\lambda`.
-    saddle_preconditioner : sympy.Expr
-        Preconditioner for the saddle point system (default: :math:`1/\eta`).
-    constraints : sympy.Matrix
-        Constraint equation(s), default is :math:`\nabla \cdot \mathbf{u}`.
 
     Notes
     -----
@@ -724,6 +1137,169 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._constitutive_model = None
 
         return
+
+    def _create_stress_history_ddt(self, order=2):
+        """Create DFDt for stress history tracking (VE/VEP models).
+
+        Called automatically when a constitutive model with
+        ``requires_stress_history = True`` is assigned. Can also be called
+        explicitly to pre-create the DFDt with a specific order.
+        """
+        if self.Unknowns.DFDt is not None:
+            return  # already created
+
+        self._order = order
+        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+            self.mesh,
+            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            self.u.sym,
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self.u.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+            verbose=self.verbose,
+            bcs=None,
+            order=order,
+            smoothing=0.0001,
+        )
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose=False,
+        evalf=False,
+        order=None,
+        picard: int = 0,
+    ):
+        """Solve the Stokes system, with optional viscoelastic stress history.
+
+        When a constitutive model with stress history is active (DFDt is not None),
+        the solve includes pre/post hooks for advecting stress history, updating
+        BDF coefficients, and projecting the actual stress after the solve.
+
+        Parameters
+        ----------
+        zero_init_guess : bool
+            If True, use zero initial guess. Otherwise use current field values.
+        timestep : float, optional
+            Advection timestep. Required when stress history is active.
+        _force_setup : bool
+            Force rebuild of pointwise functions.
+        verbose : bool
+            Enable verbose output.
+        evalf : bool
+            Force numerical evaluation during history updates.
+        order : int, optional
+            Override the VE time integration order.
+        picard : int, default=0
+            Number of Picard iterations before switching to Newton.
+            Picard uses a simplified Jacobian and can help convergence
+            for strongly nonlinear problems like VEP at yield onset.
+        """
+
+        has_stress_history = self.Unknowns.DFDt is not None
+
+        if has_stress_history:
+            if timestep is None:
+                raise ValueError(
+                    "timestep is required for viscoelastic solve. "
+                    "Call stokes.solve(timestep=dt)"
+                )
+
+            # dt_elastic must always equal the solve timestep. The constitutive
+            # model's VE formulas (eta_eff, stress history terms) all reference
+            # Parameters.dt_elastic. If it differs from the actual timestep,
+            # the stress computation is inconsistent with the time integration.
+            self.constitutive_model.Parameters.dt_elastic = timestep
+
+            if order is None or order > self._order:
+                order = self._order
+
+            if _force_setup:
+                self.is_setup = False
+
+            # Re-setup when effective_order changes (DDt history ramp-up)
+            _current_eff_order = self.constitutive_model.effective_order
+            if not hasattr(self, '_prev_effective_order'):
+                self._prev_effective_order = None
+            if _current_eff_order != self._prev_effective_order:
+                self.is_setup = False
+                self.constitutive_model._solver_is_setup = False
+            self._prev_effective_order = _current_eff_order
+
+            if not self.constitutive_model._solver_is_setup:
+                self.is_setup = False
+                self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+            if not self.is_setup:
+                self._setup_pointwise_functions(verbose)
+                self._setup_discretisation(verbose)
+                self._setup_solver(verbose)
+
+            # 1. ADVECT stress history along characteristics
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - advect stress history", flush=True)
+
+            self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
+                                       store_result=False)
+            self.constitutive_model._update_bdf_coefficients()
+
+            # 2. SOLVE
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - solve", flush=True)
+
+            super().solve(
+                zero_init_guess,
+                _force_setup=_force_setup,
+                verbose=verbose,
+                picard=picard,
+            )
+
+            # 3. PROJECT actual stress and SHIFT history
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - store stress and shift history", flush=True)
+
+            import numpy as np
+
+            _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
+
+            self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
+            self.DFDt._psi_star_projection_solver.smoothing = 0.0
+            self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+
+            for i in range(self.DFDt.order - 1, 0, -1):
+                if i == 1:
+                    self.DFDt.psi_star[i].array[...] = _advected_sigma_star
+                else:
+                    self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
+
+            self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+            self.is_setup = True
+            self.constitutive_model._solver_is_setup = True
+
+        else:
+            # Plain Stokes — no stress history
+            super().solve(
+                zero_init_guess,
+                _force_setup=_force_setup,
+                verbose=verbose,
+            )
+
+    @property
+    def tau(self):
+        r"""Deviatoric stress from the most recent solve.
+
+        When stress history is active (VEP), returns ``psi_star[0]`` which
+        contains the actual projected stress. Otherwise falls through to the
+        base class lazy projection.
+        """
+        if self.Unknowns.DFDt is not None:
+            return self.DFDt.psi_star[0]
+        return super().tau
 
     # =========================================================================
     # PETSc Residual Templates
@@ -1164,85 +1740,26 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
 
 class SNES_VE_Stokes(SNES_Stokes):
-    r"""
-    Viscoelastic Stokes equation solver.
+    r"""Viscoelastic Stokes solver (backward-compatibility wrapper).
 
-    Provides a discrete representation of the Stokes flow equations with
-    incompressibility (or near-incompressibility) constraint and a flux
-    history term for viscoelastic modelling. Inherits from :class:`SNES_Stokes`.
+    .. deprecated::
+        Use ``uw.systems.Stokes`` directly with a
+        ``ViscoElasticPlasticFlowModel`` constitutive model. The Stokes
+        solver now creates stress history infrastructure automatically
+        when the constitutive model requires it.
 
-    Momentum equation:
-
-    .. math::
-
-        -\nabla \cdot \underbrace{\left[ \boldsymbol{\tau} - p \mathbf{I}
-        \right]}_{\mathbf{F}} = \underbrace{\mathbf{f}}_{\mathbf{h}}
-
-    Continuity equation:
-
-    .. math::
-
-        \underbrace{\nabla \cdot \mathbf{u}}_{\mathbf{h}_p} = 0
-
-    The flux term is a deviatoric stress :math:`\boldsymbol{\tau}` related
-    to velocity gradients :math:`\nabla \mathbf{u}` through a viscosity
-    tensor :math:`\eta`, plus a volumetric (pressure) part :math:`p`:
-
-    .. math::
-
-        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}
-        \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
-
-    The constraint equation :math:`\mathbf{h}_p = 0` is incompressible flow
-    by default but can be set to any function of :math:`\mathbf{u}` and
-    :math:`\nabla \cdot \mathbf{u}`.
+    This wrapper pre-creates the DFDt with a specific ``order`` parameter,
+    which is useful when you want to control the BDF order before assigning
+    the constitutive model.
 
     Parameters
     ----------
     mesh : Mesh
         The computational mesh.
-    velocityField : MeshVariable, optional
-        Mesh variable for velocity. Created automatically if not provided.
-    pressureField : MeshVariable, optional
-        Mesh variable for pressure. Created automatically if not provided.
-    degree : int, default=2
-        Polynomial degree for velocity elements.
     order : int, default=2
-        Order parameter (typically same as degree).
-    p_continuous : bool, default=True
-        If False, use discontinuous pressure elements.
-    verbose : bool, default=False
-        Enable verbose output.
-    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
-        Time derivative operator (may be used in child classes).
-
-    Attributes
-    ----------
-    u : MeshVariable
-        Velocity field unknown :math:`\mathbf{u}`.
-    p : MeshVariable
-        Pressure field unknown :math:`p`.
-    bodyforce : sympy.Expr
-        Body force term :math:`\mathbf{f}`.
-    penalty : float
-        Augmented Lagrangian penalty parameter :math:`\lambda`.
-    saddle_preconditioner : sympy.Expr
-        Preconditioner for saddle point system (default: :math:`1/\eta`).
-
-    Notes
-    -----
-    - The viscosity tensor :math:`\boldsymbol{\eta}` is set via the
-      ``constitutive_model`` property
-    - For viscoelastic problems, the flux term contains stress history
-      tracked on a particle swarm
-    - Augmented Lagrangian approach adds :math:`\lambda \nabla \cdot \mathbf{u}`
-      to penalize incompressibility
-    - Pressure element order determines mixed FEM integration order
-
-    See Also
-    --------
-    SNES_Stokes : Base Stokes solver.
-    uw.constitutive_models.ViscoElasticPlasticFlowModel : Constitutive model for VE flow.
+        BDF time integration order for stress history.
+    **kwargs
+        All other arguments are passed to :class:`SNES_Stokes`.
     """
 
     instances = 0
@@ -1256,12 +1773,9 @@ class SNES_VE_Stokes(SNES_Stokes):
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: Optional[bool] = False,
-        # DuDt Not used in VE, but may be in child classes
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
-
-        # Stokes is parent (will not build DuDt or DFDt)
         super().__init__(
             mesh,
             velocityField,
@@ -1273,22 +1787,8 @@ class SNES_VE_Stokes(SNES_Stokes):
             DFDt=DFDt,
         )
 
-        self._order = order  # VE time-order
-
-        if self.Unknowns.DFDt is None:
-            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                vtype=uw.VarType.SYM_TENSOR,
-                degree=self.u.degree - 1,
-                continuous=True,
-                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
-                verbose=self.verbose,
-                bcs=None,
-                order=self._order,
-                smoothing=0.0001,
-            )
+        # Pre-create DFDt so it's available before constitutive model is set
+        self._create_stress_history_ddt(order=order)
 
         return
 
@@ -1296,75 +1796,6 @@ class SNES_VE_Stokes(SNES_Stokes):
     def delta_t(self):
         """Elastic timestep from the constitutive model."""
         return self.constitutive_model.Parameters.dt_elastic
-
-    ## Solver needs to update the stress history terms as well as call the SNES solve:
-
-    @timing.routine_timer_decorator
-    def solve(
-        self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        _force_setup: bool = False,
-        verbose=False,
-        evalf=False,
-        order=None,
-    ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        """
-
-        if order is None or order > self._order:
-            order = self._order
-
-        if timestep is None:
-            timestep = self.delta_t.sym
-
-        if timestep != self.delta_t:
-            self._constitutive_model.Parameters.elastic_dt = timestep  # this will force an initialisation because the functions need to be updated
-
-        if _force_setup:
-            self.is_setup = False
-
-        if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
-
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VE Stokes solver - pre-solve DFDt update", flush=True)
-
-        # Update SemiLagrange Flux terms
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VE Stokes solver - solve Stokes flow", flush=True)
-
-        super().solve(
-            zero_init_guess,
-            _force_setup=_force_setup,
-            verbose=verbose,
-            picard=0,
-        )
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VEP Stokes solver - post-solve DFDt update", flush=True)
-
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
-
-        return
 
 
 class SNES_Projection(SNES_Scalar):
@@ -1403,13 +1834,6 @@ class SNES_Projection(SNES_Scalar):
         Name for the solver instance.
     verbose : bool, default=False
         Enable verbose output.
-
-    Attributes
-    ----------
-    uw_function : sympy.Expr
-        The function :math:`\tilde{f}` to project.
-    smoothing : float
-        The regularization parameter :math:`\alpha`.
 
     See Also
     --------
@@ -1534,13 +1958,6 @@ class SNES_Vector_Projection(SNES_Vector):
         Polynomial degree for the finite element space.
     verbose : bool, default=False
         Enable verbose output.
-
-    Attributes
-    ----------
-    uw_function : sympy.Matrix
-        The vector function :math:`\tilde{\mathbf{f}}` to project.
-    smoothing : float
-        The regularization parameter :math:`\alpha`.
 
     See Also
     --------
@@ -1834,13 +2251,6 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         Time derivative operator for the unknown.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
-
-    Attributes
-    ----------
-    u : MeshVariable
-        The scalar unknown.
-    f : sympy.Expr
-        Volumetric source term.
 
     Notes
     -----
@@ -2345,13 +2755,6 @@ class SNES_Diffusion(SNES_Scalar):
     DFDt : Eulerian_DDt, SemiLagrangian_DDt, or Lagrangian_DDt, optional
         Time derivative operator for the flux.
 
-    Attributes
-    ----------
-    u : MeshVariable
-        The scalar unknown.
-    f : sympy.Expr
-        Volumetric source term.
-
     Notes
     -----
     - The diffusivity :math:`\kappa` is set via the ``constitutive_model`` property
@@ -2472,7 +2875,7 @@ class SNES_Diffusion(SNES_Scalar):
         """Pointwise source term including time derivative."""
         f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
-            -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
+            -self.f + self.DuDt.bdf() / self.delta_t,
             "Diffusion pointwise force term: f_0(u)",
         )
 
@@ -2674,15 +3077,13 @@ class SNES_Diffusion(SNES_Scalar):
 
         super().solve(zero_init_guess, _force_setup)
 
+        # Invalidate cached data views - PETSc may have replaced underlying buffers
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
         self.DuDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
-
-        # if isinstance(self.DFDt, Eulerian_DDt):
-        #     for i in range(order):
-        #         ### have to substitute the unknown history term into the symbolic flux term
-        #         self.DFDt.psi_star[i].subs({self.DuDt.psi_fn:self.DuDt.psi_star[i]})
-
-        # self._flux_star =  self._flux.copy()
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
@@ -2737,17 +3138,6 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for stress.
 
-    Attributes
-    ----------
-    u : MeshVariable
-        Velocity field unknown.
-    p : MeshVariable
-        Pressure field unknown.
-    rho : sympy.Expr
-        Fluid density.
-    bodyforce : sympy.Expr
-        Body force term :math:`\mathbf{f}`.
-
     Notes
     -----
     - The viscosity :math:`\eta` is set via the ``constitutive_model`` property
@@ -2788,6 +3178,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         rho: Optional[float] = 0.0,
         restore_points_func: Callable = None,
         order: Optional[int] = 2,
+        flux_order: Optional[int] = None,
         p_continuous: Optional[bool] = False,
         verbose: Optional[bool] = False,
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
@@ -2813,6 +3204,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._first_solve = True
 
         self._order = order
+        self._flux_order = flux_order  # None means follow effective_order
         self._penalty = expression(R"{\uplambda}", 0, "Incompressibility Penalty")
 
         self.restore_points_to_domain_func = restore_points_func
@@ -2873,12 +3265,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         """Pointwise momentum source term (body force + inertia)."""
         DuDt = self.Unknowns.DuDt
 
-        # I think this should be bdf(1) ... the higher order
-        # terms are introduced through the adams_moulton fluxes
-
         f0 = expression(
             r"\mathbf{f}_0\left( \mathbf{u} \right)",
-            -self.bodyforce + self.rho * DuDt.bdf(1) / self.delta_t,
+            -self.bodyforce + self.rho * DuDt.bdf() / self.delta_t,
             "NStokes pointwise force term: f_0(u)",
         )
 
@@ -2924,7 +3313,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         f0 = expression(
             r"\mathbf{F}_1\left( \mathbf{p} \right)",
-            sympy.simplify(sympy.Matrix((self.constraints))),
+            sympy.Matrix((self.constraints)),
             "NStokes pointwise flux term: f_0(p)",
         )
 
@@ -3105,6 +3494,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # Update SemiLagrange Flux terms
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+
+        # Override AM coefficients if flux_order is explicitly set
+        if self._flux_order is not None:
+            from underworld3.systems.ddt import _update_am_values
+            fo = min(self._flux_order, self.DFDt.effective_order)
+            _update_am_values(self.DFDt._am_coeffs, fo, 0.5)
 
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - solve Stokes flow", flush=True)

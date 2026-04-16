@@ -610,16 +610,34 @@ def test_swarm_functionality():
 
 ### JIT Compilation Issues
 
-If you see generated C code with symbolic expressions instead of numbers:
+**Slow time-stepping loops**: If each `solver.solve()` call takes 10+ seconds
+in a time-stepping loop, the solver is probably recompiling the JIT extension
+every step. Use `UWexpression` objects for any parameter that changes between
+steps:
 
-```text
-// ERROR symptom in generated code:
-out[0] = 1.0/{ \eta \hspace{ 0.0006pt } };  // Should be numeric!
+```python
+# FAST — expression parameter, no recompilation on change
+dt_e = uw.expression("dt_e", 0.01)
+model.Parameters.dt_elastic = dt_e
+
+for step in range(100):
+    dt_e.sym = compute_timestep()  # Updates constants[], ~0ms
+    solver.solve()                  # No JIT rebuild
 ```
 
-**Cause**: `unwrap(fn, keep_constants=False)` not properly unwrapping constants.
+**Symbolic names in generated C code**: If you see LaTeX-like names in the
+generated C code (e.g., `\eta` instead of a number or `constants[i]`):
 
-**Solution**: Check that constants (like UWQuantity) are being unwrapped to numeric values.
+```text
+// ERROR symptom — expression not unwrapped:
+out[0] = 1.0/{ \eta \hspace{ 0.0006pt } };
+```
+
+**Cause**: A `UWexpression` was not properly detected as constant or unwrapped.
+
+**Solution**: Check that the expression resolves to a pure number when fully
+unwrapped. Composite expressions containing mesh variables or coordinates
+cannot be routed through `constants[]`.
 
 ### PETSc DM Errors with Swarms
 

@@ -28,10 +28,20 @@ Underworld3 uses **git tag-based versioning** via `setuptools-scm`. The version 
 ### Stable Release
 
 ```bash
-# On main branch, after all changes merged
+# 1. Write release notes before tagging
+#    Copy the template and fill in:
+cp docs/release-notes/TEMPLATE.md docs/release-notes/v3.1.0.md
+#    Edit v3.1.0.md with highlights, features, fixes, breaking changes
+#    Commit the notes (can be part of the release PR)
+
+# 2. Tag and push — CI creates the GitHub Release with your notes
 git tag -a v3.1.0 -m "Release 3.1.0"
 git push origin v3.1.0
 ```
+
+If you push a tag without a matching `docs/release-notes/vX.Y.Z.md` file,
+CI creates a **draft** release instead — you must add notes and publish
+manually from the GitHub Releases page.
 
 ### Beta/Pre-release
 

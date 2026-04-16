@@ -18,7 +18,7 @@ from typing import Optional
 
 # Configuration
 DEFAULT_LAUNCHER_REPO = "underworldcode/uw3-binder-launcher"
-DEFAULT_LAUNCHER_BRANCH = "uw3-release-candidate"
+DEFAULT_LAUNCHER_BRANCH = "v0.99"
 
 
 def url_encode(s: str) -> str:

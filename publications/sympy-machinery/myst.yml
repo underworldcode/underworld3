@@ -1,0 +1,89 @@
+version: 1
+
+project:
+  title: "Symbolic PDE Assembly in Underworld3: From SymPy Expressions to Parallel Finite Element Solvers"
+  description: >
+    Describes the design philosophy and implementation of the symbolic
+    equation-assembly pipeline in Underworld3 — from user-facing SymPy
+    expressions through JIT compilation to PETSc weak-form callbacks.
+  keywords:
+    - geodynamics
+    - finite elements
+    - symbolic computing
+    - SymPy
+    - PETSc
+    - code generation
+    - Python
+  license: CC-BY-4.0
+  open_access: true
+  bibliography:
+    - references.bib
+  authors:
+    - name: Louis Moresi
+      orcid: 0000-0003-3685-174X
+      corresponding: true
+      affiliations:
+        - anu-rses
+    - name: John Mansour
+      orcid: 0000-0001-5865-1664
+      affiliations:
+        - monash
+    - name: Julian Giordani
+      orcid: 0000-0003-4515-9296
+      affiliations:
+        - usyd
+    - name: Matt Knepley
+      orcid: 0000-0002-2292-0735
+      affiliations:
+        - buffalo
+  affiliations:
+    - id: anu-rses
+      institution: Australian National University
+      department: Research School of Earth Sciences
+      ror: https://ror.org/019wvm592
+      city: Canberra
+      country: Australia
+    - id: monash
+      institution: Monash University
+      department: School of Earth, Atmospheric & Environmental Science
+      city: Melbourne
+      country: Australia
+    - id: usyd
+      institution: University of Sydney
+      city: Sydney
+      country: Australia
+    - id: buffalo
+      institution: University at Buffalo
+      department: Computer Science and Engineering
+      city: Buffalo
+      country: United States
+
+  exports:
+    # Draft / preprint (Typst — fast, no TeX needed)
+    - format: typst
+      template: lapreprint-typst
+      output: exports/paper-preprint.pdf
+
+    # GMD submission (LaTeX — required by Copernicus)
+    - format: pdf
+      template: egu_copernicus
+      journal_name: gmd
+      running_author: "Moresi et al."
+      output: exports/paper-gmd.pdf
+
+    # EarthArXiv preprint
+    - format: pdf
+      template: eartharxiv
+      output: exports/paper-eartharxiv.pdf
+
+    # LaTeX source bundle for arXiv upload
+    - format: tex
+      template: arxiv_two_column
+      output: exports/arxiv-submission.zip
+
+    # Word for collaborators
+    - format: docx
+      output: exports/paper.docx
+
+site:
+  template: article-theme

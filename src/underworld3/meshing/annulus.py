@@ -538,6 +538,10 @@ def Annulus(
 
     new_mesh.boundary_normals = boundary_normals
 
+    # Full annulus: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
+
     return new_mesh
 
 
@@ -1110,6 +1114,10 @@ def AnnulusWithSpokes(
 
     new_mesh.boundary_normals = boundary_normals
 
+    # Full annulus with spokes: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
+
     return new_mesh
 
 
@@ -1392,6 +1400,10 @@ def AnnulusInternalBoundary(
 
     new_mesh.boundary_normals = boundary_normals
 
+    # Full annulus with internal boundary: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
+
     return new_mesh
 
 
@@ -1670,5 +1682,9 @@ def DiscInternalBoundaries(
         Centre = None
 
     new_mesh.boundary_normals = boundary_normals
+
+    # Full disc with internal boundaries: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
 
     return new_mesh
