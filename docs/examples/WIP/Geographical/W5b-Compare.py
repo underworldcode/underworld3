@@ -58,8 +58,8 @@ shared = WorkflowProducts(products_dir=SHARED_DIR / "products")
 run_a = WorkflowProducts(products_dir=Path(f"output/h2ex/res_{RES}/azimuth_{AZIMUTH_A:03d}/products"))
 run_b = WorkflowProducts(products_dir=Path(f"output/h2ex/res_{RES}/azimuth_{AZIMUTH_B:03d}/products"))
 
-print(f"=== Azimuth Comparison: {AZIMUTH_A} vs {AZIMUTH_B} ===\n")
 
+print(f"=== Azimuth Comparison: {AZIMUTH_A} vs {AZIMUTH_B} ===\n")
 # Check both runs exist
 for label, run_store in [("A", run_a), ("B", run_b)]:
     azimuth = AZIMUTH_A if label == "A" else AZIMUTH_B
@@ -288,14 +288,14 @@ if C_a is not None and C_b is not None:
 
     pl.subplot(0, 0)
     pl.add_mesh(clipped, scalars="C_A", cmap="Blues",
-                show_edges=False, clim=[0, 0.25],
+                show_edges=False, clim=[0, 0.5],
                 scalar_bar_args={"title": "C"})
     add_faults(pl, opacity=0.5)
     pl.add_title(f"Accumulation — azimuth {AZIMUTH_A}")
 
     pl.subplot(0, 1)
     pl.add_mesh(clipped, scalars="C_B", cmap="Blues",
-                show_edges=False, clim=[0, 0.25],
+                show_edges=False, clim=[0, 0.5],
                 scalar_bar_args={"title": "C"})
     add_faults(pl, opacity=0.5)
     pl.add_title(f"Accumulation — azimuth {AZIMUTH_B}")

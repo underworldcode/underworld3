@@ -1511,7 +1511,6 @@ class SemiLagrangian(uw_object):
             v_mid_result = uw.function.global_evaluate(
                 self.V_fn,
                 mid_pt_coords,
-                mode="fast",
             )
 
             # CRITICAL: Preserve UnitAwareArray through slicing
@@ -1579,7 +1578,6 @@ class SemiLagrangian(uw_object):
             value_at_end_points = uw.function.global_evaluate(
                 expr_to_evaluate,
                 end_pt_coords,
-                mode="fast",
             )
 
             # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned

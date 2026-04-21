@@ -10,7 +10,7 @@ import underworld3 as uw
 from underworld3.workflows import WorkflowProducts
 
 RES = 28
-AZIMUTHS = [30]  # azimuth 0 already done
+AZIMUTHS = [0, 30]
 
 uw.reset_default_model()
 model = uw.Model()
@@ -152,10 +152,9 @@ for AZIMUTH in AZIMUTHS:
     run.save("darcy_velocity", vd)
     uw.pprint(0, "  W3 checkpointed")
 
-    # --- W4b: Concentration (skip in parallel — DDt global_evaluate bug) ---
-    if False:  # Run serially instead
-        uw.pprint(0, "\n--- W4b: Concentration ---")
-    kappa = uw.expression(f"k_C_{AZIMUTH}", uw.quantity(1e-10, "m**2/s"), "tracer diffusivity")
+    # --- W4b: Concentration ---
+    uw.pprint(0, "\n--- W4b: Concentration ---")
+    kappa = uw.expression(f"k_C_{AZIMUTH}", uw.quantity(1e-11, "m**2/s"), "tracer diffusivity")
     C = uw.discretisation.MeshVariable(f"C_{AZIMUTH}", mesh, 1, degree=1)
     adv = uw.systems.AdvDiffusion(mesh, u_Field=C, V_fn=vd)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
