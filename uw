@@ -42,24 +42,57 @@ get_env() {
     fi
 }
 
+petsc_version_short() {
+    # Read active PETSc version from .petsc-version, or detect from checkout.
+    local ver_file="$SCRIPT_DIR/petsc-custom/.petsc-version"
+    if [ -f "$ver_file" ]; then
+        cat "$ver_file" | tr -d '[:space:]'
+        return
+    fi
+    # Detect from git tag
+    if [ -d "$PETSC_CUSTOM/.git" ]; then
+        local tag
+        tag=$(cd "$PETSC_CUSTOM" && git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -n "$tag" ]; then
+            echo "$tag" | sed -E 's/^v([0-9]+)\.([0-9]+).*/\1\2/'
+            return
+        fi
+    fi
+    echo "324"  # default
+}
+
 petsc_arch_for_env() {
-    # Derive the PETSC_ARCH from the environment name.
-    # Primary AMR envs (amr, amr-runtime, amr-dev) use platform-default MPI.
-    # Override envs (amr-mpich*, amr-openmpi*) force a specific MPI.
+    # Derive the PETSC_ARCH from the environment name and active PETSc version.
+    # Format: petsc-{version}-uw-{mpi}  (e.g. petsc-324-uw-openmpi)
     local env="$1"
+    local ver=$(petsc_version_short)
+    local mpi=""
+
     case "$env" in
-        amr-mpich*)   echo "petsc-4-uw-mpich" ;;
-        amr-openmpi*) echo "petsc-4-uw-openmpi" ;;
+        amr-mpich*)   mpi="mpich" ;;
+        amr-openmpi*) mpi="openmpi" ;;
         amr*)
             # Platform-default MPI
             if [[ "$(uname -s)" == "Darwin" ]]; then
-                echo "petsc-4-uw-openmpi"
+                mpi="openmpi"
             else
-                echo "petsc-4-uw-mpich"
+                mpi="mpich"
             fi
             ;;
-        *)            echo "" ;;  # conda-forge, no custom PETSc
+        *)            echo ""; return ;;  # conda-forge, no custom PETSc
     esac
+
+    # Check for versioned arch first, fall back to legacy unversioned
+    local versioned="petsc-${ver}-uw-${mpi}"
+    local legacy="petsc-4-uw-${mpi}"
+    if [ -d "$PETSC_CUSTOM/${versioned}" ]; then
+        echo "${versioned}"
+    elif [ -d "$PETSC_CUSTOM/${legacy}" ]; then
+        echo "${legacy}"
+    else
+        # No build exists yet — return the versioned name for new builds
+        echo "${versioned}"
+    fi
 }
 
 petsc_built() {
@@ -126,7 +159,7 @@ run_build() {
         # Step 2: Check/build petsc4py
         if ! petsc4py_installed "$env"; then
             echo "  Installing petsc4py for $env..."
-            $PIXI run -e "$env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation || {
+            $PIXI run -e "$env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation --no-cache-dir || {
                 echo -e "${YELLOW}petsc4py build failed${NC}"
                 exit 1
             }
@@ -244,6 +277,60 @@ run_build() {
     echo ""
     echo "Next: ./uw test    (run tests)"
     echo "      ./uw doctor  (check configuration)"
+}
+
+run_petsc_cmd() {
+    local petsc_cmd="${1:-versions}"
+    local arg="$2"
+    case "$petsc_cmd" in
+        versions|list)
+            $PIXI run -e "$(get_env)" "$SCRIPT_DIR/petsc-custom/build-petsc.sh" versions
+            ;;
+        switch)
+            if [ -z "$arg" ]; then
+                echo "Usage: ./uw petsc switch <version-tag>"
+                echo "  e.g.: ./uw petsc switch v3.25.0"
+                exit 1
+            fi
+            $PIXI run -e "$(get_env)" "$SCRIPT_DIR/petsc-custom/build-petsc.sh" checkout "$arg"
+
+            # Nuke stale build artifacts and petsc4py. The next ./uw build's
+            # target-change detection can't fire because the still-installed
+            # petsc4py reports the OLD arch, so we force a full rebuild here.
+            # (run_build already passes --no-cache-dir to pip install . so we
+            # don't need a global pip cache purge — only petsc4py's local-path
+            # install needs its own --no-cache-dir.)
+            echo ""
+            echo "Clearing stale build artifacts for clean rebuild..."
+            rm -rf "$SCRIPT_DIR"/build/lib.* "$SCRIPT_DIR"/build/temp.* "$SCRIPT_DIR"/build/bdist.* 2>/dev/null
+            rm -f "$SCRIPT_DIR/build/.petsc_target"
+            if is_amr_env "$(get_env)"; then
+                echo "Uninstalling old petsc4py (linked to previous PETSc build)..."
+                $PIXI run -e "$(get_env)" pip uninstall -y petsc4py 2>/dev/null || true
+            fi
+
+            echo ""
+            echo "To complete the switch, rebuild PETSc then underworld3:"
+            echo "  ./uw petsc build"
+            echo "  ./uw build"
+            ;;
+        active)
+            local ver=$(petsc_version_short)
+            local arch=$(petsc_arch_for_env "$(get_env)")
+            echo "Active PETSc: ${ver} (arch: ${arch})"
+            ;;
+        build)
+            $PIXI run -e "$(get_env)" "$SCRIPT_DIR/petsc-custom/build-petsc.sh"
+            ;;
+        *)
+            echo "Usage: ./uw petsc [versions|switch <tag>|active|build]"
+            echo ""
+            echo "  versions     List available PETSc builds"
+            echo "  switch <tag> Checkout a PETSc version (e.g. v3.25.0)"
+            echo "  active       Show active PETSc version and arch"
+            echo "  build        Build PETSc for the active version"
+            ;;
+    esac
 }
 
 # Standalone diagnostics (works even if underworld3 not built)
@@ -1483,6 +1570,10 @@ case "${1:-}" in
         rm -rf "$SCRIPT_DIR"/build/lib.* "$SCRIPT_DIR"/build/temp.* "$SCRIPT_DIR"/build/bdist.*
         rm -f "$SCRIPT_DIR/build/.petsc_target"
         echo -e "${GREEN}Done${NC}. Run './uw build' to rebuild."
+        ;;
+    petsc)
+        # PETSc version management: ./uw petsc [versions|switch|active]
+        run_petsc_cmd "$2" "$3"
         ;;
     doctor)
         run_doctor

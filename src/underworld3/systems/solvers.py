@@ -59,6 +59,7 @@ from typing import Optional, Callable, Union
 
 import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
+from underworld3.cython.generic_solvers import SNES_MultiComponent
 from underworld3 import VarType
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import (
@@ -1266,9 +1267,29 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
             _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
 
-            self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
-            self.DFDt._psi_star_projection_solver.smoothing = 0.0
-            self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+            if getattr(self.DFDt, '_psi_star_use_multicomponent', False):
+                # Multi-component projection: solve all components at once.
+                # Only set uw_function on first call — the flux expression
+                # structure is stable; constant values flow through PetscDS.
+                if not getattr(self.DFDt, '_psi_star_projector_initialised', False) or not self.constitutive_model._solver_is_setup:
+                    import sympy
+                    flux = self.constitutive_model.flux
+                    indep = self.DFDt._psi_star_indep_indices
+                    row = sympy.Matrix([[flux[i, j] for (i, j) in indep]])
+                    self.DFDt._psi_star_projection_solver.uw_function = row
+                    self.DFDt._psi_star_projection_solver.smoothing = 0.0
+                    self.DFDt._psi_star_projector_initialised = True
+                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+                # Fan flat result back to psi_star[0] tensor variable
+                for k, (i, j) in enumerate(self.DFDt._psi_star_indep_indices):
+                    vals = self.DFDt._psi_star_flat_var.array[:, 0, k]
+                    self.DFDt.psi_star[0].array[:, i, j] = vals
+                    if i != j:
+                        self.DFDt.psi_star[0].array[:, j, i] = vals
+            else:
+                self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
+                self.DFDt._psi_star_projection_solver.smoothing = 0.0
+                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
 
             for i in range(self.DFDt.order - 1, 0, -1):
                 if i == 1:
@@ -2202,6 +2223,105 @@ class SNES_Tensor_Projection(SNES_Projection):
         """Set the scalar component function for current tensor element."""
         self.is_setup = False
         self._uw_scalar_function = user_uw_function
+
+
+class SNES_MultiComponent_Projection(SNES_MultiComponent):
+    r"""
+    Multi-component projection solver.
+
+    Projects an N-component row-matrix expression onto an N-component
+    mesh variable in a **single** SNES solve, sharing one DM across all
+    components. Replaces the per-component cycling used by
+    :class:`SNES_Tensor_Projection`, which tears down and rebuilds the
+    PETSc DM on every inner iteration.
+
+    The projection is block-diagonal across components: each component
+    satisfies the scalar problem
+
+    .. math::
+
+        -\nabla \cdot \left[ \alpha \nabla u_k \right]
+        - \left[ u_k - \tilde f_k \right] = 0
+
+    with no cross-component coupling. Setting :math:`\alpha = 0` gives a
+    pure L2 projection per component.
+
+    Parameters
+    ----------
+    mesh : Mesh
+    u_Field : MeshVariable, optional
+        Target ``(1, n_components)`` MATRIX variable. If ``None``, one is
+        created.
+    n_components : int, optional
+        Number of scalar components; required if ``u_Field`` is ``None``.
+    degree : int, default=2
+    verbose : bool, default=False
+
+    See Also
+    --------
+    SNES_Projection : Scalar projection (Nc=1).
+    SNES_Tensor_Projection : Legacy per-component cycling projector.
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable = None,
+        n_components: int = None,
+        degree=2,
+        verbose=False,
+    ):
+        super().__init__(
+            mesh,
+            u_Field=u_Field,
+            n_components=n_components,
+            degree=degree,
+            verbose=verbose,
+        )
+
+        self.is_setup = False
+        self._smoothing = sympify(0)
+        self._uw_weighting_function = sympify(1)
+        self._uw_function = sympy.zeros(1, self._n_components)
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(self.Unknowns)
+
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        "Per-component projection misfit (row matrix shape (1, Nc)).",
+    )
+
+    F1 = Template(
+        r"\mathbf{F}_1 \left( \mathbf{u} \right)",
+        lambda self: self.smoothing * self.Unknowns.L,
+        "Per-component block-diagonal Laplacian smoothing (shape (Nc, dim)).",
+    )
+
+    uw_function = SymbolicProperty(
+        matrix_wrap=True,
+        doc="Row matrix (1, n_components) of expressions to project.",
+    )
+
+    @property
+    def smoothing(self):
+        """Smoothing regularisation parameter."""
+        return self._smoothing
+
+    @smoothing.setter
+    def smoothing(self, value):
+        self.is_setup = False
+        self._smoothing = sympify(value)
+
+    @property
+    def uw_weighting_function(self):
+        """Weighting function applied during projection."""
+        return self._uw_weighting_function
+
+    @uw_weighting_function.setter
+    def uw_weighting_function(self, value):
+        self.is_setup = False
+        self._uw_weighting_function = value
 
 
 # #################################################

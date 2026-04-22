@@ -490,7 +490,7 @@ def debugging_text_bd(randstr, fn, fn_type, eqn_no):
     return debug_str
 
 
-_GextResult = namedtuple("GextResult", ["ptrobj", "fn_dicts", "constants_manifest"])
+_GextResult = namedtuple("GextResult", ["ptrobj", "fn_dicts", "constants_manifest", "cache_key"])
 
 
 @timing.routine_timer_decorator
@@ -587,6 +587,7 @@ def getext(
             ptrobj,
             extn_fn_dict(i_res, i_jac, i_ebc, i_bd_res, i_bd_jac),
             constants_manifest,
+            cache_key=jitname,
         )
 
     # ── Per-function cache: check which individual functions are cached ──
@@ -725,6 +726,7 @@ def getext(
         result_ptr,
         extn_fn_dict(i_res, i_jac, i_ebc, i_bd_res, i_bd_jac),
         constants_manifest,
+        cache_key=jitname,
     )
 
 

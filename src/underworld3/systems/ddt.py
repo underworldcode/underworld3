@@ -746,19 +746,45 @@ class Eulerian(uw_object):
                 self.mesh, self.psi_star[0], verbose=False
             )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
-            self._WorkVar = uw.discretisation.MeshVariable(
-                f"W_star_Eulerian_{self.instance_number}",
+            import math
+            dim = self.mesh.dim
+            if self.vtype == uw.VarType.SYM_TENSOR:
+                Nc = math.comb(dim + 1, 2)  # 3 in 2D, 6 in 3D
+                self._psi_star_indep_indices = [
+                    (i, j) for i in range(dim) for j in range(i, dim)
+                ]
+            else:
+                Nc = dim * dim
+                self._psi_star_indep_indices = [
+                    (i, j) for i in range(dim) for j in range(dim)
+                ]
+
+            self._psi_star_flat_var = uw.discretisation.MeshVariable(
+                f"psi_star_flat_{self.instance_number}",
                 self.mesh,
-                vtype=uw.VarType.SCALAR,
+                (1, Nc),
+                vtype=uw.VarType.MATRIX,
                 degree=self.degree,
                 continuous=self.continuous,
-                varsymbol=r"W^{*}",
+                varsymbol=r"{\psi^{*}_{\mathrm{flat}}}",
             )
-            self._psi_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
-                self.mesh, self.psi_star[0], self._WorkVar, verbose=False
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh,
+                u_Field=self._psi_star_flat_var,
+                n_components=Nc,
+                degree=self.degree,
+                verbose=False,
             )
+            self._psi_star_use_multicomponent = True
 
-        self._psi_star_projection_solver.uw_function = self.psi_fn
+        if getattr(self, '_psi_star_use_multicomponent', False):
+            # Flatten tensor to (1, Nc) row for multicomponent solver
+            import sympy
+            indep = self._psi_star_indep_indices
+            row = sympy.Matrix([[self.psi_fn[i, j] for (i, j) in indep]])
+            self._psi_star_projection_solver.uw_function = row
+        else:
+            self._psi_star_projection_solver.uw_function = self.psi_fn
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
 
@@ -1120,22 +1146,48 @@ class SemiLagrangian(uw_object):
             )
 
         elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
-            self._WorkVarTP = uw.discretisation.MeshVariable(
-                f"W_star_slcn_{self.instance_number}",
+            import math
+            dim = self.mesh.dim
+            if vtype == uw.VarType.SYM_TENSOR:
+                Nc = math.comb(dim + 1, 2)
+                self._psi_star_indep_indices = [
+                    (i, j) for i in range(dim) for j in range(i, dim)
+                ]
+            else:
+                Nc = dim * dim
+                self._psi_star_indep_indices = [
+                    (i, j) for i in range(dim) for j in range(dim)
+                ]
+
+            self._psi_star_flat_var = uw.discretisation.MeshVariable(
+                f"psi_star_flat_slcn_{self.instance_number}",
                 self.mesh,
-                vtype=uw.VarType.SCALAR,
+                (1, Nc),
+                vtype=uw.VarType.MATRIX,
                 degree=degree,
                 continuous=continuous,
-                varsymbol=r"W^{*}",
+                varsymbol=r"{\psi^{*}_{\mathrm{flat}}}",
             )
-            self._psi_star_projection_solver = uw.systems.solvers.SNES_Tensor_Projection(
-                self.mesh, self.psi_star[0], self._WorkVarTP, verbose=False
+            self._psi_star_projection_solver = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh,
+                u_Field=self._psi_star_flat_var,
+                n_components=Nc,
+                degree=degree,
+                verbose=False,
             )
+            self._psi_star_use_multicomponent = True
 
         # We should find a way to add natural bcs here
         # (self.Unknowns.u carried as a symbol from solver to solver)
 
-        self._psi_star_projection_solver.uw_function = self._workVar.sym
+        if getattr(self, '_psi_star_use_multicomponent', False):
+            import sympy
+            indep = self._psi_star_indep_indices
+            fn = self._workVar.sym
+            row = sympy.Matrix([[fn[i, j] for (i, j) in indep]])
+            self._psi_star_projection_solver.uw_function = row
+        else:
+            self._psi_star_projection_solver.uw_function = self._workVar.sym
         self._psi_star_projection_solver.bcs = bcs
         self._psi_star_projection_solver.smoothing = smoothing
 
@@ -1154,7 +1206,13 @@ class SemiLagrangian(uw_object):
     def psi_fn(self, new_fn):
         """Set the tracked expression."""
         self._psi_fn = new_fn
-        self._psi_star_projection_solver.uw_function = self._psi_fn
+        if getattr(self, '_psi_star_use_multicomponent', False):
+            import sympy
+            indep = self._psi_star_indep_indices
+            row = sympy.Matrix([[new_fn[i, j] for (i, j) in indep]])
+            self._psi_star_projection_solver.uw_function = row
+        else:
+            self._psi_star_projection_solver.uw_function = self._psi_fn
         return
 
     def _object_viewer(self):
@@ -1202,9 +1260,23 @@ class SemiLagrangian(uw_object):
                 eval_result = UnitAwareArray(eval_result, units=psi_units)
             self.psi_star[0].array[...] = eval_result
         except Exception:
-            self._psi_star_projection_solver.uw_function = self.psi_fn
-            self._psi_star_projection_solver.smoothing = 0.0
-            self._psi_star_projection_solver.solve()
+            if getattr(self, '_psi_star_use_multicomponent', False):
+                import sympy
+                indep = self._psi_star_indep_indices
+                row = sympy.Matrix([[self.psi_fn[i, j] for (i, j) in indep]])
+                self._psi_star_projection_solver.uw_function = row
+                self._psi_star_projection_solver.smoothing = 0.0
+                self._psi_star_projection_solver.solve()
+                # Fan out flat result to tensor psi_star[0]
+                for k, (i, j) in enumerate(indep):
+                    vals = self._psi_star_flat_var.array[:, 0, k]
+                    self.psi_star[0].array[:, i, j] = vals
+                    if i != j:
+                        self.psi_star[0].array[:, j, i] = vals
+            else:
+                self._psi_star_projection_solver.uw_function = self.psi_fn
+                self._psi_star_projection_solver.smoothing = 0.0
+                self._psi_star_projection_solver.solve()
 
         # Copy to all other history slots
         for i in range(1, self.order):

@@ -165,6 +165,9 @@ cmake = ">=3.31,<4"
 make = ">=4.4,<5"
 mpi4py = ">=4,<5"
 
+[feature.amr.activation]
+scripts = ["petsc-custom/activate-petsc-arch.sh"]
+
 [feature.amr.activation.env]
 PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
 
@@ -173,15 +176,9 @@ openmpi = ">=5.0,<6"
 hdf5 = { version = ">=1.14,<2", build = "*openmpi*" }
 h5py = { version = ">=3.12,<4", build = "*openmpi*" }
 
-[feature.amr.target.osx-arm64.activation.env]
-PETSC_ARCH = "petsc-4-uw-openmpi"
-
 [feature.amr.target.linux-64.dependencies]
 hdf5 = { version = ">=1.14,<2", build = "*mpich*" }
 h5py = { version = ">=3.12,<4", build = "*mpich*" }
-
-[feature.amr.target.linux-64.activation.env]
-PETSC_ARCH = "petsc-4-uw-mpich"
 
 [feature.amr.tasks]
 petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
@@ -202,9 +199,11 @@ mpi4py = ">=4,<5"
 hdf5 = { version = ">=1.14,<2", build = "*mpich*" }
 h5py = { version = ">=3.12,<4", build = "*mpich*" }
 
+[feature.amr-mpich.activation]
+scripts = ["petsc-custom/activate-petsc-arch.sh"]
+
 [feature.amr-mpich.activation.env]
 PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
-PETSC_ARCH = "petsc-4-uw-mpich"
 
 [feature.amr-mpich.tasks]
 petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
@@ -221,9 +220,11 @@ mpi4py = ">=4,<5"
 hdf5 = { version = ">=1.14,<2", build = "*openmpi*" }
 h5py = { version = ">=3.12,<4", build = "*openmpi*" }
 
+[feature.amr-openmpi.activation]
+scripts = ["petsc-custom/activate-petsc-arch.sh"]
+
 [feature.amr-openmpi.activation.env]
 PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
-PETSC_ARCH = "petsc-4-uw-openmpi"
 
 [feature.amr-openmpi.tasks]
 petsc-local-build = { cmd = "./build-petsc.sh", cwd = "petsc-custom" }
@@ -236,19 +237,26 @@ petsc-local-clean = { cmd = "./build-petsc.sh clean", cwd = "petsc-custom" }
 # Uses the same conda deps as amr but points to a separate PETSC_ARCH
 # so the optimised build is untouched.
 #
-# Setup:
+# PETSC_ARCH is set dynamically by petsc-custom/activate-petsc-arch.sh
+# and resolves to:  petsc-<ver>-uw-<mpi>-debug
+# where <ver> comes from petsc-custom/.petsc-version and <mpi> follows
+# the platform default (openmpi on macOS, mpich on Linux).
+#
+# Setup (inside a pixi shell -e amr-debug, so $PETSC_ARCH is already set):
 #   cd petsc-custom/petsc
 #   pixi run -e amr-debug python3 ./configure \
-#       --with-petsc-arch=petsc-4-uw-openmpi-debug --with-debugging=1 \
+#       --with-petsc-arch="$PETSC_ARCH" --with-debugging=1 \
 #       --with-mpi-dir="$CONDA_PREFIX" --with-hdf5=0 \
 #       --download-mpich=0 --download-openmpi=0 --download-mpi4py=0 \
 #       --with-petsc4py=0 --with-x=0 --with-pragmatic=0 --with-slepc=0 \
 #       "--COPTFLAGS=-g -O0" "--CXXOPTFLAGS=-g -O0" "--FOPTFLAGS=-g -O0"
-#   make PETSC_DIR=$(pwd) PETSC_ARCH=petsc-4-uw-openmpi-debug all
+#   make PETSC_DIR=$(pwd) PETSC_ARCH="$PETSC_ARCH" all
+
+[feature.amr-debug.activation]
+scripts = ["petsc-custom/activate-petsc-arch.sh"]
 
 [feature.amr-debug.activation.env]
 PETSC_DIR = "$PIXI_PROJECT_ROOT/petsc-custom/petsc"
-PETSC_ARCH = "petsc-4-uw-openmpi-debug"
 
 # ============================================
 # HPC CLUSTER FEATURE

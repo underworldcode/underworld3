@@ -572,10 +572,13 @@ class Constitutive_Model(uw_object):
         self._solver_is_setup = False
         self._is_setup = False
 
-        # Propagate is_setup flag to solver if we have a reference
+        # Propagate invalidation to solver if we have a reference.
+        # A constitutive parameter change affects the F1 pointwise function
+        # only — the DM, fields, and BCs are unchanged. The solver's
+        # _build() can swap functions in place without DM teardown.
         if hasattr(self, "Parameters") and hasattr(self.Parameters, "_solver"):
             if self.Parameters._solver is not None:
-                self.Parameters._solver.is_setup = False
+                self.Parameters._solver._needs_function_rewire = True
 
         return
 

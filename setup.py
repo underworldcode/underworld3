@@ -76,35 +76,34 @@ def configure():
     LIBRARY_DIRS = []
     LIBRARIES = []
 
+    import os
+
     PETSC_DIR = ""
     PETSC_ARCH = ""
 
-    # try get PETSC_DIR from petsc pip installation
-    try:
-        import petsc
+    # Priority 1: Environment variables (set by pixi activation for custom builds)
+    if os.environ.get("PETSC_DIR") and os.path.exists(os.environ["PETSC_DIR"]):
+        PETSC_DIR = os.environ["PETSC_DIR"]
+        PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
 
-        PETSC_DIR = petsc.get_petsc_dir()
-    except:
-        pass
+    # Priority 2: petsc4py configuration (matches the installed petsc4py)
+    if not PETSC_DIR or not os.path.exists(PETSC_DIR):
+        config = petsc4py.get_config()
+        PETSC_DIR = config["PETSC_DIR"]
+        PETSC_ARCH = config.get("PETSC_ARCH", "")
 
-    # PETSc
-    import os
+    # Priority 3: conda petsc package
+    if not PETSC_DIR or not os.path.exists(PETSC_DIR):
+        try:
+            import petsc
+            PETSC_DIR = petsc.get_petsc_dir()
+        except ImportError:
+            pass
 
-    if not os.path.exists(PETSC_DIR):
-        print(f"PETSC_INFO from petsc4py - {petsc4py.get_config()}")
-        PETSC_DIR = petsc4py.get_config()["PETSC_DIR"]
-        PETSC_ARCH = petsc4py.get_config()["PETSC_ARCH"]
-
-    # It is preferable to use the petsc4py paths to the
-    # petsc libraries for consistency but the pip installation
-    # of PETSc sometimes points to the temporary setup up path
-
-    if not os.path.exists(PETSC_DIR):
-        print(f"PETSC_DIR {PETSC_DIR} is bad - trying another ...")
-
-        if os.environ.get("CONDA_PREFIX") and not os.environ.get("PETSC_DIR"):
+    # Priority 4: conda prefix fallback
+    if not PETSC_DIR or not os.path.exists(PETSC_DIR):
+        if os.environ.get("CONDA_PREFIX"):
             import sys
-
             py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
             PETSC_DIR = os.path.join(
                 os.environ["CONDA_PREFIX"],
@@ -112,10 +111,7 @@ def configure():
                 "python" + py_version,
                 "site-packages",
                 "petsc",
-            )  # symlink to latest python
-            PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
-        else:
-            PETSC_DIR = os.environ["PETSC_DIR"]
+            )
             PETSC_ARCH = os.environ.get("PETSC_ARCH", "")
 
     print(f"Using PETSc:")

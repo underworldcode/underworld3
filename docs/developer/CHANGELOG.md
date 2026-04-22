@@ -4,6 +4,31 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ---
 
+## 2026 Q2 (April – June)
+
+### Multi-Component Projection Solver (April 2026)
+
+**New `SNES_MultiComponent_Projection` solver** that projects N scalar components in a single PETSc SNES solve sharing one DM, replacing the per-component cycling in `SNES_Tensor_Projection` (which tore down and rebuilt the DM on each inner iteration). The underlying `SNES_MultiComponent` Cython base decouples the FE component count from `mesh.dim` — PETSc's pointwise callback interface accepts any DOF count per node; the new class exposes that directly.
+
+- Wired into `SNES_VE_Stokes` via `_setup_tau_projection` for the symmetric-tensor tau projection (Nc=3 in 2D, Nc=6 in 3D). User-facing tau variable remains a `SYM_TENSOR` so downstream `.array[:, i, j]` reads are unchanged; a flat `(1, Nc)` MATRIX drives the actual solve and results fan out after each solve.
+- DM build count scales with outer solves rather than `Nc × outer_solves` — the dominant cost in `SNES_Tensor_Projection` on the VE square-wave benchmark.
+- 10 validation tests: `Nc=1` agrees with `SNES_Projection`, `Nc=3` symmetric-tensor agrees with `SNES_Tensor_Projection`, `Nc=4` full-tensor agreement, DM-rebuild count invariant, smoothing-parametrised agreement (1e-4, 1e-2, 1.0).
+
+**Files**: `cython/petsc_generic_snes_solvers.pyx` (new `SNES_MultiComponent` class, VE tau wiring), `systems/solvers.py` (new `SNES_MultiComponent_Projection`), `systems/__init__.py` (export), `tests/test_multicomponent_projection.py`.
+
+### PETSc Pointwise Jacobian Layout Fix (April 2026)
+
+**Documented PETSc's `[fc, gc, df, dg]` flat-index convention** for pointwise Jacobian arrays and fixed a latent layout bug in `SNES_Vector`. The `SNES_Vector` permutations `(0, 3, 1, 2)` for g3 and `(2, 1, 0)` for g1/g2 did not match PETSc's element-assembly index order (fe.c:2639–2790) — the bug was hidden by the trial-side symmetry of every in-repo consumer's F1 (strain-rate-based smoothing, deviatoric Stokes stress, divergence penalty).
+
+- Migrated `SNES_Vector._setup_pointwise_functions` (main residual and natural-BC Jacobian paths) from `derive_by_array` + `permutedims` to explicit nested-loop construction that writes directly into PETSc's expected row-major 2D layout. Same pattern as the new `SNES_MultiComponent`.
+- Regression test with `F1 = smoothing * Unknowns.L` (raw gradient, not symmetrised) guards against the layout bug returning: at `smoothing > 0`, identical targets must give identical components, and results must match `SNES_MultiComponent_Projection` to rel-L2 ≤ 1e-8.
+- Audit of other solvers: `SNES_Scalar` trivially correct (Nc=1); `SNES_Stokes_SaddlePt` and `SNES_NavierStokes` already use the correct `(0, 2, 1, 3)` permutation.
+- New developer documentation: `docs/developer/subsystems/petsc-jacobian-layout.md` captures the convention, the sympy-to-PETSc axis mapping, and a checklist for new solvers (identical-targets + non-zero-smoothing validation tests required).
+
+**Files**: `cython/petsc_generic_snes_solvers.pyx` (`SNES_Vector` migration), `tests/test_snes_vector_asymmetric_jacobian.py`, `docs/developer/subsystems/petsc-jacobian-layout.md`, `docs/developer/index.md` (toctree).
+
+---
+
 ## 2026 Q1 (January – March)
 
 ### v3.0.0 Release (March 2026)

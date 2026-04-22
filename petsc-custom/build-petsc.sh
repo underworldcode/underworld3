@@ -37,6 +37,29 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PETSC_DIR="${SCRIPT_DIR}/petsc"
+VERSION_FILE="${SCRIPT_DIR}/.petsc-version"
+
+# ── PETSc version detection ──────────────────────────────────────────────────
+# Read version from .petsc-version file, or detect from the git checkout.
+# Returns short form like "324" for v3.24.x or "325" for v3.25.x.
+
+petsc_version_short() {
+    local ver=""
+    if [ -f "${VERSION_FILE}" ]; then
+        ver=$(cat "${VERSION_FILE}" | tr -d '[:space:]')
+    fi
+    if [ -z "${ver}" ] && [ -d "${PETSC_DIR}/.git" ]; then
+        # Detect from git tag: v3.24.2 → 324
+        local tag
+        tag=$(cd "${PETSC_DIR}" && git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -n "${tag}" ]; then
+            ver=$(echo "${tag}" | sed -E 's/^v([0-9]+)\.([0-9]+).*/\1\2/')
+        fi
+    fi
+    echo "${ver:-324}"  # default to 324 if detection fails
+}
+
+PETSC_VER=$(petsc_version_short)
 
 # ── Cluster detection ─────────────────────────────────────────────────────────
 detect_cluster() {
@@ -91,7 +114,7 @@ EOF
         }
 
         MPI_IMPL=$(_detect_local_mpi)
-        PETSC_ARCH="petsc-4-uw-${MPI_IMPL}"
+        PETSC_ARCH="petsc-${PETSC_VER}-uw-${MPI_IMPL}"
         ;;
 
     kaiju)
@@ -107,7 +130,7 @@ EOF
         fi
         MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
         MPI_IMPL="openmpi"
-        PETSC_ARCH="petsc-4-uw-openmpi"
+        PETSC_ARCH="petsc-${PETSC_VER}-uw-openmpi"
         ;;
 
     gadi)
@@ -128,7 +151,7 @@ EOF
         fi
         MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
         MPI_IMPL="openmpi"
-        PETSC_ARCH="petsc-4-uw-openmpi"
+        PETSC_ARCH="petsc-${PETSC_VER}-uw-openmpi"
         ;;
 
     *)
@@ -387,27 +410,118 @@ clean_all() {
     fi
 }
 
+checkout_version() {
+    # Checkout a specific PETSc version tag and update .petsc-version
+    local tag="$1"
+    if [ -z "${tag}" ]; then
+        echo "Usage: $0 checkout <version-tag>"
+        echo "  e.g.: $0 checkout v3.25.0"
+        echo ""
+        echo "Available tags:"
+        cd "${PETSC_DIR}" && git tag --list 'v3.2[0-9]*' | sort -V | tail -10
+        exit 1
+    fi
+
+    cd "${PETSC_DIR}"
+
+    # Fetch latest tags
+    git fetch --tags 2>/dev/null
+
+    if ! git rev-parse "${tag}" &>/dev/null; then
+        echo "Error: tag '${tag}' not found."
+        echo "Available tags:"
+        git tag --list 'v3.2[0-9]*' | sort -V | tail -10
+        exit 1
+    fi
+
+    echo "Checking out PETSc ${tag}..."
+    git checkout "${tag}"
+
+    # Update .petsc-version file
+    local ver_short
+    ver_short=$(echo "${tag}" | sed -E 's/^v([0-9]+)\.([0-9]+).*/\1\2/')
+    echo "${ver_short}" > "${VERSION_FILE}"
+    echo "Active PETSc version: ${ver_short} (${tag})"
+    echo "  Stored in: ${VERSION_FILE}"
+
+    # Check if a build exists for this version
+    local new_arch="petsc-${ver_short}-uw-${MPI_IMPL}"
+    if [ -d "${PETSC_DIR}/${new_arch}/lib" ]; then
+        echo "  Existing build found: ${new_arch}"
+        echo "  Run: ./uw build  (to rebuild petsc4py + UW3)"
+    else
+        echo "  No build for ${new_arch} yet."
+        echo "  Run: pixi run -e <env> ./petsc-custom/build-petsc.sh"
+    fi
+}
+
+list_versions() {
+    echo "PETSc version builds:"
+    echo ""
+    local active_ver
+    active_ver=$(petsc_version_short)
+    for arch_dir in "${PETSC_DIR}"/petsc-*-uw-*/; do
+        [ -d "${arch_dir}" ] || continue
+        local arch_name=$(basename "${arch_dir}")
+        local marker=""
+        local style=""
+
+        # Classify: versioned (petsc-324-uw-*) vs legacy (petsc-4-uw-*)
+        if echo "${arch_name}" | grep -qE '^petsc-[0-9]{3,}-uw-'; then
+            # Versioned arch: petsc-324-uw-openmpi → 324
+            local arch_ver=$(echo "${arch_name}" | sed -E 's/^petsc-([0-9]+)-uw-.*/\1/')
+            if [ "${arch_ver}" = "${active_ver}" ]; then
+                marker=" (active)"
+            fi
+        else
+            style="  [legacy]"
+        fi
+
+        local has_lib=""
+        if [ -f "${arch_dir}/lib/libpetsc.dylib" ] || [ -f "${arch_dir}/lib/libpetsc.so" ]; then
+            has_lib="  [built]"
+        else
+            has_lib="  [incomplete]"
+        fi
+        echo "  ${arch_name}${has_lib}${style}${marker}"
+    done
+    echo ""
+    if [ -d "${PETSC_DIR}/.git" ]; then
+        local tag
+        tag=$(cd "${PETSC_DIR}" && git describe --tags --abbrev=0 2>/dev/null || echo "unknown")
+        echo "Source checkout: ${tag}"
+    fi
+    echo "Active version: ${active_ver} (from ${VERSION_FILE})"
+}
+
 show_help() {
     echo "Usage: $0 [command]"
     echo ""
     echo "Cluster: ${CLUSTER}  (override: export UW_CLUSTER=local|kaiju|gadi)"
-    echo "PETSC_ARCH: ${PETSC_ARCH}"
+    echo "PETSC_ARCH: ${PETSC_ARCH}  (version: ${PETSC_VER})"
     echo ""
     echo "Commands:"
-    echo "  (none)    Full build: clone, patch, configure, build"
-    [ "${CLUSTER}" = "local" ] && echo "            (local: also runs petsc4py separately)"
-    echo "  clone     Clone PETSc repository"
-    echo "  patch     Apply UW3 patches to PETSc source"
-    echo "  configure Configure PETSc with AMR tools"
-    echo "  build     Build PETSc"
-    echo "  test      Run PETSc tests"
-    echo "  petsc4py  Build and install petsc4py (local only)"
-    echo "  clean     Remove build for current arch (${PETSC_ARCH})"
-    echo "  clean-all Remove entire PETSc directory (all builds)"
-    echo "  help      Show this help"
+    echo "  (none)      Full build: clone, patch, configure, build"
+    [ "${CLUSTER}" = "local" ] && echo "              (local: also runs petsc4py separately)"
+    echo "  clone       Clone PETSc repository"
+    echo "  checkout V  Checkout PETSc version tag (e.g. v3.25.0) and set active"
+    echo "  patch       Apply UW3 patches to PETSc source"
+    echo "  configure   Configure PETSc with AMR tools"
+    echo "  build       Build PETSc"
+    echo "  test        Run PETSc tests"
+    echo "  petsc4py    Build and install petsc4py (local only)"
+    echo "  versions    List available PETSc builds"
+    echo "  clean       Remove build for current arch (${PETSC_ARCH})"
+    echo "  clean-all   Remove entire PETSc directory (all builds)"
+    echo "  help        Show this help"
     if [ "${CLUSTER}" = "local" ]; then
         echo ""
-        echo "MPICH and OpenMPI builds co-exist. To build both:"
+        echo "Version switching:"
+        echo "  $0 checkout v3.25.0   # switch source to 3.25.0"
+        echo "  $0                     # build (creates petsc-325-uw-openmpi)"
+        echo "  $0 checkout v3.24.2   # switch back (existing build reused)"
+        echo ""
+        echo "MPI variants co-exist. To build both:"
         echo "  pixi run -e amr         ./petsc-custom/build-petsc.sh"
         echo "  pixi run -e amr-openmpi ./petsc-custom/build-petsc.sh"
     fi
@@ -434,11 +548,13 @@ case "${1:-all}" in
         echo "=========================================="
         ;;
     clone)     clone_petsc ;;
+    checkout)  checkout_version "$2" ;;
     patch)     apply_patches ;;
     configure) configure_petsc ;;
     build)     build_petsc ;;
     test)      test_petsc ;;
     petsc4py)  build_petsc4py ;;
+    versions)  list_versions ;;
     clean)     clean_petsc ;;
     clean-all) clean_all ;;
     help|--help|-h) show_help ;;
