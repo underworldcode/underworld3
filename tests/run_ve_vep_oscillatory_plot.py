@@ -78,7 +78,7 @@ def run_oscillatory(order, n_steps, dt, omega, V0, t0, tau_y=None):
         time_phys += dt
         V_bc.sym = V0 * np.sin(omega * time_phys)
 
-        stokes.solve(zero_init_guess=False, evalf=False)
+        stokes.solve(zero_init_guess=False, timestep=dt, evalf=False)
 
         val = uw.function.evaluate(stokes.tau.sym[0, 1], centre)
         sigma_xy = float(val.flatten()[0])
