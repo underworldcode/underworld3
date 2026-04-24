@@ -642,8 +642,14 @@ class MathematicalMixin:
 
     def __getattr__(self, name):
         """Enhanced method delegation with signature handling."""
-        # Prevent recursion if _validate_sym is being accessed
-        if name == "_validate_sym" or name.startswith("_"):
+        # Prevent recursion. "sym" is guarded because _validate_sym below calls
+        # self.sym — if the sym @property getter raises AttributeError (e.g.
+        # accessing internal state not yet set during __init__), Python falls
+        # back to __getattr__, which re-enters _validate_sym and loops. Names
+        # starting with "_" are guarded so internal attribute probing (e.g.
+        # hasattr checks during early init) fails fast rather than through the
+        # sym-delegation path.
+        if name in ("_validate_sym", "sym") or name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
         try:
