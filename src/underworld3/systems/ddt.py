@@ -1285,6 +1285,15 @@ class SemiLagrangian(uw_object):
 
         if self._psi_snapshot is None:
             ps0 = self.psi_star[0]
+            # NOTE: this currently registers a persistent MeshVariable in the
+            # mesh DM, which is overkill for a transient buffer that's only
+            # read by this DDt's projection.  A future improvement would be
+            # a transient/scratch-variable mechanism (likely backed by
+            # PETSc's auxiliary Vec machinery — already used elsewhere in
+            # the codebase via DMSetAuxiliaryVec_UW) so the snapshot doesn't
+            # accumulate in the DM across DDt creations.  See:
+            # docs/developer/ai-notes/historical-notes.md for the
+            # variable-deletion limitation context.
             self._psi_snapshot = uw.discretisation.MeshVariable(
                 f"psi_snapshot_{self.instance_number}",
                 self.mesh,
@@ -1293,9 +1302,9 @@ class SemiLagrangian(uw_object):
                 degree=ps0.degree,
                 continuous=ps0.continuous,
             )
-            # Initialise psi_snapshot.array to current psi_star[0].array so
-            # the source evaluates consistently before the first refresh.
-            self._psi_snapshot.array[...] = ps0.array[...]
+            # Initialise psi_snapshot's data to current psi_star[0]'s data
+            # so the source evaluates consistently before the first refresh.
+            self._psi_snapshot.data[...] = ps0.data[...]
 
         self._psi_snapshot_enabled = True
 
@@ -1435,10 +1444,14 @@ class SemiLagrangian(uw_object):
 
         # Refresh the source-snapshot variable so the projection's source
         # field captures psi_star[0]'s state from BEFORE this step's solve.
-        # This is the per-step memcpy that keeps the snapshot machinery
-        # aligned with psi_star[0] without recompiling the projection.
+        # Per-step memcpy keeps the snapshot machinery aligned with
+        # psi_star[0] without recompiling the projection.  Routes through
+        # ``.data`` rather than ``.array`` to skip unit conversion (both
+        # variables already live in non-dimensional space) while keeping
+        # the callback sync that pushes values into the underlying PETSc
+        # local Vec.
         if self._psi_snapshot_enabled and self._psi_snapshot is not None:
-            self._psi_snapshot.array[...] = self.psi_star[0].array[...]
+            self._psi_snapshot.data[...] = self.psi_star[0].data[...]
 
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
