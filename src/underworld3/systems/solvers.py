@@ -505,6 +505,7 @@ class SNES_Darcy(SNES_Scalar):
         timestep: float = None,
         verbose: bool = False,
         _force_setup: bool = False,
+        divergence_retries: int = 0,
     ):
         r"""Solve the Darcy flow system.
 
@@ -521,6 +522,9 @@ class SNES_Darcy(SNES_Scalar):
             If True, print solver progress information.
         _force_setup : bool, optional
             Force re-setup of solver even if already configured.
+        divergence_retries : int, optional
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
 
         Notes
         -----
@@ -535,7 +539,8 @@ class SNES_Darcy(SNES_Scalar):
 
         # Solve pressure
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
         # Now solve flow field: v = -flux = -K(grad(h) - s)
 
@@ -770,6 +775,7 @@ class SNES_TransientDarcy(SNES_Darcy):
         timestep=None,
         _force_setup: bool = False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         r"""
         Solve the transient Darcy system for one timestep.
@@ -784,6 +790,9 @@ class SNES_TransientDarcy(SNES_Darcy):
             Force re-setup of solver.
         verbose : bool, optional
             Print solver progress.
+        divergence_retries : int, optional
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep
@@ -802,7 +811,8 @@ class SNES_TransientDarcy(SNES_Darcy):
         self.DFDt.update_pre_solve(timestep, verbose=verbose)
 
         # Solve PDE (bypass SNES_Darcy.solve to avoid double setup/projection)
-        SNES_Scalar.solve(self, zero_init_guess, _force_setup)
+        SNES_Scalar.solve(self, zero_init_guess, _force_setup,
+                          divergence_retries=divergence_retries)
 
         # Invalidate cached data views
         target_var = getattr(self.u, "_base_var", self.u)
@@ -1174,6 +1184,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         evalf=False,
         order=None,
         picard: int = 0,
+        divergence_retries: int = 0,
     ):
         """Solve the Stokes system, with optional viscoelastic stress history.
 
@@ -1199,6 +1210,15 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             Number of Picard iterations before switching to Newton.
             Picard uses a simplified Jacobian and can help convergence
             for strongly nonlinear problems like VEP at yield onset.
+        divergence_retries : int, default=0
+            If SNES returns a DIVERGED reason after the main solve, re-call
+            the underlying Newton up to this many times with a warm start
+            (``zero_init_guess=False``) to try to rescue. Each retry uses
+            the just-computed iterate plus the freshly-advected stress
+            history, which is often enough for VEP at yield onset (Min/softmin
+            kinks) to step off a bad Newton iterate. ``0`` preserves legacy
+            behaviour (divergence is terminal). Typical useful value is 1.
+            Only applies in the VE/VEP branch (``DFDt is not None``).
         """
 
         has_stress_history = self.Unknowns.DFDt is not None
@@ -1257,6 +1277,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 _force_setup=_force_setup,
                 verbose=verbose,
                 picard=picard,
+                divergence_retries=divergence_retries,
             )
 
             # 3. PROJECT actual stress and SHIFT history
@@ -1308,6 +1329,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 zero_init_guess,
                 _force_setup=_force_setup,
                 verbose=verbose,
+                divergence_retries=divergence_retries,
             )
 
     @property
@@ -2154,8 +2176,16 @@ class SNES_Tensor_Projection(SNES_Projection):
     ## Need to over-ride solve method to run over all components
 
     @timing.routine_timer_decorator
-    def solve(self, verbose=False):
-        """Solve by projecting each tensor component sequentially."""
+    def solve(self, verbose=False, divergence_retries: int = 0):
+        """Solve by projecting each tensor component sequentially.
+
+        Parameters
+        ----------
+        verbose : bool
+        divergence_retries : int, default=0
+            Forwarded to each per-component SNES solve. 0 preserves
+            legacy behaviour.
+        """
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
 
@@ -2791,6 +2821,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         _force_setup: bool = False,
         _evalf=False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -2800,6 +2831,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if timestep is not None and timestep != self.delta_t:
@@ -2823,7 +2857,8 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
         # Invalidate cached data views - PETSc may have replaced underlying buffers
         # This ensures .data and .array properties return fresh data from PETSc
@@ -3162,6 +3197,7 @@ class SNES_Diffusion(SNES_Scalar):
         evalf: bool = False,
         _force_setup: bool = False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -3171,6 +3207,9 @@ class SNES_Diffusion(SNES_Scalar):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if timestep is not None and timestep != self.delta_t:
@@ -3195,7 +3234,8 @@ class SNES_Diffusion(SNES_Scalar):
         self.DuDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
         # Invalidate cached data views - PETSc may have replaced underlying buffers
         target_var = getattr(self.u, "_base_var", self.u)
@@ -3579,6 +3619,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         verbose=False,
         _evalf=False,
         order=None,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -3588,6 +3629,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if order is None or order > self._order:
@@ -3629,6 +3673,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             _force_setup=_force_setup,
             verbose=verbose,
             picard=0,
+            divergence_retries=divergence_retries,
         )
 
         if uw.mpi.rank == 0 and verbose:
