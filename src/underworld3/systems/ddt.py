@@ -1056,6 +1056,18 @@ class SemiLagrangian(uw_object):
         self._dt = None  # current timestep (set by solver or update_pre_solve)
         self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
 
+        # Source snapshot machinery (opt-in via enable_source_snapshot()).
+        # Used when psi_fn references psi_star[0] itself (e.g. VE/VEP stress
+        # history where flux = 2·viscosity·E_eff and E_eff contains psi_star[0]
+        # via its history term). Without a snapshot the projection becomes
+        # implicit in psi_star[0] and Min-mode at yield admits the wrong fixed
+        # point. With snapshot, psi_star[0] symbols in the source are
+        # substituted with a frozen snapshot variable that's refreshed each
+        # step from psi_star[0]'s data array. The projection becomes a true
+        # one-shot Galerkin projection.
+        self._psi_snapshot_enabled = False
+        self._psi_snapshot = None
+
         if swarm_degree is None:
             self.swarm_degree = degree
         else:
@@ -1204,16 +1216,92 @@ class SemiLagrangian(uw_object):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
-        """Set the tracked expression."""
+        """Set the tracked expression and propagate to the projection's source.
+
+        When :meth:`enable_source_snapshot` has been called, ``psi_star[0]``
+        symbols in ``new_fn`` are transparently substituted with the
+        snapshot variable's symbols before the source is pushed to the
+        projection solver — so the projection becomes a true one-shot
+        Galerkin projection regardless of whether ``new_fn`` references
+        ``psi_star[0]``.
+        """
         self._psi_fn = new_fn
+        self._psi_star_projection_solver.uw_function = self._build_projection_source(new_fn)
+        return
+
+    def _build_projection_source(self, source_fn):
+        """Construct the row matrix used as the projection's ``uw_function``.
+
+        Applies snapshot substitution (psi_star[0] → snap) when enabled.
+        Used by both ``psi_fn.setter`` and the ``initialise_history``
+        fallback path so substitution semantics are consistent.
+        """
         if getattr(self, '_psi_star_use_multicomponent', False):
             import sympy
             indep = self._psi_star_indep_indices
-            row = sympy.Matrix([[new_fn[i, j] for (i, j) in indep]])
-            self._psi_star_projection_solver.uw_function = row
+            row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
+            if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+                ps0 = self.psi_star[0]
+                psi_snapshot = self._psi_snapshot
+                substitutions = {
+                    ps0.sym[i, j]: psi_snapshot.sym[i, j]
+                    for i in range(self.mesh.dim)
+                    for j in range(self.mesh.dim)
+                }
+                row = row.subs(substitutions)
+            return row
         else:
-            self._psi_star_projection_solver.uw_function = self._psi_fn
-        return
+            # Scalar / vector path: psi_star[0] is a scalar/vector field. If
+            # snapshot is needed for these vtypes, extend here similarly.
+            return source_fn
+
+    def enable_source_snapshot(self):
+        """Enable snapshot substitution in the projection's source field.
+
+        Call this once when the source expression (``psi_fn``) references
+        ``psi_star[0]`` itself — without it the projection's residual
+        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
+        because target and source share the same data field. With Min-mode
+        plasticity at the yield kink, the implicit projection admits two
+        fixed points (elastic and yield branches); under timestep change the
+        iteration drifts to the elastic-branch fixed point and σ violates
+        the yield surface.
+
+        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
+        shape/vtype/degree. Each call to ``update_pre_solve`` copies
+        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
+        input for the upcoming projection. Substitution makes the
+        projection's compiled C code read from ``psi_snapshot.array``
+        instead of ``psi_star[0].array`` — there's no recompile per step,
+        just a memcpy.
+
+        Idempotent: safe to call more than once.
+        """
+        if not getattr(self, '_psi_star_use_multicomponent', False):
+            # Currently only wired for tensor projections (the case that
+            # exposed the bug).  Scalar/vector extension is straightforward
+            # if needed later.
+            return
+
+        if self._psi_snapshot is None:
+            ps0 = self.psi_star[0]
+            self._psi_snapshot = uw.discretisation.MeshVariable(
+                f"psi_snapshot_{self.instance_number}",
+                self.mesh,
+                ps0.shape,
+                vtype=ps0.vtype,
+                degree=ps0.degree,
+                continuous=ps0.continuous,
+            )
+            # Initialise psi_snapshot.array to current psi_star[0].array so
+            # the source evaluates consistently before the first refresh.
+            self._psi_snapshot.array[...] = ps0.array[...]
+
+        self._psi_snapshot_enabled = True
+
+        # Re-run the psi_fn setter so the substitution is applied to the
+        # currently-installed projection source.
+        self.psi_fn = self._psi_fn
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
@@ -1260,23 +1348,19 @@ class SemiLagrangian(uw_object):
                 eval_result = UnitAwareArray(eval_result, units=psi_units)
             self.psi_star[0].array[...] = eval_result
         except Exception:
+            # Fallback: project psi_fn onto psi_star[0] via the SNES projector.
+            # Route through the shared builder so snapshot substitution
+            # semantics are consistent.
+            self._psi_star_projection_solver.uw_function = self._build_projection_source(self.psi_fn)
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve()
             if getattr(self, '_psi_star_use_multicomponent', False):
-                import sympy
-                indep = self._psi_star_indep_indices
-                row = sympy.Matrix([[self.psi_fn[i, j] for (i, j) in indep]])
-                self._psi_star_projection_solver.uw_function = row
-                self._psi_star_projection_solver.smoothing = 0.0
-                self._psi_star_projection_solver.solve()
                 # Fan out flat result to tensor psi_star[0]
-                for k, (i, j) in enumerate(indep):
+                for k, (i, j) in enumerate(self._psi_star_indep_indices):
                     vals = self._psi_star_flat_var.array[:, 0, k]
                     self.psi_star[0].array[:, i, j] = vals
                     if i != j:
                         self.psi_star[0].array[:, j, i] = vals
-            else:
-                self._psi_star_projection_solver.uw_function = self.psi_fn
-                self._psi_star_projection_solver.smoothing = 0.0
-                self._psi_star_projection_solver.solve()
 
         # Copy to all other history slots
         for i in range(1, self.order):
@@ -1348,6 +1432,13 @@ class SemiLagrangian(uw_object):
 
         if not self._history_initialised:
             self.initialise_history()
+
+        # Refresh the source-snapshot variable so the projection's source
+        # field captures psi_star[0]'s state from BEFORE this step's solve.
+        # This is the per-step memcpy that keeps the snapshot machinery
+        # aligned with psi_star[0] without recompiling the projection.
+        if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+            self._psi_snapshot.array[...] = self.psi_star[0].array[...]
 
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)

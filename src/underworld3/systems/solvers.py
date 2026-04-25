@@ -1173,6 +1173,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             order=order,
             smoothing=0.0001,
         )
+        # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
+        # history term — without snapshot substitution the projection of
+        # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at
+        # yield admits the wrong fixed point under timestep change.
+        self.Unknowns.DFDt.enable_source_snapshot()
 
     @timing.routine_timer_decorator
     def solve(
@@ -1289,50 +1294,16 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
 
             if getattr(self.DFDt, '_psi_star_use_multicomponent', False):
-                # Multi-component projection: solve all components at once.
-                # The source flux = 2·viscosity·E_eff references psi_star[0] in
-                # E_eff's history term.  Using flux directly as the projection
-                # source makes the projection implicit in psi_star[0] (target
-                # equals source's input), and Min-mode at the yield kink admits
-                # multiple fixed points — under dt change the iteration drifts
-                # to the elastic-branch fixed point (yield surface violation).
-                # Fix: substitute psi_star[0] with a frozen snapshot variable
-                # in the flux expression. The projection then becomes a true
-                # one-shot Galerkin projection of a constant-input source.
-                # Each step we copy psi_star[0].array → snapshot.array before
-                # the projection solve.
-                ps0 = self.DFDt.psi_star[0]
-                dim = self.mesh.dim
-                # Lazy-create the snapshot variable + cached substituted-flux row
-                if not hasattr(self.DFDt, '_psi_star_0_snapshot'):
-                    self.DFDt._psi_star_0_snapshot = uw.discretisation.MeshVariable(
-                        f"psi_star_0_snap_{self.DFDt.instance_number}",
-                        self.mesh,
-                        ps0.shape,
-                        vtype=ps0.vtype,
-                        degree=ps0.degree,
-                        continuous=ps0.continuous,
-                    )
-                if not hasattr(self.DFDt, '_psi_star_row_frozen') or not self.constitutive_model._solver_is_setup:
-                    import sympy
-                    snap = self.DFDt._psi_star_0_snapshot
-                    flux = self.constitutive_model.flux
-                    substitutions = {}
-                    for i in range(dim):
-                        for j in range(dim):
-                            substitutions[ps0.sym[i, j]] = snap.sym[i, j]
-                    flux_frozen = flux.subs(substitutions)
-                    indep = self.DFDt._psi_star_indep_indices
-                    self.DFDt._psi_star_row_frozen = sympy.Matrix(
-                        [[flux_frozen[i, j] for (i, j) in indep]]
-                    )
-                # Each step: copy current psi_star[0] → snapshot, then project.
-                # Setting uw_function each step is required: setting it once
-                # does not currently trigger a fresh recompile of the
-                # projection's compiled residual (TODO: identify why and
-                # remove the per-step set for performance).
-                self.DFDt._psi_star_0_snapshot.array[...] = self.DFDt.psi_star[0].array[...]
-                self.DFDt._psi_star_projection_solver.uw_function = self.DFDt._psi_star_row_frozen
+                # Multi-component projection of flux → psi_star[0].
+                #
+                # The DFDt's source-snapshot machinery (enabled once in
+                # _create_stress_history_ddt) intercepts psi_fn assignment
+                # to substitute psi_star[0] symbols with a frozen
+                # psi_snapshot variable, refreshed each step in
+                # update_pre_solve. So the projection's compiled source
+                # reads from psi_snapshot (not psi_star[0] itself) and is a
+                # true one-shot Galerkin projection — no implicit
+                # fixed-point iteration.
                 self.DFDt._psi_star_projection_solver.smoothing = 0.0
                 self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
                 # Fan flat result back to psi_star[0] tensor variable
