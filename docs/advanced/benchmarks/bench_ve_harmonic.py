@@ -46,22 +46,17 @@ T_END = N_PERIODS * 2.0 * np.pi / OMEGA + 0.5  # extra to capture tail
 LABEL = "ve_harmonic"
 
 
-def main():
+def _run_one(bdf_order):
+    """Run the simulation at one BDF order, return per-step trace + diagnostics."""
     params = dict(DEFAULT_PARAMS)
-    params["bdf_order"] = 2
-    mesh, stokes, V_top, params = build_stokes(LABEL, params)
+    params["bdf_order"] = bdf_order
+    mesh, stokes, V_top, params = build_stokes(f"{LABEL}_o{bdf_order}", params)
 
-    t_r = t_relax(params)
-    De = OMEGA * t_r
-    gamma_dot_0 = 2.0 * V0 / params["H"]
-
-    # Pre-allocate
     times, dts, sigmas, gammas, reasons = [], [], [], [], []
     t_cur = 0.0
-    t_wall0 = time.time()
+    t0 = time.time()
     while t_cur < T_END - 1e-9:
         dt = min(DT, T_END - t_cur)
-        # Set V_top at the midpoint of the step (centred-difference style)
         t_mid = t_cur + 0.5 * dt
         v_now = V0 * float(np.sin(OMEGA * t_mid))
         V_top.sym = sympy.Float(v_now)
@@ -69,32 +64,36 @@ def main():
         stokes.solve(zero_init_guess=False, timestep=dt, divergence_retries=2)
         s = probe_centre(stokes)
         t_cur += dt
-        times.append(t_cur)
-        dts.append(dt)
-        sigmas.append(s)
+        times.append(t_cur); dts.append(dt); sigmas.append(s)
         gammas.append(2.0 * v_now / params["H"])
         reasons.append(int(stokes.snes.getConvergedReason()))
-    t_wall = time.time() - t_wall0
-    times = np.array(times)
-    dts = np.array(dts)
-    sigmas = np.array(sigmas)
-    gammas = np.array(gammas)
-    reasons = np.array(reasons)
+    return (np.array(times), np.array(dts), np.array(sigmas),
+            np.array(gammas), np.array(reasons), time.time() - t0, params)
 
-    # Analytical reference
-    sigma_ana = maxwell_oscillatory(times, params["eta"], params["mu"], gamma_dot_0, OMEGA)
 
-    # Diagnostics
-    err = error_metrics(sigmas, sigma_ana)
-    A_sim, phi_sim = fit_amp_phase(times, sigmas, OMEGA)
+def main():
+    times1, dts1, sig1, gam1, rea1, wall1, params = _run_one(1)
+    times2, dts2, sig2, gam2, rea2, wall2, _      = _run_one(2)
+    # Both runs use the same dt schedule, so the time grids match
+    assert np.allclose(times1, times2)
+
+    t_r = t_relax(params)
+    De = OMEGA * t_r
+    gamma_dot_0 = 2.0 * V0 / params["H"]
+    sigma_ana = maxwell_oscillatory(times1, params["eta"], params["mu"], gamma_dot_0, OMEGA)
+
+    err1 = error_metrics(sig1, sigma_ana)
+    err2 = error_metrics(sig2, sigma_ana)
+    A1, phi1 = fit_amp_phase(times1, sig1, OMEGA)
+    A2, phi2 = fit_amp_phase(times2, sig2, OMEGA)
     A_ana = params["eta"] * gamma_dot_0 / np.sqrt(1.0 + De**2)
     phi_ana = float(np.arctan(De))
 
-    print(f"[{LABEL}]  steps={len(times)}  wall={t_wall:.1f}s")
-    print(f"  De = ω·t_r = {De:.4f}")
-    print(f"  Amplitude:  sim={A_sim:.4f}  ana={A_ana:.4f}  Δ={A_sim-A_ana:+.4f}")
-    print(f"  Phase lag:  sim={phi_sim:.4f}  ana={phi_ana:.4f}  Δ={phi_sim-phi_ana:+.4f} rad")
-    print(f"  max|err|={err['max_abs']:.4e}  rms={err['rms']:.4e}  rel={err['rel_max']:.4f}")
+    print(f"[{LABEL}]  steps={len(times1)}  De=ω·t_r={De:.4f}")
+    print(f"  BDF-1 wall={wall1:.1f}s  max|err|={err1['max_abs']:.4e}  rms={err1['rms']:.4e}")
+    print(f"        amp sim={A1:.4f} ana={A_ana:.4f}   phi sim={phi1:.4f} ana={phi_ana:.4f}")
+    print(f"  BDF-2 wall={wall2:.1f}s  max|err|={err2['max_abs']:.4e}  rms={err2['rms']:.4e}")
+    print(f"        amp sim={A2:.4f} ana={A_ana:.4f}   phi sim={phi2:.4f} ana={phi_ana:.4f}")
 
     save_run(
         LABEL,
@@ -102,11 +101,15 @@ def main():
         params_extra=dict(
             V0=V0, omega=OMEGA, gamma_dot_0=gamma_dot_0, De=De,
             t_end=T_END, dt_nominal=DT,
-            A_sim=A_sim, A_ana=A_ana, phi_sim=phi_sim, phi_ana=phi_ana,
-            err_max=err["max_abs"], err_rms=err["rms"], wall_time=t_wall,
+            A_bdf1=A1, A_bdf2=A2, A_ana=A_ana,
+            phi_bdf1=phi1, phi_bdf2=phi2, phi_ana=phi_ana,
+            err_max_bdf1=err1["max_abs"], err_rms_bdf1=err1["rms"],
+            err_max_bdf2=err2["max_abs"], err_rms_bdf2=err2["rms"],
+            wall_bdf1=wall1, wall_bdf2=wall2,
         ),
-        times=times, dts=dts, sigma=sigmas, sigma_ana=sigma_ana,
-        gamma_dot=gammas, snes_reasons=reasons,
+        times=times1, dts=dts1, gamma_dot=gam1, sigma_ana=sigma_ana,
+        sigma_bdf1=sig1, sigma_bdf2=sig2,
+        snes_reasons_bdf1=rea1, snes_reasons_bdf2=rea2,
     )
 
 

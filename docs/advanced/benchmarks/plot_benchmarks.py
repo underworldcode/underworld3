@@ -36,10 +36,12 @@ plt.rcParams.update({
     "legend.framealpha": 0.92,
 })
 
-C_SIM = "#D62728"          # red — simulation markers
+C_BDF1 = "#1F77B4"         # blue circles — BDF-1
+C_BDF2 = "#D62728"         # red squares — BDF-2
 C_ANA = "black"            # solid black — analytical
 C_DRIVE = "#1F77B4"        # light blue — driving (filled)
-C_ERR = "#9467BD"          # purple — error trace
+C_ERR_BDF1 = "#1F77B4"
+C_ERR_BDF2 = "#D62728"
 C_DT = "#2CA02C"           # green — dt
 C_YIELD = "grey"
 
@@ -47,17 +49,17 @@ C_YIELD = "grey"
 def _plot_three_panel(name, t_ana_grid, sigma_ana_grid, info, *, tau_y=None):
     """Common three-panel layout used by all three benchmarks.
 
-    ``info`` is the loaded payload (arrays + metadata).
-    ``t_ana_grid``, ``sigma_ana_grid`` are a fine-grained analytical curve
-    for the smooth black line (the per-step ``sigma_ana`` is only
-    sampled at solve points).
+    Reads BDF-1 + BDF-2 traces from one npz and overlays both.  The
+    npz's per-step arrays are: ``sigma_bdf1``, ``sigma_bdf2``,
+    ``sigma_ana``.
     """
     arrays, params, extra = info
     times = arrays["times"]
-    sigma = arrays["sigma"]
     sigma_ana = arrays["sigma_ana"]
     dts = arrays["dts"]
     gamma_dot = arrays["gamma_dot"]
+    sigma_bdf1 = arrays["sigma_bdf1"]
+    sigma_bdf2 = arrays["sigma_bdf2"]
 
     fig, (ax_top, ax_err, ax_dt) = plt.subplots(
         3, 1, sharex=True,
@@ -65,19 +67,21 @@ def _plot_three_panel(name, t_ana_grid, sigma_ana_grid, info, *, tau_y=None):
     )
 
     # --- Top: σ(t)
-    # Background: driving γ̇(t), rescaled to fit alongside σ
     sigma_max = float(np.max(np.abs(sigma_ana_grid))) or 1.0
     gamma_max = float(np.max(np.abs(gamma_dot))) or 1.0
-    drive_scale = 0.5 * sigma_max / gamma_max  # fits inside the σ-range
+    drive_scale = 0.5 * sigma_max / gamma_max
     ax_top.fill_between(
         times, 0.0, drive_scale * gamma_dot,
-        color=C_DRIVE, alpha=0.20, linewidth=0,
-        label=fr"driving $\dot\gamma(t)$ (scaled ×{drive_scale:.2f})",
+        color=C_DRIVE, alpha=0.18, linewidth=0,
+        label=fr"driving $\dot\gamma(t)$ (×{drive_scale:.2f})",
     )
     ax_top.plot(t_ana_grid, sigma_ana_grid, "-", color=C_ANA, lw=1.4,
                 label="analytical")
-    ax_top.plot(times, sigma, "o", color=C_SIM, ms=3.6, alpha=0.85,
-                label="simulation")
+    ax_top.plot(times, sigma_bdf1, "o", color=C_BDF1, ms=4.2, alpha=0.78,
+                mec=C_BDF1, mfc="white", mew=1.3,
+                label="BDF-1")
+    ax_top.plot(times, sigma_bdf2, "s", color=C_BDF2, ms=3.8, alpha=0.85,
+                label="BDF-2")
     if tau_y is not None:
         ax_top.axhline(+tau_y, color=C_YIELD, ls="--", lw=0.9, alpha=0.7,
                        label=fr"$\pm\tau_y$ = $\pm${tau_y:g}")
@@ -85,26 +89,31 @@ def _plot_three_panel(name, t_ana_grid, sigma_ana_grid, info, *, tau_y=None):
     ax_top.axhline(0, color="grey", lw=0.4, alpha=0.4)
     ax_top.set_ylabel(r"$\sigma_{xy}$")
 
-    # Title with the headline numbers
-    title_bits = [name]
-    if "err_max" in extra:
-        title_bits.append(fr"max$|\,\mathrm{{err}}\,| = {extra['err_max']:.2e}$")
-    if "err_rms" in extra:
-        title_bits.append(fr"rms = {extra['err_rms']:.2e}")
+    # Title with the headline numbers per order
+    bits = [name]
+    if "err_max_bdf1" in extra:
+        bits.append(fr"BDF-1 max|err|={extra['err_max_bdf1']:.2e}")
+    if "err_max_bdf2" in extra:
+        bits.append(fr"BDF-2 max|err|={extra['err_max_bdf2']:.2e}")
     if "De" in extra:
-        title_bits.append(fr"$\mathrm{{De}} = {extra['De']:.3f}$")
+        bits.append(fr"De={extra['De']:.3f}")
     if "tau_y" in extra:
-        title_bits.append(fr"$\tau_y = {extra['tau_y']:g}$")
-    ax_top.set_title("    ".join(title_bits))
-    ax_top.legend(loc="lower right")
+        bits.append(fr"$\tau_y={extra['tau_y']:g}$")
+    ax_top.set_title("    ".join(bits))
+    ax_top.legend(loc="lower right", ncol=2)
 
-    # --- Middle: |sigma − sigma_ana|
-    err = np.abs(sigma - sigma_ana)
-    eps = max(1e-12, err.min() * 0.1) if err.min() > 0 else 1e-12
-    ax_err.semilogy(times, np.maximum(err, eps), "-", color=C_ERR, lw=0.9,
-                    marker="o", ms=2.8)
+    # --- Middle: |sigma − sigma_ana| for both orders
+    err1 = np.abs(sigma_bdf1 - sigma_ana)
+    err2 = np.abs(sigma_bdf2 - sigma_ana)
+    eps = 1e-9
+    ax_err.semilogy(times, np.maximum(err1, eps), "-", color=C_ERR_BDF1,
+                    lw=0.8, marker="o", ms=2.8, mec=C_ERR_BDF1, mfc="white",
+                    label="BDF-1")
+    ax_err.semilogy(times, np.maximum(err2, eps), "-", color=C_ERR_BDF2,
+                    lw=0.8, marker="s", ms=2.8, label="BDF-2")
     ax_err.set_ylabel(r"$|\sigma_{\mathrm{sim}} - \sigma_{\mathrm{ana}}|$")
-    ax_err.set_ylim(bottom=eps)
+    ax_err.legend(loc="upper right", ncol=2, fontsize=8)
+    ax_err.set_ylim(bottom=eps * 0.9)
 
     # --- Bottom: dt
     ax_dt.step(times, dts, where="post", color=C_DT, lw=1.1)
@@ -127,15 +136,16 @@ def plot_ve_harmonic():
     sigma_grid = maxwell_oscillatory(t_grid, eta, mu, gd0, omega)
     fig = _plot_three_panel("VE harmonic", t_grid, sigma_grid,
                             (arrays, params, extra))
-    # Add an extra info box for amplitude / phase
     ax_top = fig.axes[0]
     info = (
-        f"Amplitude: sim {extra['A_sim']:.4f}  /  ana {extra['A_ana']:.4f}\n"
-        f"Phase lag: sim {extra['phi_sim']:.4f}  /  ana {extra['phi_ana']:.4f}  rad"
+        f"Amplitude  ana={extra['A_ana']:.4f}\n"
+        f"           BDF-1={extra['A_bdf1']:.4f}  BDF-2={extra['A_bdf2']:.4f}\n"
+        f"Phase lag  ana={extra['phi_ana']:.4f}\n"
+        f"           BDF-1={extra['phi_bdf1']:.4f}  BDF-2={extra['phi_bdf2']:.4f}"
     )
     ax_top.text(0.02, 0.97, info, transform=ax_top.transAxes,
                 ha="left", va="top",
-                fontsize=9,
+                fontsize=8.5, family="monospace",
                 bbox=dict(facecolor="white", edgecolor="0.7", alpha=0.92,
                           boxstyle="round,pad=0.4"))
     out = f"{FIG_DIR}/bench_ve_harmonic.png"
@@ -177,12 +187,64 @@ def plot_vep_square():
     print(f"  wrote {out}")
 
 
+def plot_convergence():
+    """Three-panel log-log convergence plot, one panel per case."""
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), sharey=True)
+    cases = [
+        ("convergence_ve_harmonic", "VE harmonic"),
+        ("convergence_ve_square",   "VE square wave"),
+        ("convergence_vep_square",  "VEP square wave"),
+    ]
+    for ax, (name, title) in zip(axes, cases):
+        try:
+            arrays, params, extra = load_run(name)
+        except FileNotFoundError:
+            ax.set_title(f"{title} — no data")
+            continue
+        order = arrays["order"]; dt = arrays["dt"]
+        max_abs = arrays["max_abs"]; rms = arrays["rms"]
+
+        for o, marker, lbl_color in [(1, "o", C_BDF1), (2, "s", C_BDF2)]:
+            mask = order == o
+            if not mask.any():
+                continue
+            d = dt[mask]; e = max_abs[mask]; r = rms[mask]
+            ax.loglog(d, e, marker=marker, color=lbl_color, ms=7,
+                      lw=1.5, label=fr"BDF-{o} max$|\,\mathrm{{err}}\,|$")
+            ax.loglog(d, r, marker=marker, color=lbl_color, ms=5,
+                      lw=1.0, ls=":", alpha=0.7,
+                      label=fr"BDF-{o} rms")
+
+        # Reference slopes — a guide line through the smallest-dt BDF-2 max-abs
+        if (order == 2).any():
+            mask2 = order == 2
+            d_ref = float(dt[mask2].min())
+            e_ref = float(max_abs[mask2][np.argmin(dt[mask2])])
+            d_grid = np.array([dt.min() * 0.7, dt.max() * 1.3])
+            ax.loglog(d_grid, e_ref * (d_grid / d_ref) ** 2,
+                      "k--", lw=0.8, alpha=0.5, label=r"slope 2")
+            ax.loglog(d_grid, e_ref * (d_grid / d_ref) ** 1,
+                      "k:", lw=0.8, alpha=0.5, label=r"slope 1")
+        ax.set_title(title)
+        ax.set_xlabel(r"$\Delta t$")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(loc="lower right", fontsize=8)
+
+    axes[0].set_ylabel("error")
+    plt.tight_layout()
+    out = f"{FIG_DIR}/bench_convergence.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out}")
+
+
 if __name__ == "__main__":
     os.makedirs(FIG_DIR, exist_ok=True)
     for plotter, name in [
         (plot_ve_harmonic, "ve_harmonic"),
         (plot_ve_square, "ve_square"),
         (plot_vep_square, "vep_square"),
+        (plot_convergence, "convergence"),
     ]:
         try:
             plotter()
