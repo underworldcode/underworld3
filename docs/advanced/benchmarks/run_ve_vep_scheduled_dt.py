@@ -69,6 +69,11 @@ def _update_bdf_coefficients_symmetric_restart(self):
     (i.e. ratio >= threshold OR ratio <= 1/threshold). The hypothesis is that
     a single BDF-1 step at the new dt creates uniform-spaced psi_star history
     for subsequent BDF-2 steps, rescuing variable-dt accuracy.
+
+    Note: this benchmark retains the experimental BDF-1 restart logic for
+    historical comparison (the hypothesis was rejected — see commit
+    d504e14).  The previous bdf_blend mixing has been retired (commit
+    21ebe3b) and is no longer applied here.
     """
     order = self.effective_order
     if self.Unknowns is not None and self.Unknowns.DFDt is not None:
@@ -85,15 +90,6 @@ def _update_bdf_coefficients_symmetric_restart(self):
             except (TypeError, ZeroDivisionError):
                 pass
         coeffs = _bdf_coefficients(order, dt_current, dt_history)
-        alpha = self.bdf_blend
-        if 0 < alpha < 1 and order >= 2:
-            coeffs_o1 = _bdf_coefficients(1, dt_current, dt_history)
-            while len(coeffs_o1) < len(coeffs):
-                coeffs_o1.append(sympy.Integer(0))
-            coeffs = [
-                (1 - alpha) * c1 + alpha * ck
-                for c1, ck in zip(coeffs_o1, coeffs)
-            ]
     else:
         coeffs = _bdf_coefficients(order, None, [])
     while len(coeffs) < 4:

@@ -202,7 +202,7 @@ The stress history lives on particles via the solver's `DFDt` (flux time derivat
 
 If you don't want to use particles for 
 
-For VEP problems, the viscoelastic effective strain rate includes contributions from the stress history, and the plastic yield criterion is evaluated against this total deformation rate. The `bdf_blend` parameter controls blending between BDF-1 and BDF-2 near the yield surface, where pure BDF-2 can produce oscillations. The model auto-detects the appropriate blend: pure VE problems get full BDF-2 accuracy, while VEP problems get a stable near-optimal blend.
+For VEP problems, the viscoelastic effective strain rate includes contributions from the stress history, and the plastic yield criterion is evaluated against this total deformation rate. The Min-mode plasticity has a non-smooth kink at the yield surface, which historically caused twitchy SNES behaviour at yield onset. Two safeguards keep the solver well-behaved there: a Picard-style retry on SNES divergence (`divergence_retries`), and a snapshot-based projection in the stress-history machinery that prevents an implicit feedback loop between the projection's source and target under variable timestep.
 
 Recent work has extended the anisotropic model to `TransverseIsotropicVEPFlowModel`, combining directional weakness with viscoelastic stress memory and plastic yielding. The yield criterion is evaluated on the resolved shear stress on the fault plane, computed from the full stress tensor and the director orientation. In UW3, this is a class that inherits from the VEP model and overrides the stress computation with additional director terms. The Jacobian follows automatically. In UW2, it would have been extremely difficult to implement.
 
