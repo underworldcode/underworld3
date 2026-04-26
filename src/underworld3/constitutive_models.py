@@ -1460,17 +1460,6 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             vp_effective_viscosity = self._plastic_effective_viscosity
             if self._yield_mode == "harmonic":
                 effective_viscosity = 1 / (1 / effective_viscosity + 1 / vp_effective_viscosity)
-            elif self._yield_mode == "smooth":
-                # Corrected harmonic: cancels the excess 1/η_ve contribution
-                # at deep yielding while staying smooth everywhere.
-                #   η_eff = η_ve · (1+f) / (1 + f + f²)
-                # where f = η_ve/η_pl measures yield overshoot.
-                #
-                # f → 0 (elastic): η_eff → η_ve   (no correction)
-                # f → ∞ (yielding): η_eff → η_pl  (exact yield)
-                # No Min/Max — just arithmetic. Continuous derivatives.
-                f = effective_viscosity / vp_effective_viscosity
-                effective_viscosity = effective_viscosity * (1 + f) / (1 + f + f**2)
             elif self._yield_mode == "softmin":
                 # Smooth approximation to Min(η_ve, η_pl):
                 #   η_eff = η_ve / g(f)
@@ -1487,12 +1476,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             else:
                 effective_viscosity = sympy.Min(effective_viscosity, vp_effective_viscosity)
 
-        # Apply viscosity floor — but skip for smooth/harmonic yield modes
+        # Apply viscosity floor — but skip for smooth-blend yield modes
         # where the outer Max creates a nested Min/Max that breaks the
         # BDF-2 Jacobian. Those modes are already smooth and bounded.
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
-            if self.is_viscoplastic and self._yield_mode in ("harmonic", "smooth", "softmin"):
+            if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
                 return effective_viscosity
             else:
                 return sympy.Max(
@@ -1709,24 +1698,38 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def yield_mode(self):
         r"""How to combine VE and plastic viscosities.
 
-        ``"smooth"`` (default): corrected harmonic —
-            ``η_ve · (1+f) / (1+f+f²)`` where ``f = η_ve/η_pl``.
-            Smooth, no Min/Max. Best balance of accuracy and robustness.
-        ``"softmin"``: smooth approximation to Min —
+        ``"softmin"`` (default): smooth approximation to Min —
             ``η_ve / g(f)`` where ``g(f) ≈ max(1, f)`` with smoothing
-            parameter δ (``yield_softness``, default 0.5).
-            Closer to exact yield than ``"smooth"`` but less robust.
+            parameter δ (``yield_softness``, default 0.1).  Approaches
+            exact Min as δ → 0; smooth derivatives at the kink.
+            Recommended default: gets within ~2 % of the true yield
+            surface while avoiding the SNES kink penalties of ``"min"``.
         ``"harmonic"``: parallel blending — ``1/(1/η_ve + 1/η_pl)``.
             Smooth but undershoots τ_y for soft materials.
         ``"min"``: sharp cutoff — ``Min(η_ve, η_pl)``.
-            Exact yield but can cause SNES divergence with BDF-2.
+            Exact yield but can cause SNES divergence with BDF-2 and
+            BDF-2 phase-lag at BC discontinuities (see benchmarks).
+
+        Note: the previous ``"smooth"`` mode (corrected harmonic
+        ``η_ve·(1+f)/(1+f+f²)``) was retired — it under-clipped the
+        yield surface by ~50 % under realistic forcing, with no
+        compensating benefit over ``softmin``.  Recover from git
+        history if needed (commit message keyword: ``smooth_yield``).
         """
         return self._yield_mode
 
     @yield_mode.setter
     def yield_mode(self, value):
-        if value not in ("min", "harmonic", "smooth", "softmin"):
-            raise ValueError(f"yield_mode must be 'min', 'harmonic', 'smooth', or 'softmin', got '{value}'")
+        if value == "smooth":
+            raise ValueError(
+                "yield_mode='smooth' has been retired — it under-clipped "
+                "the yield surface by ~50%. Use 'softmin' instead "
+                "(default; close to exact Min with smooth derivatives)."
+            )
+        if value not in ("min", "harmonic", "softmin"):
+            raise ValueError(
+                f"yield_mode must be 'min', 'harmonic', or 'softmin', got '{value}'"
+            )
         self._yield_mode = value
         self._reset()
 
@@ -2656,9 +2659,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     def viscosity(self):
         r"""Effective viscosity for the fault-plane shear component.
 
-        Applies the yield mode (smooth/softmin/min/harmonic) to η₁,
-        leaving η₀ (bulk) unchanged. The anisotropic tensor handles
-        the directional dependence.
+        Applies the yield mode (softmin/min/harmonic) to η₁, leaving
+        η₀ (bulk) unchanged. The anisotropic tensor handles the
+        directional dependence.
         """
         inner_self = self.Parameters
 
@@ -2672,9 +2675,6 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             vp_eff = self._plastic_effective_viscosity
             if self._yield_mode == "harmonic":
                 eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
-            elif self._yield_mode == "smooth":
-                f = eta_1_eff / vp_eff
-                eta_1_eff = eta_1_eff * (1 + f) / (1 + f + f**2)
             elif self._yield_mode == "softmin":
                 delta = self._yield_softness
                 f = eta_1_eff / vp_eff
@@ -2768,9 +2768,6 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             vp_eff = self._plastic_effective_viscosity
             if self._yield_mode == "harmonic":
                 eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
-            elif self._yield_mode == "smooth":
-                f = eta_1_eff / vp_eff
-                eta_1_eff = eta_1_eff * (1 + f) / (1 + f + f**2)
             elif self._yield_mode == "softmin":
                 delta = self._yield_softness
                 f = eta_1_eff / vp_eff
@@ -2895,14 +2892,24 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         r"""How to apply yield limiting to the fault-plane viscosity.
 
         Same options as :class:`ViscoElasticPlasticFlowModel`:
-        ``"smooth"`` (default), ``"softmin"``, ``"harmonic"``, ``"min"``.
+        ``"softmin"`` (default), ``"harmonic"``, ``"min"``.  The
+        ``"smooth"`` option was retired (under-clipped by ~50 %); see
+        the parent class's :attr:`yield_mode` docstring for details.
         """
         return self._yield_mode
 
     @yield_mode.setter
     def yield_mode(self, value):
-        if value not in ("min", "harmonic", "smooth", "softmin"):
-            raise ValueError(f"yield_mode must be 'min', 'harmonic', 'smooth', or 'softmin', got '{value}'")
+        if value == "smooth":
+            raise ValueError(
+                "yield_mode='smooth' has been retired — it under-clipped "
+                "the yield surface by ~50%. Use 'softmin' instead "
+                "(default; close to exact Min with smooth derivatives)."
+            )
+        if value not in ("min", "harmonic", "softmin"):
+            raise ValueError(
+                f"yield_mode must be 'min', 'harmonic', or 'softmin', got '{value}'"
+            )
         self._yield_mode = value
         self._reset()
 
