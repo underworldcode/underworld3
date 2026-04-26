@@ -14,8 +14,33 @@ closed-form analytical solutions.  Each benchmark has three pieces:
 * a Markdown page (this section) that documents the governing
   equation, the closed-form solution, the test setup, and the result.
 
-The runner and the plotter are deliberately decoupled: re-running the
-plot to tweak style does not re-run the (slow) simulation.
+The runner and the plotter are deliberately decoupled: each runner
+saves the per-step trace, both BDF orders, the analytical reference,
+and the parameter dict in one self-contained file; re-running the
+plot script to tweak style does not re-run the (slow) simulation.
+A separate `bench_convergence.py` runs each case at a sweep of
+timestep sizes (and both BDF orders) and saves all per-run traces so
+the convergence figure and any per-(order, dt) replot are equally
+reproducible from saved data.
+
+## Workflow
+
+```bash
+# Run a single per-case benchmark (both BDF orders, ~3-6 min each)
+pixi run -e amr-dev python docs/advanced/benchmarks/bench_ve_harmonic.py
+pixi run -e amr-dev python docs/advanced/benchmarks/bench_ve_square.py
+pixi run -e amr-dev python docs/advanced/benchmarks/bench_vep_square.py
+
+# Run the convergence sweep (~30 min, all dts × both orders × all cases)
+pixi run -e amr-dev python docs/advanced/benchmarks/bench_convergence.py
+
+# Replot from saved data — does NOT re-run simulations
+pixi run -e amr-dev python docs/advanced/benchmarks/plot_benchmarks.py
+
+# Verify the on-disk data is complete (used as a sanity check before
+# claiming a benchmark suite is "done")
+pixi run -e amr-dev python docs/advanced/benchmarks/check_saved_data.py
+```
 
 ## Cases
 
@@ -30,5 +55,5 @@ vep-square
 | Case | Driving | Closed form | What it tests |
 |---|---|---|---|
 | `ve-harmonic` | $V_{\mathrm{top}} = V_0\sin\omega t$ | full Maxwell oscillatory | amplitude attenuation, phase lag |
-| `ve-square` | square-wave $V_{\mathrm{top}}$ | piecewise exponential | BDF-2 history at BC discontinuities |
+| `ve-square` | square-wave $V_{\mathrm{top}}$ | piecewise exponential | BDF history at BC discontinuities |
 | `vep-square` | square-wave with yield | clipped Maxwell square-wave | Min-mode plasticity, projection-snapshot fix |
