@@ -76,22 +76,32 @@ def _run_one(bdf_order):
     A_inf = params["eta"] * gamma_dot_0 / np.sqrt(1.0 + De**2)
     phi = float(np.arctan(De))
 
-    # Plant the steady-state peak as the initial condition: σ(0) = A_∞,
-    # σ̇(0) = 0.  Bypass the DDt's auto-initialise so it doesn't reset
-    # ψ*[0] back to the constitutive law's evaluation at t=0.
+    # Plant the steady-state cycle as the initial condition.  σ_ss(t) =
+    # A_∞·cos(ωt) is the analytical solution under our cos forcing —
+    # zero homogeneous component, σ̇(0) = 0.  History slot k is the
+    # value at t = -k·Δt, which by cosine evenness is A_∞·cos(k·ω·Δt).
     #
-    # Use .array (the structured (N, 2, 2) view) rather than .data — the
-    # latter doesn't reliably sync to the underlying lvec for SYM_TENSOR
-    # writes by component.
+    # Using the *exact* per-slot value (not just A_∞ for all k) is what
+    # actually buys the benefit: the alternative drops O(Δt²) error into
+    # ψ*[1], which then contaminates BDF-2's truncation right from
+    # step 1 — exactly the kind of phase error we are trying to avoid.
+    #
+    # Also bypass the DDt's effective_order ramp: with all history slots
+    # already populated, the very first solve can use full BDF order
+    # rather than starting at BDF-1 and ramping up.
     ddt = stokes.DFDt
     ddt._history_initialised = True
     for k in range(ddt.order):
-        ddt.psi_star[k].array[:, 0, 1] = A_inf
-        ddt.psi_star[k].array[:, 1, 0] = A_inf
-    # Pretend a previous step at DT happened so the var-dt BDF guard
-    # has a sensible dt_history to compare against on the first solve.
+        val_k = A_inf * float(np.cos(OMEGA * k * DT))
+        ddt.psi_star[k].array[:, 0, 1] = val_k
+        ddt.psi_star[k].array[:, 1, 0] = val_k
+    # Tell the DDt that bdf_order full history slots are already
+    # populated, so effective_order = bdf_order from step 1.  Otherwise
+    # _n_solves_completed = 0 forces effective_order = 1 on the first
+    # solve, which would re-introduce BDF-1 startup error.
+    ddt._n_solves_completed = ddt.order
     if bdf_order >= 2:
-        ddt._dt_history[0] = DT
+        ddt._dt_history = [DT] * ddt.order
 
     times, dts, sigmas, gammas, reasons = [], [], [], [], []
     t_cur = 0.0
