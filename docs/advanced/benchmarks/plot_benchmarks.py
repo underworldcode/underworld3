@@ -129,11 +129,14 @@ def plot_ve_harmonic():
     arrays, params, extra = load_run("ve_harmonic")
     eta, mu = params["eta"], params["mu"]
     omega = extra["omega"]
+    De = omega * eta / mu
     gd0 = extra["gamma_dot_0"]
-    # Fine analytical grid for the smooth curve
-    from _bench_helpers import maxwell_oscillatory
+    A_inf = eta * gd0 / np.sqrt(1.0 + De**2)
+    # Fine analytical grid for the smooth curve.  The bench uses the
+    # peak-start IC: V_top(t) = V_0·cos(ωt + φ) with φ = arctan(De), so
+    # the steady-state σ_ss(t) = A_∞·cos(ωt).  No transient.
     t_grid = np.linspace(0, arrays["times"][-1], 2000)
-    sigma_grid = maxwell_oscillatory(t_grid, eta, mu, gd0, omega)
+    sigma_grid = A_inf * np.cos(omega * t_grid)
     fig = _plot_three_panel("VE harmonic", t_grid, sigma_grid,
                             (arrays, params, extra))
     ax_top = fig.axes[0]
@@ -182,6 +185,48 @@ def plot_vep_square():
     fig = _plot_three_panel("VEP square wave (Min mode)", t_grid, sigma_grid,
                             (arrays, params, extra), tau_y=tau_y)
     out = f"{FIG_DIR}/bench_vep_square.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out}")
+
+
+def plot_ve_square_vardt():
+    arrays, params, extra = load_run("ve_square_vardt")
+    eta, mu = params["eta"], params["mu"]
+    half_period = extra["half_period"]
+    gd0 = extra["gamma_dot_0"]
+    from _bench_helpers import maxwell_square_wave
+    t_grid = np.linspace(0, arrays["times"][-1], 4000)
+    sigma_grid = maxwell_square_wave(t_grid, eta, mu, gd0, half_period)
+    title = (
+        f"VE square wave — variable dt "
+        fr"($\Delta t_{{\rm plat}}={extra['dt_plateau']:g}$, "
+        fr"$\Delta t_{{\rm fine}}={extra['dt_fine']:g}$, ±{extra['window']:g})"
+    )
+    fig = _plot_three_panel(title, t_grid, sigma_grid, (arrays, params, extra))
+    out = f"{FIG_DIR}/bench_ve_square_vardt.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out}")
+
+
+def plot_vep_square_vardt():
+    arrays, params, extra = load_run("vep_square_vardt")
+    eta, mu = params["eta"], params["mu"]
+    half_period = extra["half_period"]
+    tau_y = extra["tau_y"]
+    gd0 = extra["gamma_dot_0"]
+    from _bench_helpers import vep_square_wave
+    t_grid = np.linspace(0, arrays["times"][-1], 4000)
+    sigma_grid = vep_square_wave(t_grid, eta, mu, gd0, tau_y, half_period)
+    title = (
+        f"VEP square wave — variable dt "
+        fr"($\Delta t_{{\rm plat}}={extra['dt_plateau']:g}$, "
+        fr"$\Delta t_{{\rm fine}}={extra['dt_fine']:g}$, ±{extra['window']:g})"
+    )
+    fig = _plot_three_panel(title, t_grid, sigma_grid,
+                            (arrays, params, extra), tau_y=tau_y)
+    out = f"{FIG_DIR}/bench_vep_square_vardt.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  wrote {out}")
@@ -244,6 +289,8 @@ if __name__ == "__main__":
         (plot_ve_harmonic, "ve_harmonic"),
         (plot_ve_square, "ve_square"),
         (plot_vep_square, "vep_square"),
+        (plot_ve_square_vardt, "ve_square_vardt"),
+        (plot_vep_square_vardt, "vep_square_vardt"),
         (plot_convergence, "convergence"),
     ]:
         try:
