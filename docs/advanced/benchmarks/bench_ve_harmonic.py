@@ -47,7 +47,13 @@ LABEL = "ve_harmonic"
 
 
 def _run_one(bdf_order):
-    """Run the simulation at one BDF order, return per-step trace + diagnostics."""
+    """Run the simulation at one BDF order, return per-step trace + diagnostics.
+
+    V_top is sampled at the *endpoint* of each step — i.e. the value
+    BDF-2's implicit step actually expects at the new time.  Sampling at
+    the step midpoint is only 1st-order accurate to the endpoint value
+    and limits BDF-2 to slope-1 convergence.
+    """
     params = dict(DEFAULT_PARAMS)
     params["bdf_order"] = bdf_order
     mesh, stokes, V_top, params = build_stokes(f"{LABEL}_o{bdf_order}", params)
@@ -57,13 +63,13 @@ def _run_one(bdf_order):
     t0 = time.time()
     while t_cur < T_END - 1e-9:
         dt = min(DT, T_END - t_cur)
-        t_mid = t_cur + 0.5 * dt
-        v_now = V0 * float(np.sin(OMEGA * t_mid))
+        t_end_step = t_cur + dt
+        v_now = V0 * float(np.sin(OMEGA * t_end_step))
         V_top.sym = sympy.Float(v_now)
         stokes.constitutive_model.Parameters.dt_elastic = dt
         stokes.solve(zero_init_guess=False, timestep=dt, divergence_retries=2)
         s = probe_centre(stokes)
-        t_cur += dt
+        t_cur = t_end_step
         times.append(t_cur); dts.append(dt); sigmas.append(s)
         gammas.append(2.0 * v_now / params["H"])
         reasons.append(int(stokes.snes.getConvergedReason()))
