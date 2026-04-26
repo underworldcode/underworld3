@@ -70,19 +70,31 @@ Logs to `output/benchmarks/ve_square.npz`.
 ```{figure} ../figures/bench_ve_square.png
 :width: 100%
 
-Top: simulated stress (red points) and analytical envelope (black) over
-four periods of the square-wave forcing (light blue fill).  Middle:
-pointwise absolute error on a log scale; the bumps coincide with the BC
-flips at $t = 2, 4, 6,\ldots\,t_r$ where the analytical $\dot\sigma$ has
-a jump.  Bottom: time-step (constant for this run).
+Top: BDF-1 (blue open circles) and BDF-2 (red filled squares)
+overlaid on the analytical envelope (black) over four periods of the
+square-wave forcing (light blue fill).  Middle: pointwise absolute
+error for both orders on a log scale; the bumps coincide with the BC
+flips at $t = 2, 4, 6, \ldots\, t_r$ where the analytical
+$\dot\sigma$ has a jump.  Bottom: time-step (constant for this run).
 ```
 
-The simulation tracks the analytical envelope with a max error of
-$\sim 8\times 10^{-2}$, concentrated immediately after each BC flip.
-The error decays exponentially within each half-period as the
-discrete BDF-2 history catches up with the new ramp.  The decay rate
-matches the Maxwell relaxation time $t_r$.
+Both orders track the analytical envelope.  The asymptotic per-period
+envelope amplitude is $\sigma_{\mathrm{ss}}\tanh(T_{1/2}/(2t_r)) =
+\tanh(1) \approx 0.762$, reached within two periods.
 
-The asymptotic per-period envelope amplitude is
-$\sigma_{\mathrm{ss}}\tanh(T_{1/2}/(2t_r)) = \tanh(1) \approx 0.762$,
-which the simulation reaches within the first two periods.
+```{figure} ../figures/bench_convergence.png
+:width: 100%
+
+Convergence sweep — middle panel is the square-wave case.  BDF-1
+shows clean slope 1.  BDF-2 starts steeper than slope 1 and trends
+toward slope 2 as $\Delta t$ shrinks, but at the dt range plotted
+the BC discontinuity at every half-period flip injects an
+$O(\Delta t)$ contribution that masks BDF-2's slope-2 advantage —
+the constant ratio between BDF-1 and BDF-2 errors is the asymptote
+the BDF-2 line is bending towards as the BC-flip contribution
+becomes subdominant.
+```
+
+The error decays exponentially within each half-period as the
+discrete history catches up with the new ramp; the decay rate matches
+the Maxwell relaxation time $t_r$.

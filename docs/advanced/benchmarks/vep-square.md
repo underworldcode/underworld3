@@ -80,33 +80,43 @@ Logs to `output/benchmarks/vep_square.npz`.
 ```{figure} ../figures/bench_vep_square.png
 :width: 100%
 
-Top: simulated stress (red points), analytical clipped solution (black),
-yield surface guides $\pm\tau_y$ (dashed grey), and rescaled forcing
-(light blue fill).  Middle: pointwise absolute error on a log scale —
-note the dramatic drop to $\sim 10^{-6}$ during yielded plateaux where
-both simulation and analytical sit at $\pm\tau_y$ to machine precision.
-Bottom: time-step.
+Top: BDF-1 (blue open circles) and BDF-2 (red filled squares)
+overlaid on the analytical clipped solution (black), yield surface
+guides $\pm\tau_y$ (dashed grey), and rescaled forcing (light blue
+fill).  Middle: pointwise absolute error for both orders on a log
+scale — note the dramatic drop to $\sim 10^{-6}$ during yielded
+plateaux where simulation and analytical both sit at $\pm\tau_y$ to
+machine precision.  Bottom: time-step.
 ```
 
-Two things to read from this plot:
+Two things to read from the per-case plot:
 
-1. **The yield surface holds**.  Peak $|\sigma|$ matches $\tau_y = 0.5$
-   to four decimal places; the count of overshoots ($|\sigma| >
-   1.001\,\tau_y$) is zero.  This is the regression that the
+1. **The yield surface holds for both orders**.  Peak $|\sigma|$
+   matches $\tau_y = 0.5$ to four decimal places at the canonical dt
+   for both BDF-1 and BDF-2; the count of overshoots
+   ($|\sigma| > 1.001\,\tau_y$) is zero in both runs.  This is the
+   regression that the
    [variable-dt yield-lock test](../../../tests/test_1052_VEP_stability_regression.py)
    protects against re-introduction.
 
-2. **The error has structure**.  During yielded plateaux the simulation
-   matches the analytical to machine precision (the $\sim 10^{-6}$ floor
-   is the projection's L2 residual), so the error there reflects only
-   the implementation's purity at the yield surface.  During the elastic
-   loading/unloading transients the BDF-2 phase error accumulates and
-   peaks at $\sim 10^{-2}$ just after each BC flip, decaying within the
-   half-period.  The maximum overall is $\sim 6\times 10^{-2}$ and the
-   RMS is $\sim 3\times 10^{-2}$ — both close to the matching pure-VE
-   benchmark's transient errors.
+2. **The error has structure**.  During yielded plateaux the
+   simulation matches the analytical to machine precision (the
+   $\sim 10^{-6}$ floor is the projection's L2 residual).  During the
+   elastic loading/unloading transients the per-step truncation error
+   peaks just after each BC flip and decays within the half-period.
+
+```{figure} ../figures/bench_convergence.png
+:width: 100%
+
+Convergence sweep — right panel is the VEP case.  BDF-1 shows clean
+slope 1.  BDF-2 follows the same trend with a constant ratio above
+BDF-1, until the smallest $\Delta t$ where a transient overshoot
+arrives one step late on the yield-onset transition; this shows up
+in the max-norm but not the rms.  Peak $|\sigma|$ stays within 1.3 %
+of $\tau_y$ at every $\Delta t$ tested.
+```
 
 The benchmark's strict accuracy requirement is the yield-surface peak,
 not the transient error: any future change that produces $|\sigma| >
-\tau_y$ on a fixed-dt yielded plateau fails the corresponding regression
-test.
+\tau_y$ on a fixed-dt yielded plateau by more than the yield-lock
+test's tolerance fails the regression suite.
