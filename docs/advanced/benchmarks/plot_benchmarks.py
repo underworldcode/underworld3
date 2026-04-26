@@ -220,13 +220,37 @@ def plot_vep_square_vardt():
     t_grid = np.linspace(0, arrays["times"][-1], 4000)
     sigma_grid = vep_square_wave(t_grid, eta, mu, gd0, tau_y, half_period)
     title = (
-        f"VEP square wave — variable dt "
+        f"VEP square wave (Min) — variable dt "
         fr"($\Delta t_{{\rm plat}}={extra['dt_plateau']:g}$, "
         fr"$\Delta t_{{\rm fine}}={extra['dt_fine']:g}$, ±{extra['window']:g})"
     )
     fig = _plot_three_panel(title, t_grid, sigma_grid,
                             (arrays, params, extra), tau_y=tau_y)
     out = f"{FIG_DIR}/bench_vep_square_vardt.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out}")
+
+
+def plot_vep_square_vardt_smooth():
+    arrays, params, extra = load_run("vep_square_vardt_smooth")
+    eta, mu = params["eta"], params["mu"]
+    half_period = extra["half_period"]
+    tau_y = extra["tau_y"]
+    gd0 = extra["gamma_dot_0"]
+    from _bench_helpers import vep_square_wave
+    t_grid = np.linspace(0, arrays["times"][-1], 4000)
+    # Reference shown is the Min-clipped solution — useful as a guide,
+    # but smooth mode is expected to under-clip below ±τ_y.
+    sigma_grid = vep_square_wave(t_grid, eta, mu, gd0, tau_y, half_period)
+    title = (
+        f"VEP square wave (smooth) — variable dt "
+        fr"($\Delta t_{{\rm plat}}={extra['dt_plateau']:g}$, "
+        fr"$\Delta t_{{\rm fine}}={extra['dt_fine']:g}$, ±{extra['window']:g})"
+    )
+    fig = _plot_three_panel(title, t_grid, sigma_grid,
+                            (arrays, params, extra), tau_y=tau_y)
+    out = f"{FIG_DIR}/bench_vep_square_vardt_smooth.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  wrote {out}")
@@ -291,6 +315,7 @@ if __name__ == "__main__":
         (plot_vep_square, "vep_square"),
         (plot_ve_square_vardt, "ve_square_vardt"),
         (plot_vep_square_vardt, "vep_square_vardt"),
+        (plot_vep_square_vardt_smooth, "vep_square_vardt_smooth"),
         (plot_convergence, "convergence"),
     ]:
         try:
