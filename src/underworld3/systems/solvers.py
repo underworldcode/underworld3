@@ -1147,7 +1147,34 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         self._constitutive_model = None
 
+        # Optional: alternative F1 expression to autodiff for the
+        # Jacobian.  When None, autodiff F1 itself (default).  Used for
+        # inexact-Newton tricks like a smooth-Jacobian / sharp-residual
+        # split at a VEP yield kink.  See ``set_jacobian_F1_source``.
+        self._F1_jacobian_source = None
+
         return
+
+    def set_jacobian_F1_source(self, F1_source):
+        r"""Override the F1 expression used to build the Jacobian blocks.
+
+        By default, the Stokes Jacobian's uu / up G2, G3 blocks are
+        autodiff'd from the residual F1.  Some problems benefit from
+        differentiating a *different* but related expression — e.g. a
+        smooth (softmin) viscosity formula for the Jacobian while the
+        residual F1 keeps a sharp Min, so Newton sees a continuous
+        derivative even when the iterate sits exactly on the yield kink.
+
+        Setting ``F1_source`` triggers a JIT recompile (the Jacobian
+        symbols change).  Pass ``None`` to revert to autodiff of F1.
+
+        Parameters
+        ----------
+        F1_source : sympy.Matrix or None
+            Alternative expression of the same shape as ``F1.sym``.
+        """
+        self._F1_jacobian_source = F1_source
+        self.is_setup = False
 
     def _create_stress_history_ddt(self, order=2):
         """Create DFDt for stress history tracking (VE/VEP models).
