@@ -50,10 +50,12 @@ pixi run -e amr-dev python docs/advanced/benchmarks/check_saved_data.py
 ve-harmonic
 ve-square
 vep-square
+vardt-square
 ```
 
 | Case | Driving | Closed form | What it tests |
 |---|---|---|---|
-| `ve-harmonic` | $V_{\mathrm{top}} = V_0\sin\omega t$ | full Maxwell oscillatory | amplitude attenuation, phase lag |
+| `ve-harmonic` | $V_{\mathrm{top}} = V_0\cos(\omega t + \varphi)$ | $A_\infty\cos\omega t$ | amplitude attenuation, phase lag, peak-start IC |
 | `ve-square` | square-wave $V_{\mathrm{top}}$ | piecewise exponential | BDF history at BC discontinuities |
 | `vep-square` | square-wave with yield | clipped Maxwell square-wave | Min-mode plasticity, projection-snapshot fix |
+| `vardt-square` | square-wave + reduced $\Delta t$ near flips | same as `ve-square` / `vep-square` | snapshot machinery under variable timestep |
