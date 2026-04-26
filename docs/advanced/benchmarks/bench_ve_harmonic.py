@@ -40,23 +40,58 @@ from _bench_helpers import (
 V0 = 0.5                     # → γ̇₀ = 2·V0/H = 1.0 in the symmetric strain rate
 OMEGA = np.pi / 2.0          # period 4·t_r → De = π/2 ≈ 1.57
 DT = 0.05                    # ~80 steps per period; resolves the harmonic
-N_PERIODS = 4                # 4 full periods after transient
-T_END = N_PERIODS * 2.0 * np.pi / OMEGA + 0.5  # extra to capture tail
+N_PERIODS = 4                # 4 full periods (no warmup needed — see below)
+T_END = N_PERIODS * 2.0 * np.pi / OMEGA   # 4 periods exactly
 
 LABEL = "ve_harmonic"
 
+# Initial condition design: start at a point in the steady-state cycle
+# where σ̇ = 0, so σ(0) is consistent with the analytical and there is
+# *no* startup transient.  Choose BC such that σ_ss(t) = A_∞·cos(ωt),
+# i.e. peak at t=0.  Working backwards through the Maxwell phase
+# response (lag φ = arctan(De)), this requires
+#   V_top(t) = V_0 · cos(ωt + φ)
+# so that ε̇_xy(t) = (V_0/H)·cos(ωt + φ) and the steady-state response
+# σ_ss(t) = A_∞·cos(ωt + φ - φ) = A_∞·cos(ωt).
+#
+# The initial condition σ(0) = A_∞ matches the steady-state at t=0
+# exactly, leaving no homogeneous (decaying) component — so the entire
+# recorded trace is on the steady cycle.
+
 
 def _run_one(bdf_order):
-    """Run the simulation at one BDF order, return per-step trace + diagnostics.
+    """Run the simulation at one BDF order with peak-start initial condition.
 
-    V_top is sampled at the *endpoint* of each step — i.e. the value
-    BDF-2's implicit step actually expects at the new time.  Sampling at
-    the step midpoint is only 1st-order accurate to the endpoint value
-    and limits BDF-2 to slope-1 convergence.
+    See module docstring above for why σ(0) = A_∞ paired with the cosine
+    forcing eliminates the startup transient.  V_top is sampled at the
+    *endpoint* of each step (BDF expects the value at the new time).
     """
     params = dict(DEFAULT_PARAMS)
     params["bdf_order"] = bdf_order
     mesh, stokes, V_top, params = build_stokes(f"{LABEL}_o{bdf_order}", params)
+
+    t_r = params["eta"] / params["mu"]
+    De = OMEGA * t_r
+    gamma_dot_0 = 2.0 * V0 / params["H"]
+    A_inf = params["eta"] * gamma_dot_0 / np.sqrt(1.0 + De**2)
+    phi = float(np.arctan(De))
+
+    # Plant the steady-state peak as the initial condition: σ(0) = A_∞,
+    # σ̇(0) = 0.  Bypass the DDt's auto-initialise so it doesn't reset
+    # ψ*[0] back to the constitutive law's evaluation at t=0.
+    #
+    # Use .array (the structured (N, 2, 2) view) rather than .data — the
+    # latter doesn't reliably sync to the underlying lvec for SYM_TENSOR
+    # writes by component.
+    ddt = stokes.DFDt
+    ddt._history_initialised = True
+    for k in range(ddt.order):
+        ddt.psi_star[k].array[:, 0, 1] = A_inf
+        ddt.psi_star[k].array[:, 1, 0] = A_inf
+    # Pretend a previous step at DT happened so the var-dt BDF guard
+    # has a sensible dt_history to compare against on the first solve.
+    if bdf_order >= 2:
+        ddt._dt_history[0] = DT
 
     times, dts, sigmas, gammas, reasons = [], [], [], [], []
     t_cur = 0.0
@@ -64,7 +99,8 @@ def _run_one(bdf_order):
     while t_cur < T_END - 1e-9:
         dt = min(DT, T_END - t_cur)
         t_end_step = t_cur + dt
-        v_now = V0 * float(np.sin(OMEGA * t_end_step))
+        # BC: V_top(t) = V_0·cos(ωt + φ) so σ_ss(t) = A_∞·cos(ωt).
+        v_now = V0 * float(np.cos(OMEGA * t_end_step + phi))
         V_top.sym = sympy.Float(v_now)
         stokes.constitutive_model.Parameters.dt_elastic = dt
         stokes.solve(zero_init_guess=False, timestep=dt, divergence_retries=2)
@@ -80,13 +116,15 @@ def _run_one(bdf_order):
 def main():
     times1, dts1, sig1, gam1, rea1, wall1, params = _run_one(1)
     times2, dts2, sig2, gam2, rea2, wall2, _      = _run_one(2)
-    # Both runs use the same dt schedule, so the time grids match
     assert np.allclose(times1, times2)
 
     t_r = t_relax(params)
     De = OMEGA * t_r
     gamma_dot_0 = 2.0 * V0 / params["H"]
-    sigma_ana = maxwell_oscillatory(times1, params["eta"], params["mu"], gamma_dot_0, OMEGA)
+    A_inf = params["eta"] * gamma_dot_0 / np.sqrt(1.0 + De**2)
+    # Peak-start initial condition + cos(ωt + φ) forcing → no transient,
+    # so the analytical is the steady-state cycle σ(t) = A_∞·cos(ωt).
+    sigma_ana = A_inf * np.cos(OMEGA * times1)
 
     err1 = error_metrics(sig1, sigma_ana)
     err2 = error_metrics(sig2, sigma_ana)
