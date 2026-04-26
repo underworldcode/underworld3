@@ -201,6 +201,74 @@ def _step_square_analytical(t, eta, mu, gamma_dot, half_period):
     return out
 
 
+def test_ti_vep_yield_lock_variable_dt():
+    """TransverseIsotropicVEPFlowModel should inherit the same yield-lock
+    behaviour as VEP under variable dt — both share SemiLagrangian DDt and
+    its snapshot machinery via SNES_Stokes._create_stress_history_ddt.
+
+    Catches: regressions in the TI-VEP code path that would prevent the
+    snapshot substitution from applying (e.g. changes to psi_star[0]'s
+    symbolic structure under TI flux, or accidental override of the DDt
+    setup).
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 8), minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5),
+    )
+    v = uw.discretisation.MeshVariable("U_ti", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_ti", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    cm = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
+        stokes.Unknowns, order=2,
+    )
+    stokes.constitutive_model = cm
+    cm.Parameters.shear_viscosity_0 = ETA
+    cm.Parameters.shear_viscosity_1 = ETA
+    cm.Parameters.shear_modulus = MU
+    cm.Parameters.yield_stress = TAU_Y
+    cm.Parameters.director = sympy.Matrix([0.0, 1.0])  # horizontal fault
+    cm.Parameters.strainrate_inv_II_min = 1.0e-6
+    cm._yield_mode = "min"
+
+    V_top = expression(R"V_{top_ti}", sympy.Float(V0), "Top V")
+    stokes.add_dirichlet_bc((V_top, 0.0), "Top")
+    stokes.add_dirichlet_bc((-V_top, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1.0e-6
+    stokes.petsc_options["snes_force_iteration"] = True
+
+    # Sanity check: snapshot machinery is wired in
+    assert stokes.Unknowns.DFDt is not None
+    assert stokes.Unknowns.DFDt._psi_snapshot_enabled
+    assert stokes.Unknowns.DFDt._psi_snapshot is not None
+
+    centre = np.array([[0.0, 0.0]])
+
+    def _step_ti(dt):
+        V_top.sym = sympy.Float(V0)
+        cm.Parameters.dt_elastic = dt
+        stokes.solve(zero_init_guess=False, timestep=dt, divergence_retries=2)
+
+    def _sigma_ti():
+        return float(uw.function.evaluate(stokes.tau.sym[0, 1], centre).flatten()[0])
+
+    # Phase 1: warm up to yield at dt = 0.20
+    for _ in range(6):
+        _step_ti(0.20 * T_R)
+    assert abs(_sigma_ti() - TAU_Y) < TAU_Y * 0.01, "TI-VEP did not reach yield"
+    # Phase 2 + 3: halve and double, σ must hold
+    sigmas = []
+    for _ in range(4):
+        _step_ti(0.10 * T_R); sigmas.append(_sigma_ti())
+    for _ in range(4):
+        _step_ti(0.20 * T_R); sigmas.append(_sigma_ti())
+    sigmas = np.array(sigmas)
+    assert np.abs(sigmas).max() <= TAU_Y * 1.01, (
+        f"TI-VEP variable-dt yield violation: peak={np.abs(sigmas).max():.4f} "
+        f"vs τ_y={TAU_Y}"
+    )
+
+
 def test_pure_ve_variable_dt_accuracy():
     """Pure VE under variable dt should match the analytical square-wave
     solution within a loose tolerance.
