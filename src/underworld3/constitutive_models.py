@@ -2432,6 +2432,16 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         self._order = order
         self._yield_mode = "softmin"
         self._yield_softness = 0.1
+        # BDF order-blending α ∈ [0, 1].  α=1 → pure BDF-2; α=0 → pure
+        # BDF-1; intermediate → linear blend of coefficients.  Required
+        # to damp a slow exponential drift seen in TI-VEP + spatial
+        # ``yield_stress`` field at BDF-2: pure α=1 produces |σ_xy|→∞
+        # over ~10 t_r, isolated to the TI tensor + influence-function
+        # combination (not isotropic VEP).  α=0.5 gives ~1.5-order
+        # accuracy and stable plateaux.  Investigated/reinstated 2026-04
+        # after the original retirement (commit 21ebe3b) which only
+        # exercised constant or scalar-yield TI-VEP setups.
+        self._bdf_blend = 0.5
         self._max_dt_ratio_for_higher_order = 2.0
 
         # Timestep (set by solver)
@@ -2619,6 +2629,20 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         else:
             coeffs = _bdf_coefficients(order, None, [])
 
+        # BDF order blending — see ``self._bdf_blend`` docstring.
+        # Linear mix of BDF-1 and the requested-order coefficients.
+        alpha = self._bdf_blend
+        if 0 < alpha < 1 and order >= 2:
+            coeffs_o1 = _bdf_coefficients(1, dt_current, dt_history) \
+                if (self.Unknowns is not None and self.Unknowns.DFDt is not None) \
+                else _bdf_coefficients(1, None, [])
+            while len(coeffs_o1) < len(coeffs):
+                coeffs_o1.append(sympy.Integer(0))
+            coeffs = [
+                (1 - alpha) * c1 + alpha * ck
+                for c1, ck in zip(coeffs_o1, coeffs)
+            ]
+
         while len(coeffs) < 4:
             coeffs.append(sympy.Integer(0))
 
@@ -2626,6 +2650,31 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         self._bdf_c1.sym = coeffs[1]
         self._bdf_c2.sym = coeffs[2]
         self._bdf_c3.sym = coeffs[3]
+
+    @property
+    def bdf_blend(self):
+        r"""BDF coefficient blending α ∈ [0, 1].
+
+        Linearly mixes BDF-1 and the requested-order coefficients:
+        ``c = (1-α)·c_BDF1 + α·c_requested_order``.
+
+        - ``α = 0``: pure BDF-1 (most stable, first-order accurate)
+        - ``α = 0.5`` (default for TI-VEP): balanced ~1.5-order
+        - ``α = 1``: pure requested order (e.g. BDF-2)
+
+        TI-VEP defaults to ``0.5`` because pure BDF-2 drifts unstably on
+        problems with a spatially varying ``yield_stress`` field (e.g.
+        ``influence_function``-localised faults).  Set ``α = 1`` if the
+        problem has uniform ``yield_stress`` and you need full
+        second-order accuracy.
+        """
+        return self._bdf_blend
+
+    @bdf_blend.setter
+    def bdf_blend(self, value):
+        if not (0.0 <= float(value) <= 1.0):
+            raise ValueError(f"bdf_blend must be in [0, 1], got {value}")
+        self._bdf_blend = float(value)
 
     @property
     def stress_star(self):

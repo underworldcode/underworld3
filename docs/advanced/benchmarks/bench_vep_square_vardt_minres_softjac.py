@@ -80,6 +80,11 @@ def _run_one(bdf_order):
         yield_stress=TAU_Y, yield_mode="min",
     )
     # Inexact Newton: softmin Jacobian, Min residual.
+    # ``set_jacobian_F1_source`` defaults to installing the ``cp``
+    # (critical-point) linesearch, which is the right pairing for an
+    # inexact Jacobian — the default ``bt`` rejects useful steps as
+    # ``DIVERGED_LINE_SEARCH`` because they don't strictly reduce the
+    # Min residual (only the softmin one).
     F1_jac = _capture_softmin_F1(stokes, JAC_SOFTNESS)
     stokes.set_jacobian_F1_source(F1_jac)
 

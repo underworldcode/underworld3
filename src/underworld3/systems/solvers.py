@@ -1155,7 +1155,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         return
 
-    def set_jacobian_F1_source(self, F1_source):
+    def set_jacobian_F1_source(self, F1_source, linesearch="cp"):
         r"""Override the F1 expression used to build the Jacobian blocks.
 
         By default, the Stokes Jacobian's uu / up G2, G3 blocks are
@@ -1172,9 +1172,22 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         ----------
         F1_source : sympy.Matrix or None
             Alternative expression of the same shape as ``F1.sym``.
+        linesearch : str or None, default ``"cp"``
+            SNES linesearch type to install when ``F1_source`` is set.
+            Defaults to ``"cp"`` (critical-point) because inexact-Newton
+            steps don't reliably reduce the residual norm and PETSc's
+            default ``bt`` (backtracking) consequently rejects useful
+            steps with ``DIVERGED_LINE_SEARCH``.  ``cp`` accepts the
+            predicted step at the optimum of the local linearisation and
+            converges cleanly on the same problems where ``bt`` flails.
+            Set to ``None`` to leave the linesearch type untouched (e.g.
+            if you've already configured one via ``petsc_options``).
+            Has no effect when ``F1_source is None``.
         """
         self._F1_jacobian_source = F1_source
         self.is_setup = False
+        if F1_source is not None and linesearch is not None:
+            self.petsc_options["snes_linesearch_type"] = linesearch
 
     def _create_stress_history_ddt(self, order=2):
         """Create DFDt for stress history tracking (VE/VEP models).
