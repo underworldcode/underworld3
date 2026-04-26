@@ -5063,10 +5063,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         U = sympy.Array(self.u.sym).reshape(dim)
         P = sympy.Array(self.p.sym).reshape(1)
 
+        # Optional override: differentiate an alternative F1 to build the
+        # uu and up Jacobian blocks while leaving the residual F1
+        # unchanged. Used for inexact Newton (e.g. softmin Jacobian with
+        # Min residual at a yield kink). When None, autodiff F1 itself.
+        F1_jac_src = getattr(self, "_F1_jacobian_source", None)
+        F1_for_jac = sympy.Array(F1_jac_src) if F1_jac_src is not None else F1
+
         G0 = sympy.derive_by_array(F0, self.u.sym)
         G1 = sympy.derive_by_array(F0, self.Unknowns.L)
-        G2 = sympy.derive_by_array(F1, self.u.sym)
-        G3 = sympy.derive_by_array(F1, self.Unknowns.L)
+        G2 = sympy.derive_by_array(F1_for_jac, self.u.sym)
+        G3 = sympy.derive_by_array(F1_for_jac, self.Unknowns.L)
 
         # reorganise indices from sympy to petsc orssdering / reshape to Matrix form
         # ijkl -> LJKI (hence 3120)
@@ -5091,8 +5098,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         G0 = sympy.derive_by_array(F0, self.p.sym)
         G1 = sympy.derive_by_array(F0, self._G)
-        G2 = sympy.derive_by_array(F1, self.p.sym)
-        G3 = sympy.derive_by_array(F1, self._G)
+        G2 = sympy.derive_by_array(F1_for_jac, self.p.sym)
+        G3 = sympy.derive_by_array(F1_for_jac, self._G)
 
         self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
         self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))  # zero in stokes tests
