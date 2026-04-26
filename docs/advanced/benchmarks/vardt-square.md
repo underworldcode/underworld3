@@ -86,3 +86,55 @@ story as in the fixed-dt VEP case: at the loading→yield transition
 the 2nd-order step occasionally lags by one fine-Δt step before
 catching up.  RMS — which is the more honest measure for a sharp
 transition — is comparable to BDF-1's.
+
+### VEP (softmin mode, default δ = 0.1)
+
+```{figure} ../figures/bench_vep_square_vardt_softmin.png
+:width: 100%
+
+Same problem with `yield_mode="softmin"` — replacing
+$\min(\eta_{ve},\eta_{pl})$ with the smooth approximation
+$\eta_{ve}/g(f)$, $g(f) = 1 + (f-1+\sqrt{(f-1)^2+\delta^2})/2$.
+At δ = 0.1 the kink is differentiable but the plateau still tracks
+the yield surface tightly.
+```
+
+| | BDF-1 | BDF-2 |
+|---|---|---|
+| peak\|σ\| | 0.4894 (97.9% of τ_y) | 0.4853 (97.1% of τ_y) |
+| max\|err vs Min-clip\| | 8.39e-02 | 1.11e-01 |
+| rms vs Min-clip       | 6.12e-02 | 7.76e-02 |
+
+Softmin keeps the plateau within 2-3% of the true Min yield surface
+while smoothing out the kink at $\eta_{ve} = \eta_{pl}$ — Newton sees
+a continuous derivative and the SNES never needs the Picard retry
+that Min mode occasionally triggers.  The "error vs Min-clip"
+figure-of-merit penalises the deliberately rounded transitions; it
+is not an accuracy gap in any physically meaningful sense.
+
+### Why `yield_mode="smooth"` was retired
+
+The third yield-mode option, the harmonic-blend "smooth" formula
+$\eta_{eff} = \eta_{ve}\,(1+f)/(1+f+f^2)$, was retired in this same
+benchmark suite (commit 5936b46) after the variable-dt run made the
+problem unmissable:
+
+```{figure} ../figures/bench_vep_square_vardt_smooth.png
+:width: 100%
+
+`yield_mode="smooth"` plateaus at |σ| ≈ 0.24 — only ~50% of
+τ_y = 0.5 — across every loading half-cycle.  Both BDF orders
+under-clip identically.  This is not a transient; the driving
+$\dot\gamma$ holds long enough to reach steady state on every plateau.
+```
+
+| | BDF-1 | BDF-2 |
+|---|---|---|
+| peak\|σ\| | 0.2599 (52.0% of τ_y) | 0.2355 (47.1% of τ_y) |
+| max\|err vs Min-clip\| | 3.66e-01 | 3.81e-01 |
+
+The blend formula has the wrong asymptotic behaviour: at $f = 1$
+(the yield kink itself) it gives $\eta_{eff}/\eta_{ve} = 2/3$, and it
+keeps reducing $\eta_{eff}$ deep into the plastic regime instead of
+saturating at $\eta_{pl}$.  `softmin` does not have this defect, so
+`smooth` was removed and the setter now redirects users.
