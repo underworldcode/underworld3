@@ -834,6 +834,49 @@ class Eulerian(uw_object):
         self._history_initialised = True
         return
 
+    def set_initial_history(self, values, dt=None):
+        r"""Plant history values for BDF restart or analytical IC.
+
+        Bypasses the automatic ``effective_order`` ramp so the very
+        first solve runs at the full BDF order rather than starting at
+        BDF-1. Use this when you have known values at :math:`t` and
+        past times — e.g. an analytical periodic solution, or a
+        checkpointed history loaded from disk.
+
+        Parameters
+        ----------
+        values : sequence of length ``self.order``
+            ``values[k]`` is :math:`\psi` at :math:`t - k\,\Delta t`,
+            i.e. ``values[0]`` is the current state. Each entry must
+            be assignable to ``psi_star[k].array`` — either an array
+            of matching shape, or a scalar that broadcasts.
+        dt : float, optional
+            Uniform timestep assumed between history slots. Required
+            for ``order >= 2`` to seed correct multistep coefficients
+            on the first solve. Ignored for ``order = 1``.
+        """
+        if len(values) != self.order:
+            raise ValueError(
+                f"set_initial_history requires {self.order} value(s) "
+                f"(one per history slot, including the current state); "
+                f"got {len(values)}."
+            )
+        for k, val in enumerate(values):
+            self.psi_star[k].array[...] = val
+        self._history_initialised = True
+        self._n_solves_completed = self.order
+        if dt is not None:
+            self._dt_history = [float(dt)] * self.order
+        elif self.order >= 2:
+            import warnings
+            warnings.warn(
+                "set_initial_history called with order >= 2 but no "
+                "dt — variable-dt BDF coefficients will be wrong on "
+                "the first solve. Pass dt=<timestep> to suppress.",
+                stacklevel=2,
+            )
+        return
+
     def initiate_history_fn(self):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
@@ -1376,6 +1419,49 @@ class SemiLagrangian(uw_object):
             self.psi_star[i].array[...] = self.psi_star[0].array[...]
 
         self._history_initialised = True
+        return
+
+    def set_initial_history(self, values, dt=None):
+        r"""Plant history values for BDF restart or analytical IC.
+
+        Bypasses the automatic ``effective_order`` ramp so the very
+        first solve runs at the full BDF order rather than starting
+        at BDF-1. Use this when you have known values at :math:`t`
+        and past times — e.g. an analytical periodic solution, or a
+        checkpointed history loaded from disk.
+
+        Parameters
+        ----------
+        values : sequence of length ``self.order``
+            ``values[k]`` is :math:`\psi` at :math:`t - k\,\Delta t`,
+            i.e. ``values[0]`` is the current state. Each entry must
+            be assignable to ``psi_star[k].array`` — either an array
+            of matching shape, or a scalar that broadcasts.
+        dt : float, optional
+            Uniform timestep assumed between history slots. Required
+            for ``order >= 2`` to seed correct multistep coefficients
+            on the first solve. Ignored for ``order = 1``.
+        """
+        if len(values) != self.order:
+            raise ValueError(
+                f"set_initial_history requires {self.order} value(s) "
+                f"(one per history slot, including the current state); "
+                f"got {len(values)}."
+            )
+        for k, val in enumerate(values):
+            self.psi_star[k].array[...] = val
+        self._history_initialised = True
+        self._n_solves_completed = self.order
+        if dt is not None:
+            self._dt_history = [float(dt)] * self.order
+        elif self.order >= 2:
+            import warnings
+            warnings.warn(
+                "set_initial_history called with order >= 2 but no "
+                "dt — variable-dt BDF coefficients will be wrong on "
+                "the first solve. Pass dt=<timestep> to suppress.",
+                stacklevel=2,
+            )
         return
 
     def initiate_history_fn(self):

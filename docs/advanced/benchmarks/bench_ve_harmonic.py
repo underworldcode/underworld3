@@ -82,26 +82,18 @@ def _run_one(bdf_order):
     # value at t = -k·Δt, which by cosine evenness is A_∞·cos(k·ω·Δt).
     #
     # Using the *exact* per-slot value (not just A_∞ for all k) is what
-    # actually buys the benefit: the alternative drops O(Δt²) error into
-    # ψ*[1], which then contaminates BDF-2's truncation right from
-    # step 1 — exactly the kind of phase error we are trying to avoid.
-    #
-    # Also bypass the DDt's effective_order ramp: with all history slots
-    # already populated, the very first solve can use full BDF order
-    # rather than starting at BDF-1 and ramping up.
-    ddt = stokes.DFDt
-    ddt._history_initialised = True
-    for k in range(ddt.order):
+    # actually buys the benefit: a constant A_∞ across all slots drops
+    # O(Δt²) error into ψ*[1], contaminating BDF-2's truncation from
+    # step 1 — exactly the phase error we are trying to avoid.
+    n_nodes = stokes.DFDt.psi_star[0].array.shape[0]
+    history = []
+    for k in range(stokes.DFDt.order):
+        arr = np.zeros((n_nodes, 2, 2))
         val_k = A_inf * float(np.cos(OMEGA * k * DT))
-        ddt.psi_star[k].array[:, 0, 1] = val_k
-        ddt.psi_star[k].array[:, 1, 0] = val_k
-    # Tell the DDt that bdf_order full history slots are already
-    # populated, so effective_order = bdf_order from step 1.  Otherwise
-    # _n_solves_completed = 0 forces effective_order = 1 on the first
-    # solve, which would re-introduce BDF-1 startup error.
-    ddt._n_solves_completed = ddt.order
-    if bdf_order >= 2:
-        ddt._dt_history = [DT] * ddt.order
+        arr[:, 0, 1] = val_k
+        arr[:, 1, 0] = val_k
+        history.append(arr)
+    stokes.DFDt.set_initial_history(history, dt=DT)
 
     times, dts, sigmas, gammas, reasons = [], [], [], [], []
     t_cur = 0.0
