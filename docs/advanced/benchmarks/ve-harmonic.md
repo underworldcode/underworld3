@@ -74,16 +74,30 @@ plot script doesn't re-run the simulation.
 ```{figure} ../figures/bench_ve_harmonic.png
 :width: 100%
 
-Top: simulated stress (red points), closed-form solution (black), and
-the rescaled square-wave forcing (light blue fill) for context.  Middle:
-pointwise absolute error.  Bottom: time-step.  Inset shows the
-fitted-vs-analytical amplitude and phase.
+Top: BDF-1 (blue open circles) and BDF-2 (red filled squares)
+overlaid on the closed-form solution (black) and the rescaled
+sinusoidal forcing (light blue fill) for context.  Middle: pointwise
+absolute error for both orders.  Bottom: time-step.  Inset compares
+fitted vs analytical amplitude and phase lag.
 ```
 
 At $\mathrm{De} = \pi/2$ the analytical amplitude is
 $A_\infty = 1/\sqrt{1+\pi^2/4} \approx 0.537$ and the phase lag is
-$\varphi = \arctan(\pi/2) \approx 1.004$ rad.  The benchmark recovers
-both: the fitted amplitude matches to within $10^{-3}$ and the phase
-lag to within a few percent over the post-transient window.  The
-pointwise error sits below $\sim 2\times 10^{-2}$ — the BDF-2 phase
-error at $\Delta t / T = 0.0125$ explains essentially all of it.
+$\varphi = \arctan(\pi/2) \approx 1.004$ rad.  Both BDF orders recover
+the amplitude to within a percent and the phase lag to within a few
+percent.
+
+```{figure} ../figures/bench_convergence.png
+:width: 100%
+
+Convergence sweep — left panel is the harmonic case.  Both BDF orders
+sit on slope 1 (the dotted reference line) throughout the dt range.
+That's not BDF-2 misbehaving: $V_{\mathrm{top}}$ is sampled at the
+step midpoint, which is *1st-order* accurate to the value BDF-2's
+implicit step expects at the step endpoint.  Genuine BDF-2 slope-2
+convergence would require endpoint-sampled forcing.
+```
+
+The point of this benchmark is twofold: confirm we recover the steady
+amplitude and phase, and surface the BC-sampling order as the limiter
+on temporal accuracy under smooth forcing.
