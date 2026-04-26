@@ -30,6 +30,11 @@ from _bench_helpers import (
 # ---------------------------------------------------------------------------
 
 def run_ve_harmonic(dt, bdf_order, V0=0.5, omega=np.pi/2.0, n_periods=4):
+    """Endpoint V_top sampling — see bench_ve_harmonic.py for the rationale.
+
+    Midpoint sampling is 1st-order accurate to the value BDF-2 wants
+    at the step endpoint and would limit BDF-2 to slope-1 convergence.
+    """
     label = f"ve_h_dt{dt:.4f}_o{bdf_order}"
     params = dict(DEFAULT_PARAMS); params["bdf_order"] = bdf_order
     _, stokes, V_top, params = build_stokes(label, params)
@@ -40,12 +45,13 @@ def run_ve_harmonic(dt, bdf_order, V0=0.5, omega=np.pi/2.0, n_periods=4):
     t_cur = 0.0
     while t_cur < t_end - 1e-9:
         ds = min(dt, t_end - t_cur)
-        v_now = V0 * float(np.sin(omega * (t_cur + 0.5 * ds)))
+        t_end_step = t_cur + ds
+        v_now = V0 * float(np.sin(omega * t_end_step))
         V_top.sym = sympy.Float(v_now)
         stokes.constitutive_model.Parameters.dt_elastic = ds
         stokes.solve(zero_init_guess=False, timestep=ds, divergence_retries=2)
         sigmas.append(probe_centre(stokes))
-        t_cur += ds
+        t_cur = t_end_step
         times.append(t_cur)
     times = np.array(times); sigmas = np.array(sigmas)
     sigma_ana = maxwell_oscillatory(times, params["eta"], params["mu"], gd0, omega)

@@ -47,7 +47,8 @@ $$
 | Velocity field | $\mathbb{P}^2$ |
 | Pressure field | $\mathbb{P}^1$ |
 | Boundary conditions | top/bottom velocity = $\pm V_0\sin(\omega t)$, free at left/right |
-| Time integration | BDF-2, $\Delta t = 0.05\,t_r$ |
+| Time integration | BDF-1 *and* BDF-2 at $\Delta t = 0.05\,t_r$, plus a sweep over $\Delta t \in \{0.025, 0.05, 0.10, 0.20, 0.40\}\,t_r$ |
+| BC sampling | $V_{\mathrm{top}}$ evaluated at the *endpoint* of each step |
 | Shear viscosity | $\eta = 1$ |
 | Shear modulus | $\mu = 1$ |
 | Top velocity amplitude | $V_0 = 0.5$ → $\dot\gamma_0 = 1$ |
@@ -83,21 +84,26 @@ fitted vs analytical amplitude and phase lag.
 
 At $\mathrm{De} = \pi/2$ the analytical amplitude is
 $A_\infty = 1/\sqrt{1+\pi^2/4} \approx 0.537$ and the phase lag is
-$\varphi = \arctan(\pi/2) \approx 1.004$ rad.  Both BDF orders recover
-the amplitude to within a percent and the phase lag to within a few
-percent.
+$\varphi = \arctan(\pi/2) \approx 1.004$ rad.  At $\Delta t =
+0.05\,t_r$ BDF-2 recovers both the amplitude and the phase lag to
+within $10^{-3}$ rad; BDF-1 is off by a few percent in the phase
+(the residual O($\Delta t$) error of an implicit-Euler scheme).
 
 ```{figure} ../figures/bench_convergence.png
 :width: 100%
 
-Convergence sweep — left panel is the harmonic case.  Both BDF orders
-sit on slope 1 (the dotted reference line) throughout the dt range.
-That's not BDF-2 misbehaving: $V_{\mathrm{top}}$ is sampled at the
-step midpoint, which is *1st-order* accurate to the value BDF-2's
-implicit step expects at the step endpoint.  Genuine BDF-2 slope-2
-convergence would require endpoint-sampled forcing.
+Convergence sweep — left panel is the harmonic case.  BDF-1 sits on
+slope 1 (dotted reference); BDF-2 (rms, lower red dotted line)
+hits slope 2 (dashed reference) cleanly between $\Delta t = 0.4$ and
+$0.1$ before levelling off at the fine end (where the BDF-2 startup
+transient — first one or two steps that effectively run at BDF-1 —
+becomes the dominant contribution).
 ```
 
-The point of this benchmark is twofold: confirm we recover the steady
-amplitude and phase, and surface the BC-sampling order as the limiter
-on temporal accuracy under smooth forcing.
+The benchmark surfaces a subtle but important detail: $V_{\mathrm{top}}$
+is sampled at the step *endpoint* (i.e.\\ the time BDF's implicit step
+solves for), not at the midpoint.  Midpoint sampling is only
+1st-order accurate to the endpoint value; using it would limit BDF-2
+to slope-1 convergence even though the time integrator itself is
+2nd-order.  Same nominal mesh, dt schedule, and tolerance — only the
+BC sampling differs.
