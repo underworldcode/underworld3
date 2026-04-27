@@ -2432,19 +2432,17 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         self._order = order
         self._yield_mode = "softmin"
         self._yield_softness = 0.1
-        # BDF order-blending α ∈ [0, 1].  α=1 → pure BDF-2; α=0 → pure
-        # BDF-1; intermediate → linear blend of coefficients.  Required
-        # to damp an instability seen in TI-VEP + spatial ``yield_stress``
-        # field at BDF-2: pure α=1 produces |σ_xy| → 10⁸ over ~10 t_r at
-        # θ=±15°, ~10 at θ=0°.  Empirically the instability is gated by
-        # |c_2| (the ψ*_1 weight): α≤0.25 → |c_2|≤0.125 → stable; α≥0.5
-        # → |c_2|≥0.25 → blow-up.  Default 0.10 leaves headroom and
-        # gives ~1.1-order accuracy.  Set α=1.0 explicitly if you have
-        # uniform ``yield_stress`` (no spatial gradient) and need full
-        # second-order accuracy.  Investigated/reinstated 2026-04 after
-        # the 21ebe3b retirement which only exercised constant or
-        # scalar-yield TI-VEP setups.
-        self._bdf_blend = 0.10
+        # BDF order-blending α ∈ [0, 1].  α=1 → pure BDF-2 (default);
+        # α=0 → pure BDF-1 coefficients; intermediate → linear blend.
+        #
+        # NOTE: TI-VEP at order=2 with a spatially varying ``yield_stress``
+        # field (e.g. ``influence_function``-localised faults) is unstable
+        # for α > ~0.25.  The recommended user-facing fix is ``order=1``
+        # (the class default).  This knob is left as an *explicit* damping
+        # option for users who must use order=2 — it doesn't paper over
+        # the bug at the default.  Empirical stability threshold:
+        # α ≤ 0.25 stable, α ≥ 0.5 blow-up.  Investigated 2026-04.
+        self._bdf_blend = 1.0
         self._max_dt_ratio_for_higher_order = 2.0
 
         # Timestep (set by solver)
@@ -2657,25 +2655,21 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
     @property
     def bdf_blend(self):
-        r"""BDF coefficient blending α ∈ [0, 1].
+        r"""BDF coefficient blending α ∈ [0, 1].  **Damping knob.**
 
         Linearly mixes BDF-1 and the requested-order coefficients:
-        ``c = (1-α)·c_BDF1 + α·c_requested_order``.
+        ``c = (1-α)·c_BDF1 + α·c_requested_order``.  α=1 is no blend.
 
-        - ``α = 0``: pure BDF-1 coefficients (most stable, first-order)
-        - ``α = 0.10`` (default for TI-VEP): stable, near-first-order
-        - ``α = 0.25``: also stable in our tests; slightly higher accuracy
-        - ``α = 1``: pure requested order (e.g. BDF-2)
-
-        TI-VEP defaults to ``0.10`` because pure BDF-2 (α=1) is unstable
-        on problems with a spatially varying ``yield_stress`` field (e.g.
-        ``influence_function``-localised faults).  Empirically the
-        instability is gated by the magnitude of the ψ*_{n-1} coefficient
-        (c_2 in BDF-2 is 0.5 for constant dt; α=0.10 gives c_2 = 0.05;
-        α≥0.5 gives c_2 ≥ 0.25 and the simulation drifts).
-
-        Set ``α = 1`` explicitly if you have a uniform ``yield_stress``
-        (no spatial gradient) and need full second-order accuracy.
+        **For TI-VEP fault simulations, prefer ``order=1`` over tuning
+        this knob.**  At ``order=2`` with a spatially varying
+        ``yield_stress`` field, the simulation drifts unstably:
+        |σ_xy| → 10⁸ over ~10 t_r.  Empirically the instability is
+        gated by the magnitude of the ψ*_{n-1} weight: α ≤ 0.25 stable,
+        α ≥ 0.5 blow-up.  Lower α values stabilise but throw away
+        most of BDF-2's accuracy advantage — at α=0.10 the trace
+        difference vs ``order=1`` is ~0.1% of peak, for ~50% wall-time
+        overhead.  Use this knob only if you specifically need
+        order-2 behaviour on a problem with uniform yield_stress.
         """
         return self._bdf_blend
 
