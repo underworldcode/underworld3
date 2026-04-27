@@ -1151,6 +1151,29 @@ worktree_create() {
         exit 1
     fi
 
+    # Policy: worktrees must NEVER be on `development` or `main` directly.
+    # `main` is the release branch (tagged history); `development` is the
+    # integration trunk and lives in the default repo checkout. All work
+    # happens on side branches. Refuse misleading prefixes.
+    if [ "$branch_prefix" = "development" ] || [ "$branch_prefix" = "main" ]; then
+        local main_repo
+        main_repo=$(get_main_repo)
+        echo -e "${YELLOW}Refusing to use '$branch_prefix' as a branch prefix.${NC}"
+        echo ""
+        echo "Worktrees in this repo are always on a side branch:"
+        echo "  feature/<name>   bugfix/<name>   docs/<name>   ..."
+        echo ""
+        echo "If you wanted a checkout of '$branch_prefix' to read code from,"
+        echo "use the main repo at:"
+        echo "  $main_repo"
+        echo ""
+        echo "If you wanted to do work that will merge to development,"
+        echo "use a regular prefix:"
+        echo "  ./uw worktree create $name           # → feature/$name"
+        echo "  ./uw worktree create $name bugfix    # → bugfix/$name"
+        exit 1
+    fi
+
     local main_repo=$(get_main_repo)
     local wt_path="$main_repo/.claude/worktrees/$name"
     local branch_name="${branch_prefix}/${name}"
@@ -1324,7 +1347,13 @@ worktree_list() {
             local dirty=""
             [ "$status" -gt 0 ] && dirty="  ${YELLOW}($status modified)${NC}"
 
-            echo -e "  ${GREEN}${wt_name}${NC}  [$branch]  ($linked)$dirty"
+            # Policy advisory: worktrees should never be on development or main
+            local policy=""
+            if [ "$branch" = "development" ] || [ "$branch" = "main" ]; then
+                policy="  ${YELLOW}⚠ on '$branch' — branch off to a side branch${NC}"
+            fi
+
+            echo -e "  ${GREEN}${wt_name}${NC}  [$branch]  ($linked)$dirty$policy"
             echo "    $d"
         else
             echo -e "  ${YELLOW}${wt_name}${NC}  (not a git worktree)"

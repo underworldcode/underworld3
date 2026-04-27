@@ -147,6 +147,29 @@ worktree's source into the worktree's own environment.
 
 **Full documentation**: `docs/developer/guides/branching-strategy.md` (Git Worktrees section)
 
+#### Worktree branch policy
+
+**Worktrees must NEVER be on `development` or `main` directly.**
+
+In this repo, `main` is the *release* branch (tagged quarterly, essentially
+read-only history) and `development` is the integration trunk where active
+work converges. The default repository checkout (`~/+Underworld/underworld3-pixi`)
+should usually sit on `development` — that's where you read the current
+working state and pull updates. All work — even work intended to land
+on `development` — happens on a side branch (`feature/...`, `bugfix/...`,
+`docs/...`) in a worktree, then merges to `development` via PR.
+
+`./uw worktree create` enforces this for new worktrees (always on a
+side branch, reset to `origin/development`). It's on you not to break
+it manually:
+
+- Never `git checkout development` (or `main`) inside a worktree
+- Never `git worktree add ... development` to put a worktree on
+  `development` directly
+- If you find a worktree on `development` (e.g. from older tooling),
+  branch off immediately (`git switch -c bugfix/whatever`) before
+  committing
+
 #### Creating and using a worktree
 
 ```bash
