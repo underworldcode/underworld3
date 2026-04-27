@@ -36,7 +36,8 @@ def _run_one(theta_deg, tau_y, bdf_order, label):
 
     t_r = ETA_1 / MU
     De = OMEGA * t_r
-    gamma_dot_0 = 2.0 * V0 / 1.0
+    # BCs: Top moves, Bottom fixed → γ̇_0 = V0/H (not 2·V0/H).
+    gamma_dot_0 = V0 / 1.0
     A_inf = ETA_1 * gamma_dot_0 / np.sqrt(1.0 + De**2)
     phi = float(np.arctan(De))
 

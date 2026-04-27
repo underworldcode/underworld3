@@ -182,7 +182,11 @@ def _run_one(theta_deg, tau_y, bdf_order, label):
     # Maxwell relaxation time and steady-state amplitude (sub-yield)
     t_r = ETA_1 / MU
     De = OMEGA * t_r
-    gamma_dot_0 = 2.0 * V0 / H
+    # BCs: Top moves at V_top, Bottom fixed → engineering shear rate
+    # γ̇_0 = V0/H (NOT 2·V0/H — that would be the antisymmetric case
+    # used by bench_ve_harmonic.py).  Steady VE amplitude is then
+    # σ_∞ = 2η·ε̇/sqrt(1+De²) = η·γ̇_0/sqrt(1+De²) since ε̇ = γ̇/2.
+    gamma_dot_0 = V0 / H
     A_inf = ETA_1 * gamma_dot_0 / np.sqrt(1.0 + De**2)
     phi = float(np.arctan(De))
 
