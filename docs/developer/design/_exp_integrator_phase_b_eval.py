@@ -87,13 +87,7 @@ def step_exp_VEP(sigma_n, gdot_n, gdot_np1, dt, tau_y=None,
 
 
 def step_bdf1_VEP(sigma_n, gdot_np1, dt, tau_y=None, delta=0.1):
-    """BDF-1 with softmin return-mapping yield (parallel to step_exp_VEP).
-
-    Predictor: pure-VE BDF-1.  Corrector: smooth clip via softmin on
-    |σ|/τ_y.  Same yield treatment as the exponential integrator
-    above, so any difference in the trace is from the time integrator
-    itself, not the yield model.
-    """
+    """BDF-1 with softmin return-mapping yield (parallel to step_exp_VEP)."""
     sigma_pred = (sigma_n + MU * dt * gdot_np1) / (1 + dt / TAU_VE)
     if tau_y is None:
         return sigma_pred
@@ -103,6 +97,60 @@ def step_bdf1_VEP(sigma_n, gdot_np1, dt, tau_y=None, delta=0.1):
     offset = (-1 + np.sqrt(1 + delta**2)) / 2
     g = 1 + (f - 1 + np.sqrt((f - 1)**2 + delta**2)) / 2 - offset
     return sigma_pred / g
+
+
+# ── Square-wave analyticals and tests ──────────────────────────────
+
+def maxwell_square_analytical(t, half_period, gamma_dot_0, tau_y=None):
+    """σ(t) for square-wave γ̇, σ(0) = 0.  Optional yield clip at τ_y.
+
+    Within period n: σ(t) = target_n + (σ_start_n - target_n) e^{-(t-n·HP)/τ}
+    σ_start_(n+1) = target_n + (σ_start_n - target_n) e^{-HP/τ}
+
+    For yielding: clip σ to [-τ_y, +τ_y] post-hoc.  This is approximate
+    (real yielding clamps σ̇=0 once at yield, doesn't blend) but good
+    enough for cross-checking integrators against the same model.
+    """
+    sigma_ss = ETA * gamma_dot_0
+    decay = np.exp(-half_period / TAU_VE)
+    out = np.zeros_like(t)
+    n_prev = 0
+    sigma_start = 0.0
+    for i, ti in enumerate(t):
+        n = int(ti // half_period)
+        while n_prev < n:                         # advance one period at a time
+            sign_p = 1.0 if n_prev % 2 == 0 else -1.0
+            target_p = sign_p * sigma_ss
+            sigma_start = target_p + (sigma_start - target_p) * decay
+            n_prev += 1
+        sign = 1.0 if n % 2 == 0 else -1.0
+        target = sign * sigma_ss
+        t_local = ti - n * half_period
+        s = target + (sigma_start - target) * np.exp(-t_local / TAU_VE)
+        if tau_y is not None and abs(s) > tau_y:
+            s = np.sign(s) * tau_y
+        out[i] = s
+    return out
+
+
+def test_square_VE_VEP(half_period, dt, tau_y=None):
+    """Run all three integrators on square-wave forcing.  Returns
+    (t, sig_exp, sig_b1, sig_b2, sig_ana)."""
+    t = np.arange(0.0, T_END + 1e-12, dt)
+    n_period = (t // half_period).astype(int)
+    gdot_at = GAMMA_DOT_0 * np.where(n_period % 2 == 0, 1.0, -1.0)
+
+    sig_exp = np.zeros_like(t)
+    sig_b1 = np.zeros_like(t)
+    tau_lag = TAU_VE
+    for i in range(1, len(t)):
+        sig_exp[i], tau_lag = step_exp_VEP(
+            sig_exp[i-1], gdot_at[i-1], gdot_at[i], dt,
+            tau_y=tau_y, tau_prev=tau_lag,
+        )
+        sig_b1[i] = step_bdf1_VEP(sig_b1[i-1], gdot_at[i], dt, tau_y=tau_y)
+    sig_ana = maxwell_square_analytical(t, half_period, GAMMA_DOT_0, tau_y=tau_y)
+    return t, sig_exp, sig_b1, sig_ana
 
 
 # ── Test 1: yield-active sinusoidal forcing ────────────────────────
@@ -204,6 +252,54 @@ def main():
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(os.path.join(out_dir, "exp_integrator_phase_b_yield.png"), dpi=140)
     print(f"\nWrote phase_b_yield.png")
+
+    # ── Test 3: Square-wave VE and VEP ───────────────────────────
+    half_period = 2 * TAU_VE
+    print(f"\n=== Test 3: Square-wave VE  (half-period = 2τ) ===")
+    print(f"{'dt':>5} | {'Exp max|err|':>12} {'Exp peak':>9} | "
+          f"{'BDF-1 max|err|':>14} {'BDF-1 peak':>10} | {'Ana peak':>8}")
+    for dt in (0.05, 0.1, 0.25, 0.5, 1.0):
+        t, se, s1, sa = test_square_VE_VEP(half_period, dt, tau_y=None)
+        eme = np.abs(se - sa).max(); em1 = np.abs(s1 - sa).max()
+        print(f"{dt:>5.2f} | {eme:>12.3e} {np.abs(se).max():>9.4f} | "
+              f"{em1:>14.3e} {np.abs(s1).max():>10.4f} | {np.abs(sa).max():>8.4f}")
+
+    print(f"\n=== Test 4: Square-wave VEP (half-period = 2τ, τ_y = 0.4) ===")
+    tau_y = 0.4
+    print(f"{'dt':>5} | {'Exp max|err|':>12} {'Exp peak':>9} | "
+          f"{'BDF-1 max|err|':>14} {'BDF-1 peak':>10} | {'τ_y':>5}")
+    for dt in (0.05, 0.1, 0.25, 0.5):
+        t, se, s1, sa = test_square_VE_VEP(half_period, dt, tau_y=tau_y)
+        eme = np.abs(se - sa).max(); em1 = np.abs(s1 - sa).max()
+        print(f"{dt:>5.2f} | {eme:>12.3e} {np.abs(se).max():>9.4f} | "
+              f"{em1:>14.3e} {np.abs(s1).max():>10.4f} | {tau_y:>5.2f}")
+
+    # ── Plot 3: square-wave VE/VEP traces ────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True)
+    half_period = 2 * TAU_VE
+    for ax, dt, tau_y_plot, title in [
+        (axes[0, 0], 0.1, None, "VE  Δt=0.1τ"),
+        (axes[0, 1], 0.5, None, "VE  Δt=0.5τ (large)"),
+        (axes[1, 0], 0.1, 0.4,  "VEP Δt=0.1τ, τ_y=0.4"),
+        (axes[1, 1], 0.5, 0.4,  "VEP Δt=0.5τ, τ_y=0.4"),
+    ]:
+        t, se, s1, sa = test_square_VE_VEP(half_period, dt, tau_y=tau_y_plot)
+        ax.plot(t, sa, 'k-', lw=1.5, label='analytical')
+        ax.plot(t, se, 'o-', color='C0', ms=3, label='Exp', alpha=0.85)
+        ax.plot(t, s1, 's-', color='C1', ms=3, label='BDF-1', alpha=0.85)
+        if tau_y_plot is not None:
+            ax.axhline(+tau_y_plot, color='gray', ls=':', alpha=0.5)
+            ax.axhline(-tau_y_plot, color='gray', ls=':', alpha=0.5)
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+    axes[0, 0].legend(fontsize=9)
+    for ax in axes[1]: ax.set_xlabel(r'$t/\tau$')
+    for ax in axes[:, 0]: ax.set_ylabel(r'$\sigma$')
+    fig.suptitle("Square-wave forcing: VE & VEP — Exponential vs BDF-1",
+                 fontsize=12, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(os.path.join(out_dir, "exp_integrator_phase_b_square.png"), dpi=140)
+    print(f"\nWrote phase_b_square.png")
 
     # ── Plot 2: large-dt traces ──────────────────────────────────
     fig, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=False)

@@ -118,6 +118,48 @@ This is the regime that matters for **yield-active fault zones**: η_eff drops t
 
 Figures: `exp_integrator_phase_b_yield.png`, `exp_integrator_phase_b_largedt.png`.
 
+### Phase B square-wave evaluation — DONE
+
+Square-wave forcing is the harder test case (sharp γ̇ discontinuities at every period boundary, plus yield kinks for VEP).  Both integrators must handle the BC discontinuity using only their internal interpolation — there's no special "fine-dt around flips" treatment in this 1D test (UW3's bench scripts do that adaptively; here we test the raw integrators).
+
+**Square-wave VE** (no yield, half-period 2τ):
+
+| Δt | Exp max\|err\| | BDF-1 max\|err\| | Exp peak | BDF-1 peak | Ana peak |
+|---|---|---|---|---|---|
+| 0.05 | 4.9e-2 | 1.0e-1 | 0.86 | 0.85 | 0.865 |
+| 0.10 | 9.7e-2 | 2.0e-1 | 0.85 | 0.84 | 0.865 |
+| 0.25 | 2.3e-1 | 4.3e-1 | 0.83 | 0.79 | 0.865 |
+| 0.50 | 4.3e-1 | 7.3e-1 | 0.78 | 0.70 | 0.865 |
+| 1.00 | 7.4e-1 | 1.1e0 | 0.63 | 0.63 | 0.865 |
+
+Exp is consistently ~2× more accurate than BDF-1 across all Δt.  The dominant error source is the BC discontinuity itself — neither integrator's two-point quadrature can represent a step in γ̇ — but exp's exact relaxation handling makes the smooth-period error cleaner.  At Δt = 1τ, both integrators over-smooth (each step covers half a half-period) and the difference shrinks.
+
+**Square-wave VEP** (τ_y = 0.4):
+
+| Δt | Exp err | BDF-1 err | Exp peak | BDF-1 peak |
+|---|---|---|---|---|
+| 0.05 | 3.9e-1 | 3.9e-1 | 0.397 | 0.394 |
+| 0.10 | 3.8e-1 | 4.3e-1 | 0.396 | 0.395 |
+| 0.25 | 4.7e-1 | 5.1e-1 | 0.399 | 0.398 |
+| 0.50 | 4.0e-1 | 5.1e-1 | 0.400 | 0.399 |
+
+Both correctly clip at τ_y.  Errors of ~0.4 are dominated by **single-step phase lag at the sign flips** — when γ̇ flips, both methods take 1–2 steps before σ starts moving in the new direction, while the analytical response is essentially instant.  Both integrators suffer this equally; at small Δt with active yielding, exp ≈ BDF-1.
+
+Figure: `exp_integrator_phase_b_square.png`.
+
+### Phase B verdict
+
+| Problem | Δt regime | Exp vs BDF-1 |
+|---|---|---|
+| Sinusoidal VE | Δt ≪ τ | Exp 5–12× better (decisive) |
+| Sinusoidal VE | Δt ≈ τ | Exp wins; BDF over-damps to ~0 |
+| Sinusoidal VEP | small Δt | Match — yield dominates over time integrator |
+| Square-wave VE | small Δt | Exp ~2× better consistently |
+| Square-wave VE | large Δt | Exp degrades more gracefully than BDF |
+| Square-wave VEP | small Δt | Match — yield + BC lag dominate both |
+
+The clearest empirical case for exponential is **smooth or moderate-discontinuity problems with bulk Δt/τ approaching 1**, plus the structural argument that the BDF-2 ψ*₁ amplification path doesn't exist (no second history term to autodiff).  Sharp BC discontinuities and active yielding both *level the playing field* — exp doesn't outperform there, but it doesn't regress either, and the structural simplicity remains a win.
+
 ---
 
 ## DDt generalisation — architectural sketch
