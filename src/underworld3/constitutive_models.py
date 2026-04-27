@@ -2434,14 +2434,17 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         self._yield_softness = 0.1
         # BDF order-blending α ∈ [0, 1].  α=1 → pure BDF-2; α=0 → pure
         # BDF-1; intermediate → linear blend of coefficients.  Required
-        # to damp a slow exponential drift seen in TI-VEP + spatial
-        # ``yield_stress`` field at BDF-2: pure α=1 produces |σ_xy|→∞
-        # over ~10 t_r, isolated to the TI tensor + influence-function
-        # combination (not isotropic VEP).  α=0.5 gives ~1.5-order
-        # accuracy and stable plateaux.  Investigated/reinstated 2026-04
-        # after the original retirement (commit 21ebe3b) which only
-        # exercised constant or scalar-yield TI-VEP setups.
-        self._bdf_blend = 0.5
+        # to damp an instability seen in TI-VEP + spatial ``yield_stress``
+        # field at BDF-2: pure α=1 produces |σ_xy| → 10⁸ over ~10 t_r at
+        # θ=±15°, ~10 at θ=0°.  Empirically the instability is gated by
+        # |c_2| (the ψ*_1 weight): α≤0.25 → |c_2|≤0.125 → stable; α≥0.5
+        # → |c_2|≥0.25 → blow-up.  Default 0.10 leaves headroom and
+        # gives ~1.1-order accuracy.  Set α=1.0 explicitly if you have
+        # uniform ``yield_stress`` (no spatial gradient) and need full
+        # second-order accuracy.  Investigated/reinstated 2026-04 after
+        # the 21ebe3b retirement which only exercised constant or
+        # scalar-yield TI-VEP setups.
+        self._bdf_blend = 0.10
         self._max_dt_ratio_for_higher_order = 2.0
 
         # Timestep (set by solver)
@@ -2631,8 +2634,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         # BDF order blending — see ``self._bdf_blend`` docstring.
         # Linear mix of BDF-1 and the requested-order coefficients.
+        # α=0 → pure BDF-1; α=1 → no blend (skip).
         alpha = self._bdf_blend
-        if 0 < alpha < 1 and order >= 2:
+        if alpha < 1 and order >= 2:
             coeffs_o1 = _bdf_coefficients(1, dt_current, dt_history) \
                 if (self.Unknowns is not None and self.Unknowns.DFDt is not None) \
                 else _bdf_coefficients(1, None, [])
@@ -2658,15 +2662,20 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         Linearly mixes BDF-1 and the requested-order coefficients:
         ``c = (1-α)·c_BDF1 + α·c_requested_order``.
 
-        - ``α = 0``: pure BDF-1 (most stable, first-order accurate)
-        - ``α = 0.5`` (default for TI-VEP): balanced ~1.5-order
+        - ``α = 0``: pure BDF-1 coefficients (most stable, first-order)
+        - ``α = 0.10`` (default for TI-VEP): stable, near-first-order
+        - ``α = 0.25``: also stable in our tests; slightly higher accuracy
         - ``α = 1``: pure requested order (e.g. BDF-2)
 
-        TI-VEP defaults to ``0.5`` because pure BDF-2 drifts unstably on
-        problems with a spatially varying ``yield_stress`` field (e.g.
-        ``influence_function``-localised faults).  Set ``α = 1`` if the
-        problem has uniform ``yield_stress`` and you need full
-        second-order accuracy.
+        TI-VEP defaults to ``0.10`` because pure BDF-2 (α=1) is unstable
+        on problems with a spatially varying ``yield_stress`` field (e.g.
+        ``influence_function``-localised faults).  Empirically the
+        instability is gated by the magnitude of the ψ*_{n-1} coefficient
+        (c_2 in BDF-2 is 0.5 for constant dt; α=0.10 gives c_2 = 0.05;
+        α≥0.5 gives c_2 ≥ 0.25 and the simulation drifts).
+
+        Set ``α = 1`` explicitly if you have a uniform ``yield_stress``
+        (no spatial gradient) and need full second-order accuracy.
         """
         return self._bdf_blend
 
