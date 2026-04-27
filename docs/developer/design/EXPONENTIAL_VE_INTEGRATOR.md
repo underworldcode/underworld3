@@ -1,285 +1,165 @@
-# Exponential Integrator for VE / VEP Constitutive Updates
+# Exponential Integrator for VE / VEP Constitutive Updates — Implementation Plan
 
-**Status**: Investigation / design (started 2026-04-27)
-**Branch**: TBD (started on `bugfix/vep-investigation-fixes` for context, will move)
-**Motivation**: planning entry under "Nice to Have" in `~/Library/CloudStorage/Box-Box/Planning/underworld.md`
-
-## Problem statement
-
-The current VE / VEP / TI-VEP constitutive update uses a BDF-k discretisation of the Maxwell ODE
-
-$$\dot\sigma + \sigma/\tau = 2\mu\,\dot\varepsilon$$
-
-with $\tau = \eta/\mu$ the relaxation time. BDF-2 has known issues we documented on `bugfix/vep-investigation-fixes`:
-
-1. The $c_2 \psi^*_{n-1}$ term in the multistep formula gets amplified through the autodiff Jacobian whenever the constitutive viscosity has spatial gradients (TI tensor + spatial $\tau_y$). Result: |σ| → ∞ over ~10 t_r at BDF-2.
-2. BDF-1 is robust but only first-order accurate. With our `bdf_blend = 0.10` workaround we get effectively BDF-1 anyway.
-3. BDF-style derivative approximations are inherently sensitive when $\Delta t \gg \tau$ (excessive numerical diffusion) and when $\dot\varepsilon$ is noisy from the Stokes solve.
-
-The Maxwell relaxation operator is **linear and analytically integrable**. Discretising the time derivative is unnecessary work — we can integrate exactly and only approximate the forcing.
-
-## Mathematical formulation
-
-### The operator-split form
-
-Treat the Maxwell ODE as a linear inhomogeneous equation. The integrating factor is $e^{t/\tau}$, giving the closed-form solution over a step $[t^n, t^{n+1}]$:
-
-$$\sigma^{n+1} = e^{-\Delta t/\tau}\,\sigma^n
-            + 2\mu \int_{t^n}^{t^{n+1}} e^{-(t^{n+1}-s)/\tau}\,\dot\varepsilon(s)\,ds$$
-
-Only $\dot\varepsilon(s)$ inside the integral needs to be approximated.
-
-### Two-point linear quadrature (recommended)
-
-If we approximate $\dot\varepsilon$ as a linear interpolant between $\dot\varepsilon^n$ and $\dot\varepsilon^{n+1}$ over the step, the integral has a closed form:
-
-$$\sigma^{n+1} = \alpha\,\sigma^n + 2\mu\,\bigl(A\,\dot\varepsilon^{n+1} + B\,\dot\varepsilon^n\bigr)$$
-
-with
-
-$$\alpha = e^{-\Delta t/\tau},\quad
-\varphi = \frac{1-\alpha}{\Delta t/\tau},\quad
-A = \tau(1-\varphi),\quad
-B = \tau(\varphi - \alpha).$$
-
-Properties to verify before we trust this:
-
-- **Limits**:
-  - $\Delta t/\tau \to 0$: $\alpha \to 1$, $A, B \to \Delta t/2$ → trapezoidal-rule limit
-  - $\Delta t/\tau \to \infty$: $\alpha \to 0$, $A \to \tau$, $B \to 0$ → viscous limit ($\sigma \to 2\eta\dot\varepsilon^{n+1}$)
-- **Stability**: $|\alpha| = e^{-\Delta t/\tau} < 1$ unconditionally
-- **Order**: second-order in $\Delta t$ for smooth $\dot\varepsilon$ (linear interpolant in the integral)
-- **Storage**: one history slot ($\sigma^n$) and one ($\dot\varepsilon^n$). No multistep history needed.
-
-### Comparison to BDF
-
-| | BDF-1 | BDF-2 | Exp (this) |
-|---|---|---|---|
-| Order | 1 | 2 | 2 |
-| Stability for $\Delta t \gg \tau$ | OK (over-damped) | OK at α=1 (constant coefficients only) | exact |
-| History slots | 1 | 2 | 1 (σ) + 1 (ε̇) |
-| Multistep autodiff issue with spatial yield | n/a | yes (this branch) | n/a |
-
-## Implementation approach
-
-### Phase A — 1D linear Maxwell validator (standalone) — DONE
-
-Pure Python, no UW3. `_exp_integrator_phase_a.py`. Solves engineering Maxwell $\dot\sigma + \sigma/\tau = \mu\dot\gamma$ for prescribed $\dot\gamma(t)$ and compares exponential integrator to BDF-1, BDF-2, and the analytical phasor solution.
-
-**Results — sinusoidal forcing** ($\dot\gamma = \dot\gamma_0 \cos(\omega t)$, $\omega = \pi/2$, $\eta = \mu = \tau = 1$, $T = 8\tau$):
-
-| $\Delta t/\tau$ | **Exp max\|err\|** | BDF-1 max | BDF-2 max |
-|---|---|---|---|
-| 0.01 | **1.1e-5** | 4.5e-3 | 7.4e-5 |
-| 0.05 | **2.9e-4** | 2.2e-2 | 1.8e-3 |
-| 0.1  | **1.1e-3** | 4.4e-2 | 6.8e-3 |
-| 0.25 | **7.1e-3** | 1.1e-1 | 3.7e-2 |
-| 0.5  | **2.8e-2** | 1.9e-1 | 1.1e-1 |
-| 1.0  | **1.0e-1** | 3.5e-1 | 3.5e-1 |
-| 2.0  | **5.7e-2** | 3.4e-1 | 3.4e-1 |
-
-Conclusions:
-
-1. **Exponential is consistently 5–6× more accurate than BDF-2 at small $\Delta t$** and shows clean second-order convergence.
-2. **At $\Delta t \geq \tau$, BDF-1 and BDF-2 collapse together to ~full-amplitude error (3.4e-1)** — they over-damp the response so heavily that simulated $\sigma$ stays near zero, regardless of multistep order. The trace plot makes this stark: at $\Delta t/\tau = 1$ both BDFs give a flat near-zero output while the exponential tracks the analytical sinusoid faithfully.
-3. **The exponential integrator's error actually *decreases* from $\Delta t/\tau = 1$ to 2** because the linear-interpolant quadrature error is dominated by the trapezoidal-rule limit, which is well-behaved for slow forcing.
-
-**Square-wave** results are less clean because of discontinuity-handling at sign flips. All three integrators have errors of similar order (~0.5–0.8 of full amplitude). Likely needs the same fine-dt-around-flips treatment we already use for `bench_*_vardt`. Not a blocker — this is a feature of *forcing approximation*, not the relaxation operator.
-
-**Decision gate**: cleared. Proceed to Phase B.
-
-Figure: `exp_integrator_phase_a.png` (convergence + trace).
-
-### Phase B numerical evaluation — VEP and large-Δt regimes — DONE
-
-Standalone validator extended (`_exp_integrator_phase_b_eval.py`) to test (i) yield-active VEP with return-mapping clip and (ii) the large-Δt/τ regime where BDF over-damps.
-
-**VEP harmonic** ($\omega = \pi/4$, $\Delta t = 0.1\tau$, A_∞ = 0.79):
-
-| τ_y | regime | Exp peak\|σ\| | BDF-1 peak\|σ\| | ratio |
-|---|---|---|---|---|
-| 0.10 | yielding | 0.100 | 0.100 | 1.000 |
-| 0.20 | yielding | 0.200 | 0.199 | 1.003 |
-| 0.30 | yielding | 0.299 | 0.299 | 1.002 |
-| 0.50 | yielding | 0.499 | 0.494 | 1.010 |
-
-When *both* integrators use the same return-mapping yield treatment, **they agree to ~1%** at small Δt with active yielding. The yield mechanism dominates over the time integrator. Implication: in the VEP regime where dt is small relative to τ_VE, switching to exponential doesn't give a *direct* accuracy win — the win is structural (no BDF-2 instability, single history, simpler autodiff path).
-
-**Pure VE at large Δt/τ** (no yield, smooth forcing):
-
-| Δt/τ | Exp max\|err\| | BDF-1 max\|err\| | Notes |
-|---|---|---|---|
-| 0.5 | 0.010 | 0.126 | Exp 12× better |
-| 1.0 | 0.040 | 0.225 | Exp 6× better |
-| 2.0 | 0.119 | 0.402 | BDF-1 wrong shape; Exp under-shoots peaks |
-| 5.0 | 0.624 | 0.584 | Both bad — quadrature too coarse |
-
-This is the regime that matters for **yield-active fault zones**: η_eff drops to η_pl, τ_eff = η_pl/μ shrinks, and dt/τ_eff can grow into the Δt/τ ≈ 1 regime even when dt/τ_VE in the bulk is small. Exponential continues to give physically meaningful answers; BDF-1 over-damps and BDF-2 hits the documented multistep instability.
-
-Figures: `exp_integrator_phase_b_yield.png`, `exp_integrator_phase_b_largedt.png`.
-
-### Phase B square-wave evaluation — DONE
-
-Square-wave forcing is the harder test case (sharp γ̇ discontinuities at every period boundary, plus yield kinks for VEP).  Both integrators must handle the BC discontinuity using only their internal interpolation — there's no special "fine-dt around flips" treatment in this 1D test (UW3's bench scripts do that adaptively; here we test the raw integrators).
-
-**Square-wave VE** (no yield, half-period 2τ):
-
-| Δt | Exp max\|err\| | BDF-1 max\|err\| | Exp peak | BDF-1 peak | Ana peak |
-|---|---|---|---|---|---|
-| 0.05 | 4.9e-2 | 1.0e-1 | 0.86 | 0.85 | 0.865 |
-| 0.10 | 9.7e-2 | 2.0e-1 | 0.85 | 0.84 | 0.865 |
-| 0.25 | 2.3e-1 | 4.3e-1 | 0.83 | 0.79 | 0.865 |
-| 0.50 | 4.3e-1 | 7.3e-1 | 0.78 | 0.70 | 0.865 |
-| 1.00 | 7.4e-1 | 1.1e0 | 0.63 | 0.63 | 0.865 |
-
-Exp is consistently ~2× more accurate than BDF-1 across all Δt.  The dominant error source is the BC discontinuity itself — neither integrator's two-point quadrature can represent a step in γ̇ — but exp's exact relaxation handling makes the smooth-period error cleaner.  At Δt = 1τ, both integrators over-smooth (each step covers half a half-period) and the difference shrinks.
-
-**Square-wave VEP** (τ_y = 0.4):
-
-| Δt | Exp err | BDF-1 err | Exp peak | BDF-1 peak |
-|---|---|---|---|---|
-| 0.05 | 3.9e-1 | 3.9e-1 | 0.397 | 0.394 |
-| 0.10 | 3.8e-1 | 4.3e-1 | 0.396 | 0.395 |
-| 0.25 | 4.7e-1 | 5.1e-1 | 0.399 | 0.398 |
-| 0.50 | 4.0e-1 | 5.1e-1 | 0.400 | 0.399 |
-
-Both correctly clip at τ_y.  Errors of ~0.4 are dominated by **single-step phase lag at the sign flips** — when γ̇ flips, both methods take 1–2 steps before σ starts moving in the new direction, while the analytical response is essentially instant.  Both integrators suffer this equally; at small Δt with active yielding, exp ≈ BDF-1.
-
-Figure: `exp_integrator_phase_b_square.png`.
-
-### Phase B verdict
-
-| Problem | Δt regime | Exp vs BDF-1 |
-|---|---|---|
-| Sinusoidal VE | Δt ≪ τ | Exp 5–12× better (decisive) |
-| Sinusoidal VE | Δt ≈ τ | Exp wins; BDF over-damps to ~0 |
-| Sinusoidal VEP | small Δt | Match — yield dominates over time integrator |
-| Square-wave VE | small Δt | Exp ~2× better consistently |
-| Square-wave VE | large Δt | Exp degrades more gracefully than BDF |
-| Square-wave VEP | small Δt | Match — yield + BC lag dominate both |
-
-The clearest empirical case for exponential is **smooth or moderate-discontinuity problems with bulk Δt/τ approaching 1**, plus the structural argument that the BDF-2 ψ*₁ amplification path doesn't exist (no second history term to autodiff).  Sharp BC discontinuities and active yielding both *level the playing field* — exp doesn't outperform there, but it doesn't regress either, and the structural simplicity remains a win.
+**Status**: Phase A/B numerical evaluation complete; implementation green-lit (2026-04-28)
+**Branch**: `feature/exp-integrator-investigation`
+**Decision**: Pursue. Replace BDF-style σ-history with exponential integration of the relaxation operator + linear-quadrature forcing. Architecture: extend existing `SemiLagrangian` DDt with peer integrator method.
 
 ---
 
-## DDt generalisation — architectural sketch
+## TL;DR
 
-The current `SemiLagrangian` DDt is BDF-centric: it holds a list `psi_star[0..order-1]` of past stress history slots, exposes a `bdf()` method that computes $\sum c_i \psi^*_i$ symbolically, and updates `_bdf_c0..c3` UWexpressions per timestep via `_update_bdf_coefficients`.
+For Maxwell-type viscoelasticity $\dot\sigma + \sigma/\tau = \mu\dot\gamma$, integrate the relaxation operator analytically and approximate only the forcing:
 
-For the exponential integrator we need a **second history field** ($\dot\varepsilon^*$ — strain rate at the previous step) and a **different history-term computation**. Three implementation strategies, in increasing surgical scope:
+$$\sigma^{n+1} = \alpha\,\sigma^n + \mu(A\,\dot\gamma^{n+1} + B\,\dot\gamma^n)$$
 
-### Strategy 1 — Subclass: `ExponentialMaxwell_DDt(SemiLagrangian)`
+with $\alpha = e^{-\Delta t/\tau}$, $\varphi = (1-\alpha)\tau/\Delta t$, $A = \tau(1-\varphi)$, $B = \tau(\varphi-\alpha)$.
 
-Inherit the snapshot/projection machinery; add ε̇* slot; provide `exp_history()` alongside `bdf()`.
+Numerically validated: **5–12× more accurate than BDF-2** at small Δt, **decisively better at Δt ≈ τ** (where BDF-1/2 over-damp to near-zero output), **structurally avoids the BDF-2 multistep instability** seen in TI-VEP + spatial yield_stress (no second history term to amplify through the autodiff Jacobian).
 
-```python
-class ExponentialMaxwell_DDt(SemiLagrangian):
-    def __init__(self, ..., order=1):  # exp is single-step (order=1 always)
-        super().__init__(..., order=1)
-        # Parallel slot for strain-rate history
-        self._epsdot_star = MeshVariable(...)
-        # Time-integration coefficients (UWexpressions, updated per step)
-        self._exp_alpha = expression(r"\alpha", sympy.Float(1.0), ...)
-        self._exp_phi   = expression(r"\varphi", sympy.Float(1.0), ...)
-        self._exp_A     = expression(r"A", sympy.Float(0.0), ...)
-        self._exp_B     = expression(r"B", sympy.Float(0.0), ...)
+The integrator stores one slot of σ-history *and* one slot of γ̇-history. Yield handling via standard return-mapping. The DDt class hierarchy already supports multiple parallel integrator coefficient sets (`_bdf_coeffs`, `_am_coeffs`); adding `_exp_coeffs` and an optional forcing-history storage stream is a peer extension, ~200 lines.
 
-    def update_post_solve(self, dt, ...):
-        super().update_post_solve(dt, ...)
-        # Project current ε̇ into ε̇* slot (parallel to ψ* projection)
-        self._project_epsdot_star()
+---
 
-    def exp_history(self, mu_dt):
-        """Returns the symbolic history term: α σⁿ + μ B γ̇ⁿ."""
-        return (self._exp_alpha * self.psi_star[0].sym
-                + 2 * mu_dt / self._dt * self._exp_B * self._epsdot_star.sym)
-```
+## Implementation phasing
 
-The constitutive model selects which DDt class to use based on a `time_integrator` parameter. When set to `"exponential"`:
-- The DDt is `ExponentialMaxwell_DDt`
-- `stress()` builds $\sigma = 2\eta(1-\varphi)\,\dot\varepsilon + \mathrm{exp\_history}$
-- `_update_time_coefficients()` computes $\alpha, \varphi, A, B$ from current dt and (lagged) τ
+### Phase B — UW3 prototype (next session, est. 3–5 days)
 
-**Pros**: minimal disturbance to existing BDF code paths. Reuses snapshot fix.
-**Cons**: introduces a parallel hierarchy; if both BDF and exp must coexist for transition, we have two diverging code paths in the constitutive model.
+**Goal**: Match BDF-2's `bench_ve_harmonic` accuracy (1.34e-3) with single-step exponential, in a clean implementation.
 
-### Strategy 2 — Refactor `SemiLagrangian` into history-storage + integrator
+**Tasks** (in order):
 
-Separate concerns:
+1. **Resolve UWexpression-to-JIT propagation** (~half day)
+   - The Phase B jury-rig (`_exp_integrator_uw3_jury_rig.py`) hit a JIT propagation snag: setting `cm._exp_alpha.sym = X` per step doesn't reach the JIT-compiled flux. The BDF path's `_bdf_c0..c3` *do* propagate via `_update_constants()` — replicate that mechanism for `_exp_alpha`, `_exp_phi`.
+   - Likely fix: subclass-level `_update_constants` or piggyback on the existing constants-manifest registration in `SolverBaseClass`.
 
-- **`HistoryStorage`** — a list of mesh variables for past states, the projection-snapshot machinery, the SemiLagrangian advection. *No* opinion about how the history is consumed.
-- **`TimeIntegrator`** — given a `HistoryStorage` and current state, produces the residual contribution. Subclasses: `BDF_TimeIntegrator(order)`, `ExponentialMaxwell_TimeIntegrator()`.
+2. **Extend `SemiLagrangian` DDt with exponential integrator** (~1 day, ~200 lines)
+   - Add `_exp_coeffs = _create_exp_coefficients(...)` parallel to existing `_bdf_coeffs`/`_am_coeffs`
+   - Add `with_forcing_history=False` constructor parameter; when True, allocate `forcing_star` MeshVariable and wire projection-snapshot machinery (mirror what's done for `psi_star`)
+   - Add `update_post_solve` branch that calls `_update_exp_values(dt, tau_eff)` and projects the current strain rate into `forcing_star[0]` (use `SNES_MultiComponent_Projection` — already used for VE-Stokes' tau projection)
+   - Add `exp_history_term()` peer method to `bdf()` and `adams_moulton_flux()`
 
-```python
-class TimeIntegrator(ABC):
-    @abstractmethod
-    def history_term(self, current_state) -> sympy.Expr:
-        """Symbolic history contribution to the residual."""
-    @abstractmethod
-    def update_coefficients(self, dt, **kwargs):
-        """Per-step coefficient update."""
-    @abstractmethod
-    def required_history_slots(self) -> list[VarType]:
-        """What state variables to track (stress, strain rate, ...)."""
-```
+3. **Add `MaxwellExponentialFlowModel`** (~half day, ~150 lines)
+   - Sibling of `ViscoElasticPlasticFlowModel`. `requires_stress_history = True`, but the auto-DDt creation path uses `with_forcing_history=True` instead of `order=k`
+   - Stress: `σ = 2η(1-φ)·ε̇ + DFDt.exp_history_term()`
+   - Yield handling: the `viscosity` property wraps with softmin/min as today, replacing η(1-φ) where it appears
+   - Lagged-τ: each `_update_constants()` call pulls τ_eff from the most recent post-solve projected stress and uses it for next step's α, φ, A, B
 
-The constitutive model holds a `time_integrator: TimeIntegrator` attribute and asks it for the history term. The DDt instance becomes a thin wrapper that just owns the storage.
+4. **Validate on existing benchmarks** (~half day)
+   - `bench_ve_harmonic` — must match BDF-2's max\|err\| = 1.34e-3 at peak-start IC, or be stricter
+   - `bench_ve_square_vardt` — must match BDF-2's accuracy under variable Δt
+   - `bench_vep_square` (Min mode) — peak \|σ\| within 1% of τ_y, matching the snapshot-fix BDF-2 baseline
+   - All 20 existing VE/VEP regression tests still pass
 
-**Pros**: clean separation; new integrators (RK, Crank-Nicolson, etc.) drop in without touching constitutive model.
-**Cons**: substantial refactor of `ddt.py` and the constitutive-model assignment path. High up-front cost.
+5. **The killer test** (~half day)
+   - `bench_ti_vep_harmonic` at θ ∈ {0°, ±15°}, τ_y ∈ {0.15, 0.30}, with the spatial yield_stress field
+   - **Decision gate**: peak \|σ_xy\| must stay bounded (≲ 1.1·τ_y in fault zone, ≲ A_∞ in bulk) for all 6 (θ, τ_y) combinations. BDF-2 currently produces 10⁸ blow-up here; exp should run cleanly. This is the empirical proof of the structural argument.
 
-### Strategy 3 — Keep BDF DDt, add exp as a special configuration
+### Phase C — Particle / Lagrangian extension (later session)
 
-Treat the exponential integrator as "BDF-1 with α∈(0,1) replaced by exp(-Δt/τ) and the leading viscosity replaced by η(1-φ)". The DDt machinery technically still stores one history slot and provides BDF-1 coefficients; we just plug in different expressions in the constitutive model's stress formula.
+`Lagrangian_DDt` and `Lagrangian_Swarm_DDt` are siblings of `SemiLagrangian`; they already share the BDF/AM coefficient API. Mirror the Phase B changes:
+- Add `_exp_coeffs` and `exp_history_term()`
+- Add forcing-history slot (a swarm variable in the `Lagrangian_Swarm` case)
+- The integrator-method API is storage-agnostic; nothing the constitutive model calls needs to change
 
-**Pros**: zero changes to DDt.
-**Cons**: confuses the BDF intent; the ε̇* requirement still needs handling somewhere; coefficient computations in ``_update_bdf_coefficients`` would have to dual-purpose.
+### Phase D — Generic `TimeIntegrator` refactor (deferred — only if needed)
 
-### Recommendation — revised
+If we end up with three or four integrator methods on the DDt class and want to add a fifth (e.g., Crank-Nicolson or higher-order ETD), refactor to separate `HistoryStorage` from a `TimeIntegrator` strategy object. Not needed for current scope; the peer-method approach scales fine to 3–4 methods.
 
-**Strategy 1 was the wrong framing**. The existing `SemiLagrangian` DDt is *already* a multi-integrator class: lines 405-406 maintain *both* `_bdf_coeffs` and `_am_coeffs` against a single `psi_star` storage, and `update_post_solve` updates them in parallel each step. `bdf()` and `adams_moulton_flux()` are sibling methods that consume the same storage with different coefficient combinations.
+---
 
-Adding the exponential integrator is structurally **a peer extension to the existing class**, not a subclass:
+## Open architectural questions to resolve during Phase B
 
-```python
-class SemiLagrangian(uw_object):
-    def __init__(self, ..., order=2, with_forcing_history=False, forcing_fn=None):
-        # Existing state-history storage (BDF/AM use this)
-        self.psi_star = [...]                              # k slots for BDF-k
-        self._bdf_coeffs = _create_coefficients(order, "BDF", ...)
-        self._am_coeffs  = _create_coefficients(order, "AM",  ...)
+1. **Lagged-τ vs SNES sub-iteration for VEP**
 
-        # NEW: optional forcing-history storage for ETD-k
-        if with_forcing_history:
-            self.forcing_star = [MeshVariable(...)]        # 1 slot for ETD-2
-            self._forcing_fn = forcing_fn                  # e.g. mesh.E
-            self._exp_coeffs = {
-                "alpha": expression(r"\alpha", ...),
-                "A":     expression(r"A",     ...),
-                "B":     expression(r"B",     ...),
-            }
+   For yield-active VEP, $\tau_{\text{eff}} = \eta_{\text{eff}}/\mu$ depends on σ (nonlinear). Two strategies:
+   - *Lagged-τ (Picard)*: Compute α, φ, A, B from previous step's η_eff. First-order in the nonlinear coupling, trivial to implement. **Phase B starts with this.**
+   - *Self-consistent τ via SNES*: Include τ in the iterate so the inner Newton converges τ↔σ together. More accurate but couples the time-integration to the SNES tolerance. Add only if lagged-τ shows insufficient accuracy.
 
-    def update_post_solve(self, dt, ...):
-        # Existing — shifts ψ* slots, updates BDF/AM coefficients
-        super_update_post_solve(...)
-        if hasattr(self, "_exp_coeffs"):
-            _update_exp_values(self._exp_coeffs, dt, tau_eff)
-            _project_forcing_into(self.forcing_star[0], self._forcing_fn)
+2. **Per-quad α, φ when τ is spatial**
 
-    # Existing
-    def bdf(self, order=None) -> sympy.Expr: ...
-    def adams_moulton_flux(self, order=None) -> sympy.Expr: ...
+   When η_eff is a spatial field (yield zone, weakness map), α = exp(-Δt/τ) becomes a spatial expression. Sympy handles `exp(spatial_expr)` symbolically, but JIT codegen has to evaluate `exp` per quadrature point per residual eval — potentially expensive.
 
-    # New peer
-    def exp_history_term(self) -> sympy.Expr:
-        """α·ψ*₀ + 2η(φ-α)·forcing_star[0] — ETD-2 history piece."""
-        a = self._exp_coeffs["alpha"]
-        # ... assemble symbolic expression ...
-```
+   Mitigation: project (α, φ) onto a scalar mesh variable at the start of each step. They're constant within a step. The JIT then sees a scalar-field reference, not an `exp` to evaluate. ~one extra projection per step.
 
-Constitutive models declare which integrator they want (`time_integrator="bdf"` / `"am"` / `"exp"`) and call the matching method. The DDt's `with_forcing_history` flag is set to True for `"exp"`. Constructor side-effect: the forcing-history MeshVariable is allocated and projection-snapshot machinery is wired up.
+3. **Forcing-history projection cost**
 
-**Storage shape**:
+   ε̇* needs to be projected into `forcing_star[0]` after each solve. UW3's `SNES_MultiComponent_Projection` (committed in 2026-04 for VE-Stokes' tau projection, see `docs/developer/CHANGELOG.md`) makes this cheap and direct. Memory cost: one extra `SYM_TENSOR` MeshVariable per VE/VEP solver.
+
+4. **TI-VEP per-component decomposition**
+
+   The TI rank-4 tensor has separate timescales: $\tau_0 = \eta_0/\mu$ for bulk, $\tau_{1,\text{eff}} = \eta_{1,\text{eff}}/\mu$ for fault-tangent. The clean approach is to construct the rank-4 stress tensor with separate $(\alpha_0, \varphi_0)$ for the isotropic part and $(\alpha_1, \varphi_1)$ for the director-aligned correction, matching how `_build_c_tensor` already does separate viscosities. **Validate at Phase B step 5; bug-fix in this session if needed.**
+
+5. **Asymmetric fine-Δt windows around BC flips**
+
+   Phase B 1D evaluation showed that centred fine windows around BC discontinuities waste their pre-flip half (σ is near peak and barely changes) while the post-flip half does the real work. Production benchmarks should use asymmetric windows (small pre, larger post). Affects the `bench_*_vardt` schedule, not the integrator itself.
+
+---
+
+## Validation gates (must pass before merging Phase B)
+
+| Test | Baseline | Exponential target | Status |
+|---|---|---|---|
+| `bench_ve_harmonic` | BDF-2 max\|err\| = 1.34e-3 | match or beat | TBD |
+| `bench_ve_square_vardt` | BDF-2 max\|err\| ≈ 8e-2 | match | TBD |
+| `bench_vep_square` (Min) | peak\|σ\| = 0.5000 | peak\|σ\| ≤ 1.001·τ_y | TBD |
+| `bench_vep_square_vardt` | passes | passes | TBD |
+| **`bench_ti_vep_harmonic` order=2** | **10⁸ blow-up** | **bounded ≲ τ_y** | **TBD — decision gate** |
+| 20 existing VE/VEP regression tests | pass | pass | TBD |
+
+---
+
+## Future work (out of scope for Phase B but relevant)
+
+- **Backtracking timestepping**: when a step contains an event that the integrator can't capture in one piece (e.g., a steep change in γ̇ or yield-onset), back up and retry with smaller Δt. Logically separate from the integrator choice; both BDF and exp would benefit. Useful for adaptive timestep strategies that don't know flip times a priori.
+
+- **Higher-order ETDs**: ETD-3, ETD-4 would store 2 or 3 forcing-history slots and use cubic/quartic interpolation in the integral. Not needed unless second-order forcing accuracy proves insufficient (unlikely for typical mantle/lithosphere problems).
+
+- **Higher-order yield treatment**: the lagged-τ approach is first-order in the nonlinear coupling. For sharp yield onset under variable Δt, a self-consistent τ via SNES sub-iteration may be needed. Bridge from Phase B if observed.
+
+- **Symbolic τ_eff in non-Maxwell rheologies** (Burgers, Maxwell-Voigt, etc.): the exponential framework generalises to any linear relaxation operator. Each relaxation timescale gets its own (α, φ); the rank-4 contraction picks them up via a matrix exponential of the relaxation tensor. Out of scope, but the architecture leaves the door open.
+
+---
+
+## Appendix A — Numerical evidence
+
+### Phase A (1D linear Maxwell, sinusoidal forcing) — DONE
+
+`_exp_integrator_phase_a.py` solves $\dot\sigma + \sigma/\tau = \mu\dot\gamma$ with $\dot\gamma = \dot\gamma_0 \cos(\omega t)$, $\omega = \pi/2$, $\eta = \mu = \tau = 1$.
+
+| Δt/τ | Exp max\|err\| | BDF-1 | BDF-2 |
+|---|---|---|---|
+| 0.01 | 1.1e-5 | 4.5e-3 | 7.4e-5 |
+| 0.05 | 2.9e-4 | 2.2e-2 | 1.8e-3 |
+| 0.10 | 1.1e-3 | 4.4e-2 | 6.8e-3 |
+| 0.50 | 2.8e-2 | 1.9e-1 | 1.1e-1 |
+| **1.00** | **1.0e-1** | 3.5e-1 | 3.5e-1 |
+| **2.00** | **5.7e-2** | 3.4e-1 | 3.4e-1 |
+
+Exp shows clean second-order slope at small Δt and stays accurate at Δt ≥ τ where both BDFs collapse to near-zero output. Figure: `exp_integrator_phase_a.png`.
+
+### Phase B (VEP, large Δt, square wave, variable-Δt) — DONE
+
+`_exp_integrator_phase_b_eval.py` extends to:
+
+- **VEP harmonic** ($\omega = \pi/4$, return-mapping yield): both Exp and BDF-1 clip correctly at τ_y; agreement to ~1% at small Δt because yield mechanism dominates over time integrator.
+
+- **Pure VE at large Δt/τ**: at Δt/τ ≤ 1, Exp 5–12× more accurate; at Δt/τ ≥ 2, both struggle but Exp degrades more gracefully (gives bounded under-shoot vs BDF's wrong-shape output).
+
+- **Square wave VE/VEP**: exp consistently ~2× more accurate than BDF-1 for VE; the yield+BC-discontinuity error dominates both for VEP at small Δt.
+
+- **Variable-Δt around BC flips** (correctly schedule, with fine-zone clamp): improvement of 11–19% in max error for both VE and VEP, both Exp and BDF-1. The exp's plateau-period exactness shows clearly as the per-step error drops to near machine precision once the BC discontinuity is well-resolved.
+
+Figures: `exp_integrator_phase_b_yield.png`, `exp_integrator_phase_b_largedt.png`, `exp_integrator_phase_b_square.png`, `exp_integrator_phase_b_vardt.png`.
+
+### Phase B UW3 jury-rig — partial (propagation snag identified)
+
+`_exp_integrator_uw3_jury_rig.py` attempted to wire ETD-2 into UW3 via a custom `MaxwellExpFlowModel(ViscousFlowModel)` subclass. Hit a JIT propagation issue: `cm._exp_alpha.sym = X` per-step updates don't reach the JIT-compiled flux. Minimal incremental test (`_exp_jury_rig_minimal.py`) confirmed the constitutive-model class plumbing works in isolation; the issue is specific to per-step updates of UWexpression coefficients. **First task of Phase B is resolving this**, by replicating the BDF coefficient propagation pattern.
+
+---
+
+## Appendix B — Architecture details
+
+### What the exponential integrator stores
 
 | Integrator | psi_star slots | forcing_star slots | Coefficients |
 |---|---|---|---|
@@ -290,117 +170,19 @@ Constitutive models declare which integrator they want (`time_integrator="bdf"` 
 | **ETD-2 (this proposal)** | **1** | **1** | **α, A, B** |
 | ETD-3 | 1 | 2 | α, A, B, C |
 
-Strategy 3 (overload BDF) is rejected: too clever, hard to debug.
+The `SemiLagrangian` already maintains parallel `_bdf_coeffs` and `_am_coeffs`. Adding `_exp_coeffs` is the same kind of peer extension.
 
-The Lagrangian / particle-based extension you'd want for the swarm system drops in cleanly here too — `Lagrangian_DDt` and `Lagrangian_Swarm_DDt` already exist as siblings of `SemiLagrangian` with the same coefficient/method API; adding `exp_history_term()` to those mirrors the change above. The integrator-method API is *agnostic* to whether storage is grid- or particle-based.
+### What stays the same vs BDF in the constitutive model
 
-### Implementation sizing
+The factorisation σ = η_eff·γ̇ + (history) is preserved. Yield-mode logic (softmin/min/harmonic) wraps η_eff identically to today. The Stokes weak-form structure is unchanged. What changes:
+- Different formula for η_eff_VE: η(1-φ) replaces η Δt/(τ+Δt)
+- Different history term: α·σⁿ + 2η(φ-α)·ε̇ⁿ replaces the BDF Σ c_i ψ*_i sum
+- New ε̇* storage slot
 
-Adding the exponential path to `SemiLagrangian` (and mirroring to `Lagrangian` and `Lagrangian_Swarm` when ready) is roughly:
+### Why this avoids the BDF-2 instability (TI-VEP + spatial yield)
 
-- ~80 lines: new `_create_exp_coefficients`, `_update_exp_values`, parallel to existing `_create_coefficients`
-- ~50 lines: optional `forcing_star` storage + projection-snapshot setup
-- ~30 lines: new `exp_history_term()` method
-- ~30 lines: `with_forcing_history` constructor branch
-- ~20 lines: constitutive-model integrator dispatch (which method to call)
+The instability we documented arises from the c_2·ψ*_{n-1} term in BDF-2's history sum getting autodiff'd into the Jacobian, where it picks up the spatial gradient of η_1_eff (via $\partial\eta_{1,\text{eff}}/\partial\nabla u$), and then gets *directionally amplified* by the rank-4 tensor's $\hat n\otimes\hat n\otimes\hat n\otimes\hat n$ coupling. The amplification compounds across history, exploding |σ| over ~10 t_r.
 
-Maybe 200 lines total in `ddt.py`, plus 50 lines for the constitutive-model selector. Smaller than the existing BDF infrastructure. The bulk of the new code is the `forcing_star` projection wiring — but UW3's `SNES_MultiComponent_Projection` (added 2026-04 for the VE-Stokes tau projection) makes this cheap and direct.
+Exponential has **no second history term**. There's no c_2·ψ*_1 to amplify. The α·σⁿ contribution is autodiff-trivial (σⁿ is a known mesh variable, treated as constant w.r.t. ∇u). The ε̇ⁿ contribution likewise. The Jacobian's only ∇u-dependent term is the leading 2η_eff(1-φ)·ε̇, which is well-behaved.
 
-Strategy 1 from the earlier draft (subclass) is *not* recommended — it'd duplicate the storage/projection machinery instead of factoring with what's already there.
-
-### Phase B implementation work-plan (concrete)
-
-1. Create `ExponentialMaxwell_DDt` in `systems/ddt.py`. Re-use `SemiLagrangian` projection-snapshot. Add `_epsdot_star` mesh variable + projection. Add `α, φ, A, B` UWexpressions and `_update_exp_coefficients(dt, tau)`.
-
-2. Create `MaxwellExponentialFlowModel` in `constitutive_models.py`, sibling of `ViscoElasticPlasticFlowModel`. `requires_stress_history = True` (re-uses solver auto-DDt path) but with the exp DDt class. Stress:
-   ```python
-   def stress(self):
-       phi, alpha = self._exp_phi, self._exp_alpha
-       eta = self.Parameters.shear_viscosity_0
-       sigma_h = self.Unknowns.DFDt.exp_history(self.Parameters.dt_elastic *
-                                                 self.Parameters.shear_modulus)
-       return 2 * eta * (1 - phi) * self.Unknowns.E + sigma_h
-   ```
-
-3. Wire VEP via lagged-τ: each step, after solve, compute new $\tau_{\text{eff}} = \eta_{\text{eff}}/\mu$ from the projected stress and update for next step's α, φ.
-
-4. Add `bench_ve_harmonic_exp.py` — run the harmonic benchmark with the new model. Decision gate: must match BDF-2's max\|err\| of 1.34e-3 (or beat it).
-
-5. If (4) passes, run `bench_ti_vep_harmonic_exp.py` — the headline test. Should sidestep the BDF-2 instability entirely.
-
-### Open architectural questions (to resolve during Phase B implementation)
-
-1. **Where does ε̇* live?** A mesh variable is the obvious choice (parallel to ψ*). But it's symmetric (sym-tensor) and needs a SemiLagrangian advection like ψ*. The projection cost roughly doubles vs current BDF.
-
-2. **Per-quadrature-point vs scalar α, φ**? When η is uniform, α and φ are scalars and constants[] handles them cheaply. When η is spatial (yield zones, weakness fields), α, φ become spatial expressions — sympy handles `exp` of a spatial expression, but JIT codegen has to evaluate `exp` per quad point per solve. Need to measure overhead before committing. Worst case: project (α, φ) onto a scalar mesh variable per step, evaluated once.
-
-3. **Yield kink in the exponential operator**? The "linear relaxation" model assumes constant τ over the step. When yielding kicks in mid-step, that's wrong. Lagged-τ is first-order in this nonlinearity; sub-iteration via SNES is exact. Phase C decides which.
-
-4. **Snapshot machinery compatibility**? The existing snapshot fix (commits 8f2b0dd, 31abad1) is what makes BDF VEP variable-dt stable. The exponential integrator has different history structure but the snapshot mechanism (project actual stress → use that for next step's `psi_star[0]`) should apply identically. Verify on Phase B variable-dt test.
-
-5. **Default for VEP/TI-VEP?** Even after exponential is wired in and validated, when should it become the *default*? Probably keep BDF as the default for backward-compat and select via `time_integrator="exponential"` until the exp path has soak-tested across the full benchmark suite.
-
-### Phase B — UW3 prototype: pure VE
-
-New constitutive model `MaxwellExponentialFlowModel` (sibling of `ViscousFlowModel`). Single history slot for σ, one for ε̇. Stress expression for the residual:
-
-```python
-sigma = alpha * sigma_star + 2*mu*A * E + 2*mu*B * E_star
-```
-
-Where `alpha`, `A`, `B` are scalar UWexpressions updated per timestep from current `dt` and `tau`. `E` is `Unknowns.E` (current strain rate), `E_star` is the previous step's strain rate.
-
-Validate against `bench_ve_harmonic.py` — should match or beat BDF-2's 1.34e-3 max\|err\|.
-
-**Decision gate**: if VE prototype passes the existing benchmark, proceed to Phase C.
-
-### Phase C — VEP extension
-
-For yield-active VEP, the relaxation time $\tau$ depends on stress (plastic viscosity grows when yielding). The "linear relaxation" framing breaks down.
-
-Three options:
-
-1. **Lagged-τ (Picard-style)**: use $\tau$ from the previous step in $\alpha, A, B$. First-order accurate in the nonlinear coupling but trivial to implement.
-2. **Sub-iteration within step**: iterate $\tau \to \sigma \to \tau$ to convergence inside each step. Robust but expensive.
-3. **Exponential of nonlinear operator**: keep the integrating-factor form but with $\tau$ as a function of the iterate. Gets clever and we'd need to think carefully about what's exact.
-
-**Plan**: start with (1), validate on `bench_vep_square_vardt` against existing BDF-1 and BDF-2 traces. Move to (2) only if (1) is too inaccurate at yield onset.
-
-### Phase D — TI-VEP extension
-
-Two viscosities ($\eta_0$ bulk, $\eta_1$ fault-plane), two relaxation times ($\tau_0 = \eta_0/\mu$, $\tau_1 = \eta_1/\mu$). The exponential update needs to handle the rank-4 tensor structure.
-
-Open question: does the exponential decompose component-wise along director vs perpendicular, or do we need a tensor exponential?
-
-**Plan**: defer until B and C land. Validate on `bench_ti_vep_harmonic` with the spatial-yield-stress fault — this is the case where the BDF-2 path was unstable. Exponential should sidestep entirely.
-
-## Open questions / risks
-
-1. **The $\dot\varepsilon^n$ history term** — currently UW3's `DFDt` machinery stores $\sigma^*$ (stress history). Adding $\dot\varepsilon^*$ is structurally new. Could re-use the same projection-snapshot machinery used for $\sigma^*$ but applied to $\dot\varepsilon$. Worth thinking about whether this complicates SemiLagrangian advection or the projection-fix.
-
-2. **Spatial $\tau$** — when $\eta$ varies spatially (yield zone, weakness fields), $\tau = \eta/\mu$ varies. The exponential coefficients $\alpha, A, B$ are then per-quadrature-point, not constants. Symbolically this is fine (sympy handles $\exp$ of a spatial expression) but JIT codegen has to evaluate $\exp$ per quadrature point per solve — potentially expensive if $\eta$ is complex.
-
-3. **Yield kink** — at the yield surface, $\eta_{\text{eff}}$ has a jump (Min mode) or steep transition (softmin). The "linear relaxation" model is wrong precisely at that boundary. Need to think about what the right object is.
-
-4. **BC discontinuities** — in our square-wave benchmarks, $\dot\varepsilon^n$ and $\dot\varepsilon^{n+1}$ can differ by $\dot\varepsilon_0$ (sign flip). The trapezoidal-style $A, B$ quadrature can lose accuracy at the discontinuity. Possibly need a "fine-dt around flips" adapter (we already have this for BDF in `bench_*_vardt`).
-
-5. **Integration with `set_jacobian_F1_source`** — once exponential is the residual, the Jacobian autodiff is qualitatively different (no multistep $\psi^*_1$ term). Probably *easier*: no inexact-Newton tricks needed because there's no instability.
-
-## Validation against existing benchmarks
-
-Once Phase B–D are in:
-
-| Benchmark | Current (BDF-2) | Exp target |
-|---|---|---|
-| `bench_ve_harmonic` | 1.34e-3 (peak-start) | match or beat |
-| `bench_ve_square` | passes | passes |
-| `bench_ve_square_vardt` | passes | passes |
-| `bench_vep_square` | passes (Min) | passes (with lagged-τ) |
-| `bench_vep_square_vardt` | passes | passes |
-| `bench_ti_vep_harmonic` | **unstable at order=2** | **stable at full order** |
-
-The TI-VEP fault row is the strongest motivation: BDF-2 currently can't run that problem at all without the `bdf_blend=0.10` damping (which throws away the order-2 benefit). Exponential should run it cleanly.
-
-## Next concrete step
-
-Implement and run the Phase A 1D Maxwell validator. Should take ~1 hour and definitively answer "is this formulation actually as good as the math suggests".
+This is why the structural argument carries to TI-VEP via the per-component decomposition (Phase B step 5): each component of the rank-4 tensor gets its own (α, φ, A, B), each with single-history-slot relaxation, no cross-component amplification.
