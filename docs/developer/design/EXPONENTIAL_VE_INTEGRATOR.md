@@ -235,11 +235,78 @@ Treat the exponential integrator as "BDF-1 with α∈(0,1) replaced by exp(-Δt/
 **Pros**: zero changes to DDt.
 **Cons**: confuses the BDF intent; the ε̇* requirement still needs handling somewhere; coefficient computations in ``_update_bdf_coefficients`` would have to dual-purpose.
 
-### Recommendation
+### Recommendation — revised
 
-**Start with Strategy 1** (subclass). Lowest cost-to-prototype, validates the formulation in production-like UW3 plumbing before committing to a refactor. If it works and we want to keep both BDF and exponential as first-class options long-term, **promote to Strategy 2** in a separate session — at that point we know which interfaces matter.
+**Strategy 1 was the wrong framing**. The existing `SemiLagrangian` DDt is *already* a multi-integrator class: lines 405-406 maintain *both* `_bdf_coeffs` and `_am_coeffs` against a single `psi_star` storage, and `update_post_solve` updates them in parallel each step. `bdf()` and `adams_moulton_flux()` are sibling methods that consume the same storage with different coefficient combinations.
 
-Strategy 3 is rejected: too clever, hard to debug.
+Adding the exponential integrator is structurally **a peer extension to the existing class**, not a subclass:
+
+```python
+class SemiLagrangian(uw_object):
+    def __init__(self, ..., order=2, with_forcing_history=False, forcing_fn=None):
+        # Existing state-history storage (BDF/AM use this)
+        self.psi_star = [...]                              # k slots for BDF-k
+        self._bdf_coeffs = _create_coefficients(order, "BDF", ...)
+        self._am_coeffs  = _create_coefficients(order, "AM",  ...)
+
+        # NEW: optional forcing-history storage for ETD-k
+        if with_forcing_history:
+            self.forcing_star = [MeshVariable(...)]        # 1 slot for ETD-2
+            self._forcing_fn = forcing_fn                  # e.g. mesh.E
+            self._exp_coeffs = {
+                "alpha": expression(r"\alpha", ...),
+                "A":     expression(r"A",     ...),
+                "B":     expression(r"B",     ...),
+            }
+
+    def update_post_solve(self, dt, ...):
+        # Existing — shifts ψ* slots, updates BDF/AM coefficients
+        super_update_post_solve(...)
+        if hasattr(self, "_exp_coeffs"):
+            _update_exp_values(self._exp_coeffs, dt, tau_eff)
+            _project_forcing_into(self.forcing_star[0], self._forcing_fn)
+
+    # Existing
+    def bdf(self, order=None) -> sympy.Expr: ...
+    def adams_moulton_flux(self, order=None) -> sympy.Expr: ...
+
+    # New peer
+    def exp_history_term(self) -> sympy.Expr:
+        """α·ψ*₀ + 2η(φ-α)·forcing_star[0] — ETD-2 history piece."""
+        a = self._exp_coeffs["alpha"]
+        # ... assemble symbolic expression ...
+```
+
+Constitutive models declare which integrator they want (`time_integrator="bdf"` / `"am"` / `"exp"`) and call the matching method. The DDt's `with_forcing_history` flag is set to True for `"exp"`. Constructor side-effect: the forcing-history MeshVariable is allocated and projection-snapshot machinery is wired up.
+
+**Storage shape**:
+
+| Integrator | psi_star slots | forcing_star slots | Coefficients |
+|---|---|---|---|
+| BDF-1 | 1 | 0 | c_0, c_1 |
+| BDF-2 | 2 | 0 | c_0, c_1, c_2 |
+| AM-2 | 1 | 0 | a_0, a_1, a_2 |
+| ETD-1 (Lawson) | 1 | 0 | α |
+| **ETD-2 (this proposal)** | **1** | **1** | **α, A, B** |
+| ETD-3 | 1 | 2 | α, A, B, C |
+
+Strategy 3 (overload BDF) is rejected: too clever, hard to debug.
+
+The Lagrangian / particle-based extension you'd want for the swarm system drops in cleanly here too — `Lagrangian_DDt` and `Lagrangian_Swarm_DDt` already exist as siblings of `SemiLagrangian` with the same coefficient/method API; adding `exp_history_term()` to those mirrors the change above. The integrator-method API is *agnostic* to whether storage is grid- or particle-based.
+
+### Implementation sizing
+
+Adding the exponential path to `SemiLagrangian` (and mirroring to `Lagrangian` and `Lagrangian_Swarm` when ready) is roughly:
+
+- ~80 lines: new `_create_exp_coefficients`, `_update_exp_values`, parallel to existing `_create_coefficients`
+- ~50 lines: optional `forcing_star` storage + projection-snapshot setup
+- ~30 lines: new `exp_history_term()` method
+- ~30 lines: `with_forcing_history` constructor branch
+- ~20 lines: constitutive-model integrator dispatch (which method to call)
+
+Maybe 200 lines total in `ddt.py`, plus 50 lines for the constitutive-model selector. Smaller than the existing BDF infrastructure. The bulk of the new code is the `forcing_star` projection wiring — but UW3's `SNES_MultiComponent_Projection` (added 2026-04 for the VE-Stokes tau projection) makes this cheap and direct.
+
+Strategy 1 from the earlier draft (subclass) is *not* recommended — it'd duplicate the storage/projection machinery instead of factoring with what's already there.
 
 ### Phase B implementation work-plan (concrete)
 
