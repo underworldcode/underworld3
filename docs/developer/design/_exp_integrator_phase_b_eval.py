@@ -174,8 +174,15 @@ def test_square_VE_VEP_vardt(half_period, dt_plateau, dt_fine, window,
 
     while t_cur < T_END - 1e-12:
         dt_step = schedule_dt(t_cur)
-        # Clamp so we don't straddle the next flip
+        # Clamp so we don't straddle the next flip OR step over the
+        # fine zone preceding it.  Without the second clamp, a plateau
+        # step starting just outside the window can leap clean over
+        # the entire fine zone, defeating the purpose of having one.
         flip_next = next((f for f in flip_times if f > t_cur + 1e-12), T_END)
+        fine_zone_start = max(0.0, flip_next - window)
+        if t_cur < fine_zone_start - 1e-12:
+            # Approaching the fine zone — clamp to land at its start
+            dt_step = min(dt_step, fine_zone_start - t_cur)
         dt_step = min(dt_step, flip_next - t_cur, T_END - t_cur)
         t_end = t_cur + dt_step
         # Period indexing: int(t // HP) gives the period containing t,
