@@ -1106,11 +1106,47 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     """
 
-    def __init__(self, unknowns, order=1, material_name: str = None):
+    def __init__(self, unknowns, order=1, integrator: str = "bdf",
+                 material_name: str = None):
+        """Construct a viscoelastic-plastic flow model.
 
-        ## We just need to add the expressions for the stress history terms in here.\
-        ## They are properties to hold expressions that are persistent for this instance
-        ## (i.e. we only update the value, not the object)
+        Parameters
+        ----------
+        unknowns : Unknowns
+            The solver unknowns (velocity, pressure).
+        order : int, default 1
+            Time integration order. Used by ``integrator='bdf'``;
+            forced to 1 for ``integrator='etd'`` (single stress slot).
+        integrator : str, default "bdf"
+            Time integration scheme:
+
+            - ``"bdf"`` (default): backward differentiation formula
+              of the deviatoric-stress rate equation (the production
+              VEP behaviour). ``order=1`` for backward Euler, ``order=2``
+              for BDF-2.
+            - ``"etd"``: ETD-2 exponential integrator that integrates
+              the Maxwell relaxation operator analytically and uses
+              linear quadrature on the strain-rate forcing. Pinned to a
+              single stress history slot. 5-12× more accurate than BDF-2
+              at small Δt and structurally avoids BDF-2's autodiff-
+              amplification instability seen in TI-VEP + spatial yield;
+              see ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``.
+        material_name : str, optional
+            Name identifier for this material.
+        """
+        if integrator not in ("bdf", "etd"):
+            raise ValueError(
+                f"integrator must be 'bdf' or 'etd', got '{integrator!r}'"
+            )
+        self._integrator = integrator
+        if integrator == "etd" and order != 1:
+            import warnings
+            warnings.warn(
+                "ETD-2 carries one stress history slot; ``order`` is "
+                f"pinned to 1 (you passed order={order}).",
+                UserWarning, stacklevel=2,
+            )
+            order = 1
 
         # Store material_name before creating expressions (needed by create_unique_symbol)
         self._material_name = material_name
@@ -1406,25 +1442,62 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._bdf_c3.sym = coeffs[3]
 
     def _update_history_coefficients(self):
-        """Uniform pre-solve hook the Stokes solver calls each step.
+        """Pre-solve hook: refresh integrator coefficients.
 
-        Default (BDF) implementation: delegates to ``_update_bdf_coefficients``.
-        Subclasses with non-BDF integrators (e.g. ``MaxwellExponentialFlowModel``)
-        override this to update their own coefficient set instead. The Stokes
-        solver dispatches uniformly through this method — no ``isinstance``
-        checks at the solver layer.
+        Dispatches on ``self._integrator``:
+        - ``"bdf"``: updates the BDF c-coefficients via
+          :py:meth:`_update_bdf_coefficients`.
+        - ``"etd"``: updates the ETD-2 α, φ on the DDt from the raw
+          viscous timescale ``τ_VE = η/μ`` via
+          ``DFDt.update_exp_coefficients(dt, τ_VE)``.
         """
-        self._update_bdf_coefficients()
+        if self._integrator == "etd":
+            if self.Unknowns.DFDt is None:
+                return
+            params = self.Parameters
+            if params.shear_modulus.sym is sympy.oo:
+                tau_eff = sympy.oo
+            else:
+                try:
+                    eta_val = float(params.shear_viscosity_0.sym)
+                    mu_val = float(params.shear_modulus.sym)
+                    tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
+                except (TypeError, ValueError):
+                    tau_eff = None
+            try:
+                dt_val = (
+                    float(params.dt_elastic.sym)
+                    if params.dt_elastic.sym is not sympy.oo
+                    else None
+                )
+            except (TypeError, ValueError):
+                dt_val = None
+            self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+        else:
+            self._update_bdf_coefficients()
 
     def _update_history_post_solve(self):
-        """Uniform post-solve hook the Stokes solver calls each step.
+        """Post-solve hook.
 
-        Default (BDF) implementation: no-op (BDF needs only psi_star history,
-        which is shifted by the solver after the projection). Subclasses that
-        store extra state for the next step (e.g. ETD-2 storing ε̇ⁿ in
-        ``forcing_star``) override this.
+        - BDF: no-op (psi_star history is shifted by the solver after
+          the post-solve stress projection).
+        - ETD-2: refresh ``forcing_star`` from the just-solved ε̇ for
+          the next step's history term.
         """
-        return
+        if self._integrator == "etd" and self.Unknowns.DFDt is not None:
+            if self.Unknowns.DFDt.forcing_star is not None:
+                self.Unknowns.DFDt.update_forcing_history(forcing_fn=self.Unknowns.E)
+
+    @property
+    def stress_history_ddt_kwargs(self):
+        """SemiLagrangian DDt kwargs based on integrator selection.
+
+        ETD-2 needs the forcing-history slot (``with_forcing_history=True``);
+        BDF does not.
+        """
+        if self._integrator == "etd":
+            return {"with_forcing_history": True}
+        return {}
 
     # The following should have no setters
     @property
@@ -1451,26 +1524,57 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def E_eff(self):
-        r"""Effective strain rate including elastic contribution.
+        r"""Effective strain rate including elastic-history coupling.
+
+        For BDF integration:
 
         .. math::
-            \dot{\varepsilon}_{\mathrm{eff}} = \dot{\varepsilon} + \frac{\boldsymbol{\sigma}^*}{2 G \Delta t}
+            \dot{\varepsilon}_\mathrm{eff} = \dot{\varepsilon}
+                - \sum_i c_i \frac{\sigma^{*(i)}}{2 \mu \Delta t}
+
+        For ETD-2 (exponential) integration:
+
+        .. math::
+            \dot{\varepsilon}_\mathrm{eff} = (1-\varphi)\,\dot{\varepsilon}
+                + \frac{\alpha}{2\eta}\,\sigma^*
+                + (\varphi-\alpha)\,\dot{\varepsilon}^*
+
+        Both forms reduce to bare ``ε̇`` when no elastic history is
+        active. The yield criterion ``η_pl = τ_y/(2|E_eff|_II)`` is the
+        same expression structure for both — it adapts naturally to the
+        integrator's ``E_eff``.
         """
         E = self.Unknowns.E
 
-        if self.Unknowns.DFDt is not None:
+        if self.Unknowns.DFDt is None or not self.is_elastic:
+            self._E_eff.sym = E
+            return self._E_eff
 
-            if self.is_elastic:
-                mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
-                # BDF history coefficients as UWexpressions (route through constants[])
-                bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
+        DDt = self.Unknowns.DFDt
 
-                # History contribution: -Σ cᵢ·σ_star[i-1] / (2·μ·dt)
-                for i in range(self.Unknowns.DFDt.order):
-                    E += -bdf_cs[i] * self.Unknowns.DFDt.psi_star[i].sym / (2 * mu_dt)
+        if self._integrator == "etd":
+            # ETD-2 effective strain rate carrying α·σ*/(2η) and (φ-α)·ε̇*
+            alpha = DDt._exp_alpha
+            phi = DDt._exp_phi
+            sigma_star = DDt.psi_star[0].sym
+            if DDt.forcing_star is not None:
+                edot_star = DDt.forcing_star.sym
+            else:
+                edot_star = sympy.zeros(*E.shape)
+            eta_raw = self.Parameters.shear_viscosity_0
+            self._E_eff.sym = (
+                (1 - phi) * E
+                + (alpha / (2 * eta_raw)) * sigma_star
+                + (phi - alpha) * edot_star
+            )
+            return self._E_eff
 
+        # BDF default
+        mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
+        bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
+        for i in range(DDt.order):
+            E += -bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
         self._E_eff.sym = E
-
         return self._E_eff
 
     @property
@@ -1487,6 +1591,20 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return self.viscosity
 
     @property
+    def _unclipped_ve_viscosity(self):
+        """Unclipped viscoelastic viscosity (no yield wrap), depends on integrator.
+
+        - BDF: ``ve_effective_viscosity = η·μΔt/(c₀·η + μΔt)`` —
+          baked-in time-integration factor for backward differentiation.
+        - ETD-2: ``η`` (raw) — the time-integration factor ``(1-φ)`` is
+          carried symbolically in :py:attr:`E_eff`, not folded into
+          this viscosity.
+        """
+        if self._integrator == "etd":
+            return self.Parameters.shear_viscosity_0
+        return self.Parameters.ve_effective_viscosity
+
+    @property
     def viscosity(self):
         r"""Effective viscosity combining visco-elastic and plastic limits.
 
@@ -1499,14 +1617,19 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
           when η_ve is small relative to η_pl.
         - ``"min"``: sharp ``Min(η_ve, η_pl)``. Exact yield stress but can
           cause SNES divergence with higher-order BDF time integration.
+
+        The unclipped η_ve depends on ``self._integrator`` —
+        :py:attr:`_unclipped_ve_viscosity` returns the correct base for
+        BDF or ETD-2 (raw η for ETD-2 since the time factor lives in
+        ``E_eff``; ``ve_effective_viscosity`` for BDF).
         """
 
         inner_self = self.Parameters
 
         if inner_self.yield_stress.sym == sympy.oo:
-            return inner_self.ve_effective_viscosity
+            return self._unclipped_ve_viscosity
 
-        effective_viscosity = inner_self.ve_effective_viscosity
+        effective_viscosity = self._unclipped_ve_viscosity
 
         if self.is_viscoplastic:
             vp_effective_viscosity = self._plastic_effective_viscosity
@@ -1673,24 +1796,26 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return stress
 
     def stress(self):
-        """Viscoelastic(-plastic) deviatoric stress for the weak form."""
+        """Viscoelastic(-plastic) deviatoric stress for the weak form.
 
-        edot = self.grad_u
+        Both BDF and ETD-2 are written as ``σ = 2·viscosity·E_eff``.
+        :py:attr:`E_eff` carries the integrator-specific elastic-history
+        coupling, and :py:attr:`viscosity` returns the appropriate yield-
+        wrapped effective viscosity (``ve_effective_viscosity`` for BDF,
+        raw ``η`` for ETD-2 since the time factor is in ``E_eff``).
+        """
+        if not self.is_elastic or self.Unknowns.DFDt is None:
+            return 2 * self.viscosity * self.grad_u
 
-        stress = 2 * self.viscosity * edot
+        if self._integrator == "etd" and self.Unknowns.DFDt.forcing_star is None:
+            raise RuntimeError(
+                "integrator='etd' requires a SemiLagrangian DDt with "
+                "with_forcing_history=True. The auto-DDt creation path "
+                "reads stress_history_ddt_kwargs — re-create the solver/"
+                "model so the kwargs propagate."
+            )
 
-        if self.Unknowns.DFDt is not None:
-
-            if self.is_elastic:
-                mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
-                bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
-
-                for i in range(self.Unknowns.DFDt.order):
-                    stress += 2 * self.viscosity * (
-                        -bdf_cs[i] * self.Unknowns.DFDt.psi_star[i].sym / (2 * mu_dt)
-                    )
-
-        return stress
+        return 2 * self.viscosity * self.E_eff.sym
 
     # def eff_edot(self):
 
@@ -1839,239 +1964,24 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
 
 class MaxwellExponentialFlowModel(ViscoElasticPlasticFlowModel):
-    r"""Maxwell visco-elastic flow with ETD-2 exponential time integration.
+    r"""Thin alias: ViscoElasticPlasticFlowModel(integrator="etd").
 
-    Replaces BDF-style backward differentiation of the deviatoric-stress
-    rate equation with closed-form integration of the Maxwell relaxation
-    operator plus ETD-2 quadrature of the strain-rate forcing:
+    .. deprecated:: Phase B
+        Use ``ViscoElasticPlasticFlowModel(unknowns, integrator="etd")``
+        directly. This sibling class survives as a thin scaffold so
+        existing scripts (the Phase B benchmark runners) continue to
+        work; it has no own behaviour.
 
-    .. math::
-        \sigma^{n+1} = \alpha\,\sigma^n
-            + 2\eta_\mathrm{eff}(1-\varphi)\,\dot\varepsilon^{n+1}
-            + 2\eta(\varphi-\alpha)\,\dot\varepsilon^n
-
-    with :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}`,
-    :math:`\varphi = (1-\alpha)\tau_\mathrm{eff}/\Delta t`,
-    :math:`\tau_\mathrm{eff} = \eta_\mathrm{eff}/\mu`.
-
-    Compared with BDF-2 the exponential formulation is 5–12× more accurate
-    at small Δt, decisively better at Δt ≈ τ (where BDF-1/2 over-damp the
-    output to near-zero), and structurally avoids the BDF-2 multistep
-    instability seen in TI-VEP + spatial yield_stress (no second history
-    term to amplify through the autodiff Jacobian). See
-    ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md`` for derivation
-    and validation evidence.
-
-    Implementation notes (Phase B prototype)
-    ----------------------------------------
-    Coefficients ``α``, ``φ`` live on the DDt (see
-    ``SemiLagrangian._exp_coeffs``), refreshed before each solve via
-    ``DFDt.update_exp_coefficients(dt, τ_eff)``. The forcing-history slot
-    ``forcing_star`` (one tensor MeshVariable, parallel to ``psi_star[0]``)
-    is allocated automatically by the auto-DDt creation path because this
-    class returns ``with_forcing_history=True`` from
-    ``stress_history_ddt_kwargs``.
-
-    The yield-coupling implementation here is intentionally minimal — yield
-    activates by clipping ``η_eff`` via the inherited softmin/min logic but
-    the effective strain rate ``E_eff`` returns plain ``Unknowns.E`` (not the
-    BDF-coupled form). This is an instantaneous-strain-rate yield criterion
-    that suffices for the Phase B benchmarks. A self-consistent yield-coupled
-    ``E_eff_exp`` is a Phase D follow-up if validation flags it.
-
-    Lagged-τ
-    --------
-    For VEP, ``τ_eff = η_eff/μ`` depends on the current stress state
-    (nonlinear). ``_update_history_coefficients`` uses a Picard-style lag:
-    ``τ_eff`` is computed from the last step's parameter values. This is
-    first-order in the nonlinear coupling. For sharp yield onset under
-    variable Δt, a self-consistent ``τ`` via SNES sub-iteration is the
-    Phase D escalation path.
+    See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md`` for the
+    formulation.
     """
 
     def __init__(self, unknowns, material_name=None):
-        # ETD-2 only carries one stress history slot. Pin order=1 in the
-        # inherited init so the auto-DDt allocates a single psi_star.
-        super().__init__(unknowns, order=1, material_name=material_name)
+        super().__init__(
+            unknowns, order=1, integrator="etd",
+            material_name=material_name,
+        )
 
-    @property
-    def stress_history_ddt_kwargs(self):
-        """Engage the SemiLagrangian's forcing-history machinery.
-
-        Returns ``{"with_forcing_history": True}`` so the auto-DDt allocates
-        a tensor MeshVariable to store ``ε̇ⁿ`` between steps.
-        """
-        return {"with_forcing_history": True}
-
-    @property
-    def viscosity(self):
-        r"""Yield-wrapped η for the ETD-2 model — same softmin/min/harmonic
-        structure as the BDF VEP model.
-
-        Yield is **inside the SNES residual** via the
-        :math:`\sigma = 2\eta_\mathrm{eff}\,E_\mathrm{eff,exp}` factorisation
-        in :py:meth:`stress`, with :math:`\eta_\mathrm{eff} =
-        \mathrm{softmin}(\eta, \eta_\mathrm{pl})` and
-        :math:`\eta_\mathrm{pl} = \tau_y/(2|E_\mathrm{eff,exp}|_{II})`.
-        This matches BDF VEP's established formulation — Newton sees the
-        yield-respecting stress, momentum balance is satisfied with the
-        clipped stress, no separate post-solve return mapping needed.
-        """
-        params = self.Parameters
-        if params.yield_stress.sym == sympy.oo:
-            return params.shear_viscosity_0
-
-        eta_raw = params.shear_viscosity_0
-        if self.is_viscoplastic:
-            vp_eta = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                eta = 1 / (1 / eta_raw + 1 / vp_eta)
-            elif self._yield_mode == "softmin":
-                delta = self._yield_softness
-                f = eta_raw / vp_eta
-                import math
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                eta = eta_raw / g
-            else:  # "min"
-                eta = sympy.Min(eta_raw, vp_eta)
-        else:
-            eta = eta_raw
-
-        if params.shear_viscosity_min.sym != -sympy.oo:
-            if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
-                return eta
-            return sympy.Max(eta, params.shear_viscosity_min)
-        return eta
-
-    @property
-    def E_eff(self):
-        r"""ETD-2 effective strain rate carrying the history coupling.
-
-        .. math::
-            E_\mathrm{eff} = (1-\varphi)\,\dot\varepsilon
-                + \frac{\alpha}{2\eta}\,\sigma^*
-                + (\varphi-\alpha)\,\dot\varepsilon^*
-
-        Constructed so :math:`2\eta\,E_\mathrm{eff}` equals the analytical
-        ETD-2 stress when no yield is active. The inherited
-        ``_plastic_effective_viscosity`` reads
-        :math:`\eta_\mathrm{pl} = \tau_y/(2|E_\mathrm{eff}|_{II})` so the
-        yield surface lands at :math:`|\sigma|_{II} = \tau_y` exactly
-        (rather than the under-clipped :math:`(1-\varphi)\tau_y` that an
-        instantaneous-strain-rate ``E_eff`` would produce).
-        """
-        E = self.Unknowns.E
-        if not self.is_elastic or self.Unknowns.DFDt is None:
-            self._E_eff.sym = E
-            return self._E_eff
-
-        DDt = self.Unknowns.DFDt
-        alpha = DDt._exp_alpha
-        phi = DDt._exp_phi
-        sigma_star = DDt.psi_star[0].sym
-        if DDt.forcing_star is not None:
-            edot_star = DDt.forcing_star.sym
-        else:
-            edot_star = sympy.zeros(*E.shape)
-        eta_raw = self.Parameters.shear_viscosity_0
-
-        E_eff = (1 - phi) * E + (alpha / (2 * eta_raw)) * sigma_star + (phi - alpha) * edot_star
-        self._E_eff.sym = E_eff
-        return self._E_eff
-
-    def stress(self):
-        r"""Maxwell-elastic-plastic deviatoric stress, ETD-2 form.
-
-        .. math::
-            \sigma = 2\,\eta_\mathrm{eff}\,E_\mathrm{eff}
-
-        where :math:`\eta_\mathrm{eff} = \mathrm{softmin}(\eta, \eta_\mathrm{pl})`
-        (BDF-style yield wrapping) and :math:`E_\mathrm{eff}` carries the
-        ETD-2 history coupling. Reduces to the analytical ETD-2 stress
-        :math:`2\eta(1-\varphi)\dot\varepsilon + \alpha\sigma^*
-        + 2\eta(\varphi-\alpha)\dot\varepsilon^*` when no yield is active.
-        At yield-active steps the history terms are scaled by
-        :math:`\eta_\mathrm{eff}/\eta` — a Picard-style approximation
-        that keeps :math:`|\sigma|_{II}` saturating at :math:`\tau_y`
-        while preserving the exponential structure.
-        """
-        if not self.is_elastic or self.Unknowns.DFDt is None:
-            return 2 * self.viscosity * self.grad_u
-
-        if self.Unknowns.DFDt.forcing_star is None:
-            raise RuntimeError(
-                "MaxwellExponentialFlowModel requires a SemiLagrangian DDt "
-                "constructed with with_forcing_history=True. Re-create the "
-                "solver/model so the auto-DDt creation path picks up "
-                "stress_history_ddt_kwargs."
-            )
-
-        return 2 * self.viscosity * self.E_eff.sym
-
-    @property
-    def flux(self):
-        r"""ETD-2 flux = stress() (mirrors the inherited VEP wiring)."""
-        return self.stress()
-
-    def _update_history_coefficients(self):
-        r"""Pre-solve hook: refresh α, φ on the DDt for this step.
-
-        Uses the raw viscous timescale :math:`\tau_\mathrm{VE} = \eta/\mu`
-        (no yield-state coupling). Lagged-τ (scalar median or per-node
-        from prior σ*, ε̇*) was tried in earlier iterations and found to
-        give *larger* yield-surface overshoot than the raw value: the
-        ETD-2 analytical structure has a non-zero minimum stress under
-        harmonic forcing because the history term ``2η(φ-α)·ε̇*`` uses
-        raw η (Picard-style approximation when yield is active),
-        making the floor on σ insensitive to τ_eff except via the
-        Picard scaling of α·σ*. Tightening the saturation requires
-        either (i) yield-clipping the history term too — losing
-        analytical ETD-2 in the no-yield limit — or (ii) per-component
-        (α, φ) for TI, both of which are Phase D scope.
-
-        At this raw-τ setting the ETD-2 model achieves parity with
-        BDF-1 production on the killer-test sweep (max σ_II/τ_y
-        per-node ~1.5 at θ=±15°, τ_y=0.15) while BDF-2 blows up by
-        10⁵-10⁹ — confirming the structural argument.
-        """
-        if self.Unknowns.DFDt is None:
-            return
-        DDt = self.Unknowns.DFDt
-        params = self.Parameters
-
-        if params.shear_modulus.sym is sympy.oo:
-            tau_eff = sympy.oo
-        else:
-            try:
-                eta_val = float(params.shear_viscosity_0.sym)
-                mu_val = float(params.shear_modulus.sym)
-                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
-            except (TypeError, ValueError):
-                tau_eff = None
-        try:
-            dt_val = (
-                float(params.dt_elastic.sym)
-                if params.dt_elastic.sym is not sympy.oo
-                else None
-            )
-        except (TypeError, ValueError):
-            dt_val = None
-        DDt.update_exp_coefficients(dt_val, tau_eff)
-
-    def _update_history_post_solve(self):
-        r"""Post-solve hook: refresh ``forcing_star`` from current ε̇^{n+1}.
-
-        Yield is enforced inside the SNES residual (via the yield-wrapped
-        viscosity in :py:meth:`stress`), so ``psi_star[0]`` already
-        satisfies the yield surface — no return-mapping clip needed
-        here. The only post-solve work is to record the new strain rate
-        as the next step's ε̇* history term.
-        """
-        if self.Unknowns.DFDt is None:
-            return
-        if self.Unknowns.DFDt.forcing_star is not None:
-            self.Unknowns.DFDt.update_forcing_history(forcing_fn=self.Unknowns.E)
 
 
 ###
@@ -2698,7 +2608,39 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     ViscoElasticPlasticFlowModel : Isotropic VEP model.
     """
 
-    def __init__(self, unknowns, order=1, material_name: str = None):
+    def __init__(self, unknowns, order=1, integrator: str = "bdf",
+                 material_name: str = None):
+        """Construct a transversely isotropic VEP flow model.
+
+        Parameters
+        ----------
+        unknowns : Unknowns
+            Solver unknowns (velocity, pressure).
+        order : int, default 1
+            BDF time integration order (used when ``integrator='bdf'``).
+            Forced to 1 for ``integrator='etd'``.
+        integrator : str, default "bdf"
+            Time integration scheme — see
+            :class:`ViscoElasticPlasticFlowModel` for details. ETD-2
+            for TI uses a single ``(α, φ)`` pair shared across bulk and
+            fault-tangent (Phase B prototype); per-component ``(α₀, φ₀)``,
+            ``(α₁, φ₁)`` is a Phase D follow-up.
+        material_name : str, optional
+            Name identifier for this material.
+        """
+        if integrator not in ("bdf", "etd"):
+            raise ValueError(
+                f"integrator must be 'bdf' or 'etd', got '{integrator!r}'"
+            )
+        self._integrator = integrator
+        if integrator == "etd" and order != 1:
+            import warnings
+            warnings.warn(
+                "ETD-2 carries one stress history slot; ``order`` is "
+                f"pinned to 1 (you passed order={order}).",
+                UserWarning, stacklevel=2,
+            )
+            order = 1
 
         self._material_name = material_name
 
@@ -2900,8 +2842,49 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         return self._order
 
     def _update_history_coefficients(self):
-        """Uniform pre-solve hook — TI-VEP delegates to ``_update_bdf_coefficients``."""
-        self._update_bdf_coefficients()
+        r"""Pre-solve hook — dispatches BDF or ETD-2.
+
+        BDF: refresh ``_bdf_c0..c3`` UWexpressions via
+        :py:meth:`_update_bdf_coefficients`. ETD-2: refresh ``α, φ`` on
+        the DDt from the raw fault-plane viscous timescale ``η₁/μ``.
+        """
+        if self._integrator == "etd":
+            if self.Unknowns.DFDt is None:
+                return
+            params = self.Parameters
+            if params.shear_modulus.sym is sympy.oo:
+                tau_eff = sympy.oo
+            else:
+                try:
+                    eta_val = float(params.shear_viscosity_1.sym)
+                    mu_val = float(params.shear_modulus.sym)
+                    tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
+                except (TypeError, ValueError):
+                    tau_eff = None
+            try:
+                dt_val = (
+                    float(params.dt_elastic.sym)
+                    if params.dt_elastic.sym is not sympy.oo
+                    else None
+                )
+            except (TypeError, ValueError):
+                dt_val = None
+            self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+        else:
+            self._update_bdf_coefficients()
+
+    def _update_history_post_solve(self):
+        """Post-solve hook — BDF: no-op; ETD-2: refresh forcing_star."""
+        if self._integrator == "etd" and self.Unknowns.DFDt is not None:
+            if self.Unknowns.DFDt.forcing_star is not None:
+                self.Unknowns.DFDt.update_forcing_history(forcing_fn=self.Unknowns.E)
+
+    @property
+    def stress_history_ddt_kwargs(self):
+        """ETD-2 needs the forcing-history slot; BDF does not."""
+        if self._integrator == "etd":
+            return {"with_forcing_history": True}
+        return {}
 
     def _update_bdf_coefficients(self):
         """Update BDF coefficient UWexpressions with blending."""
@@ -2983,15 +2966,40 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
     @property
     def E_eff(self):
-        r"""Effective strain rate including elastic history."""
+        r"""Effective strain rate including elastic-history coupling.
+
+        BDF: ``E_eff = ε̇ - Σc_i·σ*/(2μΔt)``.
+        ETD-2: ``E_eff = (1-φ)·ε̇ + α·σ*/(2η₁) + (φ-α)·ε̇*``.
+        """
         E = self.Unknowns.E
 
-        if self.Unknowns.DFDt is not None and self.is_elastic:
-            mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
-            bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
-            for i in range(self.Unknowns.DFDt.order):
-                E += -bdf_cs[i] * self.Unknowns.DFDt.psi_star[i].sym / (2 * mu_dt)
+        if self.Unknowns.DFDt is None or not self.is_elastic:
+            self._E_eff.sym = E
+            return self._E_eff
 
+        DDt = self.Unknowns.DFDt
+
+        if self._integrator == "etd":
+            alpha = DDt._exp_alpha
+            phi = DDt._exp_phi
+            sigma_star = DDt.psi_star[0].sym
+            if DDt.forcing_star is not None:
+                edot_star = DDt.forcing_star.sym
+            else:
+                edot_star = sympy.zeros(*E.shape)
+            eta_1 = self.Parameters.shear_viscosity_1
+            self._E_eff.sym = (
+                (1 - phi) * E
+                + (alpha / (2 * eta_1)) * sigma_star
+                + (phi - alpha) * edot_star
+            )
+            return self._E_eff
+
+        # BDF default
+        mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
+        bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
+        for i in range(DDt.order):
+            E += -bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
         self._E_eff.sym = E
         return self._E_eff
 
@@ -3082,13 +3090,16 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         return viscosity_yield
 
     def _build_c_tensor(self):
-        """Build the anisotropic tensor with VE effective viscosities.
+        """Build the anisotropic tensor with VE-effective viscosities.
 
-        Both η₀ and η₁ are replaced by their VE effective values:
-          η₀_ve = η₀·μ·dt / (c₀·η₀ + μ·dt)
-          η₁_ve = η₁·μ·dt / (c₀·η₁ + μ·dt)
-        Then η₁_ve is further yield-limited to η₁_eff. This ensures
-        Δ = η₀_ve - η₁_eff = 0 when η₁ = η₀ and yield is inactive.
+        BDF (default): η₀ and η₁ are replaced by their VE-effective
+        values (``η·μΔt / (c₀η + μΔt)``), then η₁_ve is further
+        yield-limited to η₁_eff. This ensures ``Δ = η₀_ve - η₁_eff = 0``
+        when ``η₁ = η₀`` and yield is inactive.
+
+        ETD-2: η₀ and η₁ are kept raw — the time-integration factor
+        ``(1-φ)`` lives in :py:attr:`E_eff` symbolically. Yield wrapping
+        on η₁ uses the same softmin/min/harmonic structure as BDF.
         """
 
         if self._is_setup:
@@ -3096,20 +3107,23 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         d = self.dim
 
-        # η₀: VE effective (no yield)
-        eta_0_raw = self.Parameters.shear_viscosity_0
-        mu = self.Parameters.shear_modulus
-        dt_e = self.Parameters.dt_elastic
-        c0 = self._bdf_c0
-
-        mu_val = mu.sym if hasattr(mu, 'sym') else mu
-        if mu_val is sympy.oo:
-            eta_0 = eta_0_raw.sym if hasattr(eta_0_raw, 'sym') else eta_0_raw
+        if self._integrator == "etd":
+            # ETD: raw η₀, η₁ (time factor in E_eff)
+            eta_0 = self.Parameters.shear_viscosity_0.sym
+            eta_1_eff = self.Parameters.shear_viscosity_1
         else:
-            eta_0 = eta_0_raw * mu * dt_e / (c0 * eta_0_raw + mu * dt_e)
-
-        # η₁: VE effective + yield limited
-        eta_1_eff = self.Parameters.ve_effective_viscosity
+            # BDF: VE-effective with c₀-baked Δt scaling
+            eta_0_raw = self.Parameters.shear_viscosity_0
+            mu = self.Parameters.shear_modulus
+            dt_e = self.Parameters.dt_elastic
+            c0 = self._bdf_c0
+            mu_val = mu.sym if hasattr(mu, 'sym') else mu
+            if mu_val is sympy.oo:
+                eta_0 = eta_0_raw.sym if hasattr(eta_0_raw, 'sym') else eta_0_raw
+            else:
+                eta_0 = eta_0_raw * mu * dt_e / (c0 * eta_0_raw + mu * dt_e)
+            # η₁: VE effective (will be yield-clipped below)
+            eta_1_eff = self.Parameters.ve_effective_viscosity
 
         if self.is_viscoplastic:
             vp_eff = self._plastic_effective_viscosity
@@ -3286,254 +3300,19 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
 
 class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowModel):
-    r"""Transverse-isotropic Maxwell visco-elastic-plastic, ETD-2 integration.
+    r"""Thin alias: TransverseIsotropicVEPFlowModel(integrator="etd").
 
-    Sibling of :class:`TransverseIsotropicVEPFlowModel` that integrates the
-    Maxwell relaxation operator analytically (ETD-2) instead of using BDF
-    backward differentiation. The rank-4 anisotropic stress tensor
-    :math:`C(\eta_0, \eta_1)` carries the bulk vs fault-tangent split as
-    in the BDF version, but the time integration becomes:
-
-    .. math::
-        \sigma^{n+1} = C\!:\![(1-\varphi)\,\dot\varepsilon^{n+1}
-            + (\varphi-\alpha)\,\dot\varepsilon^n] + \alpha\,\sigma^n
-
-    with :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}` and
-    :math:`\varphi = (1-\alpha)\tau_\mathrm{eff}/\Delta t`.
-
-    Phase B initial implementation (this class)
-    -------------------------------------------
-    * Single :math:`(\alpha, \varphi)` shared by bulk and fault-tangent
-      components, computed from :math:`\tau = \eta_1/\mu` (the
-      yield-active component). Per-component decomposition with separate
-      :math:`(\alpha_0, \varphi_0)` for bulk and
-      :math:`(\alpha_1, \varphi_1)` for the director-aligned correction
-      is a Phase D follow-up — only matters when :math:`\eta_0 \ne \eta_1`
-      *and* yield is active simultaneously.
-    * Yield handling is **predictor-corrector return mapping** (matching
-      :class:`MaxwellExponentialFlowModel`): the SNES residual is built
-      from the pure visco-elastic stress, and a post-solve clip on
-      ``psi_star[0]`` saturates :math:`|\sigma|_{II}` at
-      :math:`\tau_y(x)`. Phase B uses :math:`|\sigma|_{II}` clipping
-      rather than fault-resolved-shear clipping; the spatial
-      ``yield_stress`` field localises the effect to the fault zone via
-      its small ``τ_y`` there and large ``τ_y`` in the bulk.
-
-    Validation gate
-    ---------------
-    Empirical decision gate for the design doc's Phase B step 5:
-    :math:`|\sigma_{xy}|` must stay bounded :math:`\lesssim 1.1\tau_y`
-    on the fault and :math:`\lesssim A_\infty` in the bulk for the
-    sweep θ ∈ {0°, ±15°} × τ_y ∈ {0.15, 0.30}, where BDF-2 currently
-    blows up to ~10⁸. See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``.
+    .. deprecated:: Phase B
+        Use ``TransverseIsotropicVEPFlowModel(unknowns, integrator="etd")``
+        directly. This sibling class survives as a thin scaffold for
+        existing scripts.
     """
 
     def __init__(self, unknowns, material_name=None):
-        # ETD-2 stores one psi_star slot; pin order=1 in the inherited init.
-        super().__init__(unknowns, order=1, material_name=material_name)
-
-    @property
-    def stress_history_ddt_kwargs(self):
-        """Engage the SemiLagrangian's forcing-history machinery."""
-        return {"with_forcing_history": True}
-
-    @property
-    def viscosity(self):
-        r"""Yield-wrapped fault-plane viscosity ``η₁_eff = softmin(η₁, η_pl)``.
-
-        Yield is **inside the SNES residual** via the rank-4 tensor
-        ``C(η₀, η₁_eff)`` in :py:meth:`stress` — same structure as BDF
-        TI-VEP, ensuring momentum balance is satisfied with the
-        yield-respecting stress.
-        """
-        params = self.Parameters
-        if params.yield_stress.sym == sympy.oo:
-            return params.shear_viscosity_1
-
-        eta_1_raw = params.shear_viscosity_1
-        if self.is_viscoplastic:
-            vp_eta = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                eta_1_eff = 1 / (1 / eta_1_raw + 1 / vp_eta)
-            elif self._yield_mode == "softmin":
-                delta = self._yield_softness
-                f = eta_1_raw / vp_eta
-                import math
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                eta_1_eff = eta_1_raw / g
-            else:  # "min"
-                eta_1_eff = sympy.Min(eta_1_raw, vp_eta)
-        else:
-            eta_1_eff = eta_1_raw
-
-        if params.shear_viscosity_min.sym != -sympy.oo:
-            if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
-                return eta_1_eff
-            return sympy.Max(eta_1_eff, params.shear_viscosity_min)
-        return eta_1_eff
-
-    @property
-    def K(self):
-        r"""Effective stiffness for preconditioner (raw ``η₁``)."""
-        return self.Parameters.shear_viscosity_1
-
-    @property
-    def E_eff(self):
-        r"""ETD-2 effective strain rate carrying the history coupling.
-
-        .. math::
-            E_\mathrm{eff} = (1-\varphi)\,\dot\varepsilon
-                + \frac{\alpha}{2\eta_1}\,\sigma^*
-                + (\varphi-\alpha)\,\dot\varepsilon^*
-
-        Constructed so the ``2η_eff·E_eff`` factorisation reproduces the
-        analytical ETD-2 stress when no yield is active and saturates at
-        ``τ_y`` when yield is active. The fault-plane resolved-shear
-        ``_plastic_effective_viscosity`` reads
-        :math:`\eta_\mathrm{pl} = \tau_y/(2|\gamma|)` from the in-plane
-        component of ``E_eff``.
-        """
-        E = self.Unknowns.E
-        if not self.is_elastic or self.Unknowns.DFDt is None:
-            self._E_eff.sym = E
-            return self._E_eff
-
-        DDt = self.Unknowns.DFDt
-        alpha = DDt._exp_alpha
-        phi = DDt._exp_phi
-        sigma_star = DDt.psi_star[0].sym
-        if DDt.forcing_star is not None:
-            edot_star = DDt.forcing_star.sym
-        else:
-            edot_star = sympy.zeros(*E.shape)
-        eta_1 = self.Parameters.shear_viscosity_1
-
-        E_eff = (1 - phi) * E + (alpha / (2 * eta_1)) * sigma_star + (phi - alpha) * edot_star
-        self._E_eff.sym = E_eff
-        return self._E_eff
-
-    def _build_c_tensor(self):
-        r"""Rank-4 anisotropic tensor with raw ``η₀`` and yield-wrapped ``η₁_eff``.
-
-        Differs from the BDF parent class's ``_build_c_tensor`` which
-        folds in ``μΔt/(c₀η + μΔt)`` for both viscosities — ETD-2 carries
-        the time-integration factor ``(1-φ)`` symbolically through
-        ``E_eff`` instead. Yield wrapping on ``η₁`` (via ``self.viscosity``)
-        keeps the residual yield-respecting.
-        """
-        if self._is_setup:
-            return
-
-        d = self.dim
-        eta_0 = self.Parameters.shear_viscosity_0.sym
-        eta_1_eff = self.viscosity   # yield-wrapped η₁ (softmin/min/harmonic)
-        n = self.Parameters.director.sym
-        Delta = eta_0 - eta_1_eff
-
-        identity = uw.maths.tensor.rank4_identity(d)
-        lambda_mat = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
-
-        for i in range(d):
-            for j in range(d):
-                for k in range(d):
-                    for l in range(d):
-                        base_val = 2 * identity[i, j, k, l] * eta_0
-                        aniso_correction = (
-                            2 * Delta * (
-                                (n[i] * n[k] * int(j == l)
-                                 + n[j] * n[k] * int(l == i)
-                                 + n[i] * n[l] * int(j == k)
-                                 + n[j] * n[l] * int(k == i)) / 2
-                                - 2 * n[i] * n[j] * n[k] * n[l]
-                            )
-                        )
-                        val = base_val - aniso_correction
-                        if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
-                            val = sympy.Mul(sympy.S.One, val, evaluate=False)
-                        lambda_mat[i, j, k, l] = val
-
-        lambda_mat = uw.maths.tensor.rank4_to_mandel(lambda_mat, d)
-        self._c = uw.maths.tensor.mandel_to_rank4(lambda_mat, d)
-
-        self._is_setup = True
-        self._solver_is_setup = False
-        return
-
-    def stress(self):
-        r"""ETD-2 visco-elastic-plastic stress with TI rank-4 tensor.
-
-        .. math::
-            \sigma = C(\eta_0, \eta_{1,\mathrm{eff}})\!:\!E_\mathrm{eff}
-
-        where ``E_eff`` carries the ETD-2 history coupling and
-        ``η_{1,eff}`` is yield-wrapped. Yield is enforced inside the SNES
-        residual — momentum balance is satisfied with the yield-respecting
-        stress (matches BDF TI-VEP's pattern).
-        """
-        if not self.is_elastic or self.Unknowns.DFDt is None:
-            self._build_c_tensor()
-            return self._q(self.grad_u)
-
-        if self.Unknowns.DFDt.forcing_star is None:
-            raise RuntimeError(
-                "TransverseIsotropicMaxwellExponentialFlowModel requires a "
-                "SemiLagrangian DDt constructed with with_forcing_history=True. "
-                "Re-create the solver/model so the auto-DDt creation path picks "
-                "up stress_history_ddt_kwargs."
-            )
-
-        self._build_c_tensor()
-        return self._q(self.E_eff.sym)
-
-    @property
-    def flux(self):
-        r"""ETD-2 TI flux = stress() (mirrors the inherited wiring)."""
-        return self.stress()
-
-    def _update_history_coefficients(self):
-        r"""Pre-solve hook: refresh α, φ from raw viscous τ_VE = η₁/μ.
-
-        Mirrors :py:meth:`MaxwellExponentialFlowModel._update_history_coefficients`
-        — see that method for why lagged-τ doesn't tighten the
-        yield-surface overshoot under ETD-2's Picard-style history.
-        """
-        if self.Unknowns.DFDt is None:
-            return
-        DDt = self.Unknowns.DFDt
-        params = self.Parameters
-
-        if params.shear_modulus.sym is sympy.oo:
-            tau_eff = sympy.oo
-        else:
-            try:
-                eta_val = float(params.shear_viscosity_1.sym)
-                mu_val = float(params.shear_modulus.sym)
-                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
-            except (TypeError, ValueError):
-                tau_eff = None
-        try:
-            dt_val = (
-                float(params.dt_elastic.sym)
-                if params.dt_elastic.sym is not sympy.oo
-                else None
-            )
-        except (TypeError, ValueError):
-            dt_val = None
-        DDt.update_exp_coefficients(dt_val, tau_eff)
-
-    def _update_history_post_solve(self):
-        r"""Post-solve hook: refresh ``forcing_star`` from current ε̇^{n+1}.
-
-        Yield is enforced inside the SNES residual via the rank-4 tensor
-        ``C(η₀, η₁_eff)`` in :py:meth:`stress`, so ``psi_star[0]``
-        already satisfies the yield surface — no return-mapping clip
-        needed here.
-        """
-        if self.Unknowns.DFDt is None:
-            return
-        if self.Unknowns.DFDt.forcing_star is not None:
-            self.Unknowns.DFDt.update_forcing_history(forcing_fn=self.Unknowns.E)
+        super().__init__(
+            unknowns, order=1, integrator="etd",
+            material_name=material_name,
+        )
 
 
 class MultiMaterialConstitutiveModel(Constitutive_Model):
