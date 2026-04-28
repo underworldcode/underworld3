@@ -143,7 +143,12 @@ def probe_centre_resolved(stokes, n_vec, c=np.array([[0.5, 0.5]])):
 # Time-stepping
 # ---------------------------------------------------------------------------
 
-def run_one(theta_deg, tau_y_at_fault):
+def run_one(theta_deg, tau_y_at_fault, t_end=None):
+    """Run one (θ, τ_y) combo. ``t_end`` overrides the module-level T_END;
+    use a fraction of T_END (e.g. ``T_END/4`` = 1 period) for fast
+    smokes that just check yield enforcement / convergence behaviour."""
+    if t_end is None:
+        t_end = T_END
     label = f"ti_exp_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
     mesh, stokes, V_top, n_vec = build_ti_exp_stokes(label, theta_deg, tau_y_at_fault)
     cm = stokes.constitutive_model
@@ -173,16 +178,16 @@ def run_one(theta_deg, tau_y_at_fault):
     t0 = time.time()
     t_cur = 0.0
     n_x, n_y = n_vec
-    while t_cur < T_END - 1e-9:
-        dt = min(DT, T_END - t_cur)
-        t_end = t_cur + dt
-        v_now = V0 * float(np.cos(OMEGA * t_end))
+    while t_cur < t_end - 1e-9:
+        dt = min(DT, t_end - t_cur)
+        t_end_step = t_cur + dt
+        v_now = V0 * float(np.cos(OMEGA * t_end_step))
         V_top.sym = sympy.Float(v_now)
         cm.Parameters.dt_elastic = dt
         try:
             stokes.solve(zero_init_guess=False, timestep=dt, divergence_retries=2)
         except Exception as exc:
-            print(f"  step at t={t_end:.3f}: {exc}", flush=True)
+            print(f"  step at t={t_end_step:.3f}: {exc}", flush=True)
             diverged += 1
             break
 
@@ -207,8 +212,8 @@ def run_one(theta_deg, tau_y_at_fault):
         ratio = sigma_II / np.maximum(ty_per_node, 1e-30)
         sigmaII_over_ty_max.append(float(ratio.max()))
 
-        times.append(t_end)
-        t_cur = t_end
+        times.append(t_end_step)
+        t_cur = t_end_step
 
     return dict(
         theta_deg=theta_deg,
