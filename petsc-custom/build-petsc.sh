@@ -218,6 +218,70 @@ setup_gadi_build_env() {
     export PATH="/usr/bin:/usr/local/bin:${MPI_DIR}/bin:${PATH}"
 }
 
+# ── Local macOS/OpenMPI build environment setup ──────────────────────────────
+# The pixi osx-arm64 toolchain currently mixes a conda clang/ld stack, OpenMPI
+# wrapper defaults, and Fortran settings that are not coherent enough for PETSc's
+# mixed C/Fortran configure checks. For local macOS OpenMPI builds, force the
+# MPI wrappers onto Apple's clang/clang++ and a working external gfortran.
+setup_local_macos_openmpi_build_env() {
+    [ "${CLUSTER}" = "local" ] || return 0
+    [ "${MPI_IMPL}" = "openmpi" ] || return 0
+    [ "$(uname -s)" = "Darwin" ] || return 0
+
+    local _sdkroot _macos_target _fc _pixi_fc _fc_driver
+
+    _pixi_fc="${PIXI_ENV}/bin/arm64-apple-darwin20.0.0-gfortran"
+    if [ -n "${OMPI_FC}" ] && [ -x "${OMPI_FC}" ]; then
+        _fc="${OMPI_FC}"
+    elif [ -x "/opt/homebrew/bin/gfortran" ]; then
+        _fc="/opt/homebrew/bin/gfortran"
+    elif command -v gfortran >/dev/null 2>&1 && [ "$(command -v gfortran)" != "${_pixi_fc}" ]; then
+        _fc="$(command -v gfortran)"
+    else
+        echo "Error: local macOS OpenMPI PETSc builds require an external gfortran"
+        echo "Install one with: brew install gcc"
+        exit 1
+    fi
+
+    _fc_driver="$(
+        env -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET \
+            "${_fc}" -### -x f95 /dev/null 2>&1 || true
+    )"
+    _sdkroot="$(
+        printf '%s\n' "${_fc_driver}" | python3 -c 'import re, sys; text = sys.stdin.read(); match = re.search(r"-syslibroot\s+(/[^ ]*MacOSX[0-9.]*\.sdk)/?", text); print(match.group(1) if match else "")'
+    )"
+    _macos_target="$(
+        printf '%s\n' "${_fc_driver}" | python3 -c 'import re, sys; text = sys.stdin.read(); match = re.search(r"-mmacosx-version-min=([0-9]+\.[0-9]+)", text); print(match.group(1) if match else "")'
+    )"
+    if [ -z "${_sdkroot}" ] || [ -z "${_macos_target}" ]; then
+        echo "Error: unable to determine gfortran macOS SDK/deployment target"
+        exit 1
+    fi
+
+    # Strip pixi/conda toolchain env so the MPI wrappers are driven by one
+    # coherent compiler stack rather than a mix of conda wrappers and Apple tools.
+    unset AS AR CC CXX FC F77 F90 CPP LD NM RANLIB STRIP
+    unset CFLAGS CXXFLAGS FFLAGS FORTRANFLAGS CPPFLAGS LDFLAGS LDFLAGS_LD
+    unset SDKROOT MACOSX_DEPLOYMENT_TARGET LIBRARY_PATH CPATH
+    unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+    unset CMAKE_ARGS CC_FOR_BUILD CXX_FOR_BUILD FC_FOR_BUILD CPP_FOR_BUILD
+    unset OBJC OBJC_FOR_BUILD CLANG CLANGXX GFORTRAN
+
+    export SDKROOT="${_sdkroot}"
+    export OMPI_CC=/usr/bin/clang
+    export OMPI_CXX=/usr/bin/clang++
+    export OMPI_FC="${_fc}"
+    export OMPI_CFLAGS="--sysroot=${_sdkroot} -mmacosx-version-min=${_macos_target}"
+    export OMPI_CXXFLAGS="--sysroot=${_sdkroot} -mmacosx-version-min=${_macos_target}"
+    export OMPI_FCFLAGS="--sysroot=${_sdkroot} -mmacosx-version-min=${_macos_target} -I${PIXI_ENV}/include"
+
+    echo "Applying macOS OpenMPI toolchain overrides:"
+    echo "  SDKROOT: ${SDKROOT}"
+    echo "  CC/CXX:  ${OMPI_CC} / ${OMPI_CXX}"
+    echo "  FC:      ${OMPI_FC}"
+    echo "  Target:  macOS ${_macos_target}"
+}
+
 clone_petsc() {
     # For Gadi: resolve symlink before cloning. git clone replaces a
     # symlink-to-empty-dir with a real directory, defeating the
@@ -267,6 +331,8 @@ configure_petsc() {
     if [ "${CLUSTER}" = "gadi" ]; then
         _python="$(which python3)"
         setup_gadi_build_env
+    elif [ "${CLUSTER}" = "local" ] && [ "${MPI_IMPL}" = "openmpi" ]; then
+        setup_local_macos_openmpi_build_env
     fi
 
     # Flags shared across all clusters.
@@ -298,7 +364,9 @@ configure_petsc() {
     case "${CLUSTER}" in
         local)
             "${_python}" ./configure "${_common[@]}" \
-                --with-mpi-dir="${PIXI_ENV}" \
+                --with-cc="${PIXI_ENV}/bin/mpicc" \
+                --with-cxx="${PIXI_ENV}/bin/mpicxx" \
+                --with-fc="${PIXI_ENV}/bin/mpif90" \
                 --with-hdf5=1 \
                 --with-hdf5-dir="${PIXI_ENV}" \
                 --download-hdf5=0 \
@@ -353,7 +421,11 @@ build_petsc() {
     export PETSC_DIR
     export PETSC_ARCH
 
-    [ "${CLUSTER}" = "gadi" ] && setup_gadi_build_env
+    if [ "${CLUSTER}" = "gadi" ]; then
+        setup_gadi_build_env
+    elif [ "${CLUSTER}" = "local" ] && [ "${MPI_IMPL}" = "openmpi" ]; then
+        setup_local_macos_openmpi_build_env
+    fi
 
     make all
     echo "PETSc build complete."
@@ -366,7 +438,11 @@ test_petsc() {
     export PETSC_DIR
     export PETSC_ARCH
 
-    [ "${CLUSTER}" = "gadi" ] && setup_gadi_build_env
+    if [ "${CLUSTER}" = "gadi" ]; then
+        setup_gadi_build_env
+    elif [ "${CLUSTER}" = "local" ] && [ "${MPI_IMPL}" = "openmpi" ]; then
+        setup_local_macos_openmpi_build_env
+    fi
 
     make check
     echo "PETSc tests complete."
@@ -383,6 +459,10 @@ build_petsc4py() {
 
     export PETSC_DIR
     export PETSC_ARCH
+
+    if [ "${CLUSTER}" = "local" ] && [ "${MPI_IMPL}" = "openmpi" ]; then
+        setup_local_macos_openmpi_build_env
+    fi
 
     python setup.py build
     python setup.py install
