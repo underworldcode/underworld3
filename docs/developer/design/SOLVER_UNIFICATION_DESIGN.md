@@ -1,6 +1,15 @@
 # Solver Unification Design
 
-> Status: **Proposed** — for implementation after VEP validation is complete
+> Status: **Implemented** (2026-04-28, branch `feature/exp-integrator-investigation`).
+> The unification landed alongside Phase B of the exponential integrator —
+> see `EXPONENTIAL_VE_INTEGRATOR.md`. ``VE_Stokes`` now emits a runtime
+> ``DeprecationWarning`` on construction with a migration template; production
+> callsites have been swept; the constitutive model declares its DDt needs via
+> ``requires_stress_history`` (existing) plus ``stress_history_ddt_kwargs``
+> (new in Phase B — used by ``integrator='etd'`` to request
+> ``with_forcing_history=True`` on the auto-DDt). The lazy-creation path in
+> ``Stokes.constitutive_model.setter`` reads both. The text below is preserved
+> as the design rationale for future readers.
 
 ## Goal
 
