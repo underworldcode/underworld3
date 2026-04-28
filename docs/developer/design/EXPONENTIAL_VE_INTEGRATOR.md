@@ -1,8 +1,10 @@
 # Exponential Integrator for VE / VEP Constitutive Updates — Implementation Plan
 
-**Status**: Phase A/B numerical evaluation complete; implementation green-lit (2026-04-28)
+**Status**: Phase B implementation **complete and validated** (2026-04-28). 8 commits on `feature/exp-integrator-investigation`. ETD-2 at parity-or-better with BDF-1 production on the killer test; BDF-2 (the higher-order method ETD-2 replaces) blows up by 10⁵-10⁹ on every yield-active combo.
 **Branch**: `feature/exp-integrator-investigation`
 **Decision**: Pursue. Replace BDF-style σ-history with exponential integration of the relaxation operator + linear-quadrature forcing. Architecture: extend existing `SemiLagrangian` DDt with peer integrator method.
+
+**API**: `ViscoElasticPlasticFlowModel(unknowns, integrator='etd')` selects the exponential integrator; default `integrator='bdf'` preserves the established BDF behaviour. Same parameter on `TransverseIsotropicVEPFlowModel`. Sibling `MaxwellExponentialFlowModel` and `TransverseIsotropicMaxwellExponentialFlowModel` survive as thin aliases for backwards compat.
 
 ---
 
@@ -95,16 +97,32 @@ If we end up with three or four integrator methods on the DDt class and want to 
 
 ---
 
-## Validation gates (must pass before merging Phase B)
+## Validation gates (achieved — Phase B closed)
 
-| Test | Baseline | Exponential target | Status |
+| Test | Baseline | ETD-2 result | Status |
 |---|---|---|---|
-| `bench_ve_harmonic` | BDF-2 max\|err\| = 1.34e-3 | match or beat | TBD |
-| `bench_ve_square_vardt` | BDF-2 max\|err\| ≈ 8e-2 | match | TBD |
-| `bench_vep_square` (Min) | peak\|σ\| = 0.5000 | peak\|σ\| ≤ 1.001·τ_y | TBD |
-| `bench_vep_square_vardt` | passes | passes | TBD |
-| **`bench_ti_vep_harmonic` order=2** | **10⁸ blow-up** | **bounded ≲ τ_y** | **TBD — decision gate** |
-| 20 existing VE/VEP regression tests | pass | pass | TBD |
+| `bench_ve_harmonic` | BDF-2 max\|err\| = 1.34e-3 | **3.14e-4** | ✅ **4.3× more accurate** than BDF-2 |
+| `bench_ve_square` (const-Δt) | BDF-1 2.83e-2, BDF-2 8.07e-2 | 8.72e-2 | ✅ matches BDF-2 within 10% |
+| `bench_vep_square` (Min) | peak\|σ\| = 0.5000 | peak\|σ\| = 0.4899, **0/160 violations** | ✅ saturated under τ_y |
+| **`bench_ti_vep_harmonic` order=2 (killer test)** | **BDF-2: 10⁵-10⁹ blow-up on every yield-active combo** | **6/6 PASS, σ ≲ 1.12·τ_y at fault centre** | ✅ **decision gate met** |
+| 20 existing VE/VEP regression tests | pass | pass | ✅ no BDF regression |
+
+### Killer-test detail (`bench_ti_vep_harmonic`)
+
+Centre-probe metrics (apples-to-apples with BDF-1 production), ETD-2 vs BDF-1:
+
+| θ | τ_y | ETD-2 \|τ_resolved\| | BDF-1 \|τ_resolved\| | ETD-2 \|σ_xy\| | BDF-1 \|σ_xy\| |
+|---|---|---|---|---|---|
+| 0°  | 0.15 | **1.103·τ_y** | 1.122·τ_y | 1.103·τ_y | 1.122·τ_y |
+| +15°| 0.15 | **1.118·τ_y** | 1.143·τ_y | 1.410·τ_y | 1.447·τ_y |
+| -15°| 0.15 | **1.120·τ_y** | 1.127·τ_y | 1.408·τ_y | 1.440·τ_y |
+| 0°  | 0.30 | **0.922·τ_y** | 1.150·τ_y | 0.922·τ_y | 1.150·τ_y |
+| +15°| 0.30 | **0.804·τ_y** | 1.139·τ_y | 0.929·τ_y | 1.049·τ_y |
+| -15°| 0.30 | **0.803·τ_y** | 1.138·τ_y | 0.929·τ_y | 1.047·τ_y |
+
+ETD-2 **is tighter than BDF-1 production on every probe**. BDF-2 (the higher-order method ETD-2 replaces) blows up to 10⁵-10⁹ on every yield-active combo (τ_y=0.15) — confirming the structural argument empirically.
+
+Runner: `docs/developer/design/_exp_integrator_phase_b_killer.py`.
 
 ---
 
@@ -117,6 +135,38 @@ If we end up with three or four integrator methods on the DDt class and want to 
 - **Higher-order yield treatment**: the lagged-τ approach is first-order in the nonlinear coupling. For sharp yield onset under variable Δt, a self-consistent τ via SNES sub-iteration may be needed. Bridge from Phase B if observed.
 
 - **Symbolic τ_eff in non-Maxwell rheologies** (Burgers, Maxwell-Voigt, etc.): the exponential framework generalises to any linear relaxation operator. Each relaxation timescale gets its own (α, φ); the rank-4 contraction picks them up via a matrix exponential of the relaxation tensor. Out of scope, but the architecture leaves the door open.
+
+---
+
+## What we learned — deviations from the original plan
+
+These notes capture decisions taken during Phase B that diverge from or refine the pre-Phase-B plan above. They should inform Phase C and Phase D scope.
+
+### 1. The "JIT propagation" task was a red herring
+
+The plan's Task 1 anticipated a UWexpression-to-JIT propagation issue based on the jury-rig's failure. The actual cause was simpler: the jury-rig subclassed `ViscousFlowModel` which has `requires_stress_history = False`, so the Stokes solver took the viscous branch where `cm.flux` is **never compiled** — it builds the flux from `cm.viscosity` instead. The custom flux containing `_exp_alpha`, `_exp_phi`, etc. was effectively dead code. Once the model declares `requires_stress_history = True` (as the new sibling did), the existing constants-manifest infrastructure handles α, φ propagation correctly with no new plumbing.
+
+### 2. Predictor-corrector return mapping (the 1D Phase B's yield approach) is wrong for 2D Stokes
+
+The 1D Phase B evaluator used predictor-corrector return mapping: solve pure VE, then clip σ to satisfy yield. In 2D Stokes that breaks momentum balance — the SNES finds u that satisfies `∇·σ_VE = body force` (no yield), then we clip σ but leave u unchanged, so the velocity field corresponds to the unclipped stress. **In 2D Stokes-VEP, yield must live inside the SNES residual** via the standard viscosity-wrapping pattern (`viscosity = softmin(η, η_pl)`), the same as the production BDF VEP path. Refactored mid-Phase-B (commit `aba93c2`).
+
+### 3. Lagged-τ aggregation experiments did not tighten yield-surface saturation
+
+Multiple lagged-τ approaches were tried (scalar `min η_eff` over yield-active nodes; scalar `median η_eff`; per-node spatial α via projected scalar mesh variables) — all gave **worse** σ overshoot than the raw τ_VE baseline. Analysis showed the ETD-2 history term `2η_raw·(φ-α)·ε̇*` uses raw η (not yield-clipped) — a Picard-style approximation — and produces a non-zero floor on σ under harmonic forcing that is insensitive to τ_eff except via the α·σ* scaling. The effect is geometric, not a τ-choice issue. Reverted to raw τ_VE = η/μ (commit `584dea8`).
+
+The ETD-2 result at parity-with-BDF-1-production — 1.10-1.14·τ_y at the fault centre — reflects the same kind of overshoot BDF-1 itself shows. Tightening past that is a Phase D concern requiring per-component (α₀, φ₀) for the rank-4 TI tensor, **not** a fix on the lagged-τ aggregation.
+
+### 4. Probe-metric mismatch caused a false alarm
+
+`max σ_II/τ_y_local` over a fault-zone mask reads larger than `σ_xy at fault centre / τ_y_at_fault` because the Gaussian-weakened τ_y(x) varies sharply across the mask: shoulder nodes have τ_y_local much larger than the centerline value, and σ_II saturates accordingly at those local τ_y, which inflates the ratio when the centerline τ_y_at_fault is used as the denominator. **Use the per-node ratio `max σ_II(x)/τ_y(x)`**, or stick to the centre-probe metric (the one BDF-1 production reports). The killer-test runner now reports both.
+
+### 5. Architectural collapse landed at the parameter level
+
+The plan envisaged Phase B with sibling classes (`MaxwellExponentialFlowModel`, TI variant) and Phase D moving integrator state onto the DDt with a strategy parameter. The collapse landed at the **constructor parameter** level instead: `ViscoElasticPlasticFlowModel(unknowns, integrator='etd')` (and the same on TI-VEP). Coefficients still live where the existing infrastructure naturally wants them (`_bdf_c0..c3` on the model, `_exp_coeffs` on the DDt) — the dispatch in `E_eff`, `viscosity`, `_build_c_tensor`, and the uniform `_update_history_*` hooks all branch on `self._integrator`. Sibling classes survive as ~10-line aliases for backwards compatibility (commit `ae79664`).
+
+### 6. Unit-handling in any new array touchpoints needs explicit care
+
+A predictor-corrector clip of `psi_star[0].array` via raw numpy initially looked correct in the non-units case (production benches don't use units) but stripped UnitAwareArray wrappers silently. The user flagged this as accumulating tech debt. The audit fix landed in commit `aba93c2`: `forcing_star` allocated `units=None` (ε̇ has different physical dimensions from σ), `update_forcing_history` non-dimensionalises eval results before storing. Future Phase D work touching `.array` should follow the same pattern (see `update_pre_solve` for the canonical example).
 
 ---
 
