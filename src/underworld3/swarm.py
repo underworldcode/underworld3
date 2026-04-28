@@ -1802,39 +1802,74 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         if filename.endswith(".h5") == False:
             raise RuntimeError("The filename must end with .h5")
 
+        local_data = self.data[:]
+        local_n = local_data.shape[0]
+        n_components = self.num_components
+
         if h5py.h5.get_config().mpi == True and not force_sequential:
+            # BUGFIX(#151): the previous parallel path called
+            #   h5f.create_dataset("data", data=self.data[:])
+            # collectively, but each rank passed its own local-sized array.
+            # In parallel HDF5 every rank must specify the *same* dataset
+            # shape on a collective create_dataset; passing different shapes
+            # leaves HDF5's internal metadata inconsistent so the collective
+            # close never synchronises, producing a silent hang.
+            #
+            # Fix: allgather the per-rank sizes, create the dataset at the
+            # global shape, then each rank writes its own slice.
+            sizes = comm.allgather(local_n)
+            total_n = sum(sizes)
+            offset = sum(sizes[: comm.rank])
+
             with h5py.File(f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm) as h5f:
                 if compression == True:
-                    h5f.create_dataset("data", data=self.data[:], compression=compressionType)
+                    dset = h5f.create_dataset(
+                        "data",
+                        shape=(total_n, n_components),
+                        dtype=local_data.dtype,
+                        chunks=True,
+                        compression=compressionType,
+                    )
                 else:
-                    h5f.create_dataset("data", data=self.data[:])
+                    dset = h5f.create_dataset(
+                        "data",
+                        shape=(total_n, n_components),
+                        dtype=local_data.dtype,
+                    )
+                if local_n > 0:
+                    dset[offset : offset + local_n] = local_data
         else:
+            # Sequential fallback: rank 0 creates the file and writes its slab,
+            # then each higher rank appends in turn. Indentation here matters —
+            # the barrier/loop must be outside the rank-0 branch so all ranks
+            # synchronise (the previous version nested them inside, leaving
+            # higher ranks' data unwritten and rank 0 deadlocked at the
+            # barrier with no peers).
             if comm.rank == 0:
                 with h5py.File(f"{filename[:-3]}.h5", "w") as h5f:
                     if compression == True:
                         h5f.create_dataset(
                             "data",
-                            data=self.data[:],
+                            data=local_data,
                             chunks=True,
-                            maxshape=(None, self.data.shape[1]),
+                            maxshape=(None, n_components),
                             compression=compressionType,
                         )
                     else:
                         h5f.create_dataset(
                             "data",
-                            data=self.data[:],
+                            data=local_data,
                             chunks=True,
-                            maxshape=(None, self.data.shape[1]),
+                            maxshape=(None, n_components),
                         )
-                comm.barrier()
-                for proc in range(1, comm.size):
-                    if comm.rank == proc:
-                        if self.local_size > 0:
-                            with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
-                                incoming_size = h5f["data"].shape[0]
-                                h5f["data"].resize((h5f["data"].shape[0] + self.local_size), axis=0)
-                                h5f["data"][incoming_size:] = self.data[:, ...]
-                    comm.barrier()
+
+            comm.barrier()
+            for proc in range(1, comm.size):
+                if comm.rank == proc and local_n > 0:
+                    with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
+                        incoming_size = h5f["data"].shape[0]
+                        h5f["data"].resize((incoming_size + local_n), axis=0)
+                        h5f["data"][incoming_size:] = local_data
                 comm.barrier()
 
         ## Add swarm variable unit metadata to the file
@@ -3512,31 +3547,49 @@ class Swarm(Stateful, uw_object):
             warnings.warn("Compression may slow down write times", stacklevel=2)
 
         if h5py.h5.get_config().mpi == True and not force_sequential:
-            # It seems to be a bad idea to mix mpi barriers with the access
-            # context manager so the copy-free version of this seems to hang
-            # when there are many active cores. This is probably why the parallel
-            # h5py write hangs
-
+            # BUGFIX(#151): the previous parallel path called
+            #   h5f.create_dataset("coordinates", data=points_data_copy)
+            # collectively, but each rank passed its own local-sized array.
+            # In parallel HDF5 every rank must specify the *same* dataset
+            # shape on a collective create_dataset; passing different shapes
+            # leaves HDF5's internal metadata inconsistent so the collective
+            # close never synchronises, producing a silent hang.
+            #
+            # Fix: allgather the per-rank sizes, create the dataset at the
+            # global shape, then each rank writes its own slice.
             points_data_copy = self._particle_coordinates.data[:].copy()
+            local_n = points_data_copy.shape[0]
+            cdim = points_data_copy.shape[1]
+            sizes = comm.allgather(local_n)
+            total_n = sum(sizes)
+            offset = sum(sizes[: comm.rank])
 
             with h5py.File(f"{filename[:-3]}.h5", "w", driver="mpio", comm=comm) as h5f:
                 if compression == True:
-                    h5f.create_dataset(
+                    dset = h5f.create_dataset(
                         "coordinates",
-                        data=points_data_copy,
+                        shape=(total_n, cdim),
+                        dtype=points_data_copy.dtype,
+                        chunks=True,
                         compression=compressionType,
                     )
                 else:
-                    h5f.create_dataset("coordinates", data=points_data_copy)
+                    dset = h5f.create_dataset(
+                        "coordinates",
+                        shape=(total_n, cdim),
+                        dtype=points_data_copy.dtype,
+                    )
+                if local_n > 0:
+                    dset[offset : offset + local_n] = points_data_copy
 
             del points_data_copy
 
         else:
-            # It seems to be a bad idea to mix mpi barriers with the access
-            # context manager so the copy-free version of this seems to hang
-            # when there are many active cores
+            # Sequential fallback: rank 0 creates the file and writes its slab,
+            # then each higher rank appends in turn.
 
             points_data_copy = self.points[:].copy()
+            local_n = points_data_copy.shape[0]
 
             if comm.rank == 0:
                 with h5py.File(f"{filename[:-3]}.h5", "w") as h5f:
@@ -3558,17 +3611,16 @@ class Swarm(Stateful, uw_object):
 
             comm.barrier()
             for i in range(1, comm.size):
-                if comm.rank == i:
+                if comm.rank == i and local_n > 0:
+                    # BUGFIX(#151): the previous version referenced an undefined
+                    # ``data_copy`` here; passive swarms with a zero-particle
+                    # rank would have raised NameError. Use the local
+                    # ``points_data_copy`` we already have.
                     with h5py.File(f"{filename[:-3]}.h5", "a") as h5f:
-                        h5f["coordinates"].resize(
-                            (h5f["coordinates"].shape[0] + points_data_copy.shape[0]),
-                            axis=0,
-                        )
-                        # passive swarm, zero local particles is not unusual
-                        if data_copy.shape[0] > 0:
-                            h5f["coordinates"][-points_data_copy.shape[0] :] = points_data_copy[:]
+                        existing_size = h5f["coordinates"].shape[0]
+                        h5f["coordinates"].resize((existing_size + local_n), axis=0)
+                        h5f["coordinates"][existing_size:] = points_data_copy
                 comm.barrier()
-            comm.barrier()
 
             del points_data_copy
 
