@@ -3990,8 +3990,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         p_name = "pressure" # pressureField.clean_name
         v_name = "velocity" # velocityField.clean_name
 
-        # Works / mostly quick
+        # Pressure subsolve — flexible GMRES + GASM. (FGMRES is right-
+        # preconditioned by construction; no need to set pc_side explicitly.)
         self.petsc_options[f"fieldsplit_{p_name}_ksp_type"] = "fgmres"
+        self.petsc_options[f"fieldsplit_{p_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{p_name}_ksp_rtol"]  = self._tolerance
         self.petsc_options[f"fieldsplit_{p_name}_pc_type"] = "gasm"
         # self.petsc_options[f"fieldsplit_{p_name}_pc_gasm_type"] = "basic"
@@ -4003,8 +4005,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # self.petsc_options[f"fieldsplit_{p_name}_pc_gamg_type"] = "agg"
         # self.petsc_options[f"fieldsplit_{p_name}_pc_gamg_repartition"] = True
 
-        # Great set of options for gamg
-        self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "cg"
+        # Velocity subsolve — flexible GMRES + GAMG.
+        #
+        # FGMRES (not CG/FCG) is the default to remain robust under non-stationary
+        # preconditioning and weakly-indefinite coarse operators. The mg_levels
+        # KSP is bounded but variable-iteration (mg_levels_ksp_converged_maxits)
+        # so the GAMG application is non-linear; CG/FCG's residual recurrence
+        # cannot accommodate this, and at scale (large parallel partitions, sharp
+        # internal sources, free-slip Nitsche) PETSc reports DIVERGED_PC_FAILED
+        # / indefinite matrix or GMRES residual-recursion mismatch. See issue
+        # #147 for the spherical-Kramer benchmark on Gadi that drove this change;
+        # gthyagi's validated FGMRES configuration completed at np=144,
+        # cellsize=1/32 where CG/FCG and standard GMRES both failed.
+        self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "fgmres"
+        self.petsc_options[f"fieldsplit_{v_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{v_name}_ksp_rtol"]  = self._tolerance * 0.1
         self.petsc_options[f"fieldsplit_{v_name}_pc_type"]  = "gamg"
         self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_type"]  = "agg"
@@ -4396,8 +4410,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         p_name = "pressure" # pressureField.clean_name
         v_name = "velocity" # velocityField.clean_name
 
-        # Works / mostly quick
+        # Pressure subsolve — flexible GMRES + GASM. (FGMRES is right-
+        # preconditioned by construction; no need to set pc_side explicitly.)
         self.petsc_options[f"fieldsplit_{p_name}_ksp_type"] = "fgmres"
+        self.petsc_options[f"fieldsplit_{p_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{p_name}_ksp_rtol"]  = self._tolerance
         self.petsc_options[f"fieldsplit_{p_name}_pc_type"] = "gasm"
         self.petsc_options[f"fieldsplit_{p_name}_pc_gasm_type"] = "basic"
@@ -4409,8 +4425,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # self.petsc_options[f"fieldsplit_{p_name}_pc_gamg_type"] = "agg"
         # self.petsc_options[f"fieldsplit_{p_name}_pc_gamg_repartition"] = True
 
-
-        self.petsc_options[f"fieldsplit_velocity_ksp_type"] = "cg"
+        # Velocity subsolve — see corresponding block in __init__ for the
+        # rationale (FGMRES default for robustness to non-stationary GAMG
+        # preconditioning and weakly-indefinite coarse operators; issue #147).
+        self.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fgmres"
+        self.petsc_options[f"fieldsplit_velocity_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_velocity_pc_type"]  = "gamg"
         self.petsc_options[f"fieldsplit_velocity_pc_gamg_type"]  = "agg"
         self.petsc_options[f"fieldsplit_velocity_pc_gamg_repartition"]  = True
