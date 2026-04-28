@@ -132,8 +132,8 @@ def test_xdmf_compat_2d(tmp_path):
     del mesh
 
 
-def test_write_timestep_mesh_uses_viz_topology(tmp_path):
-    """write_timestep mesh output keeps direct topology for XDMF readers."""
+def test_write_timestep_mesh_keeps_restart_and_viz_topology(tmp_path):
+    """write_timestep mesh output keeps restart data plus XDMF topology."""
 
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
     s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
@@ -147,6 +147,9 @@ def test_write_timestep_mesh_uses_viz_topology(tmp_path):
     xdmf_file = os.path.join(str(tmp_path), "viztopo.mesh.00000.xdmf")
 
     with h5py.File(mesh_h5, "r") as h5f:
+        assert "labels" in h5f
+        assert "topology/cells" in h5f
+        assert "topology/cones" in h5f
         assert "viz/topology/cells" in h5f
         cells = h5f["viz/topology/cells"]
         assert len(cells.shape) == 2
