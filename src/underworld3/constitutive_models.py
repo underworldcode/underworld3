@@ -3315,6 +3315,245 @@ class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowM
         )
 
 
+class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
+    r"""Phase D — per-component ``(α_⊥, φ_⊥)/(α_∥, φ_∥)`` ETD-2 for TI VEP.
+
+    The rank-4 modulus splits into two orthogonal projectors:
+
+    .. math::
+        C(\eta_0, \eta_\parallel) = 2\eta_0 \, \mathbf{P}_\perp
+            + 2\eta_\parallel \, \mathbf{P}_\parallel
+
+    where :math:`\mathbf{P}_\parallel` is the director-aligned projector
+    (the ``K`` kernel built in :py:meth:`_build_c_tensor`) and
+    :math:`\mathbf{P}_\perp = \mathbf{I}_4 - \mathbf{P}_\parallel`.
+    Each branch has its own Maxwell relaxation time:
+
+    .. math::
+        \tau_\perp = \eta_0 / \mu, \qquad
+        \tau_\parallel = \eta_\parallel^\text{eff} / \mu
+
+    so the analytical exponential factors differ:
+
+    .. math::
+        \alpha_k = e^{-\Delta t / \tau_k}, \qquad
+        \varphi_k = (1 - \alpha_k) \tau_k / \Delta t
+
+    The split flux integrates each branch independently and sums:
+
+    .. math::
+        \sigma^{n+1} = (\alpha_\perp \mathbf{P}_\perp + \alpha_\parallel
+            \mathbf{P}_\parallel) : \sigma^*
+            + 2[\eta_0(1-\varphi_\perp) \mathbf{P}_\perp
+                 + \eta_\parallel^\text{eff}(1-\varphi_\parallel)
+                   \mathbf{P}_\parallel] : \dot\varepsilon^{n+1}
+            + 2[\eta_0(\varphi_\perp - \alpha_\perp) \mathbf{P}_\perp
+                 + \eta_\parallel^\text{eff}(\varphi_\parallel - \alpha_\parallel)
+                   \mathbf{P}_\parallel] : \dot\varepsilon^*
+
+    Phase B uses a single lumped ``(α, φ)`` from ``η_∥_eff/μ`` for the
+    whole tensor — empirically blows up at tight yield surfaces because
+    the matrix branch has no business being yielded. The split scheme
+    relaxes each channel on its proper timescale; the analytical floor
+    on ``σ_∥`` is then ``≲ τ_y`` by construction.
+
+    Implementation choice: ``α_⊥, φ_⊥`` come from the DDt's existing
+    scalar ``_exp_coeffs`` (matrix viscosity is fixed and spatially
+    uniform — a single per-step scalar is right). ``α_∥, φ_∥`` are
+    inlined as sympy expressions of the yield-clipped ``η_∥_eff`` so
+    the JIT evaluates them per quadrature point (spatial heterogeneity
+    captured automatically). No DDt changes, no solver changes.
+    """
+
+    def __init__(self, unknowns, material_name=None):
+        super().__init__(
+            unknowns, order=1, integrator="etd",
+            material_name=material_name,
+        )
+
+    def _update_history_coefficients(self):
+        r"""Update ``(α_⊥, φ_⊥)`` only — the matrix branch.
+
+        ``(α_∥, φ_∥)`` are inlined per-quadrature in :py:meth:`stress`.
+        Picks ``τ_⊥ = η_0/μ`` (raw matrix viscosity).
+        """
+        if self._integrator != "etd" or self.Unknowns.DFDt is None:
+            return super()._update_history_coefficients()
+        params = self.Parameters
+        if params.shear_modulus.sym is sympy.oo:
+            tau_perp = sympy.oo
+        else:
+            try:
+                eta_val = float(params.shear_viscosity_0.sym)
+                mu_val = float(params.shear_modulus.sym)
+                tau_perp = eta_val / mu_val if mu_val > 0 else sympy.oo
+            except (TypeError, ValueError):
+                tau_perp = None
+        try:
+            dt_val = (
+                float(params.dt_elastic.sym)
+                if params.dt_elastic.sym is not sympy.oo
+                else None
+            )
+        except (TypeError, ValueError):
+            dt_val = None
+        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_perp)
+
+    def _eta_par_eff(self):
+        """Yield-clipped ``η_∥_eff`` — same softmin/min/harmonic as parent.
+
+        For ETD the base is the raw ``η_1`` (no VE pre-clip); the yield
+        envelope is then applied via the configured yield_mode.
+        """
+        params = self.Parameters
+        eta_par = params.shear_viscosity_1
+        if hasattr(eta_par, 'sym'):
+            eta_par = eta_par.sym
+
+        if not self.is_viscoplastic or params.yield_stress.sym is sympy.oo:
+            return eta_par
+
+        vp_eff = self._plastic_effective_viscosity
+        if self._yield_mode == "harmonic":
+            return 1 / (1 / eta_par + 1 / vp_eff)
+        elif self._yield_mode == "softmin":
+            delta = self._yield_softness
+            f = eta_par / vp_eff
+            import math
+            offset = (-1 + math.sqrt(1 + delta**2)) / 2
+            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
+            return eta_par / g
+        else:
+            return sympy.Min(eta_par, vp_eff)
+
+    def _build_split_c_tensors(self, eta_perp, eta_par):
+        r"""Build ``C_⊥ = 2·η_⊥·P_⊥`` and ``C_∥ = 2·η_∥·P_∥``.
+
+        Identical loop structure to :py:meth:`_build_c_tensor`, but
+        each tensor isolates one projector by zeroing the other
+        viscosity coefficient.
+        """
+        d = self.dim
+        n = self.Parameters.director.sym
+        identity = uw.maths.tensor.rank4_identity(d)
+
+        c_perp_arr = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
+        c_par_arr = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
+
+        for i in range(d):
+            for j in range(d):
+                for k in range(d):
+                    for l in range(d):
+                        I_ijkl = identity[i, j, k, l]
+                        K_ijkl = (
+                            (n[i] * n[k] * int(j == l)
+                             + n[j] * n[k] * int(l == i)
+                             + n[i] * n[l] * int(j == k)
+                             + n[j] * n[l] * int(k == i)) / 2
+                            - 2 * n[i] * n[j] * n[k] * n[l]
+                        )
+                        # 2·η_⊥·P_⊥ = 2·η_⊥·(I - K)
+                        v_perp = 2 * eta_perp * (I_ijkl - K_ijkl)
+                        # 2·η_∥·P_∥ = 2·η_∥·K
+                        v_par = 2 * eta_par * K_ijkl
+                        # Same guard as parent _build_c_tensor — sympy
+                        # NDimArray.__setitem__ refuses iterable RHS.
+                        if hasattr(v_perp, '__getitem__') and not isinstance(
+                            v_perp, (sympy.MatrixBase, sympy.NDimArray)
+                        ):
+                            v_perp = sympy.Mul(sympy.S.One, v_perp, evaluate=False)
+                        if hasattr(v_par, '__getitem__') and not isinstance(
+                            v_par, (sympy.MatrixBase, sympy.NDimArray)
+                        ):
+                            v_par = sympy.Mul(sympy.S.One, v_par, evaluate=False)
+                        c_perp_arr[i, j, k, l] = v_perp
+                        c_par_arr[i, j, k, l] = v_par
+
+        c_perp = uw.maths.tensor.mandel_to_rank4(
+            uw.maths.tensor.rank4_to_mandel(c_perp_arr, d), d)
+        c_par = uw.maths.tensor.mandel_to_rank4(
+            uw.maths.tensor.rank4_to_mandel(c_par_arr, d), d)
+        return c_perp, c_par
+
+    def stress(self):
+        r"""Per-component ETD-2 flux. Overrides the lumped-(α,φ) parent.
+
+        Each branch's E_eff is built and contracted with its own
+        sub-modulus; the two are summed.
+
+        Uses UWexpression operands (not ``.sym``) for divisions so the
+        existing Pint-aware operator overloading handles units —
+        mirrors the parent ``E_eff`` pattern.
+        """
+        params = self.Parameters
+        DDt = self.Unknowns.DFDt
+        E = self.Unknowns.E
+
+        # Matrix branch: scalar (α_⊥, φ_⊥) from DDt — both are UWexpressions
+        # with dimensionless ``.sym``.
+        alpha_perp = DDt._exp_alpha
+        phi_perp = DDt._exp_phi
+        # UWexpression for division (units-aware); ``.sym`` for tensor build.
+        eta_perp = params.shear_viscosity_0
+        eta_perp_sym = eta_perp.sym
+
+        # Director branch: per-quad (α_∥, φ_∥) from yield-clipped η_∥_eff.
+        # ``_eta_par_eff`` returns a sympy/UW chain; ``mu``, ``dt`` keep
+        # their UWexpression form for unit-correct division.
+        eta_par_chain = self._eta_par_eff()
+        # Materialise η_∥_eff as a sympy expression. It may already be a
+        # sympy expr (yield-active path) or a UWexpression (no-yield path).
+        if hasattr(eta_par_chain, 'sym'):
+            eta_par_sym = eta_par_chain.sym
+        else:
+            eta_par_sym = eta_par_chain
+        mu_sym = params.shear_modulus.sym
+        dt_sym = params.dt_elastic.sym if hasattr(params.dt_elastic, 'sym') else params.dt_elastic
+        # τ_∥ = η_∥_eff / μ  (sympy scalar expression with possible field
+        # dependence baked in through ``_plastic_effective_viscosity``)
+        tau_par = eta_par_sym / mu_sym
+        x_par = dt_sym / tau_par
+        alpha_par = sympy.exp(-x_par)
+        phi_par = (1 - alpha_par) / x_par
+
+        # Histories: full σ* and ε̇*; the projectors are baked into C_⊥, C_∥.
+        sigma_star = DDt.psi_star[0].sym
+        if DDt.forcing_star is not None:
+            edot_star = DDt.forcing_star.sym
+        else:
+            edot_star = sympy.zeros(*E.shape)
+
+        # Build the split sub-moduli using ``.sym`` operands.
+        c_perp, c_par = self._build_split_c_tensors(eta_perp_sym, eta_par_sym)
+
+        # E_eff_⊥ = (1-φ_⊥)·ε̇ + α_⊥/(2η_⊥)·σ* + (φ_⊥-α_⊥)·ε̇*
+        # alpha_perp, phi_perp, eta_perp are UWexpressions — operator
+        # overloads on UWexpression handle Pint unit propagation.
+        e_eff_perp = (
+            (1 - phi_perp) * E
+            + (alpha_perp / (2 * eta_perp)) * sigma_star
+            + (phi_perp - alpha_perp) * edot_star
+        )
+        # E_eff_∥ — α_∥, φ_∥ are sympy exprs (per-quad); divide by sympy
+        # ``eta_par_sym`` directly (no Pint involvement at this point).
+        e_eff_par = (
+            (1 - phi_par) * E
+            + (alpha_par / (2 * eta_par_sym)) * sigma_star
+            + (phi_par - alpha_par) * edot_star
+        )
+
+        def _contract(c, x):
+            if len(c.shape) == 2:
+                return sympy.Matrix(c * x)
+            return sympy.Matrix(sympy.tensorcontraction(
+                sympy.tensorcontraction(sympy.tensorproduct(c, x), (1, 5)),
+                (0, 3),
+            ))
+
+        # σ = C_⊥:E_eff_⊥ + C_∥:E_eff_∥
+        return _contract(c_perp, e_eff_perp) + _contract(c_par, e_eff_par)
+
+
 class MultiMaterialConstitutiveModel(Constitutive_Model):
     r"""
     Multi-material constitutive model using level-set weighted flux averaging.
