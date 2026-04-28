@@ -1268,6 +1268,15 @@ class SemiLagrangian(uw_object):
         # discretisation; populated each step in update_forcing_history()
         # via direct nodal evaluation of forcing_fn (typically the model's
         # strain-rate symbol).
+        #
+        # Units: deliberately ``units=None``. The forcing field is the
+        # strain rate (1/time), distinct from psi_star's stress units
+        # (Pa·s × ε̇ = Pa). We don't know strain-rate units at construction
+        # time (forcing_fn is supplied later by the constitutive model).
+        # ``update_forcing_history`` non-dimensionalises the evaluated
+        # forcing before storing, matching the codebase convention that
+        # variable storage holds non-dimensional values internally and
+        # units are re-attached at the .data interface.
         self._forcing_vtype = vtype
         if with_forcing_history:
             self.forcing_star = uw.discretisation.MeshVariable(
@@ -1277,7 +1286,7 @@ class SemiLagrangian(uw_object):
                 degree=self.degree,
                 continuous=self.continuous,
                 varsymbol=rf"{{ {varsymbol}_{{F}}^{{ * }} }}",
-                units=psi_units,
+                units=None,
             )
 
         # BDF/AM/exp coefficient UWexpressions — routed through PetscDS constants[]
@@ -2074,6 +2083,20 @@ class SemiLagrangian(uw_object):
         is :math:`\nabla\mathbf{u}`, well-defined at nodes, with no
         history-coupled term that would make a projection implicit.
 
+        Unit handling
+        -------------
+        ``forcing_star`` is allocated with ``units=None`` (see
+        ``__init__``). When the model is unit-aware, ``forcing_fn`` is a
+        symbolic expression of the velocity field whose evaluation
+        returns a ``UnitAwareArray`` carrying strain-rate units (1/time).
+        We non-dimensionalise that result via the active scaling system
+        before assigning to ``forcing_star.array``, which keeps the
+        stored values consistent with the rest of the variable storage
+        (codebase convention: variable storage is non-dimensional;
+        units are re-attached at the ``.data`` interface). When the
+        model is not unit-aware, the evaluation returns a plain ndarray
+        and assignment is a straight numpy copy.
+
         Parameters
         ----------
         forcing_fn : sympy expression, optional
@@ -2094,11 +2117,12 @@ class SemiLagrangian(uw_object):
         if forcing_fn is None:
             return  # constitutive model hasn't wired the forcing source yet
 
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
         coords = self.forcing_star.coords
         # Use non-dimensional coords for evaluate() (mirrors the psi_star
         # path in update_pre_solve)
         if hasattr(coords, "magnitude"):
-            from underworld3.utilities.unit_aware_array import UnitAwareArray
             coords_nd = uw.non_dimensionalise(coords)
             if isinstance(coords_nd, UnitAwareArray):
                 coords_nd = np.array(coords_nd)
@@ -2106,6 +2130,21 @@ class SemiLagrangian(uw_object):
                 coords_nd = coords_nd.magnitude
         else:
             coords_nd = coords
+
+        def _eval_nd(component_expr):
+            """Evaluate component at coords and non-dimensionalise to a
+            plain 1-D float array suitable for nodal storage."""
+            result = uw.function.evaluate(component_expr, coords_nd, evalf=evalf)
+            # If the evaluation returned units (model is unit-aware),
+            # non-dimensionalise before storing — keeps forcing_star's
+            # internal storage non-dimensional like psi_star.
+            if isinstance(result, UnitAwareArray) or hasattr(result, "magnitude"):
+                result = uw.non_dimensionalise(result)
+                if isinstance(result, UnitAwareArray):
+                    result = np.array(result)
+                elif hasattr(result, "magnitude"):
+                    result = result.magnitude
+            return np.asarray(result).flatten()
 
         vtype = self._forcing_vtype
         if vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
@@ -2115,29 +2154,21 @@ class SemiLagrangian(uw_object):
                 if vtype == uw.VarType.SYM_TENSOR
                 else [(i, j) for i in range(dim) for j in range(dim)]
             )
-            new_arr = np.zeros_like(self.forcing_star.array)
+            new_arr = np.zeros_like(np.asarray(self.forcing_star.array))
             for (i, j) in indep:
-                vals = np.asarray(
-                    uw.function.evaluate(forcing_fn[i, j], coords_nd, evalf=evalf)
-                ).flatten()
+                vals = _eval_nd(forcing_fn[i, j])
                 new_arr[:, i, j] = vals
                 if i != j:
                     new_arr[:, j, i] = vals
             self.forcing_star.array[...] = new_arr
         elif vtype == uw.VarType.VECTOR:
             dim = self.mesh.dim
-            new_arr = np.zeros_like(self.forcing_star.array)
+            new_arr = np.zeros_like(np.asarray(self.forcing_star.array))
             for i in range(dim):
-                vals = np.asarray(
-                    uw.function.evaluate(forcing_fn[i], coords_nd, evalf=evalf)
-                ).flatten()
-                new_arr[:, i] = vals
+                new_arr[:, i] = _eval_nd(forcing_fn[i])
             self.forcing_star.array[...] = new_arr
         else:  # SCALAR
-            vals = np.asarray(
-                uw.function.evaluate(forcing_fn, coords_nd, evalf=evalf)
-            ).flatten()
-            self.forcing_star.array[:] = vals
+            self.forcing_star.array[:] = _eval_nd(forcing_fn)
 
 
 ## Consider Deprecating this one - it is the same as the Lagrangian_Swarm but
