@@ -132,6 +132,59 @@ def test_xdmf_compat_2d(tmp_path):
     del mesh
 
 
+def test_write_timestep_mesh_uses_viz_topology(tmp_path):
+    """write_timestep mesh output keeps direct topology for XDMF readers."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
+    s_var.data[:, 0] = mesh._coords[:, 0]
+
+    mesh.write_timestep(
+        "viztopo", index=0, outputPath=str(tmp_path), meshVars=[s_var]
+    )
+
+    mesh_h5 = os.path.join(str(tmp_path), "viztopo.mesh.00000.h5")
+    xdmf_file = os.path.join(str(tmp_path), "viztopo.mesh.00000.xdmf")
+
+    with h5py.File(mesh_h5, "r") as h5f:
+        assert "viz/topology/cells" in h5f
+        cells = h5f["viz/topology/cells"]
+        assert len(cells.shape) == 2
+        assert cells.shape[1] > 1
+
+    with open(xdmf_file, "r") as f:
+        xdmf_text = f.read()
+    assert "&MeshData;:/viz/topology/cells" in xdmf_text
+    assert "&MeshData;:/topology/cells" not in xdmf_text
+    assert 'ItemType="HyperSlab"' not in xdmf_text
+
+    del mesh
+
+
+def test_write_checkpoint_mesh_uses_petsc_topology(tmp_path):
+    """write_checkpoint keeps PETSc DMPlex topology for restart output."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
+    s_var.data[:, 0] = mesh._coords[:, 0]
+
+    mesh.write_checkpoint(
+        "restart",
+        outputPath=str(tmp_path),
+        meshUpdates=True,
+        meshVars=[s_var],
+        index=0,
+    )
+
+    mesh_h5 = os.path.join(str(tmp_path), "restart.mesh.00000.h5")
+
+    with h5py.File(mesh_h5, "r") as h5f:
+        assert "topologies/uw_mesh/topology" in h5f
+        assert "viz/topology/cells" not in h5f
+
+    del mesh
+
+
 # ---------------------------------------------------------------------------
 # Test: 3D mesh
 # ---------------------------------------------------------------------------
@@ -163,6 +216,19 @@ def test_xdmf_compat_3d(tmp_path):
     # Verify XDMF
     xdmf_file = os.path.join(str(tmp_path), "test3d.mesh.00000.xdmf")
     _check_xdmf_refs(xdmf_file, str(tmp_path))
+
+    mesh_h5 = os.path.join(str(tmp_path), "test3d.mesh.00000.h5")
+    with h5py.File(mesh_h5, "r") as h5f:
+        assert "viz/topology/cells" in h5f
+        cells = h5f["viz/topology/cells"]
+        assert len(cells.shape) == 2
+        assert cells.shape[1] > 1
+
+    with open(xdmf_file, "r") as f:
+        xdmf_text = f.read()
+    assert "&MeshData;:/viz/topology/cells" in xdmf_text
+    assert "&MeshData;:/topology/cells" not in xdmf_text
+    assert f'Dimensions="{s_compat.shape[0]}"' in xdmf_text
 
     del mesh
 

@@ -2775,11 +2775,11 @@ class Mesh(Stateful, uw_object):
             mesh_file = output_base_name + ".mesh.00000.h5"
             path = Path(mesh_file)
             if not path.is_file():
-                self.write(mesh_file)
+                self.write(mesh_file, petsc_format=False)
 
         else:
             mesh_file = output_base_name + f".mesh.{index:05}.h5"
-            self.write(mesh_file)
+            self.write(mesh_file, petsc_format=False)
 
         if create_xdmf:
             _write_mesh_viz_groups(self, mesh_file)
@@ -2960,10 +2960,10 @@ class Mesh(Stateful, uw_object):
                     mesh_file = filename + f".mesh.{index:05}.h5"
                     path = Path(mesh_file)
                     if not path.is_file():
-                        self.write(mesh_file)
+                        self.write(mesh_file, petsc_format=True)
 
                 else:
-                    self.write(filename + f".mesh.{index:05}.h5")
+                    self.write(filename + f".mesh.{index:05}.h5", petsc_format=True)
 
                 variables = []
                 if meshVars is not None:
@@ -3082,7 +3082,12 @@ class Mesh(Stateful, uw_object):
             self._stale_lvec = True
 
     @timing.routine_timer_decorator
-    def write(self, filename: str, index: Optional[int] = None):
+    def write(
+        self,
+        filename: str,
+        index: Optional[int] = None,
+        petsc_format: bool = False,
+    ):
         """
         Save mesh data to the specified hdf5 file.
 
@@ -3094,11 +3099,13 @@ class Mesh(Stateful, uw_object):
         index :
             Not yet implemented. An optional index which might
             correspond to the timestep (for example).
+        petsc_format :
+            If True, write PETSc DMPlex HDF5 checkpoint/restart topology.
+            If False, write PETSc HDF5_VIZ topology used by XDMF.
 
         """
 
-        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
-        if index:
+        if index is not None:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
             ## I'm unsure if the corresponding xdmf functionality is enabled via
@@ -3106,7 +3113,13 @@ class Mesh(Stateful, uw_object):
             # viewer.pushTimestepping(viewer)
             # viewer.setTimestep(index)
 
-        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        viewer_format = (
+            PETSc.Viewer.Format.HDF5_PETSC
+            if petsc_format
+            else PETSc.Viewer.Format.HDF5_VIZ
+        )
+        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
+        viewer.pushFormat(viewer_format)
         try:
             viewer(self.dm)
         finally:
@@ -4999,20 +5012,42 @@ def checkpoint_xdmf(
         geomPath = "geometry"
         geom = h5["geometry"]
 
-    if "viz" in h5 and "topology" in h5["viz"]:
+    if "viz" in h5 and "topology" in h5["viz"] and "cells" in h5["viz"]["topology"]:
         topoPath = "viz/topology"
         topo = h5["viz"]["topology"]
-    else:
+    elif "topology" in h5 and "cells" in h5["topology"]:
         topoPath = "topology"
         topo = h5["topology"]
+    else:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: no direct cell "
+            "connectivity dataset found at /viz/topology/cells."
+        )
 
     vertices = geom["vertices"]
     numVertices = vertices.shape[0]
     spaceDim = vertices.shape[1]
     cells = topo["cells"]
+    if len(cells.shape) != 2:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: {topoPath}/cells has "
+            f"shape {cells.shape}. XDMF requires a 2D direct cell-to-vertex "
+            "connectivity dataset."
+        )
     numCells = cells.shape[0]
     numCorners = cells.shape[1]
     cellDim = topo["cells"].attrs["cell_dim"]
+    topology_precision = cells.dtype.itemsize
+
+    if numCorners <= 1:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: {topoPath}/cells has "
+            f"shape {cells.shape}. XDMF requires direct cell-to-vertex "
+            "connectivity, not PETSc DMPlex internal topology."
+        )
 
     if topoPath == "topology":
         warnings.warn(
@@ -5078,7 +5113,7 @@ def checkpoint_xdmf(
     <DataItem Name="cells"
               ItemType="Uniform"
               Format="HDF"
-              NumberType="Float" Precision="8"
+              NumberType="Int" Precision="{topology_precision}"
               Dimensions="{numCells} {numCorners}">
       &MeshData;:/{topoPath}/cells
     </DataItem>
@@ -5166,27 +5201,17 @@ def checkpoint_xdmf(
         else:
             variable_type = "Vector"
 
+        data_dimensions = f"{numItems}" if numComponents == 1 else f"{numItems} {numComponents}"
         var_attribute = f"""
         <Attribute
            Name="{var.clean_name}"
            Type="{variable_type}"
            Center="{center}">
-          <DataItem ItemType="HyperSlab"
-                Dimensions="1 {numItems} {numComponents}"
-                Type="HyperSlab">
-            <DataItem
-               Dimensions="3 3"
-               Format="XML">
-              0 0 0
-              1 1 1
-              1 {numItems} {numComponents}
-            </DataItem>
-            <DataItem
-               DataType="Float" Precision="8"
-               Dimensions="1 {numItems} {numComponents}"
-               Format="HDF">
-              &{var.clean_name+"_Data"};:/{dataset_path}
-            </DataItem>
+          <DataItem
+             DataType="Float" Precision="8"
+             Dimensions="{data_dimensions}"
+             Format="HDF">
+            &{var.clean_name+"_Data"};:/{dataset_path}
           </DataItem>
         </Attribute>
         """
