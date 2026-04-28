@@ -352,6 +352,14 @@ def plot_panels(obj, out_path, off_screen=True):
     u_cloud.point_data["u"] = vis.vector_fn_to_pv_points(u_cloud, u.sym)
     u_speed = np.linalg.norm(u_cloud.point_data["u"][:, :2], axis=1)
     u_cloud.point_data["|u|"] = u_speed
+    # u_y as a separate scalar — the BC drives a horizontal shear so u_x
+    # is dominant everywhere; u_y concentrates where the fault forces a
+    # rotation of the velocity field toward the fault tangent direction.
+    # Plot u_y as the panel-1 colormap to make that pattern visible.
+    pvmesh.point_data["u_y"] = vis.scalar_fn_to_pv_points(pvmesh, u.sym[1])
+    pvmesh.point_data["|u|"] = vis.scalar_fn_to_pv_points(
+        pvmesh, sympy.sqrt(u.sym.dot(u.sym))
+    )
 
     # Fault line for overlay
     n_x = float(meta["n_x"]); n_y = float(meta["n_y"])
@@ -371,13 +379,22 @@ def plot_panels(obj, out_path, off_screen=True):
         p.camera.parallel_projection = True
         p.add_mesh(fault_line, color="red", line_width=4)
 
-    # Velocity
+    # Velocity — u_y heatmap (small but reveals fault-induced rotation)
+    # with full-vector arrows on top.
     pl.subplot(0, 0)
-    pl.add_mesh(pvmesh, scalars=None, color="#eeeeee", show_edges=False)
+    uy_max = float(np.max(np.abs(pvmesh.point_data["u_y"])))
+    pl.add_mesh(
+        pvmesh, scalars="u_y", cmap="seismic",
+        clim=(-uy_max, uy_max),
+        show_scalar_bar=True, scalar_bar_args={"title": "u_y"},
+    )
     sub = max(1, len(u_cloud.points) // 250)
     pl.add_arrows(u_cloud.points[::sub], u_cloud.point_data["u"][::sub],
                   mag=0.35, color="#333333")
-    pl.add_text("velocity field", position="upper_edge", font_size=12, color="black")
+    pl.add_text(
+        "velocity: u_y heatmap (+arrows show full u)",
+        position="upper_edge", font_size=11, color="black",
+    )
     _common(pl)
 
     # |ε̇|_II
