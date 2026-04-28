@@ -11,6 +11,36 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _stable_sort_key(obj):
+    """Return a process-stable key for ordering symbolic/JIT objects.
+
+    Python hash randomisation means unordered containers such as ``set`` can
+    iterate differently on different MPI ranks. JIT source emission must not
+    depend on that ordering because every rank has to compile/load byte
+    identical C source.
+    """
+
+    field_id = getattr(obj, "field_id", None)
+    if field_id is None:
+        field_id = -1
+
+    return (
+        field_id,
+        type(obj).__module__,
+        type(obj).__qualname__,
+        getattr(obj, "name", ""),
+        getattr(obj, "clean_name", ""),
+        getattr(obj, "_ccodestr", ""),
+        str(obj),
+    )
+
+
+def _stable_sorted(iterable):
+    """Sort *iterable* with a deterministic key suitable for JIT emission."""
+
+    return sorted(iterable, key=_stable_sort_key)
+
+
 def _petsc_build_env():
     """Return a subprocess environment with PETSc's C/C++ compilers set.
 
@@ -336,7 +366,7 @@ def _extract_constants(all_fns, mesh):
     # Sort by the user-given symbol name, not ``str(expr)`` — ``__str__`` on a
     # UWexpression returns the current *value*, which shuffles the index
     # assignment whenever a value changes. ``.name`` is stable.
-    sorted_constants = sorted(constant_exprs, key=lambda e: e.name)
+    sorted_constants = sorted(constant_exprs, key=lambda e: (e.name, _stable_sort_key(e)))
 
     manifest = []
     subs_map = {}
@@ -379,7 +409,7 @@ def _is_truly_constant(expr, UWexpression):
 
     # Check remaining free symbols — any spatial/field dependency makes it non-constant
     from sympy.vector.scalar import BaseScalar
-    for sym in unwrapped.free_symbols:
+    for sym in _stable_sorted(unwrapped.free_symbols):
         if isinstance(sym, BaseScalar):
             return False
         if isinstance(sym, sympy.Function):
@@ -412,7 +442,7 @@ def _collect_constant_atoms(expr, result_set, is_constant_expr, UWexpression):
         return
 
     # Check all UWexpression atoms
-    for atom in expr.atoms(sympy.Symbol):
+    for atom in _stable_sorted(expr.atoms(sympy.Symbol)):
         if isinstance(atom, UWexpression) and _is_truly_constant(atom, UWexpression):
             result_set.add(atom)
         elif isinstance(atom, UWexpression):
@@ -833,7 +863,7 @@ def generate_c_source(
     # is important, as the secondary call will overwrite
     # those patched in the first call.
 
-    ccode_patch_fns(mesh.vars.values(), "petsc_a")
+    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a")
     ccode_patch_fns(primary_field_list, "petsc_u")
 
     # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,
@@ -953,7 +983,7 @@ def generate_c_source(
         # We recover _ccodestr from the coordinate's _id attribute.
         from sympy.vector.scalar import BaseScalar
 
-        free_syms = fn.free_symbols
+        free_syms = tuple(_stable_sorted(fn.free_symbols))
         for sym in free_syms:
             if isinstance(sym, BaseScalar) and not hasattr(sym, '_ccodestr'):
                 idx = sym._id[0]  # 0, 1, or 2 for x, y, z
@@ -1052,9 +1082,9 @@ ext_mods = [Extension(
 setup(ext_modules=cythonize(ext_mods))
 """.format(
         NAME=MODNAME,
-        HEADERS=list(underworld3._incdirs.keys()),
-        LIBDIRS=list(underworld3._libdirs.keys()),
-        LIBFILES=list(underworld3._libfiles.keys()),
+        HEADERS=list(_stable_sorted(underworld3._incdirs.keys())),
+        LIBDIRS=list(_stable_sorted(underworld3._libdirs.keys())),
+        LIBFILES=list(_stable_sorted(underworld3._libfiles.keys())),
     )
     codeguys.append(["setup.py", setup_py_str])
 
@@ -1108,7 +1138,7 @@ cdef extern from "cy_ext.h" nogil:
             randstr = debug_name
 
     # Print includes
-    for header in printer.headers:
+    for header in _stable_sorted(printer.headers):
         h_str += '#include "{}"\n'.format(header)
 
     h_str += "\n"
