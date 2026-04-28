@@ -276,6 +276,65 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
         coeffs[i].sym = 0.0
 
 
+def _create_exp_coefficients(instance_id):
+    """Create UWexpression objects for the ETD-2 coefficients ``[α, φ]``.
+
+    These are named to render as ``α_exp`` and ``φ_exp`` (with the
+    DDt instance id appended) so they remain visually distinct from
+    BDF/AM coefficients in symbolic output.
+    """
+    alpha = _UWexpression(
+        rf"{{\alpha^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
+        sym=0.0,
+        description=f"Exp integrator α = exp(-Δt/τ) (DDt instance {instance_id})",
+        _unique_name_generation=True,
+    )
+    phi = _UWexpression(
+        rf"{{\varphi^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
+        sym=0.0,
+        description=f"Exp integrator φ = (1-α)/(Δt/τ) (DDt instance {instance_id})",
+        _unique_name_generation=True,
+    )
+    return [alpha, phi]
+
+
+def _update_exp_values(coeffs, dt, tau_eff):
+    r"""Update exponential-integrator coefficient values for current state.
+
+    Computes :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}` and
+    :math:`\varphi = (1-\alpha)/(\Delta t/\tau_\mathrm{eff})` and stores
+    them in ``coeffs[0]``, ``coeffs[1]`` respectively. The viscous limit
+    (:math:`\Delta t/\tau \to \infty`) gives ``α=0, φ=0``; the elastic
+    limit (:math:`\Delta t/\tau \to 0`) gives ``α=1, φ=1``.
+
+    Parameters
+    ----------
+    coeffs : list of UWexpression
+        Two-element list ``[α, φ]`` to update.
+    dt : float or None
+        Current timestep.
+    tau_eff : float or None
+        Maxwell relaxation time (η_eff/μ). When None or non-positive,
+        defaults to the viscous limit.
+    """
+    dt_f = _as_float(dt)
+    tau_f = _as_float(tau_eff)
+    if dt_f is None or tau_f is None or tau_f <= 0.0 or dt_f <= 0.0:
+        alpha, phi = 0.0, 0.0  # viscous limit
+    else:
+        x = dt_f / tau_f
+        if x < 1e-12:
+            alpha, phi = 1.0, 1.0  # elastic limit
+        elif x > 50.0:
+            alpha = 0.0
+            phi = 1.0 / x  # well-defined small phi, exact for large x
+        else:
+            alpha = float(np.exp(-x))
+            phi = (1.0 - alpha) / x
+    coeffs[0].sym = alpha
+    coeffs[1].sym = phi
+
+
 def _build_weighted_sum(coeffs, psi_fn, psi_star_syms):
     """Build a fixed-structure weighted sum: c0*psi + c1*psi_star[0] + ...
 
@@ -404,9 +463,14 @@ class Symbolic(uw_object):
         # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
+        # ETD-2 (exponential) coefficients [α, φ] for Maxwell-relaxation integration.
+        # Treated as a peer to the BDF/AM coefficient sets; values are pushed via
+        # PetscDSSetConstants every step in update_exp_coefficients().
+        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
+        # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, self.theta)
+        _update_exp_values(self._exp_coeffs, None, None)
 
         return
 
@@ -560,6 +624,18 @@ class Symbolic(uw_object):
         """
         return _build_weighted_sum(self._am_coeffs, self.psi_fn, self.psi_star)
 
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Update the ETD-2 (exponential) coefficient values for this step.
+
+        Sets ``self._exp_coeffs[0].sym = α`` and ``self._exp_coeffs[1].sym = φ``
+        from current ``dt`` and ``tau_eff`` (Maxwell relaxation time
+        :math:`\tau = \eta_\mathrm{eff}/\mu`). Called by the constitutive
+        model (which owns τ_eff) before each solve, peer to the BDF/AM
+        coefficient updates that happen automatically in
+        ``update_pre_solve``.
+        """
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
 
 class Eulerian(uw_object):
     r"""
@@ -700,9 +776,11 @@ class Eulerian(uw_object):
         # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
+        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
+        # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, self.theta)
+        _update_exp_values(self._exp_coeffs, None, None)
 
         return
 
@@ -999,6 +1077,10 @@ class Eulerian(uw_object):
         """
         return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
 
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Update the ETD-2 (exponential) coefficient values for this step."""
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
 
 class SemiLagrangian(uw_object):
     r"""
@@ -1048,6 +1130,15 @@ class SemiLagrangian(uw_object):
         Smoothing parameter for projections.
     preserve_moments : bool, default=False
         Use moment-preserving projection (experimental).
+    with_forcing_history : bool, default=False
+        When True, allocate an additional ``forcing_star`` MeshVariable
+        (matching ``psi_star[0]``'s shape, vtype, degree, continuity) to
+        store one history slot for the strain-rate forcing. Required by
+        ETD-2 exponential integration of the Maxwell relaxation operator;
+        ignored for BDF/AM. Populated each step via
+        :meth:`update_forcing_history` (direct nodal evaluation of
+        ``forcing_fn`` — typically the constitutive model's strain-rate
+        symbol).
 
     Notes
     -----
@@ -1080,6 +1171,7 @@ class SemiLagrangian(uw_object):
         order=1,
         smoothing=0.0,
         preserve_moments=False,
+        with_forcing_history: bool = False,
     ):
         super().__init__()
 
@@ -1092,6 +1184,16 @@ class SemiLagrangian(uw_object):
         self.V_fn = V_fn
         self.order = order
         self.preserve_moments = preserve_moments
+        self.with_forcing_history = with_forcing_history
+
+        # Forcing-history storage. Allocated only if requested. Populated
+        # each step via update_forcing_history(forcing_fn) — used by ETD-2
+        # exponential integration of the Maxwell relaxation operator to
+        # supply the ε̇ⁿ history term in the constitutive flux.
+        self.forcing_star = None
+        self._forcing_fn = None  # set by the constitutive model
+        self._forcing_vtype = None
+        self._forcing_indep_indices = None
 
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
@@ -1161,12 +1263,31 @@ class SemiLagrangian(uw_object):
                 )
             )
 
-        # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
+        # Forcing-history slot (only allocated when ETD-2 / exponential
+        # integration is engaged). Mirrors psi_star[0] in shape/vtype/
+        # discretisation; populated each step in update_forcing_history()
+        # via direct nodal evaluation of forcing_fn (typically the model's
+        # strain-rate symbol).
+        self._forcing_vtype = vtype
+        if with_forcing_history:
+            self.forcing_star = uw.discretisation.MeshVariable(
+                f"forcing_star_sl_{self.instance_number}",
+                self.mesh,
+                vtype=vtype,
+                degree=self.degree,
+                continuous=self.continuous,
+                varsymbol=rf"{{ {varsymbol}_{{F}}^{{ * }} }}",
+                units=psi_units,
+            )
+
+        # BDF/AM/exp coefficient UWexpressions — routed through PetscDS constants[]
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
+        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
+        # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, 0.5)
+        _update_exp_values(self._exp_coeffs, None, None)
 
         # Working variable that has a potentially different discretisation from psi_star
         # We project from this to psi_star and we use this variable to define the
@@ -1920,6 +2041,103 @@ class SemiLagrangian(uw_object):
             Ignored (kept for API compatibility).
         """
         return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
+
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Update the ETD-2 (exponential) coefficient values for this step.
+
+        Sets ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
+        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)`` so the next solve
+        uses the correct exponential coefficients via PetscDSSetConstants
+        on the next ``_update_constants`` call. Called by the constitutive
+        model (which owns ``τ_eff = η_eff/μ``) before each solve.
+        """
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
+    @property
+    def _exp_alpha(self):
+        """Convenience accessor for the ETD-2 ``α`` coefficient UWexpression."""
+        return self._exp_coeffs[0]
+
+    @property
+    def _exp_phi(self):
+        """Convenience accessor for the ETD-2 ``φ`` coefficient UWexpression."""
+        return self._exp_coeffs[1]
+
+    def update_forcing_history(self, forcing_fn=None, evalf=False, verbose=False):
+        r"""Refresh ``forcing_star`` from ``forcing_fn`` via direct nodal evaluation.
+
+        Used by ETD-2 exponential integration to store the current
+        strain-rate field as :math:`\dot\varepsilon^{n}` for the next
+        step's history term. Called by the constitutive model from the
+        solver's post-solve hook. Direct nodal evaluation (rather than an
+        L2 projection through SNES) is sufficient because the strain rate
+        is :math:`\nabla\mathbf{u}`, well-defined at nodes, with no
+        history-coupled term that would make a projection implicit.
+
+        Parameters
+        ----------
+        forcing_fn : sympy expression, optional
+            Symbolic strain-rate field to evaluate at each node. If
+            None, falls back to ``self._forcing_fn`` (set by the
+            constitutive model at solve-attach time). No-op if neither
+            is set or ``with_forcing_history=False``.
+        evalf : bool, optional
+            Forwarded to ``uw.function.evaluate`` (forces numerical
+            evaluation when True).
+        verbose : bool, optional
+            Enable verbose output.
+        """
+        if not self.with_forcing_history or self.forcing_star is None:
+            return
+        if forcing_fn is None:
+            forcing_fn = self._forcing_fn
+        if forcing_fn is None:
+            return  # constitutive model hasn't wired the forcing source yet
+
+        coords = self.forcing_star.coords
+        # Use non-dimensional coords for evaluate() (mirrors the psi_star
+        # path in update_pre_solve)
+        if hasattr(coords, "magnitude"):
+            from underworld3.utilities.unit_aware_array import UnitAwareArray
+            coords_nd = uw.non_dimensionalise(coords)
+            if isinstance(coords_nd, UnitAwareArray):
+                coords_nd = np.array(coords_nd)
+            elif hasattr(coords_nd, 'magnitude'):
+                coords_nd = coords_nd.magnitude
+        else:
+            coords_nd = coords
+
+        vtype = self._forcing_vtype
+        if vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
+            dim = self.mesh.dim
+            indep = (
+                [(i, j) for i in range(dim) for j in range(i, dim)]
+                if vtype == uw.VarType.SYM_TENSOR
+                else [(i, j) for i in range(dim) for j in range(dim)]
+            )
+            new_arr = np.zeros_like(self.forcing_star.array)
+            for (i, j) in indep:
+                vals = np.asarray(
+                    uw.function.evaluate(forcing_fn[i, j], coords_nd, evalf=evalf)
+                ).flatten()
+                new_arr[:, i, j] = vals
+                if i != j:
+                    new_arr[:, j, i] = vals
+            self.forcing_star.array[...] = new_arr
+        elif vtype == uw.VarType.VECTOR:
+            dim = self.mesh.dim
+            new_arr = np.zeros_like(self.forcing_star.array)
+            for i in range(dim):
+                vals = np.asarray(
+                    uw.function.evaluate(forcing_fn[i], coords_nd, evalf=evalf)
+                ).flatten()
+                new_arr[:, i] = vals
+            self.forcing_star.array[...] = new_arr
+        else:  # SCALAR
+            vals = np.asarray(
+                uw.function.evaluate(forcing_fn, coords_nd, evalf=evalf)
+            ).flatten()
+            self.forcing_star.array[:] = vals
 
 
 ## Consider Deprecating this one - it is the same as the Lagrangian_Swarm but
