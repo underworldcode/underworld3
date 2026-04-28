@@ -149,6 +149,17 @@ def run_one(theta_deg, tau_y_at_fault):
     cm = stokes.constitutive_model
     DFDt = stokes.Unknowns.DFDt
 
+    # Per-node τ_y(x) — the SPATIAL yield_stress field evaluated at psi_star
+    # node coords. Used for the proper yield-surface gate
+    # ``max_x σ_II(x) / τ_y(x)`` rather than dividing peak σ_II by the
+    # fault-centerline τ_y (which is misleading because the Gaussian
+    # influence decays sharply, so points just off centerline have
+    # τ_y_local much larger than τ_y_at_fault).
+    ty_field_sym = cm.Parameters.yield_stress.sym
+    ty_per_node = np.asarray(
+        uw.function.evaluate(ty_field_sym, DFDt.psi_star[0].coords)
+    ).flatten()
+
     # Steady-state amplitude (sub-yield) for the analytical baseline
     t_r = ETA_1 / MU
     De = OMEGA * t_r
@@ -156,6 +167,7 @@ def run_one(theta_deg, tau_y_at_fault):
     A_inf = ETA_1 * gamma_dot_0 / np.sqrt(1.0 + De ** 2)
 
     times, sxy_centre, sxy_max_global, sigmaII_max_fault = [], [], [], []
+    sigmaII_over_ty_max = []     # the proper yield-surface gate: max σ_II(x)/τ_y(x)
     times_ana, resolved_centre = [], []
     diverged = 0
     t0 = time.time()
@@ -186,10 +198,14 @@ def run_one(theta_deg, tau_y_at_fault):
         coords = DFDt.psi_star[0].coords
         # fault zone mask: distance from fault line ≤ 3·FAULT_WIDTH
         cx, cy = 0.5 * W, 0.5 * H
-        # signed distance to fault line: |(x-cx)·n_x + (y-cy)·n_y|
         sd = np.abs((coords[:, 0] - cx) * n_x + (coords[:, 1] - cy) * n_y)
         mask = sd < 3.0 * FAULT_WIDTH
         sigmaII_max_fault.append(float(sigma_II[mask].max()) if mask.any() else 0.0)
+
+        # Proper yield-surface gate: per-node ratio σ_II(x)/τ_y(x).
+        # Should be ≤ 1.001 at all nodes if yield is correctly enforced.
+        ratio = sigma_II / np.maximum(ty_per_node, 1e-30)
+        sigmaII_over_ty_max.append(float(ratio.max()))
 
         times.append(t_end)
         t_cur = t_end
@@ -203,6 +219,7 @@ def run_one(theta_deg, tau_y_at_fault):
         resolved_centre=np.array(resolved_centre),
         sxy_max_global=np.array(sxy_max_global),
         sigmaII_max_fault=np.array(sigmaII_max_fault),
+        sigmaII_over_ty_max=np.array(sigmaII_over_ty_max),
         wall=time.time() - t0,
         diverged=diverged,
     )
@@ -224,27 +241,29 @@ def main():
             if len(res['times']):
                 sif_max = float(res['sigmaII_max_fault'].max())
                 sxy_glob_max = float(res['sxy_max_global'].max())
-                ratio = sif_max / ty
-                print(f"  peak σ_II_fault: {sif_max:.4f} ({ratio:.3f}·τ_y)")
+                # Proper yield gate: per-node max σ_II(x)/τ_y(x)
+                ratio_pn = float(res['sigmaII_over_ty_max'].max())
+                print(f"  peak σ_II_fault: {sif_max:.4f} (= {sif_max/ty:.3f} · centerline τ_y)")
+                print(f"  max σ_II/τ_y per-node: {ratio_pn:.4f}  ← yield-surface gate")
                 print(f"  peak |σ_xy| global: {sxy_glob_max:.4f}  A_∞={res['A_inf']:.4f}")
-                ok_yield = sif_max < 1.1 * ty
-                ok_bulk = sxy_glob_max < 1.5 * res['A_inf']  # generous bulk threshold
+                # Decision gate uses the per-node ratio (the centerline-τ_y
+                # ratio is misleading for spatial yield_stress fields).
+                ok_yield = ratio_pn < 1.05
                 if ok_yield and res['diverged'] == 0:
                     print(f"  PASS")
                     n_pass += 1
-                    summary.append((theta, ty, ratio, "PASS"))
+                    summary.append((theta, ty, ratio_pn, "PASS"))
                 else:
-                    print(f"  FAIL (σ_II_fault/τ_y={ratio:.3f}, "
-                          f"σ_xy_global={sxy_glob_max:.4f}, "
+                    print(f"  FAIL (max σ_II/τ_y per-node = {ratio_pn:.4f}, "
                           f"diverged={res['diverged']})")
-                    summary.append((theta, ty, ratio, "FAIL"))
+                    summary.append((theta, ty, ratio_pn, "FAIL"))
             else:
                 print(f"  FAIL — no steps completed")
                 summary.append((theta, ty, float('inf'), "FAIL"))
             print()
     print(f"\n=== KILLER TEST SUMMARY: {n_pass}/{n_total} PASS ===", flush=True)
     for theta, ty, ratio, status in summary:
-        print(f"  θ={theta:+.0f}°, τ_y={ty:.2f}: σ_II/τ_y={ratio:.3f}  [{status}]")
+        print(f"  θ={theta:+.0f}°, τ_y={ty:.2f}: max σ_II/τ_y per-node = {ratio:.4f}  [{status}]")
 
 
 if __name__ == "__main__":
