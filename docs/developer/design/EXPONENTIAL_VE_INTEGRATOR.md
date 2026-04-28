@@ -1,8 +1,14 @@
 # Exponential Integrator for VE / VEP Constitutive Updates — Implementation Plan
 
-**Status**: Phase B implementation **complete and validated** (2026-04-28). 8 commits on `feature/exp-integrator-investigation`. ETD-2 at parity-or-better with BDF-1 production on the killer test; BDF-2 (the higher-order method ETD-2 replaces) blows up by 10⁵-10⁹ on every yield-active combo.
+**Status**: Phase B implementation **complete; structural argument validated, but range of validity is narrow** (2026-04-28). 14 commits on `feature/exp-integrator-investigation`.
+
+**TL;DR**:
+- **What works**: ETD-2 is 4.3× more accurate than BDF-2 on the smooth `bench_ve_harmonic` (no yield active), and at parity with BDF-1 production on `bench_ti_vep_harmonic` for τ_y/A_∞ ≈ 0.55. BDF-2 blows up by 10⁵-10⁹ on every yield-active combo of the killer test; ETD-2 stays bounded — the structural argument is empirically confirmed.
+- **What doesn't work**: For tight yield surfaces (τ_y/A_∞ < ~0.5 — the typical fault-mechanics regime), Phase B ETD-2 catastrophically diverges step-by-step while Newton silently reports success. BDF-1 production handles the same tight-yield case cleanly. **Phase B as committed should not be used as a drop-in replacement for BDF on production fault-mechanics problems**; default ``integrator='bdf'`` is the right choice until Phase D lands. Concrete numbers: §"What we learned" item #7.
+- **Path forward**: Phase D — per-component (α₀, φ₀)/(α₁, φ₁) decomposition of the rank-4 TI tensor — is necessary for production-quality ETD-2 on tight-yield problems. Filed as a planning item with reproduction artefacts.
+
 **Branch**: `feature/exp-integrator-investigation`
-**Decision**: Pursue. Replace BDF-style σ-history with exponential integration of the relaxation operator + linear-quadrature forcing. Architecture: extend existing `SemiLagrangian` DDt with peer integrator method.
+**Decision**: Pursue, with revised scope. Phase B as committed lands the integrator scaffold + structural validation. Phase D is required to make it useful for fault mechanics.
 
 **API**: `ViscoElasticPlasticFlowModel(unknowns, integrator='etd')` selects the exponential integrator; default `integrator='bdf'` preserves the established BDF behaviour. Same parameter on `TransverseIsotropicVEPFlowModel`. Sibling `MaxwellExponentialFlowModel` and `TransverseIsotropicMaxwellExponentialFlowModel` survive as thin aliases for backwards compat.
 
@@ -168,27 +174,33 @@ The plan envisaged Phase B with sibling classes (`MaxwellExponentialFlowModel`, 
 
 A predictor-corrector clip of `psi_star[0].array` via raw numpy initially looked correct in the non-units case (production benches don't use units) but stripped UnitAwareArray wrappers silently. The user flagged this as accumulating tech debt. The audit fix landed in commit `aba93c2`: `forcing_star` allocated `units=None` (ε̇ has different physical dimensions from σ), `update_forcing_history` non-dimensionalises eval results before storing. Future Phase D work touching `.array` should follow the same pattern (see `update_pre_solve` for the canonical example).
 
-### 7. Empirical range of validity: τ_y / A_∞ ≥ ~0.5
+### 7. Empirical range of validity: τ_y / A_∞ ≥ ~0.5; below that, Phase B ETD-2 is strictly worse than BDF-1 production
 
-A direct test by tightening τ_y from 0.15 to **0.05** on `bench_ti_vep_harmonic` (so τ_y / A_∞ = 0.05/0.27 ≈ 0.19) at RES=32 over 1.5 periods produced a **catastrophic step-by-step runaway** even though Newton converged on every step. Concrete numbers (saved checkpoints at `output/phase_b_th{0,15}_ty0p05.*`):
+A direct test by tightening τ_y from 0.15 to **0.05** on `bench_ti_vep_harmonic` (so τ_y / A_∞ = 0.05/0.27 ≈ 0.19) at RES=32 over 1.5 periods produced a **catastrophic step-by-step runaway** for Phase B ETD-2 even though Newton converged on every step. Apples-to-apples comparison with BDF-1 production on the *same* setup (saved at `output/phase_b_th{0,15}_ty0p05.*` and `output/phase_b_bdf_th+15_ty0p05.npz`):
 
-| metric | τ_y=0.15 (ratio 0.55) | τ_y=0.05 (ratio 0.19) |
+| metric (θ=+15°, τ_y=0.05) | **ETD-2** (Phase B) | **BDF-1** (production) |
 |---|---|---|
-| max σ_II in domain | ~0.5 | **17.8** |
-| u_y range | ±0.006 | **±18** |
-| SNES iter mean / max | ~5 / ~10 | **14 / 38** |
-| Diverged steps | 0/120 | 0/120 |
-| Wall / step | ~2 s | **8.6 s** |
+| max σ_II in domain | **17.8** | **1.05** |
+| u_y range | ±18 | ±0.032 |
+| SNES iter mean / max | 8 / 22 | 1.8 / 4 |
+| Wall / step | 5.9 s | 1.7 s |
+| Centre \|σ_xy\| peak | 17.8 (356·τ_y) | 0.108 (2.15·τ_y) |
+| Diverged SNES steps | 0/120 | 0/120 |
 
-The mechanism is the same one items 3 and 5 in this list flagged: the ETD-2 history term `α·σ* + 2η·(φ-α)·ε̇*` uses raw η (Picard-style approximation); when the analytical-floor σ-magnitude exceeds τ_y, σ* feeds back through α·σ* on each step and grows without bound. The leading viscous term is yield-clipped, but the history isn't, and (1-φ) is small at typical Δt so the leading contribution can't dominate the runaway history.
+The catastrophe **is specific to the ETD-2 implementation**, not a problem-class issue: BDF-1 production handles τ_y=0.05 cleanly with bounded σ, faster Newton (mean 1.8 iters), and 3.5× faster wall time per step.
 
-**Newton's "convergence" reports in this regime are physically meaningless** — Newton finds the residual minimum each step, but the time-integration loop diverges. SNES iteration counts are *not* an early-warning signal; the warning is in the σ_II / u_y magnitudes themselves.
+The mechanism is the one items 3 and 5 in this list already identified: the ETD-2 history term ``α·σ* + 2η·(φ-α)·ε̇*`` uses raw η (Picard approximation when yield is active). The analytical-floor σ-magnitude under harmonic forcing is ~A_∞, independent of τ_y. When A_∞ > τ_y, σ* feeds back through α·σ* on each step and grows without bound; the leading viscous term is yield-clipped but has small (1-φ) coefficient at typical Δt, so it can't dominate the runaway history.
 
-Practical rules of thumb for the current Phase B implementation:
-- ``integrator='etd'`` with the raw τ_VE = η/μ in `α, φ` — works for **τ_y / A_∞ ≥ ~0.5**, at parity with BDF-1 production
-- Below that ratio: solution diverges silently (no SNES error); Phase D is required
+**Newton's "convergence" reports in this regime are physically meaningless** — Newton finds the residual minimum each step, but the time-integration loop diverges. SNES iteration counts are *not* an early-warning signal (they actually *drop* from typical levels because the residual structure becomes degenerate); the warning is in σ_II / u_y magnitudes themselves.
 
-The Phase D fixes are listed earlier in this section (per-component (α₀, φ₀)/(α₁, φ₁) for TI; or self-consistent τ via SNES sub-iteration). The Phase B design-doc note that "lagged-τ doesn't help" applies in this regime too — the failure is structural to the Picard approximation, not a τ-choice issue.
+Practical implications for Phase B as committed:
+
+* ``integrator='etd'`` with the raw τ_VE = η/μ in `α, φ` works for **τ_y / A_∞ ≥ ~0.5** — at parity with BDF-1 production for accuracy at ratio 0.55, beats BDF-2 by 4.3× at no-yield ``bench_ve_harmonic``.
+* Below that ratio (the **typical fault-mechanics regime**): solution diverges silently (no SNES error). Phase B ETD-2 is **strictly worse than BDF-1** — slower, less accurate, unstable.
+* Phase B as currently committed should be treated as a structural-argument demo, not a drop-in replacement for the BDF integrators. Production users should keep ``integrator='bdf'`` (the default) until Phase D lands.
+* **Phase D (per-component (α₀, φ₀)/(α₁, φ₁) for TI) is blocking, not "future work"**, for any production use of ETD-2 on tight-yield problems.
+
+The Phase B design-doc note that "lagged-τ doesn't help" applies in this regime too — the failure is structural to the Picard approximation, not a τ-choice issue.
 
 ---
 
