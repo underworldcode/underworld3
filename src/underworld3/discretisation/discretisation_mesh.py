@@ -1242,10 +1242,8 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, '_vertex_map') and self._vertex_map is not None:
             return self._vertex_map
 
-        from scipy.spatial import cKDTree
-
-        tree = cKDTree(self.X.coords)
-        dists, indices = tree.query(self.parent.X.coords)
+        tree = uw.kdtree.KDTree(self.X.coords)
+        dists, indices = tree.query(self.parent.X.coords, sqr_dists=False)
         matched = dists < 1.0e-10
 
         # parent_rows[i] -> sub_rows[i]: matched vertex pairs
@@ -1378,13 +1376,12 @@ class Mesh(Stateful, uw_object):
                 # Interpolate from backed-up data via kd-tree IDW
                 if var_name in old_var_backups:
                     try:
-                        from scipy.spatial import cKDTree
                         old_coords, old_data = old_var_backups[var_name]
                         new_coords = old_var.coords
 
-                        tree = cKDTree(old_coords)
+                        tree = uw.kdtree.KDTree(old_coords)
                         nnn = 3 if self.dim == 2 else 4
-                        dists, indices = tree.query(new_coords, k=nnn)
+                        dists, indices = tree.query(new_coords, k=nnn, sqr_dists=False)
 
                         # Inverse distance weighting
                         weights = 1.0 / (dists + 1e-30)
@@ -1431,14 +1428,13 @@ class Mesh(Stateful, uw_object):
         Returns (sub_rows, parent_rows) — numpy arrays of matching DOF indices.
         """
         import numpy as np
-        from scipy.spatial import cKDTree
 
         key = (id(parent_var), id(sub_var))
         if key in self._dof_maps:
             return self._dof_maps[key]
 
-        tree = cKDTree(sub_var.coords)
-        dists, indices = tree.query(parent_var.coords)
+        tree = uw.kdtree.KDTree(sub_var.coords)
+        dists, indices = tree.query(parent_var.coords, sqr_dists=False)
         matched = dists < 1.0e-10
 
         # indices[matched] maps parent row → sub row
