@@ -133,6 +133,12 @@ def build_model(theta_deg, tau_y_at_fault, label_suffix=""):
     stokes.tolerance = 1.0e-4
     stokes.petsc_options["ksp_type"] = "fgmres"
     stokes.petsc_options["snes_force_iteration"] = True
+    # Iteration monitoring (only printed during the capture phase; load
+    # path doesn't run the solver).
+    if os.environ.get("UW_SNES_MONITOR", "0") == "1":
+        stokes.petsc_options["snes_monitor"] = None
+        stokes.petsc_options["snes_converged_reason"] = None
+        stokes.petsc_options["snes_max_it"] = 50
 
     V_top = expression(rf"V_{{top,{label}}}", sympy.Float(0.0), "Top BC")
     stokes.add_essential_bc(sympy.Matrix([V_top, 0.0]), "Top")
@@ -179,6 +185,8 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
     T_END = n_periods * 2.0 * np.pi / OMEGA
     best = None     # (in_fault_max, step_index)
     saved = []      # full state history so we can rewind to the chosen step
+    iters = []      # SNES iteration count per step
+    reasons = []    # SNES convergence reason per step
     t_cur = 0.0
     t0 = time.time()
     while t_cur < T_END - 1e-9:
@@ -188,6 +196,8 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
         V_top.sym = sympy.Float(v_now)
         cm.Parameters.dt_elastic = dt
         stokes.solve(zero_init_guess=False, timestep=dt, divergence_retries=2)
+        iters.append(int(stokes.snes.getIterationNumber()))
+        reasons.append(int(stokes.snes.getConvergedReason()))
 
         sigma_arr = np.asarray(DFDt.psi_star[0].array)
         sigma_II = np.sqrt(0.5 * (sigma_arr ** 2).sum(axis=(1, 2)))
@@ -264,6 +274,8 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
         os.path.join(OUT_DIR, key + ".mesh.sigma.00000.h5")
     )
 
+    iters_arr = np.array(iters)
+    reasons_arr = np.array(reasons)
     metadata = dict(
         theta_deg=theta_deg,
         tau_y_at_fault=tau_y_at_fault,
@@ -273,15 +285,24 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
         wall_seconds=float(time.time() - t0),
         max_in_fault_sigma_II=float(best[0]),
         n_steps=len(saved),
+        iters=iters_arr,            # SNES iteration count per step
+        reasons=reasons_arr,        # SNES convergence reason per step (>0 OK)
     )
     np.savez(os.path.join(OUT_DIR, key + ".meta.npz"), **metadata)
 
+    n_diverged = int((reasons_arr < 0).sum())
     print(
         f"  ran {len(saved)} steps in {metadata['wall_seconds']:.1f}s; "
         f"chose t={metadata['t']:.3f}, V_top={metadata['v_top']:+.4f}; "
         f"max in-fault σ_II = {metadata['max_in_fault_sigma_II']:.4f} "
         f"({metadata['max_in_fault_sigma_II']/tau_y_at_fault:.3f}·τ_y_centre); "
         f"checkpointed → {OUT_DIR}/{key}.*",
+        flush=True,
+    )
+    print(
+        f"  SNES iterations per step: mean={iters_arr.mean():.1f} "
+        f"median={int(np.median(iters_arr))} max={iters_arr.max()} "
+        f"diverged_steps={n_diverged}/{len(reasons_arr)}",
         flush=True,
     )
 
@@ -455,7 +476,7 @@ def capture_or_load(theta_deg, tau_y_at_fault, n_periods=1.5):
 
 
 def main():
-    cases = [(0.0, 0.15), (15.0, 0.15)]
+    cases = [(0.0, 0.15), (15.0, 0.15), (0.0, 0.05), (15.0, 0.05)]
     for theta, ty in cases:
         print(f"\n=== θ={theta:+.0f}°, τ_y={ty:.2f} ===", flush=True)
         obj = capture_or_load(theta, ty, n_periods=1.5)
