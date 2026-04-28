@@ -43,11 +43,11 @@ def test_ve_stokes_first_solve_does_not_deadlock():
     v = uw.discretisation.MeshVariable("V", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
-    stokes = uw.systems.VE_Stokes(
-        mesh, velocityField=v, pressureField=p, order=2
+    stokes = uw.systems.Stokes(
+        mesh, velocityField=v, pressureField=p,
     )
-    stokes.constitutive_model = (
-        uw.constitutive_models.ViscoElasticPlasticFlowModel
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=2,
     )
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     stokes.constitutive_model.Parameters.shear_modulus = 1.0

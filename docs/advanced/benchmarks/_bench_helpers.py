@@ -198,10 +198,10 @@ def build_stokes(label, params, yield_stress=None, yield_mode="min"):
     )
     v = uw.discretisation.MeshVariable(f"U_{label}", mesh, mesh.dim, degree=p["velocity_degree"])
     pp = uw.discretisation.MeshVariable(f"P_{label}", mesh, 1, degree=p["pressure_degree"])
-    stokes = uw.systems.VE_Stokes(
-        mesh, velocityField=v, pressureField=pp, order=p["bdf_order"],
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=pp)
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=p["bdf_order"],
     )
-    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = p["eta"]
     stokes.constitutive_model.Parameters.shear_modulus = p["mu"]
     stokes.constitutive_model.Parameters.yield_stress = (
