@@ -210,6 +210,31 @@ class Model(PintNativeModelMixin, BaseModel):
         swarm_id = id(swarm)
         self._swarms[swarm_id] = swarm
 
+    def _unregister_swarm(self, swarm):
+        """
+        Internal method to drop a swarm and all its variables from the registry.
+
+        Without this, transient swarms (used for global expression evaluation,
+        checkpoint reads, mesh adaptation transfers) accumulate in the registry
+        forever, leaking the underlying PETSc DMs and field storage. Called
+        from :meth:`Swarm.__del__`.
+        """
+        swarm_id = id(swarm)
+        self._swarms.pop(swarm_id, None)
+        # Drop any variables that belong to this swarm. Building the list of
+        # names first avoids mutating the dict during iteration.
+        try:
+            from .swarm import SwarmVariable
+        except ImportError:
+            return
+        names_to_drop = [
+            name for name, var in self._variables.items()
+            if isinstance(var, SwarmVariable) and getattr(var, "_swarm_ref", None) is not None
+            and var._swarm_ref() is swarm
+        ]
+        for name in names_to_drop:
+            self._variables.pop(name, None)
+
     def _register_variable(self, name, variable):
         """
         Internal method to register a variable with this model.

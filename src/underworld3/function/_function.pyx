@@ -506,10 +506,7 @@ def global_evaluate_nd(   expr,
 
     # Invalidate cached data after bare-bones dm.migrate —
     # particle count and values changed but Swarm.migrate() was bypassed.
-    evaluation_swarm._particle_coordinates._canonical_data = None
-    for var in evaluation_swarm._vars.values():
-        if hasattr(var, "_canonical_data"):
-            var._canonical_data = None
+    evaluation_swarm._invalidate_canonical_data()
 
     # Pre-allocate with NaN so the shape is always correct. If any points
     # are lost during the migration round-trip, they remain NaN rather than
