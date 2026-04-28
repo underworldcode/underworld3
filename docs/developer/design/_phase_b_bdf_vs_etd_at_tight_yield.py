@@ -1,10 +1,11 @@
-"""Phase B: does BDF-1 also blow up at τ_y/A_∞ ≈ 0.19?
+"""Phase B: BDF-1 vs ETD-2 trajectory comparison at τ_y=0.05.
 
 The user asked whether the catastrophic ETD-2 runaway at τ_y=0.05 is
 specific to ETD-2 or a problem-class issue affecting BDF as well. This
-script runs the same bench_ti_vep_harmonic geometry at τ_y=0.05 with
-``integrator='bdf'`` (i.e. the production BDF-1 path) and reports the
-same metrics as the ETD-2 capture.
+script runs the bench_ti_vep_harmonic geometry at τ_y=0.05 with both
+``integrator='bdf'`` (production BDF-1) and ``integrator='etd'``
+(ETD-2 trial) and saves matching time series so we can plot them on
+the same axes.
 
 Running θ=+15° (the more demanding angled case) for 1.5 periods at
 RES=32 — same setup as ``output/phase_b_th+15_ty0p05.*``.
@@ -40,8 +41,19 @@ RES = 32
 OUT_DIR = "output"
 
 
-def run_bdf(theta_deg, tau_y_at_fault, n_periods=1.5):
-    label = f"bdf_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
+def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
+    """Run one (integrator, θ, τ_y) trajectory and save a time-series npz.
+
+    integrator: 'bdf' (BDF-1) or 'etd' (ETD-2).
+    """
+    if integrator == "bdf":
+        order = 1
+    elif integrator == "etd":
+        order = 2
+    else:
+        raise ValueError(f"unknown integrator '{integrator}'")
+
+    label = f"{integrator}_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
 
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(RES, RES),
@@ -74,9 +86,8 @@ def run_bdf(theta_deg, tau_y_at_fault, n_periods=1.5):
     tau_y_field = 1.0 / weakness
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p_sol)
-    # *** integrator='bdf' (production path) ***
     stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
-        stokes.Unknowns, integrator="bdf", order=1,
+        stokes.Unknowns, integrator=integrator, order=order,
     )
     cm = stokes.constitutive_model
     cm.Parameters.shear_viscosity_0 = ETA_0
@@ -142,14 +153,15 @@ def run_bdf(theta_deg, tau_y_at_fault, n_periods=1.5):
     iters_arr = np.array(iters)
     reasons_arr = np.array(reasons)
 
+    integrator_label = "BDF-1" if integrator == "bdf" else "ETD-2"
     print(
         f"  ran {len(iters)} steps in {time.time()-t0:.1f}s; "
-        f"BDF-1, integrator='bdf', τ_y_fault={tau_y_at_fault}",
+        f"{integrator_label}, integrator='{integrator}', τ_y_fault={tau_y_at_fault}",
         flush=True,
     )
     if iters_arr.size > 0 and (iters_arr >= 0).any():
         print(
-            f"  SNES iters per step (bdf): mean={iters_arr[iters_arr>=0].mean():.1f} "
+            f"  SNES iters per step ({integrator}): mean={iters_arr[iters_arr>=0].mean():.1f} "
             f"median={int(np.median(iters_arr[iters_arr>=0]))} "
             f"max={iters_arr[iters_arr>=0].max()} "
             f"diverged={int((reasons_arr<0).sum())}/{len(reasons_arr)}",
@@ -175,7 +187,10 @@ def run_bdf(theta_deg, tau_y_at_fault, n_periods=1.5):
         )
 
     # Save the time series so we can replot/compare without rerunning
-    out_npz = os.path.join(OUT_DIR, f"phase_b_bdf_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p") + ".npz")
+    out_npz = os.path.join(
+        OUT_DIR,
+        f"phase_b_{integrator}_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p") + ".npz",
+    )
     np.savez(
         out_npz,
         iters=iters_arr,
@@ -193,11 +208,25 @@ def run_bdf(theta_deg, tau_y_at_fault, n_periods=1.5):
     return out_npz
 
 
+def _cache_path(integrator, theta_deg, tau_y):
+    return os.path.join(
+        OUT_DIR,
+        f"phase_b_{integrator}_th{theta_deg:+.0f}_ty{tau_y:.2f}".replace(".", "p") + ".npz",
+    )
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    # Match the θ=+15° τ_y=0.05 case from the ETD-2 demo
-    print("=== BDF-1 control: θ=+15°, τ_y=0.05 ===", flush=True)
-    run_bdf(15.0, 0.05, n_periods=1.5)
+    theta_deg = 15.0
+    tau_y = 0.05
+
+    for integrator in ("bdf", "etd"):
+        cache = _cache_path(integrator, theta_deg, tau_y)
+        if os.path.exists(cache):
+            print(f"=== {integrator.upper()} cache hit: {cache} — skipping run ===", flush=True)
+            continue
+        print(f"=== {integrator.upper()}: θ={theta_deg:+.0f}°, τ_y={tau_y} ===", flush=True)
+        run_case(theta_deg, tau_y, integrator, n_periods=1.5)
 
 
 if __name__ == "__main__":
