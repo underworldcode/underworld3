@@ -343,7 +343,7 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     return pv_mesh
 
 
-def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
+def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
     """Evaluate Underworld scalar function at PyVista mesh points.
 
     Parameters
@@ -354,20 +354,15 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
         Underworld scalar function to evaluate.
     dim : int, optional
         Dimensionality (2 or 3). Auto-detected if None.
-    simplify : bool, optional
-        Simplify expression before evaluation (default: True).
 
     Returns
     -------
     numpy.ndarray
-        Scalar values at mesh points.
+        Scalar values at mesh points (units stripped for PyVista).
+        The units string is stored as ``pv_mesh._last_scalar_units``.
     """
     import underworld3 as uw
-    import sympy
     import numpy as np
-
-    if simplify:
-        uw_fn = sympy.simplify(uw_fn)
 
     if dim is None:
         if pv_mesh.points[:, 2].max() - pv_mesh.points[:, 2].min() < 1.0e-6:
@@ -376,29 +371,32 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
             dim = 3
 
     # Use stored coordinate array if available (preserves units and dimensional info)
-    # Otherwise fall back to pv_mesh.points (non-dimensional [0-1] coordinates)
     if hasattr(pv_mesh, '_coord_array'):
-        # Use the original mesh coordinate array (may be UnitAwareArray)
         coords = pv_mesh._coord_array[:, 0:dim]
     else:
-        # Fallback: use PyVista points directly (non-dimensional)
         coords = pv_mesh.points[:, 0:dim]
 
-    scalar_values = uw.function.evaluate(uw_fn, coords, evalf=True)
+    scalar_values = uw.function.evaluate(uw_fn, coords)
 
-    # Convert UnitAwareArray to plain numpy array for PyVista compatibility
-    # PyVista doesn't support UnitAwareArray and calls np.ndim() which fails
+    # Capture units before stripping for colorbar labels
+    scalar_units = None
+    if hasattr(scalar_values, "units") and scalar_values.units is not None:
+        scalar_units = str(scalar_values.units)
+    elif hasattr(scalar_values, "_units") and scalar_values._units is not None:
+        scalar_units = str(scalar_values._units)
+
+    pv_mesh._last_scalar_units = scalar_units
+
+    # Strip units for PyVista compatibility
     if hasattr(scalar_values, "magnitude"):
-        # UnitAwareArray - strip units for visualization
         scalar_values = scalar_values.magnitude
     else:
-        # Plain array - ensure it's numpy
         scalar_values = np.asarray(scalar_values)
 
     return scalar_values
 
 
-def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
+def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
     """Evaluate Underworld vector function at PyVista mesh points.
 
     Parameters
@@ -409,41 +407,39 @@ def vector_fn_to_pv_points(pv_mesh, uw_fn, dim=None, simplify=True):
         Underworld vector function to evaluate.
     dim : int, optional
         Dimensionality (not used, derived from function shape).
-    simplify : bool, optional
-        Simplify expression before evaluation (default: True).
 
     Returns
     -------
     numpy.ndarray
         Vector values at mesh points, shape ``(n_points, 3)``.
+        Units string stored as ``pv_mesh._last_vector_units``.
     """
     import numpy as np
     import underworld3 as uw
-    import sympy
 
-    if simplify:
-        uw_fn = sympy.simplify(uw_fn)
     dim = uw_fn.shape[1]
     if dim != 2 and dim != 3:
         print(f"UW vector function should have dimension 2 or 3")
 
-    # Use stored coordinate array if available (preserves units and dimensional info)
-    # Otherwise fall back to pv_mesh.points (non-dimensional [0-1] coordinates)
     if hasattr(pv_mesh, '_coord_array'):
-        # Use the original mesh coordinate array (may be UnitAwareArray)
         coords = pv_mesh._coord_array[:, 0:dim]
     else:
-        # Fallback: use PyVista points directly (non-dimensional)
         coords = pv_mesh.points[:, 0:dim]
 
-    vector_values_raw = uw.function.evaluate(uw_fn, coords, evalf=True)
+    vector_values_raw = uw.function.evaluate(uw_fn, coords)
 
-    # Convert UnitAwareArray to plain numpy array for PyVista compatibility
+    # Capture units before stripping
+    vector_units = None
+    if hasattr(vector_values_raw, "units") and vector_values_raw.units is not None:
+        vector_units = str(vector_values_raw.units)
+    elif hasattr(vector_values_raw, "_units") and vector_values_raw._units is not None:
+        vector_units = str(vector_values_raw._units)
+
+    pv_mesh._last_vector_units = vector_units
+
     if hasattr(vector_values_raw, "magnitude"):
-        # UnitAwareArray - strip units for visualization
         vector_values_raw = vector_values_raw.magnitude
     else:
-        # Plain array - ensure it's numpy
         vector_values_raw = np.asarray(vector_values_raw)
 
     vector_values = np.zeros_like(pv_mesh.points)
@@ -670,7 +666,10 @@ def plot_scalar(
     pvmesh = mesh_to_pv_mesh(mesh)
     pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar)
 
-    print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
+    # Build scalar bar label with units if available
+    scalar_bar_title = scalar_name
+    if hasattr(pvmesh, '_last_scalar_units') and pvmesh._last_scalar_units:
+        scalar_bar_title = f"{scalar_name} ({pvmesh._last_scalar_units})"
 
     pl = pv.Plotter(window_size=window_size)
     if clip_angle != 0.0:
@@ -683,7 +682,8 @@ def plot_scalar(
                 scalars=scalar_name,
                 show_edges=show_edges,
                 use_transparency=False,
-                show_scalar_bar=False,
+                show_scalar_bar=True,
+                scalar_bar_args={"title": scalar_bar_title},
                 opacity=1.0,
                 clim=clim,
             )
@@ -697,7 +697,8 @@ def plot_scalar(
             use_transparency=False,
             opacity=1.0,
             clim=clim,
-            show_scalar_bar=False,
+            show_scalar_bar=True,
+            scalar_bar_args={"title": scalar_bar_title},
         )
 
     pl.show(cpos=cpos)
@@ -811,6 +812,16 @@ def plot_vector(
     None
         This function does not return any value. It displays the vector field on the mesh in a PyVista
         window and optionally saves a screenshot.
+
+    Notes
+    -----
+    When the model uses physical units, arrows are drawn in the mesh
+    coordinate space. A velocity of 1 cm/yr on a mesh in meters
+    (extent ~1e6) produces arrows of length ~3e-10 in mesh units —
+    effectively invisible. Adjust ``vmag`` to compensate::
+
+        # Scale arrows to ~5% of mesh extent
+        vmag = 0.05 * mesh_extent / max_velocity
     """
 
     import sympy
@@ -827,7 +838,10 @@ def plot_vector(
     else:
         pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar.sym)
 
-    print(pvmesh.point_data[scalar_name].min(), pvmesh.point_data[scalar_name].max())
+    # Build scalar bar label with units if available
+    scalar_bar_title = scalar_name
+    if hasattr(pvmesh, '_last_scalar_units') and pvmesh._last_scalar_units:
+        scalar_bar_title = f"{scalar_name} ({pvmesh._last_scalar_units})"
 
     velocity_points = meshVariable_to_pv_cloud(vector)
     velocity_points.point_data[vector_name] = vector_fn_to_pv_points(velocity_points, vector.sym)
@@ -843,7 +857,8 @@ def plot_vector(
                 scalars=scalar_name,
                 show_edges=show_edges,
                 use_transparency=False,
-                show_scalar_bar=False,
+                show_scalar_bar=True,
+                scalar_bar_args={"title": scalar_bar_title},
                 opacity=1.0,
                 clim=clim,
             )
@@ -857,11 +872,9 @@ def plot_vector(
             use_transparency=False,
             opacity=1.0,
             clim=clim,
-            show_scalar_bar=False,
+            show_scalar_bar=True,
+            scalar_bar_args={"title": scalar_bar_title},
         )
-
-    # pl.add_scalar_bar(vector_name, vertical=False, title_font_size=25, label_font_size=20, fmt=fmt,
-    #                   position_x=0.225, position_y=0.01,)
 
     if show_arrows:
         pl.add_arrows(
