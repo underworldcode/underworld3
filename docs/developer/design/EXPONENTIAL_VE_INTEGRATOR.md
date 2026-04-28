@@ -168,6 +168,28 @@ The plan envisaged Phase B with sibling classes (`MaxwellExponentialFlowModel`, 
 
 A predictor-corrector clip of `psi_star[0].array` via raw numpy initially looked correct in the non-units case (production benches don't use units) but stripped UnitAwareArray wrappers silently. The user flagged this as accumulating tech debt. The audit fix landed in commit `aba93c2`: `forcing_star` allocated `units=None` (ε̇ has different physical dimensions from σ), `update_forcing_history` non-dimensionalises eval results before storing. Future Phase D work touching `.array` should follow the same pattern (see `update_pre_solve` for the canonical example).
 
+### 7. Empirical range of validity: τ_y / A_∞ ≥ ~0.5
+
+A direct test by tightening τ_y from 0.15 to **0.05** on `bench_ti_vep_harmonic` (so τ_y / A_∞ = 0.05/0.27 ≈ 0.19) at RES=32 over 1.5 periods produced a **catastrophic step-by-step runaway** even though Newton converged on every step. Concrete numbers (saved checkpoints at `output/phase_b_th{0,15}_ty0p05.*`):
+
+| metric | τ_y=0.15 (ratio 0.55) | τ_y=0.05 (ratio 0.19) |
+|---|---|---|
+| max σ_II in domain | ~0.5 | **17.8** |
+| u_y range | ±0.006 | **±18** |
+| SNES iter mean / max | ~5 / ~10 | **14 / 38** |
+| Diverged steps | 0/120 | 0/120 |
+| Wall / step | ~2 s | **8.6 s** |
+
+The mechanism is the same one items 3 and 5 in this list flagged: the ETD-2 history term `α·σ* + 2η·(φ-α)·ε̇*` uses raw η (Picard-style approximation); when the analytical-floor σ-magnitude exceeds τ_y, σ* feeds back through α·σ* on each step and grows without bound. The leading viscous term is yield-clipped, but the history isn't, and (1-φ) is small at typical Δt so the leading contribution can't dominate the runaway history.
+
+**Newton's "convergence" reports in this regime are physically meaningless** — Newton finds the residual minimum each step, but the time-integration loop diverges. SNES iteration counts are *not* an early-warning signal; the warning is in the σ_II / u_y magnitudes themselves.
+
+Practical rules of thumb for the current Phase B implementation:
+- ``integrator='etd'`` with the raw τ_VE = η/μ in `α, φ` — works for **τ_y / A_∞ ≥ ~0.5**, at parity with BDF-1 production
+- Below that ratio: solution diverges silently (no SNES error); Phase D is required
+
+The Phase D fixes are listed earlier in this section (per-component (α₀, φ₀)/(α₁, φ₁) for TI; or self-consistent τ via SNES sub-iteration). The Phase B design-doc note that "lagged-τ doesn't help" applies in this regime too — the failure is structural to the Picard approximation, not a τ-choice issue.
+
 ---
 
 ## Appendix A — Numerical evidence
