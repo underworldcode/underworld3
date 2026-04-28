@@ -2052,13 +2052,12 @@ class SemiLagrangian(uw_object):
         return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
 
     def update_exp_coefficients(self, dt, tau_eff):
-        r"""Update the ETD-2 (exponential) coefficient values for this step.
+        r"""Update the scalar ETD-2 (exponential) coefficient UWexpressions.
 
         Sets ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
         ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)`` so the next solve
         uses the correct exponential coefficients via PetscDSSetConstants
-        on the next ``_update_constants`` call. Called by the constitutive
-        model (which owns ``τ_eff = η_eff/μ``) before each solve.
+        on the next ``_update_constants`` call.
         """
         _update_exp_values(self._exp_coeffs, dt, tau_eff)
 

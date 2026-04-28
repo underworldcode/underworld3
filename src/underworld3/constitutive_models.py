@@ -2015,23 +2015,25 @@ class MaxwellExponentialFlowModel(ViscoElasticPlasticFlowModel):
         return self.stress()
 
     def _update_history_coefficients(self):
-        r"""Pre-solve hook: refresh α, φ on the DDt using the actual stress.
+        r"""Pre-solve hook: refresh α, φ on the DDt for this step.
 
-        Lagged-τ Picard: compute :math:`\tau_\mathrm{eff}` from the
-        previous step's stored stress and strain rate, rather than from
-        the raw viscous timescale :math:`\eta/\mu`. When yield is active
-        in a region, :math:`\eta_\mathrm{eff}(x) = |\sigma^*|_{II}/(2|\dot\varepsilon^*|_{II}) \ll \eta`,
-        so the effective relaxation timescale is shorter and the
-        history term ``α·σ*`` decays faster — preventing the yield
-        surface from being violated by stale memory of pre-yield stress.
+        Uses the raw viscous timescale :math:`\tau_\mathrm{VE} = \eta/\mu`
+        (no yield-state coupling). Lagged-τ (scalar median or per-node
+        from prior σ*, ε̇*) was tried in earlier iterations and found to
+        give *larger* yield-surface overshoot than the raw value: the
+        ETD-2 analytical structure has a non-zero minimum stress under
+        harmonic forcing because the history term ``2η(φ-α)·ε̇*`` uses
+        raw η (Picard-style approximation when yield is active),
+        making the floor on σ insensitive to τ_eff except via the
+        Picard scaling of α·σ*. Tightening the saturation requires
+        either (i) yield-clipping the history term too — losing
+        analytical ETD-2 in the no-yield limit — or (ii) per-component
+        (α, φ) for TI, both of which are Phase D scope.
 
-        Aggregation: this scalar α / φ pair is shared across all
-        quadrature points, so for spatially mixed yield/non-yield
-        regions we have to pick one. Using the global minimum of
-        ``η_eff`` (i.e. the strongest yield zone) biases toward
-        yield-active relaxation rates. Fully per-node spatial α via
-        mesh-variable projection is the cleaner long-term fix
-        (design-doc open question 2) — kept as the next escalation.
+        At this raw-τ setting the ETD-2 model achieves parity with
+        BDF-1 production on the killer-test sweep (max σ_II/τ_y
+        per-node ~1.5 at θ=±15°, τ_y=0.15) while BDF-2 blows up by
+        10⁵-10⁹ — confirming the structural argument.
         """
         if self.Unknowns.DFDt is None:
             return
@@ -2042,50 +2044,11 @@ class MaxwellExponentialFlowModel(ViscoElasticPlasticFlowModel):
             tau_eff = sympy.oo
         else:
             try:
+                eta_val = float(params.shear_viscosity_0.sym)
                 mu_val = float(params.shear_modulus.sym)
+                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
             except (TypeError, ValueError):
-                mu_val = None
-            if mu_val is None or mu_val <= 0:
-                tau_eff = sympy.oo
-            else:
-                try:
-                    eta_raw = float(params.shear_viscosity_0.sym)
-                except (TypeError, ValueError):
-                    eta_raw = None
-
-                # Try lagged-τ from prior step's actual stress
                 tau_eff = None
-                if DDt.forcing_star is not None and eta_raw is not None:
-                    try:
-                        sigma_arr = np.asarray(DDt.psi_star[0].array)
-                        edot_arr = np.asarray(DDt.forcing_star.array)
-                        sigma_II = np.sqrt(0.5 * (sigma_arr ** 2).sum(axis=(1, 2)))
-                        edot_II = np.sqrt(0.5 * (edot_arr ** 2).sum(axis=(1, 2)))
-                        eps_floor = 1e-9
-                        try:
-                            ef = float(params.strainrate_inv_II_min.sym)
-                            if ef > 0:
-                                eps_floor = ef
-                        except (TypeError, ValueError):
-                            pass
-                        # Per-node η_eff, clamped to [tiny, η_raw]
-                        denom = 2.0 * (edot_II + eps_floor)
-                        eta_eff_arr = np.clip(sigma_II / denom, 1e-12, eta_raw)
-                        # Representative scalar: min over yield-active nodes
-                        # (those with η_eff below η_raw by a margin).
-                        active = eta_eff_arr < 0.99 * eta_raw
-                        if active.any():
-                            eta_rep = float(eta_eff_arr[active].min())
-                        else:
-                            eta_rep = eta_raw
-                        tau_eff = eta_rep / mu_val
-                    except Exception:
-                        tau_eff = None
-
-                if tau_eff is None and eta_raw is not None:
-                    # Fallback to raw τ when prior arrays unavailable
-                    # (e.g. first step before forcing_star is populated)
-                    tau_eff = eta_raw / mu_val
         try:
             dt_val = (
                 float(params.dt_elastic.sym)
@@ -3529,18 +3492,11 @@ class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowM
         return self.stress()
 
     def _update_history_coefficients(self):
-        r"""Pre-solve hook: refresh α, φ on the DDt using the actual stress.
+        r"""Pre-solve hook: refresh α, φ from raw viscous τ_VE = η₁/μ.
 
-        Lagged-τ Picard, mirroring
-        :py:meth:`MaxwellExponentialFlowModel._update_history_coefficients`:
-        compute :math:`\tau_\mathrm{eff}` from the previous step's stored
-        stress and strain rate so the history term decays at the
-        yield-active rate when yield is active. For TI we use
-        :math:`|\sigma^*|_{II}/(2|\dot\varepsilon^*|_{II})` as a proxy
-        for :math:`\eta_{1,\mathrm{eff}}` (fault-plane viscosity). Single
-        scalar τ across bulk and fault-tangent components — the bulk is
-        approximated when yield is active. Fully per-node spatial α via
-        mesh-variable projection is the cleaner long-term fix.
+        Mirrors :py:meth:`MaxwellExponentialFlowModel._update_history_coefficients`
+        — see that method for why lagged-τ doesn't tighten the
+        yield-surface overshoot under ETD-2's Picard-style history.
         """
         if self.Unknowns.DFDt is None:
             return
@@ -3551,45 +3507,11 @@ class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowM
             tau_eff = sympy.oo
         else:
             try:
+                eta_val = float(params.shear_viscosity_1.sym)
                 mu_val = float(params.shear_modulus.sym)
+                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
             except (TypeError, ValueError):
-                mu_val = None
-            if mu_val is None or mu_val <= 0:
-                tau_eff = sympy.oo
-            else:
-                try:
-                    eta_1_raw = float(params.shear_viscosity_1.sym)
-                except (TypeError, ValueError):
-                    eta_1_raw = None
-
-                # Lagged-τ from prior step's actual stress
                 tau_eff = None
-                if DDt.forcing_star is not None and eta_1_raw is not None:
-                    try:
-                        sigma_arr = np.asarray(DDt.psi_star[0].array)
-                        edot_arr = np.asarray(DDt.forcing_star.array)
-                        sigma_II = np.sqrt(0.5 * (sigma_arr ** 2).sum(axis=(1, 2)))
-                        edot_II = np.sqrt(0.5 * (edot_arr ** 2).sum(axis=(1, 2)))
-                        eps_floor = 1e-9
-                        try:
-                            ef = float(params.strainrate_inv_II_min.sym)
-                            if ef > 0:
-                                eps_floor = ef
-                        except (TypeError, ValueError):
-                            pass
-                        denom = 2.0 * (edot_II + eps_floor)
-                        eta_eff_arr = np.clip(sigma_II / denom, 1e-12, eta_1_raw)
-                        active = eta_eff_arr < 0.99 * eta_1_raw
-                        if active.any():
-                            eta_rep = float(eta_eff_arr[active].min())
-                        else:
-                            eta_rep = eta_1_raw
-                        tau_eff = eta_rep / mu_val
-                    except Exception:
-                        tau_eff = None
-
-                if tau_eff is None and eta_1_raw is not None:
-                    tau_eff = eta_1_raw / mu_val
         try:
             dt_val = (
                 float(params.dt_elastic.sym)
