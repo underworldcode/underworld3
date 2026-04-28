@@ -1856,11 +1856,24 @@ class SNES_VE_Stokes(SNES_Stokes):
         Use ``uw.systems.Stokes`` directly with a
         ``ViscoElasticPlasticFlowModel`` constitutive model. The Stokes
         solver now creates stress history infrastructure automatically
-        when the constitutive model requires it.
+        when the constitutive model is assigned (the lazy-creation
+        pathway also reads ``stress_history_ddt_kwargs`` from the model
+        — required for ``integrator='etd'`` to allocate
+        ``forcing_star``). VE_Stokes pre-creates the DDt at solver
+        ``__init__`` time, before the model exists, so it can't see
+        those kwargs and is incompatible with ``integrator='etd'``.
 
-    This wrapper pre-creates the DFDt with a specific ``order`` parameter,
-    which is useful when you want to control the BDF order before assigning
-    the constitutive model.
+    Migration: replace::
+
+        stokes = uw.systems.VE_Stokes(mesh, velocityField=v, pressureField=p, order=2)
+        stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+
+    with::
+
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            stokes.Unknowns, order=2,
+        )
 
     Parameters
     ----------
@@ -1886,6 +1899,17 @@ class SNES_VE_Stokes(SNES_Stokes):
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
+        import warnings
+        warnings.warn(
+            "VE_Stokes is deprecated. Use uw.systems.Stokes(...) directly and "
+            "assign the constitutive model afterwards — the Stokes solver creates "
+            "DDt infrastructure lazily when the model is assigned, and the lazy "
+            "path correctly forwards stress_history_ddt_kwargs from the model "
+            "(required for integrator='etd' to allocate forcing_star). "
+            "VE_Stokes pre-creates DDt at __init__ time, before the model exists, "
+            "so it cannot use ETD-2. See the class docstring for migration.",
+            DeprecationWarning, stacklevel=2,
+        )
         super().__init__(
             mesh,
             velocityField,
