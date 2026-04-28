@@ -3278,6 +3278,250 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         return sympy.Max(0, 1 - eta_1_eff / eta_1_ve.sym if hasattr(eta_1_ve, 'sym') else 0)
 
 
+class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowModel):
+    r"""Transverse-isotropic Maxwell visco-elastic-plastic, ETD-2 integration.
+
+    Sibling of :class:`TransverseIsotropicVEPFlowModel` that integrates the
+    Maxwell relaxation operator analytically (ETD-2) instead of using BDF
+    backward differentiation. The rank-4 anisotropic stress tensor
+    :math:`C(\eta_0, \eta_1)` carries the bulk vs fault-tangent split as
+    in the BDF version, but the time integration becomes:
+
+    .. math::
+        \sigma^{n+1} = C\!:\![(1-\varphi)\,\dot\varepsilon^{n+1}
+            + (\varphi-\alpha)\,\dot\varepsilon^n] + \alpha\,\sigma^n
+
+    with :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}` and
+    :math:`\varphi = (1-\alpha)\tau_\mathrm{eff}/\Delta t`.
+
+    Phase B initial implementation (this class)
+    -------------------------------------------
+    * Single :math:`(\alpha, \varphi)` shared by bulk and fault-tangent
+      components, computed from :math:`\tau = \eta_1/\mu` (the
+      yield-active component). Per-component decomposition with separate
+      :math:`(\alpha_0, \varphi_0)` for bulk and
+      :math:`(\alpha_1, \varphi_1)` for the director-aligned correction
+      is a Phase D follow-up — only matters when :math:`\eta_0 \ne \eta_1`
+      *and* yield is active simultaneously.
+    * Yield handling is **predictor-corrector return mapping** (matching
+      :class:`MaxwellExponentialFlowModel`): the SNES residual is built
+      from the pure visco-elastic stress, and a post-solve clip on
+      ``psi_star[0]`` saturates :math:`|\sigma|_{II}` at
+      :math:`\tau_y(x)`. Phase B uses :math:`|\sigma|_{II}` clipping
+      rather than fault-resolved-shear clipping; the spatial
+      ``yield_stress`` field localises the effect to the fault zone via
+      its small ``τ_y`` there and large ``τ_y`` in the bulk.
+
+    Validation gate
+    ---------------
+    Empirical decision gate for the design doc's Phase B step 5:
+    :math:`|\sigma_{xy}|` must stay bounded :math:`\lesssim 1.1\tau_y`
+    on the fault and :math:`\lesssim A_\infty` in the bulk for the
+    sweep θ ∈ {0°, ±15°} × τ_y ∈ {0.15, 0.30}, where BDF-2 currently
+    blows up to ~10⁸. See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``.
+    """
+
+    def __init__(self, unknowns, material_name=None):
+        # ETD-2 stores one psi_star slot; pin order=1 in the inherited init.
+        super().__init__(unknowns, order=1, material_name=material_name)
+
+    @property
+    def stress_history_ddt_kwargs(self):
+        """Engage the SemiLagrangian's forcing-history machinery."""
+        return {"with_forcing_history": True}
+
+    @property
+    def viscosity(self):
+        r"""Raw fault-plane shear viscosity ``η₁`` (no yield/Δt wrapping).
+
+        Yield is handled post-solve (predictor-corrector return mapping).
+        The time-integration factor ``(1-φ)`` is folded into ``stress()``
+        directly. Returns ``η₁`` rather than ``η₀`` so the saddle
+        preconditioner sees the smaller fault-plane viscosity for a
+        better-conditioned Schur scaling on the fault.
+        """
+        return self.Parameters.shear_viscosity_1
+
+    @property
+    def K(self):
+        r"""Effective stiffness for preconditioner (raw ``η₁``)."""
+        return self.Parameters.shear_viscosity_1
+
+    @property
+    def E_eff(self):
+        r"""Instantaneous strain rate (no history coupling).
+
+        ETD-2 yield is handled post-solve, so ``E_eff`` does not need to
+        carry the elastic-history coupling that BDF VEP needs for its
+        yield-coupled criterion.
+        """
+        self._E_eff.sym = self.Unknowns.E
+        return self._E_eff
+
+    def _build_c_tensor(self):
+        r"""Rank-4 anisotropic tensor with **raw** ``η₀, η₁`` (no Δt or yield scaling).
+
+        ETD-2 supplies the time-integration factor ``(1-φ)`` at the
+        contraction site in :py:meth:`stress`; yield is handled post-solve
+        via return mapping. Differs from the BDF parent class's
+        ``_build_c_tensor`` which folds in ``μΔt/(c₀η + μΔt)`` and
+        ``softmin(η₁_ve, η_pl)``.
+        """
+        if self._is_setup:
+            return
+
+        d = self.dim
+        eta_0 = self.Parameters.shear_viscosity_0.sym
+        eta_1 = self.Parameters.shear_viscosity_1.sym
+        n = self.Parameters.director.sym
+        Delta = eta_0 - eta_1
+
+        identity = uw.maths.tensor.rank4_identity(d)
+        lambda_mat = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
+
+        for i in range(d):
+            for j in range(d):
+                for k in range(d):
+                    for l in range(d):
+                        base_val = 2 * identity[i, j, k, l] * eta_0
+                        aniso_correction = (
+                            2 * Delta * (
+                                (n[i] * n[k] * int(j == l)
+                                 + n[j] * n[k] * int(l == i)
+                                 + n[i] * n[l] * int(j == k)
+                                 + n[j] * n[l] * int(k == i)) / 2
+                                - 2 * n[i] * n[j] * n[k] * n[l]
+                            )
+                        )
+                        val = base_val - aniso_correction
+                        if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
+                            val = sympy.Mul(sympy.S.One, val, evaluate=False)
+                        lambda_mat[i, j, k, l] = val
+
+        lambda_mat = uw.maths.tensor.rank4_to_mandel(lambda_mat, d)
+        self._c = uw.maths.tensor.mandel_to_rank4(lambda_mat, d)
+
+        self._is_setup = True
+        self._solver_is_setup = False
+        return
+
+    def stress(self):
+        r"""ETD-2 visco-elastic stress with TI rank-4 tensor.
+
+        .. math::
+            \sigma = C\!:\!\bigl[(1-\varphi)\,\dot\varepsilon
+                + (\varphi-\alpha)\,\dot\varepsilon^*\bigr]
+                + \alpha\,\sigma^*
+
+        Yield enforcement is post-hoc — see
+        :py:meth:`_update_history_post_solve`.
+        """
+        edot = self.grad_u
+        if not self.is_elastic or self.Unknowns.DFDt is None:
+            return self._q(edot)
+
+        DDt = self.Unknowns.DFDt
+        if DDt.forcing_star is None:
+            raise RuntimeError(
+                "TransverseIsotropicMaxwellExponentialFlowModel requires a "
+                "SemiLagrangian DDt constructed with with_forcing_history=True. "
+                "Re-create the solver/model so the auto-DDt creation path picks "
+                "up stress_history_ddt_kwargs."
+            )
+
+        alpha = DDt._exp_alpha
+        phi = DDt._exp_phi
+        sigma_star = DDt.psi_star[0].sym
+        edot_star = DDt.forcing_star.sym
+
+        E_combined = (1 - phi) * edot + (phi - alpha) * edot_star
+        return self._q(E_combined) + alpha * sigma_star
+
+    @property
+    def flux(self):
+        r"""ETD-2 TI flux = stress() (mirrors the inherited wiring)."""
+        return self.stress()
+
+    def _update_history_coefficients(self):
+        r"""Pre-solve hook: refresh α, φ for current dt and τ_eff = η₁/μ.
+
+        Phase B uses a single ``(α, φ)`` from the fault-plane timescale
+        ``η₁/μ`` (the yield-active component). When ``η₀ ≠ η₁`` and yield
+        is active simultaneously the bulk component is approximated.
+        Per-component decomposition is a Phase D follow-up if accuracy
+        flags it.
+        """
+        if self.Unknowns.DFDt is None:
+            return
+        params = self.Parameters
+        if params.shear_modulus.sym is sympy.oo:
+            tau_eff = sympy.oo
+        else:
+            try:
+                eta_val = float(params.shear_viscosity_1.sym)
+                mu_val = float(params.shear_modulus.sym)
+                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
+            except (TypeError, ValueError):
+                tau_eff = None
+        try:
+            dt_val = (
+                float(params.dt_elastic.sym)
+                if params.dt_elastic.sym is not sympy.oo
+                else None
+            )
+        except (TypeError, ValueError):
+            dt_val = None
+        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+
+    def _update_history_post_solve(self):
+        r"""Post-solve hook: yield-clip ``psi_star[0]`` then store ε̇^{n+1}.
+
+        Predictor-corrector return mapping: scale ``psi_star[0]`` so
+        :math:`|\sigma|_{II} \le \tau_y(x)` per node, using the spatial
+        ``yield_stress`` field. Then refresh ``forcing_star`` with the
+        current ε̇ for the next step's history term.
+
+        Note: Phase B uses :math:`|\sigma|_{II}` clipping rather than
+        fault-resolved-shear clipping. For the killer test setup
+        (spatial ``yield_stress`` field with small τ_y in the fault zone
+        and large τ_y in the bulk) this localises the clip to the fault
+        without separately decomposing into iso/aniso components.
+        """
+        if self.Unknowns.DFDt is None:
+            return
+        DDt = self.Unknowns.DFDt
+
+        if self.is_viscoplastic:
+            import numpy as _np
+            ty_sym = self.Parameters.yield_stress.sym
+            tau_y_arr = None
+            try:
+                tau_y_arr = float(ty_sym)
+            except (TypeError, ValueError):
+                try:
+                    tau_y_arr = _np.asarray(
+                        uw.function.evaluate(ty_sym, DDt.psi_star[0].coords)
+                    ).flatten()
+                except Exception:
+                    tau_y_arr = None
+            if tau_y_arr is not None:
+                sigma_arr = _np.asarray(DDt.psi_star[0].array)
+                sigma_II = _np.sqrt(0.5 * (sigma_arr ** 2).sum(axis=(1, 2)))
+                delta = self._yield_softness
+                ty_pernode = _np.asarray(tau_y_arr)
+                if ty_pernode.ndim == 0:
+                    ty_pernode = _np.full_like(sigma_II, float(ty_pernode))
+                with _np.errstate(invalid='ignore', divide='ignore'):
+                    f = sigma_II / _np.maximum(ty_pernode, 1e-30)
+                offset = (-1 + _np.sqrt(1.0 + delta ** 2)) / 2.0
+                g = 1.0 + (f - 1.0 + _np.sqrt((f - 1.0) ** 2 + delta ** 2)) / 2.0 - offset
+                scale = _np.where(sigma_II > 0.0, 1.0 / g, 1.0)
+                DDt.psi_star[0].array[...] = sigma_arr * scale[:, None, None]
+
+        if DDt.forcing_star is not None:
+            DDt.update_forcing_history(forcing_fn=self.Unknowns.E)
+
+
 class MultiMaterialConstitutiveModel(Constitutive_Model):
     r"""
     Multi-material constitutive model using level-set weighted flux averaging.
