@@ -9,8 +9,7 @@ Run with: pixi run -e default python tests/profile_jit_phases.py
 import time
 import sympy
 import underworld3 as uw
-from underworld3.systems import VE_Stokes
-
+from underworld3.systems import Stokes
 # ── Setup (fast) ──────────────────────────────────────────────────────────────
 
 mesh = uw.meshing.UnstructuredSimplexBox(
@@ -22,8 +21,10 @@ v = uw.discretisation.MeshVariable("U", mesh, 2, degree=2, vtype=uw.VarType.VECT
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=True,
                                     vtype=uw.VarType.SCALAR)
 
-stokes = VE_Stokes(mesh, velocityField=v, pressureField=p, order=1)
-stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+stokes = Stokes(mesh, velocityField=v, pressureField=p)
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+    stokes.Unknowns, order=1,
+)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 stokes.constitutive_model.Parameters.shear_modulus = 1.0
 stokes.constitutive_model.Parameters.shear_viscosity_min = 1.0e-3

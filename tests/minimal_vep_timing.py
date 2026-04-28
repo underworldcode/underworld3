@@ -6,8 +6,7 @@ Run with: pixi run -e amr-dev python tests/minimal_vep_timing.py
 import time
 import sympy
 import underworld3 as uw
-from underworld3.systems import VE_Stokes
-
+from underworld3.systems import Stokes
 t0 = time.time()
 
 # --- Mesh ---
@@ -24,8 +23,10 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=True,
 print(f"Variables: {time.time() - t0:.1f}s")
 
 # --- Solver + constitutive model ---
-stokes = VE_Stokes(mesh, velocityField=v, pressureField=p, order=1)
-stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+stokes = Stokes(mesh, velocityField=v, pressureField=p)
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+    stokes.Unknowns, order=1,
+)
 stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 stokes.constitutive_model.Parameters.shear_modulus = 1.0
 stokes.constitutive_model.Parameters.shear_viscosity_min = 1.0e-3
@@ -64,8 +65,10 @@ stokes.solve(timestep=0.02, zero_init_guess=False)
 print(f"Second solve (cached): {time.time() - t2:.1f}s")
 
 # --- Compare: pure VE (no yield) ---
-stokes2 = VE_Stokes(mesh, velocityField=v, pressureField=p, order=1)
-stokes2.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+stokes2 = Stokes(mesh, velocityField=v, pressureField=p)
+stokes2.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+    stokes2.Unknowns, order=1,
+)
 stokes2.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 stokes2.constitutive_model.Parameters.shear_modulus = 1.0
 # yield_stress defaults to sympy.oo — pure VE

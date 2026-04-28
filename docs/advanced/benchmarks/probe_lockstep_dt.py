@@ -15,8 +15,10 @@ def make_stokes(label):
         minCoords=(-1, -0.5), maxCoords=(1, 0.5))
     v = uw.discretisation.MeshVariable(f"U_{label}", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable(f"P_{label}", mesh, 1, degree=1)
-    stokes = uw.systems.VE_Stokes(mesh, velocityField=v, pressureField=p, order=2)
-    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=2,
+    )
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     stokes.constitutive_model.Parameters.shear_modulus = 1.0
     stokes.constitutive_model.Parameters.yield_stress = 0.5
