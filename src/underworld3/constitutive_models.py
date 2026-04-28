@@ -593,6 +593,37 @@ class Constitutive_Model(uw_object):
         return False
 
     @property
+    def stress_history_ddt_kwargs(self):
+        """Extra kwargs passed to the auto-DDt creation when this model
+        triggers it via ``requires_stress_history = True``.
+
+        Default: empty dict (BDF-only models). ETD-2 / exponential models
+        override to inject ``with_forcing_history=True`` so the DDt
+        allocates a forcing-history slot.
+        """
+        return {}
+
+    def _update_history_coefficients(self):
+        """Uniform pre-solve hook the Stokes solver calls before each solve.
+
+        Default: no-op (non-stress-history models have nothing to update).
+        BDF-style stress-history subclasses (VEP, TI-VEP) override to
+        delegate to ``_update_bdf_coefficients``. ETD-2 / exponential
+        subclasses (e.g. ``MaxwellExponentialFlowModel``) override to
+        update α, φ on the DDt. The solver dispatches uniformly through
+        this method — no ``isinstance`` checks at the solver layer.
+        """
+        return
+
+    def _update_history_post_solve(self):
+        """Uniform post-solve hook the Stokes solver calls after each solve.
+
+        Default: no-op. Subclasses that store extra integrator state for
+        the next step (e.g. ETD-2 storing ε̇ⁿ in ``forcing_star``) override.
+        """
+        return
+
+    @property
     def plastic_fraction(self):
         """Fraction of strain rate that is plastic (0 for non-plastic models).
 
@@ -1374,6 +1405,27 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._bdf_c2.sym = coeffs[2]
         self._bdf_c3.sym = coeffs[3]
 
+    def _update_history_coefficients(self):
+        """Uniform pre-solve hook the Stokes solver calls each step.
+
+        Default (BDF) implementation: delegates to ``_update_bdf_coefficients``.
+        Subclasses with non-BDF integrators (e.g. ``MaxwellExponentialFlowModel``)
+        override this to update their own coefficient set instead. The Stokes
+        solver dispatches uniformly through this method — no ``isinstance``
+        checks at the solver layer.
+        """
+        self._update_bdf_coefficients()
+
+    def _update_history_post_solve(self):
+        """Uniform post-solve hook the Stokes solver calls each step.
+
+        Default (BDF) implementation: no-op (BDF needs only psi_star history,
+        which is shifted by the solver after the projection). Subclasses that
+        store extra state for the next step (e.g. ETD-2 storing ε̇ⁿ in
+        ``forcing_star``) override this.
+        """
+        return
+
     # The following should have no setters
     @property
     def stress_star(self):
@@ -1781,6 +1833,238 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             return False
 
         return True
+
+
+###
+
+
+class MaxwellExponentialFlowModel(ViscoElasticPlasticFlowModel):
+    r"""Maxwell visco-elastic flow with ETD-2 exponential time integration.
+
+    Replaces BDF-style backward differentiation of the deviatoric-stress
+    rate equation with closed-form integration of the Maxwell relaxation
+    operator plus ETD-2 quadrature of the strain-rate forcing:
+
+    .. math::
+        \sigma^{n+1} = \alpha\,\sigma^n
+            + 2\eta_\mathrm{eff}(1-\varphi)\,\dot\varepsilon^{n+1}
+            + 2\eta(\varphi-\alpha)\,\dot\varepsilon^n
+
+    with :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}`,
+    :math:`\varphi = (1-\alpha)\tau_\mathrm{eff}/\Delta t`,
+    :math:`\tau_\mathrm{eff} = \eta_\mathrm{eff}/\mu`.
+
+    Compared with BDF-2 the exponential formulation is 5–12× more accurate
+    at small Δt, decisively better at Δt ≈ τ (where BDF-1/2 over-damp the
+    output to near-zero), and structurally avoids the BDF-2 multistep
+    instability seen in TI-VEP + spatial yield_stress (no second history
+    term to amplify through the autodiff Jacobian). See
+    ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md`` for derivation
+    and validation evidence.
+
+    Implementation notes (Phase B prototype)
+    ----------------------------------------
+    Coefficients ``α``, ``φ`` live on the DDt (see
+    ``SemiLagrangian._exp_coeffs``), refreshed before each solve via
+    ``DFDt.update_exp_coefficients(dt, τ_eff)``. The forcing-history slot
+    ``forcing_star`` (one tensor MeshVariable, parallel to ``psi_star[0]``)
+    is allocated automatically by the auto-DDt creation path because this
+    class returns ``with_forcing_history=True`` from
+    ``stress_history_ddt_kwargs``.
+
+    The yield-coupling implementation here is intentionally minimal — yield
+    activates by clipping ``η_eff`` via the inherited softmin/min logic but
+    the effective strain rate ``E_eff`` returns plain ``Unknowns.E`` (not the
+    BDF-coupled form). This is an instantaneous-strain-rate yield criterion
+    that suffices for the Phase B benchmarks. A self-consistent yield-coupled
+    ``E_eff_exp`` is a Phase D follow-up if validation flags it.
+
+    Lagged-τ
+    --------
+    For VEP, ``τ_eff = η_eff/μ`` depends on the current stress state
+    (nonlinear). ``_update_history_coefficients`` uses a Picard-style lag:
+    ``τ_eff`` is computed from the last step's parameter values. This is
+    first-order in the nonlinear coupling. For sharp yield onset under
+    variable Δt, a self-consistent ``τ`` via SNES sub-iteration is the
+    Phase D escalation path.
+    """
+
+    def __init__(self, unknowns, material_name=None):
+        # ETD-2 only carries one stress history slot. Pin order=1 in the
+        # inherited init so the auto-DDt allocates a single psi_star.
+        super().__init__(unknowns, order=1, material_name=material_name)
+
+    @property
+    def stress_history_ddt_kwargs(self):
+        """Engage the SemiLagrangian's forcing-history machinery.
+
+        Returns ``{"with_forcing_history": True}`` so the auto-DDt allocates
+        a tensor MeshVariable to store ``ε̇ⁿ`` between steps.
+        """
+        return {"with_forcing_history": True}
+
+    @property
+    def viscosity(self):
+        r"""Raw shear viscosity (no yield wrapping in the residual).
+
+        Yield handling for the ETD-2 model is **predictor-corrector return
+        mapping** (matching the design doc's Phase B 1D evaluator): the
+        SNES residual is built from the pure visco-elastic stress
+        :math:`\sigma_\mathrm{pred} = 2\eta(1-\varphi)\dot\varepsilon
+        + \alpha\sigma^* + 2\eta(\varphi-\alpha)\dot\varepsilon^*`, and a
+        post-solve clip in :py:meth:`_update_history_post_solve` enforces
+        :math:`|\sigma|_{II} \le \tau_y` by scaling
+        ``psi_star[0]`` in place. This keeps the SNES Jacobian smooth
+        (no :math:`1/(1-\varphi)^2` amplification from a viscosity-wrapped
+        yield criterion) and matches what made the 1D Phase B exp+VEP
+        evaluator robust.
+        """
+        return self.Parameters.shear_viscosity_0
+
+    @property
+    def E_eff(self):
+        r"""Instantaneous strain rate.
+
+        ETD-2 yield is handled post-solve (return mapping), so ``E_eff``
+        does not carry the elastic-history coupling that BDF/VEP needs
+        for its yield-coupled criterion.
+        """
+        self._E_eff.sym = self.Unknowns.E
+        return self._E_eff
+
+    def stress(self):
+        r"""Pure ETD-2 visco-elastic stress (no yield in the SNES residual).
+
+        .. math::
+            \sigma_\mathrm{pred} = 2\eta(1-\varphi)\,\dot\varepsilon
+                + \alpha\,\sigma^* + 2\eta(\varphi-\alpha)\,\dot\varepsilon^*
+
+        Yield enforcement is post-hoc: see :py:meth:`_update_history_post_solve`,
+        which scales ``psi_star[0]`` to satisfy :math:`|\sigma|_{II} \le \tau_y`
+        before the new ``ε̇*`` is recorded for the next step. This
+        predictor-corrector return mapping mirrors the design-doc 1D
+        Phase B evaluator and avoids the autodiff Jacobian conditioning
+        issues caused by viscosity-wrapped softmin yields under ETD-2's
+        small ``(1-φ)`` leading factor.
+        """
+        if not self.is_elastic or self.Unknowns.DFDt is None:
+            return 2 * self.viscosity * self.grad_u
+
+        DDt = self.Unknowns.DFDt
+        if DDt.forcing_star is None:
+            raise RuntimeError(
+                "MaxwellExponentialFlowModel requires a SemiLagrangian DDt "
+                "constructed with with_forcing_history=True. Re-create the "
+                "solver/model so the auto-DDt creation path picks up "
+                "stress_history_ddt_kwargs."
+            )
+
+        alpha = DDt._exp_alpha
+        phi = DDt._exp_phi
+        sigma_star = DDt.psi_star[0].sym
+        edot_star = DDt.forcing_star.sym
+        eta = self.Parameters.shear_viscosity_0
+
+        return (
+            2 * eta * (1 - phi) * self.grad_u
+            + alpha * sigma_star
+            + 2 * eta * (phi - alpha) * edot_star
+        )
+
+    @property
+    def flux(self):
+        r"""ETD-2 flux = stress() (mirrors the inherited VEP wiring)."""
+        return self.stress()
+
+    def _update_history_coefficients(self):
+        r"""Pre-solve hook: refresh α, φ on the DDt for this step's dt and τ_eff.
+
+        Reads ``dt_elastic`` from ``Parameters`` and ``τ_eff = η/μ`` from the
+        current parameter values (Picard / lagged-τ). When η is a spatial
+        field (e.g. yield-active VEP), τ_eff cannot be reduced to a scalar
+        without per-quad projection — Phase B starts with the scalar path
+        and skips per-quad projection (the design doc's open question 2).
+        Returns silently in that case; α, φ retain their last set values.
+        """
+        if self.Unknowns.DFDt is None:
+            return
+        params = self.Parameters
+        # Compute τ_eff = η/μ as a plain float when both are scalars.
+        # Symbolic / spatial fields are not yet handled here — that would
+        # require per-quad projection of α, φ.
+        if params.shear_modulus.sym is sympy.oo:
+            tau_eff = sympy.oo
+        else:
+            try:
+                eta_val = float(params.shear_viscosity_0.sym)
+                mu_val = float(params.shear_modulus.sym)
+                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
+            except (TypeError, ValueError):
+                tau_eff = None
+        try:
+            dt_val = (
+                float(params.dt_elastic.sym)
+                if params.dt_elastic.sym is not sympy.oo
+                else None
+            )
+        except (TypeError, ValueError):
+            dt_val = None
+        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+
+    def _update_history_post_solve(self):
+        r"""Post-solve hook: yield-clip ``psi_star[0]`` then record ε̇^{n+1}.
+
+        Predictor-corrector return mapping for yield: the SNES residual
+        used a pure ETD-2 stress (no yield in the residual), so the just-
+        projected ``psi_star[0]`` may have :math:`|\sigma|_{II} > \tau_y`
+        in yield-active regions. We scale it down in place so the stored
+        history satisfies the yield surface; the next step's history
+        term then relaxes from the clipped state, matching the 1D
+        Phase B evaluator's robust formulation.
+
+        Then refresh ``forcing_star`` with current ε̇^{n+1} for the next
+        step's ETD-2 history.
+        """
+        if self.Unknowns.DFDt is None:
+            return
+        DDt = self.Unknowns.DFDt
+
+        # Yield clip on psi_star[0] (predictor-corrector return mapping).
+        if self.is_viscoplastic:
+            import numpy as _np
+            ty_sym = self.Parameters.yield_stress.sym
+            tau_y_arr = None
+            try:
+                tau_y_arr = float(ty_sym)
+            except (TypeError, ValueError):
+                # Spatial yield_stress field — evaluate at psi_star[0] coords
+                try:
+                    tau_y_arr = _np.asarray(
+                        uw.function.evaluate(ty_sym, DDt.psi_star[0].coords)
+                    ).flatten()
+                except Exception:
+                    tau_y_arr = None
+            if tau_y_arr is not None:
+                sigma_arr = _np.asarray(DDt.psi_star[0].array)
+                # Per-node σ_II = √(½ σ_ij σ_ij)
+                sigma_II = _np.sqrt(0.5 * (sigma_arr ** 2).sum(axis=(1, 2)))
+                # softmin clip on f = |σ|/τ_y per node
+                delta = self._yield_softness
+                # Broadcast scalar τ_y to per-node array if necessary
+                ty_pernode = _np.asarray(tau_y_arr)
+                if ty_pernode.ndim == 0:
+                    ty_pernode = _np.full_like(sigma_II, float(ty_pernode))
+                with _np.errstate(invalid='ignore', divide='ignore'):
+                    f = sigma_II / _np.maximum(ty_pernode, 1e-30)
+                offset = (-1 + _np.sqrt(1.0 + delta ** 2)) / 2.0
+                g = 1.0 + (f - 1.0 + _np.sqrt((f - 1.0) ** 2 + delta ** 2)) / 2.0 - offset
+                # g >= 1 always; positive-stress nodes get scaled by 1/g
+                scale = _np.where(sigma_II > 0.0, 1.0 / g, 1.0)
+                DDt.psi_star[0].array[...] = sigma_arr * scale[:, None, None]
+
+        # Record ε̇^{n+1} as ε̇ⁿ forcing for next step.
+        if DDt.forcing_star is not None:
+            DDt.update_forcing_history(forcing_fn=self.Unknowns.E)
 
 
 ###
@@ -2607,6 +2891,10 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             ddt_eff = self.Unknowns.DFDt.effective_order
             return min(self._order, ddt_eff)
         return self._order
+
+    def _update_history_coefficients(self):
+        """Uniform pre-solve hook — TI-VEP delegates to ``_update_bdf_coefficients``."""
+        self._update_bdf_coefficients()
 
     def _update_bdf_coefficients(self):
         """Update BDF coefficient UWexpressions with blending."""

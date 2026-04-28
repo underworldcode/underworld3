@@ -1195,11 +1195,22 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         Called automatically when a constitutive model with
         ``requires_stress_history = True`` is assigned. Can also be called
         explicitly to pre-create the DFDt with a specific order.
+
+        Constitutive models can inject extra SemiLagrangian kwargs via the
+        ``stress_history_ddt_kwargs`` property — used e.g. by
+        ``MaxwellExponentialFlowModel`` to set ``with_forcing_history=True``.
         """
         if self.Unknowns.DFDt is not None:
             return  # already created
 
         self._order = order
+        # Constitutive model may request extra SemiLagrangian kwargs (e.g.
+        # with_forcing_history for ETD-2 integration).
+        cm = getattr(self, "constitutive_model", None)
+        ddt_kwargs = {}
+        if cm is not None:
+            ddt_kwargs = dict(getattr(cm, "stress_history_ddt_kwargs", {}))
+
         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
@@ -1212,6 +1223,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             bcs=None,
             order=order,
             smoothing=0.0001,
+            **ddt_kwargs,
         )
         # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
         # history term — without snapshot substitution the projection of
@@ -1311,7 +1323,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
             self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
                                        store_result=False)
-            self.constitutive_model._update_bdf_coefficients()
+            # Uniform pre-solve coefficient hook: VEP delegates to
+            # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
+            # α, φ on the DDt via _update_exp_coefficients(). No isinstance
+            # checks at the solver layer.
+            self.constitutive_model._update_history_coefficients()
 
             # 2. SOLVE
             if uw.mpi.rank == 0 and verbose:
@@ -1364,6 +1380,12 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                     self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
 
             self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+            # Uniform post-solve hook for any extra integrator-state storage.
+            # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
+            # forcing_star with current ε̇^{n+1} so the next step's history
+            # term has access to ε̇ⁿ.
+            self.constitutive_model._update_history_post_solve()
 
             self.is_setup = True
             self.constitutive_model._solver_is_setup = True
