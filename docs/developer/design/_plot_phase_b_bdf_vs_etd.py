@@ -58,8 +58,18 @@ def _load_bdf2_from_log(log_path=None):
     runaway. None if the log doesn't exist.
     """
     if log_path is None:
-        log_path = os.path.join(OUT_DIR, "phase_b_bdf2_th+15_ty0p05.log")
-    if not os.path.exists(log_path):
+        # Tracked trace lives next to this script (git won't track *.log).
+        candidates = [
+            os.path.join(
+                os.path.dirname(__file__),
+                "_phase_b_bdf2_th+15_ty0p05.trace.txt",
+            ),
+            os.path.join(OUT_DIR, "phase_b_bdf2_th+15_ty0p05.log"),
+        ]
+        log_path = next((p for p in candidates if os.path.exists(p)), None)
+        if log_path is None:
+            return None
+    elif not os.path.exists(log_path):
         return None
     import re
     pat = re.compile(
