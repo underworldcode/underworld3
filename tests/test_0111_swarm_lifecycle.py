@@ -1,23 +1,18 @@
 """Lifecycle regression tests for Swarm cleanup.
 
-The prep work for the global-point-routing redesign adds three things:
+The prep work for the global-point-routing redesign restores the swarm
+lifecycle so that transient swarms (used inside ``global_evaluate_nd``,
+checkpoint reads, mesh-adapt transfers) are actually freed on garbage
+collection instead of accumulating in the model registry forever.
 
   - ``Swarm.__del__`` now calls ``self.dm.destroy()`` so the PETSc DMSwarm and
-    its registered fields free when ``__del__`` actually runs.
+    every registered field are released when the swarm is collected.
   - ``Swarm._invalidate_canonical_data()`` consolidates the cache invalidation
     that previously appeared inline in two places.
-  - ``Model._unregister_swarm(swarm)`` drops a swarm and any of its registered
-    variables from the global model registry. Consumer recipes that build a
-    transient swarm (read_timestep, load_from_checkpoint, mesh.adapt transfer)
-    must call this before the swarm goes out of scope, otherwise the strong
-    reference in ``Model._swarms`` keeps it alive and ``__del__`` never fires.
-
-The end-to-end "RSS does not grow" leak-loop is **not** part of this prep
-test set: a fully automatic leak-free swarm requires removing the strong ref
-in ``Model._swarms`` (probably ``WeakValueDictionary`` + ``weakref.finalize``
-to also auto-drop variables), which is a wider lifecycle redesign than this
-prep PR scope. Instead, we test the building blocks individually and trust
-the consumer recipes to use ``_unregister_swarm`` explicitly.
+  - ``Model._swarms`` is a ``WeakValueDictionary`` so that registration no
+    longer pins swarms beyond the user's last strong reference.
+  - ``Model._unregister_swarm`` drops the swarm's registered variables when
+    ``__del__`` fires.
 """
 
 import gc
@@ -121,3 +116,90 @@ def test_model_unregister_idempotent(mesh):
     swarm = uw.swarm.Swarm(mesh)
     model._unregister_swarm(swarm)
     model._unregister_swarm(swarm)  # must not raise
+
+
+def test_swarm_del_fires_on_drop(mesh):
+    """A swarm with no remaining strong references is collected automatically.
+
+    Before ``Model._swarms`` became a ``WeakValueDictionary`` the registry
+    pinned every swarm forever, so ``__del__`` never fired. The proof that
+    the cycle is broken: registry size returns to baseline after ``del``.
+    """
+    model = uw.get_default_model()
+    n_before = len(model._swarms)
+
+    swarm = uw.swarm.Swarm(mesh)
+    uw.swarm.SwarmVariable(
+        "_test_drop", swarm,
+        vtype=uw.VarType.SCALAR, dtype=float, _proxy=False,
+    )
+    swarm.populate(fill_param=2)
+    assert len(model._swarms) == n_before + 1
+
+    del swarm
+    gc.collect()
+
+    assert len(model._swarms) == n_before, (
+        "Swarm not collected after del — the registry is still pinning it"
+    )
+    assert "_test_drop" not in model._variables
+
+
+def test_swarm_lifecycle_does_not_leak(mesh):
+    """End-to-end: many transient swarms do not grow current RSS unboundedly.
+
+    Uses ``psutil.Process().memory_info().rss`` (current resident memory) so
+    OS-level peak tracking does not mask freed memory. The threshold is
+    deliberately generous — a real leak grows by tens of MB per 100 swarms.
+    """
+    psutil = pytest.importorskip("psutil")
+    import os
+    p = psutil.Process(os.getpid())
+
+    def rss_mb():
+        return p.memory_info().rss / (1024 * 1024)
+
+    n_iters = 500
+    sample_every = 100
+
+    # Warm-up: first iterations always cost RSS for one-off allocations
+    # (caches, JIT tables, lazy initialisation).
+    for _ in range(50):
+        s = uw.swarm.Swarm(mesh)
+        uw.swarm.SwarmVariable(
+            "v", s,
+            vtype=uw.VarType.MATRIX, size=(1, 3),
+            dtype=float, _proxy=False,
+        )
+        s.populate(fill_param=2)
+        del s
+    gc.collect()
+    rss_samples = [rss_mb()]
+
+    for i in range(n_iters):
+        s = uw.swarm.Swarm(mesh)
+        for j in range(3):
+            uw.swarm.SwarmVariable(
+                f"v_{j}", s,
+                vtype=uw.VarType.MATRIX, size=(1, 3),
+                dtype=float, _proxy=False,
+            )
+        s.populate(fill_param=2)
+        for var in s._vars.values():
+            _ = var.array
+        del s
+
+        if (i + 1) % sample_every == 0:
+            gc.collect()
+            rss_samples.append(rss_mb())
+
+    growth_mb = rss_samples[-1] - rss_samples[0]
+    growth_per_100 = growth_mb / (n_iters / sample_every)
+    print(f"\nRSS samples (MB): {[round(x, 1) for x in rss_samples]}")
+    print(f"Growth per 100 swarms: {growth_per_100:.2f} MB")
+    # Without the WeakValueDictionary fix this comes back as ~25–30 MB / 100
+    # (full DMSwarm + registered fields preserved in the registry).
+    assert growth_per_100 < 5.0, (
+        f"Suspected swarm leak: {growth_per_100:.2f} MB per 100 swarms "
+        f"(samples: {rss_samples})"
+    )

@@ -112,7 +112,15 @@ class Model(PintNativeModelMixin, BaseModel):
     # Declare private attributes for Pydantic v2
     _meshes: Any = PrivateAttr(default_factory=dict)
     _primary_mesh_id: Optional[int] = PrivateAttr(default=None)
-    _swarms: Any = PrivateAttr(default_factory=dict)
+    # WeakValueDictionary so dropping the user's last reference to a swarm
+    # actually lets it be garbage-collected. Without this, transient swarms
+    # used inside functions (global expression evaluation, checkpoint reads,
+    # mesh-adapt transfers) accumulate forever via the registry's strong
+    # reference and ``Swarm.__del__`` never fires. Iteration, length, and
+    # membership checks behave the same as a regular dict; the only
+    # difference is that entries auto-disappear once their swarm value has
+    # no other strong references.
+    _swarms: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
     _solvers: Dict[str, Any] = PrivateAttr(default_factory=dict)
 
@@ -250,13 +258,15 @@ class Model(PintNativeModelMixin, BaseModel):
         variable : MeshVariable or SwarmVariable
             Variable instance to register
         """
-        # For SwarmVariables, ensure we keep strong reference to swarm to prevent garbage collection
+        # For SwarmVariables, make sure the parent swarm has been registered.
+        # Registration is via WeakValueDictionary, so it does not pin the
+        # swarm — when the user drops their last reference the swarm dies
+        # and ``Swarm.__del__`` cleans up the variable side of the registry.
         from .swarm import SwarmVariable
 
         if isinstance(variable, SwarmVariable):
             swarm = variable.swarm  # This will raise if swarm already garbage collected
             swarm_id = id(swarm)
-            # Ensure swarm is registered with strong reference
             if swarm_id not in self._swarms:
                 self._register_swarm(swarm)
 
