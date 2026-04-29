@@ -1,21 +1,28 @@
 # Exponential Integrator for VE / VEP Constitutive Updates — Implementation Plan
 
-**Status**: Phase B + Phase D implementations **complete** (2026-04-29). Phase D enforces yield surface to BDF-class fidelity; remaining BDF-vs-ETD difference is a documented physics-modelling characteristic, not a numerical bug. 22 commits on `feature/exp-integrator-investigation`.
+**Status**: Phase B **ships** for VE / mild VEP. Phase D and Phase E investigations land on the branch as documented experiments — neither delivers BDF-class fault mechanics in the deep-yield TI regime, and they should not ship as production paths. 24 commits on `feature/exp-integrator-investigation`. Investigation closed 2026-04-29.
 
 **TL;DR**:
-- **VE only (no yield)**: ETD-2 is 4.3× more accurate than BDF-2 on smooth `bench_ve_harmonic`; passes all VE/VEP regression tests; doesn't over-damp at large Δt. Use `integrator='etd'` for any VE-only application.
-- **VEP, mild yield (τ_y/A_∞ ≈ 0.55)**: Phase B ETD-2 (single (α, φ) lump) at parity with BDF-1 production. BDF-2 blew up; ETD-2 stays bounded — original structural argument confirmed.
-- **VEP, deep yield (τ_y/A_∞ < ~0.5 — fault-mechanics regime)**: Phase B ETD-2 catastrophically diverges in the global frame while *resolved fault shear* still hovers at ~2·τ_y. Phase D `TransverseIsotropicVEPSplitFlowModel` (per-component split + lagged + capped) brings σ_∥ to within 21% of τ_y (vs 4% for BDF-1) and removes the global runaway. Slip rate `|u_y|` is ~16× BDF's; this is a structural BDF-vs-ETD difference (BDF's E_eff carries built-in elastic damping during yield; ETD's analytical form does not), not a numerical defect.
-- **Path forward**: Phase D as committed is a usable scaffold for fault-mechanics experimentation. For BDF-tight slip-rate matching, future work should explore consistent capping, σ-update under-relaxation (rec #3), or revisit predictor-corrector with the explicit-parallel infrastructure.
+- **VE only (no yield)**: ETD-2 is 4.3× more accurate than BDF-2 on smooth `bench_ve_harmonic`; passes all VE/VEP regression tests; doesn't over-damp at large Δt. Use `integrator='etd'`.
+- **VEP, mild yield (τ_y/A_∞ ≈ 0.55)**: Phase B ETD-2 (single (α, φ) lump) at parity with BDF-1 production. BDF-2 blew up here; ETD-2 stays bounded.
+- **VEP, deep yield (τ_y/A_∞ < ~0.5 — fault-mechanics regime)**: **none of the ETD variants match BDF-1**.
+  - Phase B (lumped ETD): catastrophic global runaway in σ and u while resolved fault shear stays at ~2·τ_y.
+  - Phase D (per-component split, explicit-parallel + cap): σ enforcement BDF-class but `|u_y|` ratchets to 21× BDF (boundary overshoot, fault-tip stress concentrations).
+  - Phase E (hybrid BDF/ETD with spatial fault weight): σ enforcement BDF-class, field structure clean at any snapshot, but `|u_y|` still drifts monotonically over cycles to ~3× BDF — likely from the shared σ* history coupling the BDF and ETD branches.
+- **The structural issue**: BDF's `E_eff = ε̇ + σ*/(2μΔt)` magnifies σ-history by ~10× at typical Δt, providing built-in elastic damping during yield that absorbs cyclic-loading energy into elastic accumulation rather than slip. ETD's analytical form `α·σ* + 2η(1-φ)·ε̇ + ...` has σ-history coefficient at most O(1); patches consistently leak the missing damping into slow drift over cycles. This is not closeable with single-knob fixes.
+- **Decision**: ETD as designed is well-suited to VE and mild VEP. For deep-yield fault mechanics, **BDF-1 remains the right integrator**; ETD shouldn't be retrofitted. The original BDF-2 instability that motivated this whole investigation is a separate problem and deserves its own focused look.
 
 **Branch**: `feature/exp-integrator-investigation`
 
-**API**:
-- `ViscoElasticPlasticFlowModel(unknowns, integrator='etd')` — single-(α, φ) Phase B prototype. Use for VE work or mild VEP.
-- `TransverseIsotropicVEPFlowModel(unknowns, integrator='etd')` — same, for TI laws.
-- `TransverseIsotropicVEPSplitFlowModel(unknowns)` — Phase D split + lagged + capped (`tau_par_cap_factor` exposed for tuning, default 1.0). Use for tight-yield TI fault problems.
-- Default `integrator='bdf'` everywhere preserves existing BDF behaviour.
+**API (production)**:
+- `ViscoElasticPlasticFlowModel(unknowns, integrator='etd')` — single-(α, φ) Phase B prototype. Default `integrator='bdf'`.
+- `TransverseIsotropicVEPFlowModel(unknowns, integrator='etd')` — same, for TI laws. Default `integrator='bdf'`.
 - Sibling `MaxwellExponentialFlowModel` / `TransverseIsotropicMaxwellExponentialFlowModel` survive as thin aliases for backwards compat.
+
+**API (experimental — DO NOT USE for production)**:
+- `TransverseIsotropicVEPSplitFlowModel` (Phase D): per-component split with τ-cap. σ enforcement OK, `|u_y|` ratchets.
+- `TransverseIsotropicVEPFlowModel(unknowns, integrator='hybrid', fault_weight=...)` (Phase E): spatial blend BDF/ETD. σ enforcement OK, `|u_y|` drifts.
+- Both retained on the branch for reference and reproducibility but not advertised in user-facing docs.
 
 ---
 
@@ -112,9 +119,48 @@ with `P_∥` the director-aligned projector (the `K` kernel of the original `_bu
 
 **Open**: `|u_y|` is 16-21× BDF-1's. The yield surface is correctly enforced; the difference is in how much slip accumulates per yield cycle. Mechanism (lesson #9 below): BDF's E_eff = ε̇ + σ*/(2μΔt) has built-in elastic damping that absorbs boundary motion into elastic accumulation rather than slip. ETD's E_eff with α_∥ → 0 at yield wipes elastic memory each step; even with the soft cap, the flux structure keeps slip accumulating at near-boundary rate. Not a yield-criterion failure — both integrators sit on the yield surface — but a difference in how the constitutive law is integrated through the yielded regime.
 
-### Phase E — Generic `TimeIntegrator` refactor (deferred — only if needed)
+### Phase E — Hybrid BDF/ETD with spatial fault weight — DONE (2026-04-29)
 
-If we end up with five-plus integrator methods on the DDt class and want to add another (e.g., Crank-Nicolson or higher-order ETD), refactor to separate `HistoryStorage` from a `TimeIntegrator` strategy object. Not needed for current scope; the peer-method approach scales fine to 4 methods (BDF, AM, ETD, ETD-split).
+User-suggested structural insight: in the TI fault model the user already supplies the fault geometry through `yield_stress(x)`; we know a priori where yielding *can* happen. So let each integrator handle its sweet spot:
+
+- Inside the fault zone (where `τ_y(x)` is reachable): **BDF-1** — its `σ*/(2μΔt)` magnification provides the elastic damping that the cyclic-yield regime needs.
+- Outside the fault (where `τ_y(x) → τ_y_bulk` ≫ A_∞ and yielding is structurally unreachable): **ETD-2** — strictly more accurate VE; its lack of plastic damping doesn't matter because plasticity isn't activated.
+
+**Math**: `σ(x) = w(x)·σ_BDF + (1-w(x))·σ_ETD` with `w(x) = (1/τ_y(x) - 1/τ_y_bulk) / (1/τ_y_fault - 1/τ_y_bulk) ∈ [0, 1]`.
+
+**Implementation** (in `TransverseIsotropicVEPFlowModel`):
+- New `integrator='hybrid'` option; constructor takes `fault_weight` (sympy expression).
+- `_eta_for_tensor(integrator_mode, apply_yield)` extracts (η_0, η_1_eff) per integrator/yield combination.
+- `_assemble_c_tensor(η_0, η_1_eff)` builds the rank-4 tensor from given values.
+- `_build_c_tensor` for `'hybrid'` builds both `_c_bdf` (yield-clipped) and `_c_etd` (raw).
+- `_e_eff_for(integrator_mode)` returns the right E_eff form.
+- `stress()` for `'hybrid'` blends `w·(C_BDF:E_eff_BDF) + (1-w)·(C_ETD:E_eff_ETD)`.
+- Both BDF and ETD coefficients update each step. Single shared psi_star + forcing_star.
+
+**Killer-test outcome** (θ=+15°, τ_y=0.05, RES=32, 1.5T):
+
+| metric | BDF-1 | ETD lumped | split + cap | **hybrid** |
+| --- | --- | --- | --- | --- |
+| centre `\|σ_∥\|` peak | **1.04·τ_y** | 2.06·τ_y | 1.21·τ_y | 1.12·τ_y |
+| centre `\|σ_xy\|` peak | 2.15·τ_y | 29·τ_y | 2.47·τ_y | 2.35·τ_y |
+| global max `\|σ\|_II` | 1.05 | 17.82 | 1.32 | **0.95** |
+| global max `\|u_y\|` | **0.032** | 18.49 | 0.681 | 0.109 |
+| SNES iters mean / max | 1.8 / 4 | 8.1 / 22 | 1.0 / 1 | 2.1 / 4 |
+| wall / step | 1.7 s | 5.6 s | 1.9 s | 2.3 s |
+
+(τ_y=0.15 sanity: σ_∥=1.05·τ_y, |u_y|=0.014, SNES 1.5 mean — matches BDF.)
+
+**What works**: σ_∥ peak 1.12·τ_y (closest to BDF's 1.04 of any ETD variant), |σ|_II peak 0.95 (actually slightly tighter than BDF's 1.05 at this snapshot), Newton iterates normally (2.1 vs split's degenerate 1.0). PyVista field plots show physically clean structure: u_y range ±0.017 at chosen step (no boundary overshoot), strain-rate localised on the fault band, no fault-tip stress concentrations.
+
+**Why we still don't ship it**: the trajectory plot reveals `|u_y|` ramps monotonically from ~1e-5 to 0.109 over 1.5 periods — slow accumulation, not bounded oscillation like BDF-1 (which oscillates around 0.01-0.03 returning to baseline between yield events). At any single snapshot the field looks BDF-class; over cycles, drift accumulates.
+
+**Likely cause**: shared σ* history. Both BDF and ETD branches read from the same `psi_star`, but `psi_star` is updated to the *blended* σ each step. Inside the fault, the BDF branch's σ* is "previous step's blended σ" — not "previous step's BDF-pure σ". Bulk's ETD-stored history leaks into the fault's BDF computation, slowly amplifying fault slip over cycles. Fixing this would need two independent history fields with parallel updates — a significant refactor.
+
+**Decision**: Phase E as committed is the cleanest hybrid we tried, but doesn't deliver BDF-class temporal behaviour and fundamentally can't without the independent-history rework. Keep on branch as documented investigation; not advertised in user-facing API.
+
+### Phase F — Generic `TimeIntegrator` refactor (deferred — only if needed)
+
+If we end up with five-plus integrator methods on the DDt class and want to add another (e.g., Crank-Nicolson or higher-order ETD), refactor to separate `HistoryStorage` from a `TimeIntegrator` strategy object. Not needed for current scope.
 
 ---
 
@@ -286,6 +332,26 @@ Also-tried, rejected:
 * **Raw E (current strain rate) as yield-criterion rate input**: adds explicit u-dependence into η_∥_eff, which propagates into C_∥ and produces a singular GAMG operator at u=0 (start-up zero state). Smooth-floor regularisation didn't fix the SNES 0-iter divergence. Reverted — the parent's E_eff-based criterion is the right shape, just needs the right rate input (forcing_star, lesson above).
 * **`σ*/(2ε̇*)` back-derivation for lagged η**: appears intuitive (it's the *effective* viscosity from histories alone) but breaks elastic regime (where σ ≈ μ·γ·dt, not η·ε̇). Produced startup spikes. Replaced by the parent-softmin-on-forcing_star pattern.
 * **`sympy.Min` cap on η**: catastrophic 29/120 SNES diverged; non-smooth derivative breaks Newton. Replaced by smooth `(1-exp(-c·x))/c`.
+
+### 11. Phase E (hybrid) drifts because of shared σ* history — and that's structural
+
+The Phase E hybrid (`σ = w·σ_BDF + (1-w)·σ_ETD`) was conceptually the cleanest fix for the BDF-vs-ETD mismatch — let each integrator handle its sweet spot. Snapshot-by-snapshot the field structure is BDF-class (no boundary overshoot, fault-band strain-rate localisation, σ_∥ within 8% of τ_y). But the time-trajectory shows `|u_y|` ramping monotonically over cycles, ending at ~3× BDF.
+
+Mechanism: both branches share a single ``psi_star`` history slot, which is updated to the *blended* σ each step. So inside the fault, the BDF branch's σ* is "previous step's blended σ" — contaminated with ETD's looser-history contribution from the bulk. Over many cycles, that contamination amplifies fault slip slightly each pass.
+
+The fix would require two independent history fields with parallel updates (BDF history fed only by BDF flux, ETD history fed only by ETD flux, plus the spatial blend at flux time). That's a real DDt refactor, not a one-line fix, and even then there's no guarantee the slow drift fully closes — the underlying physics-mismatch (lesson #9) lives in how each integrator handles the yielded regime, not just in the history bookkeeping.
+
+The investigation-level lesson: **patches that share history between BDF and ETD branches will leak the missing damping into temporal drift.** Whether it's a per-quad split (Phase D, Newton-implicit), explicit-parallel split (Phase D with cap), or spatial blend (Phase E), the slow drift keeps reappearing in different magnitudes. ETD-as-designed is a beautiful integrator for VE; trying to retrofit it onto deep-yield VEP without rebuilding from the ground up consistently leaves residual non-physical behaviour.
+
+### 12. Investigation closed — recommendation
+
+After Phase B (lumped ETD-2), Phase D (per-component split, three sub-variants), and Phase E (spatial hybrid), the conclusion is robust:
+
+* ETD-2 is the right integrator for **VE and mild-VEP** problems. Phase B ships, makes a strictly stronger user offering than BDF-2 in the regime where it's valid.
+* For **deep-yield VEP fault mechanics**, BDF-1 is the right integrator. Don't retrofit ETD onto this regime; the structural physics-mismatch (lesson #9) keeps re-asserting itself in different forms.
+* The original BDF-2 instability that motivated this work is a separate problem deserving its own focused investigation. ETD didn't close it; we now know that.
+
+Phase D and Phase E artifacts (`TransverseIsotropicVEPSplitFlowModel`, `TransverseIsotropicVEPFlowModel(integrator='hybrid')`) remain on the branch as documented experiments, marked experimental, useful for future researchers who want to revisit the problem with new ideas (e.g., independent histories, fully-rebuilt integrator hierarchy).
 
 ---
 
