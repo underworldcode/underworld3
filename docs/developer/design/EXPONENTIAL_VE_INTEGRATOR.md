@@ -4,20 +4,18 @@
 
 **TL;DR**:
 - **The lesson**: the drift/blow-up on VEP+yield is order-driven, not algorithm-driven. **First-order methods (BDF-1, ETD-1) are L-stable and damp the high-frequency modes that plastic yield transitions excite**; higher-order methods (BDF-2, ETD-2 lumped/split/hybrid) preserve those modes and let them grow. Recognising this collapses the whole "ETD doesn't work for fault mechanics" narrative — it's *higher-order* ETD that doesn't work, same as higher-order BDF.
-- **Production recommendation**: `integrator='etd1'` for everything. Single-step like BDF-1, no forcing-history mesh variable, fully L-stable, with the analytical exp factor for the linear part. Killer-test trajectory **byte-identical to BDF-1** in σ_∥ and |u_y|; ~5% slower wall-clock.
-- **Higher-order ETD on smooth VE** (no yield): ETD-2 still beats BDF-2 by 4.3× on `bench_ve_harmonic`. Available as `integrator='etd'` for users who know their problem is fully VE.
+- **Production recommendation**: `integrator='etd', order=1` for everything. Single-step like BDF-1, no forcing-history mesh variable, fully L-stable, with the analytical exp factor for the linear part. Killer-test trajectory **byte-identical to BDF-1** in σ_∥ and |u_y|; ~5% slower wall-clock.
+- **Higher-order ETD on smooth VE** (no yield): ETD-2 still beats BDF-2 by 4.3× on `bench_ve_harmonic`. Available as `integrator='etd', order=2` for users who know their problem is fully VE.
 - **Higher-order anything on tight-yield TI**: don't use. BDF-2, ETD-2 lumped, ETD-2 split + lag + cap, ETD-2 hybrid — all show drift or blow-up of various flavours.
 
 **Branch**: `feature/exp-integrator-investigation`
 
-**API (production, recommended)**:
-- `ViscoElasticPlasticFlowModel(unknowns, integrator='etd1')` — first-order ETD. **Default-recommended for new code.**
-- `TransverseIsotropicVEPFlowModel(unknowns, integrator='etd1')` — same, TI variant.
-
-**API (also production, when applicable)**:
-- `integrator='bdf'` on the same classes — default, unchanged. Same accuracy class as ETD-1 but with rational rather than analytical relaxation factor.
-- `integrator='etd'` (Phase B ETD-2) — second-order, accurate on smooth VE, **avoid in VEP+yield regime** (catastrophic σ/u runaway).
-- Sibling `MaxwellExponentialFlowModel` / `TransverseIsotropicMaxwellExponentialFlowModel` survive as thin aliases.
+**API (production)**:
+- `ViscoElasticPlasticFlowModel(unknowns, integrator='etd', order=1)` — ETD-1 (first-order). **Default-recommended for new code** — BDF-1 stability + analytical exp factor for the linear-relaxation part.
+- `TransverseIsotropicVEPFlowModel(unknowns, integrator='etd', order=1)` — same, TI variant.
+- `integrator='bdf'` on the same classes (with `order=1` or `2`) — production default, unchanged behaviour. Same accuracy class as ETD-1 but with rational rather than analytical relaxation factor.
+- `integrator='etd', order=2` (Phase B ETD-2) — second-order, accurate on smooth VE (4.3× better than BDF-2 on `bench_ve_harmonic`); **avoid in VEP+yield regime** (catastrophic σ/u runaway documented in lessons #7, #9).
+- Sibling `MaxwellExponentialFlowModel` / `TransverseIsotropicMaxwellExponentialFlowModel` survive as thin aliases for backwards compat.
 
 **API (experimental — investigative, not for production)**:
 - `TransverseIsotropicVEPSplitFlowModel` (Phase D): per-component split with τ-cap. σ enforcement OK, `|u_y|` ratchets.
@@ -364,7 +362,7 @@ Same general principle as Crank-Nicolson failing on stiff problems while implici
 
 This collapses the "ETD doesn't work for fault mechanics" narrative the earlier lessons #7, #9, #11, #12 were converging toward. The actual statement is "*higher-order* ETD doesn't work for fault mechanics," same as higher-order BDF. ETD-1 (single-step, no forcing-history slot, analytical exp factor) is the right shape: BDF-1 stability + ETD's exact treatment of the linear-relaxation part.
 
-**Production recommendation**: `integrator='etd1'` as the default for VEP and TI-VEP. Wall-clock cost ~5% over BDF-1 (one extra `exp` per coefficient update); accuracy is per-iteration the same as BDF-1 (both first-order) but the analytical factor handles the linear-relaxation limit cleanly without the rational-approximation error at large `Δt/τ`. Phase B's ETD-2 (`integrator='etd'`) remains available for users with smooth VE problems who can certify yield is never active — it beats BDF-2 by 4× there.
+**Production recommendation**: `integrator='etd', order=1` as the default for VEP and TI-VEP. Wall-clock cost ~5% over BDF-1 (one extra `exp` per coefficient update); accuracy is per-iteration the same as BDF-1 (both first-order) but the analytical factor handles the linear-relaxation limit cleanly without the rational-approximation error at large `Δt/τ`. Phase B's ETD-2 (`integrator='etd', order=2`) remains available for users with smooth VE problems who can certify yield is never active — it beats BDF-2 by 4× there.
 
 The Phase D and Phase E artefacts stay on the branch as instructive failures of the higher-order-ETD idea — useful documentation of what doesn't work and why, but not part of the production API.
 

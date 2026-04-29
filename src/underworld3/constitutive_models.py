@@ -1115,38 +1115,45 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         unknowns : Unknowns
             The solver unknowns (velocity, pressure).
         order : int, default 1
-            Time integration order. Used by ``integrator='bdf'``;
-            forced to 1 for ``integrator='etd'`` (single stress slot).
-        integrator : str, default "bdf"
-            Time integration scheme:
+            Time-integration order. Combines with ``integrator``:
 
-            - ``"bdf"`` (default): backward differentiation formula
-              of the deviatoric-stress rate equation (the production
-              VEP behaviour). ``order=1`` for backward Euler, ``order=2``
-              for BDF-2.
-            - ``"etd"``: ETD-2 exponential integrator that integrates
-              the Maxwell relaxation operator analytically and uses
-              linear quadrature on the strain-rate forcing. Pinned to a
-              single stress history slot. 5-12× more accurate than BDF-2
-              at small Δt and structurally avoids BDF-2's autodiff-
-              amplification instability seen in TI-VEP + spatial yield;
-              see ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``.
+            - ``integrator='bdf', order=1``: BDF-1 (backward Euler).
+            - ``integrator='bdf', order=2``: BDF-2.
+            - ``integrator='etd', order=1``: ETD-1 (single-step,
+              fully L-stable, recommended default for VEP+yield).
+            - ``integrator='etd', order=2``: ETD-2 (single-step
+              with linear-quadrature forcing history; accurate on
+              smooth VE but **unstable in tight-yield VEP** —
+              produces global runaway, see EXPONENTIAL_VE_INTEGRATOR.md
+              lessons #7, #9).
+        integrator : str, default "bdf"
+            Time-integration scheme:
+
+            - ``"bdf"``: backward differentiation formula on the
+              deviatoric-stress rate equation. Production default.
+            - ``"etd"``: exponential time-differencing — integrates the
+              Maxwell relaxation operator analytically (``α = exp(-Δt/τ)``).
+              ``order=1`` is the recommended default for new code: same
+              stability as BDF-1, exact handling of the relaxation factor
+              at large ``Δt/τ``. ``order=2`` adds linear quadrature on
+              the forcing history for higher accuracy on smooth VE
+              (4.3× more accurate than BDF-2 on ``bench_ve_harmonic``)
+              but blows up under active yield in tight-yield TI faults.
+              See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``.
         material_name : str, optional
             Name identifier for this material.
         """
-        if integrator not in ("bdf", "etd", "etd1"):
+        if integrator not in ("bdf", "etd"):
             raise ValueError(
-                f"integrator must be 'bdf', 'etd', or 'etd1', got '{integrator!r}'"
+                f"integrator must be 'bdf' or 'etd', got '{integrator!r}'"
+            )
+        if integrator == "etd" and order not in (1, 2):
+            raise ValueError(
+                f"integrator='etd' supports order=1 (ETD-1, default-recommended) "
+                f"or order=2 (ETD-2, accurate for smooth VE; avoid in tight-yield "
+                f"VEP where it produces global runaway). Got order={order}."
             )
         self._integrator = integrator
-        if integrator in ("etd", "etd1") and order != 1:
-            import warnings
-            warnings.warn(
-                f"integrator='{integrator}' carries one stress history slot; "
-                f"``order`` is pinned to 1 (you passed order={order}).",
-                UserWarning, stacklevel=2,
-            )
-            order = 1
 
         # Store material_name before creating expressions (needed by create_unique_symbol)
         self._material_name = material_name
@@ -1444,16 +1451,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def _update_history_coefficients(self):
         """Pre-solve hook: refresh integrator coefficients.
 
-        Dispatches on ``self._integrator``:
-        - ``"bdf"``: updates the BDF c-coefficients via
+        Dispatches on ``(self._integrator, self._order)``:
+        - ``"bdf"`` (order 1 or 2): updates BDF c-coefficients via
           :py:meth:`_update_bdf_coefficients`.
-        - ``"etd"``: updates the ETD-2 α, φ on the DDt from
-          ``τ_VE = η/μ`` via ``DFDt.update_exp_coefficients(dt, τ_VE)``.
-        - ``"etd1"``: same as ETD-2 but force ``φ = α`` so the forcing-
-          history term ``(φ-α)·ε̇*`` vanishes — first-order, fully
-          L-dissipative, no ε̇* slot needed.
+        - ``"etd"`` order=2 (Phase B ETD-2): updates α, φ on the DDt
+          from ``τ_VE = η/μ``; forcing-history slot active.
+        - ``"etd"`` order=1 (ETD-1): updates α, φ as for ETD-2 then
+          forces ``φ = α`` so the ``(φ-α)·ε̇*`` term zeros out — fully
+          L-stable single-step, no forcing-history slot needed.
         """
-        if self._integrator in ("etd", "etd1"):
+        if self._integrator == "etd":
             if self.Unknowns.DFDt is None:
                 return
             params = self.Parameters
@@ -1475,9 +1482,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             except (TypeError, ValueError):
                 dt_val = None
             self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
-            if self._integrator == "etd1":
-                # Force φ = α so the (φ-α)·ε̇* term zeros out and the
-                # (1-φ)·ε̇ term becomes (1-α)·ε̇ — exact ETD-1 reduction.
+            if self._order == 1:
+                # ETD-1 reduction: φ = α makes the (φ-α)·ε̇* term zero
+                # AND turns (1-φ)·ε̇ into (1-α)·ε̇.
                 self.Unknowns.DFDt._exp_phi.sym = self.Unknowns.DFDt._exp_alpha.sym
         else:
             self._update_bdf_coefficients()
@@ -1489,7 +1496,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         - ETD-2: refresh ``forcing_star`` from the just-solved ε̇ for
           the next step's history term.
         """
-        if self._integrator == "etd" and self.Unknowns.DFDt is not None:
+        if self._integrator == "etd" and self._order == 2 and self.Unknowns.DFDt is not None:
             if self.Unknowns.DFDt.forcing_star is not None:
                 self.Unknowns.DFDt.update_forcing_history(forcing_fn=self.Unknowns.E)
 
@@ -1497,10 +1504,10 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def stress_history_ddt_kwargs(self):
         """SemiLagrangian DDt kwargs based on integrator selection.
 
-        ETD-2 needs the forcing-history slot (``with_forcing_history=True``);
-        BDF and ETD-1 do not.
+        ETD-2 (order=2) needs the forcing-history slot; BDF and ETD-1
+        (order=1) do not.
         """
-        if self._integrator == "etd":
+        if self._integrator == "etd" and self._order == 2:
             return {"with_forcing_history": True}
         return {}
 
@@ -1557,11 +1564,11 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         DDt = self.Unknowns.DFDt
 
-        if self._integrator in ("etd", "etd1"):
+        if self._integrator == "etd":
             # ETD-2 effective strain rate carrying α·σ*/(2η) and (φ-α)·ε̇*.
-            # ETD-1: φ = α (set in _update_history_coefficients), so the
-            # (φ-α)·ε̇* term zeros out and (1-φ)·ε̇ → (1-α)·ε̇ — same expression
-            # tree, no separate code path needed.
+            # ETD-1 (order=1): φ = α (set in _update_history_coefficients),
+            # so the (φ-α)·ε̇* term zeros out and (1-φ)·ε̇ → (1-α)·ε̇ — same
+            # expression tree, no separate code path needed.
             alpha = DDt._exp_alpha
             phi = DDt._exp_phi
             sigma_star = DDt.psi_star[0].sym
@@ -1608,7 +1615,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
           carried symbolically in :py:attr:`E_eff`, not folded into
           this viscosity.
         """
-        if self._integrator in ("etd", "etd1"):
+        if self._integrator == "etd":
             return self.Parameters.shear_viscosity_0
         return self.Parameters.ve_effective_viscosity
 
@@ -1815,9 +1822,14 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         if not self.is_elastic or self.Unknowns.DFDt is None:
             return 2 * self.viscosity * self.grad_u
 
-        # ETD-1 uses the same E_eff machinery but with φ=α, so forcing_star
-        # is not required (the (φ-α)·ε̇* term zeros out symbolically).
-        if self._integrator == "etd" and self.Unknowns.DFDt.forcing_star is None:
+        # ETD-1 (order=1) uses the same E_eff machinery but with φ=α, so
+        # forcing_star is not required (the (φ-α)·ε̇* term zeros out).
+        # Only ETD-2 (order=2) needs forcing_star.
+        if (
+            self._integrator == "etd"
+            and self._order == 2
+            and self.Unknowns.DFDt.forcing_star is None
+        ):
             raise RuntimeError(
                 "integrator='etd' requires a SemiLagrangian DDt with "
                 "with_forcing_history=True. The auto-DDt creation path "
@@ -1974,13 +1986,13 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
 
 class MaxwellExponentialFlowModel(ViscoElasticPlasticFlowModel):
-    r"""Thin alias: ViscoElasticPlasticFlowModel(integrator="etd").
+    r"""Thin alias: ``ViscoElasticPlasticFlowModel(integrator='etd', order=1)``.
 
     .. deprecated:: Phase B
-        Use ``ViscoElasticPlasticFlowModel(unknowns, integrator="etd")``
-        directly. This sibling class survives as a thin scaffold so
-        existing scripts (the Phase B benchmark runners) continue to
-        work; it has no own behaviour.
+        Use the canonical form ``ViscoElasticPlasticFlowModel(unknowns,
+        integrator='etd', order=1)`` directly. This sibling class
+        survives as a thin scaffold so existing scripts continue to
+        work; defaults to ETD-1 (recommended).
 
     See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md`` for the
     formulation.
@@ -2628,16 +2640,29 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         unknowns : Unknowns
             Solver unknowns (velocity, pressure).
         order : int, default 1
-            BDF time integration order (used when ``integrator='bdf'``).
-            Forced to 1 for ``integrator='etd'`` and ``integrator='hybrid'``.
+            Time-integration order. Combines with ``integrator``:
+
+            - ``integrator='bdf', order=1``: BDF-1 (backward Euler).
+            - ``integrator='bdf', order=2``: BDF-2.
+            - ``integrator='etd', order=1``: ETD-1 (single-step,
+              fully L-stable, **recommended default for VEP+yield**).
+              Reproduces BDF-1 byte-identically on the killer test;
+              wins at large ``Δt/τ`` where the analytical relaxation
+              factor matters.
+            - ``integrator='etd', order=2``: ETD-2 (linear-quadrature
+              forcing history). 4× more accurate than BDF-2 on smooth
+              VE but blows up under active yield in tight-yield TI
+              faults — see lessons #7, #9 in EXPONENTIAL_VE_INTEGRATOR.md.
+
+            ``integrator='hybrid'`` pins ``order=1``.
         integrator : str, default "bdf"
             Time integration scheme:
 
             - ``'bdf'``: Backward differentiation (default, robust for VEP).
-            - ``'etd'``: Exponential time-differencing (more accurate for
-              VE; Phase B prototype with single ``(α, φ)`` lump — beats
-              BDF-2 by ~4× on smooth VE benches but degrades vs BDF-1 once
-              yielding is active in the TI fault regime).
+            - ``'etd'``: Exponential time-differencing — analytical
+              relaxation factor ``α = exp(-Δt/τ)``. Pair with ``order=1``
+              for the recommended default; ``order=2`` is available but
+              unsafe under active yield (see lessons #7, #9).
             - ``'hybrid'``: **EXPERIMENTAL — DO NOT USE FOR PRODUCTION.**
               Spatial blend of BDF (inside fault) and ETD (outside
               fault). Phase E investigation: σ enforcement is
@@ -2659,16 +2684,22 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         material_name : str, optional
             Name identifier for this material.
         """
-        if integrator not in ("bdf", "etd", "etd1", "hybrid"):
+        if integrator not in ("bdf", "etd", "hybrid"):
             raise ValueError(
-                f"integrator must be 'bdf', 'etd', 'etd1', or 'hybrid', "
+                f"integrator must be 'bdf', 'etd', or 'hybrid', "
                 f"got '{integrator!r}'"
             )
+        if integrator == "etd" and order not in (1, 2):
+            raise ValueError(
+                f"integrator='etd' supports order=1 (ETD-1, default-recommended) "
+                f"or order=2 (ETD-2; avoid in tight-yield VEP). "
+                f"Got order={order}."
+            )
         self._integrator = integrator
-        if integrator in ("etd", "etd1", "hybrid") and order != 1:
+        if integrator == "hybrid" and order != 1:
             import warnings
             warnings.warn(
-                f"integrator='{integrator}' uses one stress history slot; "
+                f"integrator='hybrid' uses one stress history slot; "
                 f"``order`` is pinned to 1 (you passed order={order}).",
                 UserWarning, stacklevel=2,
             )
@@ -2904,25 +2935,21 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
 
     def _update_history_coefficients(self):
-        r"""Pre-solve hook — dispatches BDF, ETD-1/2, or hybrid.
+        r"""Pre-solve hook — dispatches BDF, ETD (order 1/2), or hybrid.
 
-        BDF: refresh ``_bdf_c0..c3``. ETD-2: refresh ``α, φ`` on the DDt
-        from ``η_1/μ``. ETD-1: same as ETD-2 but force ``φ = α`` so the
-        ``(φ-α)·ε̇*`` history term vanishes — first-order, fully
-        L-dissipative analogue of BDF-1 with the analytical α factor
-        for the linear-relaxation part. Hybrid: refresh both — flux
-        uses both per-spatial weight.
+        BDF: refresh ``_bdf_c0..c3``. ETD-2 (order=2): refresh ``α, φ``
+        on the DDt from ``η_1/μ``. ETD-1 (order=1): same plus force
+        ``φ = α`` so the ``(φ-α)·ε̇*`` history term vanishes. Hybrid:
+        refresh both BDF and ETD-2 — flux uses both per-spatial weight.
         """
         if self._integrator == "etd":
             self._update_etd_coefficients()
-        elif self._integrator == "etd1":
-            self._update_etd_coefficients()
-            # First-order reduction: φ = α makes the (φ-α)·ε̇* term zero
-            # AND turns the (1-φ)·ε̇ coefficient into (1-α). The existing
-            # E_eff machinery then computes σ = α·σ* + 2η(1-α)·ε̇ = ETD-1.
-            DDt = self.Unknowns.DFDt
-            if DDt is not None:
-                DDt._exp_phi.sym = DDt._exp_alpha.sym
+            if self._order == 1:
+                # ETD-1 reduction: φ = α zeros (φ-α)·ε̇* and turns
+                # (1-φ)·ε̇ into (1-α)·ε̇.
+                DDt = self.Unknowns.DFDt
+                if DDt is not None:
+                    DDt._exp_phi.sym = DDt._exp_alpha.sym
         elif self._integrator == "hybrid":
             # Hybrid uses BOTH integrators with spatial blend; update
             # both coefficient sets each step.
@@ -2932,17 +2959,26 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             self._update_bdf_coefficients()
 
     def _update_history_post_solve(self):
-        """Post-solve hook — BDF: no-op; ETD/hybrid: refresh forcing_star."""
-        if self._integrator in ("etd", "hybrid") and self.Unknowns.DFDt is not None:
+        """Post-solve hook — refresh forcing_star for ETD-2 / hybrid.
+
+        ETD-1 (order=1) doesn't need this; the (φ-α)·ε̇* term zeros out.
+        """
+        needs_forcing = (
+            (self._integrator == "etd" and self._order == 2)
+            or self._integrator == "hybrid"
+        )
+        if needs_forcing and self.Unknowns.DFDt is not None:
             if self.Unknowns.DFDt.forcing_star is not None:
                 self.Unknowns.DFDt.update_forcing_history(forcing_fn=self.Unknowns.E)
 
     @property
     def stress_history_ddt_kwargs(self):
-        """ETD-2 / hybrid need the forcing-history slot; BDF and ETD-1
-        do not (ETD-1's E_eff has zero coefficient on ε̇*).
+        """ETD-2 (order=2) and hybrid need the forcing-history slot;
+        BDF and ETD-1 do not.
         """
-        if self._integrator in ("etd", "hybrid"):
+        if self._integrator == "hybrid":
+            return {"with_forcing_history": True}
+        if self._integrator == "etd" and self._order == 2:
             return {"with_forcing_history": True}
         return {}
 
@@ -3164,15 +3200,16 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         - ``integrator_mode='bdf'``: η₀, η₁ are VE-effective (c₀-baked
           Δt scaling — needed for BDF's E_eff structure).
-        - ``integrator_mode='etd'`` / ``'etd1'``: η₀, η₁ are raw (time
-          factor lives in α/φ symbolically; ETD-1 uses the same C
-          tensor as ETD-2, only the symbolic E_eff differs).
+        - ``integrator_mode='etd'``: η₀, η₁ are raw (time factor lives
+          in α/φ symbolically). Used for both ETD-1 and ETD-2 — the
+          C tensor is identical; only the symbolic E_eff differs (via
+          ``self._order``).
         - ``apply_yield=True``: softmin/min/harmonic clip on η₁_eff.
         - ``apply_yield=False``: no clipping (use this for the ETD-VE
           branch of the hybrid integrator, where the bulk is
           structurally non-yieldable so clipping is a no-op anyway).
         """
-        if integrator_mode in ("etd", "etd1"):
+        if integrator_mode == "etd":
             eta_0 = self.Parameters.shear_viscosity_0.sym
             eta_1_eff = self.Parameters.shear_viscosity_1
         else:  # bdf
@@ -3422,12 +3459,13 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
 
 class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowModel):
-    r"""Thin alias: TransverseIsotropicVEPFlowModel(integrator="etd").
+    r"""Thin alias: ``TransverseIsotropicVEPFlowModel(integrator='etd', order=1)``.
 
     .. deprecated:: Phase B
-        Use ``TransverseIsotropicVEPFlowModel(unknowns, integrator="etd")``
-        directly. This sibling class survives as a thin scaffold for
-        existing scripts.
+        Use the canonical form ``TransverseIsotropicVEPFlowModel(unknowns,
+        integrator='etd', order=1)`` directly. This sibling class
+        survives as a thin scaffold for existing scripts; defaults to
+        ETD-1 (recommended).
     """
 
     def __init__(self, unknowns, material_name=None):
