@@ -113,6 +113,12 @@ def main():
     if bdf2 is None:
         print("  (no BDF-2 log found — skipping)", flush=True)
 
+    try:
+        etd1 = _load("etd1")
+    except FileNotFoundError:
+        etd1 = None
+        print("  (no ETD-1 trajectory cached — skipping)", flush=True)
+
     n_bdf = int(bdf["n_steps"])
     n_etd = int(etd["n_steps"])
     t_bdf = (np.arange(n_bdf) + 1) * DT
@@ -124,6 +130,9 @@ def main():
     if hybrid is not None:
         n_hybrid = int(hybrid["n_steps"])
         t_hybrid = (np.arange(n_hybrid) + 1) * DT
+    if etd1 is not None:
+        n_etd1 = int(etd1["n_steps"])
+        t_etd1 = (np.arange(n_etd1) + 1) * DT
 
     fig, axes = plt.subplots(3, 1, figsize=(8.5, 9.5), sharex=True)
 
@@ -141,6 +150,9 @@ def main():
     if hybrid is not None and "sigma_par_centre" in hybrid.files:
         ax.plot(t_hybrid / period, hybrid["sigma_par_centre"], "-", color="#9467bd",
                 label=f"hybrid (peak |σ_∥|={hybrid['sigma_par_centre'].max():.3f})")
+    if etd1 is not None and "sigma_par_centre" in etd1.files:
+        ax.plot(t_etd1 / period, etd1["sigma_par_centre"], "-", color="#17becf", lw=2.0,
+                label=f"ETD-1 (peak |σ_∥|={etd1['sigma_par_centre'].max():.3f}) ★")
     if bdf2 is not None:
         t_b2, sII_b2, uy_b2, spar_b2 = bdf2
         ax.plot(t_b2 / period, spar_b2, "x-", color="#ff7f0e",
@@ -167,6 +179,10 @@ def main():
         ax.semilogy(t_hybrid / period, np.abs(hybrid["sigma_II_max_per_step"]),
                     "-", color="#9467bd",
                     label=f"hybrid (peak={hybrid['sigma_II_max_per_step'].max():.3f})")
+    if etd1 is not None:
+        ax.semilogy(t_etd1 / period, np.abs(etd1["sigma_II_max_per_step"]),
+                    "-", color="#17becf", lw=2.0,
+                    label=f"ETD-1 (peak={etd1['sigma_II_max_per_step'].max():.3f}) ★")
     if bdf2 is not None:
         t_b2, sII_b2, uy_b2, spar_b2 = bdf2
         ax.semilogy(t_b2 / period, sII_b2, "x-", color="#ff7f0e",
@@ -193,6 +209,10 @@ def main():
         ax.semilogy(t_hybrid / period, hybrid["u_y_max_per_step"],
                     "-", color="#9467bd",
                     label=f"hybrid (peak={hybrid['u_y_max_per_step'].max():.3f})")
+    if etd1 is not None:
+        ax.semilogy(t_etd1 / period, etd1["u_y_max_per_step"],
+                    "-", color="#17becf", lw=2.0,
+                    label=f"ETD-1 (peak={etd1['u_y_max_per_step'].max():.3f}) ★")
     if bdf2 is not None:
         t_b2, sII_b2, uy_b2, spar_b2 = bdf2
         ax.semilogy(t_b2 / period, uy_b2, "x-", color="#ff7f0e",
