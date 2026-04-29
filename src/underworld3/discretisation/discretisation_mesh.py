@@ -3720,9 +3720,12 @@ class Mesh(Stateful, uw_object):
         )
 
         # Transfer variable data from old mesh to new mesh via evaluate.
-        # The old variables are still on `self` (old DM). Evaluate them at
-        # the new mesh coordinates (from temp_mesh) to get interpolated values.
-        new_coords = temp_mesh.X.coords
+        # The old variables are still on ``self`` (old DM). Evaluate each old
+        # variable's symbol at the *new mesh's DOF coords for that variable's
+        # degree/continuity*, not at the new mesh's vertex set. The vertex
+        # set only matches degree-1 continuous variables; for degree>=2 or
+        # discontinuous variables the DOF count differs and the resulting
+        # array would not fit into ``new_var.data``.
         transferred_data = {}
 
         for var_name, old_var in old_vars_data.items():
@@ -3730,8 +3733,11 @@ class Mesh(Stateful, uw_object):
                 if old_var._lvec is not None and old_var.data.size > 0:
                     if verbose:
                         print(f"[{uw.mpi.rank}] Transferring '{var_name}'...", flush=True)
+                    target_coords = temp_mesh._get_coords_for_basis(
+                        old_var.degree, old_var.continuous
+                    )
                     transferred_data[var_name] = uw.function.evaluate(
-                        old_var.sym, new_coords
+                        old_var.sym, target_coords
                     )
             except Exception as e:
                 if verbose:
