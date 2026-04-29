@@ -277,6 +277,20 @@ def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
         u_VE_arr = np.asarray(u_VE.array).reshape(-1, 2)
         u_VE_y_max_per_step.append(float(np.abs(u_VE_arr[:, 1]).max()))
 
+        # NOTE on architecture (commit history):
+        # 1. Single-shot with body force = -∇·σ_VE (uncorrected): works
+        #    for BDF-1, blows up for ETD-* because σ_VE → σ_admissible
+        #    via radial return creates a momentum imbalance.
+        # 2. Single-shot with body force = -∇·σ_admissible (apply RR
+        #    on σ_VE FIRST, then use as body-force): blows up for ALL
+        #    three because σ_admissible has a sharp discontinuity at
+        #    the yield boundary, ∇·σ_admissible is large+localised
+        #    there, drives a big v_pl correction, σ_total overshoots,
+        #    next clip is harder, runaway.
+        # The architecture really needs INNER Picard within a timestep
+        # to converge σ_admissible and v_pl simultaneously. This file
+        # currently runs version 1 (uncorrected) — Picard pending.
+
         # Stage 2: viscous Stokes with σ_VE on RHS, frozen η
         try:
             stokes_pl.solve(zero_init_guess=False)
@@ -297,6 +311,8 @@ def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
         edot_xx = np.asarray(uw.function.evaluate(E_pl_sym[0, 0], sigma_coords)).flatten()
         edot_xy = np.asarray(uw.function.evaluate(E_pl_sym[0, 1], sigma_coords)).flatten()
         edot_yy = np.asarray(uw.function.evaluate(E_pl_sym[1, 1], sigma_coords)).flatten()
+        # σ_total = σ_VE + 2η·ε̇(v_pl). Reverting to v1 architecture
+        # (uncorrected body force) which works for BDF-1.
         sigma_total = sigma_VE.copy()
         sigma_total[:, 0, 0] += 2 * eta_eff_frozen * edot_xx
         sigma_total[:, 0, 1] += 2 * eta_eff_frozen * edot_xy
