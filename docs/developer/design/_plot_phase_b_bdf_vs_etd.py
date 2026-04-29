@@ -51,6 +51,40 @@ def _load(integrator):
     return np.load(path)
 
 
+def _load_bdf2_from_log(log_path=None):
+    """Parse the per-step BDF-2 trace from the runner's stdout log.
+    Returns ``(t, sigma_II, u_y, sigma_par)`` numpy arrays of the
+    sparse sample points (every 5 steps after the first 5) up to the
+    runaway. None if the log doesn't exist.
+    """
+    if log_path is None:
+        log_path = os.path.join(OUT_DIR, "phase_b_bdf2_th+15_ty0p05.log")
+    if not os.path.exists(log_path):
+        return None
+    import re
+    pat = re.compile(
+        r"step\s+(\d+)/\d+\s+t=([\d.+\-eE]+)\s+V=[\d.+\-eE]+\s+iters=\s*\d+\s+"
+        r"\|σ\|_II=([\d.+\-eE]+)\s+\|u_y\|=([\d.+\-eE]+)\s+\|σ_∥\|=([\d.+\-eE]+)"
+    )
+    rows = []
+    with open(log_path) as f:
+        for line in f:
+            m = pat.search(line)
+            if m:
+                rows.append((int(m.group(1)), float(m.group(2)),
+                             float(m.group(3)), float(m.group(4)),
+                             float(m.group(5))))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r[0])
+    return (
+        np.array([r[1] for r in rows]),
+        np.array([r[2] for r in rows]),
+        np.array([r[3] for r in rows]),
+        np.array([r[4] for r in rows]),
+    )
+
+
 def main():
     bdf = _load("bdf")
     etd = _load("etd")
@@ -64,6 +98,10 @@ def main():
     except FileNotFoundError:
         hybrid = None
         print("  (no hybrid trajectory cached — skipping)", flush=True)
+
+    bdf2 = _load_bdf2_from_log()
+    if bdf2 is None:
+        print("  (no BDF-2 log found — skipping)", flush=True)
 
     n_bdf = int(bdf["n_steps"])
     n_etd = int(etd["n_steps"])
@@ -93,6 +131,10 @@ def main():
     if hybrid is not None and "sigma_par_centre" in hybrid.files:
         ax.plot(t_hybrid / period, hybrid["sigma_par_centre"], "-", color="#9467bd",
                 label=f"hybrid (peak |σ_∥|={hybrid['sigma_par_centre'].max():.3f})")
+    if bdf2 is not None:
+        t_b2, sII_b2, uy_b2, spar_b2 = bdf2
+        ax.plot(t_b2 / period, spar_b2, "x-", color="#ff7f0e",
+                label=f"BDF-2 → blow-up (peak |σ_∥|={spar_b2.max():.3f})")
     ax.axhline(TAU_Y, color="#888888", lw=0.8, linestyle="--",
                label=rf"$\tau_y={TAU_Y}$")
     ax.set_ylabel(r"centre $|\sigma_\parallel|$  (resolved fault shear)")
@@ -115,6 +157,10 @@ def main():
         ax.semilogy(t_hybrid / period, np.abs(hybrid["sigma_II_max_per_step"]),
                     "-", color="#9467bd",
                     label=f"hybrid (peak={hybrid['sigma_II_max_per_step'].max():.3f})")
+    if bdf2 is not None:
+        t_b2, sII_b2, uy_b2, spar_b2 = bdf2
+        ax.semilogy(t_b2 / period, sII_b2, "x-", color="#ff7f0e",
+                    label=f"BDF-2 → blow-up (last sample={sII_b2[-1]:.2e})")
     ax.axhline(TAU_Y, color="#888888", lw=0.8, linestyle="--",
                label=rf"$\tau_y={TAU_Y}$")
     ax.set_ylabel(r"max $|\sigma|_{II}$ (log)")
@@ -137,6 +183,10 @@ def main():
         ax.semilogy(t_hybrid / period, hybrid["u_y_max_per_step"],
                     "-", color="#9467bd",
                     label=f"hybrid (peak={hybrid['u_y_max_per_step'].max():.3f})")
+    if bdf2 is not None:
+        t_b2, sII_b2, uy_b2, spar_b2 = bdf2
+        ax.semilogy(t_b2 / period, uy_b2, "x-", color="#ff7f0e",
+                    label=f"BDF-2 → blow-up (last sample={uy_b2[-1]:.2e})")
     ax.set_ylabel(r"max $|u_y|$ (log)")
     ax.set_xlabel(r"time $t / T$ (periods)")
     ax.legend(loc="upper left", fontsize=9)
