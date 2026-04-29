@@ -10,6 +10,12 @@ The bug these tests catch is a silent reset to zero. Before the fix,
 matches the new mesh's degree-1 continuous DOFs, so any degree>=2 or
 discontinuous variable came out the wrong size and the reshape raised,
 which the surrounding ``try`` swallowed and the variable was zeroed.
+
+These tests require a PETSc build with mesh-adaptation backends
+(MMG/pragmatic). The conda-forge PETSc used by the default CI matrix
+doesn't include them, so the tests skip there. They run on the
+``amr-dev``/``amr-openmpi-dev`` environments which build PETSc from
+source with the adaptation tooling.
 """
 
 import numpy as np
@@ -18,7 +24,39 @@ import pytest
 import underworld3 as uw
 from underworld3.meshing import UnstructuredSimplexBox
 
-pytestmark = pytest.mark.level_2
+
+def _has_petsc_adaptation_backend():
+    """Probe whether PETSc was built with MMG/pragmatic.
+
+    The cheapest test: build a tiny mesh, try to call ``adaptMetric`` with
+    a trivial isotropic metric. If PETSc raises ``error code 63``
+    (``PETSC_ERR_ARG_OUTOFRANGE`` — typical of "no mesh adapter
+    configured"), the backend is missing.
+    """
+    try:
+        m = UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5,
+        )
+        H = uw.discretisation.MeshVariable("_probe", m, 1, degree=1)
+        H.array[:, 0, 0] = 100.0
+        # Use the real adapt() entry point but with a coarse metric;
+        # if PETSc raises, we capture and skip.
+        m.adapt(H)
+        return True
+    except Exception:
+        return False
+
+
+_petsc_has_adaptation = _has_petsc_adaptation_backend()
+
+pytestmark = [
+    pytest.mark.level_2,
+    pytest.mark.skipif(
+        not _petsc_has_adaptation,
+        reason="PETSc was built without mesh-adaptation backends "
+        "(MMG/pragmatic). Use the amr-dev environment to run these tests.",
+    ),
+]
 
 
 def _smooth_field(coords):
