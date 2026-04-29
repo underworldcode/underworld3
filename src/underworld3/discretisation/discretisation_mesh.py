@@ -3726,16 +3726,24 @@ class Mesh(Stateful, uw_object):
         # set only matches degree-1 continuous variables; for degree>=2 or
         # discontinuous variables the DOF count differs and the resulting
         # array would not fit into ``new_var.data``.
+        #
+        # Cache target coords by (degree, continuous) so meshes with many
+        # variables of the same basis don't pay for repeated cloned
+        # CoordinateDMs inside ``_get_coords_for_basis``.
         transferred_data = {}
+        target_coords_cache = {}
 
         for var_name, old_var in old_vars_data.items():
             try:
                 if old_var._lvec is not None and old_var.data.size > 0:
                     if verbose:
                         print(f"[{uw.mpi.rank}] Transferring '{var_name}'...", flush=True)
-                    target_coords = temp_mesh._get_coords_for_basis(
-                        old_var.degree, old_var.continuous
-                    )
+                    basis_key = (old_var.degree, old_var.continuous)
+                    if basis_key not in target_coords_cache:
+                        target_coords_cache[basis_key] = (
+                            temp_mesh._get_coords_for_basis(*basis_key)
+                        )
+                    target_coords = target_coords_cache[basis_key]
                     transferred_data[var_name] = uw.function.evaluate(
                         old_var.sym, target_coords
                     )

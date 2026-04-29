@@ -47,7 +47,7 @@ def test_adapt_preserves_degree_2_field_in_parallel():
 
     mesh.adapt(H)
 
-    T2 = mesh._vars["T"]
+    T2 = mesh.vars["T"]
     expected = _smooth_field(T2.coords)
     actual = np.asarray(T2.array[:, 0, 0])
     max_err = float(np.abs(expected - actual).max())

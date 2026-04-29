@@ -89,7 +89,7 @@ def test_adapt_preserves_degree_1_continuous(mesh):
     metric = _refinement_metric(mesh)
     mesh.adapt(metric)
 
-    T2 = mesh._vars["T"]
+    T2 = mesh.vars["T"]
     expected = _smooth_field(T2.coords)
     actual = np.asarray(T2.array[:, 0, 0])
     max_err = float(np.abs(expected - actual).max())
@@ -115,7 +115,7 @@ def test_adapt_preserves_degree_2_continuous(mesh):
     metric = _refinement_metric(mesh)
     mesh.adapt(metric)
 
-    T2 = mesh._vars["T"]
+    T2 = mesh.vars["T"]
     expected = _smooth_field(T2.coords)
     actual = np.asarray(T2.array[:, 0, 0])
     max_err = float(np.abs(expected - actual).max())
@@ -137,7 +137,7 @@ def test_adapt_preserves_vector_field(mesh):
     metric = _refinement_metric(mesh)
     mesh.adapt(metric)
 
-    V2 = mesh._vars["V"]
+    V2 = mesh.vars["V"]
     expected_x = _smooth_field(V2.coords)
     expected_y = -_smooth_field(V2.coords)
     actual_x = np.asarray(V2.array[:, 0, 0])
@@ -157,9 +157,35 @@ def test_adapt_preserves_constant_field(mesh):
     metric = _refinement_metric(mesh)
     mesh.adapt(metric)
 
-    T2 = mesh._vars["T"]
+    T2 = mesh.vars["T"]
     actual = np.asarray(T2.array[:, 0, 0])
     assert np.allclose(actual, 3.14, atol=1e-8), (
         f"Constant field corrupted by adapt — range "
         f"[{actual.min():.3e}, {actual.max():.3e}]"
     )
+
+
+def test_adapt_preserves_discontinuous_field(mesh):
+    """Discontinuous (DG) variables also survive adapt.
+
+    The bug fixed in this PR affected the *vertex* evaluation target,
+    which is the wrong DOF count for discontinuous variables (one DOF
+    per cell-element, not one per vertex). Without the fix, a DG-1
+    variable's transfer would silently reset to zero.
+    """
+    T = uw.discretisation.MeshVariable("T_dg", mesh, 1, degree=1, continuous=False)
+    T.array[:, 0, 0] = _smooth_field(T.coords)
+
+    metric = _refinement_metric(mesh)
+    mesh.adapt(metric)
+
+    T2 = mesh.vars["T_dg"]
+    expected = _smooth_field(T2.coords)
+    actual = np.asarray(T2.array[:, 0, 0])
+    max_err = float(np.abs(expected - actual).max())
+
+    assert np.asarray(T2.array).max() > 0.5, (
+        "Discontinuous field appears to have been reset to zero by adapt"
+    )
+    # DG interpolation is bumpier than continuous; allow a wider band.
+    assert max_err < 0.15, f"max err = {max_err:.3e}"
