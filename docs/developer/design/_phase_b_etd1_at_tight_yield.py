@@ -1,4 +1,4 @@
-"""ETD-1 (first-order) trajectory at τ_y=0.05, θ=+15°.
+"""ETD (order=1) trajectory at τ_y=0.05, θ=+15°.
 
 Hypothesis (after the lesson from BDF-2/ETD-2 lumped/split/hybrid):
 all higher-order time integrators show some flavour of growing
@@ -8,9 +8,10 @@ not algorithm specifics. ETD-1 is the first-order ETD analogue:
 
     σ^{n+1} = α·σ^n + 2η(1-α)·ε̇^{n+1},   α = exp(-Δt/τ)
 
-Single step, no φ, no ε̇* history. Implemented as ETD-2 with
-φ = α (set in _update_history_coefficients), which zeroes the
-(φ-α)·ε̇* term and turns (1-φ)·ε̇ into (1-α)·ε̇.
+Single step, no φ, no ε̇* history. Selected via
+``integrator='etd', order=1`` on the constitutive model — implemented
+as ETD-2 with φ = α (set in _update_history_coefficients), which
+zeroes the (φ-α)·ε̇* term and turns (1-φ)·ε̇ into (1-α)·ε̇.
 
 Per-step logging every 5 steps + runaway guard, per the project
 memory on per-step diagnostics.
@@ -79,7 +80,7 @@ def run_etd1(theta_deg, tau_y_at_fault, n_periods=1.5):
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p_sol)
     stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
-        stokes.Unknowns, integrator="etd1",
+        stokes.Unknowns, integrator="etd", order=1,
     )
     cm = stokes.constitutive_model
     cm.Parameters.shear_viscosity_0 = ETA_0
