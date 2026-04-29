@@ -3365,11 +3365,42 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
     captured automatically). No DDt changes, no solver changes.
     """
 
+    # Default cap on τ_∥/Δt — recommendation 4 from the practical
+    # stabilisation strategy. α_∥ ≥ exp(-1/c); c=1 → α_∥ ≥ 0.37
+    # (37% of σ* retained each step, matches BDF-style elastic
+    # damping). Set to 0 to disable (recovers the un-capped behaviour
+    # where boundary motion goes straight into plastic slip).
+    _tau_par_cap_factor = 1.0
+
     def __init__(self, unknowns, material_name=None):
         super().__init__(
             unknowns, order=1, integrator="etd",
             material_name=material_name,
         )
+
+    @property
+    def tau_par_cap_factor(self):
+        r"""Lower bound ``c`` such that ``τ_∥ ≥ c·Δt`` in the parallel
+        branch's exponential factor.
+
+        Caps how aggressively the parallel-branch's elastic memory is
+        relaxed during yielding. Without this cap, ``η_∥_eff → 0`` at
+        deep yield drives ``α_∥ = exp(-Δt/τ_∥) → 0`` — boundary
+        motion goes straight into slip each step with no elastic
+        spring-back, ratcheting fault displacement at the BC rate.
+        With ``c=1`` (default), ``α_∥ ≥ 1/e``; with ``c=2``,
+        ``α_∥ ≥ exp(-0.5)``.
+
+        Set to ``0`` to disable (recovers the explicit-plasticity
+        behaviour). The cap applies only to the (α_∥, φ_∥) factors —
+        ``C_∥`` keeps the natural yield-clipped η_∥ so ``σ_∥`` still
+        sits at the yield surface.
+        """
+        return self._tau_par_cap_factor
+
+    @tau_par_cap_factor.setter
+    def tau_par_cap_factor(self, value):
+        self._tau_par_cap_factor = float(value)
 
     def _update_history_coefficients(self):
         r"""Update ``(α_⊥, φ_⊥)`` only — the matrix branch.
@@ -3594,21 +3625,32 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
 
         mu_sym = params.shear_modulus.sym
         dt_sym = params.dt_elastic.sym if hasattr(params.dt_elastic, 'sym') else params.dt_elastic
-        tau_par_lagged = eta_par_lagged / mu_sym
-        x_par = dt_sym / tau_par_lagged
+        # x_par = Δt/τ_∥ — natural value (no cap)
+        tau_par_natural = eta_par_lagged / mu_sym
+        x_par_natural = dt_sym / tau_par_natural
+        # Soft cap on x_par: x_eff = (1 - exp(-c·x))/c
+        # • x → 0:    x_eff → x          (elastic, no cap)
+        # • x → ∞:    x_eff → 1/c        (capped → α_∥ ≥ exp(-1/c))
+        # • smooth derivatives everywhere; pre-evaluates to a finite
+        #   scalar at codegen-time defaults (dt=∞, μ=∞, η=Pint) where
+        #   x_natural = oo, exp(-c·oo) = 0, x_eff = 1/c — avoids the
+        #   oo-vs-Pint dimensional clash that breaks sympy.Max/+ caps.
+        # Equivalent to capping τ_∥ ≥ c·Δt (recommendation #4).
+        if self._tau_par_cap_factor > 0.0:
+            c = sympy.Float(self._tau_par_cap_factor)
+            x_par = (1 - sympy.exp(-c * x_par_natural)) / c
+        else:
+            x_par = x_par_natural
         alpha_par = sympy.exp(-x_par)
         phi_par = (1 - alpha_par) / x_par
 
-        # Use the SAME lagged η for the C_∥ multiplicative weights as
-        # for α_∥/φ_∥. Fully explicit (Picard) parallel-branch
-        # plasticity: the parent's _eta_par_eff would inherit ETD's
-        # weak-σ* E_eff, leaving the softmin clamp dis-engaged on the
-        # current iterate even in plastic regions, so |σ_∥| drifts to
-        # 4·τ_y. Forcing_star-based softmin sees the yielded state
-        # because |γ̇*| is large there. Trade-off: Newton no longer
-        # iterates on parallel-branch plasticity, but BDF-1 effectively
-        # does the same (its |γ̇|_metric is dominated by σ* history at
-        # yield), and BDF-1 sits cleanly on the yield surface.
+        # C_∥ uses the natural lagged η (no cap) — preserves the
+        # σ_∥ ≈ τ_y enforcement on the yield surface. The cap only
+        # tames the elastic-memory factor (α_∥, φ_∥) so the parallel
+        # branch retains some spring-back instead of fully releasing
+        # in one step. Recovers BDF-style behaviour where boundary
+        # motion is partly absorbed by elastic accumulation rather
+        # than dumped entirely into slip.
         eta_par_current = eta_par_lagged
 
         # Build the split sub-moduli with the lagged η_∥
