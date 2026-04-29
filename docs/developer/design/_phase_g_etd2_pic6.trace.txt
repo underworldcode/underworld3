@@ -1,0 +1,7 @@
+# Phase G two-Stokes operator-split: etd2_pic6
+# η_eff_frozen=4.761905e-02
+# columns: step, t, V_top, snes_VE, snes_pl_total, picard_iters, sigma_eq_max_VE, sigma_eq_max_total, sigma_eq_max_admissible, u_VE_y_max, u_pl_y_max, yielded_fraction
+   1  0.0500 +0.4985   1   6   6 2.131789e-02 1.960643e-01 1.960643e-01 1.648185e-05 1.666981e-02 0.037649
+   2  0.1000 +0.4938   1   6   6 2.443232e-01 8.330464e-01 8.330464e-01 6.186718e-02 1.325508e-01 0.082645
+   3  0.1500 +0.4862   1   6   6 8.293909e-01 6.402894e+00 6.402894e+00 3.383270e-01 6.187864e-01 0.104683
+   4  0.2000 +0.4755   1   6   6 8.913783e+00 1.277921e+02 1.277921e+02 1.815234e+00 8.460083e+00 0.124885

@@ -193,7 +193,8 @@ def _eta_eff_bdf1(eta_raw, mu_raw, dt):
     return eta_raw * mu_raw * dt / (eta_raw + mu_raw * dt)
 
 
-def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
+def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1,
+                   max_picard=1, picard_tol=5e-3, omega_tau=0.5):
     setup = _build_setup(label)
     mesh = setup["mesh"]
 
@@ -238,7 +239,7 @@ def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
     trace_fh.write(
         f"# Phase G two-Stokes operator-split: {label}\n"
         f"# η_eff_frozen={eta_eff_frozen:.6e}\n"
-        f"# columns: step, t, V_top, snes_VE, snes_pl, "
+        f"# columns: step, t, V_top, snes_VE, snes_pl_total, picard_iters, "
         f"sigma_eq_max_VE, sigma_eq_max_total, sigma_eq_max_admissible, "
         f"u_VE_y_max, u_pl_y_max, yielded_fraction\n"
     )
@@ -277,66 +278,91 @@ def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
         u_VE_arr = np.asarray(u_VE.array).reshape(-1, 2)
         u_VE_y_max_per_step.append(float(np.abs(u_VE_arr[:, 1]).max()))
 
-        # NOTE on architecture (commit history):
-        # 1. Single-shot with body force = -∇·σ_VE (uncorrected): works
-        #    for BDF-1, blows up for ETD-* because σ_VE → σ_admissible
-        #    via radial return creates a momentum imbalance.
-        # 2. Single-shot with body force = -∇·σ_admissible (apply RR
-        #    on σ_VE FIRST, then use as body-force): blows up for ALL
-        #    three because σ_admissible has a sharp discontinuity at
-        #    the yield boundary, ∇·σ_admissible is large+localised
-        #    there, drives a big v_pl correction, σ_total overshoots,
-        #    next clip is harder, runaway.
-        # The architecture really needs INNER Picard within a timestep
-        # to converge σ_admissible and v_pl simultaneously. This file
-        # currently runs version 1 (uncorrected) — Picard pending.
+        # Inner Picard iteration within this timestep.
+        #
+        # σ_body is the stress used as body force in stage 2 (∇·σ_body
+        # appears in the momentum equation). σ_admissible is the
+        # yield-clipped total stress that we ultimately store as
+        # psi_star (history for the NEXT timestep).
+        #
+        # Algorithm:
+        #   σ_body = σ_VE  (initial guess for body-force stress)
+        #   for k = 1..max_picard:
+        #       psi_star.array ← σ_body
+        #       stage 2 solve                   → v_pl
+        #       σ_total = σ_body + 2η·ε̇(v_pl)
+        #       σ_admissible = J2_RR(σ_total)
+        #       δ = ||σ_admissible - σ_body|| / ||σ_admissible||
+        #       σ_body ← (1-ω)·σ_body + ω·σ_admissible   [damped]
+        #       if δ < tol: break
+        #
+        # Critical: psi_star (history) must be the LAST σ_admissible,
+        # NOT σ_body. σ_body is the iterate driving the body force; only
+        # σ_admissible is guaranteed yield-admissible. The damping applies
+        # to σ_body across Picard iterations only, never to the stored
+        # history.
+        sigma_body = sigma_VE.copy()
+        snes_pl_iters_total = 0
+        picard_k_used = max_picard
+        sigma_admissible = sigma_body.copy()  # in case max_picard=0
+        sigma_total = sigma_body.copy()
+        u_pl_y_max_inner = 0.0
+        for picard_k in range(max_picard):
+            DFDt.psi_star[0].array[...] = sigma_body
+            try:
+                stokes_pl.solve(zero_init_guess=False)
+            except Exception as exc:
+                print(f"  step t={t_end_step:.3f} picard={picard_k}: "
+                      f"pl solve raised — {exc}", flush=True)
+                snes_pl_iters_total = -1
+                break
+            snes_pl_iters_total += int(stokes_pl.snes.getIterationNumber())
 
-        # Stage 2: viscous Stokes with σ_VE on RHS, frozen η
-        try:
-            stokes_pl.solve(zero_init_guess=False)
-        except Exception as exc:
-            print(f"  step at t={t_end_step:.3f}: pl solve raised — {exc}", flush=True)
+            u_pl_arr = np.asarray(u_pl.array).reshape(-1, 2)
+            u_pl_y_max_inner = max(u_pl_y_max_inner,
+                                   float(np.abs(u_pl_arr[:, 1]).max()))
+
+            E_pl_sym = stokes_pl.Unknowns.E
+            edot_xx = np.asarray(uw.function.evaluate(E_pl_sym[0, 0], sigma_coords)).flatten()
+            edot_xy = np.asarray(uw.function.evaluate(E_pl_sym[0, 1], sigma_coords)).flatten()
+            edot_yy = np.asarray(uw.function.evaluate(E_pl_sym[1, 1], sigma_coords)).flatten()
+            sigma_total = sigma_body.copy()
+            sigma_total[:, 0, 0] += 2 * eta_eff_frozen * edot_xx
+            sigma_total[:, 0, 1] += 2 * eta_eff_frozen * edot_xy
+            sigma_total[:, 1, 0] += 2 * eta_eff_frozen * edot_xy
+            sigma_total[:, 1, 1] += 2 * eta_eff_frozen * edot_yy
+
+            sigma_admissible = _j2_radial_return(sigma_total, sigma_y_at_nodes)
+            denom = max(np.linalg.norm(sigma_admissible), 1e-12)
+            delta = np.linalg.norm(sigma_admissible - sigma_body) / denom
+            # damping applies only to σ_body (the body-force iterate)
+            sigma_body = (1.0 - omega_tau) * sigma_body + omega_tau * sigma_admissible
+            if delta < picard_tol:
+                picard_k_used = picard_k + 1
+                break
+
+        if snes_pl_iters_total < 0:
             break
-        snes_pl_iters = int(stokes_pl.snes.getIterationNumber())
 
-        u_pl_arr = np.asarray(u_pl.array).reshape(-1, 2)
-        u_pl_y_max_per_step.append(float(np.abs(u_pl_arr[:, 1]).max()))
-
-        # Compute σ_total = σ_VE + 2η·ε̇(v_pl) at psi_star coords by
-        # evaluating the symbolic strain rate of u_pl
-        # NOTE: for simplicity, evaluate ε̇(v_pl) symbolically and add
-        # 2·η_eff·ε̇ to σ_VE. Use the existing symbolic strain-rate of
-        # the plastic-solver Unknowns.
-        E_pl_sym = stokes_pl.Unknowns.E
-        edot_xx = np.asarray(uw.function.evaluate(E_pl_sym[0, 0], sigma_coords)).flatten()
-        edot_xy = np.asarray(uw.function.evaluate(E_pl_sym[0, 1], sigma_coords)).flatten()
-        edot_yy = np.asarray(uw.function.evaluate(E_pl_sym[1, 1], sigma_coords)).flatten()
-        # σ_total = σ_VE + 2η·ε̇(v_pl). Reverting to v1 architecture
-        # (uncorrected body force) which works for BDF-1.
-        sigma_total = sigma_VE.copy()
-        sigma_total[:, 0, 0] += 2 * eta_eff_frozen * edot_xx
-        sigma_total[:, 0, 1] += 2 * eta_eff_frozen * edot_xy
-        sigma_total[:, 1, 0] += 2 * eta_eff_frozen * edot_xy
-        sigma_total[:, 1, 1] += 2 * eta_eff_frozen * edot_yy
+        u_pl_y_max_per_step.append(u_pl_y_max_inner)
         sigma_eq_total = np.sqrt(1.5 * (sigma_total * sigma_total).sum(axis=(1, 2)))
         sigma_eq_total_per_step.append(float(sigma_eq_total.max()))
-
-        # J2 radial return on σ_total
-        sigma_admissible = _j2_radial_return(sigma_total, sigma_y_at_nodes)
         sigma_eq_admissible = np.sqrt(1.5 * (sigma_admissible * sigma_admissible).sum(axis=(1, 2)))
         sigma_eq_admissible_per_step.append(float(sigma_eq_admissible.max()))
         n_yielded = int((sigma_eq_total > sigma_y_at_nodes * 0.99).sum())
         yielded_fraction_per_step.append(n_yielded / sigma_eq_total.size)
 
-        # Update psi_star with the admissible stress for next step's VE history
+        # Final psi_star = σ_admissible (yield-admissible, J2-clipped).
+        # NOT σ_body — that's the damped body-force iterate which is not
+        # guaranteed to satisfy |σ| ≤ σ_y pointwise.
         DFDt.psi_star[0].array[...] = sigma_admissible
 
-        iters_VE.append(snes_VE_iters); iters_pl.append(snes_pl_iters)
+        iters_VE.append(snes_VE_iters); iters_pl.append(snes_pl_iters_total)
 
         step_idx = len(iters_VE)
         trace_fh.write(
             f"{step_idx:4d} {t_end_step:7.4f} {v_now:+.4f} "
-            f"{snes_VE_iters:3d} {snes_pl_iters:3d} "
+            f"{snes_VE_iters:3d} {snes_pl_iters_total:3d} {picard_k_used:3d} "
             f"{sigma_eq_VE_per_step[-1]:.6e} "
             f"{sigma_eq_total_per_step[-1]:.6e} "
             f"{sigma_eq_admissible_per_step[-1]:.6e} "
@@ -348,7 +374,7 @@ def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
         if step_idx <= 5 or step_idx % 5 == 0:
             print(
                 f"  step {step_idx:3d}/120  t={t_end_step:5.3f}  "
-                f"V={v_now:+.3f}  VE={snes_VE_iters:2d} pl={snes_pl_iters:2d}  "
+                f"V={v_now:+.3f}  VE={snes_VE_iters} pl={snes_pl_iters_total} pic={picard_k_used}  "
                 f"|σ_VE|_eq={sigma_eq_VE_per_step[-1]:.3e}  "
                 f"|σ_tot|_eq={sigma_eq_total_per_step[-1]:.3e}  "
                 f"|σ_adm|_eq={sigma_eq_admissible_per_step[-1]:.3e}  "
@@ -413,22 +439,24 @@ def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     cases = [
-        # (label, integrator, order)
-        ("bdf1",  "bdf", 1),
-        ("etd1",  "etd", 1),
-        ("etd2",  "etd", 2),  # headline experiment
+        # (label, integrator, order, max_picard)
+        ("bdf1_pic1",  "bdf", 1, 1),    # single-shot baseline (works)
+        ("bdf1_pic6",  "bdf", 1, 6),    # with inner Picard
+        ("etd1_pic6",  "etd", 1, 6),    # ETD-1 needs Picard to escape boundary trap
+        ("etd2_pic6",  "etd", 2, 6),    # headline: ETD-2 with proper inner Picard
     ]
-    for label, integrator, order in cases:
+    for label, integrator, order, max_picard in cases:
         cache = os.path.join(OUT_DIR, f"phase_g_{label}.npz")
         if os.path.exists(cache):
             print(f"\n=== {label}: cache hit, skipping ===", flush=True)
             continue
         print(
-            f"\n=== Phase G two-Stokes ({integrator.upper()}-{order} VE "
-            f"+ viscous plastic) ===",
+            f"\n=== Phase G two-Stokes ({integrator.upper()}-{order} VE, "
+            f"picard={max_picard}, viscous plastic) ===",
             flush=True,
         )
-        run_two_stokes(label, n_periods=1.5, integrator=integrator, order=order)
+        run_two_stokes(label, n_periods=1.5, integrator=integrator,
+                       order=order, max_picard=max_picard)
 
 
 if __name__ == "__main__":

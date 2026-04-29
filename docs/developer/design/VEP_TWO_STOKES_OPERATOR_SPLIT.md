@@ -103,6 +103,54 @@ If the answer is yes for ETD-2: we have a robust path to the higher-accuracy int
 
 If no: the residual drift mechanism is structural beyond two-Stokes equilibration, and ETD-1 + softmin yield-in-residual remains the right answer.
 
+## Investigation outcome (2026-04-29)
+
+The first-cut implementation in `_phase_g_two_stokes.py` is shippable as a study tool but the architecture as proposed **does not work** for sustained yielding. Across all four configurations:
+
+| Case               | Stage-1 integrator | Inner Picard | Result                        |
+| ------------------ | ------------------ | ------------ | ----------------------------- |
+| `bdf1_pic1`        | BDF-1              | 1 (no Picard)| Runaway at step 39 (σ → 133)  |
+| `bdf1_pic6`        | BDF-1              | 6, ω_τ=0.5   | Runaway at step 4 (σ → 144)   |
+| `etd1_pic6`        | ETD-1              | 6, ω_τ=0.5   | Runaway at step 4 (σ → 145)   |
+| `etd2_pic6`        | ETD-2              | 6, ω_τ=0.5   | Runaway at step 4 (σ → 128)   |
+
+(Test setup: 1.5 periods of harmonic shear, V₀=0.5, ω=π/2, RES=32, fault layer τ_y=0.05 vs bulk τ_y=200, θ=15°.)
+
+Even single-shot BDF-1 fails. The blow-up pattern is identical across all cases: σ_eq grows ~2.3× per step in the late phase of the second loading half-cycle (steps 35–39 for single-shot, steps 1–4 for inner Picard).
+
+### Failure mechanism — feedback loop on the yield-boundary discontinuity
+
+1. Stage 1 (yield_stress=∞) inherits `psi_star = σ_admissible` from the previous step. `σ_admissible` is **discontinuous** at the yield-zone boundary because the J2 radial return is a hard projection (σ → (σ_y/|σ|)·σ in yielded cells, identity elsewhere).
+2. The VE update `σ_VE = α·σ_admissible + 2η_eff(1-α)·ε̇_VE` propagates this discontinuity into σ_VE.
+3. Stage 2 body force `−∇·σ_VE` therefore has a near-delta-function source at the yield boundary. With η_frozen ≈ 0.048, the `v_pl` correction has gradients ~σ_jump / (η_frozen·h) ≈ thousands.
+4. `σ_total = σ_VE + 2η·ε̇(v_pl)` overshoots σ_y far more than σ_VE alone did. Radial return clips harder. The clip-induced jump in `σ_admissible` is now larger.
+5. Goto step 1. Each step amplifies the discontinuity-driven correction. After ~30 steps the bulk hasn't yielded but the fault-boundary discontinuity dominates the response.
+
+### Why inner Picard makes it worse
+
+With max_picard=6 and ω_τ=0.5, each iteration solves stage 2 against an increasingly clipped `σ_body`. Each stage-2 solve still sees the discontinuity at the yield boundary (clipped vs unclipped), but now with body force = −∇·(σ_body damped between σ_VE and σ_admissible). The damping does *not* smooth the jump — it just averages across iterates with the same jump location. v_pl stays large; `σ_total = σ_body + 2η·ε̇(v_pl)` keeps growing per inner iteration. Six iterations of growth is enough to blow up immediately.
+
+### The damping bug fix (kept, no longer relevant on its own)
+
+The Picard implementation initially wrote the damped `σ_body = (1-ω)·σ_VE + ω·σ_admissible` as the new `psi_star` at the end of the timestep. That was wrong: only `σ_admissible` is yield-admissible. The fix (write `σ_admissible`) restored single-shot byte-identical to 3af9751 (which also fails at step 39, identical numbers). The damping bug is now fixed but the underlying architecture remains broken.
+
+### Architectural conclusion — what's actually needed
+
+The two-Stokes operator split with `bodyforce = −∇·σ_VE` is provably wrong as posed:
+
+* Either σ_VE is unclipped (the predictor) — then it overshoots σ_y arbitrarily far in yielded cells, and `−∇·σ_VE` is enormous;
+* Or σ_VE is clipped (`σ_admissible`) — then it's discontinuous and `∇·σ_admissible` has a delta source at the yield boundary.
+
+Both fail. The "correct" stress to put on the right-hand side is one that is *both* yield-admissible *and* smooth, which only happens if it's a regularised yield surface (softmin) — which is exactly the in-residual softmin that ETD-1 + yield-in-residual already does in PR #161.
+
+Three candidate paths forward, in increasing order of departure from the current design:
+
+1. **Replace `−∇·σ_admissible` body force with a smoothing**: project `σ_admissible` onto a continuous P1 mesh variable before differentiating. Smooths the jump but adds spatial diffusion of stress; not obviously consistent.
+2. **Spatially-varying η_pl (interpretation b)**: stage 2 has no σ_VE body force at all. Instead, η_pl(x) = σ_y/(2|γ̇_VE|) where σ_VE > σ_y, large value otherwise. Stage 2 is a pure viscous Stokes with non-uniform viscosity. The yield is enforced through the constitutive law, not through a body force. This is much closer to the standard production geodynamics pattern. Untested in this branch.
+3. **Augmented Lagrangian / Uzawa for the plastic constraint**: introduce a Lagrange multiplier for |σ| ≤ σ_y; iterate momentum balance and constraint together. This is the rigorous equivalent of (a) in §2 of this doc.
+
+**Net assessment**: ETD-1 + yield-in-residual softmin (the PR #161 production answer) remains the best available path. The two-Stokes architecture as proposed in this document is rejected. Interpretation (b) — yield-aware viscosity in stage 2 with no σ_VE body force — is the natural next investigation if anyone wants to revisit; it may also be the architecture the web-advice doc actually intended.
+
 ## Code organisation
 
 Suggested new files (on a branch off `development` after PR #161 merges):
