@@ -3426,6 +3426,69 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         else:
             return sympy.Min(eta_par, vp_eff)
 
+    def _eta_par_eff_lagged(self):
+        """Yield-clipped ``η_∥_eff`` using the **lagged** strain rate
+        (``forcing_star``, projected post-solve) instead of the current
+        ``E_eff``.
+
+        Same softmin/harmonic/min envelope as :py:meth:`_eta_par_eff`,
+        but the plastic estimate ``vp_eff_lag = τ_y/(2|γ̇*|)`` uses the
+        *previous step's* fault-plane shear magnitude. This is the
+        proper "lag η_∥_eff": elastic regime → η_1_raw (low |γ̇*|);
+        yielded regime → ``τ_y/(2|γ̇*|)`` (saturated stress, large rate).
+        Using the parent's E_eff-based formula here would couple α_∥
+        back into the current Newton iterate, which collapses to a
+        1-iteration trivial residual (over-damping). Holding the rate
+        fixed at the post-solve value breaks that feedback.
+        """
+        params = self.Parameters
+        DDt = self.Unknowns.DFDt
+
+        eta_par = params.shear_viscosity_1
+        if hasattr(eta_par, 'sym'):
+            eta_par = eta_par.sym
+
+        if not self.is_viscoplastic or params.yield_stress.sym is sympy.oo:
+            return eta_par
+        if DDt is None or DDt.forcing_star is None:
+            return self._eta_par_eff()  # no history yet — fall back to current
+
+        # Lagged plastic estimate: |γ̇*_∥| from forcing_star + director
+        Edot_lag = DDt.forcing_star.sym
+        n = params.director.sym
+        T_lag = Edot_lag * n
+        edot_n_lag = (n.T * T_lag)[0, 0]
+        T_sq_lag = (T_lag.T * T_lag)[0, 0]
+        gamma_dot_sq_lag = T_sq_lag - edot_n_lag ** 2
+        gamma_dot_abs_lag = sympy.sqrt(sympy.Max(gamma_dot_sq_lag, 0))
+
+        # Strip Pint from the ε_min floor (forcing_star is unitless storage)
+        edot_min_raw = params.strainrate_inv_II_min.sym
+        if hasattr(edot_min_raw, 'magnitude'):
+            edot_min_val = float(edot_min_raw.magnitude)
+        else:
+            try:
+                edot_min_val = float(edot_min_raw)
+            except (TypeError, ValueError):
+                edot_min_val = 1.0e-6
+
+        tau_y_sym = params.yield_stress.sym
+        vp_eff_lag = tau_y_sym / (
+            2 * (gamma_dot_abs_lag + sympy.Float(edot_min_val))
+        )
+
+        if self._yield_mode == "harmonic":
+            return 1 / (1 / eta_par + 1 / vp_eff_lag)
+        elif self._yield_mode == "softmin":
+            delta = self._yield_softness
+            f = eta_par / vp_eff_lag
+            import math
+            offset = (-1 + math.sqrt(1 + delta ** 2)) / 2
+            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
+            return eta_par / g
+        else:
+            return sympy.Min(eta_par, vp_eff_lag)
+
     def _build_split_c_tensors(self, eta_perp, eta_par):
         r"""Build ``C_⊥ = 2·η_⊥·P_⊥`` and ``C_∥ = 2·η_∥·P_∥``.
 
@@ -3476,69 +3539,89 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         return c_perp, c_par
 
     def stress(self):
-        r"""Per-component ETD-2 flux. Overrides the lumped-(α,φ) parent.
+        r"""Per-component ETD-2 flux with **lagged** ``(α_∥, φ_∥)``.
 
         Each branch's E_eff is built and contracted with its own
         sub-modulus; the two are summed.
 
-        Uses UWexpression operands (not ``.sym``) for divisions so the
-        existing Pint-aware operator overloading handles units —
-        mirrors the parent ``E_eff`` pattern.
+        ``α_∥, φ_∥`` are derived from a *lagged* parallel viscosity
+        computed from the projected stress and strain-rate histories:
+
+        .. math::
+            \eta_\parallel^{\,\mathrm{lag}}
+              = \frac{|\sigma^*_\parallel|}
+                     {2\,\max(|\dot\varepsilon^*_\parallel|, \dot\varepsilon_\min)}
+
+        where ``|·|_∥`` is the Pythagorean fault-plane shear magnitude
+        (same pattern as :py:meth:`_plastic_effective_viscosity`). This
+        sits naturally on the yield surface during yielding (because
+        ``|σ^*_∥|`` saturates near ``τ_y`` while ``|ε̇^*_∥|`` is large)
+        and tracks the elastic VE response otherwise. Critically the
+        expression depends only on previous-step storage — no
+        plasticity-clip recursion through ``E_eff`` — keeping the JIT
+        codegen tree shallow.
+
+        The C_∥ sub-modulus still uses the **current** yield-clipped
+        ``η_∥_eff`` (preserves Newton's nonlinear plasticity Jacobian
+        through the multiplicative response weights).
         """
         params = self.Parameters
         DDt = self.Unknowns.DFDt
         E = self.Unknowns.E
 
-        # Matrix branch: scalar (α_⊥, φ_⊥) from DDt — both are UWexpressions
-        # with dimensionless ``.sym``.
+        # Matrix branch: scalar (α_⊥, φ_⊥) from DDt
         alpha_perp = DDt._exp_alpha
         phi_perp = DDt._exp_phi
-        # UWexpression for division (units-aware); ``.sym`` for tensor build.
         eta_perp = params.shear_viscosity_0
         eta_perp_sym = eta_perp.sym
 
-        # Director branch: per-quad (α_∥, φ_∥) from yield-clipped η_∥_eff.
-        # ``_eta_par_eff`` returns a sympy/UW chain; ``mu``, ``dt`` keep
-        # their UWexpression form for unit-correct division.
-        eta_par_chain = self._eta_par_eff()
-        # Materialise η_∥_eff as a sympy expression. It may already be a
-        # sympy expr (yield-active path) or a UWexpression (no-yield path).
-        if hasattr(eta_par_chain, 'sym'):
-            eta_par_sym = eta_par_chain.sym
-        else:
-            eta_par_sym = eta_par_chain
-        mu_sym = params.shear_modulus.sym
-        dt_sym = params.dt_elastic.sym if hasattr(params.dt_elastic, 'sym') else params.dt_elastic
-        # τ_∥ = η_∥_eff / μ  (sympy scalar expression with possible field
-        # dependence baked in through ``_plastic_effective_viscosity``)
-        tau_par = eta_par_sym / mu_sym
-        x_par = dt_sym / tau_par
-        alpha_par = sympy.exp(-x_par)
-        phi_par = (1 - alpha_par) / x_par
-
-        # Histories: full σ* and ε̇*; the projectors are baked into C_⊥, C_∥.
+        # Histories
         sigma_star = DDt.psi_star[0].sym
         if DDt.forcing_star is not None:
             edot_star = DDt.forcing_star.sym
         else:
             edot_star = sympy.zeros(*E.shape)
 
-        # Build the split sub-moduli using ``.sym`` operands.
-        c_perp, c_par = self._build_split_c_tensors(eta_perp_sym, eta_par_sym)
+        # ── Lagged η_∥_eff via parent's softmin envelope, evaluated
+        # against forcing_star (previous-step ε̇) instead of E_eff
+        # (current Newton iterate). Breaks the per-quad-split's
+        # 1-iteration trivial-Newton failure mode.
+        eta_par_lag_chain = self._eta_par_eff_lagged()
+        if hasattr(eta_par_lag_chain, 'sym'):
+            eta_par_lagged = eta_par_lag_chain.sym
+        else:
+            eta_par_lagged = eta_par_lag_chain
+
+        mu_sym = params.shear_modulus.sym
+        dt_sym = params.dt_elastic.sym if hasattr(params.dt_elastic, 'sym') else params.dt_elastic
+        tau_par_lagged = eta_par_lagged / mu_sym
+        x_par = dt_sym / tau_par_lagged
+        alpha_par = sympy.exp(-x_par)
+        phi_par = (1 - alpha_par) / x_par
+
+        # ── Current η_∥_eff for the multiplicative response weights ─
+        # Keeps Newton's plasticity Jacobian intact through C_∥.
+        eta_par_chain = self._eta_par_eff()
+        if hasattr(eta_par_chain, 'sym'):
+            eta_par_current = eta_par_chain.sym
+        else:
+            eta_par_current = eta_par_chain
+
+        # Build the split sub-moduli
+        c_perp, c_par = self._build_split_c_tensors(eta_perp_sym, eta_par_current)
 
         # E_eff_⊥ = (1-φ_⊥)·ε̇ + α_⊥/(2η_⊥)·σ* + (φ_⊥-α_⊥)·ε̇*
-        # alpha_perp, phi_perp, eta_perp are UWexpressions — operator
-        # overloads on UWexpression handle Pint unit propagation.
         e_eff_perp = (
             (1 - phi_perp) * E
             + (alpha_perp / (2 * eta_perp)) * sigma_star
             + (phi_perp - alpha_perp) * edot_star
         )
-        # E_eff_∥ — α_∥, φ_∥ are sympy exprs (per-quad); divide by sympy
-        # ``eta_par_sym`` directly (no Pint involvement at this point).
+        # E_eff_∥ uses lagged α_∥, φ_∥ but current η_∥_eff in the
+        # σ*-projection denominator (so the projected history reads
+        # off the same modulus the next step's flux is built on).
         e_eff_par = (
             (1 - phi_par) * E
-            + (alpha_par / (2 * eta_par_sym)) * sigma_star
+            + (alpha_par / (2 * eta_par_current)) * sigma_star
             + (phi_par - alpha_par) * edot_star
         )
 
@@ -3550,7 +3633,6 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
                 (0, 3),
             ))
 
-        # σ = C_⊥:E_eff_⊥ + C_∥:E_eff_∥
         return _contract(c_perp, e_eff_perp) + _contract(c_par, e_eff_par)
 
 
