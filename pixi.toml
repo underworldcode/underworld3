@@ -89,6 +89,7 @@ pytest-mpi = ">=0.6,<0.7"
 pytest-timeout = ">=2.3,<3"
 pytest-forked = ">=1.6,<2"
 pytest-xdist = ">=3.8,<4"
+psutil = ">=5.9,<8"  # leak-loop regression test in tests/test_0111_swarm_lifecycle.py
 
 # Mesh generation
 pykdtree = ">=1.4,<2"

@@ -2499,17 +2499,63 @@ class Swarm(Stateful, uw_object):
 
         super().__init__()
 
-        # Register with default model for orchestration
-        uw.get_default_model()._register_swarm(self)
+        # Register with the same model already captured in self._model_ref
+        # above (not a fresh ``get_default_model()`` call) so that
+        # ``__del__`` deregisters from the same registry it registered with,
+        # even if the default model is swapped mid-session.
+        model._register_swarm(self)
 
     def __del__(self):
-        """Cleanup swarm by unregistering from mesh to prevent memory leaks"""
+        """Cleanup swarm: unregister from mesh and model, destroy the DM.
+
+        Three steps: drop the mesh-side weak-set entry, drop the model-side
+        registry entry (which also forgets any SwarmVariables that belonged
+        to this swarm), and call ``self.dm.destroy()`` to release the PETSc
+        DMSwarm and its registered fields.
+
+        Historically the model registry kept a strong reference to every
+        swarm and ``__del__`` did not call ``dm.destroy()`` — both leaks
+        accumulated quickly inside time-stepping loops that build transient
+        swarms (global expression evaluation, checkpoint reads, mesh
+        adaptation transfers). The registry is now a ``WeakValueDictionary``
+        and ``__del__`` cleans up its own resources.
+        """
         try:
             if hasattr(self, "mesh") and self.mesh is not None:
                 self.mesh.unregister_swarm(self)
         except (AttributeError, ReferenceError, RuntimeError):
             # Mesh/Model may have already been garbage collected, which is fine
             pass
+        try:
+            model = self._model_ref() if hasattr(self, "_model_ref") else None
+            if model is not None:
+                model._unregister_swarm(self)
+        except (AttributeError, ReferenceError, RuntimeError):
+            pass
+        try:
+            if hasattr(self, "dm") and self.dm is not None:
+                self.dm.destroy()
+        except Exception:
+            # DM may already have been destroyed (e.g. by Mesh.adapt) or
+            # PETSc may be finalising. Either way, nothing more we can do.
+            pass
+
+    def _invalidate_canonical_data(self):
+        """Drop cached array views on the coordinates and every registered variable.
+
+        Required after any operation that bypasses :meth:`Swarm.migrate` but
+        still mutates particle layout — notably the bare ``self.dm.migrate(...)``
+        used by round-trip evaluation patterns. Calling :meth:`Swarm.migrate`
+        already does this internally; call this directly only when you used the
+        underlying DMSwarm migrate.
+        """
+        if hasattr(self, "_particle_coordinates") and self._particle_coordinates is not None:
+            self._particle_coordinates._canonical_data = None
+        # ``self._vars`` may be a WeakValueDictionary whose values disappear
+        # asynchronously during GC; iterate a snapshot.
+        for var in list(self._vars.values()):
+            if hasattr(var, "_canonical_data"):
+                var._canonical_data = None
 
     @property
     def mesh(self):
@@ -3268,10 +3314,7 @@ class Swarm(Stateful, uw_object):
         # Invalidate all cached data after migration.
         # Any particle movement (send, receive, or balanced swap) makes
         # cached arrays stale — both size and values may have changed.
-        self._particle_coordinates._canonical_data = None
-        for var in self._vars.values():
-            if hasattr(var, "_canonical_data"):
-                var._canonical_data = None
+        self._invalidate_canonical_data()
 
         return
 
