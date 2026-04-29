@@ -71,19 +71,22 @@ def main():
 
     fig, axes = plt.subplots(3, 1, figsize=(8.5, 9.5), sharex=True)
 
-    # Panel 1 — centre σ_xy(t)
+    # Panel 1 — fault-resolved |σ_∥|(t) at fault centre.
+    # This is the right diagnostic for "is the yield surface respected?"
+    # |σ_xy| is global-frame and doesn't directly answer that.
     ax = axes[0]
-    ax.plot(t_bdf / period, bdf["sigma_xy_centre"], "-", color="#1f77b4",
-            label=f"BDF-1 (peak |σ_xy|={np.abs(bdf['sigma_xy_centre']).max():.3f})")
-    ax.plot(t_etd / period, etd["sigma_xy_centre"], "-", color="#d62728",
-            label=f"ETD-2 lumped (peak |σ_xy|={np.abs(etd['sigma_xy_centre']).max():.3f})")
-    if split is not None:
-        ax.plot(t_split / period, split["sigma_xy_centre"], "-", color="#2ca02c",
-                label=f"ETD-2 split (peak |σ_xy|={np.abs(split['sigma_xy_centre']).max():.3f})")
-    ax.axhline(+TAU_Y, color="#888888", lw=0.8, linestyle="--")
-    ax.axhline(-TAU_Y, color="#888888", lw=0.8, linestyle="--",
-               label=rf"$\pm\tau_y={TAU_Y}$")
-    ax.set_ylabel(r"centre $\sigma_{xy}$")
+    if "sigma_par_centre" in bdf.files:
+        ax.plot(t_bdf / period, bdf["sigma_par_centre"], "-", color="#1f77b4",
+                label=f"BDF-1 (peak |σ_∥|={bdf['sigma_par_centre'].max():.3f})")
+    if "sigma_par_centre" in etd.files:
+        ax.plot(t_etd / period, etd["sigma_par_centre"], "-", color="#d62728",
+                label=f"ETD-2 lumped (peak |σ_∥|={etd['sigma_par_centre'].max():.3f})")
+    if split is not None and "sigma_par_centre" in split.files:
+        ax.plot(t_split / period, split["sigma_par_centre"], "-", color="#2ca02c",
+                label=f"ETD-2 split (peak |σ_∥|={split['sigma_par_centre'].max():.3f})")
+    ax.axhline(TAU_Y, color="#888888", lw=0.8, linestyle="--",
+               label=rf"$\tau_y={TAU_Y}$")
+    ax.set_ylabel(r"centre $|\sigma_\parallel|$  (resolved fault shear)")
     ax.legend(loc="upper right", fontsize=9)
     ax.grid(alpha=0.3)
 
