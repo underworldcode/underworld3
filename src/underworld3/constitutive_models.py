@@ -2628,9 +2628,14 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
               VE; Phase B prototype with single ``(α, φ)`` lump — beats
               BDF-2 by ~4× on smooth VE benches but degrades vs BDF-1 once
               yielding is active in the TI fault regime).
-            - ``'hybrid'``: spatial blend of BDF (inside fault) and ETD
-              (outside fault), with the weight derived from the fault
-              indicator. Requires ``fault_weight`` parameter.
+            - ``'hybrid'``: **EXPERIMENTAL — DO NOT USE FOR PRODUCTION.**
+              Spatial blend of BDF (inside fault) and ETD (outside
+              fault). Phase E investigation: σ enforcement is
+              BDF-class but |u_y| drifts monotonically over cycles
+              from shared-history coupling between the two branches.
+              See ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md``
+              lesson #11. Use ``'bdf'`` for deep-yield fault problems.
+              Requires ``fault_weight`` parameter.
         fault_weight : sympy expression, optional
             Spatial weight ``w(x) ∈ [0, 1]`` selecting BDF (``w=1``) vs
             ETD (``w=0``) per quadrature point. Required when
@@ -3408,7 +3413,24 @@ class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowM
 
 
 class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
-    r"""Phase D — per-component ``(α_⊥, φ_⊥)/(α_∥, φ_∥)`` ETD-2 for TI VEP.
+    r"""**EXPERIMENTAL — DO NOT USE FOR PRODUCTION.**
+
+    Phase D investigation artefact. The σ_∥ enforcement reaches BDF-class
+    fidelity (1.21·τ_y vs BDF's 1.04·τ_y at τ_y=0.05) but the velocity
+    field overshoots the boundary value and ratchets monotonically over
+    cycles to ~21× BDF-1's |u_y|. The fault-tip stress concentrations
+    in the PyVista field plot are non-physical for this loading.
+
+    Retained on the branch for reproducibility of the investigation; see
+    ``docs/developer/design/EXPONENTIAL_VE_INTEGRATOR.md`` lessons #9 and
+    #10 for why this doesn't ship.
+
+    For deep-yield TI fault problems use
+    ``TransverseIsotropicVEPFlowModel(integrator='bdf')``.
+
+    --
+
+    Phase D — per-component ``(α_⊥, φ_⊥)/(α_∥, φ_∥)`` ETD-2 for TI VEP.
 
     The rank-4 modulus splits into two orthogonal projectors:
 
