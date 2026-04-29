@@ -2609,7 +2609,10 @@ class Swarm(Stateful, uw_object):
         if coords.shape[0] > 0:
             _, owner_rank = centroid_kdt.query(coords, k=1, sqr_dists=False)
             rank_arr = self.dm.getField("DMSwarm_rank")
-            rank_arr[:, 0] = owner_rank.astype(rank_arr.dtype, copy=False)
+            # ``DMSwarm_rank`` shape varies by PETSc version: 1-D ``(N,)`` on
+            # 3.21, 2-D ``(N, 1)`` on 3.25+. ``reshape(-1)`` flattens either
+            # form into a writable view into the same buffer.
+            rank_arr.reshape(-1)[:] = owner_rank.astype(rank_arr.dtype, copy=False)
             self.dm.restoreField("DMSwarm_rank")
 
         self.dm.migrate(remove_sent_points=True)
