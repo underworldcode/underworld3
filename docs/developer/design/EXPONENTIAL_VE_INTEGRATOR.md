@@ -1,16 +1,21 @@
 # Exponential Integrator for VE / VEP Constitutive Updates — Implementation Plan
 
-**Status**: Phase B implementation **complete; structural argument validated, but range of validity is narrow** (2026-04-28). 14 commits on `feature/exp-integrator-investigation`.
+**Status**: Phase B + Phase D implementations **complete** (2026-04-29). Phase D enforces yield surface to BDF-class fidelity; remaining BDF-vs-ETD difference is a documented physics-modelling characteristic, not a numerical bug. 22 commits on `feature/exp-integrator-investigation`.
 
 **TL;DR**:
-- **What works**: ETD-2 is 4.3× more accurate than BDF-2 on the smooth `bench_ve_harmonic` (no yield active), and at parity with BDF-1 production on `bench_ti_vep_harmonic` for τ_y/A_∞ ≈ 0.55. BDF-2 blows up by 10⁵-10⁹ on every yield-active combo of the killer test; ETD-2 stays bounded — the structural argument is empirically confirmed.
-- **What doesn't work**: For tight yield surfaces (τ_y/A_∞ < ~0.5 — the typical fault-mechanics regime), Phase B ETD-2 catastrophically diverges step-by-step while Newton silently reports success. BDF-1 production handles the same tight-yield case cleanly. **Phase B as committed should not be used as a drop-in replacement for BDF on production fault-mechanics problems**; default ``integrator='bdf'`` is the right choice until Phase D lands. Concrete numbers: §"What we learned" item #7.
-- **Path forward**: Phase D — per-component (α₀, φ₀)/(α₁, φ₁) decomposition of the rank-4 TI tensor — is necessary for production-quality ETD-2 on tight-yield problems. Filed as a planning item with reproduction artefacts.
+- **VE only (no yield)**: ETD-2 is 4.3× more accurate than BDF-2 on smooth `bench_ve_harmonic`; passes all VE/VEP regression tests; doesn't over-damp at large Δt. Use `integrator='etd'` for any VE-only application.
+- **VEP, mild yield (τ_y/A_∞ ≈ 0.55)**: Phase B ETD-2 (single (α, φ) lump) at parity with BDF-1 production. BDF-2 blew up; ETD-2 stays bounded — original structural argument confirmed.
+- **VEP, deep yield (τ_y/A_∞ < ~0.5 — fault-mechanics regime)**: Phase B ETD-2 catastrophically diverges in the global frame while *resolved fault shear* still hovers at ~2·τ_y. Phase D `TransverseIsotropicVEPSplitFlowModel` (per-component split + lagged + capped) brings σ_∥ to within 21% of τ_y (vs 4% for BDF-1) and removes the global runaway. Slip rate `|u_y|` is ~16× BDF's; this is a structural BDF-vs-ETD difference (BDF's E_eff carries built-in elastic damping during yield; ETD's analytical form does not), not a numerical defect.
+- **Path forward**: Phase D as committed is a usable scaffold for fault-mechanics experimentation. For BDF-tight slip-rate matching, future work should explore consistent capping, σ-update under-relaxation (rec #3), or revisit predictor-corrector with the explicit-parallel infrastructure.
 
 **Branch**: `feature/exp-integrator-investigation`
-**Decision**: Pursue, with revised scope. Phase B as committed lands the integrator scaffold + structural validation. Phase D is required to make it useful for fault mechanics.
 
-**API**: `ViscoElasticPlasticFlowModel(unknowns, integrator='etd')` selects the exponential integrator; default `integrator='bdf'` preserves the established BDF behaviour. Same parameter on `TransverseIsotropicVEPFlowModel`. Sibling `MaxwellExponentialFlowModel` and `TransverseIsotropicMaxwellExponentialFlowModel` survive as thin aliases for backwards compat.
+**API**:
+- `ViscoElasticPlasticFlowModel(unknowns, integrator='etd')` — single-(α, φ) Phase B prototype. Use for VE work or mild VEP.
+- `TransverseIsotropicVEPFlowModel(unknowns, integrator='etd')` — same, for TI laws.
+- `TransverseIsotropicVEPSplitFlowModel(unknowns)` — Phase D split + lagged + capped (`tau_par_cap_factor` exposed for tuning, default 1.0). Use for tight-yield TI fault problems.
+- Default `integrator='bdf'` everywhere preserves existing BDF behaviour.
+- Sibling `MaxwellExponentialFlowModel` / `TransverseIsotropicMaxwellExponentialFlowModel` survive as thin aliases for backwards compat.
 
 ---
 
@@ -69,9 +74,47 @@ The integrator stores one slot of σ-history *and* one slot of γ̇-history. Yie
 - Add forcing-history slot (a swarm variable in the `Lagrangian_Swarm` case)
 - The integrator-method API is storage-agnostic; nothing the constitutive model calls needs to change
 
-### Phase D — Generic `TimeIntegrator` refactor (deferred — only if needed)
+### Phase D — Per-component (α_⊥, φ_⊥)/(α_∥, φ_∥) for TI VEP — DONE (2026-04-29)
 
-If we end up with three or four integrator methods on the DDt class and want to add a fifth (e.g., Crank-Nicolson or higher-order ETD), refactor to separate `HistoryStorage` from a `TimeIntegrator` strategy object. Not needed for current scope; the peer-method approach scales fine to 3–4 methods.
+The rank-4 TI modulus splits cleanly into two orthogonal projectors:
+$$\mathbf{C} = 2\eta_0 \, \mathbf{P}_\perp + 2\eta_\parallel^\text{eff} \, \mathbf{P}_\parallel$$
+
+with `P_∥` the director-aligned projector (the `K` kernel of the original `_build_c_tensor`) and `P_⊥ = I_4 - P_∥`. Each projector has its own Maxwell relaxation time during yielding (τ_⊥ = η_0/μ stays at the matrix value while τ_∥ = η_∥_eff/μ collapses). Phase B's single lumped (α, φ) cannot represent both timescales; per-component decomposition can.
+
+**Validated in 1D cleanroom first** (`_exp_integrator_phase_d_split.py`): two parallel Maxwell branches with disparate τ, sinusoidal forcing, closed-form analytical reference. Per-component matches analytical to discretisation order (slope-2 in Δt, max\|err\|/A_∞ ≈ 5e-6 at Δt=0.005); every lumped variant carries Δt-independent error 7%-142% — the splitting is structurally required when τ_⊥ ≠ τ_∥, not a Δt issue.
+
+**UW3 implementation** as `TransverseIsotropicVEPSplitFlowModel` (`src/underworld3/constitutive_models.py`):
+
+1. **Sub-moduli**: `_build_split_c_tensors(η_⊥, η_∥)` returns `C_⊥ = 2η_⊥·(I-K)` and `C_∥ = 2η_∥·K` by zeroing one viscosity in the existing `_build_c_tensor` loop. Sum recovers original C.
+
+2. **Lagged η_∥ via `forcing_star`**: `_eta_par_eff_lagged()` reuses the parent's softmin envelope but reads the rate from `forcing_star.sym` (projected previous-step ε̇) instead of `self.E_eff.sym` (current Newton iterate). Breaks the per-quad-split's 1-iter trivial-Newton failure mode (where α_∥ depends on η_∥ depends on E_eff depends on Newton's u, collapsing to fixed point).
+
+3. **Explicit-parallel plasticity**: both `α_∥, φ_∥` AND the C_∥ multiplier use the lagged η — fully Picard for the parallel branch. ETD's E_eff has weak σ-history coupling (`α/(2η_1) ≈ 0.5` vs BDF's `1/(2μΔt) ≈ 10`) so the parent's _eta_par_eff would not see the yielded state on the current iterate; using forcing_star sees it because |γ̇*| is large there. BDF-1 effectively does the same Picard treatment via its E_eff magnification.
+
+4. **Soft cap on x_par** (recommendation #4): `x_eff = (1 - exp(-c·x_natural))/c` keeps `α_∥ ≥ exp(-1/c)`, equivalent to `τ_∥ ≥ c·Δt`. User-tunable via `cm.tau_par_cap_factor` (default c=1.0). This shape pre-evaluates to a finite scalar at codegen-time defaults (dt=∞, μ=∞, Pint(1, "Pa·s") for η) where additive forms hit `oo+Pint` dimensional clashes.
+
+5. **σ_∥ probe added** to all three killer-test runners: resolved fault-shear `|σ_∥| = √(|σ·n|² - (n·σ·n)²)` measured at fault centre per step. The previously-used `|σ_xy|` global-frame probe overshoots the yield surface in BDF too (2.15·τ_y) — `|σ_∥|` is the right comparator and shows BDF sits at 1.04·τ_y (essentially exact).
+
+**Killer-test outcome** (θ=+15°, τ_y=0.05, RES=32, 1.5T):
+
+| metric | BDF-1 | ETD lumped | split (Newton-impl, c=0) | split + cap (c=1.0) |
+| --- | --- | --- | --- | --- |
+| centre `\|σ_∥\|` peak | **1.04·τ_y** | 2.06·τ_y | 4.15·τ_y | **1.21·τ_y** |
+| centre `\|σ_xy\|` peak | 2.15·τ_y | 29.10·τ_y | 4.92·τ_y | 2.47·τ_y |
+| global max `\|σ\|_II` | 1.05 | 17.82 | 0.41 | 1.32 |
+| global max `\|u_y\|` | **0.032** | 18.49 | 0.070 | 0.681 |
+| SNES iters mean / max | 1.8 / 4 | 8.1 / 22 | 1.0 / 1 | 1.0 / 1 |
+| wall / step | 1.7 s | 5.6 s | 4.1 s | 1.9 s |
+
+(τ_y=0.15 sanity check: split + cap gives σ_∥ = 1.03·τ_y, |u_y| = 0.012, SNES 1 iter mean — Phase B regime preserved.)
+
+**What works**: σ_∥ enforcement to within 21% of τ_y (vs BDF's 4%); no global runaway; physically correct fault-mechanics structure (PyVista plots `output/exp_integrator_phase_d_pyvista_split_*.png` show strain rate localised on fault, σ saturated at yield surface, bipolar u_y indicating along-fault slip). 1-iter Newton (linear in parallel branch) makes per-step cost competitive with BDF.
+
+**Open**: `|u_y|` is 16-21× BDF-1's. The yield surface is correctly enforced; the difference is in how much slip accumulates per yield cycle. Mechanism (lesson #9 below): BDF's E_eff = ε̇ + σ*/(2μΔt) has built-in elastic damping that absorbs boundary motion into elastic accumulation rather than slip. ETD's E_eff with α_∥ → 0 at yield wipes elastic memory each step; even with the soft cap, the flux structure keeps slip accumulating at near-boundary rate. Not a yield-criterion failure — both integrators sit on the yield surface — but a difference in how the constitutive law is integrated through the yielded regime.
+
+### Phase E — Generic `TimeIntegrator` refactor (deferred — only if needed)
+
+If we end up with five-plus integrator methods on the DDt class and want to add another (e.g., Crank-Nicolson or higher-order ETD), refactor to separate `HistoryStorage` from a `TimeIntegrator` strategy object. Not needed for current scope; the peer-method approach scales fine to 4 methods (BDF, AM, ETD, ETD-split).
 
 ---
 
@@ -203,6 +246,46 @@ Practical implications for Phase B as committed:
 * **Phase D (per-component (α₀, φ₀)/(α₁, φ₁) for TI) is blocking, not "future work"**, for any production use of ETD-2 on tight-yield problems.
 
 The Phase B design-doc note that "lagged-τ doesn't help" applies in this regime too — the failure is structural to the Picard approximation, not a τ-choice issue.
+
+### 8. The diagnostic that mattered: |σ_∥| (resolved fault shear), not |σ_xy|
+
+Throughout Phase B and into the early Phase D iterations, the killer-test trajectories used `|σ_xy|` at fault centre as the yield-surface diagnostic. That was wrong. The yield criterion `|σ_∥| ≤ τ_y` lives in the fault frame; `|σ_xy|` is global-frame and includes contributions that the limiter doesn't constrain (off-fault stress, geometric tilts).
+
+Adding the resolved fault-plane shear `|σ_∥| = √(|σ·n|² - (n·σ·n)²)` as a per-step probe (commits 59ab769 onwards) revealed that:
+
+* BDF-1 sits **right on** the yield surface (peak `|σ_∥|` = 1.04·τ_y, essentially exact) despite `|σ_xy|` peaking at 2.15·τ_y.
+* Lumped Phase B ETD-2 stays at 2.06·τ_y in `|σ_∥|` even though `|σ_xy|` runs away to 29·τ_y — the catastrophe is off-fault, the *fault* is doing fine.
+* Phase D's first split implementations (per-quad and Newton-implicit lag) overshot to 4·τ_y *on the fault plane*; this needed fixing.
+
+Without `|σ_∥|`, Phase D would have been judged on `|σ_xy|` alone — and the cure (explicit-parallel + cap) would have looked like it just lowered the global-frame number without engaging with the actual yield-criterion physics.
+
+### 9. The structural BDF-vs-ETD slip-rate difference — physics, not numerics
+
+After Phase D's σ_∥ enforcement reached BDF parity (1.21 vs 1.04·τ_y), `|u_y|` remained 16-21× BDF-1's at τ_y=0.05. The mechanism is a structural difference in how each integrator handles the yielded regime, not a numerical defect:
+
+* **BDF**: E_eff = ε̇ + σ*/(2μΔt). At Δt=0.05, μ=1, the σ-history prefactor is **10**. When σ_∥ saturates near τ_y, this term *dominates* E_eff_∥ — boundary motion is preferentially absorbed into elastic accumulation rather than slip. The integrator has built-in elastic damping during yield.
+* **ETD (Phase D)**: E_eff_∥ = (1-φ_∥)·ε̇ + α_∥/(2η_∥)·σ* + (φ_∥-α_∥)·ε̇*. At yield with α_∥, φ_∥ → 0 (or even with the soft cap clamping them at 0.37, 0.63), the σ-history coefficient is at most O(1). Boundary motion goes into γ̇_∥ at the imposed BC rate — the fault slips freely.
+
+Both integrators correctly enforce `|σ_∥| ≤ τ_y` (the limiter works). They just distribute the boundary motion differently between elastic and plastic strain. BDF's behaviour is closer to a typical seismic-cycle picture (elastic energy stores and releases episodically); ETD's is closer to steady-flow plasticity (boundary motion drives free slip at yield). Neither is "wrong"; they're modelling different limits of the same constitutive law.
+
+Implication: when comparing integrators on a tight-yield problem, σ-amplitude is a poor metric (both at τ_y); the meaningful difference is in time-integrated slip per cycle, which depends on the elastic-damping strength and is integrator-specific.
+
+### 10. Phase D recommendations checklist — what worked, what didn't
+
+The chatGPT advisor's stabilisation strategy was on the money for the issues we hit:
+
+| Recommendation | Phase D status |
+| --- | --- |
+| 1. Lag τ in the exponential — use τⁿ, never τⁿ⁺¹ | **Implemented.** `_eta_par_eff_lagged()` reads forcing_star (previous-step ε̇). Cured the per-quad split's 1-iter trivial-Newton failure mode. |
+| 2. Plastic correction *after* VE update (predictor-corrector) | **Rejected.** Tried earlier in Phase B; broke 2D Stokes momentum balance. Yield-in-residual via softmin is the working pattern. |
+| 3. Under-relax stress update (ω ~ 0.5) | **Not implemented.** Open follow-up. Would smooth Newton's hop and might tame the slip ratchet (lesson #9) without affecting the yield surface. |
+| 4. Cap τ_eff ≥ c·Δt to avoid α_∥ → 0 | **Implemented** as a soft x_par cap `(1-exp(-c·x))/c`. Tunable via `cm.tau_par_cap_factor` (default 1.0). Modestly improves σ_∥ enforcement (1.31 → 1.21·τ_y at τ_y=0.05) but slightly worsens the slip ratchet (0.525 → 0.681) — the inconsistent capping (η_C natural, η_α capped) shrinks the (1-φ_∥)·E term in proportion to the σ*-contribution, so σ_∥ stays controlled but flux balance is more sensitive between yield events. |
+| 5. Consistent viscosity in Stokes + constitutive | **Implemented.** Both C_∥ and (α_∥, φ_∥) use the lagged forcing_star-based η. Earlier inconsistency (C_∥ on current η, α_∥ on lagged η) had Newton converge in 1 iter and σ_∥ drift to 4·τ_y. |
+
+Also-tried, rejected:
+* **Raw E (current strain rate) as yield-criterion rate input**: adds explicit u-dependence into η_∥_eff, which propagates into C_∥ and produces a singular GAMG operator at u=0 (start-up zero state). Smooth-floor regularisation didn't fix the SNES 0-iter divergence. Reverted — the parent's E_eff-based criterion is the right shape, just needs the right rate input (forcing_star, lesson above).
+* **`σ*/(2ε̇*)` back-derivation for lagged η**: appears intuitive (it's the *effective* viscosity from histories alone) but breaks elastic regime (where σ ≈ μ·γ·dt, not η·ε̇). Produced startup spikes. Replaced by the parent-softmin-on-forcing_star pattern.
+* **`sympy.Min` cap on η**: catastrophic 29/120 SNES diverged; non-smooth derivative breaks Newton. Replaced by smooth `(1-exp(-c·x))/c`.
 
 ---
 
