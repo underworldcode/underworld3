@@ -1910,11 +1910,16 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             raise RuntimeError(f"{os.path.abspath(filename)} does not exist")
 
-        # Memory-bounded parallel read: rank 0 streams coords + values from
-        # disk into a transient routing swarm; ``swarm.migrate`` ships each
-        # (coord, value) pair to the rank that owns its location; each rank
-        # then runs a small rank-local KDTree to fill the live swarm's
-        # particles. Per-rank memory scales as ``file_size / n_ranks``.
+        # Memory-bounded parallel read. Rank 0 reads the saved file in one
+        # shot (this is not chunked — the file is the smallest copy of the
+        # data and we hold it for the duration of one ``add_particles`` call;
+        # streaming hyperslabs is a follow-up if rank-0 RAM becomes the
+        # binding constraint). Saved (coord, value) pairs are then pushed
+        # into a transient routing swarm and migrated *with the same rule
+        # the live swarm uses* — ``points_in_domain`` plus the centroid
+        # fallback inside ``Swarm.migrate``. That co-locates a saved point
+        # and the corresponding live particle on the same rank, so the
+        # rank-local KDTree always sees the right neighbour.
 
         n_components = self.num_components
         dim = self.swarm.mesh.dim
@@ -1954,8 +1959,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         tmp_swarm._invalidate_canonical_data()
         saved.array[size_before:, 0, :] = D_chunk[:, :]
 
-        # Deterministic centroid-distance routing — see Swarm._route_by_nearest_centroid.
-        tmp_swarm._route_by_nearest_centroid()
+        # Use the same migration rule as the live swarm so saved points and
+        # live particles at the same coordinate land on the same rank.
+        # ``delete_lost_points=False`` keeps points that ``points_in_domain``
+        # rejects on every rank; they fall through to the centroid fallback
+        # inside ``Swarm.migrate`` and end up somewhere deterministic.
+        tmp_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
 
         landed_X = tmp_swarm._particle_coordinates.array[...].reshape(-1, dim)
         landed_D = saved.array[:, 0, :]

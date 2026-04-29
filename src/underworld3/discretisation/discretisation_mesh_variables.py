@@ -70,8 +70,6 @@ def extend_enum(inherited):
     return wrapper
 
 
-
-
 class _BaseMeshVariable(Stateful, uw_object):
     """
     The MeshVariable class generates a variable supported by a finite element mesh and the
@@ -1190,7 +1188,11 @@ class _BaseMeshVariable(Stateful, uw_object):
         import h5py
         import numpy as np
 
-        n_components = self.shape[1]
+        # ``self.num_components`` is correct for SCALAR (1), VECTOR (dim),
+        # TENSOR (dim**2) and SYM_TENSOR (dim*(dim+1)/2). ``self.shape[1]``
+        # would silently drop components for tensor types because shape is
+        # ``(N, dim, dim)`` and ``[1]`` returns just ``dim``.
+        n_components = self.num_components
         dim = self.mesh.dim
 
         # ---- Phase 1: source swarm carries saved (coord, value) pairs ----
