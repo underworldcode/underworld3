@@ -104,7 +104,10 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
     sigma_II_max_per_step = []
     u_y_max_per_step = []
     sigma_xy_centre = []
+    sigma_par_centre = []
     centre = np.array([[cx, cy]])
+    n_x_val = -float(np.sin(theta))
+    n_y_val = float(np.cos(theta))
 
     t_cur = 0.0
     t0 = time.time()
@@ -132,6 +135,13 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
         u_y_max_per_step.append(float(np.abs(u_arr[:, 1]).max()))
         sxy_centre = float(uw.function.evaluate(stokes.tau.sym[0, 1], centre).flatten()[0])
         sigma_xy_centre.append(sxy_centre)
+        sxx_c = float(uw.function.evaluate(stokes.tau.sym[0, 0], centre).flatten()[0])
+        syy_c = float(uw.function.evaluate(stokes.tau.sym[1, 1], centre).flatten()[0])
+        T_x = sxx_c * n_x_val + sxy_centre * n_y_val
+        T_y = sxy_centre * n_x_val + syy_c * n_y_val
+        sig_nn = T_x * n_x_val + T_y * n_y_val
+        sig_par = float(np.sqrt(max(T_x ** 2 + T_y ** 2 - sig_nn ** 2, 0.0)))
+        sigma_par_centre.append(sig_par)
 
         t_cur = t_end_step
 
@@ -169,6 +179,13 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
             f"({max(abs(s) for s in sigma_xy_centre)/tau_y_at_fault:.2f}·τ_y_fault)",
             flush=True,
         )
+        print(
+            f"  centre |σ_∥| (resolved): "
+            f"end={sigma_par_centre[-1]:.4f}  "
+            f"peak={max(sigma_par_centre):.4f}  "
+            f"({max(sigma_par_centre)/tau_y_at_fault:.2f}·τ_y_fault)",
+            flush=True,
+        )
 
     out_npz = os.path.join(
         OUT_DIR,
@@ -181,6 +198,7 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
         sigma_II_max_per_step=np.asarray(sigma_II_max_per_step),
         u_y_max_per_step=np.asarray(u_y_max_per_step),
         sigma_xy_centre=np.asarray(sigma_xy_centre),
+        sigma_par_centre=np.asarray(sigma_par_centre),
         theta_deg=np.array(theta_deg),
         tau_y_at_fault=np.array(tau_y_at_fault),
         T_END=np.array(T_END),
@@ -192,12 +210,18 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    cache = os.path.join(OUT_DIR, "phase_b_etd-split_th+15_ty0p05.npz")
-    if os.path.exists(cache):
-        print(f"=== split-ETD-2 cache hit: {cache} — skipping run ===", flush=True)
-        return
-    print("=== Phase D split-ETD-2: θ=+15°, τ_y=0.05 ===", flush=True)
-    run_split(15.0, 0.05, n_periods=1.5)
+    cases = [(15.0, 0.05), (15.0, 0.15)]   # tight + Phase B working regime
+    for theta_deg, tau_y in cases:
+        cache_name = (
+            f"phase_b_etd-split_th{theta_deg:+.0f}_ty{tau_y:.2f}".replace(".", "p")
+            + ".npz"
+        )
+        cache = os.path.join(OUT_DIR, cache_name)
+        if os.path.exists(cache):
+            print(f"=== split-ETD-2 cache hit: {cache} — skipping run ===", flush=True)
+            continue
+        print(f"=== Phase D split-ETD-2: θ=+{theta_deg:.0f}°, τ_y={tau_y} ===", flush=True)
+        run_split(theta_deg, tau_y, n_periods=1.5)
 
 
 if __name__ == "__main__":

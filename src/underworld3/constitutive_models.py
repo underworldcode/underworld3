@@ -3599,15 +3599,19 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
         alpha_par = sympy.exp(-x_par)
         phi_par = (1 - alpha_par) / x_par
 
-        # ── Current η_∥_eff for the multiplicative response weights ─
-        # Keeps Newton's plasticity Jacobian intact through C_∥.
-        eta_par_chain = self._eta_par_eff()
-        if hasattr(eta_par_chain, 'sym'):
-            eta_par_current = eta_par_chain.sym
-        else:
-            eta_par_current = eta_par_chain
+        # Use the SAME lagged η for the C_∥ multiplicative weights as
+        # for α_∥/φ_∥. Fully explicit (Picard) parallel-branch
+        # plasticity: the parent's _eta_par_eff would inherit ETD's
+        # weak-σ* E_eff, leaving the softmin clamp dis-engaged on the
+        # current iterate even in plastic regions, so |σ_∥| drifts to
+        # 4·τ_y. Forcing_star-based softmin sees the yielded state
+        # because |γ̇*| is large there. Trade-off: Newton no longer
+        # iterates on parallel-branch plasticity, but BDF-1 effectively
+        # does the same (its |γ̇|_metric is dominated by σ* history at
+        # yield), and BDF-1 sits cleanly on the yield surface.
+        eta_par_current = eta_par_lagged
 
-        # Build the split sub-moduli
+        # Build the split sub-moduli with the lagged η_∥
         c_perp, c_par = self._build_split_c_tensors(eta_perp_sym, eta_par_current)
 
         # E_eff_⊥ = (1-φ_⊥)·ε̇ + α_⊥/(2η_⊥)·σ* + (φ_⊥-α_⊥)·ε̇*
