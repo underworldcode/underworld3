@@ -1155,90 +1155,149 @@ class _BaseMeshVariable(Stateful, uw_object):
     ):
         """
         Read a mesh variable from an arbitrary vertex-based checkpoint file
-        and reconstruct/interpolate the data field accordingly. The data sizes / meshes can be
-        different and will be matched using a kd-tree / inverse-distance weighting
-        to the new mesh.
+        and reconstruct/interpolate the data field accordingly. The saved
+        mesh and the live mesh may have different sizes/decompositions; the
+        values are matched by nearest-neighbour kd-tree interpolation to
+        the live mesh nodes.
 
+        Parallel-safe and memory-bounded. Two transient swarms route the
+        work without ever holding the full file on more than one rank:
+
+          1. **Source swarm** — rank 0 reads the file; saved
+             ``(coord, value)`` pairs migrate to whichever rank owns the
+             centroid-domain of each location.
+
+          2. **Query swarm** — each rank inserts *its own* live DOF
+             coordinates. They migrate using the same centroid logic, so
+             a live DOF and a saved point at the same coordinate land on
+             the same rank regardless of how PETSc partitioned the DM.
+             Each rank then runs a rank-local KDTree against the saved
+             data it received, and the interpolated values migrate back to
+             the live DOF's home rank.
+
+        Per-rank memory is bounded by ``file_size / n_ranks`` rather than
+        ``file_size`` per rank.
         """
-
-        # Fix this to match the write_timestep function
-
-        # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
-        # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
 
         output_base_name = os.path.join(outputPath, data_filename)
         data_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
 
-        # check if data_file exists
-        if os.path.isfile(os.path.abspath(data_file)):
-            pass
-        else:
+        if not os.path.isfile(os.path.abspath(data_file)):
             raise RuntimeError(f"{os.path.abspath(data_file)} does not exist")
 
         import h5py
         import numpy as np
 
-        # Keep vector available for future access
-        pass
+        # ``self.num_components`` is correct for SCALAR (1), VECTOR (dim),
+        # TENSOR (dim**2) and SYM_TENSOR (dim*(dim+1)/2). ``self.shape[1]``
+        # would silently drop components for tensor types because shape is
+        # ``(N, dim, dim)`` and ``[1]`` returns just ``dim``.
+        n_components = self.num_components
+        dim = self.mesh.dim
 
-        ## Sub functions that are used to read / interpolate the mesh.
-        def field_from_checkpoint(
-            data_file=None,
-            data_name=None,
-        ):
-            """Read the mesh data as a swarm-like value"""
-
-            if verbose and uw.mpi.rank == 0:
-                print(f"Reading data file {data_file}", flush=True)
-
-            h5f = h5py.File(data_file)
-            D = h5f["fields"][data_name][()].reshape(-1, self.shape[1])
-            X = h5f["fields"]["coordinates"][()].reshape(-1, self.mesh.dim)
-
-            h5f.close()
-
-            if len(D.shape) == 1:
-                D = D.reshape(-1, 1)
-
-            return X, D
-
-        def map_to_vertex_values(X, D, nnn=4, p=2, verbose=False):
-            # Map from "swarm" of points to nodal points
-            # This is a permutation if we building on the checkpointed
-            # mesh file
-
-            mesh_kdt = uw.kdtree.KDTree(X)
-
-            # Strip pint units from query coords — the KDTree was built
-            # from plain HDF5 floats (same physical units, no metadata).
-            query_coords = self.coords
-            if hasattr(query_coords, "magnitude"):
-                query_coords = query_coords.magnitude
-
-            return mesh_kdt.rbf_interpolator_local(query_coords, D, nnn, p, verbose)
-
-        def values_to_mesh_var(mesh_variable, Values):
-            mesh = mesh_variable.mesh
-
-            # This should be trivial but there may be problems if
-            # the kdtree does not have enough neighbours to allocate
-            # values for every point. We handle that here.
-
-            mesh_variable.data[...] = Values[...]
-
-            return
-
-        ## Read file information
-
-        X, D = field_from_checkpoint(
-            data_file,
-            data_name,
+        # ---- Phase 1: source swarm carries saved (coord, value) pairs ----
+        source_swarm = uw.swarm.Swarm(self.mesh)
+        saved = uw.swarm.SwarmVariable(
+            "_read_timestep_saved",
+            source_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, n_components),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{S}",
         )
 
-        remapped_D = map_to_vertex_values(X, D)
+        if uw.mpi.rank == 0:
+            if verbose:
+                print(f"Reading data file {data_file}", flush=True)
+            with h5py.File(data_file, "r") as h5f:
+                X_src = h5f["fields"]["coordinates"][()].reshape(-1, dim)
+                D_src = h5f["fields"][data_name][()].reshape(-1, n_components)
+        else:
+            X_src = np.empty((0, dim), dtype=np.double)
+            D_src = np.empty((0, n_components), dtype=np.double)
 
-        # This is empty at the moment
-        values_to_mesh_var(self, remapped_D)
+        src_size_before = max(source_swarm.dm.getLocalSize(), 0)
+        source_swarm.add_particles_with_global_coordinates(X_src, migrate=False)
+        source_swarm._invalidate_canonical_data()
+        saved.array[src_size_before:, 0, :] = D_src[:, :]
+        # Deterministic centroid-distance routing: nearest rank-centroid
+        # owns the point. Both swarms (source + query below) use the same
+        # rule, so a saved point at coord X and a live-DOF query at the
+        # same X always land on the same rank — exact match restored.
+        # ``Swarm.migrate``'s ``points_in_domain`` test isn't enough on its
+        # own: at partition boundaries it can return True on multiple ranks
+        # (vertex DOFs are shared) and source/query end up apart.
+        source_swarm._route_by_nearest_centroid()
+
+        landed_X = source_swarm._particle_coordinates.array[...].reshape(-1, dim)
+        landed_D = saved.array[:, 0, :]
+
+        # ---- Phase 2: query swarm round-trips live DOFs to source rank ----
+        query_coords = self.coords
+        if hasattr(query_coords, "magnitude"):
+            query_coords = query_coords.magnitude
+        n_query_local = query_coords.shape[0]
+        original_index = np.arange(n_query_local).reshape(-1, 1, 1)
+
+        query_swarm = uw.swarm.Swarm(self.mesh)
+        origin_rank = uw.swarm.SwarmVariable(
+            "rank", query_swarm,
+            vtype=uw.VarType.SCALAR, dtype=int, _proxy=False,
+            varsymbol=r"\cal{R}_o",
+        )
+        origin_index_var = uw.swarm.SwarmVariable(
+            "index", query_swarm,
+            vtype=uw.VarType.SCALAR, dtype=int, _proxy=False,
+            varsymbol=r"\cal{I}",
+        )
+        result = uw.swarm.SwarmVariable(
+            "_read_timestep_result", query_swarm,
+            vtype=uw.VarType.MATRIX, size=(1, n_components),
+            dtype=float, _proxy=False, varsymbol=r"\cal{D}",
+        )
+
+        q_size_before = max(query_swarm.dm.getLocalSize(), 0)
+        query_swarm.add_particles_with_global_coordinates(query_coords, migrate=False)
+        query_swarm._invalidate_canonical_data()
+        origin_rank.array[q_size_before:, 0, 0] = uw.mpi.rank
+        origin_index_var.array[q_size_before:, 0, 0] = original_index[:, 0, 0]
+
+        # Forward: live DOF coords go to the rank whose centroid is
+        # closest — same deterministic rule as the source swarm above.
+        query_swarm._route_by_nearest_centroid()
+
+        local_query = query_swarm._particle_coordinates.array[...].reshape(-1, dim)
+
+        if landed_X.shape[0] > 0 and local_query.shape[0] > 0:
+            kdt = uw.kdtree.KDTree(landed_X)
+            # ``nnn=1`` — exact match for round-trip reads, sensible
+            # nearest-neighbour fallback for cross-mesh reads.
+            result.array[:, 0, :] = kdt.rbf_interpolator_local(
+                local_query, landed_D, 1, 2, verbose
+            )
+        elif local_query.shape[0] > 0:
+            # No saved data landed on this rank — leave query payload zero
+            # and warn; callers can detect via a missing-rank pattern.
+            if verbose:
+                print(
+                    f"[rank {uw.mpi.rank}] read_timestep: no saved points landed; "
+                    f"queries from this rank will receive zeros",
+                    flush=True,
+                )
+
+        # Reverse: stamp the destination rank from origin_rank and use the
+        # bare DMSwarm migrate to send each query particle back home.
+        query_swarm._rank_var.array[...] = origin_rank.array[...]
+        query_swarm.dm.migrate(remove_sent_points=True)
+        uw.mpi.barrier()
+        query_swarm._invalidate_canonical_data()
+
+        # Reorder by original_index and write into self.data
+        idx = origin_index_var.array[:, 0, 0]
+        out = np.zeros((n_query_local, n_components), dtype=np.double)
+        out[idx, :] = result.array[:, 0, :]
+        self.data[...] = out
 
         return
 
