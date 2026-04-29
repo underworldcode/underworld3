@@ -8,6 +8,10 @@ and ``update_post_solve(dt)`` after the solve completes.
 History is initialised automatically on the first solve call, and BDF order
 ramps from 1 up to the requested ``order`` over the first few timesteps.
 
+For analytical-IC benchmarks (no startup transient) or checkpoint restarts,
+``set_initial_history(values, dt=...)`` plants the BDF history directly and
+bypasses the order ramp, so the first solve runs at full BDF order.
+
 ## Base Class
 
 ### Symbolic

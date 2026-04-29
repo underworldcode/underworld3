@@ -69,15 +69,16 @@ def _run_ve_shear(order, n_steps, dt_over_tr):
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
-    stokes = uw.systems.VE_Stokes(
-        mesh, velocityField=v, pressureField=p, order=order, verbose=False,
+    stokes = uw.systems.Stokes(
+        mesh, velocityField=v, pressureField=p, verbose=False,
     )
 
-    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=order,
+    )
     stokes.constitutive_model.Parameters.shear_viscosity_0 = ETA
     stokes.constitutive_model.Parameters.shear_modulus = MU
     stokes.constitutive_model.Parameters.dt_elastic = dt
-    # bdf_blend auto-detects: 1.0 for pure VE, 0.75 for VEP
 
     stokes.add_dirichlet_bc((V0, 0.0), "Top")
     stokes.add_dirichlet_bc((-V0, 0.0), "Bottom")
