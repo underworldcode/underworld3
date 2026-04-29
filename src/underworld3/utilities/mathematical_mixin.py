@@ -26,6 +26,19 @@ class MathematicalMixin:
     - Consistent behavior across different variable types
     """
 
+    # BUGFIX(#137): SymPy's binary operators on Matrix raise TypeError directly
+    # instead of returning NotImplemented, so Python's normal fall-through to
+    # the right operand's __rmul__/__radd__/etc. never fires. SymPy provides an
+    # opt-in escape hatch: any class with _op_priority strictly greater than
+    # the LHS's wins dispatch (Matrix._op_priority = 10.01, Symbol/Expr = 10.0).
+    # Setting this above all sympy core priorities makes sympy delegate
+    # `Matrix * <bare Variable>` and similar mixed-form expressions to our
+    # reverse dunders, which then sympify self via .sym and re-do the
+    # operation cleanly. This is what makes the "no .sym needed" promise in
+    # CLAUDE.md and MATHEMATICAL_MIXIN_DESIGN.md actually hold for the
+    # bare-variable-on-the-right composition case (issue #137 cases C and D).
+    _op_priority = 11.5
+
     def _validate_sym(self):
         """Validate that sym property is available and valid."""
         try:
