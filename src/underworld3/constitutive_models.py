@@ -2609,6 +2609,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     """
 
     def __init__(self, unknowns, order=1, integrator: str = "bdf",
+                 fault_weight=None,
                  material_name: str = None):
         """Construct a transversely isotropic VEP flow model.
 
@@ -2618,29 +2619,50 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             Solver unknowns (velocity, pressure).
         order : int, default 1
             BDF time integration order (used when ``integrator='bdf'``).
-            Forced to 1 for ``integrator='etd'``.
+            Forced to 1 for ``integrator='etd'`` and ``integrator='hybrid'``.
         integrator : str, default "bdf"
-            Time integration scheme — see
-            :class:`ViscoElasticPlasticFlowModel` for details. ETD-2
-            for TI uses a single ``(α, φ)`` pair shared across bulk and
-            fault-tangent (Phase B prototype); per-component ``(α₀, φ₀)``,
-            ``(α₁, φ₁)`` is a Phase D follow-up.
+            Time integration scheme:
+
+            - ``'bdf'``: Backward differentiation (default, robust for VEP).
+            - ``'etd'``: Exponential time-differencing (more accurate for
+              VE; Phase B prototype with single ``(α, φ)`` lump — beats
+              BDF-2 by ~4× on smooth VE benches but degrades vs BDF-1 once
+              yielding is active in the TI fault regime).
+            - ``'hybrid'``: spatial blend of BDF (inside fault) and ETD
+              (outside fault), with the weight derived from the fault
+              indicator. Requires ``fault_weight`` parameter.
+        fault_weight : sympy expression, optional
+            Spatial weight ``w(x) ∈ [0, 1]`` selecting BDF (``w=1``) vs
+            ETD (``w=0``) per quadrature point. Required when
+            ``integrator='hybrid'``. Typically built from the
+            ``influence_function`` used to construct ``yield_stress``,
+            normalised so that ``w=1`` inside the fault zone (where
+            yielding can happen) and ``w=0`` in the bulk (where
+            ``τ_y → τ_y_bulk`` and yielding is structurally
+            unreachable). The flux blend is
+            ``σ = w·σ_BDF + (1-w)·σ_ETD``.
         material_name : str, optional
             Name identifier for this material.
         """
-        if integrator not in ("bdf", "etd"):
+        if integrator not in ("bdf", "etd", "hybrid"):
             raise ValueError(
-                f"integrator must be 'bdf' or 'etd', got '{integrator!r}'"
+                f"integrator must be 'bdf', 'etd', or 'hybrid', got '{integrator!r}'"
             )
         self._integrator = integrator
-        if integrator == "etd" and order != 1:
+        if integrator in ("etd", "hybrid") and order != 1:
             import warnings
             warnings.warn(
-                "ETD-2 carries one stress history slot; ``order`` is "
-                f"pinned to 1 (you passed order={order}).",
+                f"integrator='{integrator}' uses one stress history slot; "
+                f"``order`` is pinned to 1 (you passed order={order}).",
                 UserWarning, stacklevel=2,
             )
             order = 1
+        if integrator == "hybrid" and fault_weight is None:
+            raise ValueError(
+                "integrator='hybrid' requires a ``fault_weight`` sympy "
+                "expression in [0, 1] (1 inside fault → BDF; 0 outside → ETD)."
+            )
+        self._fault_weight = fault_weight
 
         self._material_name = material_name
 
@@ -2841,48 +2863,57 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             return min(self._order, ddt_eff)
         return self._order
 
-    def _update_history_coefficients(self):
-        r"""Pre-solve hook — dispatches BDF or ETD-2.
+    def _update_etd_coefficients(self):
+        """Refresh DDt's (α, φ) UWexpressions from τ_eff = η_1/μ."""
+        if self.Unknowns.DFDt is None:
+            return
+        params = self.Parameters
+        if params.shear_modulus.sym is sympy.oo:
+            tau_eff = sympy.oo
+        else:
+            try:
+                eta_val = float(params.shear_viscosity_1.sym)
+                mu_val = float(params.shear_modulus.sym)
+                tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
+            except (TypeError, ValueError):
+                tau_eff = None
+        try:
+            dt_val = (
+                float(params.dt_elastic.sym)
+                if params.dt_elastic.sym is not sympy.oo
+                else None
+            )
+        except (TypeError, ValueError):
+            dt_val = None
+        self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
 
-        BDF: refresh ``_bdf_c0..c3`` UWexpressions via
-        :py:meth:`_update_bdf_coefficients`. ETD-2: refresh ``α, φ`` on
-        the DDt from the raw fault-plane viscous timescale ``η₁/μ``.
+    def _update_history_coefficients(self):
+        r"""Pre-solve hook — dispatches BDF, ETD-2, or hybrid.
+
+        BDF: refresh ``_bdf_c0..c3``. ETD-2: refresh ``α, φ`` on the DDt
+        from ``η_1/μ``. Hybrid: refresh both — flux uses both per-spatial
+        weight.
         """
         if self._integrator == "etd":
-            if self.Unknowns.DFDt is None:
-                return
-            params = self.Parameters
-            if params.shear_modulus.sym is sympy.oo:
-                tau_eff = sympy.oo
-            else:
-                try:
-                    eta_val = float(params.shear_viscosity_1.sym)
-                    mu_val = float(params.shear_modulus.sym)
-                    tau_eff = eta_val / mu_val if mu_val > 0 else sympy.oo
-                except (TypeError, ValueError):
-                    tau_eff = None
-            try:
-                dt_val = (
-                    float(params.dt_elastic.sym)
-                    if params.dt_elastic.sym is not sympy.oo
-                    else None
-                )
-            except (TypeError, ValueError):
-                dt_val = None
-            self.Unknowns.DFDt.update_exp_coefficients(dt_val, tau_eff)
+            self._update_etd_coefficients()
+        elif self._integrator == "hybrid":
+            # Hybrid uses BOTH integrators with spatial blend; update
+            # both coefficient sets each step.
+            self._update_bdf_coefficients()
+            self._update_etd_coefficients()
         else:
             self._update_bdf_coefficients()
 
     def _update_history_post_solve(self):
-        """Post-solve hook — BDF: no-op; ETD-2: refresh forcing_star."""
-        if self._integrator == "etd" and self.Unknowns.DFDt is not None:
+        """Post-solve hook — BDF: no-op; ETD/hybrid: refresh forcing_star."""
+        if self._integrator in ("etd", "hybrid") and self.Unknowns.DFDt is not None:
             if self.Unknowns.DFDt.forcing_star is not None:
                 self.Unknowns.DFDt.update_forcing_history(forcing_fn=self.Unknowns.E)
 
     @property
     def stress_history_ddt_kwargs(self):
-        """ETD-2 needs the forcing-history slot; BDF does not."""
-        if self._integrator == "etd":
+        """ETD-2 / hybrid need the forcing-history slot; BDF does not."""
+        if self._integrator in ("etd", "hybrid"):
             return {"with_forcing_history": True}
         return {}
 
@@ -2964,22 +2995,18 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             self._stress_star.sym = self.Unknowns.DFDt.psi_star[0].sym
         return self._stress_star
 
-    @property
-    def E_eff(self):
-        r"""Effective strain rate including elastic-history coupling.
-
-        BDF: ``E_eff = ε̇ - Σc_i·σ*/(2μΔt)``.
-        ETD-2: ``E_eff = (1-φ)·ε̇ + α·σ*/(2η₁) + (φ-α)·ε̇*``.
+    def _e_eff_for(self, integrator_mode):
+        r"""Build E_eff for a given integrator mode (without storing on
+        ``self._E_eff``). Used by both the public :py:attr:`E_eff` and
+        the hybrid ``stress()`` path which needs both forms in one
+        evaluation.
         """
         E = self.Unknowns.E
-
         if self.Unknowns.DFDt is None or not self.is_elastic:
-            self._E_eff.sym = E
-            return self._E_eff
-
+            return E
         DDt = self.Unknowns.DFDt
 
-        if self._integrator == "etd":
+        if integrator_mode == "etd":
             alpha = DDt._exp_alpha
             phi = DDt._exp_phi
             sigma_star = DDt.psi_star[0].sym
@@ -2988,19 +3015,32 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             else:
                 edot_star = sympy.zeros(*E.shape)
             eta_1 = self.Parameters.shear_viscosity_1
-            self._E_eff.sym = (
+            return (
                 (1 - phi) * E
                 + (alpha / (2 * eta_1)) * sigma_star
                 + (phi - alpha) * edot_star
             )
-            return self._E_eff
 
         # BDF default
         mu_dt = self.Parameters.dt_elastic * self.Parameters.shear_modulus
         bdf_cs = [self._bdf_c1, self._bdf_c2, self._bdf_c3]
+        out = E
         for i in range(DDt.order):
-            E += -bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
-        self._E_eff.sym = E
+            out = out - bdf_cs[i] * DDt.psi_star[i].sym / (2 * mu_dt)
+        return out
+
+    @property
+    def E_eff(self):
+        r"""Effective strain rate including elastic-history coupling.
+
+        BDF: ``E_eff = ε̇ - Σc_i·σ*/(2μΔt)``.
+        ETD-2: ``E_eff = (1-φ)·ε̇ + α·σ*/(2η₁) + (φ-α)·ε̇*``.
+        Hybrid: returns the BDF form (E_eff is consumed by yield-clip
+        code that should see the BDF rate metric); the actual flux uses
+        both forms inside :py:meth:`stress`.
+        """
+        mode = "bdf" if self._integrator in ("bdf", "hybrid") else "etd"
+        self._E_eff.sym = self._e_eff_for(mode)
         return self._E_eff
 
     @property
@@ -3089,30 +3129,23 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         return viscosity_yield
 
-    def _build_c_tensor(self):
-        """Build the anisotropic tensor with VE-effective viscosities.
+    def _eta_for_tensor(self, integrator_mode, apply_yield):
+        """Return ``(eta_0, eta_1_eff)`` for tensor build, parameterised
+        by integrator mode and whether to apply yield clipping.
 
-        BDF (default): η₀ and η₁ are replaced by their VE-effective
-        values (``η·μΔt / (c₀η + μΔt)``), then η₁_ve is further
-        yield-limited to η₁_eff. This ensures ``Δ = η₀_ve - η₁_eff = 0``
-        when ``η₁ = η₀`` and yield is inactive.
-
-        ETD-2: η₀ and η₁ are kept raw — the time-integration factor
-        ``(1-φ)`` lives in :py:attr:`E_eff` symbolically. Yield wrapping
-        on η₁ uses the same softmin/min/harmonic structure as BDF.
+        - ``integrator_mode='bdf'``: η₀, η₁ are VE-effective (c₀-baked
+          Δt scaling — needed for BDF's E_eff structure).
+        - ``integrator_mode='etd'``: η₀, η₁ are raw (time factor lives
+          in α/φ symbolically).
+        - ``apply_yield=True``: softmin/min/harmonic clip on η₁_eff.
+        - ``apply_yield=False``: no clipping (use this for the ETD-VE
+          branch of the hybrid integrator, where the bulk is
+          structurally non-yieldable so clipping is a no-op anyway).
         """
-
-        if self._is_setup:
-            return
-
-        d = self.dim
-
-        if self._integrator == "etd":
-            # ETD: raw η₀, η₁ (time factor in E_eff)
+        if integrator_mode == "etd":
             eta_0 = self.Parameters.shear_viscosity_0.sym
             eta_1_eff = self.Parameters.shear_viscosity_1
-        else:
-            # BDF: VE-effective with c₀-baked Δt scaling
+        else:  # bdf
             eta_0_raw = self.Parameters.shear_viscosity_0
             mu = self.Parameters.shear_modulus
             dt_e = self.Parameters.dt_elastic
@@ -3122,29 +3155,35 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
                 eta_0 = eta_0_raw.sym if hasattr(eta_0_raw, 'sym') else eta_0_raw
             else:
                 eta_0 = eta_0_raw * mu * dt_e / (c0 * eta_0_raw + mu * dt_e)
-            # η₁: VE effective (will be yield-clipped below)
             eta_1_eff = self.Parameters.ve_effective_viscosity
 
-        if self.is_viscoplastic:
+        if apply_yield and self.is_viscoplastic:
             vp_eff = self._plastic_effective_viscosity
             if self._yield_mode == "harmonic":
                 eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
             elif self._yield_mode == "softmin":
                 delta = self._yield_softness
                 f = eta_1_eff / vp_eff
-                import math  # float offset avoids sympy expression blowup in tensor
+                import math
                 offset = (-1 + math.sqrt(1 + delta**2)) / 2
                 g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
                 eta_1_eff = eta_1_eff / g
             else:
                 eta_1_eff = sympy.Min(eta_1_eff, vp_eff)
+        return eta_0, eta_1_eff
 
+    def _assemble_c_tensor(self, eta_0, eta_1_eff):
+        """Build the anisotropic rank-4 tensor from ``(eta_0, eta_1_eff)``.
+
+        Loop body identical to :py:meth:`_build_c_tensor_ve`; refactored
+        into a helper so the hybrid path can call it twice (BDF tensor
+        with yield clip, ETD tensor without) without code duplication.
+        """
+        d = self.dim
         n = self.Parameters.director.sym
         Delta = eta_0 - eta_1_eff
-
         identity = uw.maths.tensor.rank4_identity(d)
         lambda_mat = sympy.MutableDenseNDimArray.zeros(d, d, d, d)
-
         for i in range(d):
             for j in range(d):
                 for k in range(d):
@@ -3163,9 +3202,31 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
                         if hasattr(val, '__getitem__') and not isinstance(val, (sympy.MatrixBase, sympy.NDimArray)):
                             val = sympy.Mul(sympy.S.One, val, evaluate=False)
                         lambda_mat[i, j, k, l] = val
-
         lambda_mat = uw.maths.tensor.rank4_to_mandel(lambda_mat, d)
-        self._c = uw.maths.tensor.mandel_to_rank4(lambda_mat, d)
+        return uw.maths.tensor.mandel_to_rank4(lambda_mat, d)
+
+    def _build_c_tensor(self):
+        """Build the anisotropic tensor(s) for the active integrator.
+
+        - ``'bdf'`` / ``'etd'``: single tensor ``self._c``.
+        - ``'hybrid'``: two tensors ``self._c_bdf`` (yield-clipped) and
+          ``self._c_etd`` (no clip — bulk is non-yieldable). The flux
+          blend ``w·σ_BDF + (1-w)·σ_ETD`` happens in :py:meth:`stress`.
+        """
+        if self._is_setup:
+            return
+
+        if self._integrator == "hybrid":
+            eta_0_bdf, eta_1_bdf = self._eta_for_tensor("bdf", apply_yield=True)
+            self._c_bdf = self._assemble_c_tensor(eta_0_bdf, eta_1_bdf)
+            eta_0_etd, eta_1_etd = self._eta_for_tensor("etd", apply_yield=False)
+            self._c_etd = self._assemble_c_tensor(eta_0_etd, eta_1_etd)
+            self._c = self._c_bdf  # default for any callers reading self._c
+        else:
+            eta_0, eta_1_eff = self._eta_for_tensor(
+                self._integrator, apply_yield=self.is_viscoplastic
+            )
+            self._c = self._assemble_c_tensor(eta_0, eta_1_eff)
 
         self._is_setup = True
         self._solver_is_setup = False
@@ -3236,8 +3297,24 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         C(η₁_eff) handles anisotropy; the history uses the same η₁_eff as
         a scalar multiplier (consistent with how isotropic VEP uses
         self.viscosity for both).
+
+        Hybrid path: ``σ = w·σ_BDF + (1-w)·σ_ETD`` with the spatial
+        weight from ``self._fault_weight``. Each branch contracts its
+        own E_eff with its own C-tensor; the blend lives at the flux
+        level so neither integrator's structure is compromised.
         """
         self._build_c_tensor()
+
+        if self._integrator == "hybrid":
+            # σ_BDF: BDF flux with yield-clipped C tensor
+            edot_eff_bdf = self._e_eff_for("bdf")
+            sigma_bdf = self._q_with(self._c_bdf, edot_eff_bdf)
+            # σ_ETD: ETD flux with no-yield C tensor
+            edot_eff_etd = self._e_eff_for("etd")
+            sigma_etd = self._q_with(self._c_etd, edot_eff_etd)
+            # Spatial blend
+            w = self._fault_weight
+            return w * sigma_bdf + (1 - w) * sigma_etd
 
         # Apply the anisotropic tensor to the effective strain rate
         # (current + VE history): σ = C(η₀_ve, η₁_eff) : ε̇_eff
@@ -3247,6 +3324,21 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         stress = self._q(edot_eff)
 
         return stress
+
+    def _q_with(self, c, edot):
+        """Apply a given rank-4 tensor to a strain rate (helper for
+        the hybrid flux that needs to contract two distinct C tensors
+        in one ``stress()`` call).
+        """
+        rank = len(c.shape)
+        if rank == 2:
+            flux = c * edot
+        else:
+            flux = sympy.tensorcontraction(
+                sympy.tensorcontraction(sympy.tensorproduct(c, edot), (1, 5)),
+                (0, 3),
+            )
+        return sympy.Matrix(flux)
 
     @property
     def yield_mode(self):

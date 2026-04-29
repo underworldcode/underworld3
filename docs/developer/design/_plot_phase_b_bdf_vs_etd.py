@@ -59,6 +59,11 @@ def main():
     except FileNotFoundError:
         split = None
         print("  (no split-ETD trajectory cached — skipping)", flush=True)
+    try:
+        hybrid = _load("hybrid")
+    except FileNotFoundError:
+        hybrid = None
+        print("  (no hybrid trajectory cached — skipping)", flush=True)
 
     n_bdf = int(bdf["n_steps"])
     n_etd = int(etd["n_steps"])
@@ -68,12 +73,13 @@ def main():
     if split is not None:
         n_split = int(split["n_steps"])
         t_split = (np.arange(n_split) + 1) * DT
+    if hybrid is not None:
+        n_hybrid = int(hybrid["n_steps"])
+        t_hybrid = (np.arange(n_hybrid) + 1) * DT
 
     fig, axes = plt.subplots(3, 1, figsize=(8.5, 9.5), sharex=True)
 
     # Panel 1 — fault-resolved |σ_∥|(t) at fault centre.
-    # This is the right diagnostic for "is the yield surface respected?"
-    # |σ_xy| is global-frame and doesn't directly answer that.
     ax = axes[0]
     if "sigma_par_centre" in bdf.files:
         ax.plot(t_bdf / period, bdf["sigma_par_centre"], "-", color="#1f77b4",
@@ -84,6 +90,9 @@ def main():
     if split is not None and "sigma_par_centre" in split.files:
         ax.plot(t_split / period, split["sigma_par_centre"], "-", color="#2ca02c",
                 label=f"ETD-2 split (peak |σ_∥|={split['sigma_par_centre'].max():.3f})")
+    if hybrid is not None and "sigma_par_centre" in hybrid.files:
+        ax.plot(t_hybrid / period, hybrid["sigma_par_centre"], "-", color="#9467bd",
+                label=f"hybrid (peak |σ_∥|={hybrid['sigma_par_centre'].max():.3f})")
     ax.axhline(TAU_Y, color="#888888", lw=0.8, linestyle="--",
                label=rf"$\tau_y={TAU_Y}$")
     ax.set_ylabel(r"centre $|\sigma_\parallel|$  (resolved fault shear)")
@@ -102,6 +111,10 @@ def main():
         ax.semilogy(t_split / period, np.abs(split["sigma_II_max_per_step"]),
                     "-", color="#2ca02c",
                     label=f"ETD-2 split (peak={split['sigma_II_max_per_step'].max():.3f})")
+    if hybrid is not None:
+        ax.semilogy(t_hybrid / period, np.abs(hybrid["sigma_II_max_per_step"]),
+                    "-", color="#9467bd",
+                    label=f"hybrid (peak={hybrid['sigma_II_max_per_step'].max():.3f})")
     ax.axhline(TAU_Y, color="#888888", lw=0.8, linestyle="--",
                label=rf"$\tau_y={TAU_Y}$")
     ax.set_ylabel(r"max $|\sigma|_{II}$ (log)")
@@ -120,13 +133,17 @@ def main():
         ax.semilogy(t_split / period, split["u_y_max_per_step"],
                     "-", color="#2ca02c",
                     label=f"ETD-2 split (peak={split['u_y_max_per_step'].max():.3f})")
+    if hybrid is not None:
+        ax.semilogy(t_hybrid / period, hybrid["u_y_max_per_step"],
+                    "-", color="#9467bd",
+                    label=f"hybrid (peak={hybrid['u_y_max_per_step'].max():.3f})")
     ax.set_ylabel(r"max $|u_y|$ (log)")
     ax.set_xlabel(r"time $t / T$ (periods)")
     ax.legend(loc="upper left", fontsize=9)
     ax.grid(alpha=0.3, which="both")
 
     fig.suptitle(
-        rf"BDF-1 vs ETD-2 lumped vs ETD-2 split at $\theta=+15^\circ$, $\tau_y={TAU_Y}$, RES=32",
+        rf"BDF-1 vs ETD-2 lumped/split/hybrid at $\theta=+15^\circ$, $\tau_y={TAU_Y}$, RES=32",
         y=0.995,
     )
     fig.tight_layout()
