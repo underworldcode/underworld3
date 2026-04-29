@@ -596,12 +596,44 @@ class SolverBaseClass(uw_object):
                 self._last_jit_cache_key = self._current_jit_cache_key
             return
 
-        # === Full rebuild path — teardown DM and reconstruct ===
+        # === Full rebuild path — teardown DM/SNES and reconstruct ===
+        # BUGFIX(#157): two PETSc objects were leaking on every is_setup=False
+        # rebuild:
+        #   (1) self.snes — _setup_solver() does
+        #         self.snes = PETSc.SNES().create(...)
+        #       unconditionally; the previous SNES (with its KSP, PC, and
+        #       full GAMG hierarchy of coarse operator matrices) was just
+        #       overwritten.
+        #   (2) self.dm_hierarchy[:-1] — only self.dm == dm_hierarchy[-1]
+        #       was destroyed here; coarse DMs from the previous build
+        #       leaked.
+        # Tight is_setup=False loops (notably SNES_Tensor_Projection.solve()
+        # cycling 6 symmetric tensor components in 3D) accumulate one SNES
+        # plus one full coarse-DM hierarchy per iteration — large enough at
+        # Gadi scale to push past memory limits during stress recovery
+        # postprocessing. _reset() already had the correct destroy
+        # sequence; this brings _build() into line with it.
+        # NB self.snes / self.dm_hierarchy may not exist yet on the first
+        # build, so use getattr/hasattr-style guards rather than `is not None`.
+        if getattr(self, "snes", None) is not None:
+            if verbose and uw.mpi.rank == 0:
+                print(f"Destroy solver SNES", flush=True)
+            self.snes.destroy()
+            self.snes = None
+
         if self.dm is not None:
             if verbose and uw.mpi.rank == 0:
-                print(f"Destroy solver DM", flush=True)
+                print(f"Destroy solver DM hierarchy", flush=True)
 
-            self.dm.destroy()
+            if hasattr(self, "dm_hierarchy") and self.dm_hierarchy:
+                # Destroys each level — including dm_hierarchy[-1] which
+                # is self.dm — so no separate self.dm.destroy() needed.
+                for coarse_dm in self.dm_hierarchy:
+                    if coarse_dm is not None:
+                        coarse_dm.destroy()
+                self.dm_hierarchy = [None]
+            else:
+                self.dm.destroy()
             self.dm = None
             if hasattr(self, "_stokes_nullspace"):
                 self._stokes_nullspace = None
