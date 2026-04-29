@@ -100,19 +100,14 @@ def _build_setup(label):
     )
 
 
-def _build_stage1_VE(setup, label):
-    """Stage 1: VE Stokes solver (BDF-1, no in-residual yield)."""
+def _build_stage1_VE(setup, label, integrator="bdf", order=1):
+    """Stage 1: VE Stokes solver (configurable integrator)."""
     mesh = setup["mesh"]
     u_VE = setup["u_VE"]; p_VE = setup["p_VE"]
 
     stokes_VE = uw.systems.Stokes(mesh, velocityField=u_VE, pressureField=p_VE)
-    # NOTE: branch is off `development` (pre-PR-#161). The `integrator`
-    # parameter ships in PR #161 — once that lands, swap to
-    # `integrator='etd', order=1` (ETD-1) for the higher-accuracy
-    # exponential factor. For now BDF-1 (the default) is the VE
-    # predictor; matches ETD-1 numerically anyway in this regime.
     stokes_VE.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        stokes_VE.Unknowns, order=1,
+        stokes_VE.Unknowns, integrator=integrator, order=order,
     )
     cm = stokes_VE.constitutive_model
     cm.Parameters.shear_viscosity_0 = ETA
@@ -198,7 +193,7 @@ def _eta_eff_bdf1(eta_raw, mu_raw, dt):
     return eta_raw * mu_raw * dt / (eta_raw + mu_raw * dt)
 
 
-def run_two_stokes(label, n_periods=1.5):
+def run_two_stokes(label, n_periods=1.5, integrator="bdf", order=1):
     setup = _build_setup(label)
     mesh = setup["mesh"]
 
@@ -208,7 +203,8 @@ def run_two_stokes(label, n_periods=1.5):
     n_x_l = -np.sin(theta); n_y_l = np.cos(theta)
 
     # Stage 1 builds the VE Stokes — psi_star lives on this solver's DDt
-    stokes_VE, V_top_VE = _build_stage1_VE(setup, label)
+    stokes_VE, V_top_VE = _build_stage1_VE(setup, label,
+                                            integrator=integrator, order=order)
     DFDt = stokes_VE.Unknowns.DFDt
 
     sigma_coords = DFDt.psi_star[0].coords
@@ -400,12 +396,23 @@ def run_two_stokes(label, n_periods=1.5):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    cache = os.path.join(OUT_DIR, "phase_g_first_cut.npz")
-    if os.path.exists(cache):
-        print(f"=== two-Stokes cache hit: {cache} — skipping ===", flush=True)
-        return
-    print("=== Phase G two-Stokes first cut: BDF-1 VE + viscous plastic ===", flush=True)
-    run_two_stokes("first_cut", n_periods=1.5)
+    cases = [
+        # (label, integrator, order)
+        ("bdf1",  "bdf", 1),
+        ("etd1",  "etd", 1),
+        ("etd2",  "etd", 2),  # headline experiment
+    ]
+    for label, integrator, order in cases:
+        cache = os.path.join(OUT_DIR, f"phase_g_{label}.npz")
+        if os.path.exists(cache):
+            print(f"\n=== {label}: cache hit, skipping ===", flush=True)
+            continue
+        print(
+            f"\n=== Phase G two-Stokes ({integrator.upper()}-{order} VE "
+            f"+ viscous plastic) ===",
+            flush=True,
+        )
+        run_two_stokes(label, n_periods=1.5, integrator=integrator, order=order)
 
 
 if __name__ == "__main__":
