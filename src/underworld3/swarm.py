@@ -1910,37 +1910,66 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             raise RuntimeError(f"{os.path.abspath(filename)} does not exist")
 
-        ### open up file with coords on all procs and open up data on all procs. May be problematic for large problems.
-        with (
-            h5py.File(f"{filename}", "r") as h5f_data,
-            h5py.File(f"{swarmFilename}", "r") as h5f_swarm,
-        ):
+        # Memory-bounded parallel read: rank 0 streams coords + values from
+        # disk into a transient routing swarm; ``swarm.migrate`` ships each
+        # (coord, value) pair to the rank that owns its location; each rank
+        # then runs a small rank-local KDTree to fill the live swarm's
+        # particles. Per-rank memory scales as ``file_size / n_ranks``.
 
-            # with self.swarm.access(self):
-            var_dtype = self.dtype
-            file_dtype = h5f_data["data"][:].dtype
-            file_length = h5f_data["data"][:].shape[0]
+        n_components = self.num_components
+        dim = self.swarm.mesh.dim
 
-            if var_dtype != file_dtype:
-                if comm.rank == 0:
+        if uw.mpi.rank == 0:
+            with (
+                h5py.File(f"{filename}", "r") as h5f_data,
+                h5py.File(f"{swarmFilename}", "r") as h5f_swarm,
+            ):
+                file_dtype = h5f_data["data"].dtype
+                if self.dtype != file_dtype:
                     warnings.warn(
-                        f"{os.path.basename(filename)} dtype ({file_dtype}) does not match {self.name} swarm variable dtype ({var_dtype}) which may result in a loss of data.",
+                        f"{os.path.basename(filename)} dtype ({file_dtype}) "
+                        f"does not match {self.name} swarm variable dtype "
+                        f"({self.dtype}) which may result in a loss of data.",
                         stacklevel=2,
                     )
+                X_chunk = h5f_swarm["coordinates"][()].reshape(-1, dim)
+                D_chunk = h5f_data["data"][()].reshape(-1, n_components)
+        else:
+            X_chunk = np.empty((0, dim), dtype=np.double)
+            D_chunk = np.empty((0, n_components), dtype=np.double)
 
-            # First work out which are local points and ignore the rest
-            # This might help speed up the load by dropping lots of particles
+        tmp_swarm = uw.swarm.Swarm(self.swarm.mesh)
+        saved = SwarmVariable(
+            "_read_timestep_saved",
+            tmp_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, n_components),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{S}",
+        )
 
-            all_coords = h5f_swarm["coordinates"][()]
-            all_data = h5f_data["data"][()]
+        size_before = max(tmp_swarm.dm.getLocalSize(), 0)
+        tmp_swarm.add_particles_with_global_coordinates(X_chunk, migrate=False)
+        tmp_swarm._invalidate_canonical_data()
+        saved.array[size_before:, 0, :] = D_chunk[:, :]
 
-            local_coords = all_coords  # [local]
-            local_data = all_data  # [local]
+        # Deterministic centroid-distance routing — see Swarm._route_by_nearest_centroid.
+        tmp_swarm._route_by_nearest_centroid()
 
-            kdt = uw.kdtree.KDTree(local_coords)
+        landed_X = tmp_swarm._particle_coordinates.array[...].reshape(-1, dim)
+        landed_D = saved.array[:, 0, :]
 
+        if landed_X.shape[0] == 0:
+            warnings.warn(
+                f"[rank {uw.mpi.rank}] read_timestep: no saved swarm points "
+                f"landed locally; '{self.name}' on this rank will not be updated",
+                stacklevel=2,
+            )
+        else:
+            kdt = uw.kdtree.KDTree(landed_X)
             self.array[:, 0, :] = kdt.rbf_interpolator_local(
-                self.swarm._particle_coordinates.data, local_data, nnn=1
+                self.swarm._particle_coordinates.data, landed_D, nnn=1
             )
 
         return
@@ -2556,6 +2585,36 @@ class Swarm(Stateful, uw_object):
         for var in list(self._vars.values()):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
+
+    def _route_by_nearest_centroid(self):
+        """Migrate every particle to the rank whose domain-centroid is closest.
+
+        This is a deterministic alternative to :meth:`migrate`: the destination
+        is a pure function of the coordinate, computed identically on every
+        rank. Two swarms migrated this way are guaranteed to place equal
+        coordinates on the same rank — which the standard ``migrate`` does not
+        guarantee at partition boundaries (vertex DOFs sitting on a shared face
+        can return ``True`` from ``points_in_domain`` on multiple ranks).
+
+        Used by checkpoint readers and any consumer that needs source data and
+        query coordinates to converge on the same rank without relying on
+        PETSc's DOF distribution.
+        """
+        centroids = self.mesh._get_domain_centroids()
+        centroid_kdt = uw.kdtree.KDTree(centroids)
+
+        coords = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.dim).copy()
+        self.dm.restoreField("DMSwarmPIC_coor")
+
+        if coords.shape[0] > 0:
+            _, owner_rank = centroid_kdt.query(coords, k=1, sqr_dists=False)
+            rank_arr = self.dm.getField("DMSwarm_rank")
+            rank_arr[:, 0] = owner_rank.astype(rank_arr.dtype, copy=False)
+            self.dm.restoreField("DMSwarm_rank")
+
+        self.dm.migrate(remove_sent_points=True)
+        uw.mpi.barrier()
+        self._invalidate_canonical_data()
 
     @property
     def mesh(self):
