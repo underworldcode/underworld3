@@ -35,16 +35,35 @@ def mesh():
 
 
 def test_swarm_del_calls_dm_destroy():
-    """The __del__ source contains the dm.destroy() call (§1a).
+    """``Swarm.__del__`` actually contains a call to ``self.dm.destroy()``.
 
     petsc4py exposes DM methods as read-only Cython attributes, so we cannot
-    monkeypatch ``dm.destroy`` to spy on it. This is a source-level smoke
-    test that guards against accidental removal of the destroy line.
+    monkeypatch ``dm.destroy`` to spy on it. AST-based source check: parse
+    the function body and look for an actual ``self.dm.destroy(...)`` call
+    node. A bare substring search would also match the destroy reference
+    inside the docstring and pass even if the executable line were removed.
     """
+    import ast
     import inspect
-    src = inspect.getsource(uw.swarm.Swarm.__del__)
-    assert "dm.destroy" in src, (
-        "Swarm.__del__ no longer contains dm.destroy() — §1a regression"
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(uw.swarm.Swarm.__del__))
+    tree = ast.parse(src)
+
+    def is_self_dm_destroy_call(node):
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "destroy"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "dm"
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "self"
+        )
+
+    assert any(is_self_dm_destroy_call(node) for node in ast.walk(tree)), (
+        "Swarm.__del__ no longer contains a call to self.dm.destroy() — "
+        "lifecycle regression"
     )
 
 

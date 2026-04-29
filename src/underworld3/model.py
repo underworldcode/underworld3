@@ -116,10 +116,12 @@ class Model(PintNativeModelMixin, BaseModel):
     # actually lets it be garbage-collected. Without this, transient swarms
     # used inside functions (global expression evaluation, checkpoint reads,
     # mesh-adapt transfers) accumulate forever via the registry's strong
-    # reference and ``Swarm.__del__`` never fires. Iteration, length, and
-    # membership checks behave the same as a regular dict; the only
-    # difference is that entries auto-disappear once their swarm value has
-    # no other strong references.
+    # reference and ``Swarm.__del__`` never fires. Length and membership
+    # checks are dictionary-like; iteration is *not* stable in the way a
+    # plain dict's is, because entries can disappear asynchronously as
+    # their swarm value is collected. Call sites that need a stable
+    # traversal (summaries, snapshots) should iterate a copy such as
+    # ``list(self._swarms.items())``.
     _swarms: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
     _solvers: Dict[str, Any] = PrivateAttr(default_factory=dict)
@@ -4280,7 +4282,7 @@ class Model(PintNativeModelMixin, BaseModel):
         swarm_count = len(self._swarms)
         lines.append(f"**Swarms:** {swarm_count} registered")
         if swarm_count > 0 and verbose >= 1:
-            for swarm_id, swarm in self._swarms.items():
+            for swarm_id, swarm in list(self._swarms.items()):
                 try:
                     if hasattr(swarm, "data") and swarm.data is not None:
                         particle_count = len(swarm.data)

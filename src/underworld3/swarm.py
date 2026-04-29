@@ -2499,18 +2499,26 @@ class Swarm(Stateful, uw_object):
 
         super().__init__()
 
-        # Register with default model for orchestration
-        uw.get_default_model()._register_swarm(self)
+        # Register with the same model already captured in self._model_ref
+        # above (not a fresh ``get_default_model()`` call) so that
+        # ``__del__`` deregisters from the same registry it registered with,
+        # even if the default model is swapped mid-session.
+        model._register_swarm(self)
 
     def __del__(self):
         """Cleanup swarm: unregister from mesh and model, destroy the DM.
 
-        Without explicit cleanup, the PETSc DMSwarm and every registered field
-        leak on each garbage collection: the model registry holds a strong
-        reference to the swarm, and ``Swarm.__del__`` previously did not call
-        ``self.dm.destroy()``. This matters for transient swarms used inside
-        time-stepping loops (global expression evaluation, checkpoint reads,
-        mesh adaptation transfers).
+        Three steps: drop the mesh-side weak-set entry, drop the model-side
+        registry entry (which also forgets any SwarmVariables that belonged
+        to this swarm), and call ``self.dm.destroy()`` to release the PETSc
+        DMSwarm and its registered fields.
+
+        Historically the model registry kept a strong reference to every
+        swarm and ``__del__`` did not call ``dm.destroy()`` — both leaks
+        accumulated quickly inside time-stepping loops that build transient
+        swarms (global expression evaluation, checkpoint reads, mesh
+        adaptation transfers). The registry is now a ``WeakValueDictionary``
+        and ``__del__`` cleans up its own resources.
         """
         try:
             if hasattr(self, "mesh") and self.mesh is not None:
@@ -2543,7 +2551,9 @@ class Swarm(Stateful, uw_object):
         """
         if hasattr(self, "_particle_coordinates") and self._particle_coordinates is not None:
             self._particle_coordinates._canonical_data = None
-        for var in self._vars.values():
+        # ``self._vars`` may be a WeakValueDictionary whose values disappear
+        # asynchronously during GC; iterate a snapshot.
+        for var in list(self._vars.values()):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
 
