@@ -879,7 +879,8 @@ def run_v4_explicit_elastic(label, n_periods=1.5, use_yield_lagged_alpha=False):
 
 
 def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=False,
-                                 integrator='bdf', order=1):
+                                 integrator='bdf', order=1,
+                                 bdf_blend=1.0, etd_blend=1.0):
     """v5: custom constitutive law — operator-split VEP with yield-on-total.
 
     Uses ``ViscoPlasticExplicitElastic`` (defined above) which overrides
@@ -909,11 +910,14 @@ def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=Fals
     else:
         alpha_explicit = sympy.Float(ETA / (ETA + MU * DT))
 
-    cm = ViscoPlasticExplicitElastic(
+    # Use the production class from constitutive_models.py — it has the
+    # damping knobs (bdf_blend / etd_blend) the local class lacks.
+    cm = uw.constitutive_models.ViscoPlasticExplicitElastic(
         stokes.Unknowns, integrator=integrator, order=order,
-        alpha_explicit=alpha_explicit,
     )
     stokes.constitutive_model = cm
+    cm.bdf_blend = bdf_blend
+    cm.etd_blend = etd_blend
     cm.Parameters.shear_viscosity_0 = ETA
     cm.Parameters.shear_modulus = MU
     cm.Parameters.yield_stress = sigma_y_sym
@@ -1094,14 +1098,16 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     cases = [
         # (label, kind, use_lag, use_predictor, use_yield_lagged_alpha,
-        #  integrator, order)
-        ("v3_baseline_const_eta", "v3", False, False, None,  None, None),  # baseline
-        ("v5b_bdf1",              "v5", None,  None,  False, "bdf", 1),
-        ("v5b_bdf2",              "v5", None,  None,  False, "bdf", 2),
-        ("v5b_etd1",              "v5", None,  None,  False, "etd", 1),
-        ("v5b_etd2",              "v5", None,  None,  False, "etd", 2),
+        #  integrator, order, bdf_blend, etd_blend)
+        ("v3_baseline_const_eta", "v3", False, False, None,  None,  None, 1.0, 1.0),  # baseline
+        ("v5b_bdf1",              "v5", None,  None,  False, "bdf", 1,    1.0, 1.0),
+        ("v5b_bdf2",              "v5", None,  None,  False, "bdf", 2,    1.0, 1.0),
+        ("v5b_bdf2_blend25",      "v5", None,  None,  False, "bdf", 2,    0.25, 1.0),  # damped BDF-2
+        ("v5b_etd1",              "v5", None,  None,  False, "etd", 1,    1.0, 1.0),
+        ("v5b_etd2",              "v5", None,  None,  False, "etd", 2,    1.0, 1.0),
+        ("v5b_etd2_blend25",      "v5", None,  None,  False, "etd", 2,    1.0, 0.25),  # damped ETD-2
     ]
-    for label, kind, use_lag, use_predictor, use_lagged_alpha, integrator, order in cases:
+    for label, kind, use_lag, use_predictor, use_lagged_alpha, integrator, order, bdf_blend, etd_blend in cases:
         cache = os.path.join(OUT_DIR, f"phase_g_{label}.npz")
         if os.path.exists(cache):
             print(f"\n=== {label}: cache hit, skipping ===", flush=True)
@@ -1122,13 +1128,14 @@ def main():
             print(
                 f"\n=== Phase G v5 custom constitutive ({label}, "
                 f"integrator={integrator!r} order={order} "
-                f"use_yield_lagged_alpha={use_lagged_alpha}) ===",
+                f"bdf_blend={bdf_blend} etd_blend={etd_blend}) ===",
                 flush=True,
             )
             run_v5_custom_constitutive(
                 label, n_periods=1.5,
                 use_yield_lagged_alpha=use_lagged_alpha,
                 integrator=integrator, order=order,
+                bdf_blend=bdf_blend, etd_blend=etd_blend,
             )
 
 

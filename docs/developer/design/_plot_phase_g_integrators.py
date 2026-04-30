@@ -46,7 +46,7 @@ def _load_trace(label):
     )
 
 
-def _truncate_at_blowup(tr, sigma_thresh=5.0, uy_thresh=2.0):
+def _truncate_at_blowup(tr, sigma_thresh=15.0, uy_thresh=5.0):
     """Find first step where σ or |u_y| exceeds threshold; clip there."""
     if tr is None:
         return None
@@ -59,17 +59,22 @@ def _truncate_at_blowup(tr, sigma_thresh=5.0, uy_thresh=2.0):
 
 def main():
     cases = [
-        ("v3_baseline_const_eta", "BDF-1 baseline",     "#1f77b4", "-",  3.0),
-        ("v5b_bdf1",              "v5b BDF-1",          "#2ca02c", "-",  2.5),
-        ("v5b_bdf2",              "v5b BDF-2",          "#9467bd", "--", 2.0),
-        ("v5b_etd1",              "v5b ETD-1",          "#ff7f0e", ":",  2.0),
-        ("v5b_etd2",              "v5b ETD-2",          "#d62728", "-.", 2.0),
+        ("v3_baseline_const_eta", "BDF-1 baseline",                "#1f77b4", "-",  3.0),
+        ("v5b_bdf1",              "v5b BDF-1",                     "#2ca02c", "-",  2.5),
+        ("v5b_etd1",              "v5b ETD-1",                     "#ff7f0e", ":",  2.0),
+        ("v5b_bdf2",              "v5b BDF-2 (no damping)",        "#9467bd", "--", 2.0),
+        ("v5b_bdf2_blend25",      "v5b BDF-2 (bdf_blend=0.25)",    "#9467bd", "-",  1.5),
+        ("v5b_etd2",              "v5b ETD-2 (no damping)",        "#d62728", "--", 2.0),
+        ("v5b_etd2_blend25",      "v5b ETD-2 (etd_blend=0.25)",    "#d62728", "-",  1.5),
     ]
     traces_raw = {label: _load_trace(label) for label, _, _, _, _ in cases}
 
-    # Determine sigma threshold for "blowup" — 3x baseline peak
+    # Determine sigma threshold for "blowup" — 10x baseline peak.
+    # 10x is permissive: damped variants oscillate higher than baseline
+    # but stay bounded; we want to flag genuine runaway, not transient
+    # peaks of damped runs.
     baseline_tr = traces_raw.get("v3_baseline_const_eta")
-    sigma_thresh = 3.0 * float(baseline_tr["sigma_eq"].max()) if baseline_tr is not None else 5.0
+    sigma_thresh = 10.0 * float(baseline_tr["sigma_eq"].max()) if baseline_tr is not None else 15.0
 
     fig = plt.figure(figsize=(12, 9))
     gs = fig.add_gridspec(3, 1, hspace=0.30)

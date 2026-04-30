@@ -2047,6 +2047,21 @@ class ViscoPlasticExplicitElastic(ViscoElasticPlasticFlowModel):
     See ``docs/developer/design/VEP_TWO_STOKES_OPERATOR_SPLIT.md`` for
     the full investigation history (Phase G v5b).
 
+    Damping knobs for higher-order integrators
+    -------------------------------------------
+    Two damping knobs help stabilise the higher-order integrators on
+    long runs over tight-yield problems:
+
+    - :py:attr:`bdf_blend` ∈ [0, 1] — linear mix of BDF-1 and BDF-k
+      coefficients for ``integrator='bdf'`` order ≥ 2. ``1.0`` (default)
+      is pure BDF-k; ``0.0`` is pure BDF-1; intermediate values trade
+      first-order numerical dissipation for stability.
+    - :py:attr:`etd_blend` ∈ [0, 1] — scales the ``(φ-α)·ε̇_old``
+      forcing-history contribution for ``integrator='etd'`` order=2.
+      ``1.0`` (default) is full ETD-2; ``0.0`` reduces to ETD-1
+      (no forcing-history term); intermediate values trade ETD-2
+      accuracy for first-order dissipation.
+
     Notes
     -----
     The constitutive form here yields slightly different (yet
@@ -2060,12 +2075,114 @@ class ViscoPlasticExplicitElastic(ViscoElasticPlasticFlowModel):
     rate-form viscoplastic Maxwell ODE.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Damping knobs (default = no damping, full requested-order behaviour)
+        self._bdf_blend = 1.0
+        self._etd_blend = 1.0
+
+    @property
+    def bdf_blend(self):
+        r"""BDF coefficient blending α ∈ [0, 1].  **Damping knob.**
+
+        Linearly mixes BDF-1 and the requested-order coefficients:
+        ``c = (1-α)·c_BDF1 + α·c_requested_order``.  ``α=1`` (default) is
+        no blend.  ``α<1`` introduces first-order dissipation that helps
+        stabilise BDF-2 on tight-yield problems.
+        """
+        return self._bdf_blend
+
+    @bdf_blend.setter
+    def bdf_blend(self, value):
+        if not (0.0 <= float(value) <= 1.0):
+            raise ValueError(f"bdf_blend must be in [0, 1], got {value}")
+        self._bdf_blend = float(value)
+        self._is_setup = False
+        self._solver_is_setup = False
+
+    @property
+    def etd_blend(self):
+        r"""ETD-2 forcing-history blending β ∈ [0, 1].  **Damping knob.**
+
+        Scales the ``(φ-α)·ε̇_old`` contribution in the ETD-2 trial stress.
+        ``β=1`` (default) is full ETD-2.  ``β=0`` reduces the time-stepping
+        to ETD-1 (φ → α effectively, forcing-history term vanishes).
+        Intermediate values trade ETD-2 accuracy for first-order dissipation
+        in the forcing-history contribution — useful for stabilising long
+        runs over tight-yield problems.
+
+        Has no effect for ``integrator != 'etd'`` or for ``order=1``
+        (the (φ-α) factor is zero by construction in those cases).
+        """
+        return self._etd_blend
+
+    @etd_blend.setter
+    def etd_blend(self, value):
+        if not (0.0 <= float(value) <= 1.0):
+            raise ValueError(f"etd_blend must be in [0, 1], got {value}")
+        self._etd_blend = float(value)
+        self._is_setup = False
+        self._solver_is_setup = False
+
+    def _update_bdf_coefficients(self):
+        """BDF coefficient update with optional first-order blending.
+
+        Same as parent's BDF update plus, if ``self._bdf_blend < 1`` and
+        ``order >= 2``, a linear mix with BDF-1 coefficients to add
+        first-order numerical dissipation. See :py:attr:`bdf_blend`.
+        """
+        # Defer to parent for the standard coefficient computation,
+        # then re-blend if needed. Parent stores result in
+        # ``self._bdf_c0..3.sym``. We need to recompute and blend.
+        from underworld3.systems.ddt import _bdf_coefficients
+
+        order = self._order
+        if self.Unknowns is not None and self.Unknowns.DFDt is not None:
+            DDt = self.Unknowns.DFDt
+            try:
+                dt_current = float(self.Parameters.dt_elastic.sym)
+            except (TypeError, ValueError):
+                dt_current = None
+            dt_history = getattr(DDt, "_dt_history", []) or []
+            if order > getattr(DDt, "effective_order", order):
+                order = DDt.effective_order
+            coeffs = _bdf_coefficients(order, dt_current, dt_history)
+        else:
+            coeffs = _bdf_coefficients(order, None, [])
+
+        # BDF order blending
+        alpha = self._bdf_blend
+        if alpha < 1 and order >= 2:
+            if self.Unknowns is not None and self.Unknowns.DFDt is not None:
+                coeffs_o1 = _bdf_coefficients(1, dt_current, dt_history)
+            else:
+                coeffs_o1 = _bdf_coefficients(1, None, [])
+            while len(coeffs_o1) < len(coeffs):
+                coeffs_o1.append(sympy.Integer(0))
+            coeffs = [
+                (1 - alpha) * c1 + alpha * ck
+                for c1, ck in zip(coeffs_o1, coeffs)
+            ]
+
+        while len(coeffs) < 4:
+            coeffs.append(sympy.Integer(0))
+
+        self._bdf_c0.sym = coeffs[0]
+        self._bdf_c1.sym = coeffs[1]
+        self._bdf_c2.sym = coeffs[2]
+        self._bdf_c3.sym = coeffs[3]
+
     def stress(self):
         r"""Yield-on-total operator-split stress.
 
         Build :math:`\sigma^\mathrm{trial} = 2\,\eta_\mathrm{unclipped}\,
         E_\mathrm{eff}` from the base class's pure-VE machinery, then
         apply softmin yield clip on the total. See class docstring.
+
+        For ``integrator='etd'`` order=2 with ``etd_blend < 1``, the
+        forcing-history contribution :math:`(\varphi-\alpha)\dot\varepsilon^*`
+        is scaled by ``etd_blend`` for additional first-order dissipation
+        (see :py:attr:`etd_blend`).
         """
         # Non-elastic / no DDt fallback — just the active term.
         if not self.is_elastic or self.Unknowns.DFDt is None:
@@ -2085,6 +2202,27 @@ class ViscoPlasticExplicitElastic(ViscoElasticPlasticFlowModel):
             eta_unclipped.sym if hasattr(eta_unclipped, 'sym') else eta_unclipped
         )
         sigma_trial = 2 * eta_unclipped_sym * self.E_eff.sym
+
+        # ETD-2 forcing-history damping: scale (φ-α)·ε̇_old contribution
+        # by etd_blend. Effectively subtracts (1-β) of the existing
+        # forcing-history term from σ_trial.
+        if (
+            self._integrator == "etd"
+            and self._order == 2
+            and self.Unknowns.DFDt.forcing_star is not None
+            and self._etd_blend < 1.0
+        ):
+            DDt = self.Unknowns.DFDt
+            forcing_star_sym = DDt.forcing_star.sym
+            alpha_sym = DDt._exp_alpha
+            phi_sym = DDt._exp_phi
+            # 2·η·E_eff already includes 2·η·(φ-α)·ε̇_old. Subtract (1-β)
+            # times that to scale the contribution down to β·full.
+            damping_correction = (
+                (1.0 - self._etd_blend) * 2 * eta_unclipped_sym
+                * (phi_sym - alpha_sym) * forcing_star_sym
+            )
+            sigma_trial = sigma_trial - damping_correction
 
         # Yield-stress = ∞ → no plastic correction
         yield_stress = self.Parameters.yield_stress
