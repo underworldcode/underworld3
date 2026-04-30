@@ -63,7 +63,8 @@ def main():
         ("v5b_bdf1",              "v5b BDF-1",                     "#2ca02c", "-",  2.5),
         ("v5b_etd1",              "v5b ETD-1",                     "#ff7f0e", ":",  2.0),
         ("v5b_bdf2",              "v5b BDF-2 (no damping)",        "#9467bd", "--", 2.0),
-        ("v5b_bdf2_blend25",      "v5b BDF-2 (bdf_blend=0.25)",    "#9467bd", "-",  1.5),
+        ("v5b_bdf2_blend25",      "v5b BDF-2 (bdf_blend=0.25)",    "#9467bd", ":",  1.5),
+        ("v5b_bdf2_blend10",      "v5b BDF-2 (bdf_blend=0.10)",    "#9467bd", "-",  1.5),
         ("v5b_etd2",              "v5b ETD-2 (no damping)",        "#d62728", "--", 2.0),
         ("v5b_etd2_blend25",      "v5b ETD-2 (etd_blend=0.25)",    "#d62728", "-",  1.5),
     ]

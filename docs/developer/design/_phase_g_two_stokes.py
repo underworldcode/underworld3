@@ -1102,6 +1102,7 @@ def main():
         ("v3_baseline_const_eta", "v3", False, False, None,  None,  None, 1.0, 1.0),  # baseline
         ("v5b_bdf1",              "v5", None,  None,  False, "bdf", 1,    1.0, 1.0),
         ("v5b_bdf2",              "v5", None,  None,  False, "bdf", 2,    1.0, 1.0),
+        ("v5b_bdf2_blend10",      "v5", None,  None,  False, "bdf", 2,    0.10, 1.0),  # heavily damped BDF-2
         ("v5b_bdf2_blend25",      "v5", None,  None,  False, "bdf", 2,    0.25, 1.0),  # damped BDF-2
         ("v5b_etd1",              "v5", None,  None,  False, "etd", 1,    1.0, 1.0),
         ("v5b_etd2",              "v5", None,  None,  False, "etd", 2,    1.0, 1.0),
