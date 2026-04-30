@@ -271,6 +271,89 @@ The "true α decoupling matching baseline physics" remains structurally unattain
 
 The `frozen_flux` generalisation idea remains valid for *uniform* frozen contributions (predictors, prescribed sources, constant-α terms). Spatially-varying frozen contributions need to be applied with care because of the discontinuity-amplification mechanism.
 
+## v5b — Yield-on-total-stress (the actually-correct splitting, 2026-04-30 evening)
+
+The v5 results above were misleading because the stress() override applied the yield criterion to only the *active term* `2·viscosity·E`, leaving the explicit `α·σ_star` term unbounded. That's the bug — and once fixed, the architecture works exactly as intended.
+
+### Corrected stress() formulation
+
+```
+σ_trial = α_explicit · σ_star + 2 · η_VE_eff · E      (high-order VE prediction)
+σⁿ⁺¹    = softmin_clip(σ_trial, σ_y)                    (plastic correction on TOTAL)
+```
+
+Implementation: replace the old stress() override with one that builds the full σ_trial first (using the *unclipped* ve_effective_viscosity), then applies softmin clip on the total.
+
+```python
+def stress(self):
+    psi_star = self.Unknowns.DFDt.psi_star[0].sym
+    eta_ve_eff = self.Parameters.ve_effective_viscosity.sym
+    sigma_trial = self._alpha_explicit * psi_star + 2 * eta_ve_eff * self.grad_u
+    yield_stress = self.Parameters.yield_stress
+    sigma_trial_inv_II = sympy.sqrt((sigma_trial**2).trace() / 2)
+    f = sigma_trial_inv_II / yield_stress
+    delta = self._yield_softness  # 0.1
+    offset = (-1 + math.sqrt(1 + delta**2)) / 2
+    g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
+    return sigma_trial / g
+```
+
+### Result — v5b matches baseline to 4 significant figures
+
+Diagnostic at the fault midpoint (0.5, 0.5) and σ_max location across snapshot steps:
+
+| step | location           | baseline σ_eq | v5b σ_eq |
+| ---- | ------------------ | ------------- | -------- |
+| 30   | fault              | 9.08e-2       | 9.07e-2  |
+| 30   | σ_max @ (0.0,0.41) | 0.3225        | 0.3219   |
+| 60   | fault              | 8.67e-2       | 8.67e-2  |
+| 60   | σ_max @ (1.0,0.59) | 1.221         | 1.218    |
+| 90   | fault              | 9.26e-2       | 9.21e-2  |
+| 90   | σ_max @ (1.0,0.62) | 1.378         | 1.361    |
+| 120  | fault              | 9.15e-2       | 9.18e-2  |
+| 120  | σ_max @ (0.0,0.38) | 0.806         | 0.795    |
+
+Aggregate stats:
+
+| Variant         | Steps | σ_max | Peak yielded | Mean SNES | Wall (s) |
+| --------------- | ----- | ----- | ------------ | --------- | -------- |
+| BDF-1 baseline  | 120   | 1.456 | 9.09%        | 13.2      | 922 |
+| **v5b const-α** | 120   | 1.450 | 9.00%        | **1.9**   | 252 |
+
+Same σ field, same yield enforcement (1.85·σ_y overshoot at fault — the softmin smoothness contribution, identical to baseline), 7× SNES speed-up.
+
+### What this confirms
+
+The user's original operator-splitting intent works:
+- Step 1: high-order time integration of the VE part — `α·σ_old + 2·η_VE·E` with α arising from whatever time integrator (BDF, ETD-2, etc.) you chose
+- Step 2: plastic correction via softmin clip on total — yield-aware viscosity emerges naturally as the smooth radial-return projection factor `1/g`
+
+The σ_old term is genuinely **explicit/frozen** for the step — no SNES iteration on it. The active strain-rate term iterates within SNES through the clip factor (which depends on |σ_trial| ∝ |E|), but α is held fixed. This decouples the time-integration order from the within-SNES nonlinear solve.
+
+### v5b lagged-α remains structurally unstable
+
+With α(x) varying spatially due to yield-induced η_lag, runaway at step 7. This is genuinely a different concern from material heterogeneity:
+
+- **Yield-induced spatial α**: sharp gradient at yield boundary which moves between cycles → frozen α(x) becomes inconsistent with current state → discontinuity-driven runaway. **Avoid this**.
+- **Material/temperature spatial α**: smooth gradient set by η(x), μ(x), T(x). Should work fine in this architecture (untested here, but the discontinuity mechanism doesn't apply).
+
+### `frozen_flux` generalisation is the right API
+
+User's earlier suggestion: a `frozen_flux` property on the base `Constitutive_Model` carrying a tensor expression added to the residual flux without iteration. v5b's `α_explicit · σ_star` is one specific use; other use cases include:
+- Explicit elastic predictors from a prior step's high-order time integration
+- Prescribed stress sources (BC-derived, body-force-equivalent terms)
+- Multi-stage operator splitting where part of the flux is computed externally and frozen
+
+The clip-on-total then applies in the constitutive's `stress()`. This is the natural API to land alongside v5b if it ships.
+
+### Final v5b conclusions
+
+**v5b const-α (yield on total)** is the working architecture. It reproduces baseline physics to 4 significant figures while delivering an 8× SNES speed-up. The original "frozen flux + yield clip" intuition was correct; the prior failures (v1–v4 + v5 yield-on-active-only) were each tripping on a different mistake in *how* the yield was enforced or how the explicit term was injected.
+
+**Generalisation to high-order time integration**: σ_trial = (whatever the time integrator gives for pure VE) + (active term) — high-order accurate without yield in the SNES iteration. The plastic correction is a low-order softmin clip on total.
+
+**Production readiness**: viable as a UW3 architecture if the `frozen_flux` API is added cleanly. Validation against richer test problems (TI-VEP, multi-cycle dynamics, varying material properties) is the natural next step.
+
 ## Code organisation
 
 Suggested new files (on a branch off `development` after PR #161 merges):

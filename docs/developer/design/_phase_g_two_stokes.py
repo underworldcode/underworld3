@@ -252,10 +252,40 @@ class ViscoPlasticExplicitElastic(
                 "before solving (init kwarg or set_alpha_explicit())."
             )
         psi_star_sym = self.Unknowns.DFDt.psi_star[0].sym
-        return (
-            2 * self.viscosity * self.grad_u
-            + self._alpha_explicit * psi_star_sym
+
+        # Build trial stress = high-order VE prediction (σ_old explicit,
+        # active term with raw VE-effective viscosity, no yield).
+        # ve_effective_viscosity is the BDF-1 effective η with the
+        # current (constant) shear_viscosity_0 = η_VE.
+        eta_ve_eff = self.Parameters.ve_effective_viscosity.sym
+        sigma_trial = (
+            self._alpha_explicit * psi_star_sym
+            + 2 * eta_ve_eff * self.grad_u
         )
+
+        # Apply yield correction on the TOTAL trial stress: σⁿ⁺¹ =
+        # softmin_clip(σ_trial, σ_y). This is the radial-return-style
+        # plastic correction. δ-smoothness controlled by yield_softness
+        # so the SNES Jacobian remains smooth at the yield boundary.
+        # Equivalent in the elastic limit (|σ_trial| ≤ σ_y): factor → 1.
+        # Equivalent in the deep-yield limit (|σ_trial| >> σ_y):
+        # factor → σ_y/|σ_trial|, giving |σⁿ⁺¹| → σ_y exactly.
+        yield_stress = self.Parameters.yield_stress
+        if yield_stress.sym == sympy.oo:
+            return sigma_trial
+
+        delta = self._yield_softness  # default 0.1 from base class
+        sigma_trial_inv_II = sympy.sqrt((sigma_trial**2).trace() / 2)
+        # Smooth-min of (sigma_trial_inv_II, yield_stress) divided by
+        # sigma_trial_inv_II — i.e., factor ≤ 1 that scales σ_trial down
+        # to yield surface in the yielded limit. Use the same
+        # softplus-based smooth-min as the base class viscosity property:
+        f = sigma_trial_inv_II / yield_stress
+        import math as _math
+        offset = (-1 + _math.sqrt(1 + delta**2)) / 2
+        g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
+        # σⁿ⁺¹ = σ_trial · min(1, σ_y/|σ_trial|) ≈ σ_trial / g
+        return sigma_trial / g
 
 
 def _build_stokes(setup, label, use_lag, use_predictor):
