@@ -2005,6 +2005,104 @@ class MaxwellExponentialFlowModel(ViscoElasticPlasticFlowModel):
         )
 
 
+class ViscoPlasticExplicitElastic(ViscoElasticPlasticFlowModel):
+    r"""VEP with operator-split yield-on-total architecture.
+
+    Like :class:`ViscoElasticPlasticFlowModel` but with the elastic-history
+    contribution and the yield correction structured so the time
+    integrator and the nonlinear yield iteration are decoupled:
+
+    .. math::
+        \sigma^{n+1} &= \mathrm{softmin\_clip}(\sigma^\mathrm{trial},
+                                                \sigma_y) \\
+        \sigma^\mathrm{trial} &= 2\,\eta_\mathrm{unclipped}\,
+                                   \dot\varepsilon_\mathrm{eff}
+
+    The trial stress is the *unclipped* high-order VE prediction —
+    :py:attr:`E_eff` carries the integrator-specific elastic-history
+    coupling (BDF-1, BDF-2, ETD-1, ETD-2 all handled uniformly), and
+    :py:attr:`_unclipped_ve_viscosity` is the matching pure-VE viscosity
+    (no yield, no softmin). The yield correction is then a softmin clip
+    on the *total* trial stress.
+
+    Compared to the parent class, where the σ_star coefficient is
+    :math:`\mathrm{viscosity}/(\mu\,\Delta t)` — the *iterated* yield-aware
+    viscosity divided by the elastic time factor — this class freezes
+    the σ_star (and ε̇_old for ETD-2) contributions for the timestep.
+    Within SNES only the bare strain-rate term in :math:`E_\mathrm{eff}`
+    iterates, through the yield-clip factor. The relaxation rate is
+    decoupled from the within-step nonlinear iteration.
+
+    **Trade-offs**
+
+    * **First-order integrators (BDF-1, ETD-1)**: matches parent-class
+      σ trajectory to within ~2% on the Phase G isotropic VEP harmonic
+      test, with ~7× fewer SNES iterations per step (mean 1.9 vs 13.2).
+    * **Higher-order integrators (BDF-2, ETD-2)**: extends working range
+      significantly compared to the parent class (which blows up almost
+      immediately under tight yield) — but is not yet sufficient for
+      full stability across long runs on tight-yield problems. The
+      `bdf_blend` / `etd_blend` damping knobs (TODO) help.
+
+    See ``docs/developer/design/VEP_TWO_STOKES_OPERATOR_SPLIT.md`` for
+    the full investigation history (Phase G v5b).
+
+    Notes
+    -----
+    The constitutive form here yields slightly different (yet
+    physically equivalent within softmin tolerance) plastic-flow
+    direction in the deeply yielded limit compared to the parent class,
+    because the yield clip projects the total trial stress onto the
+    yield surface rather than scaling the viscosity factor on
+    :math:`E_\mathrm{eff}`. For the BDF and ETD integrators tested,
+    the difference is ≲1% in σ amplitude on the Phase G harness; both
+    are valid radial-return-style approximations of the underlying
+    rate-form viscoplastic Maxwell ODE.
+    """
+
+    def stress(self):
+        r"""Yield-on-total operator-split stress.
+
+        Build :math:`\sigma^\mathrm{trial} = 2\,\eta_\mathrm{unclipped}\,
+        E_\mathrm{eff}` from the base class's pure-VE machinery, then
+        apply softmin yield clip on the total. See class docstring.
+        """
+        # Non-elastic / no DDt fallback — just the active term.
+        if not self.is_elastic or self.Unknowns.DFDt is None:
+            return 2 * self.viscosity * self.grad_u
+
+        # σ_trial = 2 · η_VE_unclipped · E_eff
+        # The base class's _unclipped_ve_viscosity returns the
+        # integrator-aware *pure-VE* viscosity (no yield):
+        #   BDF: ve_effective_viscosity (BDF-reduced from η_VE)
+        #   ETD: shear_viscosity_0 (raw η_VE; the time factor is in
+        #        E_eff via the (1-φ) coefficient)
+        # E_eff carries the integrator-specific elastic-history coupling
+        # (σ_star and, for ETD-2, ε̇_old). Both are frozen for the
+        # timestep — only the bare E in E_eff iterates within SNES.
+        eta_unclipped = self._unclipped_ve_viscosity
+        eta_unclipped_sym = (
+            eta_unclipped.sym if hasattr(eta_unclipped, 'sym') else eta_unclipped
+        )
+        sigma_trial = 2 * eta_unclipped_sym * self.E_eff.sym
+
+        # Yield-stress = ∞ → no plastic correction
+        yield_stress = self.Parameters.yield_stress
+        if yield_stress.sym == sympy.oo:
+            return sigma_trial
+
+        # Apply softmin clip on the *total* trial stress.
+        # σⁿ⁺¹ = σ_trial / g, where g ≥ 1 is the soft-min scaling factor
+        # such that |σⁿ⁺¹| ≤ σ_y. Same softplus-based smooth-min as the
+        # parent class's `viscosity` property — keeps SNES Jacobian smooth.
+        delta = self._yield_softness  # default 0.1 from parent
+        import math as _math
+        sigma_trial_inv_II = sympy.sqrt((sigma_trial**2).trace() / 2)
+        f = sigma_trial_inv_II / yield_stress
+        offset = (-1 + _math.sqrt(1 + delta**2)) / 2
+        g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
+        return sigma_trial / g
+
 
 ###
 

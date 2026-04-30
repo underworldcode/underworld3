@@ -189,8 +189,13 @@ def _save_spatial_snapshot(label, step_idx, t, V_top_value, stokes, cm,
 
 
 # ===========================================================================
-# v5: Custom constitutive law — α-decoupled BDF-1 VEP
+# v5b: Custom constitutive law — operator-split yield-on-total VEP
 # ===========================================================================
+# As of 2026-05-01 this class lives in
+# ``src/underworld3/constitutive_models.py`` as
+# ``uw.constitutive_models.ViscoPlasticExplicitElastic``. The local copy
+# below mirrors that production class so this runner remains self-contained
+# (and runnable from worktrees that may not have the production class yet).
 class ViscoPlasticExplicitElastic(
     uw.constitutive_models.ViscoElasticPlasticFlowModel
 ):
