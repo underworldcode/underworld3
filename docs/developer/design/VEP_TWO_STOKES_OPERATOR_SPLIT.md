@@ -249,6 +249,28 @@ User's suggestion (after seeing v5 work): make `frozen_flux` a property of the b
 
 **Final net assessment**: v5 is the working architecture for "explicit elastic + visco-plastic solver." It produces a different physics trajectory than baseline (because α decoupling IS a physics change, not just a numerical reorganisation) but is dramatically better-conditioned. Whether v5 ships as a UW3 production option depends on validation against physics expectations on a wider range of problems; this branch establishes the architecture is viable and identifies `frozen_flux` as the natural generalisation pattern.
 
+### v5 follow-up (2026-04-30 evening) — α-formula bug + structural lagged-α failure
+
+After the initial v5 result, instrumented re-runs with multi-step spatial checkpoints (steps 30/60/90/120) and a lower η_lag floor (1e-3 instead of 1e-1) revealed two issues with the lagged-α variant:
+
+1. **α-formula bug (resolved)**: The original v5_lagged-α used `α = η_lag/(η_lag + μΔt)`, treating η_lag as raw elastic viscosity. But η_lag stores `cm.viscosity` which is the *post-BDF-reduction* effective viscosity. The correct match to baseline's σ_star coefficient (`viscosity/(μΔt)`) is `α = η_lag/(μΔt)`. With the wrong formula, bulk α was 0.488 instead of 0.952 — half-retention explained the 13× σ-amplitude shortfall.
+
+2. **Structural failure of lagged-α (unresolvable)**: With the corrected formula and proper η_lag floor (so η_lag genuinely varies spatially as cm.viscosity does), v5_lagged-α runs away at step 8. The runaway is the same yield-boundary discontinuity that killed v4: with α(x) varying sharply across the yield boundary, the `α(x)·σ_star` term in the flux acts as a sharp-gradient stress source that drives v_pl overshoot. Mathematically equivalent to v4's body force `−∇·(α·σ_hist)` (just by divergence theorem) — moving it inside the flux doesn't smooth the gradient. The first stable lagged-α run was a numerical accident: the high floor (0.1 > cm.viscosity_max ≈ 0.0476) clamped η_lag to a uniform 0.1 everywhere, making it effectively const-α at α=0.667. Once the floor allows real spatial variation, the architecture collapses.
+
+**Why baseline tolerates spatial α variation but v5_lagged doesn't**: Baseline's `viscosity/(μΔt)` is *iterated within SNES*. As Newton refines the velocity, viscosity at every quad point updates to the current state — yield-zone viscosity, fault-tip stress concentration, etc. all reach self-consistency. v5_lagged freezes α(x) from the prior step, so within the current step the SNES sees a fixed-spatial-pattern coefficient that may not match the current state's natural pattern. The mismatch drives instability when the loading reverses or yields shift.
+
+### Final v5 conclusions
+
+| Architecture | Result | Physics |
+| --- | --- | --- |
+| v5 const-α (uniform α=0.952)         | works, 8× SNES win, 120 steps clean | **different** from baseline: no plastic acceleration of relaxation in failed zones |
+| v5 lagged-α with high floor (~0.1)   | works, but η_lag floor pinned uniform → effectively const-α at smaller α | not genuinely lagged |
+| v5 lagged-α with low floor (~1e-3)   | runaway at step 8 | structural — equivalent to v4 pathology |
+
+The "true α decoupling matching baseline physics" remains structurally unattainable through frozen-α architectures. baseline's α-yield coupling **must** iterate inside SNES to remain stable when yield-zones move spatially. The v5 const-α architecture is a viable production option **if** you accept the physics change (no plastic acceleration of relaxation in yielded zones) — appropriate for problems where this is qualitatively acceptable, gives an 8× SNES speed-up.
+
+The `frozen_flux` generalisation idea remains valid for *uniform* frozen contributions (predictors, prescribed sources, constant-α terms). Spatially-varying frozen contributions need to be applied with care because of the discontinuity-amplification mechanism.
+
 ## Code organisation
 
 Suggested new files (on a branch off `development` after PR #161 merges):

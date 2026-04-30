@@ -51,8 +51,17 @@ TAU_Y_BULK  = 200.0
 THETA_DEG = 15.0
 RES = 32
 
-ETA_LAG_FLOOR = 1.0e-1     # floor at 10× below η_VE — keeps solver-tractable contrast
+ETA_LAG_FLOOR = 1.0e-3     # below physical yield range so floor isn't activated
 ETA_LAG_CEIL  = ETA         # raw elastic upper bound
+
+# Save spatial snapshots at these step indices (across the run, not just end)
+# so we can compare fields at multiple loading-cycle phases.
+SNAPSHOT_STEPS = (30, 60, 90, 120)
+
+# Point-wise diagnostics: σ_eq at fault midpoint (centre of weak zone)
+# and at a bulk reference point (well inside the elastic region).
+DIAG_FAULT_POINT = np.array([[0.5 * W, 0.5 * H]])     # mesh centre
+DIAG_BULK_POINT  = np.array([[0.25 * W, 0.75 * H]])   # NW quadrant (in bulk)
 
 OUT_DIR = "output"
 
@@ -102,7 +111,14 @@ def _build_setup(label):
         f"eta_lag_{label}", mesh, 1, degree=2,
         continuous=True, vtype=VarType.SCALAR,
     )
-    eta_lag.array[...] = ETA  # init: raw elastic everywhere
+    # η_lag stores the EFFECTIVE (post-BDF-reduction) viscosity, so it
+    # should be initialised to ve_eff_pure = η_VE·μΔt/(η_VE+μΔt), not raw η_VE.
+    # Otherwise step 1 of the lagged-α variant uses α = η_lag/μΔt = 20 (huge)
+    # which inherits a wrong-state ψ_star post-solve and accumulates over
+    # subsequent steps. (Doesn't matter for the η_lag injection variant
+    # which uses η_lag in shear_viscosity_0 and gets BDF-reduction applied
+    # downstream — but harmless to be consistent.)
+    eta_lag.array[...] = ETA * MU * DT / (ETA + MU * DT)
 
     # σ_hist (rank-2 sym tensor) — externally-managed stress history for
     # the v4 (explicit-elastic) variant only. Stores σⁿ from the prior
@@ -130,6 +146,46 @@ def _div_rank2_sym(tensor_sym, mesh):
         [tensor_sym[0, 0].diff(cs_x) + tensor_sym[0, 1].diff(cs_y)],
         [tensor_sym[1, 0].diff(cs_x) + tensor_sym[1, 1].diff(cs_y)],
     ])
+
+
+def _save_spatial_snapshot(label, step_idx, t, V_top_value, stokes, cm,
+                           sigma_coords, sigma_arr):
+    """Save spatial fields (velocity, ε̇, σ, viscosity) at a given step.
+
+    Saved as ``output/phase_g_{label}_spatial_step{step_idx:03d}.npz``
+    so multiple snapshots through the run are kept side-by-side.
+    """
+    u = stokes.Unknowns.u
+    u_coords = np.asarray(u.coords).copy()
+    u_array = np.asarray(u.array).reshape(-1, 2).copy()
+
+    E_sym = stokes.Unknowns.E
+    edot_xx = np.asarray(uw.function.evaluate(E_sym[0, 0], sigma_coords)).flatten()
+    edot_xy = np.asarray(uw.function.evaluate(E_sym[0, 1], sigma_coords)).flatten()
+    edot_yy = np.asarray(uw.function.evaluate(E_sym[1, 1], sigma_coords)).flatten()
+    edot_inv_II = np.sqrt(0.5 * (edot_xx**2 + 2 * edot_xy**2 + edot_yy**2))
+
+    viscosity = np.asarray(uw.function.evaluate(cm.viscosity, sigma_coords)).flatten()
+
+    sigma_eq = np.sqrt(1.5 * (sigma_arr * sigma_arr).sum(axis=(1, 2)))
+
+    out_path = os.path.join(
+        OUT_DIR, f"phase_g_{label}_spatial_step{int(step_idx):03d}.npz"
+    )
+    np.savez(
+        out_path,
+        step_idx=np.array(int(step_idx)),
+        t=np.array(t),
+        V_top=np.array(V_top_value),
+        u_coords=u_coords, u_array=u_array,
+        sigma_coords=np.asarray(sigma_coords),
+        sigma=sigma_arr,
+        sigma_eq=sigma_eq,
+        edot_xx=edot_xx, edot_xy=edot_xy, edot_yy=edot_yy,
+        edot_inv_II=edot_inv_II,
+        viscosity=viscosity,
+    )
+    print(f"  snapshot @ step {step_idx} → {out_path}", flush=True)
 
 
 # ===========================================================================
@@ -520,6 +576,18 @@ def run_lag_case(label, n_periods=1.5, use_lag=False, use_predictor=False):
                 flush=True,
             )
 
+        # Spatial snapshot at instrumented checkpoint steps
+        if step_idx in SNAPSHOT_STEPS:
+            try:
+                sigma_arr_now = np.asarray(DFDt.psi_star[0].array).copy()
+                _save_spatial_snapshot(
+                    label, step_idx, t_end_step, v_now,
+                    stokes, cm, sigma_coords, sigma_arr_now,
+                )
+            except Exception as exc:
+                print(f"  snapshot at step {step_idx} failed: {exc}",
+                      flush=True)
+
         if (sigma_eq_per_step[-1] > 100.0
                 or u_y_max_per_step[-1] > 10.0):
             print(f"  *** runaway at step {step_idx} — breaking ***",
@@ -715,6 +783,18 @@ def run_v4_explicit_elastic(label, n_periods=1.5, use_yield_lagged_alpha=False):
                 flush=True,
             )
 
+        # Spatial snapshot at instrumented checkpoint steps
+        if step_idx in SNAPSHOT_STEPS:
+            try:
+                sigma_arr_now = np.asarray(DFDt.psi_star[0].array).copy()
+                _save_spatial_snapshot(
+                    label, step_idx, t_end_step, v_now,
+                    stokes, cm, sigma_coords, sigma_arr_now,
+                )
+            except Exception as exc:
+                print(f"  snapshot at step {step_idx} failed: {exc}",
+                      flush=True)
+
         if (sigma_eq_per_step[-1] > 100.0
                 or u_y_max_per_step[-1] > 10.0):
             print(f"  *** runaway at step {step_idx} — breaking ***",
@@ -782,10 +862,18 @@ def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=Fals
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=setup["p"])
 
     # α_explicit: scalar for const variant, sympy expression w/ meshvar for lagged.
+    # IMPORTANT: η_lag stores the EFFECTIVE (post-BDF-reduction) viscosity
+    # from cm.viscosity, NOT the raw elastic η. Baseline's σ_star coefficient
+    # in the flux is `viscosity/(μΔt)` — that's the right reference. So
+    # α_lagged = η_lag/(μΔt). Earlier we had η_lag/(η_lag+μΔt) which would
+    # double-apply BDF reduction (giving α=0.488 in bulk instead of 0.952).
     if use_yield_lagged_alpha:
         eta_lag_scalar = eta_lag.sym[0, 0]
-        alpha_explicit = eta_lag_scalar / (eta_lag_scalar + MU * DT)
+        alpha_explicit = eta_lag_scalar / (MU * DT)
     else:
+        # Constant α from raw η_VE: α = η_VE/(η_VE + μΔt) — that's the
+        # correct retention factor in the pure-VE limit. This is unchanged
+        # because we're starting from raw η_VE here, not from η_eff.
         alpha_explicit = sympy.Float(ETA / (ETA + MU * DT))
 
     cm = ViscoPlasticExplicitElastic(
@@ -913,6 +1001,18 @@ def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=Fals
                 flush=True,
             )
 
+        # Spatial snapshot at instrumented checkpoint steps
+        if step_idx in SNAPSHOT_STEPS:
+            try:
+                sigma_arr_now = np.asarray(DFDt.psi_star[0].array).copy()
+                _save_spatial_snapshot(
+                    label, step_idx, t_end_step, v_now,
+                    stokes, cm, sigma_coords, sigma_arr_now,
+                )
+            except Exception as exc:
+                print(f"  snapshot at step {step_idx} failed: {exc}",
+                      flush=True)
+
         if (sigma_eq_per_step[-1] > 100.0
                 or u_y_max_per_step[-1] > 10.0):
             print(f"  *** runaway at step {step_idx} — breaking ***",
@@ -962,8 +1062,6 @@ def main():
     cases = [
         # (label, kind, use_lag, use_predictor, use_yield_lagged_alpha)
         ("v3_baseline_const_eta", "v3", False, False, None),  # baseline reference
-        ("v4_const_alpha",        "v4", None,  None,  False), # body-force decoupling, const α
-        ("v4_lagged_alpha",       "v4", None,  None,  True),  # body-force decoupling, lagged α
         ("v5_const_alpha",        "v5", None,  None,  False), # custom constitutive, const α
         ("v5_lagged_alpha",       "v5", None,  None,  True),  # custom constitutive, lagged α
     ]
