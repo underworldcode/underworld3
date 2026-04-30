@@ -132,6 +132,76 @@ def _div_rank2_sym(tensor_sym, mesh):
     ])
 
 
+# ===========================================================================
+# v5: Custom constitutive law — α-decoupled BDF-1 VEP
+# ===========================================================================
+class ViscoPlasticExplicitElastic(
+    uw.constitutive_models.ViscoElasticPlasticFlowModel
+):
+    """BDF-1 VEP with the elastic relaxation α decoupled from the
+    within-SNES yield-aware viscosity.
+
+    Standard BDF-1 VEP flux (from base class ``stress()``):
+        flux = 2·viscosity·E_eff
+             = 2·viscosity·E + (viscosity/(μΔt))·σ_star
+
+    Notice the σ_star coefficient is the yield-aware ``viscosity``
+    that SNES iterates — so the relaxation rate IS coupled to the
+    plastic-iteration viscosity. That's what we're trying to undo.
+
+    Custom flux here:
+        flux = 2·viscosity·E + α_explicit·σ_star
+
+    where:
+      * ``viscosity`` is the standard yield-aware effective viscosity
+        (softmin of η_eff and σ_y/(2|ε̇|)) — iterated within SNES, used
+        only for the active strain-rate term;
+      * ``α_explicit`` is a precomputed scalar or meshvar expression
+        (set via ``set_alpha_explicit()``), frozen for the whole
+        timestep — never iterated inside SNES.
+
+    Two flavours of α_explicit are useful:
+      - constant: ``α = η_VE/(η_VE + μΔt)`` (pure-VE relaxation,
+        truly independent of yield);
+      - yield-lagged: ``α(x) = η_lag(x)/(η_lag(x) + μΔt)`` from the
+        prior step's converged effective viscosity (so failed zones
+        still relax faster, but the spatial structure is locked in
+        before the SNES iteration starts, not iterated within it).
+
+    Notes:
+      * The ``viscosity`` property still uses ``E_eff`` for the yield
+        criterion (``vp_eff = σ_y/(2|E_eff|_II)``). That's the same
+        coupling baseline has — kept here so the yield clip is
+        comparable, only the σ_star *coefficient* differs.
+      * Keeps psi_star management to the DDt; no manual zeroing.
+    """
+
+    def __init__(self, *args, alpha_explicit=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._alpha_explicit = alpha_explicit
+
+    def set_alpha_explicit(self, alpha_sym):
+        self._alpha_explicit = alpha_sym
+        # Force re-setup so the new flux expression is picked up.
+        self._is_setup = False
+        self._solver_is_setup = False
+
+    def stress(self):
+        # Non-elastic / no DDt fallback — just the active term.
+        if not self.is_elastic or self.Unknowns.DFDt is None:
+            return 2 * self.viscosity * self.grad_u
+        if self._alpha_explicit is None:
+            raise RuntimeError(
+                "ViscoPlasticExplicitElastic: alpha_explicit must be set "
+                "before solving (init kwarg or set_alpha_explicit())."
+            )
+        psi_star_sym = self.Unknowns.DFDt.psi_star[0].sym
+        return (
+            2 * self.viscosity * self.grad_u
+            + self._alpha_explicit * psi_star_sym
+        )
+
+
 def _build_stokes(setup, label, use_lag, use_predictor):
     """Stage 2 (the main yield-aware VEP solver).
 
@@ -689,13 +759,213 @@ def run_v4_explicit_elastic(label, n_periods=1.5, use_yield_lagged_alpha=False):
     print(f"  saved → {out_npz}", flush=True)
 
 
+def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=False):
+    """v5: custom constitutive law — α-decoupled BDF-1 VEP.
+
+    Uses ``ViscoPlasticExplicitElastic`` (defined above) which overrides
+    the flux to:
+        flux = 2·viscosity·E + α_explicit·σ_star
+    so the σ_star coefficient is decoupled from the yield-aware
+    viscosity that SNES iterates.
+
+    Two α flavours:
+      const       α = η_VE/(η_VE+μΔt) (uniform)
+      yield-lagged α(x) = η_lag(x)/(η_lag(x)+μΔt), refreshed per step
+                   from prior step's converged effective viscosity.
+    """
+    setup = _build_setup(label)
+    mesh = setup["mesh"]
+    eta_lag = setup["eta_lag"]
+    u = setup["u"]
+    sigma_y_sym = setup["sigma_y_sym"]
+
+    stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=setup["p"])
+
+    # α_explicit: scalar for const variant, sympy expression w/ meshvar for lagged.
+    if use_yield_lagged_alpha:
+        eta_lag_scalar = eta_lag.sym[0, 0]
+        alpha_explicit = eta_lag_scalar / (eta_lag_scalar + MU * DT)
+    else:
+        alpha_explicit = sympy.Float(ETA / (ETA + MU * DT))
+
+    cm = ViscoPlasticExplicitElastic(
+        stokes.Unknowns, integrator='bdf', order=1,
+        alpha_explicit=alpha_explicit,
+    )
+    stokes.constitutive_model = cm
+    cm.Parameters.shear_viscosity_0 = ETA
+    cm.Parameters.shear_modulus = MU
+    cm.Parameters.yield_stress = sigma_y_sym
+    cm.Parameters.shear_viscosity_min = ETA * 1.0e-3
+    cm.Parameters.strainrate_inv_II_min = 1.0e-6
+
+    stokes.saddle_preconditioner = 1.0 / cm.K
+    stokes.tolerance = 1.0e-4
+    stokes.petsc_options["ksp_type"] = "fgmres"
+    stokes.petsc_options["snes_force_iteration"] = True
+
+    V_top = expression(rf"V_{{top,{label}}}", sympy.Float(0.0), "Top BC")
+    stokes.add_essential_bc(sympy.Matrix([V_top, 0.0]), "Top")
+    stokes.add_essential_bc(sympy.Matrix([0.0, 0.0]), "Bottom")
+    stokes.add_essential_bc((sympy.oo, 0.0), "Left")
+    stokes.add_essential_bc((sympy.oo, 0.0), "Right")
+    stokes.bodyforce = sympy.Matrix([0.0, 0.0])
+
+    DFDt = stokes.Unknowns.DFDt
+
+    cx, cy = 0.5 * W, 0.5 * H
+    theta = np.radians(THETA_DEG)
+    n_x_l = -np.sin(theta); n_y_l = np.cos(theta)
+    sigma_coords = DFDt.psi_star[0].coords
+    sd = np.abs((sigma_coords[:, 0] - cx) * n_x_l
+                + (sigma_coords[:, 1] - cy) * n_y_l)
+    half_length = 0.5 * FAULT_LENGTH
+    along = (sigma_coords[:, 0] - cx) * n_y_l - (sigma_coords[:, 1] - cy) * n_x_l
+    in_extent = np.abs(along) <= half_length
+    weakness_arr = np.where(
+        in_extent,
+        (1.0 / TAU_Y_FAULT) * np.exp(-(sd / FAULT_WIDTH) ** 2)
+        + (1.0 / TAU_Y_BULK) * (1.0 - np.exp(-(sd / FAULT_WIDTH) ** 2)),
+        1.0 / TAU_Y_BULK * np.ones_like(sd),
+    )
+    sigma_y_at_nodes = 1.0 / weakness_arr
+
+    eta_coords = eta_lag.coords
+
+    trace_path = os.path.join(
+        os.path.dirname(__file__), f"_phase_g_{label}.trace.txt"
+    )
+    trace_fh = open(trace_path, "w")
+    trace_fh.write(
+        f"# Phase G v5 custom constitutive (use_yield_lagged_alpha="
+        f"{use_yield_lagged_alpha}): {label}\n"
+        f"# columns: step, t, V_top, snes, sigma_eq_max, "
+        f"u_y_max, eta_lag_min, eta_lag_max, yielded_fraction\n"
+    )
+    trace_fh.flush()
+
+    T_END = n_periods * 2.0 * np.pi / OMEGA
+    iters = []
+    sigma_eq_per_step = []
+    u_y_max_per_step = []
+    eta_lag_min_per_step = []
+    eta_lag_max_per_step = []
+    yielded_fraction_per_step = []
+
+    t_cur = 0.0
+    t0 = time.time()
+    while t_cur < T_END - 1e-9:
+        dt = min(DT, T_END - t_cur)
+        t_end_step = t_cur + dt
+        v_now = V0 * float(np.cos(OMEGA * t_end_step))
+        V_top.sym = sympy.Float(v_now)
+        cm.Parameters.dt_elastic = dt
+
+        # Record start-of-step η_lag for diagnostics
+        eta_lag_arr = np.asarray(eta_lag.array).copy()
+        eta_lag_min_per_step.append(float(eta_lag_arr.min()))
+        eta_lag_max_per_step.append(float(eta_lag_arr.max()))
+
+        try:
+            stokes.solve(zero_init_guess=False, timestep=dt)
+        except Exception as exc:
+            print(f"  step t={t_end_step:.3f}: solve raised — {exc}",
+                  flush=True)
+            break
+        snes_iters = int(stokes.snes.getIterationNumber())
+
+        # σⁿ⁺¹ now lives in psi_star[0] (DDt-projected from cm.flux).
+        sigma_arr = np.asarray(DFDt.psi_star[0].array).copy()
+        sigma_eq = np.sqrt(1.5 * (sigma_arr * sigma_arr).sum(axis=(1, 2)))
+        sigma_eq_per_step.append(float(sigma_eq.max()))
+        n_yielded = int((sigma_eq > sigma_y_at_nodes * 0.99).sum())
+        yielded_fraction_per_step.append(n_yielded / sigma_eq.size)
+        u_arr = np.asarray(u.array).reshape(-1, 2)
+        u_y_max_per_step.append(float(np.abs(u_arr[:, 1]).max()))
+
+        # If using yield-lagged α, refresh η_lag from converged viscosity
+        if use_yield_lagged_alpha:
+            visc_at_eta = np.asarray(
+                uw.function.evaluate(cm.viscosity, eta_coords)
+            ).flatten()
+            visc_at_eta = np.clip(visc_at_eta, ETA_LAG_FLOOR, ETA_LAG_CEIL)
+            eta_lag.array[...] = visc_at_eta.reshape(-1, 1, 1)
+
+        iters.append(snes_iters)
+        step_idx = len(iters)
+        trace_fh.write(
+            f"{step_idx:4d} {t_end_step:7.4f} {v_now:+.4f} "
+            f"{snes_iters:3d} "
+            f"{sigma_eq_per_step[-1]:.6e} "
+            f"{u_y_max_per_step[-1]:.6e} "
+            f"{eta_lag_min_per_step[-1]:.6e} "
+            f"{eta_lag_max_per_step[-1]:.6e} "
+            f"{yielded_fraction_per_step[-1]:.6f}\n"
+        )
+        trace_fh.flush()
+        if step_idx <= 5 or step_idx % 5 == 0:
+            print(
+                f"  step {step_idx:3d}/120  t={t_end_step:5.3f}  "
+                f"V={v_now:+.3f}  snes={snes_iters}  "
+                f"|σ|={sigma_eq_per_step[-1]:.3e}  "
+                f"|u_y|={u_y_max_per_step[-1]:.3e}  "
+                f"yielded={yielded_fraction_per_step[-1]:.2%}",
+                flush=True,
+            )
+
+        if (sigma_eq_per_step[-1] > 100.0
+                or u_y_max_per_step[-1] > 10.0):
+            print(f"  *** runaway at step {step_idx} — breaking ***",
+                  flush=True)
+            break
+
+        t_cur = t_end_step
+
+    trace_fh.close()
+
+    iters_arr = np.array(iters)
+    print(
+        f"  ran {len(iters)} steps in {time.time()-t0:.1f}s "
+        f"(use_yield_lagged_alpha={use_yield_lagged_alpha})",
+        flush=True,
+    )
+    if len(iters) > 0:
+        print(
+            f"  SNES iters: mean={iters_arr.mean():.1f} max={iters_arr.max()}",
+            flush=True,
+        )
+        print(
+            f"  σ_eq max: {max(sigma_eq_per_step):.4f}  "
+            f"|u_y|_max: {max(u_y_max_per_step):.4f}  "
+            f"yielded max: {max(yielded_fraction_per_step):.2%}",
+            flush=True,
+        )
+
+    out_npz = os.path.join(OUT_DIR, f"phase_g_{label}.npz")
+    np.savez(
+        out_npz,
+        iters=iters_arr,
+        sigma_eq_per_step=np.asarray(sigma_eq_per_step),
+        u_y_max_per_step=np.asarray(u_y_max_per_step),
+        eta_lag_min_per_step=np.asarray(eta_lag_min_per_step),
+        eta_lag_max_per_step=np.asarray(eta_lag_max_per_step),
+        yielded_fraction_per_step=np.asarray(yielded_fraction_per_step),
+        T_END=np.array(T_END),
+        n_steps=np.array(len(iters)),
+        wall_seconds=np.array(time.time() - t0),
+    )
+    print(f"  saved → {out_npz}", flush=True)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     cases = [
         # (label, kind, use_lag, use_predictor, use_yield_lagged_alpha)
         ("v3_baseline_const_eta", "v3", False, False, None),  # baseline reference
-        ("v4_const_alpha",        "v4", None,  None,  False), # α from η_VE constant
-        ("v4_lagged_alpha",       "v4", None,  None,  True),  # α from prior η_lag
+        ("v4_const_alpha",        "v4", None,  None,  False), # body-force decoupling, const α
+        ("v4_lagged_alpha",       "v4", None,  None,  True),  # body-force decoupling, lagged α
+        ("v5_const_alpha",        "v5", None,  None,  False), # custom constitutive, const α
+        ("v5_lagged_alpha",       "v5", None,  None,  True),  # custom constitutive, lagged α
     ]
     for label, kind, use_lag, use_predictor, use_lagged_alpha in cases:
         cache = os.path.join(OUT_DIR, f"phase_g_{label}.npz")
@@ -706,7 +976,7 @@ def main():
             print(f"\n=== Phase G v3 baseline ({label}) ===", flush=True)
             run_lag_case(label, n_periods=1.5,
                          use_lag=use_lag, use_predictor=use_predictor)
-        else:
+        elif kind == "v4":
             print(
                 f"\n=== Phase G v4 explicit-elastic+VP ({label}, "
                 f"use_yield_lagged_alpha={use_lagged_alpha}) ===",
@@ -714,6 +984,14 @@ def main():
             )
             run_v4_explicit_elastic(label, n_periods=1.5,
                                      use_yield_lagged_alpha=use_lagged_alpha)
+        elif kind == "v5":
+            print(
+                f"\n=== Phase G v5 custom constitutive ({label}, "
+                f"use_yield_lagged_alpha={use_lagged_alpha}) ===",
+                flush=True,
+            )
+            run_v5_custom_constitutive(label, n_periods=1.5,
+                                        use_yield_lagged_alpha=use_lagged_alpha)
 
 
 if __name__ == "__main__":

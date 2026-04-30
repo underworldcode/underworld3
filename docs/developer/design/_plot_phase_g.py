@@ -44,9 +44,9 @@ def _load_trace(label):
 
 def main():
     cases = [
-        ("v3_baseline_const_eta", "BDF-1 baseline (in-residual elasticity)", "#1f77b4", "-"),
-        ("v4_const_alpha",        "v4: explicit elastic, α=const",          "#2ca02c", "-"),
-        ("v4_lagged_alpha",       "v4: explicit elastic, α from η_lag",     "#d62728", "--"),
+        ("v3_baseline_const_eta", "BDF-1 baseline (in-residual elasticity)",  "#1f77b4", "-"),
+        ("v5_const_alpha",        "v5 custom flux, α=const",                  "#2ca02c", "-"),
+        ("v5_lagged_alpha",       "v5 custom flux, α from η_lag",             "#d62728", "--"),
     ]
     traces = {label: _load_trace(label) for label, _, _, _ in cases}
 

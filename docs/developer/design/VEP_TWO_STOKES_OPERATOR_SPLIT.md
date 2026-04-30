@@ -184,7 +184,70 @@ Both follow-up architectures are **less stable than baseline** on this isotropic
 
 The cleaner remaining option for true α decoupling is a **custom constitutive class** that has the flux as `2·η_yield_aware·E + α_const·σ_star` directly — no body-force redirection, no `psi_star=0` trickery. That requires modifying `ViscoElasticPlasticFlowModel` itself rather than wrapping it externally; substantial UW3 dev work, deferred.
 
-**Updated net assessment**: ETD-1 + yield-in-residual softmin (PR #161) remains the production answer. The body-force decoupling family of architectures (v1, v2, v4) is structurally rejected. The η-lag injection family (v3) tracks baseline but adds no observable benefit on this problem. A custom constitutive class for true α decoupling is the only untested path, and would need an investigation of its own.
+**Updated net assessment (after v3/v4)**: ETD-1 + yield-in-residual softmin (PR #161) remains the production answer. The body-force decoupling family of architectures (v1, v2, v4) is structurally rejected. The η-lag injection family (v3) tracks baseline but adds no observable benefit on this problem. A custom constitutive class for true α decoupling is the only untested path — see v5 below.
+
+## v5 — Custom constitutive (the working architecture, 2026-04-30)
+
+The user's framing closing the v3/v4 work: implement the last-chance variant via a new constitutive law.
+
+### Architecture
+
+`ViscoPlasticExplicitElastic` subclasses `ViscoElasticPlasticFlowModel` and overrides `stress()`:
+
+```
+flux = 2·viscosity·E + α_explicit·σ_star
+       └ in SNES residual ┘   └ frozen at start of step ┘
+```
+
+vs the baseline UW3 BDF-1 VEP flux:
+
+```
+flux = 2·viscosity·E_eff = 2·viscosity·E + (viscosity/(μΔt))·σ_star
+                                            └ iterated within SNES ┘
+```
+
+The σ_star coefficient is now `α_explicit` (a precomputed sympy expression — scalar or meshvar — not a property of the SNES iterate). The yield-aware `viscosity` still iterates within SNES, but only multiplies the active strain-rate term, not the history term. This is "second-solve is the truth, with the relaxation stabilised."
+
+Two flavours of `α_explicit`:
+- **const**: `α = η_VE/(η_VE + μΔt)` — uniform, true decoupling
+- **lagged**: `α(x) = η_lag(x)/(η_lag(x) + μΔt)` — preserves the physics of "yielded zones relax faster" but freezes that spatial structure at start of step
+
+### Result
+
+| Variant | Steps | σ_max | Peak yielded | Mean SNES | Wall (s) |
+| --- | --- | --- | --- | --- | --- |
+| BDF-1 baseline           | 120 | 1.456 | 9.09% | **13.2** | 854 |
+| v5 const-α               | 120 | 0.681 | 9.73% |  1.7  | 518 |
+| v5 lagged-α              | 120 | 0.159 | 6.34% |  1.5  | 2240⁺ |
+
+⁺ Wall time inflated by per-step `uw.function.evaluate(cm.viscosity, eta_coords)` projection to refresh η_lag — easy optimisation by computing η_lag from |ε̇| numpy-side instead.
+
+**The architecture works.** Both variants run the full 1.5 forcing periods (120 steps) without a single SNES failure. Mean SNES iteration count drops from baseline's **13.2 to 1.5–1.7** — ~8× speed-up on the nonlinear solve, exactly the conditioning improvement predicted by pulling α out of the iteration.
+
+### Trajectory differences from baseline
+
+The three architectures give three different physics curves on this test:
+
+* **Baseline**: σ_star coefficient is the iterated yield-aware viscosity. Failed zones have *both* small viscosity (yield clip) AND consequently small σ_star coefficient — i.e., yield indirectly accelerates relaxation through the same coupling that causes the SNES conditioning headache. Net effect: σ peaks at 1.46 in steady state.
+* **v5 const-α**: α uniform 0.952 everywhere; failed zones don't relax faster than elastic zones. Stress retention is uniformly slow. σ peaks at 0.68 (cleaner periodic).
+* **v5 lagged-α**: α(x) drops to ~0.1 in failed zones (matching baseline's qualitative behaviour) but spatially frozen for the step. σ peaks at 0.16 — smallest residual stress, cleanest limit cycle.
+
+For physics comparison the lagged-α variant is closest to baseline's *intent* (failed zones relax faster) without the within-SNES coupling. The const-α variant is the cleanest "fully decoupled" reference.
+
+### Architectural note: `frozen_flux` as a generalisation
+
+User's suggestion (after seeing v5 work): make `frozen_flux` a property of the base `Constitutive_Model` — a tensor expression added verbatim to the residual flux, not iterated. The `α_explicit·σ_star` term in v5 is one specific use; other use cases include explicit elastic predictors, prescribed stress sources, and any scenario where part of the constitutive contribution is known up-front and shouldn't enter the nonlinear iteration. If v5 ships, `frozen_flux` is the natural API to land alongside it.
+
+### Outcome
+
+| Architecture | Result |
+| --- | --- |
+| v1, v2 (two-Stokes with body force = −∇·σ_VE)            | rejected — yield-boundary discontinuity feedback |
+| v3 (η-lag injection into shear_viscosity_0)              | tracks baseline, no benefit (doesn't actually decouple α) |
+| v4 (psi_star=0 + body force = −∇·(α·σ_hist))             | rejected — same boundary-discontinuity pathology in α-gradient |
+| **v5 (custom constitutive: flux = 2·η·E + α·σ_star)**    | **works** — 8× SNES speed-up, stable through full run |
+
+**Final net assessment**: v5 is the working architecture for "explicit elastic + visco-plastic solver." It produces a different physics trajectory than baseline (because α decoupling IS a physics change, not just a numerical reorganisation) but is dramatically better-conditioned. Whether v5 ships as a UW3 production option depends on validation against physics expectations on a wider range of problems; this branch establishes the architecture is viable and identifies `frozen_flux` as the natural generalisation pattern.
 
 ## Code organisation
 
