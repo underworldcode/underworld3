@@ -2102,14 +2102,27 @@ class ViscoPlasticExplicitElastic(ViscoElasticPlasticFlowModel):
 
     @property
     def etd_blend(self):
-        r"""ETD-2 forcing-history blending β ∈ [0, 1].  **Damping knob.**
+        r"""ETD-1 ↔ ETD-2 linear interpolation β ∈ [0, 1].  **Damping knob.**
 
-        Scales the ``(φ-α)·ε̇_old`` contribution in the ETD-2 trial stress.
-        ``β=1`` (default) is full ETD-2.  ``β=0`` reduces the time-stepping
-        to ETD-1 (φ → α effectively, forcing-history term vanishes).
-        Intermediate values trade ETD-2 accuracy for first-order dissipation
-        in the forcing-history contribution — useful for stabilising long
-        runs over tight-yield problems.
+        Linearly interpolates the ETD time-step coefficients between
+        ETD-1 (β=0) and ETD-2 (β=1, default):
+
+        .. math::
+            \varphi_\mathrm{blend} = \beta\,\varphi_{ETD2} + (1-\beta)\,\alpha
+
+        Both the active-term coefficient ``(1-φ)`` and the forcing-history
+        coefficient ``(φ-α)`` interpolate correctly:
+
+        - β=1: full ETD-2 (active = ``2η(1-φ_ETD2)·E``,
+          forcing = ``2η(φ_ETD2-α)·ε̇_old``).
+        - β=0: pure ETD-1 (active = ``2η(1-α)·E``, forcing-history
+          term zeroed out).
+
+        Implementation note: the correction to σ_trial is
+        ``(1-β)·2η(φ-α)·(ε̇_old − E)``. The dependence on ``(ε̇_old − E)``
+        means damping vanishes in steady state (where ε̇_old = E) —
+        damping only acts when the strain rate is changing, exactly
+        where ETD-2's forcing-history term contributes the most.
 
         Has no effect for ``integrator != 'etd'`` or for ``order=1``
         (the (φ-α) factor is zero by construction in those cases).
@@ -2203,9 +2216,22 @@ class ViscoPlasticExplicitElastic(ViscoElasticPlasticFlowModel):
         )
         sigma_trial = 2 * eta_unclipped_sym * self.E_eff.sym
 
-        # ETD-2 forcing-history damping: scale (φ-α)·ε̇_old contribution
-        # by etd_blend. Effectively subtracts (1-β) of the existing
-        # forcing-history term from σ_trial.
+        # ETD-2 / ETD-1 linear blend on φ:
+        #   φ_blend = β·φ_ETD2 + (1-β)·α
+        # When β=1: φ_blend = φ_ETD2 → full ETD-2.
+        # When β=0: φ_blend = α     → pure ETD-1 (φ=α makes (φ-α)·ε̇_old
+        # vanish AND turns (1-φ)·E into (1-α)·E).
+        #
+        # σ_trial_blend = 2·η·(1-φ_blend)·E + α·σ_star + 2·η·(φ_blend-α)·ε̇_old
+        #                = σ_trial_ETD2 - (1-β)·2·η·(φ-α)·(ε̇_old - E)
+        #
+        # That last form is what we apply as a correction to σ_trial
+        # (which currently equals σ_trial_ETD2 because E_eff is the
+        # full ETD-2 form). Note the correction uses (ε̇_old - E), NOT
+        # just ε̇_old: in steady state ε̇_old ≈ E so the correction
+        # vanishes — i.e., damping has no effect when nothing is
+        # changing. That's the right behaviour and matches a proper
+        # linear interpolation between ETD-1 and ETD-2.
         if (
             self._integrator == "etd"
             and self._order == 2
@@ -2216,11 +2242,9 @@ class ViscoPlasticExplicitElastic(ViscoElasticPlasticFlowModel):
             forcing_star_sym = DDt.forcing_star.sym
             alpha_sym = DDt._exp_alpha
             phi_sym = DDt._exp_phi
-            # 2·η·E_eff already includes 2·η·(φ-α)·ε̇_old. Subtract (1-β)
-            # times that to scale the contribution down to β·full.
             damping_correction = (
                 (1.0 - self._etd_blend) * 2 * eta_unclipped_sym
-                * (phi_sym - alpha_sym) * forcing_star_sym
+                * (phi_sym - alpha_sym) * (forcing_star_sym - self.grad_u)
             )
             sigma_trial = sigma_trial - damping_correction
 
