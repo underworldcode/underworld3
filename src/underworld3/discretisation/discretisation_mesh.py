@@ -1649,6 +1649,16 @@ class Mesh(Stateful, uw_object):
         # Invalidate projected boundary normals (rebuilt lazily on access)
         self._projected_normals = None
 
+        # BUGFIX(#135): invalidate the per-cell face control-point arrays.
+        # These are populated lazily by _get_mesh_face_control_points, sized
+        # (num_faces, num_local_cells, dim). After mesh.adapt() the new mesh
+        # has a different cell count, so the stale arrays from the old mesh
+        # would be indexed with new-mesh cell IDs in
+        # _test_if_points_in_cells_internal — producing IndexError when the
+        # new cell count exceeds the old one (and silent corruption otherwise).
+        self.faces_outer_control_points = None
+        self.faces_inner_control_points = None
+
         # BUGFIX(#130): refill the coord cache for every already-registered
         # variable. Variables created before this rebuild would otherwise
         # have their cache entry (from __init__) wiped above and refill
