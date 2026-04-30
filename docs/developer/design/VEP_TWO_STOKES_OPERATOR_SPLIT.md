@@ -151,6 +151,41 @@ Three candidate paths forward, in increasing order of departure from the current
 
 **Net assessment**: ETD-1 + yield-in-residual softmin (the PR #161 production answer) remains the best available path. The two-Stokes architecture as proposed in this document is rejected. Interpretation (b) — yield-aware viscosity in stage 2 with no σ_VE body force — is the natural next investigation if anyone wants to revisit; it may also be the architecture the web-advice doc actually intended.
 
+## Follow-up investigation v3/v4 (2026-04-30)
+
+Building on the v1/v2 post-mortem above, two further architectures were tested as minimal modifications of the existing UW3 BDF-1 VEP solver. The user's framing for these was: keep "second-solve is the truth" reliability of standard BDF-1 VEP, but stabilise the relaxation by taking the elastic part out of the SNES iteration.
+
+### v3 (η-lag injection)
+
+Single-Stokes BDF-1 VEP with `shear_viscosity_0 = η_lag.sym[0,0]` instead of constant — a persistent lagged meshvar updated each step from `min(η_VE, σ_y/(2|ε̇|))` at converged state, floored at `η_VE/10` to keep viscosity contrast tractable.
+
+| Variant | Source of η_lag for next step | Result |
+| --- | --- | --- |
+| baseline | n/a (constant η_VE) | 120 steps, σ_max 1.456, mean 13 SNES iters |
+| `lag` | prior step's converged \|ε̇\| | tracks baseline σ closely; SNES line-search failures from step ~35 absorbed by `snes_force_iteration` |
+| `predictor` | current step's Stage-1 (pure-VE) \|ε̇\| | abandoned mid-development, similar behaviour expected |
+
+The η-lag injection didn't actually decouple α from SNES, because in the existing UW3 flux structure `flux = 2·viscosity·E_eff = 2·viscosity·E + (viscosity/(μΔt))·σ_star`, the σ_star coefficient `viscosity/(μΔt)` IS the within-SNES yield-aware viscosity divided by μΔt. Even with `shear_viscosity_0 = η_lag` (which makes the *unclipped* ve_eff spatial), the softmin yield-clip in the residual still enters that coefficient. So we were just adding spatial variation to the SNES residual without actually pulling α out of it — explaining why lag is *less* stable than baseline rather than more.
+
+### v4 (explicit elastic + visco-plastic solver)
+
+Genuine α decoupling via the trick of forcing `psi_star = 0` at the start of each step (so the model's internal history term contributes zero) plus an external body force `−∇·(α·σ_hist)` where σ_hist is independently managed and α is precomputed at start of step:
+
+| Variant | α | Result |
+| --- | --- | --- |
+| `v4_const_alpha`  | constant `η_VE/(η_VE+μΔt) = 0.952`     | runaway at step 16, σ → 7+ |
+| `v4_lagged_alpha` | spatial `η_lag(x)/(η_lag(x)+μΔt)`       | runaway at step 35, σ → 12 |
+
+Lagged-α survived longer than const-α (matching the physics that yielded zones should relax faster), but neither completed the run. The failure mechanism is the same yield-boundary discontinuity that killed v1/v2: even with smooth softmin σ_hist, the spatial gradient of `α(x)·σ_hist(x)` is steep across the yield boundary, and `−∇·(α·σ_hist)` becomes a localised body-force spike that drives `v_pl` overshoot when σ becomes large mid-cycle. Pulling α out of the SNES iteration via body-force redirection introduces its own destabilising spatial structure.
+
+### v3/v4 conclusion
+
+Both follow-up architectures are **less stable than baseline** on this isotropic VEP harmonic test. The puzzle ("decoupling α should be more stable, why isn't it?"): pulling α out via body force trades smooth-in-residual coupling for sharp-at-yield-boundary external forcing. Baseline keeps α and σ_old multiplied by the *same* yield-aware viscosity inside the residual, which is what keeps the implicit body-force-equivalent term smooth as the yield boundary moves.
+
+The cleaner remaining option for true α decoupling is a **custom constitutive class** that has the flux as `2·η_yield_aware·E + α_const·σ_star` directly — no body-force redirection, no `psi_star=0` trickery. That requires modifying `ViscoElasticPlasticFlowModel` itself rather than wrapping it externally; substantial UW3 dev work, deferred.
+
+**Updated net assessment**: ETD-1 + yield-in-residual softmin (PR #161) remains the production answer. The body-force decoupling family of architectures (v1, v2, v4) is structurally rejected. The η-lag injection family (v3) tracks baseline but adds no observable benefit on this problem. A custom constitutive class for true α decoupling is the only untested path, and would need an investigation of its own.
+
 ## Code organisation
 
 Suggested new files (on a branch off `development` after PR #161 merges):
