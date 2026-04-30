@@ -1,4 +1,4 @@
-# Phase G v5 custom constitutive (use_yield_lagged_alpha=False): v5_const_alpha
+# Phase G v5 custom constitutive (use_yield_lagged_alpha=False): v5b_bdf1
 # columns: step, t, V_top, snes, sigma_eq_max, u_y_max, eta_lag_min, eta_lag_max, yielded_fraction
    1  0.0500 +0.4985   1 4.128560e-02 1.648464e-05 4.761905e-02 4.761905e-02 0.000000
    2  0.1000 +0.4938   1 8.039679e-02 1.799421e-04 4.761905e-02 4.761905e-02 0.046832

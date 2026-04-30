@@ -247,69 +247,43 @@ class ViscoPlasticExplicitElastic(
         if not self.is_elastic or self.Unknowns.DFDt is None:
             return 2 * self.viscosity * self.grad_u
 
-        DDt = self.Unknowns.DFDt
-        psi_star_sym = DDt.psi_star[0].sym
+        # σ_trial = 2 · η_VE_unclipped · E_eff
+        #
+        # The base class's `_unclipped_ve_viscosity` and `E_eff.sym`
+        # together encode the high-order VE prediction:
+        #   BDF-1: η_unclipped = ve_eff = η·μΔt/(η+μΔt),
+        #          E_eff = E + σ_star/(2μΔt)
+        #          → σ_trial = 2·ve_eff·E + (ve_eff/μΔt)·σ_star
+        #                    = α_BDF·σ_star + 2·ve_eff·E
+        #   BDF-2: η_unclipped = ve_eff(c_0=1.5),
+        #          E_eff = E - c_1·σ_star/(2μΔt) - c_2·σ_2star/(2μΔt)
+        #          (two-history-slot retention via c_1, c_2)
+        #   ETD-1: η_unclipped = η_VE (raw),
+        #          E_eff = (1-α)·E + α/(2η)·σ_star
+        #          (φ=α makes the (φ-α)·ε̇_old term zero)
+        #   ETD-2: η_unclipped = η_VE,
+        #          E_eff = (1-φ)·E + α/(2η)·σ_star + (φ-α)·ε̇_old
+        #          (with forcing_star)
+        #
+        # In all cases the σ_star (and ε̇_old) terms are frozen for the
+        # timestep — only the bare E in E_eff iterates within SNES. So
+        # the high-order time integrator is fully decoupled from the
+        # nonlinear yield iteration.
+        eta_unclipped = self._unclipped_ve_viscosity
+        eta_unclipped_sym = (
+            eta_unclipped.sym if hasattr(eta_unclipped, 'sym') else eta_unclipped
+        )
+        sigma_trial = 2 * eta_unclipped_sym * self.E_eff.sym
 
-        # Build trial stress = explicit/frozen VE prediction + active term.
-        # The form depends on the time integrator:
-        #
-        #   BDF-1: σ_trial = α_explicit · σ_old + 2 · η_VE_eff · E
-        #
-        #   ETD-1: σ_trial = α(η_VE) · σ_old + 2 · η_VE · (1-α) · E
-        #          (equivalent to BDF-1 with α from exp(-Δt/τ))
-        #
-        #   ETD-2: σ_trial = α · σ_old + 2 · η_VE · (φ-α) · ε̇_old
-        #                  + 2 · η_VE · (1-φ) · E
-        #          (the (φ-α)·ε̇_old term is the high-order forcing-history
-        #          contribution that distinguishes ETD-2 from ETD-1)
-        #
-        # In all cases, only the active term containing E iterates within
-        # SNES. The history part is precomputed/frozen for the timestep.
-        if self._integrator == "etd":
-            alpha_sym = DDt._exp_alpha
-            phi_sym = DDt._exp_phi
-            eta_raw = self.Parameters.shear_viscosity_0
-            sigma_trial = (
-                alpha_sym * psi_star_sym
-                + 2 * eta_raw * (1 - phi_sym) * self.grad_u
-            )
-            if DDt.forcing_star is not None:
-                # ETD-2: include forcing-history term (φ-α)·ε̇_old
-                forcing_star_sym = DDt.forcing_star.sym
-                sigma_trial = sigma_trial + (
-                    2 * eta_raw * (phi_sym - alpha_sym) * forcing_star_sym
-                )
-            # else: ETD-1 — no forcing-history slot, (φ-α)·ε̇_old term zeroes out
-        else:
-            # BDF default
-            if self._alpha_explicit is None:
-                raise RuntimeError(
-                    "ViscoPlasticExplicitElastic with integrator='bdf' "
-                    "requires alpha_explicit to be set."
-                )
-            eta_ve_eff = self.Parameters.ve_effective_viscosity.sym
-            sigma_trial = (
-                self._alpha_explicit * psi_star_sym
-                + 2 * eta_ve_eff * self.grad_u
-            )
-
-        # Apply yield correction on the TOTAL trial stress: σⁿ⁺¹ =
-        # softmin_clip(σ_trial, σ_y). This is the radial-return-style
-        # plastic correction. δ-smoothness controlled by yield_softness
-        # so the SNES Jacobian remains smooth at the yield boundary.
-        # Equivalent in the elastic limit (|σ_trial| ≤ σ_y): factor → 1.
-        # Equivalent in the deep-yield limit (|σ_trial| >> σ_y):
-        # factor → σ_y/|σ_trial|, giving |σⁿ⁺¹| → σ_y exactly.
+        # Apply yield correction on the TOTAL trial stress (softmin clip).
+        # Same δ-smoothness as base-class viscosity property so the SNES
+        # Jacobian is smooth at the yield boundary.
         yield_stress = self.Parameters.yield_stress
         if yield_stress.sym == sympy.oo:
             return sigma_trial
 
-        delta = self._yield_softness  # default 0.1 from base class
+        delta = self._yield_softness  # 0.1 by default
         sigma_trial_inv_II = sympy.sqrt((sigma_trial**2).trace() / 2)
-        # Smooth-min of (sigma_trial_inv_II, yield_stress) divided by
-        # sigma_trial_inv_II — i.e., factor ≤ 1 that scales σ_trial down
-        # to yield surface in the yielded limit. Use the same
-        # softplus-based smooth-min as the base class viscosity property:
         f = sigma_trial_inv_II / yield_stress
         import math as _math
         offset = (-1 + _math.sqrt(1 + delta**2)) / 2
@@ -1117,9 +1091,10 @@ def main():
         # (label, kind, use_lag, use_predictor, use_yield_lagged_alpha,
         #  integrator, order)
         ("v3_baseline_const_eta", "v3", False, False, None,  None, None),  # baseline
-        ("v5_const_alpha",        "v5", None,  None,  False, "bdf", 1),
-        ("v5_lagged_alpha",       "v5", None,  None,  True,  "bdf", 1),
-        ("v5_etd2_const_alpha",   "v5", None,  None,  False, "etd", 2),
+        ("v5b_bdf1",              "v5", None,  None,  False, "bdf", 1),
+        ("v5b_bdf2",              "v5", None,  None,  False, "bdf", 2),
+        ("v5b_etd1",              "v5", None,  None,  False, "etd", 1),
+        ("v5b_etd2",              "v5", None,  None,  False, "etd", 2),
     ]
     for label, kind, use_lag, use_predictor, use_lagged_alpha, integrator, order in cases:
         cache = os.path.join(OUT_DIR, f"phase_g_{label}.npz")
