@@ -61,12 +61,14 @@ def main():
     cases = [
         ("v3_baseline_const_eta", "BDF-1 baseline",                "#1f77b4", "-",  3.0),
         ("v5b_bdf1",              "v5b BDF-1",                     "#2ca02c", "-",  2.5),
-        ("v5b_etd1",              "v5b ETD-1",                     "#ff7f0e", ":",  2.0),
-        ("v5b_bdf2",              "v5b BDF-2 (no damping)",        "#9467bd", "--", 2.0),
-        ("v5b_bdf2_blend25",      "v5b BDF-2 (bdf_blend=0.25)",    "#9467bd", ":",  1.5),
+        ("v5b_etd1",              "v5b ETD-1 (etd_blend=0.0)",     "#ff7f0e", ":",  2.0),
+        ("v5b_etd2",              "v5b ETD-2 (etd_blend=1.0)",     "#d62728", "--", 1.5),
+        ("v5b_etd2_blend25",      "v5b ETD-2 (etd_blend=0.25)",    "#d62728", "-",  1.0),
+        ("v5b_etd2_blend50",      "v5b ETD-2 (etd_blend=0.50)",    "#e41a1c", "-",  1.0),
+        ("v5b_etd2_blend75",      "v5b ETD-2 (etd_blend=0.75)",    "#ff5555", "-",  1.0),
+        ("v5b_bdf2",              "v5b BDF-2 (no damping)",        "#9467bd", "--", 1.5),
         ("v5b_bdf2_blend10",      "v5b BDF-2 (bdf_blend=0.10)",    "#9467bd", "-",  1.5),
-        ("v5b_etd2",              "v5b ETD-2 (no damping)",        "#d62728", "--", 2.0),
-        ("v5b_etd2_blend25",      "v5b ETD-2 (etd_blend=0.25)",    "#d62728", "-",  1.5),
+        ("v5b_bdf2_blend25",      "v5b BDF-2 (bdf_blend=0.25)",    "#9467bd", ":",  1.5),
     ]
     traces_raw = {label: _load_trace(label) for label, _, _, _, _ in cases}
 
