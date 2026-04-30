@@ -246,22 +246,52 @@ class ViscoPlasticExplicitElastic(
         # Non-elastic / no DDt fallback — just the active term.
         if not self.is_elastic or self.Unknowns.DFDt is None:
             return 2 * self.viscosity * self.grad_u
-        if self._alpha_explicit is None:
-            raise RuntimeError(
-                "ViscoPlasticExplicitElastic: alpha_explicit must be set "
-                "before solving (init kwarg or set_alpha_explicit())."
-            )
-        psi_star_sym = self.Unknowns.DFDt.psi_star[0].sym
 
-        # Build trial stress = high-order VE prediction (σ_old explicit,
-        # active term with raw VE-effective viscosity, no yield).
-        # ve_effective_viscosity is the BDF-1 effective η with the
-        # current (constant) shear_viscosity_0 = η_VE.
-        eta_ve_eff = self.Parameters.ve_effective_viscosity.sym
-        sigma_trial = (
-            self._alpha_explicit * psi_star_sym
-            + 2 * eta_ve_eff * self.grad_u
-        )
+        DDt = self.Unknowns.DFDt
+        psi_star_sym = DDt.psi_star[0].sym
+
+        # Build trial stress = explicit/frozen VE prediction + active term.
+        # The form depends on the time integrator:
+        #
+        #   BDF-1: σ_trial = α_explicit · σ_old + 2 · η_VE_eff · E
+        #
+        #   ETD-1: σ_trial = α(η_VE) · σ_old + 2 · η_VE · (1-α) · E
+        #          (equivalent to BDF-1 with α from exp(-Δt/τ))
+        #
+        #   ETD-2: σ_trial = α · σ_old + 2 · η_VE · (φ-α) · ε̇_old
+        #                  + 2 · η_VE · (1-φ) · E
+        #          (the (φ-α)·ε̇_old term is the high-order forcing-history
+        #          contribution that distinguishes ETD-2 from ETD-1)
+        #
+        # In all cases, only the active term containing E iterates within
+        # SNES. The history part is precomputed/frozen for the timestep.
+        if self._integrator == "etd":
+            alpha_sym = DDt._exp_alpha
+            phi_sym = DDt._exp_phi
+            eta_raw = self.Parameters.shear_viscosity_0
+            sigma_trial = (
+                alpha_sym * psi_star_sym
+                + 2 * eta_raw * (1 - phi_sym) * self.grad_u
+            )
+            if DDt.forcing_star is not None:
+                # ETD-2: include forcing-history term (φ-α)·ε̇_old
+                forcing_star_sym = DDt.forcing_star.sym
+                sigma_trial = sigma_trial + (
+                    2 * eta_raw * (phi_sym - alpha_sym) * forcing_star_sym
+                )
+            # else: ETD-1 — no forcing-history slot, (φ-α)·ε̇_old term zeroes out
+        else:
+            # BDF default
+            if self._alpha_explicit is None:
+                raise RuntimeError(
+                    "ViscoPlasticExplicitElastic with integrator='bdf' "
+                    "requires alpha_explicit to be set."
+                )
+            eta_ve_eff = self.Parameters.ve_effective_viscosity.sym
+            sigma_trial = (
+                self._alpha_explicit * psi_star_sym
+                + 2 * eta_ve_eff * self.grad_u
+            )
 
         # Apply yield correction on the TOTAL trial stress: σⁿ⁺¹ =
         # softmin_clip(σ_trial, σ_y). This is the radial-return-style
@@ -869,19 +899,21 @@ def run_v4_explicit_elastic(label, n_periods=1.5, use_yield_lagged_alpha=False):
     print(f"  saved → {out_npz}", flush=True)
 
 
-def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=False):
-    """v5: custom constitutive law — α-decoupled BDF-1 VEP.
+def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=False,
+                                 integrator='bdf', order=1):
+    """v5: custom constitutive law — operator-split VEP with yield-on-total.
 
     Uses ``ViscoPlasticExplicitElastic`` (defined above) which overrides
-    the flux to:
-        flux = 2·viscosity·E + α_explicit·σ_star
-    so the σ_star coefficient is decoupled from the yield-aware
-    viscosity that SNES iterates.
+    the flux. The form depends on the time integrator:
 
-    Two α flavours:
-      const       α = η_VE/(η_VE+μΔt) (uniform)
-      yield-lagged α(x) = η_lag(x)/(η_lag(x)+μΔt), refreshed per step
-                   from prior step's converged effective viscosity.
+      BDF-1: flux = clip(α·σ_old + 2·η_VE_eff·E, σ_y)
+      ETD-1: same shape with α from exp(-Δt/τ)
+      ETD-2: flux = clip(α·σ_old + 2·η_VE·(φ-α)·ε̇_old + 2·η_VE·(1-φ)·E, σ_y)
+
+    Yield correction is a softmin clip on the TOTAL trial stress —
+    matches the ground-truth radial-return behaviour. The σ_old (and
+    ε̇_old for ETD-2) terms are explicit/frozen for the timestep, so
+    the time-integration order is decoupled from the SNES iteration.
     """
     setup = _build_setup(label)
     mesh = setup["mesh"]
@@ -891,23 +923,15 @@ def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=Fals
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=setup["p"])
 
-    # α_explicit: scalar for const variant, sympy expression w/ meshvar for lagged.
-    # IMPORTANT: η_lag stores the EFFECTIVE (post-BDF-reduction) viscosity
-    # from cm.viscosity, NOT the raw elastic η. Baseline's σ_star coefficient
-    # in the flux is `viscosity/(μΔt)` — that's the right reference. So
-    # α_lagged = η_lag/(μΔt). Earlier we had η_lag/(η_lag+μΔt) which would
-    # double-apply BDF reduction (giving α=0.488 in bulk instead of 0.952).
+    # α_explicit only used by the BDF path (ETD reads α/φ from DDt directly).
     if use_yield_lagged_alpha:
         eta_lag_scalar = eta_lag.sym[0, 0]
         alpha_explicit = eta_lag_scalar / (MU * DT)
     else:
-        # Constant α from raw η_VE: α = η_VE/(η_VE + μΔt) — that's the
-        # correct retention factor in the pure-VE limit. This is unchanged
-        # because we're starting from raw η_VE here, not from η_eff.
         alpha_explicit = sympy.Float(ETA / (ETA + MU * DT))
 
     cm = ViscoPlasticExplicitElastic(
-        stokes.Unknowns, integrator='bdf', order=1,
+        stokes.Unknowns, integrator=integrator, order=order,
         alpha_explicit=alpha_explicit,
     )
     stokes.constitutive_model = cm
@@ -1090,12 +1114,14 @@ def run_v5_custom_constitutive(label, n_periods=1.5, use_yield_lagged_alpha=Fals
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     cases = [
-        # (label, kind, use_lag, use_predictor, use_yield_lagged_alpha)
-        ("v3_baseline_const_eta", "v3", False, False, None),  # baseline reference
-        ("v5_const_alpha",        "v5", None,  None,  False), # custom constitutive, const α
-        ("v5_lagged_alpha",       "v5", None,  None,  True),  # custom constitutive, lagged α
+        # (label, kind, use_lag, use_predictor, use_yield_lagged_alpha,
+        #  integrator, order)
+        ("v3_baseline_const_eta", "v3", False, False, None,  None, None),  # baseline
+        ("v5_const_alpha",        "v5", None,  None,  False, "bdf", 1),
+        ("v5_lagged_alpha",       "v5", None,  None,  True,  "bdf", 1),
+        ("v5_etd2_const_alpha",   "v5", None,  None,  False, "etd", 2),
     ]
-    for label, kind, use_lag, use_predictor, use_lagged_alpha in cases:
+    for label, kind, use_lag, use_predictor, use_lagged_alpha, integrator, order in cases:
         cache = os.path.join(OUT_DIR, f"phase_g_{label}.npz")
         if os.path.exists(cache):
             print(f"\n=== {label}: cache hit, skipping ===", flush=True)
@@ -1115,11 +1141,15 @@ def main():
         elif kind == "v5":
             print(
                 f"\n=== Phase G v5 custom constitutive ({label}, "
+                f"integrator={integrator!r} order={order} "
                 f"use_yield_lagged_alpha={use_lagged_alpha}) ===",
                 flush=True,
             )
-            run_v5_custom_constitutive(label, n_periods=1.5,
-                                        use_yield_lagged_alpha=use_lagged_alpha)
+            run_v5_custom_constitutive(
+                label, n_periods=1.5,
+                use_yield_lagged_alpha=use_lagged_alpha,
+                integrator=integrator, order=order,
+            )
 
 
 if __name__ == "__main__":

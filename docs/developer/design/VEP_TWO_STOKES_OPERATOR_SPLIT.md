@@ -348,11 +348,34 @@ The clip-on-total then applies in the constitutive's `stress()`. This is the nat
 
 ### Final v5b conclusions
 
-**v5b const-α (yield on total)** is the working architecture. It reproduces baseline physics to 4 significant figures while delivering an 8× SNES speed-up. The original "frozen flux + yield clip" intuition was correct; the prior failures (v1–v4 + v5 yield-on-active-only) were each tripping on a different mistake in *how* the yield was enforced or how the explicit term was injected.
+**v5b const-α (yield on total)** is the working architecture for BDF-1 (and equivalently ETD-1). It reproduces baseline physics to 4 significant figures while delivering an 8× SNES speed-up. The original "frozen flux + yield clip" intuition was correct; the prior failures (v1–v4 + v5 yield-on-active-only) were each tripping on a different mistake in *how* the yield was enforced or how the explicit term was injected.
 
 **Generalisation to high-order time integration**: σ_trial = (whatever the time integrator gives for pure VE) + (active term) — high-order accurate without yield in the SNES iteration. The plastic correction is a low-order softmin clip on total.
 
 **Production readiness**: viable as a UW3 architecture if the `frozen_flux` API is added cleanly. Validation against richer test problems (TI-VEP, multi-cycle dynamics, varying material properties) is the natural next step.
+
+### ETD-2 + v5b — partial success on the harmonic test
+
+Headline test of the time-integration-decoupling concept: extend v5b to support `integrator='etd', order=2`. The ETD-2 σ_trial is built explicitly from the high-order forms:
+
+```
+σ_trial = α · σ_old + 2·η_VE·(φ-α)·ε̇_old + 2·η_VE·(1-φ)·E
+         └─────── frozen, high-order ───────┘   └ active (in SNES) ┘
+```
+
+with α = exp(-Δt/τ_M) and φ = (1-α)·τ/Δt. The (φ-α)·ε̇_old term is the high-order forcing-history contribution that distinguishes ETD-2 from ETD-1. Yield clip on total as in BDF-1 v5b.
+
+**Result**: steps 1–52 run cleanly, σ tracks baseline-BDF-1 closely (σ at step 50 = 1.42 vs baseline 1.46), with mean SNES ~5 (slightly higher than v5b BDF-1's 1.9 but well below baseline's 13.2). Step 53 hits SNES `DIVERGED_MAX_IT` at 50 iterations as |u_y| spikes from 0.19 to 1.94 — the well-known ETD-2/yield interaction issue at peak loading mid-second cycle. The architecture extends ETD-2's working range significantly (compared to ETD-2 + standard yield-in-residual which blew up much sooner in earlier Phase B/C/D work) but doesn't fully cure the high-order/yield instability on this tight-yield harmonic problem.
+
+**Interpretation**: the v5b architecture is *necessary* for ETD-2 to make any progress at all on VEP+yield (decoupling the time-integration from the SNES iteration prevents the standard blow-up), but it's *not sufficient* for full stability across all loading phases. Additional damping, sub-stepping, or a different ETD-2 formulation may be needed.
+
+For BDF-1 / ETD-1 (which have identical form here, since φ → α makes the (φ-α) term vanish): v5b is a complete solution. For ETD-2 with finite (φ-α) forcing-history: needs more care, but the architecture is the right starting point.
+
+| Variant                      | Steps | σ_max  | Mean SNES | Notes |
+| ---------------------------- | ----- | ------ | --------- | ----- |
+| BDF-1 baseline               | 120   | 1.456  | 13.2      | reference |
+| v5b BDF-1 (yield-on-total)   | 120   | 1.450  | 1.9       | matches baseline 4 sig figs |
+| v5b ETD-2 (yield-on-total)   | 53    | 1.46   | ~5 (early) | mid-cycle SNES MAX_IT |
 
 ## Code organisation
 
