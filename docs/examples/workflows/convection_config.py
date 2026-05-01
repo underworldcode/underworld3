@@ -1,35 +1,62 @@
-"""Thermal convection workflow — configuration and helpers.
+"""Thermal convection workflow — idempotent, resumable, steady-state-driven.
 
-Demonstrates the **workflow package pattern** described in
-``docs/developer/guides/workflow-packages.md``.  This module defines
-all the parameters and setup functions for Rayleigh–Bénard convection
-in a Cartesian box.
+Each invocation of ``runner.build("run_summary")`` either:
 
-In a standalone package this would be the pip-installable library;
-the companion notebook (``convection_notebook.py``) is the clean
-user-facing script.
+* short-circuits if ``run_summary.yaml`` already records ``status="steady"``
+  for this output directory; or
+* extends the run from the latest h5 checkpoint until either the steady-state
+  test passes (writes the summary) or ``config.max_steps`` is reached
+  (returns the timeseries; no summary written so a future call with a larger
+  ``max_steps`` resumes seamlessly).
 
-Usage::
+The run never destroys data.  Only ``timeseries.csv`` is appended to and only
+new h5 timesteps are written.  When config fields that affect the mesh or
+physics change, the existing directory is **archived** (``run_summary`` policy
+``"fresh"`` or ``"seed_from_old"``) or the run **fails fast** (default ``"error"``).
 
-    import convection_config as convection
+Output layout per run::
 
-    config = convection.ConvectionConfig()
-    model  = config.setup_model()
-    mesh   = convection.create_mesh(config)
-    stokes, v, p = convection.create_stokes(mesh, config)
-    adv_diff, T  = convection.create_advdiff(mesh, v, config)
-    convection.set_initial_temperature(T, mesh, config)
+    <output_dir>/
+        manifest.yaml               run state + config snapshot + identity hash
+        run.mesh.00000.h5           mesh, written once
+        run.mesh.<var>.NNNNN.h5     per-saved-step variable values
+        run.mesh.NNNNN.xdmf         ParaView metadata
+        timeseries.csv              one row per saved step
+                                      (step, t, dt, Nu_top, Nu_bot, Vrms, mean_T)
+        run_summary.yaml            ONLY when status == "steady"
 
-    # Inspect the workflow
-    convection.view()              # list all steps
-    convection.create_mesh.view()  # source of a single step
+The summary file is the "done" marker — its presence makes the runner
+skip work.  Stalled runs (hit ``max_steps`` without converging) do
+**not** write the summary, so simply re-running with a higher
+``max_steps`` resumes from the latest checkpoint and extends.  Remove
+``run_summary.yaml`` to force a re-evaluation of an already-steady run
+(or call ``runner.rebuild("run_summary")``).
 """
+
+import csv
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, Optional
 
 import numpy as np
 import sympy
+import yaml
 from pydantic import Field
 
 from underworld3.workflows import WorkflowConfig, workflow_step
+
+
+# Filename stem used inside each run's output directory.
+RUN_NAME = "run"
+
+# Fields whose change invalidates the existing on-disk run.
+_IDENTITY_FIELDS = (
+    "aspect_ratio", "cellsize", "qdegree", "regular",
+    "rayleigh", "viscosity", "diffusivity",
+    "T_top", "T_bottom",
+)
 
 
 def view():
@@ -46,252 +73,610 @@ def view():
 
 
 class ConvectionConfig(WorkflowConfig):
-    """Parameters for constant-viscosity Rayleigh–Bénard convection.
+    """Parameters for steady-state-driven Rayleigh-Bénard convection.
 
-    Non-dimensional by default — all reference quantities are unity so
-    the Rayleigh number is the single controlling parameter.  Set
-    ``ref_length``, ``ref_viscosity``, etc. to switch to dimensional mode.
+    Identity (mesh + physics) fields are hashed to detect config changes
+    against an existing on-disk run.  Operational fields (steady-state
+    tolerances, batch sizing) can change between invocations without
+    triggering a mismatch.
     """
 
     workflow_name: str = "rayleigh_benard"
-    description: str = "Constant viscosity thermal convection in a Cartesian box"
+    description: str = (
+        "Steady-state-driven, resumable Rayleigh-Bénard convection in a "
+        "Cartesian box"
+    )
 
-    # Mesh
-    cellsize: float = Field(default=1.0 / 16, gt=0, description="Mesh cell size")
-    aspect_ratio: float = Field(default=1.0, gt=0, description="Domain width / height")
-    qdegree: int = Field(default=3, ge=1, description="Quadrature degree")
+    # Identity — mesh
+    cellsize: float = Field(default=1.0 / 16, gt=0)
+    aspect_ratio: float = Field(default=1.0, gt=0)
+    qdegree: int = Field(default=3, ge=1)
+    regular: bool = False
 
-    # Physics
-    rayleigh: float = Field(default=1e6, gt=0, description="Rayleigh number")
-    viscosity: float = Field(default=1.0, gt=0, description="Reference viscosity")
-    diffusivity: float = Field(default=1.0, gt=0, description="Thermal diffusivity")
+    # Identity — physics
+    rayleigh: float = Field(default=1e6, gt=0)
+    viscosity: float = Field(default=1.0, gt=0)
+    diffusivity: float = Field(default=1.0, gt=0)
+    T_top: float = 0.0
+    T_bottom: float = 1.0
 
-    # Boundary conditions
-    T_top: float = Field(default=0.0, description="Top temperature")
-    T_bottom: float = Field(default=1.0, description="Bottom temperature")
+    # Steady-state detection (operational; can change without mismatch)
+    steady_window: float = Field(default=0.3, gt=0, le=1.0)
+    steady_tol_mean: float = Field(default=0.02, gt=0)
+    steady_tol_cv: float = Field(default=0.05, gt=0)
+    steady_min_window: int = Field(default=50, ge=10)
 
-    # Time stepping
-    n_steps: int = Field(default=50, ge=0, description="Number of time steps")
-    dt_factor: float = Field(default=2.0, gt=0, description="CFL multiplier for dt")
+    # Run extension (operational)
+    batch_steps: int = Field(default=200, gt=0)
+    max_steps: int = Field(default=5000, gt=0)
+    save_every: int = Field(default=10, gt=0)
+    dt_factor: float = Field(default=2.0, gt=0)
 
     # Output
-    output_dir: str = "output/convection"
-    save_every: int = Field(default=10, ge=1, description="Save output every N steps")
+    output_dir: str = "output/convection/run"
+    restart_policy: Literal["error", "fresh", "seed_from_old"] = "error"
 
 
 # ---------------------------------------------------------------------------
-# Helper functions — each returns standard UW3 objects
+# Identity / on-disk state
+# ---------------------------------------------------------------------------
+
+
+def _config_hash(config: ConvectionConfig) -> str:
+    """16-char hex hash of identity fields only."""
+    fields = {f: getattr(config, f) for f in _IDENTITY_FIELDS}
+    s = json.dumps(fields, sort_keys=True, default=str)
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
+
+
+def _identity_snapshot(config: ConvectionConfig) -> dict:
+    return {f: getattr(config, f) for f in _IDENTITY_FIELDS}
+
+
+def _read_manifest(output_dir: Path) -> Optional[dict]:
+    p = output_dir / "manifest.yaml"
+    if not p.exists():
+        return None
+    with open(p) as f:
+        return yaml.safe_load(f)
+
+
+def _write_manifest(output_dir: Path, data: dict) -> None:
+    p = output_dir / "manifest.yaml"
+    with open(p, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def _archive_run(output_dir: Path) -> Optional[Path]:
+    """Move ``output_dir`` to ``output_dir.archive-<UTC-stamp>/``.
+
+    Never deletes.  Returns the archive path, or ``None`` if there was
+    nothing to archive.
+    """
+    if not output_dir.exists():
+        return None
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive = output_dir.parent / f"{output_dir.name}.archive-{ts}"
+    output_dir.rename(archive)
+    return archive
+
+
+def _check_compatibility(config: ConvectionConfig, output_dir: Path):
+    """Compare current config to an existing manifest.
+
+    Returns
+    -------
+    action : str
+        ``"continue"`` — config matches; reuse the directory.
+        ``"fresh"`` — directory was archived (or didn't exist); start clean.
+    archive : Path or None
+        Path to the archived old directory, if any.
+    """
+    manifest = _read_manifest(output_dir)
+    if manifest is None:
+        return "fresh", None
+
+    if manifest.get("config_hash") == _config_hash(config):
+        return "continue", None
+
+    snap = manifest.get("config_snapshot", {})
+    changed = [
+        f"{f}: {snap.get(f)!r} -> {getattr(config, f)!r}"
+        for f in _IDENTITY_FIELDS
+        if snap.get(f) != getattr(config, f, None)
+    ]
+
+    if config.restart_policy == "error":
+        raise RuntimeError(
+            f"Config mismatch in {output_dir}\n"
+            f"  Changed identity fields:\n    "
+            + "\n    ".join(changed)
+            + "\n  Set config.restart_policy='fresh' (build new) or "
+            "'seed_from_old' (use old T as IC).\n"
+            "  Both options archive the existing directory rather than "
+            "delete it."
+        )
+
+    archive = _archive_run(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return "fresh", archive
+
+
+# ---------------------------------------------------------------------------
+# Timeseries on disk (append-only CSV)
+# ---------------------------------------------------------------------------
+
+
+_TS_FIELDS = ("step", "t", "dt", "Nu_top", "Nu_bot", "Vrms", "mean_T")
+
+
+def _read_timeseries(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    out = []
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            out.append({
+                "step": int(row["step"]),
+                "t": float(row["t"]),
+                "dt": float(row["dt"]),
+                "Nu_top": float(row["Nu_top"]),
+                "Nu_bot": float(row["Nu_bot"]),
+                "Vrms": float(row["Vrms"]),
+                "mean_T": float(row["mean_T"]),
+            })
+    return out
+
+
+def _append_timeseries_row(path: Path, row: dict) -> None:
+    is_new = not path.exists()
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_TS_FIELDS)
+        if is_new:
+            writer.writeheader()
+        writer.writerow({k: row[k] for k in _TS_FIELDS})
+
+
+def _list_saved_steps(output_dir: Path) -> list[int]:
+    """Indices of completed timesteps, derived from the xdmf files."""
+    if not output_dir.exists():
+        return []
+    steps = set()
+    for p in output_dir.glob(f"{RUN_NAME}.mesh.[0-9]*.xdmf"):
+        try:
+            steps.add(int(p.stem.split(".")[-1]))
+        except ValueError:
+            continue
+    return sorted(steps)
+
+
+# ---------------------------------------------------------------------------
+# Steady-state test
+# ---------------------------------------------------------------------------
+
+
+def _is_steady(timeseries: list[dict], config: ConvectionConfig) -> bool:
+    """Pass when both Nu(t) and Vrms(t) are statistically stationary.
+
+    Tested over the last ``steady_window`` fraction of points (with a
+    floor of ``steady_min_window`` samples).  Both the change in mean
+    between halves and the coefficient of variation must be below the
+    configured tolerances.
+    """
+    n = len(timeseries)
+    n_window = max(int(n * config.steady_window), config.steady_min_window)
+    if n < n_window:
+        return False
+
+    nu = np.array([(r["Nu_top"] + r["Nu_bot"]) / 2 for r in timeseries[-n_window:]])
+    vrms = np.array([r["Vrms"] for r in timeseries[-n_window:]])
+
+    for series in (nu, vrms):
+        half = len(series) // 2
+        a, b = series[:half].mean(), series[half:].mean()
+        mean_overall = max(abs(series.mean()), 1e-30)
+        if abs(a - b) / mean_overall > config.steady_tol_mean:
+            return False
+        if series.std() / mean_overall > config.steady_tol_cv:
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics (Nu, Vrms, <T>)
+# ---------------------------------------------------------------------------
+
+
+def _compute_diagnostics(mesh, T, v, config: ConvectionConfig) -> dict:
+    import underworld3 as uw
+
+    integrator = uw.maths.Integral(mesh, 1)
+    V_total = float(integrator.evaluate())
+
+    integrator.fn = T.sym[0]
+    mean_T = float(integrator.evaluate()) / V_total
+
+    integrator.fn = v.sym.dot(v.sym)
+    Vrms = float(np.sqrt(max(integrator.evaluate(), 0.0) / V_total))
+
+    # Surface flux samples — averaged at top and bottom boundaries.
+    n_samples = 100
+    top = np.column_stack([
+        np.linspace(0.0, config.aspect_ratio, n_samples),
+        np.full(n_samples, 1.0),
+    ])
+    bot = np.column_stack([
+        np.linspace(0.0, config.aspect_ratio, n_samples),
+        np.full(n_samples, 0.0),
+    ])
+
+    flux_fn = -mesh.vector.gradient(T.sym[0]).dot(mesh.CoordinateSystem.unit_e_1)
+    flux_top = float(np.mean(uw.function.evaluate(flux_fn, top)))
+    flux_bot = float(np.mean(uw.function.evaluate(flux_fn, bot)))
+
+    delta_T = config.T_bottom - config.T_top  # H = 1
+    Nu_top = flux_top / max(abs(delta_T), 1e-30)
+    Nu_bot = flux_bot / max(abs(delta_T), 1e-30)
+
+    return {"Nu_top": Nu_top, "Nu_bot": Nu_bot, "Vrms": Vrms, "mean_T": mean_T}
+
+
+# ---------------------------------------------------------------------------
+# Workflow steps — the DAG
 # ---------------------------------------------------------------------------
 
 
 @workflow_step(
-    description="Build a 2D unstructured simplex mesh",
+    description="Predict thermal boundary-layer thickness from Ra (high-Ra 2D scaling)",
+    produces=["bl_thickness"],
+)
+def predict_bl_thickness(config: ConvectionConfig):
+    """Boundary-layer thickness from Nu ≈ 0.27·Ra^(1/3); δ ≈ 1/(2·Nu).
+
+    Used quietly by ``set_initial_temperature`` to seed a fast-onset IC.
+    """
+    Nu_pred = max(1.0, 0.27 * config.rayleigh ** (1.0 / 3.0))
+    return float(1.0 / (2.0 * Nu_pred))
+
+
+@workflow_step(
+    description="Predict mean temperature from BL theory (= 0.5 for symmetric BLs)",
+    produces=["mean_T_predicted"],
+)
+def predict_mean_T(config: ConvectionConfig):
+    return 0.5 * (config.T_top + config.T_bottom)
+
+
+@workflow_step(
+    description="Build (or reload) the simulation mesh; apply restart_policy on mismatch",
     produces=["mesh"],
 )
 def create_mesh(config: ConvectionConfig):
     """Build a 2D unstructured simplex mesh.
 
-    Returns
-    -------
-    mesh
+    Three branches:
+
+    1. Output dir is empty (no manifest)              -> build fresh.
+    2. Manifest matches current identity hash         -> reload mesh from h5.
+    3. Manifest mismatches identity hash              -> archive old dir per
+       ``restart_policy`` (or raise on policy ``"error"``); build fresh.
+
+    The path of any archived directory is stashed on the returned mesh
+    object as ``mesh._uw_run_archive`` for downstream steps that may
+    want to seed from it.
     """
     import underworld3 as uw
 
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0.0, 0.0),
-        maxCoords=(config.aspect_ratio, 1.0),
-        cellSize=config.cellsize,
-        regular=False,
-        qdegree=config.qdegree,
-    )
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    action, archive = _check_compatibility(config, output_dir)
+    mesh_h5 = output_dir / f"{RUN_NAME}.mesh.00000.h5"
+
+    if action == "continue" and mesh_h5.exists():
+        mesh = uw.discretisation.Mesh(
+            str(mesh_h5),
+            coordinate_system_type=uw.coordinates.CoordinateSystemType.CARTESIAN,
+        )
+    else:
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0),
+            maxCoords=(config.aspect_ratio, 1.0),
+            cellSize=config.cellsize,
+            regular=config.regular,
+            qdegree=config.qdegree,
+        )
+
+    mesh._uw_run_archive = archive
     return mesh
 
 
 @workflow_step(
-    description="Configure Stokes solver with constant viscosity",
-    produces=["stokes"],
+    description="Build Stokes + AdvDiffusion solvers and their MeshVariables",
+    produces=["stokes", "adv_diff", "T", "v", "p"],
     requires=["mesh"],
 )
-def create_stokes(mesh, config: ConvectionConfig):
-    """Configure a Stokes solver with constant viscosity and free-slip walls.
+def create_solvers(mesh, config: ConvectionConfig):
+    """Set up the two coupled solvers with free-slip walls and isothermal BCs.
 
-    Buoyancy is coupled to a temperature variable ``T`` which must be
-    created by ``create_advdiff`` before solving.
-
-    Returns
-    -------
-    stokes, v, p
-        The Stokes solver and its velocity / pressure variables.
+    Returns a dict keyed by produces.  These are live (non-persistable)
+    objects; they live in the runner cache only and are rebuilt each
+    session.
     """
     import underworld3 as uw
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
 
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = config.viscosity
     stokes.tolerance = 1.0e-3
-
-    # Free-slip on all walls
     stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
     stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
-
-    return stokes, v, p
-
-
-@workflow_step(
-    description="Configure advection-diffusion solver for temperature",
-    produces=["adv_diff"],
-    requires=["mesh", "stokes"],
-)
-def create_advdiff(mesh, v, config: ConvectionConfig):
-    """Configure the advection–diffusion solver for temperature.
-
-    Returns
-    -------
-    adv_diff, T
-        The thermal solver and its temperature variable.
-    """
-    import underworld3 as uw
-
-    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
+    stokes.bodyforce = sympy.Matrix([0, config.rayleigh * T.sym[0]])
 
     adv_diff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=v)
     adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
     adv_diff.constitutive_model.Parameters.diffusivity = config.diffusivity
     adv_diff.theta = 0.5
-
-    # Dirichlet: hot bottom, cold top
     adv_diff.add_dirichlet_bc(config.T_bottom, "Bottom")
     adv_diff.add_dirichlet_bc(config.T_top, "Top")
 
-    return adv_diff, T
+    return {"stokes": stokes, "adv_diff": adv_diff, "T": T, "v": v, "p": p}
 
 
 @workflow_step(
-    description="Wire buoyancy force into the Stokes solver",
-    requires=["stokes", "adv_diff"],
+    description="Idempotent, resumable evolve until steady state or max_steps",
+    produces=["evolution_log"],
+    requires=["mesh", "stokes", "adv_diff", "T", "v", "bl_thickness"],
 )
-def set_buoyancy(stokes, T, config: ConvectionConfig):
-    """Wire the buoyancy force into the Stokes solver.
+def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig):
+    """Drive the time loop, append-only, until steady state or step cap.
 
-    Must be called after both ``create_stokes`` and ``create_advdiff``
-    so that ``T`` exists.
+    Behaviour:
+
+    * Reads ``run_summary.yaml`` first — only ``status == "steady"``
+      short-circuits.  Stalled runs leave no summary, so re-invoking
+      with a larger ``max_steps`` resumes and extends rather than
+      treating the run as finished.
+    * Otherwise discovers the latest h5 step in ``output_dir`` and either
+      starts fresh (writing mesh + IC at step 0) or resumes by reading
+      ``T`` and ``v`` back from the latest checkpoint.
+    * Runs solver steps until the steady-state test passes or
+      ``config.max_steps`` is reached.  Every ``save_every`` steps, the
+      state is written to h5 *and* a timeseries row is appended to
+      ``timeseries.csv``.
+
+    Per-step diagnostics are printed (every save) so a long run can be
+    interrupted with the partial chain intact.
     """
-    stokes.bodyforce = sympy.Matrix([0, config.rayleigh * T.sym[0]])
+    import underworld3 as uw
+
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Short-circuit on a *steady* summary only ─────────────────────
+    # ``stalled`` summaries are not written (so the user can extend with
+    # a larger max_steps and resume).  Only ``status == "steady"`` is the
+    # irrevocable done marker.
+    summary_path = output_dir / "run_summary.yaml"
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary = yaml.safe_load(f) or {}
+        if summary.get("status") == "steady":
+            uw.pprint(
+                f"[evolve] {output_dir}: status='steady', "
+                f"n_steps={summary.get('n_steps')}.  No work to do."
+            )
+            return _read_timeseries(output_dir / "timeseries.csv")
+
+    timeseries_path = output_dir / "timeseries.csv"
+    timeseries = _read_timeseries(timeseries_path)
+    saved_steps = _list_saved_steps(output_dir)
+
+    if not saved_steps:
+        # ── Fresh start ─────────────────────────────────────────────
+        archive = getattr(mesh, "_uw_run_archive", None)
+
+        if archive is not None and config.restart_policy == "seed_from_old":
+            old_steps = _list_saved_steps(archive)
+            if old_steps:
+                uw.pprint(
+                    f"[evolve] Seeding T from archived run at {archive} "
+                    f"(step {max(old_steps)})"
+                )
+                T.read_timestep(
+                    data_filename=RUN_NAME, data_name="T",
+                    index=max(old_steps), outputPath=str(archive),
+                )
+            else:
+                uw.pprint(
+                    f"[evolve] seed_from_old requested but no checkpoints "
+                    f"found in {archive}; falling back to BL-scaled IC."
+                )
+                _write_bl_ic(T, mesh, bl_thickness, config)
+        else:
+            _write_bl_ic(T, mesh, bl_thickness, config)
+
+        # Initial Stokes solve
+        stokes.solve(zero_init_guess=True)
+
+        _write_manifest(output_dir, {
+            "workflow": "rayleigh_benard",
+            "config_hash": _config_hash(config),
+            "config_snapshot": _identity_snapshot(config),
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "rayleigh": config.rayleigh,
+            "aspect_ratio": config.aspect_ratio,
+        })
+
+        mesh.write_timestep(
+            filename=RUN_NAME, index=0, outputPath=str(output_dir),
+            meshVars=[v, T],
+        )
+        diag = _compute_diagnostics(mesh, T, v, config)
+        row = {"step": 0, "t": 0.0, "dt": 0.0, **diag}
+        _append_timeseries_row(timeseries_path, row)
+        timeseries.append(row)
+        timestep = 0
+        elapsed = 0.0
+
+        uw.pprint(
+            f"[evolve] {output_dir} fresh start  Ra={config.rayleigh:.0e}  "
+            f"aspect={config.aspect_ratio}  delta_BL={bl_thickness:.3f}",
+            flush=True,
+        )
+    else:
+        # ── Resume ──────────────────────────────────────────────────
+        last = max(saved_steps)
+        T.read_timestep(
+            data_filename=RUN_NAME, data_name="T", index=last,
+            outputPath=str(output_dir),
+        )
+        v.read_timestep(
+            data_filename=RUN_NAME, data_name="U", index=last,
+            outputPath=str(output_dir),
+        )
+        timestep = last
+        elapsed = timeseries[-1]["t"] if timeseries else 0.0
+
+        uw.pprint(
+            f"[evolve] {output_dir} resume from step {last}  "
+            f"({len(timeseries)} timeseries rows)",
+            flush=True,
+        )
+
+    # ── Time loop ────────────────────────────────────────────────────
+    while timestep < config.max_steps:
+        stokes.solve(zero_init_guess=False)
+        delta_t = config.dt_factor * adv_diff.estimate_dt()
+        adv_diff.solve(timestep=delta_t, zero_init_guess=False)
+        timestep += 1
+        elapsed += float(delta_t)
+
+        if timestep % config.save_every == 0:
+            mesh.write_timestep(
+                filename=RUN_NAME, index=timestep, outputPath=str(output_dir),
+                meshVars=[v, T],
+            )
+            diag = _compute_diagnostics(mesh, T, v, config)
+            row = {
+                "step": timestep, "t": elapsed, "dt": float(delta_t), **diag,
+            }
+            _append_timeseries_row(timeseries_path, row)
+            timeseries.append(row)
+
+            uw.pprint(
+                f"[step {timestep:5d}]  t={elapsed:9.4e}  dt={delta_t:.2e}  "
+                f"Nu_top={diag['Nu_top']:6.3f}  Nu_bot={diag['Nu_bot']:6.3f}  "
+                f"Vrms={diag['Vrms']:8.4f}  <T>={diag['mean_T']:5.3f}",
+                flush=True,
+            )
+
+            if _is_steady(timeseries, config):
+                uw.pprint(
+                    f"[evolve] Steady state reached at step {timestep}.",
+                    flush=True,
+                )
+                break
+
+    return timeseries
 
 
-@workflow_step(
-    description="Set initial temperature: linear gradient + perturbation",
-    requires=["mesh", "adv_diff"],
-)
-def set_initial_temperature(T, mesh, config: ConvectionConfig):
-    """Set a linear gradient with a sinusoidal perturbation.
+def _write_bl_ic(T, mesh, bl_thickness: float, config: ConvectionConfig):
+    """Set ``T`` from a boundary-layer-scaled initial condition.
 
-    T(x, y) = T_bottom + (T_top - T_bottom) * y
-              + 0.2 * sin(pi * x / aspect) * sin(pi * y)
+    ``T(x, y) = 0.5 - 0.5 [tanh(2y/δ) - tanh(2(1-y)/δ)] + small perturbation``
+
+    The mean is ≈ 0.5 (= predicted mean from BL symmetry) and the
+    interior is isothermal, with thin top and bottom thermal BLs of
+    thickness ≈ δ.  A small two-mode sinusoidal perturbation breaks
+    symmetry to seed the rolls.
     """
     import underworld3 as uw
 
     x, y = mesh.X
-    dT = config.T_top - config.T_bottom
-    init_t = (
-        config.T_bottom
-        + dT * y
-        + 0.2 * sympy.sin(sympy.pi * x / config.aspect_ratio) * sympy.sin(sympy.pi * y)
+    delta = max(bl_thickness, 1.0e-3)
+    base = 0.5 - 0.5 * (sympy.tanh(2 * y / delta) - sympy.tanh(2 * (1 - y) / delta))
+    perturb = (
+        0.02 * sympy.cos(0.5 * sympy.pi * x / config.aspect_ratio)
+        * sympy.sin(2 * sympy.pi * y)
+        + 0.005 * sympy.cos(2 * sympy.pi * x / config.aspect_ratio)
+        * sympy.sin(sympy.pi * y)
     )
-    T.array[...] = uw.function.evaluate(init_t, T.coords)
-
-
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
+    init = (config.T_bottom - config.T_top) * base + config.T_top + perturb
+    T.array[...] = uw.function.evaluate(init, T.coords).reshape(T.array.shape)
 
 
 @workflow_step(
-    description="Plot temperature field with optional streamlines",
-    requires=["mesh", "adv_diff", "stokes"],
+    description="Compute steady-state averages and write run_summary.yaml",
+    produces=["run_summary"],
+    requires=["evolution_log"],
 )
-def plot_temperature(mesh, T, v=None, config=None, title=None, save_to=None):
-    """Plot the temperature field with optional velocity streamlines.
+def summarise_run(evolution_log, config: ConvectionConfig):
+    """Average the steady-window of the timeseries and write the summary.
 
-    Parameters
-    ----------
-    mesh : uw mesh
-        The simulation mesh.
-    T : MeshVariable
-        Temperature field.
-    v : MeshVariable, optional
-        Velocity field — adds streamlines if provided.
-    config : ConvectionConfig, optional
-        Used for the title if *title* is not given.
-    title : str, optional
-        Plot title.  Defaults to ``"Ra = ... "`` from *config*.
-    save_to : str or Path, optional
-        If given, save a screenshot instead of showing interactively.
-
-    Returns
-    -------
-    pv.Plotter or None
-        The plotter (for further customisation) or None if
-        visualisation is unavailable.
+    The summary is the "done" marker: its presence with status
+    ``"steady"`` or ``"stalled"`` makes ``evolve`` short-circuit.  When
+    the run hasn't yet reached steady state and isn't yet at
+    ``max_steps``, no summary is written (the run is just paused).
     """
-    import underworld3 as uw
+    output_dir = Path(config.output_dir)
+    summary_path = output_dir / "run_summary.yaml"
 
-    if uw.mpi.size > 1:
-        return None
+    if summary_path.exists():
+        with open(summary_path) as f:
+            cached = yaml.safe_load(f)
+        if cached.get("status") == "steady":
+            return cached
 
-    try:
-        import pyvista as pv
-        import underworld3.visualisation as vis
+    is_steady = _is_steady(evolution_log, config)
+    last_step = evolution_log[-1]["step"] if evolution_log else 0
 
-        import os, matplotlib  # noqa: E401
-        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
-            matplotlib.use("Agg")
+    if is_steady:
+        status = "steady"
+    elif last_step >= config.max_steps:
+        status = "stalled"  # hit cap; bump max_steps to extend
+    else:
+        status = "incomplete"  # paused mid-batch; just rerun
 
-        # Temperature on the high-order mesh
-        pv_mesh_t = vis.meshVariable_to_pv_mesh_object(T)
-        pv_mesh_t.point_data["T"] = vis.scalar_fn_to_pv_points(pv_mesh_t, T.sym)
+    if not evolution_log:
+        return {"status": status, "n_steps": 0}
 
-        pl = pv.Plotter(window_size=(1000, 750))
-        pl.add_mesh(pv_mesh_t, cmap="coolwarm", show_edges=False, scalars="T", opacity=1)
-        pl.add_mesh(pv_mesh_t.copy(), style="wireframe", color="Black", opacity=0.05)
+    n_window = max(
+        int(len(evolution_log) * config.steady_window),
+        min(config.steady_min_window, len(evolution_log)),
+    )
+    window = evolution_log[-n_window:]
 
-        # Streamlines from velocity field
-        if v is not None:
-            pvmesh = vis.mesh_to_pv_mesh(mesh)
-            pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v.sym) / 333
+    nu_window = np.array([(r["Nu_top"] + r["Nu_bot"]) / 2 for r in window])
+    vrms_window = np.array([r["Vrms"] for r in window])
+    meanT_window = np.array([r["mean_T"] for r in window])
 
-            cpoints = np.zeros((mesh._centroids[::4].shape[0], 3))
-            cpoints[:, 0] = mesh._centroids[::4, 0]
-            cpoints[:, 1] = mesh._centroids[::4, 1]
+    summary = {
+        "status": status,
+        "n_steps": last_step,
+        "rayleigh": config.rayleigh,
+        "aspect_ratio": config.aspect_ratio,
+        "Nu_top_mean": float(np.mean([r["Nu_top"] for r in window])),
+        "Nu_bot_mean": float(np.mean([r["Nu_bot"] for r in window])),
+        "Nu_mean": float(nu_window.mean()),
+        "Nu_std": float(nu_window.std()),
+        "Vrms_mean": float(vrms_window.mean()),
+        "Vrms_std": float(vrms_window.std()),
+        "mean_T_mean": float(meanT_window.mean()),
+        "elapsed_t": float(window[-1]["t"]),
+    }
 
-            pvstream = pvmesh.streamlines_from_source(
-                pv.PolyData(cpoints),
-                vectors="V",
-                integrator_type=45,
-                integration_direction="forward",
-                compute_vorticity=False,
-                max_steps=25,
-                surface_streamlines=True,
-            )
-            pl.add_mesh(pvstream, opacity=0.666)
+    # Only persist the summary when the run reached steady state.
+    # Stalled runs leave no done-marker so a re-invocation with a higher
+    # ``max_steps`` extends them rather than short-circuiting.
+    if status == "steady":
+        with open(summary_path, "w") as f:
+            yaml.dump(summary, f, default_flow_style=False, sort_keys=False)
 
-        if title is None and config is not None:
-            title = f"Ra = {config.rayleigh:.0e}"
-        if title:
-            pl.add_title(title)
-
-        if save_to:
-            pl.screenshot(str(save_to), window_size=(1280, 1280), return_img=False)
-            pl.close()
-        else:
-            pl.show(cpos="xy")
-
-        return pl
-
-    except (ImportError, Exception):
-        return None
+    return summary
