@@ -34,7 +34,7 @@ from typing import Literal, Optional
 
 import numpy as np
 import yaml
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from underworld3.workflows import WorkflowConfig
 
@@ -44,6 +44,63 @@ import convection_config as _convection
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+
+class TracerPopulation(BaseModel):
+    """A named tracer population: how to seed it, and how to render it.
+
+    ``region`` is one of:
+
+    * ``"uniform"``  — fill the whole mesh with an n×n grid (the
+      ``x_range`` / ``y_range`` defaults are normalised 0..1 mapped to
+      the mesh extent).
+    * ``"block"``    — fill a rectangular block specified by
+      ``x_range`` and ``y_range`` (in mesh coordinates).
+
+    Each population is advected independently and rendered as its own
+    point cloud with its own colour.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    region: Literal["uniform", "block"] = "uniform"
+    n: int = Field(default=40, ge=4, description="Tracers per dimension")
+    x_range: tuple[float, float] = (0.02, 0.98)
+    y_range: tuple[float, float] = (0.02, 0.98)
+    colour: str = "lightgrey"
+    point_size: int = Field(default=4, ge=1)
+
+
+def _default_populations() -> list[TracerPopulation]:
+    """Three populations: uniform, top-left block, dead-centre block."""
+    return [
+        TracerPopulation(
+            name="uniform",
+            region="uniform",
+            n=30,
+            colour="lightgrey",
+            point_size=3,
+        ),
+        TracerPopulation(
+            name="top_left_block",
+            region="block",
+            n=18,
+            x_range=(0.02, 0.25),
+            y_range=(0.75, 0.98),
+            colour="red",
+            point_size=5,
+        ),
+        TracerPopulation(
+            name="centre_block",
+            region="block",
+            n=18,
+            x_range=(0.40, 0.60),
+            y_range=(0.40, 0.60),
+            colour="blue",
+            point_size=5,
+        ),
+    ]
 
 
 class VisualiseConfig(WorkflowConfig):
@@ -59,13 +116,15 @@ class VisualiseConfig(WorkflowConfig):
     every: int = Field(default=1, ge=1, description="Use every Nth saved timestep")
     fps: int = Field(default=12, ge=1)
     window_size: tuple[int, int] = Field(default=(1000, 800))
-    cmap: str = Field(default="RdBu_r")
+    cmap: str = Field(default="coolwarm")
     show_streamlines: bool = False
+    show_scalar_bar: bool = True
 
-    # Tracer movie
-    n_tracers_per_dim: int = Field(default=40, ge=4)
-    tracer_color: str = "lightgrey"
-    tracer_size: int = Field(default=4, ge=1)
+    # Tracer populations — a list so we can render several at once with
+    # distinct colours (e.g. uniform background + two tagged blocks).
+    tracer_populations: list[TracerPopulation] = Field(
+        default_factory=_default_populations,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +208,9 @@ def render_temperature_frames(cfg: VisualiseConfig) -> Optional[Path]:
         pl.add_mesh(
             pv_t, cmap=cfg.cmap, scalars="T",
             clim=[0.0, 1.0],
-            show_edges=False, show_scalar_bar=False,
+            show_edges=False,
+            show_scalar_bar=cfg.show_scalar_bar,
+            scalar_bar_args={"title": "T"} if cfg.show_scalar_bar else None,
         )
 
         if cfg.show_streamlines:
@@ -183,13 +244,40 @@ def render_temperature_frames(cfg: VisualiseConfig) -> Optional[Path]:
     return frames_dir
 
 
-def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
-    """Render frames showing T plus passive tracers advected through history.
+def _seed_tracers(
+    pop: TracerPopulation,
+    x_lo: float, y_lo: float, x_hi: float, y_hi: float,
+) -> np.ndarray:
+    """Build the initial (M, 2) tracer array for one population."""
+    Lx = x_hi - x_lo
+    Ly = y_hi - y_lo
+    if pop.region == "uniform":
+        # x_range / y_range are normalised 0..1 mapped to mesh extent.
+        x0 = x_lo + pop.x_range[0] * Lx
+        x1 = x_lo + pop.x_range[1] * Lx
+        y0 = y_lo + pop.y_range[0] * Ly
+        y1 = y_lo + pop.y_range[1] * Ly
+    elif pop.region == "block":
+        # x_range / y_range are absolute mesh coordinates.
+        x0, x1 = pop.x_range
+        y0, y1 = pop.y_range
+    else:
+        raise ValueError(f"Unknown region {pop.region!r} for tracer population")
 
-    Tracers are seeded on a regular ``n_tracers_per_dim x n_tracers_per_dim``
-    grid in the domain at step 0 and advected with midpoint steps using
-    the velocity field at each saved timestep.  This shows mixing /
-    circulation patterns even when the temperature field looks steady.
+    xs = np.linspace(x0, x1, pop.n)
+    ys = np.linspace(y0, y1, pop.n)
+    return np.array([(x, y) for y in ys for x in xs])
+
+
+def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
+    """Render frames showing T plus one or more tracer populations.
+
+    Each population is seeded once at step 0 (uniform across the
+    domain, or in a specified rectangular block) and advected through
+    the saved velocity history with midpoint integration.  Populations
+    are rendered as separate point clouds, each in its own colour, so
+    a uniform background population can be drawn alongside one or more
+    tagged blocks.
     """
     import underworld3 as uw
 
@@ -216,19 +304,19 @@ def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
     if not steps:
         return frames_dir
 
-    # Seed tracers on a regular grid inside the domain.  Read the
-    # extent from the loaded mesh so we don't depend on attributes
-    # that aren't preserved across the h5 round-trip.
+    # Read mesh extent from h5-loaded coordinates (no minCoords attr after reload).
     coords = mesh.X.coords
     x_lo, y_lo = float(coords[:, 0].min()), float(coords[:, 1].min())
     x_hi, y_hi = float(coords[:, 0].max()), float(coords[:, 1].max())
-    n = cfg.n_tracers_per_dim
-    xs = np.linspace(x_lo + 0.02 * (x_hi - x_lo), x_hi - 0.02 * (x_hi - x_lo), n)
-    ys = np.linspace(y_lo + 0.02 * (y_hi - y_lo), y_hi - 0.02 * (y_hi - y_lo), n)
-    grid = np.array([(x, y) for y in ys for x in xs])
-    tracers = grid.copy()
 
-    # Read timeseries to estimate dt for advection per saved interval
+    # Seed each population once.  We track them as a list aligned with
+    # cfg.tracer_populations so each can be rendered in its own colour.
+    populations = list(cfg.tracer_populations)
+    tracers_per_pop: list[np.ndarray] = [
+        _seed_tracers(p, x_lo, y_lo, x_hi, y_hi) for p in populations
+    ]
+
+    # Read timeseries to get the time at each saved step (for dt per interval).
     ts_path = run_dir / "timeseries.csv"
     ts_rows = _convection._read_timeseries(ts_path)
     step_to_t = {r["step"]: r["t"] for r in ts_rows}
@@ -248,18 +336,26 @@ def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
             print(f"[viz] Skip step {step}: {e}", flush=True)
             continue
 
-        # Advance tracers using velocity at this time, time-step = saved-step Δt.
-        # uw.function.evaluate of a 2D vector field at (n, 2) points returns
-        # shape (n, 1, 2) — squeeze the middle dim before arithmetic.
+        # Advance every population through the same dt using midpoint
+        # integration in the velocity field at this saved step.
+        # uw.function.evaluate of a 2D vector field at (n, 2) points
+        # returns shape (n, 1, 2) — reshape to (n, 2).
         t_now = step_to_t.get(step)
         if prev_t is not None and t_now is not None and t_now > prev_t:
             dt = t_now - prev_t
-            v_here = np.asarray(uw.function.evaluate(v.sym, tracers)).reshape(-1, 2)
-            half = tracers + 0.5 * dt * v_here
-            half = np.clip(half, [x_lo, y_lo], [x_hi, y_hi])
-            v_half = np.asarray(uw.function.evaluate(v.sym, half)).reshape(-1, 2)
-            tracers = tracers + dt * v_half
-            tracers = np.clip(tracers, [x_lo, y_lo], [x_hi, y_hi])
+            for i, pts in enumerate(tracers_per_pop):
+                v_here = np.asarray(
+                    uw.function.evaluate(v.sym, pts)
+                ).reshape(-1, 2)
+                half = pts + 0.5 * dt * v_here
+                half = np.clip(half, [x_lo, y_lo], [x_hi, y_hi])
+                v_half = np.asarray(
+                    uw.function.evaluate(v.sym, half)
+                ).reshape(-1, 2)
+                advanced = pts + dt * v_half
+                tracers_per_pop[i] = np.clip(
+                    advanced, [x_lo, y_lo], [x_hi, y_hi],
+                )
         prev_t = t_now
 
         pl.clear()
@@ -267,19 +363,21 @@ def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
         pv_t.point_data["T"] = vis.scalar_fn_to_pv_points(pv_t, T.sym[0])
         pl.add_mesh(
             pv_t, cmap=cfg.cmap, scalars="T",
-            clim=[0.0, 1.0], show_edges=False, show_scalar_bar=False,
+            clim=[0.0, 1.0], show_edges=False,
+            show_scalar_bar=cfg.show_scalar_bar,
+            scalar_bar_args={"title": "T"} if cfg.show_scalar_bar else None,
         )
 
-        # Tracers as a point cloud
-        tracer_pts = np.zeros((tracers.shape[0], 3))
-        tracer_pts[:, :2] = tracers
-        pl.add_mesh(
-            pv.PolyData(tracer_pts),
-            color=cfg.tracer_color,
-            point_size=cfg.tracer_size,
-            render_points_as_spheres=True,
-            show_scalar_bar=False,
-        )
+        for pop, pts in zip(populations, tracers_per_pop):
+            tracer_pts3 = np.zeros((pts.shape[0], 3))
+            tracer_pts3[:, :2] = pts
+            pl.add_mesh(
+                pv.PolyData(tracer_pts3),
+                color=pop.colour,
+                point_size=pop.point_size,
+                render_points_as_spheres=True,
+                show_scalar_bar=False,
+            )
 
         pl.camera_position = "xy"
         pl.add_text(

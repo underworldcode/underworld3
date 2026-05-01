@@ -207,10 +207,11 @@ def _check_compatibility(config: ConvectionConfig, output_dir: Path):
 # ---------------------------------------------------------------------------
 
 
-_TS_FIELDS = ("step", "t", "dt", "Nu_top", "Nu_bot", "Vrms", "mean_T")
+_TS_FIELDS = ("step", "t", "dt", "Nu_top", "Nu_bot", "Vrms", "Vmax", "mean_T")
 
 
 def _read_timeseries(path: Path) -> list[dict]:
+    """Read timeseries.csv, tolerating older runs that lack Vmax."""
     if not path.exists():
         return []
     out = []
@@ -223,18 +224,45 @@ def _read_timeseries(path: Path) -> list[dict]:
                 "Nu_top": float(row["Nu_top"]),
                 "Nu_bot": float(row["Nu_bot"]),
                 "Vrms": float(row["Vrms"]),
+                # Vmax is optional for backward-compat with older CSVs
+                "Vmax": float(row.get("Vmax") or "nan"),
                 "mean_T": float(row["mean_T"]),
             })
     return out
 
 
 def _append_timeseries_row(path: Path, row: dict) -> None:
+    """Append one row; auto-add header on first write.
+
+    If the existing file pre-dates the current ``_TS_FIELDS`` schema
+    (e.g. an older run that lacks ``Vmax``), the file is migrated in
+    place by re-writing every row with the current schema (filling
+    missing fields with ``nan``).
+    """
+    if path.exists():
+        # Check existing header
+        with open(path) as f:
+            existing_header = f.readline().rstrip("\n")
+        existing_fields = tuple(existing_header.split(","))
+        if existing_fields != _TS_FIELDS:
+            # Migrate: read all old rows, rewrite with the new schema.
+            old_rows = _read_timeseries(path)
+            with open(path, "w", newline="") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=_TS_FIELDS, extrasaction="ignore",
+                )
+                writer.writeheader()
+                for r in old_rows:
+                    writer.writerow({k: r.get(k) for k in _TS_FIELDS})
+
     is_new = not path.exists()
     with open(path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_TS_FIELDS)
+        writer = csv.DictWriter(
+            f, fieldnames=_TS_FIELDS, extrasaction="ignore",
+        )
         if is_new:
             writer.writeheader()
-        writer.writerow({k: row[k] for k in _TS_FIELDS})
+        writer.writerow({k: row.get(k) for k in _TS_FIELDS})
 
 
 def _list_saved_steps(output_dir: Path) -> list[int]:
@@ -299,6 +327,17 @@ def _compute_diagnostics(mesh, T, v, config: ConvectionConfig) -> dict:
     integrator.fn = v.sym.dot(v.sym)
     Vrms = float(np.sqrt(max(integrator.evaluate(), 0.0) / V_total))
 
+    # Vmax: peak velocity magnitude at velocity DOFs.  Fast — just an
+    # in-memory max with an MPI all-reduce for parallel safety.
+    v_dofs = np.asarray(v.array).reshape(-1, mesh.dim)
+    v_mag = np.linalg.norm(v_dofs, axis=1)
+    local_max = float(v_mag.max()) if v_mag.size else 0.0
+    if uw.mpi.size > 1:
+        import mpi4py
+        Vmax = float(uw.mpi.comm.allreduce(local_max, op=mpi4py.MPI.MAX))
+    else:
+        Vmax = local_max
+
     # Surface flux samples — averaged at top and bottom boundaries.
     n_samples = 100
     top = np.column_stack([
@@ -318,7 +357,11 @@ def _compute_diagnostics(mesh, T, v, config: ConvectionConfig) -> dict:
     Nu_top = flux_top / max(abs(delta_T), 1e-30)
     Nu_bot = flux_bot / max(abs(delta_T), 1e-30)
 
-    return {"Nu_top": Nu_top, "Nu_bot": Nu_bot, "Vrms": Vrms, "mean_T": mean_T}
+    return {
+        "Nu_top": Nu_top, "Nu_bot": Nu_bot,
+        "Vrms": Vrms, "Vmax": Vmax,
+        "mean_T": mean_T,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +594,11 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
         )
 
     # ── Time loop ────────────────────────────────────────────────────
+    # Per-step: compute lightweight diagnostics, append to timeseries.csv,
+    #           print the live one-line summary.
+    # Per-save_every: also write an h5 checkpoint.  Steady-state test runs
+    #           after each save (no point checking more often than the
+    #           CSV grows by save_every rows).
     while timestep < config.max_steps:
         stokes.solve(zero_init_guess=False)
         delta_t = config.dt_factor * adv_diff.estimate_dt()
@@ -558,25 +606,26 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
         timestep += 1
         elapsed += float(delta_t)
 
+        diag = _compute_diagnostics(mesh, T, v, config)
+        row = {
+            "step": timestep, "t": elapsed, "dt": float(delta_t), **diag,
+        }
+        _append_timeseries_row(timeseries_path, row)
+        timeseries.append(row)
+
+        uw.pprint(
+            f"[step {timestep:5d}]  t={elapsed:9.4e}  dt={delta_t:.2e}  "
+            f"Nu_top={diag['Nu_top']:6.3f}  Nu_bot={diag['Nu_bot']:6.3f}  "
+            f"Vrms={diag['Vrms']:8.4f}  Vmax={diag['Vmax']:8.4f}  "
+            f"<T>={diag['mean_T']:5.3f}",
+            flush=True,
+        )
+
         if timestep % config.save_every == 0:
             mesh.write_timestep(
                 filename=RUN_NAME, index=timestep, outputPath=str(output_dir),
                 meshVars=[v, T],
             )
-            diag = _compute_diagnostics(mesh, T, v, config)
-            row = {
-                "step": timestep, "t": elapsed, "dt": float(delta_t), **diag,
-            }
-            _append_timeseries_row(timeseries_path, row)
-            timeseries.append(row)
-
-            uw.pprint(
-                f"[step {timestep:5d}]  t={elapsed:9.4e}  dt={delta_t:.2e}  "
-                f"Nu_top={diag['Nu_top']:6.3f}  Nu_bot={diag['Nu_bot']:6.3f}  "
-                f"Vrms={diag['Vrms']:8.4f}  <T>={diag['mean_T']:5.3f}",
-                flush=True,
-            )
-
             if _is_steady(timeseries, config):
                 uw.pprint(
                     f"[evolve] Steady state reached at step {timestep}.",
