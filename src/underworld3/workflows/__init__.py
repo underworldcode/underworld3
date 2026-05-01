@@ -9,6 +9,7 @@ See ``docs/developer/guides/workflow-packages.md`` for the full pattern.
 
 from ._base import WorkflowConfig
 from ._products import WorkflowProducts
+from ._runner import WorkflowRunner
 from ._utils import check_dependencies, parse_quantity, show_source, workflow_step
 
 
@@ -146,6 +147,7 @@ def view(module):
 __all__ = [
     "WorkflowConfig",
     "WorkflowProducts",
+    "WorkflowRunner",
     "check_dependencies",
     "init_workflow",
     "list_workflows",
