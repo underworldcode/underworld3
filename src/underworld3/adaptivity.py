@@ -473,7 +473,30 @@ def _dm_stack_bcs(dm, boundaries, stacked_bc_label_name):
 
 
 def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
-    """Unpack boundary labels to the list of names"""
+    """Unpack boundary labels to the list of names.
+
+    BUGFIX(#162): the auxiliary labels ``All_Boundaries`` (1001) and
+    ``Null_Boundary`` (666) are added to the ``boundaries`` enum by the
+    Mesh constructor (extend_enum) and populated outside this function
+    — ``All_Boundaries`` by ``markBoundaryFaces`` in ``_from_gmsh`` /
+    ``_from_plexh5``, ``Null_Boundary`` by the Mesh constructor itself
+    from the depth-0 stratum. The previous version of this function
+    iterated *every* boundary in the enum and removed its label, then
+    only repopulated those whose values appeared in the source stack
+    (``Face Sets`` etc.). Since the auxiliary values 666/1001 are
+    UW3-internal and never appear in gmsh-derived stacks, both labels
+    were silently destroyed.
+
+    The consequence (issue #162): ``BoxInternalBoundary``'s natural BCs
+    contributed nothing to the residual on any boundary, because PETSc's
+    ``DM_BC_NATURAL_FIELD`` integration relies on these consolidated
+    labels and the closure they imply. The same code path is used in
+    ``mesh_adapt_meshVar`` — adapted meshes also lost these labels.
+
+    Fix: after the standard remove/recreate cycle, restore the
+    auxiliary labels using the same primitives the Mesh constructor /
+    ``_from_*`` helpers use.
+    """
 
     if boundaries is None:
         return
@@ -501,6 +524,60 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
         b_dmlabel = dm.getLabel(b.name)
         lab_is = stacked_bc_label.getStratumIS(v)
         b_dmlabel.setStratumIS(v, lab_is)
+
+        # BUGFIX(#162): expand the boundary label to include its closure
+        # (the vertices and edges bordering the labeled facets). The
+        # standard ``useRegions=True`` gmsh import does this implicitly;
+        # the ``useRegions=False`` + ``_dm_unstack_bcs`` path used by
+        # internal-boundary meshes left labels at the height-1 stratum
+        # only. PETSc's natural-BC residual integration needs the
+        # closure to find the FE basis points on the boundary, so a
+        # closure-less label silently produces zero contribution.
+        try:
+            dm.labelComplete(b_dmlabel)
+        except Exception:
+            # labelComplete is a no-op for empty labels and certain
+            # depth combinations; swallow rather than fail label setup.
+            pass
+
+    # Repopulate consolidated auxiliary labels (see docstring).
+    boundary_names = {b.name for b in boundaries}
+
+    if "All_Boundaries" in boundary_names:
+        # Replaces any existing content; safe to call after removeLabel.
+        dm.markBoundaryFaces("All_Boundaries", 1001)
+
+    if "Null_Boundary" in boundary_names:
+        depth_label = dm.getLabel("depth")
+        if depth_label is not None:
+            verts_is = depth_label.getStratumIS(0)
+            if verts_is is not None and verts_is.getSize() > 0:
+                null_label = dm.getLabel("Null_Boundary")
+                null_label.setStratumIS(666, verts_is)
+
+    # Rebuild the consolidated UW_Boundaries label from the now-correct
+    # individual boundary labels. The Mesh constructor builds this once
+    # at construction time (discretisation_mesh.py:451-471), but at that
+    # point ``BoxInternalBoundary``'s named labels are still bundled in
+    # ``Face Sets`` and don't exist as standalone labels — so the
+    # consolidated label was empty of all named entries until this
+    # function ran. The solver registers natural BCs against
+    # ``UW_Boundaries`` (see ``PetscDSAddBoundary_UW`` calls in
+    # ``petsc_generic_snes_solvers.pyx``), so without this rebuild
+    # natural BCs on ``BoxInternalBoundary`` were silently no-ops even
+    # after the named labels were populated.
+    dm.removeLabel("UW_Boundaries")
+    uw.mpi.barrier()
+    dm.createLabel("UW_Boundaries")
+    uw_boundaries = dm.getLabel("UW_Boundaries")
+    for b in boundaries:
+        label = dm.getLabel(b.name)
+        if label is None:
+            continue
+        label_is = label.getStratumIS(b.value)
+        if label_is is not None and label_is.getSize() > 0:
+            uw_boundaries.setStratumIS(b.value, label_is)
+    uw.mpi.barrier()
 
     return
 
