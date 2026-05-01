@@ -97,6 +97,14 @@ class ConvectionConfig(WorkflowConfig):
     rayleigh: float = Field(default=1e6, gt=0)
     viscosity: float = Field(default=1.0, gt=0)
     diffusivity: float = Field(default=1.0, gt=0)
+    # NOTE: AdvDiffusionSLCN exhibits a monotonic amplitude-loss
+    # artefact (the solution drifts toward zero everywhere over
+    # time).  With T ∈ [0, 1] the physical mean is 0.5 and the drift
+    # shows up as a downward trend in <T>.  With T ∈ [-0.5, 0.5] the
+    # physical mean is 0 and the drift is invisible (drift toward
+    # zero == drift toward the mean).  ΔT = 1 either way, so Ra and
+    # Nu are unchanged — but for clean steady-state diagnostics the
+    # symmetric scaling is preferred.
     T_top: float = 0.0
     T_bottom: float = 1.0
 
@@ -417,8 +425,12 @@ def create_mesh(config: ConvectionConfig):
     mesh_h5 = output_dir / f"{RUN_NAME}.mesh.00000.h5"
 
     if action == "continue" and mesh_h5.exists():
+        # Pass qdegree on reload so high-order T (degree=3) is fully
+        # integrated — without this, Mesh defaults qdegree=2 and the
+        # solvers warn about under-integration on every solve.
         mesh = uw.discretisation.Mesh(
             str(mesh_h5),
+            qdegree=config.qdegree,
             coordinate_system_type=uw.coordinates.CoordinateSystemType.CARTESIAN,
         )
     else:
