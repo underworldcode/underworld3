@@ -642,15 +642,27 @@ def _write_bl_ic(T, mesh, bl_thickness: float, config: ConvectionConfig):
     ``T(x, y) = 0.5 - 0.5 [tanh(2y/δ) - tanh(2(1-y)/δ)] + small perturbation``
 
     The mean is ≈ 0.5 (= predicted mean from BL symmetry) and the
-    interior is isothermal, with thin top and bottom thermal BLs of
-    thickness ≈ δ.  A small two-mode sinusoidal perturbation breaks
-    symmetry to seed the rolls.
+    interior is isothermal, with top and bottom thermal BLs of
+    thickness ≈ δ.
+
+    The IC δ is floored at a safe multiple of the mesh cell size so
+    the tanh profile is always representable on the mesh.  Without
+    this, predicted δ at high Ra can be thinner than the cell size
+    (e.g. Ra=1e5 → δ≈0.04 vs cellsize=1/24≈0.042), producing a
+    near-singular IC that triggers numerical blow-up before the
+    system has had a chance to spread the BLs through advection.
+    The thicker-than-predicted IC is no worse than starting from a
+    pure conduction profile — both relax toward the same steady
+    state — but it skips the conductive transient *safely*.
     """
     import underworld3 as uw
 
+    safe_delta = max(bl_thickness, 4.0 * config.cellsize, 1.0e-3)
+
     x, y = mesh.X
-    delta = max(bl_thickness, 1.0e-3)
-    base = 0.5 - 0.5 * (sympy.tanh(2 * y / delta) - sympy.tanh(2 * (1 - y) / delta))
+    base = 0.5 - 0.5 * (
+        sympy.tanh(2 * y / safe_delta) - sympy.tanh(2 * (1 - y) / safe_delta)
+    )
     perturb = (
         0.02 * sympy.cos(0.5 * sympy.pi * x / config.aspect_ratio)
         * sympy.sin(2 * sympy.pi * y)
