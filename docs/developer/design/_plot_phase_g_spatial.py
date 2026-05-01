@@ -60,8 +60,7 @@ def main():
     SNAPSHOT_STEP = 90  # mid-second-loading-cycle (peak loading, steady state)
     cases = [
         ("v3_baseline_const_eta", "BDF-1 baseline\n(in-residual elasticity)"),
-        ("v5_const_alpha",        "v5 custom flux\nα = const"),
-        ("v5_lagged_alpha",       "v5 custom flux\nα from η_lag"),
+        ("v5b_etd2_blend75",      "v5b ETD-2\n(etd_blend=0.75)"),
     ]
     snaps = [(label, name, _load_spatial(label, SNAPSHOT_STEP))
              for label, name in cases]
