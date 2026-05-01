@@ -629,6 +629,18 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     # Slot for unique ID used in _hashable_content (like sympy.Dummy)
     __slots__ = ('_uw_id',)
 
+    # Override the MathematicalMixin priority bump back to sympy's default.
+    # MathematicalMixin sets _op_priority = 11.5 to win dispatch over
+    # sympy.Matrix (10.01) for the bare-variable composition case (#137 —
+    # MeshVariable / SwarmVariable on the right of a sympified subexpression).
+    # UWexpression is itself a sympy.Symbol subclass with its own __rmul__ /
+    # __rtruediv__ that already handle the Matrix case; inheriting the high
+    # priority would route Matrix / UWexpression through UWexpression's
+    # __rtruediv__ (which falls back to Symbol.__rtruediv__ → fails on
+    # MutableDenseMatrix). Pin it back to 10.0 so sympy's standard
+    # Matrix-dispatch path keeps handling these.
+    _op_priority = 10.0
+
     def __new__(
         cls,
         name,
