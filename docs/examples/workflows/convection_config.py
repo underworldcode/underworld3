@@ -346,7 +346,16 @@ def _compute_diagnostics(mesh, T, v, config: ConvectionConfig) -> dict:
     else:
         Vmax = local_max
 
-    # Surface flux samples — averaged at top and bottom boundaries.
+    # Surface flux samples — total (conductive + advective) heat flux
+    # in the +y direction averaged at the top and bottom boundaries.
+    #
+    # Continuous theory says vy = 0 at the impermeable walls, so the
+    # advective component vanishes there.  In a finite-element
+    # discretisation, however, "at the boundary" means evaluating
+    # basis functions that integrate over a near-boundary neighbourhood
+    # where vy is small but non-zero, so the full flux expression is
+    # what the discrete operator actually represents.  Following the
+    # PHYS-3070 convention.
     n_samples = 100
     top = np.column_stack([
         np.linspace(0.0, config.aspect_ratio, n_samples),
@@ -357,7 +366,10 @@ def _compute_diagnostics(mesh, T, v, config: ConvectionConfig) -> dict:
         np.full(n_samples, 0.0),
     ])
 
-    flux_fn = -mesh.vector.gradient(T.sym[0]).dot(mesh.CoordinateSystem.unit_e_1)
+    flux_fn = (
+        -mesh.vector.gradient(T.sym[0]).dot(mesh.CoordinateSystem.unit_e_1)
+        + v.sym[1] * T.sym[0]
+    )
     flux_top = float(np.mean(uw.function.evaluate(flux_fn, top)))
     flux_bot = float(np.mean(uw.function.evaluate(flux_fn, bot)))
 
