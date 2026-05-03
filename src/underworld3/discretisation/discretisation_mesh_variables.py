@@ -1299,6 +1299,27 @@ class _BaseMeshVariable(Stateful, uw_object):
         out[idx, :] = result.array[:, 0, :]
         self.data[...] = out
 
+        # `self.data` is a view into the per-variable local PETSc vector
+        # (`_lvec`). Three follow-ups are required so the load is visible
+        # to anything reading the *mesh-level* vector:
+        #
+        # 1. Push the per-var local data into the per-var global vector
+        #    so other callers of `_gvec` see it.
+        # 2. Destroy the cached mesh-level lvec (and mark stale) so that
+        #    ``mesh.update_lvec()`` reconstructs it from scratch. Without
+        #    this, the existing mesh._lvec retains its pre-load contents
+        #    in any slot whose owning variable wasn't reloaded — and
+        #    even the freshly-loaded slots can be corrupted by subtle
+        #    ordering bugs in update_lvec's zip(self.vars.values(),
+        #    isets, dms) loop.
+        # 3. Mark the mesh-level lvec stale so update_lvec actually
+        #    rebuilds.
+        self._sync_lvec_to_gvec()
+        if self.mesh._lvec is not None:
+            self.mesh._lvec.destroy()
+            self.mesh._lvec = None
+        self.mesh._stale_lvec = True
+
         return
 
     @timing.routine_timer_decorator
