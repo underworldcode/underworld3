@@ -508,6 +508,26 @@ These operations require **ALL ranks** to participate:
 - [ ] Test with `mpirun -np 2` and `mpirun -np 4`
 - [ ] Check for deadlocks (script hangs = collective operation issue)
 
+## Timing Output at Extreme Scale
+
+`uw.timing.print_table()` ultimately calls PETSc's `PetscLogView`. At very
+high CPU counts (≳1000 ranks), the **ASCII output path** can hang —
+typically appearing as a job that completes its computation cleanly but
+never exits. The CSV write path uses a different, less collective-heavy
+strategy and avoids the issue:
+
+```python
+# Default — fine at small scale, can hang at ≳1000 ranks
+uw.timing.print_table()
+uw.timing.print_table("results.txt")
+
+# Safe at any scale — recommended for HPC runs
+uw.timing.print_table("results.csv")
+```
+
+The behaviour is in PETSc, not Underworld; choosing CSV at scale is the
+recommended workaround. (Issue #134.)
+
 ## Summary
 
 **Key Takeaways:**
@@ -517,5 +537,6 @@ These operations require **ALL ranks** to participate:
 3. **Use `with uw.selective_ranks(ranks):`** for serial operations
 4. **Collective operations must run on ALL ranks** - never inside rank conditionals
 5. **Test with `mpirun -np N`** to catch issues early
+6. **At ≳1000 ranks, write timing output as `.csv`** to avoid `PetscLogView` hangs
 
 The parallel safety system makes parallel programming in Underworld3 safer and more intuitive - collective operations are evaluated on all ranks automatically, preventing common deadlock scenarios!

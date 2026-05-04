@@ -150,13 +150,13 @@ def print_table(filename=None, format="auto"):
     ----------
     filename : str, optional
         If provided, write results to file. Extension determines format:
-        - `.csv` : Spreadsheet-compatible CSV format
-        - `.txt` or other : Human-readable ASCII table
+        - ``.csv`` : Spreadsheet-compatible CSV format
+        - ``.txt`` or other : Human-readable ASCII table
     format : str, optional
         Override automatic format detection:
-        - "auto" : Detect from filename (default)
-        - "ascii" : Human-readable table
-        - "csv" : Comma-separated values
+        - ``"auto"`` : Detect from filename (default)
+        - ``"ascii"`` : Human-readable table
+        - ``"csv"`` : Comma-separated values
 
     Example
     -------
@@ -164,6 +164,22 @@ def print_table(filename=None, format="auto"):
     >>> # ... do work ...
     >>> uw.timing.print_table()  # Print to console
     >>> uw.timing.print_table("results.csv")  # Save as CSV
+
+    Notes
+    -----
+    **High-CPU-count usage (≳1000 ranks): prefer CSV output.**
+
+    Issue #134 (gthyagi, 2026-04-23): the underlying PETSc ``PetscLogView``
+    ASCII output path can hang at extreme rank counts on some clusters
+    (BD-integral routines + ASCII table emit appear to be the trigger),
+    while the CSV write path uses a different, less collective-heavy
+    strategy and avoids the issue. If your job is large enough that
+    timing-output cost matters, write to a ``.csv`` filename:
+
+    >>> uw.timing.print_table("results.csv")  # safe at any scale
+
+    The behaviour is in PETSc, not Underworld; choosing CSV at scale is
+    the recommended workaround.
     """
     print_petsc_log(filename=filename, format=format)
 
