@@ -967,7 +967,7 @@ COMMANDS
     set-env NAME        Change environment directly
     ai-tools            Configure external AI instruction paths
     claude-perms        Configure Claude Code permissions (safe defaults)
-    install-claude      Install Claude Code CLI globally (npm, requires dev env)
+    install-claude      Install Claude Code CLI into the dev pixi env (run via ./uw claude)
 
   Building:
     build               Build underworld3
@@ -1684,7 +1684,25 @@ case "${1:-}" in
         configure_claude_permissions "$(get_env)"
         ;;
     install-claude)
-        $PIXI run -e "$(get_env)" install-claude
+        # The install-claude pixi task lives under [feature.dev.tasks], so it
+        # only resolves in dev-feature envs (dev, amr-dev, *-dev). Guard the
+        # call so users on default/runtime get a clear message instead of a
+        # raw "task not found" error from pixi.
+        env=$(get_env)
+        case "$env" in
+            *dev*)
+                $PIXI run -e "$env" install-claude
+                ;;
+            *)
+                echo -e "${YELLOW}install-claude needs a dev environment (current: $env).${NC}"
+                echo "Switch with one of:"
+                echo "  ./uw set-env dev          # conda-forge PETSc"
+                echo "  ./uw set-env amr-dev      # custom PETSc with AMR tools"
+                echo "  ./uw set-env mpich-dev    # MPICH override"
+                echo "  ./uw set-env openmpi-dev  # OpenMPI override"
+                exit 1
+                ;;
+        esac
         ;;
     --help|-h|help)
         show_help
