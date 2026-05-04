@@ -1,7 +1,12 @@
 name: test_uw3
 
-# We should trigger this from an upload event. Note that pdoc requires us to import the
-# built code, so this is a building test as well as documentation deployment
+# Build + test on every PR / push to main / development.
+#
+# Uses pixi (with the committed pixi.lock) for a deterministic, fast install
+# rather than micromamba + environment.yaml, which had been backtracking for
+# 60+ minutes on conda-forge solves and timing the runner out before tests
+# could start. The pixi.lock matches what local development uses, so CI now
+# runs against the same dependency state developers see.
 
 on:
   push:
@@ -17,27 +22,27 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Conda environment with Micromamba
-        uses: mamba-org/setup-micromamba@v2
+      - name: Install pixi from lockfile
+        uses: prefix-dev/setup-pixi@v0.9.4
         with:
-          environment-file: ./environment.yaml
-          cache-downloads: true
-          cache-environment: true
+          # Use the env that matches local development for tests.
+          # `dev` = conda-petsc + runtime + dev features (pytest, jupyter, etc.)
+          environments: dev
+          # Hard-fail if pixi.lock disagrees with pixi.toml — never re-solve
+          # silently in CI; that's exactly the failure mode we're escaping.
+          frozen: true
+          cache: true
 
       - name: Build UW3
-        shell: bash -l {0}
-        run: |
-          export PETSC_DIR="/home/runner/micromamba/envs/uw3_test/lib"
-          VERSION=`python3 setup.py --version`
-          echo "UW - version " ${VERSION}
-
-          ## TODO. Use scripts/compile.sh once it is in development
-          pip install -e . --no-build-isolation
+        # `pixi run -e dev build` invokes the build task from pixi.toml,
+        # which is `pip install . --no-build-isolation` (non-editable —
+        # editable installs are project policy violation, see CLAUDE.md).
+        run: pixi run -e dev build
 
       - name: Run tests
-        shell: bash -l {0}
-        run: |
-          ./scripts/test.sh --p 2
+        run: pixi run -e dev ./scripts/test.sh --p 2
