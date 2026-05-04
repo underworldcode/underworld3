@@ -970,7 +970,6 @@ COMMANDS
   Setup:
     setup               Interactive configuration wizard
     set-env NAME        Change environment directly
-    shell               Open a pixi shell in the configured env (not pixi's 'default')
     ai-tools            Configure external AI instruction paths
     claude-perms        Configure Claude Code permissions (safe defaults)
     install-claude      Install Claude Code CLI into the dev pixi env (run via ./uw claude)
@@ -999,7 +998,7 @@ COMMANDS
       ./uw test --help              Show all test options
 
   Development:
-    shell               Interactive pixi shell
+    shell               Interactive pixi shell in the configured env (avoid bare 'pixi shell')
     jupyter [args]      Run jupyter (add --worktree NAME to open a worktree)
     format              Run black
     type-check          Run mypy
@@ -1590,6 +1589,10 @@ case "${1:-}" in
         echo "Run './uw build' to rebuild underworld3"
         ;;
     shell)
+        # Activate the env stored in .pixi-env, not pixi's literal 'default'.
+        # Bare `pixi shell` ignores .pixi-env and falls back to the env named
+        # 'default' in pixi.toml, which is the lightweight conda-forge PETSc
+        # env without nodejs / dev tools — a common first-timer trap.
         shift
         exec $PIXI shell -e "$(get_env)" "$@"
         ;;
@@ -1685,13 +1688,6 @@ case "${1:-}" in
         ;;
     ai-tools)
         configure_ai_tools
-        ;;
-    shell)
-        # Activate the env stored in .pixi-env, not pixi's literal 'default'.
-        # Bare `pixi shell` ignores .pixi-env and falls back to the env named
-        # 'default' in pixi.toml, which is the lightweight conda-forge PETSc
-        # env without nodejs / dev tools — a common first-timer trap.
-        exec $PIXI shell -e "$(get_env)"
         ;;
     claude-perms)
         configure_claude_permissions "$(get_env)"
