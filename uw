@@ -863,6 +863,26 @@ run_setup() {
         fi
     fi
 
+    # Optional: Install the Claude Code CLI (only meaningful for the Developer feature,
+    # which brings nodejs into the env). Reuses the install-claude pixi task.
+    if [ "$feature_choice" = "3" ]; then
+        echo ""
+        echo -e "${BOLD}Claude Code CLI (Optional)${NC}"
+        echo "  Install the Claude Code CLI globally via the dev environment's npm:"
+        echo "    pixi run -e $new_env install-claude"
+        echo "  (equivalent to: npm install -g @anthropic-ai/claude-code)"
+        echo ""
+        read -p "Install Claude Code CLI now? [y/N]: " install_claude_cli
+        install_claude_cli=${install_claude_cli:-n}
+
+        if [ "$install_claude_cli" = "y" ] || [ "$install_claude_cli" = "Y" ]; then
+            $PIXI run -e "$new_env" install-claude
+            echo -e "  ${GREEN}✓${NC} Claude Code CLI installed"
+        else
+            echo "  Skipped. Run later with: ./uw install-claude"
+        fi
+    fi
+
     # Optional: Configure Claude Code permissions for unattended monitoring
     echo ""
     echo -e "${BOLD}Claude Code Permissions (Optional)${NC}"
@@ -947,6 +967,7 @@ COMMANDS
     set-env NAME        Change environment directly
     ai-tools            Configure external AI instruction paths
     claude-perms        Configure Claude Code permissions (safe defaults)
+    install-claude      Install Claude Code CLI globally (npm, requires dev env)
 
   Building:
     build               Build underworld3
@@ -1661,6 +1682,9 @@ case "${1:-}" in
         ;;
     claude-perms)
         configure_claude_permissions "$(get_env)"
+        ;;
+    install-claude)
+        $PIXI run -e "$(get_env)" install-claude
         ;;
     --help|-h|help)
         show_help
