@@ -33,27 +33,24 @@ skip work.  Stalled runs (hit ``max_steps`` without converging) do
 (or call ``runner.rebuild("run_summary")``).
 """
 
-import csv
 import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 import sympy
-import yaml
 from pydantic import Field
 
 from underworld3.workflows import WorkflowConfig, workflow_step
 
-
-# Filename stem used inside each run's output directory.
-RUN_NAME = "run"
+from _run import RUN_NAME, Run  # noqa: F401  (RUN_NAME re-exported for viz)
 
 # Fields whose change invalidates the existing on-disk run.
 _IDENTITY_FIELDS = (
     "aspect_ratio", "cellsize", "qdegree", "regular",
+    "T_degree",
     "rayleigh", "viscosity", "diffusivity",
     "T_top", "T_bottom",
 )
@@ -93,6 +90,13 @@ class ConvectionConfig(WorkflowConfig):
     qdegree: int = Field(default=3, ge=1)
     regular: bool = False
 
+    # Identity — discretisation orders
+    # ``T_degree`` controls the polynomial order of the temperature
+    # MeshVariable (degree=3 by default, matching the previous hardcode).
+    # Changing it forces a fresh run because the on-disk h5 layout and
+    # the JIT cache key both depend on the FE space.
+    T_degree: int = Field(default=3, ge=1)
+
     # Identity — physics
     rayleigh: float = Field(default=1e6, gt=0)
     viscosity: float = Field(default=1.0, gt=0)
@@ -119,6 +123,17 @@ class ConvectionConfig(WorkflowConfig):
     max_steps: int = Field(default=5000, gt=0)
     save_every: int = Field(default=10, gt=0)
     dt_factor: float = Field(default=2.0, gt=0)
+    # Diagnostic cadence: how often to do the heavy volume integrals
+    # (Vrms, mean_T).  0 = match save_every; 1 = every step (low-Ra
+    # quick runs); >1 = every N steps.  Nu/Vmax always run every step.
+    diag_every: int = Field(default=0, ge=0)
+    # Optional: clip T to [T_top, T_bottom] after each AdvDiff solve.
+    # Helpful as a safety belt during the violent early transient at
+    # high Ra — without this, AdvDiff overshoots can drive T outside
+    # the physical range, which pumps spurious buoyancy and crashes
+    # the Stokes solve.  False by default (don't change converged
+    # solutions); set True for warm-start / high-Ra cold-start runs.
+    clip_T_range: bool = False
 
     # Output
     output_dir: str = "output/convection/run"
@@ -141,34 +156,6 @@ def _identity_snapshot(config: ConvectionConfig) -> dict:
     return {f: getattr(config, f) for f in _IDENTITY_FIELDS}
 
 
-def _read_manifest(output_dir: Path) -> Optional[dict]:
-    p = output_dir / "manifest.yaml"
-    if not p.exists():
-        return None
-    with open(p) as f:
-        return yaml.safe_load(f)
-
-
-def _write_manifest(output_dir: Path, data: dict) -> None:
-    p = output_dir / "manifest.yaml"
-    with open(p, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-
-
-def _archive_run(output_dir: Path) -> Optional[Path]:
-    """Move ``output_dir`` to ``output_dir.archive-<UTC-stamp>/``.
-
-    Never deletes.  Returns the archive path, or ``None`` if there was
-    nothing to archive.
-    """
-    if not output_dir.exists():
-        return None
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    archive = output_dir.parent / f"{output_dir.name}.archive-{ts}"
-    output_dir.rename(archive)
-    return archive
-
-
 def _check_compatibility(config: ConvectionConfig, output_dir: Path):
     """Compare current config to an existing manifest.
 
@@ -180,14 +167,15 @@ def _check_compatibility(config: ConvectionConfig, output_dir: Path):
     archive : Path or None
         Path to the archived old directory, if any.
     """
-    manifest = _read_manifest(output_dir)
+    run = Run(output_dir)
+    manifest = run.manifest
     if manifest is None:
         return "fresh", None
 
-    if manifest.get("config_hash") == _config_hash(config):
+    if manifest.config_hash == _config_hash(config):
         return "continue", None
 
-    snap = manifest.get("config_snapshot", {})
+    snap = manifest.config_snapshot
     changed = [
         f"{f}: {snap.get(f)!r} -> {getattr(config, f)!r}"
         for f in _IDENTITY_FIELDS
@@ -205,85 +193,17 @@ def _check_compatibility(config: ConvectionConfig, output_dir: Path):
             "delete it."
         )
 
-    archive = _archive_run(output_dir)
+    archive = run.archive()
     output_dir.mkdir(parents=True, exist_ok=True)
     return "fresh", archive
 
 
 # ---------------------------------------------------------------------------
-# Timeseries on disk (append-only CSV)
+# Timeseries schema (workflow-specific column order)
 # ---------------------------------------------------------------------------
 
 
 _TS_FIELDS = ("step", "t", "dt", "Nu_top", "Nu_bot", "Vrms", "Vmax", "mean_T")
-
-
-def _read_timeseries(path: Path) -> list[dict]:
-    """Read timeseries.csv, tolerating older runs that lack Vmax."""
-    if not path.exists():
-        return []
-    out = []
-    with open(path) as f:
-        for row in csv.DictReader(f):
-            out.append({
-                "step": int(row["step"]),
-                "t": float(row["t"]),
-                "dt": float(row["dt"]),
-                "Nu_top": float(row["Nu_top"]),
-                "Nu_bot": float(row["Nu_bot"]),
-                "Vrms": float(row["Vrms"]),
-                # Vmax is optional for backward-compat with older CSVs
-                "Vmax": float(row.get("Vmax") or "nan"),
-                "mean_T": float(row["mean_T"]),
-            })
-    return out
-
-
-def _append_timeseries_row(path: Path, row: dict) -> None:
-    """Append one row; auto-add header on first write.
-
-    If the existing file pre-dates the current ``_TS_FIELDS`` schema
-    (e.g. an older run that lacks ``Vmax``), the file is migrated in
-    place by re-writing every row with the current schema (filling
-    missing fields with ``nan``).
-    """
-    if path.exists():
-        # Check existing header
-        with open(path) as f:
-            existing_header = f.readline().rstrip("\n")
-        existing_fields = tuple(existing_header.split(","))
-        if existing_fields != _TS_FIELDS:
-            # Migrate: read all old rows, rewrite with the new schema.
-            old_rows = _read_timeseries(path)
-            with open(path, "w", newline="") as f:
-                writer = csv.DictWriter(
-                    f, fieldnames=_TS_FIELDS, extrasaction="ignore",
-                )
-                writer.writeheader()
-                for r in old_rows:
-                    writer.writerow({k: r.get(k) for k in _TS_FIELDS})
-
-    is_new = not path.exists()
-    with open(path, "a", newline="") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=_TS_FIELDS, extrasaction="ignore",
-        )
-        if is_new:
-            writer.writeheader()
-        writer.writerow({k: row.get(k) for k in _TS_FIELDS})
-
-
-def _list_saved_steps(output_dir: Path) -> list[int]:
-    """Indices of completed timesteps, derived from the xdmf files."""
-    if not output_dir.exists():
-        return []
-    steps = set()
-    for p in output_dir.glob(f"{RUN_NAME}.mesh.[0-9]*.xdmf"):
-        try:
-            steps.add(int(p.stem.split(".")[-1]))
-        except ValueError:
-            continue
-    return sorted(steps)
 
 
 # ---------------------------------------------------------------------------
@@ -298,16 +218,27 @@ def _is_steady(timeseries: list[dict], config: ConvectionConfig) -> bool:
     floor of ``steady_min_window`` samples).  Both the change in mean
     between halves and the coefficient of variation must be below the
     configured tolerances.
+
+    Vrms may be NaN on rows where the volume integrals were skipped
+    for cost; those rows are dropped from the Vrms test (which then
+    only sees the checkpoint-cadence rows).  Nu is computed every
+    step so its test sees every row.
     """
     n = len(timeseries)
     n_window = max(int(n * config.steady_window), config.steady_min_window)
     if n < n_window:
         return False
 
-    nu = np.array([(r["Nu_top"] + r["Nu_bot"]) / 2 for r in timeseries[-n_window:]])
-    vrms = np.array([r["Vrms"] for r in timeseries[-n_window:]])
+    window = timeseries[-n_window:]
+    nu = np.array([(r["Nu_top"] + r["Nu_bot"]) / 2 for r in window])
+    vrms_raw = np.array([r["Vrms"] for r in window])
+    vrms = vrms_raw[np.isfinite(vrms_raw)]
 
-    for series in (nu, vrms):
+    series_to_test = [nu]
+    if vrms.size >= 4:
+        series_to_test.append(vrms)
+
+    for series in series_to_test:
         half = len(series) // 2
         a, b = series[:half].mean(), series[half:].mean()
         mean_overall = max(abs(series.mean()), 1e-30)
@@ -323,20 +254,126 @@ def _is_steady(timeseries: list[dict], config: ConvectionConfig) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _compute_diagnostics(mesh, T, v, config: ConvectionConfig) -> dict:
+# Module-level cache for the diagnostic objects.  Keyed by id(mesh) so
+# different runs in the same process don't collide.  Each entry holds
+# the Integral and flux SymPy expression built once for that mesh; we
+# reuse the SAME Python objects across every diagnostic call so the JIT
+# cache hits instead of recompiling on every step.
+_DIAG_CACHE: dict = {}
+
+
+def _diag_state(mesh, T, v, config: ConvectionConfig) -> dict:
+    """Build (or fetch) the cached diagnostic helpers for this mesh.
+
+    The heavy diagnostic — the boundary heat flux — is computed via a
+    one-shot ``Projection`` of the (conductive + advective) flux
+    expression onto a scalar MeshVariable.  The Projection is created
+    once and warm-started from the previous step's solution (the flux
+    field varies smoothly between steps, so warm-start drives the
+    iteration count down to 1–2 quickly).
+
+    Volume integrals use **one Integral per integrand**, kept alive
+    across calls — re-assigning ``.fn`` on a single Integral object
+    appears to invalidate UW3's compile cache, so per-call cost was
+    creeping linearly with step count.  Mesh volume is computed once
+    and cached.
+    """
     import underworld3 as uw
 
-    integrator = uw.maths.Integral(mesh, 1)
-    V_total = float(integrator.evaluate())
+    key = id(mesh)
+    state = _DIAG_CACHE.get(key)
+    if state is not None:
+        return state
 
-    integrator.fn = T.sym[0]
-    mean_T = float(integrator.evaluate()) / V_total
+    # Mesh volume — constant; compute once.
+    integrator_vol = uw.maths.Integral(mesh, 1)
+    V_total = float(integrator_vol.evaluate())
 
-    integrator.fn = v.sym.dot(v.sym)
-    Vrms = float(np.sqrt(max(integrator.evaluate(), 0.0) / V_total))
+    # One Integral per integrand so its compiled form stays valid.
+    integrator_meanT = uw.maths.Integral(mesh, T.sym[0])
+    integrator_v2 = uw.maths.Integral(mesh, v.sym.dot(v.sym))
 
-    # Vmax: peak velocity magnitude at velocity DOFs.  Fast — just an
-    # in-memory max with an MPI all-reduce for parallel safety.
+    flux_fn = (
+        -mesh.vector.gradient(T.sym[0]).dot(mesh.CoordinateSystem.unit_e_1)
+        + v.sym[1] * T.sym[0]
+    )
+
+    # Heat-flux Projection — one solve per diagnostic call, warm-started.
+    # Fast PETSc settings (cg + jacobi at tol=1e-4) per the bench in
+    # /tmp/projection_bench.py.
+    flux_var = uw.discretisation.MeshVariable(
+        r"q_y", mesh, 1, degree=1,
+        varsymbol=r"q_y",
+    )
+    flux_proj = uw.systems.Projection(mesh, flux_var)
+    flux_proj.uw_function = flux_fn
+    flux_proj.smoothing = 0.0
+    # Settings per Issue #156: skip SNES (linear projection) and use
+    # CG + bjacobi with relative tolerance.  ksponly avoids the
+    # outer Newton loop entirely; bjacobi is robust on multi-rank.
+    flux_proj.petsc_options["snes_type"] = "ksponly"
+    flux_proj.petsc_options["ksp_type"] = "cg"
+    flux_proj.petsc_options["pc_type"] = "bjacobi"
+    flux_proj.petsc_options["ksp_rtol"] = 1.0e-4
+    flux_proj.tolerance = 1.0e-4
+
+    n_samples = 100
+    top_pts = np.column_stack([
+        np.linspace(0.0, config.aspect_ratio, n_samples),
+        np.full(n_samples, 1.0),
+    ])
+    bot_pts = np.column_stack([
+        np.linspace(0.0, config.aspect_ratio, n_samples),
+        np.full(n_samples, 0.0),
+    ])
+    state = {
+        "V_total": V_total,
+        "integrator_meanT": integrator_meanT,
+        "integrator_v2": integrator_v2,
+        "flux_proj": flux_proj,
+        "flux_var": flux_var,
+        "top_pts": top_pts,
+        "bot_pts": bot_pts,
+        "first_call": True,
+    }
+    _DIAG_CACHE[key] = state
+    return state
+
+
+def _compute_diagnostics(
+    mesh, T, v, config: ConvectionConfig,
+    timings=None, skip_volume: bool = False,
+) -> dict:
+    """Compute Nu_top, Nu_bot, Vrms, Vmax, mean_T.
+
+    If ``skip_volume`` is True, the volume integrals (Vrms, mean_T)
+    are skipped and returned as ``float('nan')``.  Use this for cheap
+    per-step logging when the volume integrals would otherwise
+    dominate (their compile cache appears to grow with each call,
+    inflating their cost over a long run).
+
+    If ``timings`` is a dict, it is filled with per-stage wall times
+    under keys ``vol`` (volume integrals), ``vmax`` (peak-v reduce)
+    and ``flux`` (heat-flux Projection + sample).
+    """
+    import time as _time
+    import underworld3 as uw
+
+    state = _diag_state(mesh, T, v, config)
+    V_total = state["V_total"]
+
+    # ── Volume integrals (mean_T, Vrms) ───────────────────────────
+    t0 = _time.perf_counter()
+    if skip_volume:
+        mean_T = float("nan")
+        Vrms = float("nan")
+    else:
+        mean_T = float(state["integrator_meanT"].evaluate()) / V_total
+        Vrms = float(np.sqrt(max(state["integrator_v2"].evaluate(), 0.0) / V_total))
+    t_vol = _time.perf_counter() - t0
+
+    # ── Vmax (cheap) ──────────────────────────────────────────────
+    t0 = _time.perf_counter()
     v_dofs = np.asarray(v.array).reshape(-1, mesh.dim)
     v_mag = np.linalg.norm(v_dofs, axis=1)
     local_max = float(v_mag.max()) if v_mag.size else 0.0
@@ -345,37 +382,35 @@ def _compute_diagnostics(mesh, T, v, config: ConvectionConfig) -> dict:
         Vmax = float(uw.mpi.comm.allreduce(local_max, op=mpi4py.MPI.MAX))
     else:
         Vmax = local_max
+    t_vmax = _time.perf_counter() - t0
 
-    # Surface flux samples — total (conductive + advective) heat flux
-    # in the +y direction averaged at the top and bottom boundaries.
-    #
-    # Continuous theory says vy = 0 at the impermeable walls, so the
-    # advective component vanishes there.  In a finite-element
-    # discretisation, however, "at the boundary" means evaluating
-    # basis functions that integrate over a near-boundary neighbourhood
-    # where vy is small but non-zero, so the full flux expression is
-    # what the discrete operator actually represents.  Following the
-    # PHYS-3070 convention.
-    n_samples = 100
-    top = np.column_stack([
-        np.linspace(0.0, config.aspect_ratio, n_samples),
-        np.full(n_samples, 1.0),
-    ])
-    bot = np.column_stack([
-        np.linspace(0.0, config.aspect_ratio, n_samples),
-        np.full(n_samples, 0.0),
-    ])
-
-    flux_fn = (
-        -mesh.vector.gradient(T.sym[0]).dot(mesh.CoordinateSystem.unit_e_1)
-        + v.sym[1] * T.sym[0]
-    )
-    flux_top = float(np.mean(uw.function.evaluate(flux_fn, top)))
-    flux_bot = float(np.mean(uw.function.evaluate(flux_fn, bot)))
+    # ── Heat-flux Projection (warm-started after first call) ─────
+    # Project the (conductive + advective) flux expression onto a
+    # smooth MeshVariable, then sample at the boundary points.  The
+    # Projection is the same Python object every step, so its compiled
+    # form is reused and the previous solution is the initial guess
+    # for the next solve.
+    t0 = _time.perf_counter()
+    flux_proj = state["flux_proj"]
+    flux_var = state["flux_var"]
+    flux_proj.solve(zero_init_guess=state["first_call"])
+    state["first_call"] = False
+    flux_top = float(np.mean(
+        uw.function.evaluate(flux_var.sym[0], state["top_pts"])
+    ))
+    flux_bot = float(np.mean(
+        uw.function.evaluate(flux_var.sym[0], state["bot_pts"])
+    ))
+    t_flux = _time.perf_counter() - t0
 
     delta_T = config.T_bottom - config.T_top  # H = 1
     Nu_top = flux_top / max(abs(delta_T), 1e-30)
     Nu_bot = flux_bot / max(abs(delta_T), 1e-30)
+
+    if timings is not None:
+        timings["vol"] = t_vol
+        timings["vmax"] = t_vmax
+        timings["flux"] = t_flux
 
     return {
         "Nu_top": Nu_top, "Nu_bot": Nu_bot,
@@ -474,17 +509,35 @@ def create_solvers(mesh, config: ConvectionConfig):
 
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
-    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=config.T_degree)
 
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = config.viscosity
-    stokes.tolerance = 1.0e-3
+    stokes.tolerance = 1.0e-6
+    stokes.penalty = 0.0
     stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
     stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
     stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
     stokes.bodyforce = sympy.Matrix([0, config.rayleigh * T.sym[0]])
+
+    # Multigrid PETSc options for the Stokes velocity / pressure
+    # subblocks.  Lifted from the PHYS-3070 convection setup — these
+    # cut Stokes-solve iterations dramatically at high Ra (where the
+    # default solver clogs as the velocity field gets chaotic).
+    stokes.petsc_options["snes_type"] = "newtonls"
+    stokes.petsc_options["ksp_type"] = "fgmres"
+    stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
+    stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
+    stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+    stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
+    stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+    stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 7
+    stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+    stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
+    stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
+    stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 
     adv_diff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=v)
     adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -524,33 +577,29 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
     import underworld3 as uw
 
     output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    run = Run.create(output_dir)
 
     # ── Short-circuit on a *steady* summary only ─────────────────────
     # ``stalled`` summaries are not written (so the user can extend with
     # a larger max_steps and resume).  Only ``status == "steady"`` is the
     # irrevocable done marker.
-    summary_path = output_dir / "run_summary.yaml"
-    if summary_path.exists():
-        with open(summary_path) as f:
-            summary = yaml.safe_load(f) or {}
-        if summary.get("status") == "steady":
-            uw.pprint(
-                f"[evolve] {output_dir}: status='steady', "
-                f"n_steps={summary.get('n_steps')}.  No work to do."
-            )
-            return _read_timeseries(output_dir / "timeseries.csv")
+    summary = run.summary
+    if summary is not None and summary.get("status") == "steady":
+        uw.pprint(
+            f"[evolve] {output_dir}: status='steady', "
+            f"n_steps={summary.get('n_steps')}.  No work to do."
+        )
+        return run.timeseries
 
-    timeseries_path = output_dir / "timeseries.csv"
-    timeseries = _read_timeseries(timeseries_path)
-    saved_steps = _list_saved_steps(output_dir)
+    timeseries = run.timeseries
+    saved_steps = run.steps
 
     if not saved_steps:
         # ── Fresh start ─────────────────────────────────────────────
         archive = getattr(mesh, "_uw_run_archive", None)
 
         if archive is not None and config.restart_policy == "seed_from_old":
-            old_steps = _list_saved_steps(archive)
+            old_steps = Run(archive).steps
             if old_steps:
                 uw.pprint(
                     f"[evolve] Seeding T from archived run at {archive} "
@@ -572,7 +621,7 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
         # Initial Stokes solve
         stokes.solve(zero_init_guess=True)
 
-        _write_manifest(output_dir, {
+        run.write_manifest({
             "workflow": "rayleigh_benard",
             "config_hash": _config_hash(config),
             "config_snapshot": _identity_snapshot(config),
@@ -587,7 +636,7 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
         )
         diag = _compute_diagnostics(mesh, T, v, config)
         row = {"step": 0, "t": 0.0, "dt": 0.0, **diag}
-        _append_timeseries_row(timeseries_path, row)
+        run.append_timeseries_row(row, _TS_FIELDS)
         timeseries.append(row)
         timestep = 0
         elapsed = 0.0
@@ -623,25 +672,52 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
     # Per-save_every: also write an h5 checkpoint.  Steady-state test runs
     #           after each save (no point checking more often than the
     #           CSV grows by save_every rows).
+    import time as _time
     while timestep < config.max_steps:
+        t0 = _time.perf_counter()
         stokes.solve(zero_init_guess=False)
+        t_stokes = _time.perf_counter() - t0
+
         delta_t = config.dt_factor * adv_diff.estimate_dt()
+
+        t0 = _time.perf_counter()
         adv_diff.solve(timestep=delta_t, zero_init_guess=False)
+        if config.clip_T_range:
+            T.array[...] = np.clip(T.array, config.T_top, config.T_bottom)
+        t_adv = _time.perf_counter() - t0
+
         timestep += 1
         elapsed += float(delta_t)
 
-        diag = _compute_diagnostics(mesh, T, v, config)
+        # Heavy volume integrals (Vrms, mean_T) cadence is controlled
+        # by config.diag_every (0 = match save_every).  Nu / Vmax
+        # always run every step.
+        diag_period = config.diag_every if config.diag_every > 0 else config.save_every
+        skip_vol = (timestep % diag_period) != 0
+        diag_timings: dict = {}
+        diag = _compute_diagnostics(
+            mesh, T, v, config,
+            timings=diag_timings, skip_volume=skip_vol,
+        )
         row = {
             "step": timestep, "t": elapsed, "dt": float(delta_t), **diag,
         }
-        _append_timeseries_row(timeseries_path, row)
+        run.append_timeseries_row(row, _TS_FIELDS)
         timeseries.append(row)
 
+        def _fmt(val, spec):
+            if not np.isfinite(val):
+                return "---"
+            return f"{val:{spec}}"
         uw.pprint(
-            f"[step {timestep:5d}]  t={elapsed:9.4e}  dt={delta_t:.2e}  "
+            f"[step {timestep:5d}]  dt={delta_t:.2e}  "
             f"Nu_top={diag['Nu_top']:6.3f}  Nu_bot={diag['Nu_bot']:6.3f}  "
-            f"Vrms={diag['Vrms']:8.4f}  Vmax={diag['Vmax']:8.4f}  "
-            f"<T>={diag['mean_T']:5.3f}",
+            f"Vrms={_fmt(diag['Vrms'], '8.4f'):>8}  "
+            f"Vmax={diag['Vmax']:8.4f}  "
+            f"<T>={_fmt(diag['mean_T'], '5.3f'):>5}  | "
+            f"t_stokes={t_stokes:5.2f}s  t_adv={t_adv:5.2f}s  "
+            f"t_flux={diag_timings.get('flux', 0.0):4.2f}s  "
+            f"t_vol={diag_timings.get('vol', 0.0):4.2f}s",
             flush=True,
         )
 
@@ -710,14 +786,11 @@ def summarise_run(evolution_log, config: ConvectionConfig):
     the run hasn't yet reached steady state and isn't yet at
     ``max_steps``, no summary is written (the run is just paused).
     """
-    output_dir = Path(config.output_dir)
-    summary_path = output_dir / "run_summary.yaml"
+    run = Run(Path(config.output_dir))
 
-    if summary_path.exists():
-        with open(summary_path) as f:
-            cached = yaml.safe_load(f)
-        if cached.get("status") == "steady":
-            return cached
+    cached = run.summary
+    if cached is not None and cached.get("status") == "steady":
+        return cached
 
     is_steady = _is_steady(evolution_log, config)
     last_step = evolution_log[-1]["step"] if evolution_log else 0
@@ -742,6 +815,10 @@ def summarise_run(evolution_log, config: ConvectionConfig):
     vrms_window = np.array([r["Vrms"] for r in window])
     meanT_window = np.array([r["mean_T"] for r in window])
 
+    # Vrms / mean_T are NaN on rows where the volume integrals were
+    # skipped for cost.  Use nanmean / nanstd so the summary still has
+    # meaningful values when most rows are NaN.  Nu is dense (every
+    # row), so plain mean/std is fine for it.
     summary = {
         "status": status,
         "n_steps": last_step,
@@ -751,9 +828,9 @@ def summarise_run(evolution_log, config: ConvectionConfig):
         "Nu_bot_mean": float(np.mean([r["Nu_bot"] for r in window])),
         "Nu_mean": float(nu_window.mean()),
         "Nu_std": float(nu_window.std()),
-        "Vrms_mean": float(vrms_window.mean()),
-        "Vrms_std": float(vrms_window.std()),
-        "mean_T_mean": float(meanT_window.mean()),
+        "Vrms_mean": float(np.nanmean(vrms_window)),
+        "Vrms_std": float(np.nanstd(vrms_window)),
+        "mean_T_mean": float(np.nanmean(meanT_window)),
         "elapsed_t": float(window[-1]["t"]),
     }
 
@@ -761,7 +838,6 @@ def summarise_run(evolution_log, config: ConvectionConfig):
     # Stalled runs leave no done-marker so a re-invocation with a higher
     # ``max_steps`` extends them rather than short-circuiting.
     if status == "steady":
-        with open(summary_path, "w") as f:
-            yaml.dump(summary, f, default_flow_style=False, sort_keys=False)
+        run.write_summary(summary)
 
     return summary

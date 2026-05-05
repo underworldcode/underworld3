@@ -49,10 +49,11 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import yaml
 from pydantic import Field
 
 from underworld3.workflows import WorkflowConfig, WorkflowRunner
+
+from _run import Run
 
 # We share the per-run definitions but hide the "single-run" config under
 # a different name to avoid confusion with this module's SweepConfig.
@@ -159,11 +160,7 @@ def _per_run_config(sweep_config: SweepConfig, ra: float, aspect: float):
 
 
 def _read_run_summary(run_dir: Path) -> Optional[dict]:
-    p = run_dir / "run_summary.yaml"
-    if not p.exists():
-        return None
-    with open(p) as f:
-        return yaml.safe_load(f)
+    return Run(run_dir).summary
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +385,7 @@ def status(sweep_config: SweepConfig) -> dict:
             summary = _read_run_summary(run_dir)
             if summary is not None:
                 out[(ra, aspect)] = summary.get("status", "unknown")
-            elif (run_dir / "manifest.yaml").exists():
+            elif Run(run_dir).manifest is not None:
                 # Has work but no summary -> stalled or in-progress
                 out[(ra, aspect)] = "in_progress"
             else:

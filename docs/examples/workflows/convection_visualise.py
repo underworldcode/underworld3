@@ -33,12 +33,11 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import numpy as np
-import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from underworld3.workflows import WorkflowConfig
 
-import convection_config as _convection
+from _run import RUN_NAME, Run
 
 
 # ---------------------------------------------------------------------------
@@ -73,14 +72,20 @@ class TracerPopulation(BaseModel):
 
 
 def _default_populations() -> list[TracerPopulation]:
-    """Three populations: uniform, top-left block, dead-centre block."""
+    """Three populations: uniform, top-left block, dead-centre block.
+
+    Mid-to-dark greys only — pure white / near-white tracers vanish
+    against the hot/cold extremes of the temperature colormap (which
+    has very saturated red and blue at high Ra) and against the
+    yellow midtone of RdYlBu_r.
+    """
     return [
         TracerPopulation(
             name="uniform",
             region="uniform",
             n=30,
-            colour="lightgrey",
-            point_size=3,
+            colour="#888888",
+            point_size=2,
         ),
         TracerPopulation(
             name="top_left_block",
@@ -88,8 +93,8 @@ def _default_populations() -> list[TracerPopulation]:
             n=18,
             x_range=(0.02, 0.25),
             y_range=(0.75, 0.98),
-            colour="red",
-            point_size=5,
+            colour="#444444",
+            point_size=3,
         ),
         TracerPopulation(
             name="centre_block",
@@ -97,8 +102,8 @@ def _default_populations() -> list[TracerPopulation]:
             n=18,
             x_range=(0.40, 0.60),
             y_range=(0.40, 0.60),
-            colour="blue",
-            point_size=5,
+            colour="#111111",
+            point_size=3,
         ),
     ]
 
@@ -116,7 +121,7 @@ class VisualiseConfig(WorkflowConfig):
     every: int = Field(default=1, ge=1, description="Use every Nth saved timestep")
     fps: int = Field(default=12, ge=1)
     window_size: tuple[int, int] = Field(default=(1000, 800))
-    cmap: str = Field(default="coolwarm")
+    cmap: str = Field(default="RdBu_r")
     show_streamlines: bool = False
     show_scalar_bar: bool = True
 
@@ -132,23 +137,40 @@ class VisualiseConfig(WorkflowConfig):
 # ---------------------------------------------------------------------------
 
 
-def _list_saved_steps(run_dir: Path) -> list[int]:
-    return sorted(
-        int(p.stem.split(".")[-1])
-        for p in run_dir.glob(f"{_convection.RUN_NAME}.mesh.[0-9]*.xdmf")
-    )
+def _read_step_times(run_dir: Path) -> dict:
+    """Map step → simulated time t from timeseries.csv (or {} if missing)."""
+    return {r["step"]: r["t"] for r in Run(run_dir).timeseries}
+
+
+def _format_t(t: float | None) -> str:
+    """Fixed-width simulated-time label (no flicker)."""
+    if t is None:
+        return "t = ----.------"
+    return f"t = {t:9.6f}"
 
 
 def _load_run_mesh(run_dir: Path):
     import underworld3 as uw
 
-    mesh_h5 = run_dir / f"{_convection.RUN_NAME}.mesh.00000.h5"
+    mesh_h5 = run_dir / f"{RUN_NAME}.mesh.00000.h5"
     if not mesh_h5.exists():
         raise FileNotFoundError(f"Mesh checkpoint not found: {mesh_h5}")
     return uw.discretisation.Mesh(
         str(mesh_h5),
         coordinate_system_type=uw.coordinates.CoordinateSystemType.CARTESIAN,
     )
+
+
+def _run_T_degree(run_dir: Path) -> int:
+    """Read ``T_degree`` from the run's manifest snapshot.
+
+    Falls back to ``3`` (the legacy hardcode) when a pre-step-2
+    manifest doesn't carry the field.
+    """
+    manifest = Run(run_dir).manifest
+    if manifest is None:
+        return 3
+    return int(manifest.config_snapshot.get("T_degree", 3))
 
 
 # ---------------------------------------------------------------------------
@@ -178,25 +200,33 @@ def render_temperature_frames(cfg: VisualiseConfig) -> Optional[Path]:
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     mesh = _load_run_mesh(run_dir)
-    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
-    v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=_run_T_degree(run_dir))
+    # Only register the velocity MeshVariable when we actually need it —
+    # adding it to the mesh DM can subtly change how T is rendered
+    # (DOF layout, scalar interpolation), so for the temperature-only
+    # frames we keep the mesh clean.
+    v = (
+        uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+        if cfg.show_streamlines else None
+    )
 
-    steps = _list_saved_steps(run_dir)
+    steps = Run(run_dir).steps
     if cfg.every > 1:
         steps = steps[:: cfg.every]
     if not steps:
         return frames_dir
 
+    step_to_t = _read_step_times(run_dir)
     pl = pv.Plotter(window_size=list(cfg.window_size), off_screen=True)
 
     for step in steps:
         try:
             T.read_timestep(
-                _convection.RUN_NAME, "T", step, outputPath=str(run_dir),
+                RUN_NAME, "T", step, outputPath=str(run_dir),
             )
             if cfg.show_streamlines:
                 v.read_timestep(
-                    _convection.RUN_NAME, "U", step, outputPath=str(run_dir),
+                    RUN_NAME, "U", step, outputPath=str(run_dir),
                 )
         except Exception as e:
             print(f"[viz] Skip step {step}: {e}", flush=True)
@@ -234,7 +264,7 @@ def render_temperature_frames(cfg: VisualiseConfig) -> Optional[Path]:
 
         pl.camera_position = "xy"
         pl.add_text(
-            f"step {step}", position="upper_left",
+            _format_t(step_to_t.get(step)), position="upper_left",
             font_size=10, color="black",
         )
         out = frames_dir / f"frame_{step:06d}.png"
@@ -295,10 +325,10 @@ def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     mesh = _load_run_mesh(run_dir)
-    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=_run_T_degree(run_dir))
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 
-    steps = _list_saved_steps(run_dir)
+    steps = Run(run_dir).steps
     if cfg.every > 1:
         steps = steps[:: cfg.every]
     if not steps:
@@ -317,20 +347,18 @@ def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
     ]
 
     # Read timeseries to get the time at each saved step (for dt per interval).
-    ts_path = run_dir / "timeseries.csv"
-    ts_rows = _convection._read_timeseries(ts_path)
-    step_to_t = {r["step"]: r["t"] for r in ts_rows}
+    step_to_t = {r["step"]: r["t"] for r in Run(run_dir).timeseries}
 
-    pl = pv.Plotter(window_size=list(cfg.window_size), off_screen=True)
     prev_t = None
+    pl = pv.Plotter(window_size=list(cfg.window_size), off_screen=True)
 
     for step in steps:
         try:
             T.read_timestep(
-                _convection.RUN_NAME, "T", step, outputPath=str(run_dir),
+                RUN_NAME, "T", step, outputPath=str(run_dir),
             )
             v.read_timestep(
-                _convection.RUN_NAME, "U", step, outputPath=str(run_dir),
+                RUN_NAME, "U", step, outputPath=str(run_dir),
             )
         except Exception as e:
             print(f"[viz] Skip step {step}: {e}", flush=True)
@@ -381,10 +409,129 @@ def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
 
         pl.camera_position = "xy"
         pl.add_text(
-            f"step {step}", position="upper_left",
+            _format_t(step_to_t.get(step)), position="upper_left",
             font_size=10, color="black",
         )
         out = frames_dir / f"frame_{step:06d}.png"
+        pl.screenshot(str(out), return_img=False)
+
+    pl.close()
+    return frames_dir
+
+
+def render_tracer_frames_frozen(
+    cfg: VisualiseConfig,
+    n_frames: int = 200,
+    virtual_dt: Optional[float] = None,
+    source_step: Optional[int] = None,
+) -> Optional[Path]:
+    """Render tracer frames using a frozen steady-state velocity field.
+
+    Useful for low-Ra runs where the actual flow is steady — looping
+    the saved chain would give incorrect (artificially periodic)
+    tracer trajectories.  Instead, we read the velocity at one
+    chosen step (default: the final saved h5), freeze it, and advect
+    every tracer population through ``virtual_dt`` for ``n_frames``
+    rendered frames.  The temperature picture is the steady T from
+    that step too.
+
+    Parameters
+    ----------
+    n_frames : int
+        Number of frames to render.
+    virtual_dt : float or None
+        Tracer advection step.  If None, defaults to ``L / Vrms / 4`` so
+        a tracer crossing the box takes ~4 frames at peak speed.
+    source_step : int or None
+        Which saved h5 step to read v and T from.  Default: latest.
+    """
+    import time as _time
+    import underworld3 as uw
+
+    if uw.mpi.size > 1:
+        return None
+    try:
+        import pyvista as pv
+        import underworld3.visualisation as vis
+    except ImportError:
+        return None
+
+    run_dir = Path(cfg.run_dir)
+    frames_dir = run_dir / cfg.output_subdir / "tracers_frozen"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    mesh = _load_run_mesh(run_dir)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=_run_T_degree(run_dir))
+    v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+
+    saved = Run(run_dir).steps
+    if not saved:
+        return frames_dir
+    if source_step is None:
+        source_step = saved[-1]
+    print(f"[frozen] reading T,v from step {source_step}", flush=True)
+    T.read_timestep(RUN_NAME, "T", source_step, outputPath=str(run_dir))
+    v.read_timestep(RUN_NAME, "U", source_step, outputPath=str(run_dir))
+
+    # Estimate Vmax for the dt heuristic.
+    coords = mesh.X.coords
+    x_lo, y_lo = float(coords[:, 0].min()), float(coords[:, 1].min())
+    x_hi, y_hi = float(coords[:, 0].max()), float(coords[:, 1].max())
+    L = max(x_hi - x_lo, y_hi - y_lo)
+    Vmax_local = float(np.linalg.norm(np.asarray(v.array).reshape(-1, 2), axis=1).max())
+    if virtual_dt is None:
+        # Cross the box in ~50 frames at peak speed so streamlines are
+        # legible; smaller dt → smoother but more frames needed.
+        virtual_dt = L / max(Vmax_local, 1e-30) / 50.0
+    print(f"[frozen] Vmax≈{Vmax_local:.4f}, virtual_dt={virtual_dt:.3e}", flush=True)
+
+    populations = list(cfg.tracer_populations)
+    tracers_per_pop: list[np.ndarray] = [
+        _seed_tracers(p, x_lo, y_lo, x_hi, y_hi) for p in populations
+    ]
+
+    # Pre-build the temperature pyvista mesh (it's the same every frame).
+    pl = pv.Plotter(window_size=list(cfg.window_size), off_screen=True)
+    pv_t = vis.meshVariable_to_pv_mesh_object(T)
+    pv_t.point_data["T"] = vis.scalar_fn_to_pv_points(pv_t, T.sym[0])
+
+    for frame_idx in range(n_frames):
+        # Advect every population by virtual_dt with midpoint integration
+        # in the frozen velocity field.
+        for i, pts in enumerate(tracers_per_pop):
+            v_here = np.asarray(uw.function.evaluate(v.sym, pts)).reshape(-1, 2)
+            half = pts + 0.5 * virtual_dt * v_here
+            half = np.clip(half, [x_lo, y_lo], [x_hi, y_hi])
+            v_half = np.asarray(uw.function.evaluate(v.sym, half)).reshape(-1, 2)
+            tracers_per_pop[i] = np.clip(
+                pts + virtual_dt * v_half, [x_lo, y_lo], [x_hi, y_hi],
+            )
+
+        pl.clear()
+        pl.add_mesh(
+            pv_t, cmap=cfg.cmap, scalars="T",
+            clim=[0.0, 1.0], show_edges=False,
+            show_scalar_bar=cfg.show_scalar_bar,
+            scalar_bar_args={"title": "T"} if cfg.show_scalar_bar else None,
+        )
+        for pop, pts in zip(populations, tracers_per_pop):
+            pts3 = np.zeros((pts.shape[0], 3))
+            pts3[:, :2] = pts
+            pl.add_mesh(
+                pv.PolyData(pts3),
+                color=pop.colour,
+                point_size=pop.point_size,
+                render_points_as_spheres=True,
+                show_scalar_bar=False,
+            )
+        pl.camera_position = "xy"
+        # Use a fake "virtual time" advancing by virtual_dt each frame.
+        virtual_t = frame_idx * virtual_dt
+        pl.add_text(
+            f"frozen  {_format_t(virtual_t)}",
+            position="upper_left", font_size=10, color="black", font="courier",
+        )
+        out = frames_dir / f"frame_{frame_idx:06d}.png"
         pl.screenshot(str(out), return_img=False)
 
     pl.close()
@@ -398,7 +545,7 @@ def render_tracer_frames(cfg: VisualiseConfig) -> Optional[Path]:
 
 def encode_movie(
     cfg: VisualiseConfig,
-    kind: Literal["temperature", "tracers"] = "temperature",
+    kind: Literal["temperature", "tracers", "tracers_frozen"] = "temperature",
 ) -> Optional[Path]:
     """Encode rendered frames into an mp4 via ``ffmpeg``.
 
@@ -427,11 +574,42 @@ def encode_movie(
     # ffmpeg input pattern only works for sequentially-numbered frames.
     # Our frame_*.png files are named by save-step index, which has gaps
     # (0, 5, 10, …) so we feed them via a concat list.
+    #
+    # When timeseries.csv has step→t mapping, scale each frame's duration
+    # to its simulated-time interval so the playback speed is proportional
+    # to simulated time. This handles both adaptive-dt runs and runs with
+    # mixed save cadences (e.g. every-1 then every-5 across a restart).
+    # Falls back to uniform 1/fps duration if no time info is available
+    # or if the time intervals are zero / non-monotonic.
+    step_to_t = _read_step_times(run_dir)
+    fallback_dur = 1.0 / max(cfg.fps, 1)
+    durations = []
+    if step_to_t:
+        # Frame filename is frame_{step:06d}.png — extract the step
+        steps = []
+        for p in frames:
+            try:
+                steps.append(int(p.stem.split("_")[-1]))
+            except ValueError:
+                steps.append(None)
+        ts = [step_to_t.get(s) if s is not None else None for s in steps]
+        if all(t is not None for t in ts) and len(ts) >= 2:
+            intervals = [ts[i + 1] - ts[i] for i in range(len(ts) - 1)]
+            if all(d > 0 for d in intervals):
+                # Scale so total movie length matches len(frames) / fps
+                target_total = len(frames) * fallback_dur
+                scale = target_total / sum(intervals)
+                durations = [d * scale for d in intervals]
+                # Last frame gets a duration equal to the prior interval
+                durations.append(durations[-1])
+    if not durations:
+        durations = [fallback_dur] * len(frames)
+
     list_path = frames_dir / "frames.txt"
     with open(list_path, "w") as f:
-        for p in frames:
+        for p, d in zip(frames, durations):
             f.write(f"file '{p.name}'\n")
-            f.write(f"duration {1.0 / max(cfg.fps, 1):.6f}\n")
+            f.write(f"duration {d:.6f}\n")
         # Repeat the last frame once with no duration so concat ends cleanly.
         f.write(f"file '{frames[-1].name}'\n")
 
