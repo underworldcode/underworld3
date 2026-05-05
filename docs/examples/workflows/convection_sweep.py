@@ -51,9 +51,7 @@ from typing import Optional
 import numpy as np
 from pydantic import Field
 
-from underworld3.workflows import WorkflowConfig, WorkflowRunner
-
-from _run import Run
+from underworld3.workflows import Run, WorkflowConfig, WorkflowRunner
 
 # We share the per-run definitions but hide the "single-run" config under
 # a different name to avoid confusion with this module's SweepConfig.

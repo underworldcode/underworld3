@@ -9,8 +9,14 @@ See ``docs/developer/guides/workflow-packages.md`` for the full pattern.
 
 from ._base import WorkflowConfig
 from ._products import WorkflowProducts
+from ._run import RUN_NAME, Manifest, Run
 from ._runner import WorkflowRunner
 from ._utils import check_dependencies, parse_quantity, show_source, workflow_step
+
+# Public API version for the run-directory primitives (Run, Manifest,
+# manifest['workflow_api'] stamp).  Pre-1.0 — shape may shift as a
+# second consumer exercises the design.
+__api_version__ = "0.1"
 
 
 def list_workflows(repo_root=None):
@@ -145,9 +151,13 @@ def view(module):
 
 
 __all__ = [
+    "Manifest",
+    "RUN_NAME",
+    "Run",
     "WorkflowConfig",
     "WorkflowProducts",
     "WorkflowRunner",
+    "__api_version__",
     "check_dependencies",
     "init_workflow",
     "list_workflows",

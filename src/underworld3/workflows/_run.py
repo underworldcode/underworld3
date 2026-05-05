@@ -1,23 +1,22 @@
-"""Thin wrappers for the on-disk run-directory format.
+"""Run-directory primitives for ``underworld3.workflows``.
 
-Future home: ``uw.workflow``.  Lives here while the convection example
-still doubles as the workshop where the API is being shaped.
+Owns the bytes-on-disk for a workflow run:
 
-This module owns the bytes-on-disk for:
-
-- ``manifest.yaml`` — run identity (workflow name, config hash, etc.).
-- ``timeseries.csv`` — append-only per-step diagnostics.
+- ``manifest.yaml`` — run identity (workflow name, config hash,
+  ``workflow_api`` version stamp).
+- ``timeseries.csv`` — append-only per-step diagnostics with
+  schema-migrating writes ('---' for NaN).
 - ``run_summary.yaml`` — steady-state "done" marker.
 - discovery of the ``run.mesh.NNNNN.{h5,xdmf}`` checkpoint chain
-  (the actual h5 read/write still goes through ``mesh.write_timestep``
-  / ``var.read_timestep`` at the call sites — wrapping those is for
-  ``Run.append_step`` / ``Run.load_field``, deferred to a later step).
+  (the actual h5 read/write goes through ``mesh.write_timestep`` and
+  ``var.read_timestep`` — :meth:`Run.load_field` wraps the read side).
 
-The ``Run`` and ``Manifest`` classes here are pure adapters around what
-``convection_config`` previously wrote with private helpers — same
-``yaml.dump`` options, same CSV conventions ('---' for NaN), same
-archive-timestamp format.  No new validation or schema enforcement;
-that lands when this module is lifted into ``uw.workflow``.
+These types are intentionally minimal — pure adapters around the
+on-disk format used by the Rayleigh-Bénard convection example.  Once a
+second consumer exercises the API, additions like
+``Run.append_step(t, dt, fields, diags)`` or ``Run.create(parameters=,
+scripts=)`` move from the design memo into the public surface and the
+package bumps to ``__api_version__ = '1.0'``.
 """
 
 from __future__ import annotations
@@ -33,8 +32,10 @@ import yaml
 
 
 # Filename stem for the h5 / xdmf checkpoint chain.  The convection
-# workflow has always used "run"; defined here so visualisers and other
-# consumers don't import it from ``convection_config``.
+# workflow has always used "run"; held as a module constant so the
+# default works without per-call configuration.  A future workflow
+# that wants a different stem will need this lifted to a Run-instance
+# attribute or a per-call argument.
 RUN_NAME = "run"
 
 
@@ -48,10 +49,12 @@ class Manifest:
     """Wrapper around ``manifest.yaml`` contents.
 
     The wrapped ``data`` dict is whatever the workflow chose to write —
-    no schema is enforced at this level.  Validation (``workflow_api``,
-    ``config_hash`` cross-checking) lands when the type moves into
-    ``uw.workflow``.  Convenience properties expose the keys the
-    convection workflow uses today.
+    no schema is enforced at this level (the package is at
+    ``__api_version__ = '0.1'``; richer validation comes when
+    a second consumer tightens the contract).  Convenience properties
+    expose the keys the convection workflow uses today plus the
+    package-level ``workflow_api`` stamp injected by
+    :meth:`Run.write_manifest`.
     """
 
     data: dict = field(default_factory=dict)
@@ -82,6 +85,12 @@ class Manifest:
     @property
     def workflow(self):
         return self.data.get("workflow")
+
+    @property
+    def workflow_api(self):
+        """Package ``__api_version__`` recorded at write time, or ``None``
+        for manifests written before the package added the stamp."""
+        return self.data.get("workflow_api")
 
     @property
     def config_hash(self):
@@ -128,9 +137,10 @@ def _format_for_csv(val):
 class Run:
     """A run-output directory — thin wrapper, no IO on construction.
 
-    Construction does not touch disk; ``Run.create`` is the helper that
-    makes the directory.  Reads (``manifest``, ``steps``, ``timeseries``,
-    ``summary``) all hit disk fresh on each access — no caching.
+    Construction does not touch disk; :meth:`Run.create` is the helper
+    that makes the directory.  Reads (:attr:`manifest`, :attr:`steps`,
+    :attr:`timeseries`, :attr:`summary`) all hit disk fresh on each
+    access — no caching.
     """
 
     def __init__(self, path):
@@ -144,8 +154,8 @@ class Run:
 
         Currently a thin alias for ``Run(path)`` — no validation that
         the path exists or contains a manifest.  ``workflow_api`` /
-        ``config_hash`` validation will be added when the type lands in
-        ``uw.workflow``.
+        ``config_hash`` validation is deferred to ``__api_version__ =
+        '1.0'``, when the contract is firmed up by a second consumer.
         """
         return cls(path)
 
@@ -164,8 +174,18 @@ class Run:
         return Manifest.read(self.path)
 
     def write_manifest(self, data: dict) -> None:
-        """Write ``manifest.yaml`` with the given dict."""
-        Manifest(dict(data)).write(self.path)
+        """Write ``manifest.yaml`` with the given dict.
+
+        Auto-injects ``workflow_api`` set to the current package
+        ``__api_version__`` if the caller has not already supplied
+        the field.  Manifests written before this stamp existed read
+        back with ``manifest.workflow_api is None``.
+        """
+        from underworld3.workflows import __api_version__
+
+        out = dict(data)
+        out.setdefault("workflow_api", __api_version__)
+        Manifest(out).write(self.path)
 
     # --- checkpoint discovery -------------------------------------------
 

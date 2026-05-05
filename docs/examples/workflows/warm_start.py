@@ -52,7 +52,7 @@ import sympy
 
 import convection_config as cc
 import underworld3 as uw
-from _run import RUN_NAME, Run
+from underworld3.workflows import RUN_NAME, Run
 
 
 def warm_start(

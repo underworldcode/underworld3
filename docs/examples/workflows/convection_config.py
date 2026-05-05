@@ -43,9 +43,7 @@ import numpy as np
 import sympy
 from pydantic import Field
 
-from underworld3.workflows import WorkflowConfig, workflow_step
-
-from _run import RUN_NAME, Run  # noqa: F401  (RUN_NAME re-exported for viz)
+from underworld3.workflows import RUN_NAME, Run, WorkflowConfig, workflow_step  # noqa: F401
 
 # Fields whose change invalidates the existing on-disk run.
 _IDENTITY_FIELDS = (

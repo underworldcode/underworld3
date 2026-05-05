@@ -35,9 +35,7 @@ from typing import Literal, Optional
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from underworld3.workflows import WorkflowConfig
-
-from _run import RUN_NAME, Run
+from underworld3.workflows import RUN_NAME, Run, WorkflowConfig
 
 
 # ---------------------------------------------------------------------------
