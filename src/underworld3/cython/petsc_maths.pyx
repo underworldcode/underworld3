@@ -102,31 +102,46 @@ class Integral:
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
 
-        self.dm = self.mesh.dm  # .clone()
-        mesh=self.mesh
+        # BUGFIX(#171): clone the mesh DM and create a fresh DS per call,
+        # rather than mutating the shared mesh DS. The previous code path
+        # was:
+        #     ds = self.mesh.dm.getDS()           # shared DS
+        #     PetscDSSetObjective(ds, 0, fn)      # mutate it
+        #     DMPlexComputeIntegralFEM(...)
+        # PetscDSSetObjective on the shared DS makes
+        # DMPlexComputeIntegralFEM cost grow linearly with repeated
+        # evaluate() calls in long simulations — observed in convection
+        # diagnostics where t_vol grew from 5 s to 833 s over ~3000 calls.
+        # The sister class CellWiseIntegral already takes the
+        # clone-DM + createDS path; this brings Integral in line.
+        # Explicit destroy of the clone at the end keeps long runs bounded.
+        mesh = self.mesh
 
         _getext_result = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
                                 self.mesh.vars.values(), verbose=verbose)
         cdef PtrContainer ext = _getext_result.ptrobj
 
         # Pull out vec for variables, and go ahead with the integral
-
         self.mesh.update_lvec()
-        a_global = self.dm.getGlobalVec()
-        self.dm.localToGlobal(self.mesh.lvec, a_global)
+        a_global = self.mesh.dm.getGlobalVec()
+        self.mesh.dm.localToGlobal(self.mesh.lvec, a_global)
 
         cdef Vec cgvec
         cgvec = a_global
 
-        cdef DM dm = self.dm
-        cdef DS ds = self.dm.getDS()
+        cdef DM dmc = self.mesh.dm.clone()
+        cdef FE fec = FE().createDefault(self.mesh.dim, 1, False, -1)
+        dmc.setField(0, fec)
+        dmc.createDS()
+
+        cdef DS ds = dmc.getDS()
         cdef PetscScalar val_array[256]
 
-        # Now set callback...
         ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
-        ierr = DMPlexComputeIntegralFEM(dm.dm, cgvec.vec, &(val_array[0]), NULL); CHKERRQ(ierr)
+        ierr = DMPlexComputeIntegralFEM(dmc.dm, cgvec.vec, &(val_array[0]), NULL); CHKERRQ(ierr)
 
-        self.dm.restoreGlobalVec(a_global)
+        self.mesh.dm.restoreGlobalVec(a_global)
+        dmc.destroy()
 
         # We're making an assumption here that PetscScalar is same as double.
         # Need to check where this may not be the case.
