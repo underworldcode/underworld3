@@ -9,6 +9,13 @@
 # To remove: rm ~/.claude/uw-token
 
 if [ -f "$HOME/.claude/uw-token" ]; then
-    CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.claude/uw-token")"
-    export CLAUDE_CODE_OAUTH_TOKEN
+    # Strip ALL whitespace (covers \r\n line endings, accidental leading
+    # spaces, and any whitespace a manual editor leaves behind). $() alone
+    # only trims trailing newlines, which is not enough here.
+    _uw_claude_token="$(tr -d '[:space:]' < "$HOME/.claude/uw-token")"
+    if [ -n "$_uw_claude_token" ]; then
+        CLAUDE_CODE_OAUTH_TOKEN="$_uw_claude_token"
+        export CLAUDE_CODE_OAUTH_TOKEN
+    fi
+    unset _uw_claude_token
 fi

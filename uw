@@ -704,15 +704,18 @@ run_claude_set_token() {
     local token="$1"
 
     if [ -z "$token" ]; then
+        # `set -e` is in effect at script scope; without `|| true` a `read`
+        # that hits EOF (empty pipe input, or Ctrl-D at the prompt) would
+        # exit the whole script and bypass the "No token provided" handler.
         if [ ! -t 0 ]; then
             # stdin is a pipe — read one line
-            read -r token
+            read -r token || true
         else
             echo -e "${BOLD}Set Claude Code OAuth token${NC}"
             echo "  Get one with 'claude setup-token' on a machine with a browser."
             echo "  See './uw claude-set-token --help' for details."
             echo ""
-            read -r -s -p "Token (input hidden): " token
+            read -r -s -p "Token (input hidden): " token || true
             echo ""
         fi
     fi
@@ -735,16 +738,39 @@ run_claude_set_token() {
     chmod 700 "$HOME/.claude" 2>/dev/null || true
 
     local token_file="$HOME/.claude/uw-token"
+
+    # Refuse to follow a symlink at the destination — a redirect through one
+    # would clobber whatever it points at, regardless of how strict our umask is.
+    if [ -L "$token_file" ]; then
+        echo -e "${YELLOW}Refusing to write through symlink at $token_file${NC}" >&2
+        echo "  Remove or replace it manually if this is intentional." >&2
+        return 1
+    fi
+
     if [ -f "$token_file" ]; then
         echo -e "  ${YELLOW}Overwriting existing token at $token_file${NC}"
     fi
 
-    # Write atomically with strict perms
-    (umask 077 && printf '%s' "$token" > "$token_file") || {
-        echo -e "${YELLOW}Failed to write $token_file${NC}" >&2
+    # Atomic replace: write to a sibling temp file (same filesystem), set
+    # mode 0600, then `mv` into place. mktemp creates the temp file 0600
+    # already; the umask 077 in the redirect subshell is belt-and-braces
+    # against any weird default mask environments.
+    local tmp_file
+    tmp_file="$(mktemp "$HOME/.claude/.uw-token.XXXXXX")" || {
+        echo -e "${YELLOW}Failed to create temp file in $HOME/.claude/${NC}" >&2
         return 1
     }
-    chmod 600 "$token_file"
+    (umask 077 && printf '%s' "$token" > "$tmp_file") || {
+        rm -f "$tmp_file"
+        echo -e "${YELLOW}Failed to write temp file $tmp_file${NC}" >&2
+        return 1
+    }
+    chmod 600 "$tmp_file"
+    mv -f "$tmp_file" "$token_file" || {
+        rm -f "$tmp_file"
+        echo -e "${YELLOW}Failed to move temp file into place${NC}" >&2
+        return 1
+    }
 
     echo -e "  ${GREEN}✓${NC} Token written to $token_file (mode 0600)"
     echo ""
