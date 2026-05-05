@@ -182,6 +182,31 @@ class Run:
                 continue
         return sorted(steps)
 
+    # --- field IO --------------------------------------------------------
+
+    def load_field(self, var, step: int, *, data_name: Optional[str] = None) -> None:
+        """Read the saved field for *var* at *step* into *var* in place.
+
+        Thin wrapper around ``var.read_timestep`` that fills in this
+        run's directory and the workflow's filename stem.  The h5 layer
+        does kd-tree interpolation when *var*'s mesh / FE space differs
+        from what was written, which is what makes the warm-start
+        recipe work across degrees and meshes.
+
+        ``data_name`` defaults to *var*'s constructor name (e.g. ``"T"``).
+        """
+        name = data_name if data_name is not None else getattr(var, "name", None)
+        if name is None:
+            raise ValueError(
+                "load_field needs a data_name when var has no .name attribute"
+            )
+        var.read_timestep(
+            data_filename=RUN_NAME,
+            data_name=name,
+            index=step,
+            outputPath=str(self.path),
+        )
+
     # --- timeseries ------------------------------------------------------
 
     @property
