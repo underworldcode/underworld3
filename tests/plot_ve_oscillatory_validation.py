@@ -44,8 +44,10 @@ def run_oscillatory(order, n_steps, dt, V0, H, ETA, MU, omega, save_prefix=None)
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
-    stokes = uw.systems.VE_Stokes(mesh, velocityField=v, pressureField=p, order=order)
-    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=order,
+    )
     stokes.constitutive_model.Parameters.shear_viscosity_0 = ETA
     stokes.constitutive_model.Parameters.shear_modulus = MU
     stokes.constitutive_model.Parameters.dt_elastic = dt

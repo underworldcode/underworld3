@@ -505,6 +505,7 @@ class SNES_Darcy(SNES_Scalar):
         timestep: float = None,
         verbose: bool = False,
         _force_setup: bool = False,
+        divergence_retries: int = 0,
     ):
         r"""Solve the Darcy flow system.
 
@@ -521,6 +522,9 @@ class SNES_Darcy(SNES_Scalar):
             If True, print solver progress information.
         _force_setup : bool, optional
             Force re-setup of solver even if already configured.
+        divergence_retries : int, optional
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
 
         Notes
         -----
@@ -535,7 +539,8 @@ class SNES_Darcy(SNES_Scalar):
 
         # Solve pressure
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
         # Now solve flow field: v = -flux = -K(grad(h) - s)
 
@@ -770,6 +775,7 @@ class SNES_TransientDarcy(SNES_Darcy):
         timestep=None,
         _force_setup: bool = False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         r"""
         Solve the transient Darcy system for one timestep.
@@ -784,6 +790,9 @@ class SNES_TransientDarcy(SNES_Darcy):
             Force re-setup of solver.
         verbose : bool, optional
             Print solver progress.
+        divergence_retries : int, optional
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep
@@ -802,7 +811,8 @@ class SNES_TransientDarcy(SNES_Darcy):
         self.DFDt.update_pre_solve(timestep, verbose=verbose)
 
         # Solve PDE (bypass SNES_Darcy.solve to avoid double setup/projection)
-        SNES_Scalar.solve(self, zero_init_guess, _force_setup)
+        SNES_Scalar.solve(self, zero_init_guess, _force_setup,
+                          divergence_retries=divergence_retries)
 
         # Invalidate cached data views
         target_var = getattr(self.u, "_base_var", self.u)
@@ -1137,7 +1147,47 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         self._constitutive_model = None
 
+        # Optional: alternative F1 expression to autodiff for the
+        # Jacobian.  When None, autodiff F1 itself (default).  Used for
+        # inexact-Newton tricks like a smooth-Jacobian / sharp-residual
+        # split at a VEP yield kink.  See ``set_jacobian_F1_source``.
+        self._F1_jacobian_source = None
+
         return
+
+    def set_jacobian_F1_source(self, F1_source, linesearch="cp"):
+        r"""Override the F1 expression used to build the Jacobian blocks.
+
+        By default, the Stokes Jacobian's uu / up G2, G3 blocks are
+        autodiff'd from the residual F1.  Some problems benefit from
+        differentiating a *different* but related expression — e.g. a
+        smooth (softmin) viscosity formula for the Jacobian while the
+        residual F1 keeps a sharp Min, so Newton sees a continuous
+        derivative even when the iterate sits exactly on the yield kink.
+
+        Setting ``F1_source`` triggers a JIT recompile (the Jacobian
+        symbols change).  Pass ``None`` to revert to autodiff of F1.
+
+        Parameters
+        ----------
+        F1_source : sympy.Matrix or None
+            Alternative expression of the same shape as ``F1.sym``.
+        linesearch : str or None, default ``"cp"``
+            SNES linesearch type to install when ``F1_source`` is set.
+            Defaults to ``"cp"`` (critical-point) because inexact-Newton
+            steps don't reliably reduce the residual norm and PETSc's
+            default ``bt`` (backtracking) consequently rejects useful
+            steps with ``DIVERGED_LINE_SEARCH``.  ``cp`` accepts the
+            predicted step at the optimum of the local linearisation and
+            converges cleanly on the same problems where ``bt`` flails.
+            Set to ``None`` to leave the linesearch type untouched (e.g.
+            if you've already configured one via ``petsc_options``).
+            Has no effect when ``F1_source is None``.
+        """
+        self._F1_jacobian_source = F1_source
+        self.is_setup = False
+        if F1_source is not None and linesearch is not None:
+            self.petsc_options["snes_linesearch_type"] = linesearch
 
     def _create_stress_history_ddt(self, order=2):
         """Create DFDt for stress history tracking (VE/VEP models).
@@ -1145,11 +1195,22 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         Called automatically when a constitutive model with
         ``requires_stress_history = True`` is assigned. Can also be called
         explicitly to pre-create the DFDt with a specific order.
+
+        Constitutive models can inject extra SemiLagrangian kwargs via the
+        ``stress_history_ddt_kwargs`` property — used e.g. by
+        ``MaxwellExponentialFlowModel`` to set ``with_forcing_history=True``.
         """
         if self.Unknowns.DFDt is not None:
             return  # already created
 
         self._order = order
+        # Constitutive model may request extra SemiLagrangian kwargs (e.g.
+        # with_forcing_history for ETD-2 integration).
+        cm = getattr(self, "constitutive_model", None)
+        ddt_kwargs = {}
+        if cm is not None:
+            ddt_kwargs = dict(getattr(cm, "stress_history_ddt_kwargs", {}))
+
         self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
@@ -1162,7 +1223,13 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             bcs=None,
             order=order,
             smoothing=0.0001,
+            **ddt_kwargs,
         )
+        # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
+        # history term — without snapshot substitution the projection of
+        # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at
+        # yield admits the wrong fixed point under timestep change.
+        self.Unknowns.DFDt.enable_source_snapshot()
 
     @timing.routine_timer_decorator
     def solve(
@@ -1174,6 +1241,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         evalf=False,
         order=None,
         picard: int = 0,
+        divergence_retries: int = 0,
     ):
         """Solve the Stokes system, with optional viscoelastic stress history.
 
@@ -1199,6 +1267,15 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             Number of Picard iterations before switching to Newton.
             Picard uses a simplified Jacobian and can help convergence
             for strongly nonlinear problems like VEP at yield onset.
+        divergence_retries : int, default=0
+            If SNES returns a DIVERGED reason after the main solve, re-call
+            the underlying Newton up to this many times with a warm start
+            (``zero_init_guess=False``) to try to rescue. Each retry uses
+            the just-computed iterate plus the freshly-advected stress
+            history, which is often enough for VEP at yield onset (Min/softmin
+            kinks) to step off a bad Newton iterate. ``0`` preserves legacy
+            behaviour (divergence is terminal). Typical useful value is 1.
+            Only applies in the VE/VEP branch (``DFDt is not None``).
         """
 
         has_stress_history = self.Unknowns.DFDt is not None
@@ -1246,7 +1323,11 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
             self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
                                        store_result=False)
-            self.constitutive_model._update_bdf_coefficients()
+            # Uniform pre-solve coefficient hook: VEP delegates to
+            # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
+            # α, φ on the DDt via _update_exp_coefficients(). No isinstance
+            # checks at the solver layer.
+            self.constitutive_model._update_history_coefficients()
 
             # 2. SOLVE
             if uw.mpi.rank == 0 and verbose:
@@ -1257,6 +1338,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 _force_setup=_force_setup,
                 verbose=verbose,
                 picard=picard,
+                divergence_retries=divergence_retries,
             )
 
             # 3. PROJECT actual stress and SHIFT history
@@ -1268,17 +1350,17 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
 
             if getattr(self.DFDt, '_psi_star_use_multicomponent', False):
-                # Multi-component projection: solve all components at once.
-                # Only set uw_function on first call — the flux expression
-                # structure is stable; constant values flow through PetscDS.
-                if not getattr(self.DFDt, '_psi_star_projector_initialised', False) or not self.constitutive_model._solver_is_setup:
-                    import sympy
-                    flux = self.constitutive_model.flux
-                    indep = self.DFDt._psi_star_indep_indices
-                    row = sympy.Matrix([[flux[i, j] for (i, j) in indep]])
-                    self.DFDt._psi_star_projection_solver.uw_function = row
-                    self.DFDt._psi_star_projection_solver.smoothing = 0.0
-                    self.DFDt._psi_star_projector_initialised = True
+                # Multi-component projection of flux → psi_star[0].
+                #
+                # The DFDt's source-snapshot machinery (enabled once in
+                # _create_stress_history_ddt) intercepts psi_fn assignment
+                # to substitute psi_star[0] symbols with a frozen
+                # psi_snapshot variable, refreshed each step in
+                # update_pre_solve. So the projection's compiled source
+                # reads from psi_snapshot (not psi_star[0] itself) and is a
+                # true one-shot Galerkin projection — no implicit
+                # fixed-point iteration.
+                self.DFDt._psi_star_projection_solver.smoothing = 0.0
                 self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
                 # Fan flat result back to psi_star[0] tensor variable
                 for k, (i, j) in enumerate(self.DFDt._psi_star_indep_indices):
@@ -1299,6 +1381,12 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
             self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 
+            # Uniform post-solve hook for any extra integrator-state storage.
+            # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
+            # forcing_star with current ε̇^{n+1} so the next step's history
+            # term has access to ε̇ⁿ.
+            self.constitutive_model._update_history_post_solve()
+
             self.is_setup = True
             self.constitutive_model._solver_is_setup = True
 
@@ -1308,6 +1396,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 zero_init_guess,
                 _force_setup=_force_setup,
                 verbose=verbose,
+                divergence_retries=divergence_retries,
             )
 
     @property
@@ -1767,11 +1856,24 @@ class SNES_VE_Stokes(SNES_Stokes):
         Use ``uw.systems.Stokes`` directly with a
         ``ViscoElasticPlasticFlowModel`` constitutive model. The Stokes
         solver now creates stress history infrastructure automatically
-        when the constitutive model requires it.
+        when the constitutive model is assigned (the lazy-creation
+        pathway also reads ``stress_history_ddt_kwargs`` from the model
+        — required for ``integrator='etd'`` to allocate
+        ``forcing_star``). VE_Stokes pre-creates the DDt at solver
+        ``__init__`` time, before the model exists, so it can't see
+        those kwargs and is incompatible with ``integrator='etd'``.
 
-    This wrapper pre-creates the DFDt with a specific ``order`` parameter,
-    which is useful when you want to control the BDF order before assigning
-    the constitutive model.
+    Migration: replace::
+
+        stokes = uw.systems.VE_Stokes(mesh, velocityField=v, pressureField=p, order=2)
+        stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+
+    with::
+
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            stokes.Unknowns, order=2,
+        )
 
     Parameters
     ----------
@@ -1797,6 +1899,17 @@ class SNES_VE_Stokes(SNES_Stokes):
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
+        import warnings
+        warnings.warn(
+            "VE_Stokes is deprecated. Use uw.systems.Stokes(...) directly and "
+            "assign the constitutive model afterwards — the Stokes solver creates "
+            "DDt infrastructure lazily when the model is assigned, and the lazy "
+            "path correctly forwards stress_history_ddt_kwargs from the model "
+            "(required for integrator='etd' to allocate forcing_star). "
+            "VE_Stokes pre-creates DDt at __init__ time, before the model exists, "
+            "so it cannot use ETD-2. See the class docstring for migration.",
+            DeprecationWarning, stacklevel=2,
+        )
         super().__init__(
             mesh,
             velocityField,
@@ -2154,8 +2267,16 @@ class SNES_Tensor_Projection(SNES_Projection):
     ## Need to over-ride solve method to run over all components
 
     @timing.routine_timer_decorator
-    def solve(self, verbose=False):
-        """Solve by projecting each tensor component sequentially."""
+    def solve(self, verbose=False, divergence_retries: int = 0):
+        """Solve by projecting each tensor component sequentially.
+
+        Parameters
+        ----------
+        verbose : bool
+        divergence_retries : int, default=0
+            Forwarded to each per-component SNES solve. 0 preserves
+            legacy behaviour.
+        """
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
 
@@ -2791,6 +2912,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         _force_setup: bool = False,
         _evalf=False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -2800,6 +2922,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if timestep is not None and timestep != self.delta_t:
@@ -2823,7 +2948,8 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
         # Invalidate cached data views - PETSc may have replaced underlying buffers
         # This ensures .data and .array properties return fresh data from PETSc
@@ -3162,6 +3288,7 @@ class SNES_Diffusion(SNES_Scalar):
         evalf: bool = False,
         _force_setup: bool = False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -3171,6 +3298,9 @@ class SNES_Diffusion(SNES_Scalar):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if timestep is not None and timestep != self.delta_t:
@@ -3195,7 +3325,8 @@ class SNES_Diffusion(SNES_Scalar):
         self.DuDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
         # Invalidate cached data views - PETSc may have replaced underlying buffers
         target_var = getattr(self.u, "_base_var", self.u)
@@ -3579,6 +3710,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         verbose=False,
         _evalf=False,
         order=None,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -3588,6 +3720,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if order is None or order > self._order:
@@ -3629,6 +3764,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             _force_setup=_force_setup,
             verbose=verbose,
             picard=0,
+            divergence_retries=divergence_retries,
         )
 
         if uw.mpi.rank == 0 and verbose:

@@ -276,6 +276,65 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
         coeffs[i].sym = 0.0
 
 
+def _create_exp_coefficients(instance_id):
+    """Create UWexpression objects for the ETD-2 coefficients ``[α, φ]``.
+
+    These are named to render as ``α_exp`` and ``φ_exp`` (with the
+    DDt instance id appended) so they remain visually distinct from
+    BDF/AM coefficients in symbolic output.
+    """
+    alpha = _UWexpression(
+        rf"{{\alpha^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
+        sym=0.0,
+        description=f"Exp integrator α = exp(-Δt/τ) (DDt instance {instance_id})",
+        _unique_name_generation=True,
+    )
+    phi = _UWexpression(
+        rf"{{\varphi^{{\mathrm{{exp}}}}_{{[{instance_id}]}}}}",
+        sym=0.0,
+        description=f"Exp integrator φ = (1-α)/(Δt/τ) (DDt instance {instance_id})",
+        _unique_name_generation=True,
+    )
+    return [alpha, phi]
+
+
+def _update_exp_values(coeffs, dt, tau_eff):
+    r"""Update exponential-integrator coefficient values for current state.
+
+    Computes :math:`\alpha = e^{-\Delta t/\tau_\mathrm{eff}}` and
+    :math:`\varphi = (1-\alpha)/(\Delta t/\tau_\mathrm{eff})` and stores
+    them in ``coeffs[0]``, ``coeffs[1]`` respectively. The viscous limit
+    (:math:`\Delta t/\tau \to \infty`) gives ``α=0, φ=0``; the elastic
+    limit (:math:`\Delta t/\tau \to 0`) gives ``α=1, φ=1``.
+
+    Parameters
+    ----------
+    coeffs : list of UWexpression
+        Two-element list ``[α, φ]`` to update.
+    dt : float or None
+        Current timestep.
+    tau_eff : float or None
+        Maxwell relaxation time (η_eff/μ). When None or non-positive,
+        defaults to the viscous limit.
+    """
+    dt_f = _as_float(dt)
+    tau_f = _as_float(tau_eff)
+    if dt_f is None or tau_f is None or tau_f <= 0.0 or dt_f <= 0.0:
+        alpha, phi = 0.0, 0.0  # viscous limit
+    else:
+        x = dt_f / tau_f
+        if x < 1e-12:
+            alpha, phi = 1.0, 1.0  # elastic limit
+        elif x > 50.0:
+            alpha = 0.0
+            phi = 1.0 / x  # well-defined small phi, exact for large x
+        else:
+            alpha = float(np.exp(-x))
+            phi = (1.0 - alpha) / x
+    coeffs[0].sym = alpha
+    coeffs[1].sym = phi
+
+
 def _build_weighted_sum(coeffs, psi_fn, psi_star_syms):
     """Build a fixed-structure weighted sum: c0*psi + c1*psi_star[0] + ...
 
@@ -404,9 +463,14 @@ class Symbolic(uw_object):
         # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
+        # ETD-2 (exponential) coefficients [α, φ] for Maxwell-relaxation integration.
+        # Treated as a peer to the BDF/AM coefficient sets; values are pushed via
+        # PetscDSSetConstants every step in update_exp_coefficients().
+        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
+        # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, self.theta)
+        _update_exp_values(self._exp_coeffs, None, None)
 
         return
 
@@ -560,6 +624,18 @@ class Symbolic(uw_object):
         """
         return _build_weighted_sum(self._am_coeffs, self.psi_fn, self.psi_star)
 
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Update the ETD-2 (exponential) coefficient values for this step.
+
+        Sets ``self._exp_coeffs[0].sym = α`` and ``self._exp_coeffs[1].sym = φ``
+        from current ``dt`` and ``tau_eff`` (Maxwell relaxation time
+        :math:`\tau = \eta_\mathrm{eff}/\mu`). Called by the constitutive
+        model (which owns τ_eff) before each solve, peer to the BDF/AM
+        coefficient updates that happen automatically in
+        ``update_pre_solve``.
+        """
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
 
 class Eulerian(uw_object):
     r"""
@@ -700,9 +776,11 @@ class Eulerian(uw_object):
         # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
+        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
+        # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, self.theta)
+        _update_exp_values(self._exp_coeffs, None, None)
 
         return
 
@@ -834,6 +912,49 @@ class Eulerian(uw_object):
         self._history_initialised = True
         return
 
+    def set_initial_history(self, values, dt=None):
+        r"""Plant history values for BDF restart or analytical IC.
+
+        Bypasses the automatic ``effective_order`` ramp so the very
+        first solve runs at the full BDF order rather than starting at
+        BDF-1. Use this when you have known values at :math:`t` and
+        past times — e.g. an analytical periodic solution, or a
+        checkpointed history loaded from disk.
+
+        Parameters
+        ----------
+        values : sequence of length ``self.order``
+            ``values[k]`` is :math:`\psi` at :math:`t - k\,\Delta t`,
+            i.e. ``values[0]`` is the current state. Each entry must
+            be assignable to ``psi_star[k].array`` — either an array
+            of matching shape, or a scalar that broadcasts.
+        dt : float, optional
+            Uniform timestep assumed between history slots. Required
+            for ``order >= 2`` to seed correct multistep coefficients
+            on the first solve. Ignored for ``order = 1``.
+        """
+        if len(values) != self.order:
+            raise ValueError(
+                f"set_initial_history requires {self.order} value(s) "
+                f"(one per history slot, including the current state); "
+                f"got {len(values)}."
+            )
+        for k, val in enumerate(values):
+            self.psi_star[k].array[...] = val
+        self._history_initialised = True
+        self._n_solves_completed = self.order
+        if dt is not None:
+            self._dt_history = [float(dt)] * self.order
+        elif self.order >= 2:
+            import warnings
+            warnings.warn(
+                "set_initial_history called with order >= 2 but no "
+                "dt — variable-dt BDF coefficients will be wrong on "
+                "the first solve. Pass dt=<timestep> to suppress.",
+                stacklevel=2,
+            )
+        return
+
     def initiate_history_fn(self):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
@@ -956,6 +1077,10 @@ class Eulerian(uw_object):
         """
         return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
 
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Update the ETD-2 (exponential) coefficient values for this step."""
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
 
 class SemiLagrangian(uw_object):
     r"""
@@ -1005,6 +1130,15 @@ class SemiLagrangian(uw_object):
         Smoothing parameter for projections.
     preserve_moments : bool, default=False
         Use moment-preserving projection (experimental).
+    with_forcing_history : bool, default=False
+        When True, allocate an additional ``forcing_star`` MeshVariable
+        (matching ``psi_star[0]``'s shape, vtype, degree, continuity) to
+        store one history slot for the strain-rate forcing. Required by
+        ETD-2 exponential integration of the Maxwell relaxation operator;
+        ignored for BDF/AM. Populated each step via
+        :meth:`update_forcing_history` (direct nodal evaluation of
+        ``forcing_fn`` — typically the constitutive model's strain-rate
+        symbol).
 
     Notes
     -----
@@ -1037,6 +1171,7 @@ class SemiLagrangian(uw_object):
         order=1,
         smoothing=0.0,
         preserve_moments=False,
+        with_forcing_history: bool = False,
     ):
         super().__init__()
 
@@ -1049,12 +1184,34 @@ class SemiLagrangian(uw_object):
         self.V_fn = V_fn
         self.order = order
         self.preserve_moments = preserve_moments
+        self.with_forcing_history = with_forcing_history
+
+        # Forcing-history storage. Allocated only if requested. Populated
+        # each step via update_forcing_history(forcing_fn) — used by ETD-2
+        # exponential integration of the Maxwell relaxation operator to
+        # supply the ε̇ⁿ history term in the constitutive flux.
+        self.forcing_star = None
+        self._forcing_fn = None  # set by the constitutive model
+        self._forcing_vtype = None
+        self._forcing_indep_indices = None
 
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
         self._n_solves_completed = 0
         self._dt = None  # current timestep (set by solver or update_pre_solve)
         self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+
+        # Source snapshot machinery (opt-in via enable_source_snapshot()).
+        # Used when psi_fn references psi_star[0] itself (e.g. VE/VEP stress
+        # history where flux = 2·viscosity·E_eff and E_eff contains psi_star[0]
+        # via its history term). Without a snapshot the projection becomes
+        # implicit in psi_star[0] and Min-mode at yield admits the wrong fixed
+        # point. With snapshot, psi_star[0] symbols in the source are
+        # substituted with a frozen snapshot variable that's refreshed each
+        # step from psi_star[0]'s data array. The projection becomes a true
+        # one-shot Galerkin projection.
+        self._psi_snapshot_enabled = False
+        self._psi_snapshot = None
 
         if swarm_degree is None:
             self.swarm_degree = degree
@@ -1106,12 +1263,40 @@ class SemiLagrangian(uw_object):
                 )
             )
 
-        # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
+        # Forcing-history slot (only allocated when ETD-2 / exponential
+        # integration is engaged). Mirrors psi_star[0] in shape/vtype/
+        # discretisation; populated each step in update_forcing_history()
+        # via direct nodal evaluation of forcing_fn (typically the model's
+        # strain-rate symbol).
+        #
+        # Units: deliberately ``units=None``. The forcing field is the
+        # strain rate (1/time), distinct from psi_star's stress units
+        # (Pa·s × ε̇ = Pa). We don't know strain-rate units at construction
+        # time (forcing_fn is supplied later by the constitutive model).
+        # ``update_forcing_history`` non-dimensionalises the evaluated
+        # forcing before storing, matching the codebase convention that
+        # variable storage holds non-dimensional values internally and
+        # units are re-attached at the .data interface.
+        self._forcing_vtype = vtype
+        if with_forcing_history:
+            self.forcing_star = uw.discretisation.MeshVariable(
+                f"forcing_star_sl_{self.instance_number}",
+                self.mesh,
+                vtype=vtype,
+                degree=self.degree,
+                continuous=self.continuous,
+                varsymbol=rf"{{ {varsymbol}_{{F}}^{{ * }} }}",
+                units=None,
+            )
+
+        # BDF/AM/exp coefficient UWexpressions — routed through PetscDS constants[]
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
+        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
+        # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, 0.5)
+        _update_exp_values(self._exp_coeffs, None, None)
 
         # Working variable that has a potentially different discretisation from psi_star
         # We project from this to psi_star and we use this variable to define the
@@ -1204,16 +1389,101 @@ class SemiLagrangian(uw_object):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
-        """Set the tracked expression."""
+        """Set the tracked expression and propagate to the projection's source.
+
+        When :meth:`enable_source_snapshot` has been called, ``psi_star[0]``
+        symbols in ``new_fn`` are transparently substituted with the
+        snapshot variable's symbols before the source is pushed to the
+        projection solver — so the projection becomes a true one-shot
+        Galerkin projection regardless of whether ``new_fn`` references
+        ``psi_star[0]``.
+        """
         self._psi_fn = new_fn
+        self._psi_star_projection_solver.uw_function = self._build_projection_source(new_fn)
+        return
+
+    def _build_projection_source(self, source_fn):
+        """Construct the row matrix used as the projection's ``uw_function``.
+
+        Applies snapshot substitution (psi_star[0] → snap) when enabled.
+        Used by both ``psi_fn.setter`` and the ``initialise_history``
+        fallback path so substitution semantics are consistent.
+        """
         if getattr(self, '_psi_star_use_multicomponent', False):
             import sympy
             indep = self._psi_star_indep_indices
-            row = sympy.Matrix([[new_fn[i, j] for (i, j) in indep]])
-            self._psi_star_projection_solver.uw_function = row
+            row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
+            if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+                ps0 = self.psi_star[0]
+                psi_snapshot = self._psi_snapshot
+                substitutions = {
+                    ps0.sym[i, j]: psi_snapshot.sym[i, j]
+                    for i in range(self.mesh.dim)
+                    for j in range(self.mesh.dim)
+                }
+                row = row.subs(substitutions)
+            return row
         else:
-            self._psi_star_projection_solver.uw_function = self._psi_fn
-        return
+            # Scalar / vector path: psi_star[0] is a scalar/vector field. If
+            # snapshot is needed for these vtypes, extend here similarly.
+            return source_fn
+
+    def enable_source_snapshot(self):
+        """Enable snapshot substitution in the projection's source field.
+
+        Call this once when the source expression (``psi_fn``) references
+        ``psi_star[0]`` itself — without it the projection's residual
+        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
+        because target and source share the same data field. With Min-mode
+        plasticity at the yield kink, the implicit projection admits two
+        fixed points (elastic and yield branches); under timestep change the
+        iteration drifts to the elastic-branch fixed point and σ violates
+        the yield surface.
+
+        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
+        shape/vtype/degree. Each call to ``update_pre_solve`` copies
+        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
+        input for the upcoming projection. Substitution makes the
+        projection's compiled C code read from ``psi_snapshot.array``
+        instead of ``psi_star[0].array`` — there's no recompile per step,
+        just a memcpy.
+
+        Idempotent: safe to call more than once.
+        """
+        if not getattr(self, '_psi_star_use_multicomponent', False):
+            # Currently only wired for tensor projections (the case that
+            # exposed the bug).  Scalar/vector extension is straightforward
+            # if needed later.
+            return
+
+        if self._psi_snapshot is None:
+            ps0 = self.psi_star[0]
+            # NOTE: this currently registers a persistent MeshVariable in the
+            # mesh DM, which is overkill for a transient buffer that's only
+            # read by this DDt's projection.  A future improvement would be
+            # a transient/scratch-variable mechanism (likely backed by
+            # PETSc's auxiliary Vec machinery — already used elsewhere in
+            # the codebase via DMSetAuxiliaryVec_UW) so the snapshot doesn't
+            # accumulate in the DM across DDt creations.  See:
+            # docs/developer/ai-notes/historical-notes.md for the
+            # variable-deletion limitation context.
+            self._psi_snapshot = uw.discretisation.MeshVariable(
+                f"psi_snapshot_{self.instance_number}",
+                self.mesh,
+                ps0.shape,
+                vtype=ps0.vtype,
+                degree=ps0.degree,
+                continuous=ps0.continuous,
+            )
+            # Initialise psi_snapshot's data to current psi_star[0]'s data
+            # so the source evaluates consistently before the first refresh.
+            self._psi_snapshot.data[...] = ps0.data[...]
+
+        self._psi_snapshot_enabled = True
+
+        # Re-run the psi_fn setter so the substitution is applied to the
+        # currently-installed projection source.
+        self.psi_fn = self._psi_fn
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
@@ -1260,29 +1530,68 @@ class SemiLagrangian(uw_object):
                 eval_result = UnitAwareArray(eval_result, units=psi_units)
             self.psi_star[0].array[...] = eval_result
         except Exception:
+            # Fallback: project psi_fn onto psi_star[0] via the SNES projector.
+            # Route through the shared builder so snapshot substitution
+            # semantics are consistent.
+            self._psi_star_projection_solver.uw_function = self._build_projection_source(self.psi_fn)
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve()
             if getattr(self, '_psi_star_use_multicomponent', False):
-                import sympy
-                indep = self._psi_star_indep_indices
-                row = sympy.Matrix([[self.psi_fn[i, j] for (i, j) in indep]])
-                self._psi_star_projection_solver.uw_function = row
-                self._psi_star_projection_solver.smoothing = 0.0
-                self._psi_star_projection_solver.solve()
                 # Fan out flat result to tensor psi_star[0]
-                for k, (i, j) in enumerate(indep):
+                for k, (i, j) in enumerate(self._psi_star_indep_indices):
                     vals = self._psi_star_flat_var.array[:, 0, k]
                     self.psi_star[0].array[:, i, j] = vals
                     if i != j:
                         self.psi_star[0].array[:, j, i] = vals
-            else:
-                self._psi_star_projection_solver.uw_function = self.psi_fn
-                self._psi_star_projection_solver.smoothing = 0.0
-                self._psi_star_projection_solver.solve()
 
         # Copy to all other history slots
         for i in range(1, self.order):
             self.psi_star[i].array[...] = self.psi_star[0].array[...]
 
         self._history_initialised = True
+        return
+
+    def set_initial_history(self, values, dt=None):
+        r"""Plant history values for BDF restart or analytical IC.
+
+        Bypasses the automatic ``effective_order`` ramp so the very
+        first solve runs at the full BDF order rather than starting
+        at BDF-1. Use this when you have known values at :math:`t`
+        and past times — e.g. an analytical periodic solution, or a
+        checkpointed history loaded from disk.
+
+        Parameters
+        ----------
+        values : sequence of length ``self.order``
+            ``values[k]`` is :math:`\psi` at :math:`t - k\,\Delta t`,
+            i.e. ``values[0]`` is the current state. Each entry must
+            be assignable to ``psi_star[k].array`` — either an array
+            of matching shape, or a scalar that broadcasts.
+        dt : float, optional
+            Uniform timestep assumed between history slots. Required
+            for ``order >= 2`` to seed correct multistep coefficients
+            on the first solve. Ignored for ``order = 1``.
+        """
+        if len(values) != self.order:
+            raise ValueError(
+                f"set_initial_history requires {self.order} value(s) "
+                f"(one per history slot, including the current state); "
+                f"got {len(values)}."
+            )
+        for k, val in enumerate(values):
+            self.psi_star[k].array[...] = val
+        self._history_initialised = True
+        self._n_solves_completed = self.order
+        if dt is not None:
+            self._dt_history = [float(dt)] * self.order
+        elif self.order >= 2:
+            import warnings
+            warnings.warn(
+                "set_initial_history called with order >= 2 but no "
+                "dt — variable-dt BDF coefficients will be wrong on "
+                "the first solve. Pass dt=<timestep> to suppress.",
+                stacklevel=2,
+            )
         return
 
     def initiate_history_fn(self):
@@ -1348,6 +1657,17 @@ class SemiLagrangian(uw_object):
 
         if not self._history_initialised:
             self.initialise_history()
+
+        # Refresh the source-snapshot variable so the projection's source
+        # field captures psi_star[0]'s state from BEFORE this step's solve.
+        # Per-step memcpy keeps the snapshot machinery aligned with
+        # psi_star[0] without recompiling the projection.  Routes through
+        # ``.data`` rather than ``.array`` to skip unit conversion (both
+        # variables already live in non-dimensional space) while keeping
+        # the callback sync that pushes values into the underlying PETSc
+        # local Vec.
+        if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+            self._psi_snapshot.data[...] = self.psi_star[0].data[...]
 
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
@@ -1730,6 +2050,124 @@ class SemiLagrangian(uw_object):
             Ignored (kept for API compatibility).
         """
         return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
+
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Update the scalar ETD-2 (exponential) coefficient UWexpressions.
+
+        Sets ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
+        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)`` so the next solve
+        uses the correct exponential coefficients via PetscDSSetConstants
+        on the next ``_update_constants`` call.
+        """
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
+    @property
+    def _exp_alpha(self):
+        """Convenience accessor for the ETD-2 ``α`` coefficient UWexpression."""
+        return self._exp_coeffs[0]
+
+    @property
+    def _exp_phi(self):
+        """Convenience accessor for the ETD-2 ``φ`` coefficient UWexpression."""
+        return self._exp_coeffs[1]
+
+    def update_forcing_history(self, forcing_fn=None, evalf=False, verbose=False):
+        r"""Refresh ``forcing_star`` from ``forcing_fn`` via direct nodal evaluation.
+
+        Used by ETD-2 exponential integration to store the current
+        strain-rate field as :math:`\dot\varepsilon^{n}` for the next
+        step's history term. Called by the constitutive model from the
+        solver's post-solve hook. Direct nodal evaluation (rather than an
+        L2 projection through SNES) is sufficient because the strain rate
+        is :math:`\nabla\mathbf{u}`, well-defined at nodes, with no
+        history-coupled term that would make a projection implicit.
+
+        Unit handling
+        -------------
+        ``forcing_star`` is allocated with ``units=None`` (see
+        ``__init__``). When the model is unit-aware, ``forcing_fn`` is a
+        symbolic expression of the velocity field whose evaluation
+        returns a ``UnitAwareArray`` carrying strain-rate units (1/time).
+        We non-dimensionalise that result via the active scaling system
+        before assigning to ``forcing_star.array``, which keeps the
+        stored values consistent with the rest of the variable storage
+        (codebase convention: variable storage is non-dimensional;
+        units are re-attached at the ``.data`` interface). When the
+        model is not unit-aware, the evaluation returns a plain ndarray
+        and assignment is a straight numpy copy.
+
+        Parameters
+        ----------
+        forcing_fn : sympy expression, optional
+            Symbolic strain-rate field to evaluate at each node. If
+            None, falls back to ``self._forcing_fn`` (set by the
+            constitutive model at solve-attach time). No-op if neither
+            is set or ``with_forcing_history=False``.
+        evalf : bool, optional
+            Forwarded to ``uw.function.evaluate`` (forces numerical
+            evaluation when True).
+        verbose : bool, optional
+            Enable verbose output.
+        """
+        if not self.with_forcing_history or self.forcing_star is None:
+            return
+        if forcing_fn is None:
+            forcing_fn = self._forcing_fn
+        if forcing_fn is None:
+            return  # constitutive model hasn't wired the forcing source yet
+
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+
+        coords = self.forcing_star.coords
+        # Use non-dimensional coords for evaluate() (mirrors the psi_star
+        # path in update_pre_solve)
+        if hasattr(coords, "magnitude"):
+            coords_nd = uw.non_dimensionalise(coords)
+            if isinstance(coords_nd, UnitAwareArray):
+                coords_nd = np.array(coords_nd)
+            elif hasattr(coords_nd, 'magnitude'):
+                coords_nd = coords_nd.magnitude
+        else:
+            coords_nd = coords
+
+        def _eval_nd(component_expr):
+            """Evaluate component at coords and non-dimensionalise to a
+            plain 1-D float array suitable for nodal storage."""
+            result = uw.function.evaluate(component_expr, coords_nd, evalf=evalf)
+            # If the evaluation returned units (model is unit-aware),
+            # non-dimensionalise before storing — keeps forcing_star's
+            # internal storage non-dimensional like psi_star.
+            if isinstance(result, UnitAwareArray) or hasattr(result, "magnitude"):
+                result = uw.non_dimensionalise(result)
+                if isinstance(result, UnitAwareArray):
+                    result = np.array(result)
+                elif hasattr(result, "magnitude"):
+                    result = result.magnitude
+            return np.asarray(result).flatten()
+
+        vtype = self._forcing_vtype
+        if vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
+            dim = self.mesh.dim
+            indep = (
+                [(i, j) for i in range(dim) for j in range(i, dim)]
+                if vtype == uw.VarType.SYM_TENSOR
+                else [(i, j) for i in range(dim) for j in range(dim)]
+            )
+            new_arr = np.zeros_like(np.asarray(self.forcing_star.array))
+            for (i, j) in indep:
+                vals = _eval_nd(forcing_fn[i, j])
+                new_arr[:, i, j] = vals
+                if i != j:
+                    new_arr[:, j, i] = vals
+            self.forcing_star.array[...] = new_arr
+        elif vtype == uw.VarType.VECTOR:
+            dim = self.mesh.dim
+            new_arr = np.zeros_like(np.asarray(self.forcing_star.array))
+            for i in range(dim):
+                new_arr[:, i] = _eval_nd(forcing_fn[i])
+            self.forcing_star.array[...] = new_arr
+        else:  # SCALAR
+            self.forcing_star.array[:] = _eval_nd(forcing_fn)
 
 
 ## Consider Deprecating this one - it is the same as the Lagrangian_Swarm but

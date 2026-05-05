@@ -534,6 +534,46 @@ class SolverBaseClass(uw_object):
             f"  to investigate.\n"
         )
 
+    def _snes_solve_with_retries(self, gvec, divergence_retries=0, verbose=False):
+        """Call self.snes.solve(None, gvec) with warm-start retries on divergence.
+
+        Useful for nonlinear problems whose residual has kinks (e.g. VEP at
+        the yield surface Min/softmin cutoff) where Newton can land on a
+        bad iterate that trips DIVERGED_MAX_IT or DIVERGED_LINE_SEARCH. A
+        single warm-start re-solve from the just-computed iterate commonly
+        steps off the kink.
+
+        The first solve is always performed. If the SNES converged reason is
+        negative, up to ``divergence_retries`` additional calls to
+        ``snes.solve(None, gvec)`` are made; ``gvec`` is retained between
+        calls so each retry is a warm start. Returns once the SNES reports
+        converged or the retry budget is exhausted.
+
+        Parameters
+        ----------
+        gvec : PETSc.Vec
+            Global solution vector (modified in place by snes.solve).
+        divergence_retries : int, default=0
+            Maximum retries on DIVERGED. 0 preserves legacy behaviour.
+            Typically 1 is enough for VEP kink-related divergence.
+        verbose : bool, default=False
+            Log each retry on rank 0.
+        """
+        self.snes.solve(None, gvec)
+        if divergence_retries <= 0:
+            return
+        for _r in range(divergence_retries):
+            reason = self.snes.getConvergedReason()
+            if reason >= 0:
+                return
+            if verbose and uw.mpi.rank == 0:
+                print(
+                    f"SNES DIVERGED (reason={reason}); "
+                    f"warm-start retry {_r + 1}/{divergence_retries}",
+                    flush=True,
+                )
+            self.snes.solve(None, gvec)
+
     @timing.routine_timer_decorator
     def _build(self,
                     verbose: bool = False,
@@ -2027,7 +2067,8 @@ class SNES_Scalar(SolverBaseClass):
               verbose:         bool=False,
               debug:           bool=False,
               debug_name:      str=None,
-              time=None, ):
+              time=None,
+              divergence_retries: int=0, ):
         """
         Solve the system of equations.
 
@@ -2055,6 +2096,10 @@ class SNES_Scalar(SolverBaseClass):
             pointwise functions. Expressions using ``mesh.t`` evaluate at
             this time. Non-dimensionalised when scaling is active.
             Default: None (petsc_t unchanged).
+        divergence_retries : int, default=0
+            If SNES reports DIVERGED after the solve, re-call it with warm
+            start up to this many times. A single retry rescues most VEP
+            yield-surface kink divergences. 0 preserves legacy behaviour.
 
         Returns
         -------
@@ -2133,7 +2178,7 @@ class SNES_Scalar(SolverBaseClass):
         self._update_constants()
 
         # solve
-        self.snes.solve(None, gvec)
+        self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
@@ -3021,6 +3066,7 @@ class SNES_Vector(SolverBaseClass):
               verbose=False,
               debug=False,
               debug_name=None,
+              divergence_retries: int=0,
                ):
         """
         Solve the vector field system of equations.
@@ -3041,6 +3087,9 @@ class SNES_Vector(SolverBaseClass):
             Enable debug output.
         debug_name : str, optional
             Name prefix for debug output files.
+        divergence_retries : int, default=0
+            If SNES reports DIVERGED after the solve, re-call it with warm
+            start up to this many times. 0 preserves legacy behaviour.
 
         Returns
         -------
@@ -3119,7 +3168,7 @@ class SNES_Vector(SolverBaseClass):
         self._update_constants()
 
         # solve
-        self.snes.solve(None,gvec)
+        self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
@@ -3765,11 +3814,18 @@ class SNES_MultiComponent(SolverBaseClass):
               verbose=False,
               debug=False,
               debug_name=None,
+              divergence_retries: int=0,
                ):
         """Solve the multi-component SNES problem.
 
         Collective across all MPI ranks. The solution is written back to
         ``self.u.vec`` and made available through ``self.u.array``.
+
+        Parameters
+        ----------
+        divergence_retries : int, default=0
+            If SNES reports DIVERGED after the solve, re-call it with warm
+            start up to this many times. 0 preserves legacy behaviour.
         """
 
         if _force_setup:
@@ -3796,7 +3852,7 @@ class SNES_MultiComponent(SolverBaseClass):
 
         self._update_constants()
 
-        self.snes.solve(None, gvec)
+        self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
@@ -5007,10 +5063,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         U = sympy.Array(self.u.sym).reshape(dim)
         P = sympy.Array(self.p.sym).reshape(1)
 
+        # Optional override: differentiate an alternative F1 to build the
+        # uu and up Jacobian blocks while leaving the residual F1
+        # unchanged. Used for inexact Newton (e.g. softmin Jacobian with
+        # Min residual at a yield kink). When None, autodiff F1 itself.
+        F1_jac_src = getattr(self, "_F1_jacobian_source", None)
+        F1_for_jac = sympy.Array(F1_jac_src) if F1_jac_src is not None else F1
+
         G0 = sympy.derive_by_array(F0, self.u.sym)
         G1 = sympy.derive_by_array(F0, self.Unknowns.L)
-        G2 = sympy.derive_by_array(F1, self.u.sym)
-        G3 = sympy.derive_by_array(F1, self.Unknowns.L)
+        G2 = sympy.derive_by_array(F1_for_jac, self.u.sym)
+        G3 = sympy.derive_by_array(F1_for_jac, self.Unknowns.L)
 
         # reorganise indices from sympy to petsc orssdering / reshape to Matrix form
         # ijkl -> LJKI (hence 3120)
@@ -5035,8 +5098,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         G0 = sympy.derive_by_array(F0, self.p.sym)
         G1 = sympy.derive_by_array(F0, self._G)
-        G2 = sympy.derive_by_array(F1, self.p.sym)
-        G3 = sympy.derive_by_array(F1, self._G)
+        G2 = sympy.derive_by_array(F1_for_jac, self.p.sym)
+        G3 = sympy.derive_by_array(F1_for_jac, self._G)
 
         self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
         self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))  # zero in stokes tests
@@ -5637,7 +5700,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
               debug=False,
               debug_name=None,
               _force_setup: bool =False,
-              time=None, ):
+              time=None,
+              divergence_retries: int = 0, ):
         """
         Solve the Stokes system for velocity and pressure.
 
@@ -5669,6 +5733,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             pointwise residual and Jacobian functions. Expressions using
             ``mesh.t`` will evaluate at this time. Non-dimensionalised
             automatically when scaling is active. Default: None (petsc_t=0).
+        divergence_retries : int, default=0
+            If the final SNES solve reports DIVERGED, re-call it with warm
+            start up to this many times. A single retry rescues most VEP
+            yield-surface kink divergences. 0 preserves legacy behaviour.
 
         Returns
         -------
@@ -5787,7 +5855,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
-            self.snes.solve(None, gvec)
+            self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         else:
         # Standard Newton solve
@@ -5797,7 +5865,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
-            self.snes.solve(None, gvec)
+            self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         cdef DM dm = self.dm
         cdef Vec clvec = self.dm.getLocalVec()

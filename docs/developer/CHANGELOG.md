@@ -6,6 +6,30 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q2 (April – June)
 
+### DDt.set_initial_history — Public API for BDF Restart (April 2026)
+
+**New `set_initial_history(values, dt=...)` method on `SemiLagrangian` and
+`Eulerian` DDt classes** to plant BDF history at the start of a run.
+Two use cases:
+
+- **Analytical IC for benchmarks** — populate ψ* from a known closed-form
+  solution so the very first solve runs at full BDF order with no startup
+  transient. The `bench_ve_harmonic.py` peak-start benchmark used the manual
+  pattern (poking four private attributes including `psi_star[k].array`,
+  `_n_solves_completed`, `_dt_history`); the new API wraps that cleanly.
+- **Checkpoint restart** — resume a multistep history from disk without
+  re-ramping `effective_order` from BDF-1 over the first `order` steps.
+
+Sets `psi_star[0..order-1].array`, marks history initialised,
+seeds `_dt_history` for variable-dt BDF coefficients, and warns when
+`order >= 2` is called without `dt`. Six unit tests cover bookkeeping,
+scalar broadcast, length validation, and the warning path.
+
+**Files**: `src/underworld3/systems/ddt.py`,
+`docs/advanced/benchmarks/bench_ve_harmonic.py`,
+`tests/test_1052_ddt_set_initial_history.py`,
+`docs/api/systems_ddt.md`.
+
 ### Multi-Component Projection Solver (April 2026)
 
 **New `SNES_MultiComponent_Projection` solver** that projects N scalar components in a single PETSc SNES solve sharing one DM, replacing the per-component cycling in `SNES_Tensor_Projection` (which tore down and rebuilt the DM on each inner iteration). The underlying `SNES_MultiComponent` Cython base decouples the FE component count from `mesh.dim` — PETSc's pointwise callback interface accepts any DOF count per node; the new class exposes that directly.
