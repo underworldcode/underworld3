@@ -323,6 +323,9 @@ anthropic = "*"
 sphinx-math-dollar = "*"
 sphinxcontrib-mermaid = "*"
 
+[feature.dev.activation]
+scripts = ["scripts/activate-claude-auth.sh"]
+
 [feature.dev.tasks]
 install-claude = "npm install -g @anthropic-ai/claude-code"
 claude = "claude"

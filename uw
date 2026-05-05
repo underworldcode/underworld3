@@ -669,6 +669,117 @@ else:
     echo "  Includes: git, gh, pixi, build tools, desktop notifications (macOS + Linux)"
 }
 
+# Help for `./uw claude-set-token`
+claude_set_token_usage() {
+    cat << 'EOF'
+./uw claude-set-token — store a Claude Code OAuth token for use in dev pixi envs.
+
+Usage:
+  ./uw claude-set-token [TOKEN]
+  ./uw claude-set-token --help
+
+  TOKEN may be passed as an argument, piped on stdin, or entered at the
+  interactive prompt (with input hidden). Tokens look like
+  sk-ant-oat01-... and are obtained on a machine with a browser by
+  running:  claude setup-token  (Pro/Max subscription required).
+
+  The token is written to ~/.claude/uw-token (mode 0600). The dev pixi
+  env's activation script (scripts/activate-claude-auth.sh) auto-exports
+  it as CLAUDE_CODE_OAUTH_TOKEN whenever you enter the env via
+  ./uw shell or pixi run -e <dev-env>. The token is NOT exported in
+  non-dev envs or in shells outside pixi.
+
+  To remove the stored token:  rm ~/.claude/uw-token
+EOF
+}
+
+# Write a Claude Code OAuth token to ~/.claude/uw-token (mode 0600).
+# Token may come from $1, stdin (if piped), or an interactive prompt.
+run_claude_set_token() {
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+        claude_set_token_usage
+        return 0
+    fi
+
+    local token="$1"
+
+    if [ -z "$token" ]; then
+        # `set -e` is in effect at script scope; without `|| true` a `read`
+        # that hits EOF (empty pipe input, or Ctrl-D at the prompt) would
+        # exit the whole script and bypass the "No token provided" handler.
+        if [ ! -t 0 ]; then
+            # stdin is a pipe — read one line
+            read -r token || true
+        else
+            echo -e "${BOLD}Set Claude Code OAuth token${NC}"
+            echo "  Get one with 'claude setup-token' on a machine with a browser."
+            echo "  See './uw claude-set-token --help' for details."
+            echo ""
+            read -r -s -p "Token (input hidden): " token || true
+            echo ""
+        fi
+    fi
+
+    # Strip whitespace (paste artifacts often include trailing newlines)
+    token="$(printf '%s' "$token" | tr -d '[:space:]')"
+
+    if [ -z "$token" ]; then
+        echo -e "${YELLOW}No token provided.${NC}" >&2
+        return 1
+    fi
+
+    if [[ "$token" != sk-ant-oat01-* ]]; then
+        echo -e "${YELLOW}Token doesn't look like a Claude Code OAuth token (expected sk-ant-oat01-... prefix).${NC}" >&2
+        echo "  Get one with 'claude setup-token' on a machine with a browser." >&2
+        return 1
+    fi
+
+    mkdir -p "$HOME/.claude"
+    chmod 700 "$HOME/.claude" 2>/dev/null || true
+
+    local token_file="$HOME/.claude/uw-token"
+
+    # Refuse to follow a symlink at the destination — a redirect through one
+    # would clobber whatever it points at, regardless of how strict our umask is.
+    if [ -L "$token_file" ]; then
+        echo -e "${YELLOW}Refusing to write through symlink at $token_file${NC}" >&2
+        echo "  Remove or replace it manually if this is intentional." >&2
+        return 1
+    fi
+
+    if [ -f "$token_file" ]; then
+        echo -e "  ${YELLOW}Overwriting existing token at $token_file${NC}"
+    fi
+
+    # Atomic replace: write to a sibling temp file (same filesystem), set
+    # mode 0600, then `mv` into place. mktemp creates the temp file 0600
+    # already; the umask 077 in the redirect subshell is belt-and-braces
+    # against any weird default mask environments.
+    local tmp_file
+    tmp_file="$(mktemp "$HOME/.claude/.uw-token.XXXXXX")" || {
+        echo -e "${YELLOW}Failed to create temp file in $HOME/.claude/${NC}" >&2
+        return 1
+    }
+    (umask 077 && printf '%s' "$token" > "$tmp_file") || {
+        rm -f "$tmp_file"
+        echo -e "${YELLOW}Failed to write temp file $tmp_file${NC}" >&2
+        return 1
+    }
+    chmod 600 "$tmp_file"
+    mv -f "$tmp_file" "$token_file" || {
+        rm -f "$tmp_file"
+        echo -e "${YELLOW}Failed to move temp file into place${NC}" >&2
+        return 1
+    }
+
+    echo -e "  ${GREEN}✓${NC} Token written to $token_file (mode 0600)"
+    echo ""
+    echo "Activate it by entering a dev pixi env:"
+    echo "  ./uw shell"
+    echo ""
+    echo "The dev-env activation script auto-exports CLAUDE_CODE_OAUTH_TOKEN."
+}
+
 # Interactive setup wizard
 run_setup() {
     # Ensure pixi is available
@@ -972,6 +1083,7 @@ COMMANDS
     set-env NAME        Change environment directly
     ai-tools            Configure external AI instruction paths
     claude-perms        Configure Claude Code permissions (safe defaults)
+    claude-set-token    Store Claude OAuth token for auto-export in dev envs (--help for details)
     install-claude      Install Claude Code CLI into the dev pixi env (run via ./uw claude)
 
   Building:
@@ -1691,6 +1803,9 @@ case "${1:-}" in
         ;;
     claude-perms)
         configure_claude_permissions "$(get_env)"
+        ;;
+    claude-set-token)
+        run_claude_set_token "${2:-}"
         ;;
     install-claude)
         # The install-claude pixi task lives under [feature.dev.tasks], so it
