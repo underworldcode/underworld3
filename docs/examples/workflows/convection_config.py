@@ -638,14 +638,13 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
             "aspect_ratio": config.aspect_ratio,
         })
 
-        mesh.write_timestep(
-            filename=RUN_NAME, index=0, outputPath=str(output_dir),
-            meshVars=[v, T],
-        )
         diag = _compute_diagnostics(mesh, T, v, config)
-        row = {"step": 0, "t": 0.0, "dt": 0.0, **diag}
-        run.append_timeseries_row(row, _TS_FIELDS)
-        timeseries.append(row)
+        run.append_step(
+            step=0, t=0.0, dt=0.0,
+            mesh=mesh, mesh_vars=[v, T],
+            diags=diag, fields=_TS_FIELDS,
+        )
+        timeseries.append({"step": 0, "t": 0.0, "dt": 0.0, **diag})
         timestep = 0
         elapsed = 0.0
 

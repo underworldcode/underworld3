@@ -52,7 +52,7 @@ import sympy
 
 import convection_config as cc
 import underworld3 as uw
-from underworld3.workflows import RUN_NAME, Run
+from underworld3.workflows import Run
 
 
 def warm_start(
@@ -146,14 +146,11 @@ def warm_start(
         "warm_start_source": str(Path(source_dir).resolve()),
         "warm_start_step": last,
     })
-    target_mesh.write_timestep(
-        filename=RUN_NAME, index=0, outputPath=str(target.path),
-        meshVars=[v, T],
-    )
     diag = cc._compute_diagnostics(target_mesh, T, v, target_config)
-    target.append_timeseries_row(
-        {"step": 0, "t": 0.0, "dt": 0.0, **diag},
-        cc._TS_FIELDS,
+    target.append_step(
+        step=0, t=0.0, dt=0.0,
+        mesh=target_mesh, mesh_vars=[v, T],
+        diags=diag, fields=cc._TS_FIELDS,
     )
 
     src_T_degree = src_snap.get("T_degree", 3)

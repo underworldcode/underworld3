@@ -287,6 +287,52 @@ class Run:
                 out.append(parsed)
         return out
 
+    def append_step(
+        self,
+        step: int,
+        t: float,
+        dt: float,
+        mesh,
+        mesh_vars: list,
+        diags: dict,
+        fields: tuple[str, ...],
+    ) -> None:
+        """Write an h5 checkpoint at *step* and append a timeseries row.
+
+        Combines the two operations a time-loop workflow does on every
+        save_every tick — ``mesh.write_timestep`` plus
+        :meth:`append_timeseries_row` — into one call so the caller's
+        loop body shrinks from four lines to one.
+
+        Parameters
+        ----------
+        step : int
+            Step index (used as the h5 filename suffix and the
+            ``"step"`` column of the timeseries row).
+        t, dt : float
+            Simulated time and step size; written into the
+            ``"t"`` and ``"dt"`` columns.
+        mesh : underworld3 Mesh
+            Mesh whose ``write_timestep`` will be called.
+        mesh_vars : list of MeshVariable
+            The variables to checkpoint.  Passed to
+            ``mesh.write_timestep(meshVars=...)``.
+        diags : dict
+            Diagnostic columns to write alongside step/t/dt.  Keys
+            should match the workflow's timeseries schema.
+        fields : tuple of str
+            The timeseries CSV column order — same value passed to
+            :meth:`append_timeseries_row`.
+        """
+        mesh.write_timestep(
+            filename=RUN_NAME,
+            index=step,
+            outputPath=str(self.path),
+            meshVars=mesh_vars,
+        )
+        row = {"step": step, "t": t, "dt": dt, **diags}
+        self.append_timeseries_row(row, fields)
+
     def append_timeseries_row(
         self, row: dict, fields: tuple[str, ...]
     ) -> None:
