@@ -93,6 +93,19 @@ class SweepConfig(WorkflowConfig):
     workflow_name: str = "rayleigh_benard_sweep"
     description: str = "Sweep convection over (Ra, aspect_ratio) to steady state"
 
+    # Identity fields — what defines this sweep.  Includes the grid
+    # axes (which (Ra, aspect) cells exist) plus the per-cell mesh
+    # and physics defaults that the cells inherit.  Operational
+    # fields (steady tolerances, step caps, save cadence) are
+    # excluded so they can change between sweep invocations without
+    # invalidating cached aggregations.
+    _identity_fields = (
+        "rayleigh_values", "aspect_ratios",
+        "cellsize", "qdegree", "regular",
+        "viscosity", "diffusivity",
+        "T_top", "T_bottom",
+    )
+
     # Sweep grid
     rayleigh_values: list[float] = Field(
         default_factory=lambda: [1e3, 1e4, 1e5, 1e6]

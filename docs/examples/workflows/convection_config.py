@@ -87,6 +87,13 @@ class ConvectionConfig(WorkflowConfig):
         "Cartesian box"
     )
 
+    # Identity fields — mesh + discretisation + physics.  Operational
+    # fields (steady tolerances, step caps, save cadence) are excluded
+    # so they can change between invocations without invalidating
+    # cached products.  Mirror of the module-level ``_IDENTITY_FIELDS``
+    # tuple defined above.
+    _identity_fields = _IDENTITY_FIELDS
+
     # Identity — mesh
     cellsize: float = Field(default=1.0 / 16, gt=0)
     aspect_ratio: float = Field(default=1.0, gt=0)

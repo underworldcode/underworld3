@@ -1,10 +1,12 @@
 """WorkflowConfig — base class for domain-specific workflow configurations."""
 
 from pathlib import Path
-from typing import Optional
+from typing import ClassVar, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 import yaml
+
+from ._cache import config_cache_key
 
 # Fields shown in the header, not repeated in the table body
 _HEADER_FIELDS = {"workflow_name", "description"}
@@ -82,6 +84,13 @@ class WorkflowConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    # Identity fields — the subset of this config whose change should
+    # invalidate cached workflow products.  Subclasses override.  When
+    # left as ``None``, :meth:`cache_key` returns ``None`` and the
+    # workflow runner falls back to existence-based caching (the
+    # pre-Phase-B+ legacy behaviour).
+    _identity_fields: ClassVar[Optional[tuple[str, ...]]] = None
+
     workflow_name: str = Field(default="", description="Short identifier for this workflow")
     description: str = Field(default="", description="Human-readable description")
     output_dir: str = Field(default="output", description="Directory for simulation output")
@@ -94,6 +103,32 @@ class WorkflowConfig(BaseModel):
     ref_temperature: Optional[str] = Field(default=None, description='e.g. "1500 kelvin"')
     ref_density: Optional[str] = Field(default=None, description='e.g. "3300 kg/m**3"')
     ref_velocity: Optional[str] = Field(default=None, description='e.g. "5 cm/year"')
+
+    # ------------------------------------------------------------------
+    # Cache-key support
+    # ------------------------------------------------------------------
+
+    def cache_key(
+        self, requires: Optional[Mapping[str, str]] = None
+    ) -> Optional[str]:
+        """Cache key derived from this config's identity fields.
+
+        Returns ``None`` if the subclass has not declared
+        :attr:`_identity_fields` — signalling to the workflow runner
+        that input-hash freshness tracking is not enabled and it
+        should fall back to existence-based caching (legacy behaviour
+        from before this base method existed).
+
+        Parameters
+        ----------
+        requires : mapping of str → str, optional
+            Cache keys of upstream products this product depends on,
+            keyed by product name.  Folded into the digest so an
+            upstream invalidation propagates downstream.
+        """
+        if self._identity_fields is None:
+            return None
+        return config_cache_key(self, self._identity_fields, requires=requires)
 
     # ------------------------------------------------------------------
     # Display

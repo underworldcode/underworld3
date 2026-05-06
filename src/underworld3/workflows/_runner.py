@@ -73,6 +73,10 @@ class WorkflowRunner:
         self.config = config
         self.products = products
         self.cache = {}
+        # Per-product cache keys recorded during this session.  Used to
+        # propagate upstream invalidation when computing the expected
+        # cache key for a downstream product.
+        self._product_cache_keys: dict[str, str] = {}
         self._producers, self._steps = _collect_steps(module)
 
     # ------------------------------------------------------------------
@@ -80,21 +84,59 @@ class WorkflowRunner:
     # ------------------------------------------------------------------
 
     def get(self, name: str):
-        """Return product *name*, building (and caching) if needed."""
+        """Return product *name*, building (and caching) if needed.
+
+        When the config supports ``cache_key``-based freshness tracking,
+        a disk-cached product is only returned if its recorded cache
+        key matches what the current config expects; mismatch triggers
+        a rebuild.  Configs without ``_identity_fields`` declared fall
+        back to existence-based caching (legacy behaviour).
+        """
         if name in self.cache:
             return self.cache[name]
 
         if self.products is not None and self.products.exists(name):
-            try:
-                obj = self.products.load(name)
-                self.cache[name] = obj
-                return obj
-            except Exception:
-                # Loading failed (e.g. needs a mesh argument we don't have).
-                # Fall through and rebuild from the producing step.
-                pass
+            expected = self._expected_cache_key(name)
+            is_fresh = (
+                self.products.fresh(name, expected)
+                if expected is not None
+                else True  # legacy: existence is enough
+            )
+            if is_fresh:
+                try:
+                    obj = self.products.load(name)
+                    self.cache[name] = obj
+                    if expected is not None:
+                        self._product_cache_keys[name] = expected
+                    return obj
+                except Exception:
+                    # Loading failed (e.g. needs a mesh argument we don't have).
+                    # Fall through and rebuild from the producing step.
+                    pass
 
         return self._run_step_for(name)
+
+    def _expected_cache_key(self, name: str) -> Optional[str]:
+        """Cache key the product *name* should have given the current
+        config + upstream products.
+
+        Returns ``None`` if the config doesn't declare identity fields
+        (legacy behaviour) — caller should then fall back to
+        existence-based caching.
+        """
+        if name not in self._producers:
+            # No producer registered.  Can happen for "external"
+            # products that were saved manually outside the runner's
+            # DAG; treat as untrackable.
+            return None
+        step = self._producers[name]
+        requires = getattr(step, "workflow_requires", None) or []
+        upstream = {req: self._expected_cache_key(req) for req in requires}
+        if any(v is None for v in upstream.values()):
+            # Incomplete chain — at least one upstream can't be hashed.
+            # Fall back to no tracking for this product.
+            return None
+        return self.config.cache_key(requires=upstream) if hasattr(self.config, "cache_key") else None
 
     # Make ``build`` a synonym of ``get`` — handy in notebooks.
     build = get
@@ -183,10 +225,35 @@ class WorkflowRunner:
         if self.products is None:
             return
         try:
-            self.products.save(name, obj)
+            expected = self._expected_cache_key(name)
+            if expected is not None:
+                # Build the inputs block for the manifest entry, so a
+                # human reader can audit what changed when a key shifts.
+                step = self._producers.get(name)
+                requires = (
+                    getattr(step, "workflow_requires", None) or [] if step else []
+                )
+                inputs = {
+                    "config": self._identity_snapshot(),
+                    "requires": {
+                        req: self._product_cache_keys.get(req) for req in requires
+                    },
+                }
+                self.products.save(name, obj, cache_key=expected, inputs=inputs)
+                self._product_cache_keys[name] = expected
+            else:
+                # Legacy / no identity fields declared — skip cache_key.
+                self.products.save(name, obj)
         except Exception:
             # Not persistable (e.g. live solver) — that's fine.
             pass
+
+    def _identity_snapshot(self) -> dict:
+        """Snapshot of the config's identity fields, for manifest audit."""
+        ids = getattr(self.config, "_identity_fields", None)
+        if ids is None:
+            return {}
+        return {f: getattr(self.config, f) for f in ids}
 
     # ------------------------------------------------------------------
     # Invalidation
