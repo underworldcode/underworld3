@@ -9,6 +9,7 @@ See ``docs/developer/guides/workflow-packages.md`` for the full pattern.
 
 from ._base import WorkflowConfig
 from ._cache import config_cache_key, config_snapshot
+from ._cli import cli_from_config, config_from_args
 from ._products import WorkflowProducts
 from ._run import RUN_NAME, Manifest, Run
 from ._runner import WorkflowRunner
@@ -165,7 +166,9 @@ __all__ = [
     "WorkflowRunner",
     "__api_version__",
     "check_dependencies",
+    "cli_from_config",
     "config_cache_key",
+    "config_from_args",
     "config_snapshot",
     "init_workflow",
     "list_workflows",

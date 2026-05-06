@@ -1,8 +1,11 @@
 """CLI driver for a single Rayleigh-Bénard convection run.
 
 Replaces the old ``run_ra_variant.py``-style monkey-patching with
-straight config overrides — every field of :class:`ConvectionConfig`
-becomes a CLI flag automatically (hyphens for underscores).
+straight config overrides.  The argparse parser is auto-derived from
+:class:`ConvectionConfig`'s Pydantic fields by
+:func:`underworld3.workflows.cli_from_config` — every config knob
+becomes a CLI flag automatically, and adding a new config field
+extends the CLI for free.
 
 Usage
 -----
@@ -36,65 +39,19 @@ Use ``--help`` to see every available knob.
 
 from __future__ import annotations
 
-import argparse
 import sys
-import typing as _typing
 from pathlib import Path
 
 import convection_config as cc
+from underworld3.workflows import cli_from_config, config_from_args
 
 
-# Fields that are part of the config object but should not be exposed
-# on the CLI — they describe the workflow itself rather than a knob.
-_HIDDEN_FIELDS = {"workflow_name", "description"}
-
-
-def _add_field_arg(parser: argparse.ArgumentParser, name: str, finfo) -> None:
-    """Add an argparse argument that mirrors a ConvectionConfig field."""
-    cli_name = "--" + name.replace("_", "-")
-    annotation = finfo.annotation
-    default = finfo.default
-    help_text = finfo.description or ""
-    help_text = f"{help_text} (default: {default!r})" if help_text else f"default: {default!r}"
-
-    origin = _typing.get_origin(annotation)
-    args = _typing.get_args(annotation)
-
-    if annotation is bool:
-        parser.add_argument(
-            cli_name, action=argparse.BooleanOptionalAction,
-            default=None, help=help_text,
-        )
-        return
-    if annotation is int:
-        parser.add_argument(cli_name, type=int, default=None, help=help_text)
-        return
-    if annotation is float:
-        parser.add_argument(cli_name, type=float, default=None, help=help_text)
-        return
-    if annotation is str:
-        parser.add_argument(cli_name, type=str, default=None, help=help_text)
-        return
-    if origin is _typing.Literal:
-        parser.add_argument(
-            cli_name, choices=list(args), default=None, help=help_text,
-        )
-        return
-    # Unknown type — skip silently so the CLI never blocks on a new field
-    # type (the caller can still set it via Python).
-
-
-def build_parser() -> argparse.ArgumentParser:
-    """Build the argparse parser by introspecting ConvectionConfig fields."""
-    parser = argparse.ArgumentParser(
+def build_parser():
+    """Auto-derived parser plus this CLI's action flags."""
+    parser = cli_from_config(
+        cc.ConvectionConfig,
         description="Run a single convection workflow to steady state.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    for name, finfo in cc.ConvectionConfig.model_fields.items():
-        if name in _HIDDEN_FIELDS:
-            continue
-        _add_field_arg(parser, name, finfo)
-
     parser.add_argument(
         "--movies", action="store_true",
         help="Render temperature frames + mp4 after the run finishes",
@@ -106,22 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def config_from_args(args: argparse.Namespace) -> cc.ConvectionConfig:
-    """Build a ConvectionConfig from parsed CLI args (Nones drop to defaults)."""
-    config_kwargs = {}
-    for name in cc.ConvectionConfig.model_fields:
-        if name in _HIDDEN_FIELDS:
-            continue
-        val = getattr(args, name, None)
-        if val is None:
-            continue
-        config_kwargs[name] = val
-    return cc.ConvectionConfig(**config_kwargs)
-
-
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    config = config_from_args(args)
+    config = config_from_args(cc.ConvectionConfig, args)
 
     print(f"[simulate] ConvectionConfig:")
     for k in cc._IDENTITY_FIELDS:

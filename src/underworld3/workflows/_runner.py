@@ -77,6 +77,10 @@ class WorkflowRunner:
         # propagate upstream invalidation when computing the expected
         # cache key for a downstream product.
         self._product_cache_keys: dict[str, str] = {}
+        # Observers — callbacks registered via .observe() that fire on
+        # cache hit / disk load / build events.  Used by UI layers
+        # (widgets, dashboards) that want to track DAG progress.
+        self._observers: list = []
         self._producers, self._steps = _collect_steps(module)
 
     # ------------------------------------------------------------------
@@ -93,6 +97,7 @@ class WorkflowRunner:
         back to existence-based caching (legacy behaviour).
         """
         if name in self.cache:
+            self._emit("cached", name)
             return self.cache[name]
 
         if self.products is not None and self.products.exists(name):
@@ -108,6 +113,7 @@ class WorkflowRunner:
                     self.cache[name] = obj
                     if expected is not None:
                         self._product_cache_keys[name] = expected
+                    self._emit("loaded", name)
                     return obj
                 except Exception:
                     # Loading failed (e.g. needs a mesh argument we don't have).
@@ -164,9 +170,11 @@ class WorkflowRunner:
                 f"Available products: {available}"
             )
         step = self._producers[name]
+        self._emit("building", name)
         kwargs = self._resolve_kwargs(step)
         result = step(**kwargs)
         self._record_outputs(step, result)
+        self._emit("built", name)
         return self.cache[name]
 
     def _resolve_kwargs(self, step):
@@ -288,6 +296,68 @@ class WorkflowRunner:
         if self.products is not None and self.products.exists(name):
             return "on_disk"
         return "missing"
+
+    # ------------------------------------------------------------------
+    # Observability hooks (for UI layers — widgets, dashboards)
+    # ------------------------------------------------------------------
+
+    def observe(self, callback) -> None:
+        """Register a callback fired on product cache/load/build events.
+
+        Each registered *callback* is invoked as
+        ``callback(event, name)`` where *event* is one of:
+
+        * ``"cached"`` — returned from in-memory cache
+        * ``"loaded"`` — read from on-disk products
+        * ``"building"`` — about to run the producing step
+        * ``"built"`` — step finished, product cached and (if
+          persistable) saved
+
+        Callbacks that raise are silently ignored so a buggy observer
+        can't break the runner.
+
+        Used by interactive UI layers (Jupyter widgets, panel
+        dashboards) that want to display DAG progress without polling.
+        """
+        self._observers.append(callback)
+
+    def _emit(self, event: str, name: str) -> None:
+        for cb in self._observers:
+            try:
+                cb(event, name)
+            except Exception:
+                pass
+
+    def what_invalidates(self, name: str) -> set:
+        """Set of products that would rebuild if *name* changed.
+
+        Walks the produces/requires DAG forward from *name* and
+        returns every product (transitively) that lists *name* in
+        its requires chain.  Useful for UI layers showing
+        "if you change X, these will rebuild".
+
+        ``name`` itself is *not* included in the returned set.
+        """
+        # Direct dependents — products whose producing step lists
+        # *name* in its requires.
+        direct = {
+            prod
+            for prod, step in self._producers.items()
+            if name in (getattr(step, "workflow_requires", None) or [])
+        }
+        # Transitively walk forward.
+        seen = set()
+        frontier = list(direct)
+        while frontier:
+            p = frontier.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            for prod, step in self._producers.items():
+                if p in (getattr(step, "workflow_requires", None) or []):
+                    if prod not in seen:
+                        frontier.append(prod)
+        return seen
 
     def dag(self):
         """Display all steps with their produces / requires / status.
