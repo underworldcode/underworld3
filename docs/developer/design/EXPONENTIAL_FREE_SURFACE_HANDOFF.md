@@ -100,84 +100,82 @@ $\gamma_{\text{eff}} = -\ln(0.9956)/0.092 = 0.048$.
 two-layer system is *not* dramatically different from half-space —
 my earlier hypothesis was wrong.
 
-## Drift rate scales with $\Delta t$ — truncation error, not noise floor
+## Drift roughly proportional to $\Delta t$ — analytic accuracy is a separate question
 
-Comparing actual trajectories vs the pure-exponential prediction
-$A(t) = 5\times 10^{-2}\,e^{-0.048\,t}$:
+Comparing actual trajectories at small vs large dt:
 
-| run | $\Delta t$ | total $t$ | measured | predicted (exp decay) | deviation | drift rate / unit time |
-|---|---:|---:|---:|---:|---:|---:|
-| small-dt (n=100) | 0.092 | 9.19 | +2.98e-2 | +3.22e-2 | -2.3e-3 | -2.5e-4 |
-| large-dt (n=32) | 1.84 | 58.8 | -7.41e-2 | +3.0e-3 | -7.7e-2 | -1.3e-3 |
+| run | $\Delta t$ | total $t$ | measured A_final | drift rate / unit time |
+|---|---:|---:|---:|---:|
+| small-dt (n=100) | 0.092 | 9.19 | +2.98e-2 | -2.5e-4 |
+| large-dt (n=32) | 1.84 | 58.8 | -7.41e-2 | -1.3e-3 |
 
-**The drift rate per unit time is $\sim 5\times$ larger at $20\times$
-larger $\Delta t$.** That's roughly linear scaling with $\Delta t$
-— consistent with $O(\Delta t^2)$ per-step truncation error
-accumulating over $t/\Delta t$ steps. This is the integrator's own
-truncation error, not a fixed velocity-noise floor.
+Drift rate scales roughly with $\Delta t$ (a $20\times$
+increase in $\Delta t$ gave $\sim 5\times$ increase in drift
+rate). Whether the precise scaling is $O(\Delta t)$ or some
+other power isn't the focus of this investigation.
 
-This changes the diagnosis: the large-dt drunken-sailor is
-**accumulated truncation error**, not noise. At small dt the
-truncation error is small enough that the relaxation dominates;
-at large dt the truncation error per step gets big enough that
-over many steps the surface drifts past zero.
+**The actual goal is a stable integration scheme that doesn't
+blow up when the timestep grows.** The small-dt run is the
+*reference trajectory* — whatever the small-dt scheme produces
+is what we want the large-dt scheme to approach. Departure from
+the analytic exponential at small dt is a separate
+accuracy-against-analytic question for a different session, not
+what this investigation is trying to solve.
 
-Implications:
-- **Higher-order integrator** (ETD-2, BDF-2 with proper source
-  handling) should help — those have $O(\Delta t^3)$ per-step
-  truncation error, so accumulated drift scales as $\Delta t^2$
-  rather than $\Delta t$.
-- **Predictor-corrector for $u_n$** within a step would also
-  reduce truncation error (we're using $u_n$ at the *start* of
-  the step; using a midpoint $u_n$ would be second-order
-  accurate).
-- **The kinematic ETD's saturation property is real** but only
-  bounds the drift relative to the *signal* — at large dt where
-  signal is decaying faster than the truncation error, the
-  truncation error dominates and the integrator can't do anything
-  about it because it's *the integrator's own error*.
+The current open question is: at large $\Delta t$, can we keep
+the trajectory bounded close to the small-dt reference? The
+kinematic ETD provides modest damping (~17% less drift than
+FE+FSSA at our test dt) but isn't delivering bounded large-dt
+behaviour by itself. The next session should attack this stability
+question directly — not the analytic-accuracy question.
 
 ## Recommended next actions, in priority order
 
-1. **Implement a higher-order kinematic ETD update** to attack
-   the $O(\Delta t^2)$ truncation error directly. Two natural
-   options:
-    - *Midpoint-corrected $u_n$*: solve Stokes once, get $u_n^n$;
-      apply half-step kinematic ETD to estimate
-      $h^{n+1/2}$; deform the mesh to that intermediate position
-      and re-solve Stokes for $u_n^{n+1/2}$; apply the full-step
-      ETD with $u_n^{n+1/2}$. This is RK2-flavoured and should
-      give $O(\Delta t^3)$ truncation per step.
+The success criterion is **stability at large $\Delta t$
+relative to the small-dt reference trajectory** — not accuracy
+against the analytic exponential. The small-dt run gives the
+reference; the goal is a scheme that doesn't blow up away from
+that reference as $\Delta t$ grows.
+
+1. **Find an integrator that's actually stable at large
+   $\Delta t$.** The current first-order kinematic ETD provides
+   modest damping but doesn't bound the trajectory at our test
+   dt. Candidates worth implementing and benchmarking against the
+   small-dt reference:
+    - *Midpoint-corrected $u_n$* (RK2-flavoured): solve Stokes,
+      take a half-step kinematic ETD to estimate $h^{n+1/2}$,
+      deform the mesh there, re-solve Stokes for $u_n^{n+1/2}$,
+      take the full-step ETD with that midpoint velocity.
+      Two Stokes solves per step but should be much more stable.
     - *Cox–Matthews ETD-2 with source*: use $u_n^n$ and
-      $u_n^{n-1}$ to estimate the linear part of $u_n(t)$
-      across the step. Two-step memory but only one Stokes
-      solve per step.
-   Both should reduce the drift rate scaling from $\Delta t$ to
-   $\Delta t^2$ per unit time, which is the difference that
-   matters at the dt regime where the integrator is supposed
-   to be useful.
+      $u_n^{n-1}$ to estimate the linear-in-time part of $u_n(t)$
+      across the step. One Stokes solve per step but two-step
+      memory.
+    - *Implicit kinematic update*: solve a coupled
+      surface-position+Stokes problem at $t^{n+1}$ — known
+      stable at any $\Delta t$, but heavier solver.
+   The bench is "compare against small-dt reference at the same
+   total $t$" — *not* against analytic exponential.
 
-2. **Test that the higher-order scheme's drift rate scales as
-   $\Delta t^2$.** Run at multiple dt and verify the drift
-   rate per unit time scales appropriately. The headline
-   homogeneous-test result is then: "kinematic ETD with
-   midpoint-corrected $u_n$ remains bounded for arbitrary
-   $\Delta t$ within the relaxation regime, where FE/FE+FSSA
-   accumulate visible error".
-
-3. **Buoyancy on the internal-boundary mesh.** The buoyancy
+2. **Buoyancy on the internal-boundary mesh.** The buoyancy
    demonstrator currently lives only on the upper-boundary
    variant. Port to the internal-boundary mesh and confirm the
-   kinematic-ETD saturation at the driven $h_{\text{eq}}$.
+   kinematic-ETD saturation at the driven $h_{\text{eq}}$. This
+   is where the scheme has clear value already — it's worth
+   landing it cleanly on the cleaner mesh.
 
-4. **Long-time accuracy run** with the higher-order scheme,
-   confirming exponential relaxation over many decay times.
+3. **Empirical-$\gamma$ from temporal regression**, as a
+   separate methodological track. The single-shot spatial
+   regression has a known failure mode (source confounding);
+   a multi-step temporal regression resolves it but needs a
+   history buffer. Independent of the integrator improvement
+   above.
 
-5. **Empirical-$\gamma$ from temporal regression**, separately
-   from the integrator improvement above. The single-shot
-   spatial regression has a known failure mode (source
-   confounding); a multi-step temporal regression resolves it
-   but needs a history buffer.
+4. *Out-of-scope-for-this-session*: matching the analytic
+   exponential decay at small dt. The small-dt run shows
+   modest deviation from analytic ($\sim 5\%$); whether
+   that's discretisation, body-force formulation, or something
+   else is a separate question.
 
 ## What not to chase
 
@@ -266,19 +264,19 @@ pixi run -e amr-dev python -u docs/developer/design/_phase_i_fs_etd_annulus.py \
 
 ## What "done" looks like for this investigation
 
-1. ✅ Measured $\gamma_{\text{eff}}$ matches half-space prediction.
-2. ✅ Buoyancy-driven kinematic ETD demonstrator works
+1. ✅ Buoyancy-driven kinematic ETD demonstrator works
    (bounded saturation at $h_{\text{eq}}$).
-3. ⏳ Pure-relaxation demonstrator with bounded error at large
-   $\Delta t$ — *needs the higher-order ETD per priority 1*.
-4. ⏳ Clean write-up: integrator works for driven problems
-   bounded by physics; pure-relaxation problems require a
-   higher-order time discretisation to keep accumulated
-   truncation error below physical relaxation.
+2. ⏳ A scheme that stays close to the small-dt reference
+   trajectory at large $\Delta t$, without blowing up — see
+   priority 1 in the next-actions list.
+3. ⏳ Clean write-up: integrator works for driven problems;
+   for pure-relaxation problems, a higher-order or implicit
+   variant is needed for stability at large $\Delta t$.
 
-The first-order kinematic ETD has a real saturation property
-that bounds amplitude relative to a fixed signal (buoyancy-driven
-case). Where it fails on homogeneous tests is from per-step
-truncation error scaling with $\Delta t$ that accumulates over
-many steps; this is fixable with a higher-order time scheme.
-That's the headline open task.
+**Goal restated:** find an integrator that doesn't blow up as
+the timestep grows. Compare against the small-dt run as
+reference (not against the analytic exponential — analytic
+accuracy is a separate question for a different session). The
+first-order kinematic ETD already buys saturation in the driven
+case; for the homogeneous case, a higher-order scheme is the
+headline open task.
