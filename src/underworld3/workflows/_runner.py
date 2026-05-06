@@ -328,6 +328,24 @@ class WorkflowRunner:
             except Exception:
                 pass
 
+    def diagram(self, *, rankdir: str = "LR") -> str:
+        """Generate a Graphviz DOT diagram of this runner's DAG.
+
+        Nodes are colour-coded by current status (cached / on-disk /
+        missing) using :meth:`status` as the status provider.
+
+        Returns the DOT source string; render with the ``dot`` command::
+
+            Path("dag.dot").write_text(runner.diagram())
+            # then in a shell: dot -Tpng dag.dot -o dag.png
+
+        Or use :func:`underworld3.workflows.render` for a one-call
+        wrapper that invokes ``dot`` directly.
+        """
+        from ._diagram import diagram as _diagram
+
+        return _diagram(self.module, status_provider=self.status, rankdir=rankdir)
+
     def what_invalidates(self, name: str) -> set:
         """Set of products that would rebuild if *name* changed.
 
