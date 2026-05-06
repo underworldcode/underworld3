@@ -37,6 +37,14 @@ def _detect_type(obj):
     cls_name = type(obj).__name__
     mod = type(obj).__module__ or ""
 
+    # Run-directory — a Run instance from the time-loop persistence
+    # primitive.  Recognised first so a Run never falls through to
+    # other handlers (it has a Path attribute, but isn't a Path).
+    from ._run import Run as _Run
+
+    if isinstance(obj, _Run):
+        return "run_directory"
+
     # File artefact — a Path returned by a step that wrote the file
     # itself (CSV, PNG, MP4, ...).  Recognised before the heavier types
     # so a step can produce a file path even when downstream code might
@@ -186,6 +194,12 @@ class WorkflowProducts:
             # round-trippable.
             files = [str(obj)]
 
+        elif product_type == "run_directory":
+            # The producer wrote a complete time-loop run directory
+            # (manifest.yaml + h5 chain + timeseries.csv + ...).  Just
+            # record its path.
+            files = [str(obj.path)]
+
         else:
             # Try YAML serialisation as fallback
             fname = f"{name}.yaml"
@@ -330,6 +344,11 @@ class WorkflowProducts:
             # Return the recorded path; the file's content is the
             # producer's responsibility (it lives at this path on disk).
             return Path(files[0])
+
+        elif product_type == "run_directory":
+            # Return a Run object pointing at the recorded directory.
+            from ._run import Run as _Run
+            return _Run.open(files[0])
 
         elif product_type == "yaml":
             with open(self._dir / files[0]) as f:

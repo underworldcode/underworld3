@@ -229,6 +229,9 @@ class WorkflowRunner:
             if expected is not None:
                 # Build the inputs block for the manifest entry, so a
                 # human reader can audit what changed when a key shifts.
+                # Use _expected_cache_key (not _product_cache_keys) so
+                # non-persistable upstream products (live solvers) still
+                # contribute their computed digest to the audit.
                 step = self._producers.get(name)
                 requires = (
                     getattr(step, "workflow_requires", None) or [] if step else []
@@ -236,7 +239,7 @@ class WorkflowRunner:
                 inputs = {
                     "config": self._identity_snapshot(),
                     "requires": {
-                        req: self._product_cache_keys.get(req) for req in requires
+                        req: self._expected_cache_key(req) for req in requires
                     },
                 }
                 self.products.save(name, obj, cache_key=expected, inputs=inputs)

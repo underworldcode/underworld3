@@ -71,7 +71,13 @@ from typing import Optional
 import numpy as np
 from pydantic import Field
 
-from underworld3.workflows import Run, WorkflowConfig, WorkflowRunner, workflow_step
+from underworld3.workflows import (
+    Run,
+    WorkflowConfig,
+    WorkflowProducts,
+    WorkflowRunner,
+    workflow_step,
+)
 
 # We share the per-run definitions but hide the "single-run" config under
 # a different name to avoid confusion with this module's SweepConfig.
@@ -237,7 +243,10 @@ def run_sweep(config: SweepConfig) -> dict:
             )
 
             cell_config = _per_run_config(config, ra, aspect)
-            runner = WorkflowRunner(_convection, cell_config, products=None)
+            cell_products = WorkflowProducts(cell_config)
+            runner = WorkflowRunner(
+                _convection, cell_config, products=cell_products,
+            )
             summary = runner.build("run_summary")
             results[_cell_key(ra, aspect)] = summary
 

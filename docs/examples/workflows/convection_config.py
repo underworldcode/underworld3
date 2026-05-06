@@ -559,7 +559,7 @@ def create_solvers(mesh, config: ConvectionConfig):
 
 @workflow_step(
     description="Idempotent, resumable evolve until steady state or max_steps",
-    produces=["evolution_log"],
+    produces=["run_directory", "evolution_log"],
     requires=["mesh", "stokes", "adv_diff", "T", "v", "bl_thickness"],
 )
 def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig):
@@ -597,7 +597,7 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
             f"[evolve] {output_dir}: status='steady', "
             f"n_steps={summary.get('n_steps')}.  No work to do."
         )
-        return run.timeseries
+        return {"run_directory": run, "evolution_log": run.timeseries}
 
     timeseries = run.timeseries
     saved_steps = run.steps
@@ -741,7 +741,7 @@ def evolve(mesh, stokes, adv_diff, T, v, bl_thickness, config: ConvectionConfig)
                 )
                 break
 
-    return timeseries
+    return {"run_directory": run, "evolution_log": timeseries}
 
 
 def _write_bl_ic(T, mesh, bl_thickness: float, config: ConvectionConfig):
@@ -784,22 +784,26 @@ def _write_bl_ic(T, mesh, bl_thickness: float, config: ConvectionConfig):
 @workflow_step(
     description="Compute steady-state averages and write run_summary.yaml",
     produces=["run_summary"],
-    requires=["evolution_log"],
+    requires=["run_directory"],
 )
-def summarise_run(evolution_log, config: ConvectionConfig):
+def summarise_run(run_directory: Run, config: ConvectionConfig):
     """Average the steady-window of the timeseries and write the summary.
 
     The summary is the "done" marker: its presence with status
     ``"steady"`` or ``"stalled"`` makes ``evolve`` short-circuit.  When
     the run hasn't yet reached steady state and isn't yet at
     ``max_steps``, no summary is written (the run is just paused).
-    """
-    run = Run(Path(config.output_dir))
 
-    cached = run.summary
+    Reads the timeseries directly from *run_directory*, which is the
+    persistent on-disk artefact.  The dependency on ``run_directory``
+    (rather than the in-memory ``evolution_log``) means a fresh
+    runner can summarise a completed run without re-evolving it.
+    """
+    cached = run_directory.summary
     if cached is not None and cached.get("status") == "steady":
         return cached
 
+    evolution_log = run_directory.timeseries
     is_steady = _is_steady(evolution_log, config)
     last_step = evolution_log[-1]["step"] if evolution_log else 0
 
@@ -846,6 +850,6 @@ def summarise_run(evolution_log, config: ConvectionConfig):
     # Stalled runs leave no done-marker so a re-invocation with a higher
     # ``max_steps`` extends them rather than short-circuiting.
     if status == "steady":
-        run.write_summary(summary)
+        run_directory.write_summary(summary)
 
     return summary
