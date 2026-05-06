@@ -1,36 +1,53 @@
 """Drive a (Ra × aspect_ratio) sweep of the per-run convection workflow.
 
-This module is an **imperative driver** rather than a pure workflow:
-each ``(Ra, aspect_ratio)`` cell of the sweep is a separate per-run
-workflow with its own ``WorkflowRunner``, its own ``output_dir``, and
-its own idempotent steady-state termination.  Aggregation steps then
-read each cell's ``run_summary.yaml`` and produce Nu(Ra) / Vrms(Ra)
-tables and matplotlib figures.
+The sweep is itself a **workflow** — its steps (``run_sweep``,
+``tabulate_nu_vs_ra``, ``plot_nu_vs_ra``, ``tabulate_vrms_vs_ra``,
+``plot_vrms_vs_ra``) are :func:`@workflow_step`-decorated so the whole
+graph can be driven by ``WorkflowRunner.build("nu_vs_ra_plot")``,
+walking the cascade and short-circuiting cached steps.  Each
+``(Ra, aspect_ratio)`` cell still uses its own nested
+``WorkflowRunner`` with the per-run convection module, with its own
+``output_dir`` and its own idempotent steady-state termination.
 
-Idempotency carries over from the per-run workflow: re-running the
-sweep does no work for cells that have already reached steady state.
-A cell that's stalled (hit max_steps without converging) extends on
-the next sweep invocation.
+Idempotency layers:
+
+- **Per cell**: each cell's ``run_summary.yaml`` short-circuits its
+  inner runner once steady; stalled cells extend on the next sweep
+  invocation.
+- **Sweep level**: the aggregation products (CSV tables, PNG plots)
+  are cached under ``<sweep output_dir>/products/`` with cache keys
+  derived from the sweep config's identity.  Re-asking for
+  ``nu_vs_ra_plot`` after nothing has changed hits the cache; if the
+  sweep config changes (e.g. a Ra value added) the affected products
+  rebuild automatically.
 
 Usage::
 
     import convection_sweep as sweep
+    from underworld3.workflows import WorkflowRunner, WorkflowProducts
 
     config = sweep.SweepConfig(
         rayleigh_values=[1e3, 1e4, 1e5, 1e6],
         aspect_ratios=[1.0, 4.0],
         cellsize=1/16,
     )
-    sweep.run_sweep(config)        # drive every cell to steady state
-    sweep.tabulate_nu_vs_ra(config)
-    sweep.tabulate_vrms_vs_ra(config)
-    sweep.plot_nu_vs_ra(config)
-    sweep.plot_vrms_vs_ra(config)
+
+    # Single cascade — runs cells, tabulates, plots; caches everything.
+    products = WorkflowProducts(config)
+    runner = WorkflowRunner(sweep, config, products=products)
+    runner.build("nu_vs_ra_plot")
+    runner.build("vrms_vs_ra_plot")
+
+The plain functions are still callable directly when a workflow
+runner is overkill::
+
+    sweep.run_sweep(config)              # drives every cell
+    sweep.tabulate_nu_vs_ra(config=config)   # reads each cell's summary
 
 Output layout::
 
     <output_dir>/
-        aspect_1x1/Ra1e3/...        per-run directory
+        aspect_1x1/Ra1e3/...        per-cell run directory
         aspect_1x1/Ra1e4/...
         ...
         aspect_4x1/Ra1e3/...
@@ -41,6 +58,9 @@ Output layout::
         figures/
             nu_vs_ra.png            log-log Nu(Ra) with reference Ra^(1/3) line
             vrms_vs_ra.png
+        products/
+            manifest.yaml           workflow products: cache_keys for the
+                                    aggregation outputs.
 """
 
 import csv
@@ -51,7 +71,7 @@ from typing import Optional
 import numpy as np
 from pydantic import Field
 
-from underworld3.workflows import Run, WorkflowConfig, WorkflowRunner
+from underworld3.workflows import Run, WorkflowConfig, WorkflowRunner, workflow_step
 
 # We share the per-run definitions but hide the "single-run" config under
 # a different name to avoid confusion with this module's SweepConfig.
@@ -166,22 +186,36 @@ def _read_run_summary(run_dir: Path) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-def run_sweep(sweep_config: SweepConfig) -> dict:
+def _cell_key(ra: float, aspect: float) -> str:
+    """String key used to identify a (Ra, aspect) cell in dict products.
+
+    YAML-serialisable (no tuple keys).  Stable under
+    ``json.dumps(..., sort_keys=True)`` so the cache key for
+    ``all_cells_completed`` is reproducible.
+    """
+    return f"aspect_{aspect:g}_Ra_{ra:g}"
+
+
+@workflow_step(
+    description="Drive every (Ra, aspect) cell to steady state",
+    produces=["all_cells_completed"],
+)
+def run_sweep(config: SweepConfig) -> dict:
     """Drive every (Ra, aspect) cell to steady state.
 
-    Each cell uses its own ``WorkflowRunner`` with the shared per-run
-    convection module; the runner reads on-disk state and either
-    short-circuits (already steady) or extends the run.
+    Each cell uses its own nested ``WorkflowRunner`` against the
+    convection workflow; that runner reads the cell's on-disk state
+    and either short-circuits (already steady) or extends the run.
 
-    Returns a dict ``{(ra, aspect): summary_or_None}``.  Cells that
-    have not yet converged have summary ``None`` (no run_summary.yaml).
+    Returns a dict ``{cell_key: summary_or_None}``.  Cells that have
+    not yet converged have summary ``None`` (no ``run_summary.yaml``).
     """
     import underworld3 as uw
 
     results = {}
-    for aspect in sweep_config.aspect_ratios:
-        for ra in sweep_config.rayleigh_values:
-            run_dir = _run_dir(sweep_config, ra, aspect)
+    for aspect in config.aspect_ratios:
+        for ra in config.rayleigh_values:
+            run_dir = _run_dir(config, ra, aspect)
             run_dir.mkdir(parents=True, exist_ok=True)
 
             uw.pprint(
@@ -189,29 +223,34 @@ def run_sweep(sweep_config: SweepConfig) -> dict:
                 flush=True,
             )
 
-            cell_config = _per_run_config(sweep_config, ra, aspect)
+            cell_config = _per_run_config(config, ra, aspect)
             runner = WorkflowRunner(_convection, cell_config, products=None)
             summary = runner.build("run_summary")
-            results[(ra, aspect)] = summary
+            results[_cell_key(ra, aspect)] = summary
 
     return results
 
 
-def tabulate_nu_vs_ra(sweep_config: SweepConfig) -> Path:
-    """Aggregate per-run summaries into a tidy CSV.
+@workflow_step(
+    description="Tabulate Nu(Ra) from each cell's run summary into a tidy CSV",
+    produces=["nu_vs_ra_csv"],
+    requires=["all_cells_completed"],
+)
+def tabulate_nu_vs_ra(all_cells_completed: dict, config: SweepConfig) -> Path:
+    """Aggregate per-cell summaries into a tidy CSV.
 
     Columns: ``aspect, Ra, Nu_mean, Nu_std, Nu_top_mean, Nu_bot_mean,
-    n_steps, status``.  Only writes rows for cells whose
-    ``run_summary.yaml`` exists (steady or summarised stalled runs).
+    n_steps, status``.  Skips cells whose summary is ``None`` (no
+    ``run_summary.yaml`` yet — i.e. not steady).
     """
-    out_dir = Path(sweep_config.output_dir) / "tables"
+    out_dir = Path(config.output_dir) / "tables"
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "nu_vs_ra.csv"
 
     rows = []
-    for aspect in sweep_config.aspect_ratios:
-        for ra in sweep_config.rayleigh_values:
-            summary = _read_run_summary(_run_dir(sweep_config, ra, aspect))
+    for aspect in config.aspect_ratios:
+        for ra in config.rayleigh_values:
+            summary = all_cells_completed.get(_cell_key(ra, aspect))
             if summary is None:
                 continue
             rows.append({
@@ -237,16 +276,21 @@ def tabulate_nu_vs_ra(sweep_config: SweepConfig) -> Path:
     return csv_path
 
 
-def tabulate_vrms_vs_ra(sweep_config: SweepConfig) -> Path:
-    """Aggregate per-run summaries into Vrms(Ra) tidy CSV."""
-    out_dir = Path(sweep_config.output_dir) / "tables"
+@workflow_step(
+    description="Tabulate Vrms(Ra) from each cell's run summary into a tidy CSV",
+    produces=["vrms_vs_ra_csv"],
+    requires=["all_cells_completed"],
+)
+def tabulate_vrms_vs_ra(all_cells_completed: dict, config: SweepConfig) -> Path:
+    """Aggregate per-cell summaries into Vrms(Ra) tidy CSV."""
+    out_dir = Path(config.output_dir) / "tables"
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "vrms_vs_ra.csv"
 
     rows = []
-    for aspect in sweep_config.aspect_ratios:
-        for ra in sweep_config.rayleigh_values:
-            summary = _read_run_summary(_run_dir(sweep_config, ra, aspect))
+    for aspect in config.aspect_ratios:
+        for ra in config.rayleigh_values:
+            summary = all_cells_completed.get(_cell_key(ra, aspect))
             if summary is None:
                 continue
             rows.append({
@@ -271,8 +315,21 @@ def tabulate_vrms_vs_ra(sweep_config: SweepConfig) -> Path:
     return csv_path
 
 
-def plot_nu_vs_ra(sweep_config: SweepConfig) -> Optional[Path]:
+@workflow_step(
+    description="Plot Nu(Ra) log-log per aspect ratio, with Ra^(1/3) reference",
+    produces=["nu_vs_ra_plot"],
+    requires=["nu_vs_ra_csv", "all_cells_completed"],
+)
+def plot_nu_vs_ra(
+    nu_vs_ra_csv: Path,
+    all_cells_completed: dict,
+    config: SweepConfig,
+) -> Optional[Path]:
     """Log-log Nu(Ra) per aspect ratio, with the Ra^(1/3) reference line.
+
+    Reads from *all_cells_completed* (numerically authoritative) but
+    declares ``nu_vs_ra_csv`` in ``requires=`` so the runner knows the
+    plot post-dates the table when both are part of the same cascade.
 
     Returns the figure path, or None if matplotlib is unavailable.
     """
@@ -283,16 +340,16 @@ def plot_nu_vs_ra(sweep_config: SweepConfig) -> Optional[Path]:
     except ImportError:
         return None
 
-    out_dir = Path(sweep_config.output_dir) / "figures"
+    out_dir = Path(config.output_dir) / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_path = out_dir / "nu_vs_ra.png"
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
-    for aspect in sweep_config.aspect_ratios:
+    for aspect in config.aspect_ratios:
         ras, nus, errs = [], [], []
-        for ra in sweep_config.rayleigh_values:
-            summary = _read_run_summary(_run_dir(sweep_config, ra, aspect))
+        for ra in config.rayleigh_values:
+            summary = all_cells_completed.get(_cell_key(ra, aspect))
             if summary is None or summary.get("Nu_mean") is None:
                 continue
             ras.append(ra)
@@ -307,8 +364,8 @@ def plot_nu_vs_ra(sweep_config: SweepConfig) -> Optional[Path]:
 
     # Reference scaling: Nu = 0.27 Ra^(1/3) (high-Ra 2D)
     ras_ref = np.logspace(
-        np.log10(min(sweep_config.rayleigh_values)),
-        np.log10(max(sweep_config.rayleigh_values)),
+        np.log10(min(config.rayleigh_values)),
+        np.log10(max(config.rayleigh_values)),
         50,
     )
     ax.plot(
@@ -330,7 +387,16 @@ def plot_nu_vs_ra(sweep_config: SweepConfig) -> Optional[Path]:
     return fig_path
 
 
-def plot_vrms_vs_ra(sweep_config: SweepConfig) -> Optional[Path]:
+@workflow_step(
+    description="Plot Vrms(Ra) log-log per aspect ratio",
+    produces=["vrms_vs_ra_plot"],
+    requires=["vrms_vs_ra_csv", "all_cells_completed"],
+)
+def plot_vrms_vs_ra(
+    vrms_vs_ra_csv: Path,
+    all_cells_completed: dict,
+    config: SweepConfig,
+) -> Optional[Path]:
     """Log-log V_rms(Ra) per aspect ratio."""
     try:
         import matplotlib
@@ -339,16 +405,16 @@ def plot_vrms_vs_ra(sweep_config: SweepConfig) -> Optional[Path]:
     except ImportError:
         return None
 
-    out_dir = Path(sweep_config.output_dir) / "figures"
+    out_dir = Path(config.output_dir) / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_path = out_dir / "vrms_vs_ra.png"
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
-    for aspect in sweep_config.aspect_ratios:
+    for aspect in config.aspect_ratios:
         ras, vrs, errs = [], [], []
-        for ra in sweep_config.rayleigh_values:
-            summary = _read_run_summary(_run_dir(sweep_config, ra, aspect))
+        for ra in config.rayleigh_values:
+            summary = all_cells_completed.get(_cell_key(ra, aspect))
             if summary is None or summary.get("Vrms_mean") is None:
                 continue
             ras.append(ra)

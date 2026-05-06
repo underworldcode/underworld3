@@ -37,6 +37,13 @@ def _detect_type(obj):
     cls_name = type(obj).__name__
     mod = type(obj).__module__ or ""
 
+    # File artefact — a Path returned by a step that wrote the file
+    # itself (CSV, PNG, MP4, ...).  Recognised before the heavier types
+    # so a step can produce a file path even when downstream code might
+    # otherwise interpret it.
+    if isinstance(obj, Path):
+        return "file"
+
     # Mesh types
     if cls_name in ("Mesh", "MeshClass") or "discretisation" in mod and "Mesh" in cls_name:
         if hasattr(obj, "write_checkpoint"):
@@ -172,6 +179,12 @@ class WorkflowProducts:
             fname = f"{name}.npz"
             np.savez(self._dir / fname, data=obj)
             files = [fname]
+
+        elif product_type == "file":
+            # The producer already wrote the file; just record the
+            # path.  Stored as a string so the YAML manifest stays
+            # round-trippable.
+            files = [str(obj)]
 
         else:
             # Try YAML serialisation as fallback
@@ -312,6 +325,11 @@ class WorkflowProducts:
         elif product_type == "ndarray":
             data = np.load(self._dir / files[0])
             return data["data"]
+
+        elif product_type == "file":
+            # Return the recorded path; the file's content is the
+            # producer's responsibility (it lives at this path on disk).
+            return Path(files[0])
 
         elif product_type == "yaml":
             with open(self._dir / files[0]) as f:

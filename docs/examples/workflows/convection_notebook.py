@@ -65,6 +65,7 @@ nest_asyncio.apply()
 # %%
 import os
 import underworld3 as uw
+from underworld3.workflows import WorkflowProducts, WorkflowRunner
 
 import convection_config as convection
 import convection_sweep as sweep
@@ -112,24 +113,42 @@ convection.view()
 
 # %% [markdown]
 """
-## 3. Drive the sweep
+## 3. Drive the sweep + aggregate as one workflow cascade
 
-For each ``(Ra, aspect)`` cell:
+The sweep is itself a workflow — its steps (``run_sweep``,
+``tabulate_*``, ``plot_*``) are :func:`@workflow_step`-decorated and
+linked by ``produces`` / ``requires``.  A single ``runner.build(...)``
+call walks the cascade:
 
-* If ``run_summary.yaml`` exists with ``status="steady"`` — short-circuit.
-* Else — resume (or fresh-start) and extend until steady state or
-  ``max_steps``.  Stalled cells leave no summary, so a future invocation
-  with a larger ``max_steps`` continues seamlessly.
+1. ``run_sweep`` drives every ``(Ra, aspect)`` cell to steady state.
+   Each cell's own ``run_summary.yaml`` short-circuits cells that are
+   already steady; stalled cells extend on the next sweep.
+2. ``tabulate_nu_vs_ra`` writes ``tables/nu_vs_ra.csv`` from the
+   per-cell summaries.
+3. ``plot_nu_vs_ra`` reads the CSV and writes ``figures/nu_vs_ra.png``.
 
-Per-step diagnostics are printed during long runs so progress is
-visible (and the run is interruptible with the partial chain intact).
+Aggregation products are cached under
+``<output_dir>/products/manifest.yaml``.  Re-running this notebook
+short-circuits any step whose inputs have not changed.
 """
 
 # %%
-results = sweep.run_sweep(sweep_config)
+products = WorkflowProducts(sweep_config)
+runner = WorkflowRunner(sweep, sweep_config, products=products)
 
+# Drive the cascade — these two calls cover everything.
+fig_nu = runner.build("nu_vs_ra_plot")
+fig_vrms = runner.build("vrms_vs_ra_plot")
+
+uw.pprint(f"Wrote {fig_nu}")
+uw.pprint(f"Wrote {fig_vrms}")
+
+# %%
+# Print a compact per-cell status summary (re-uses the cached
+# ``all_cells_completed`` product from the cascade above — no work).
+results = runner.get("all_cells_completed")
 uw.pprint("\nSweep status summary:")
-for (ra, aspect), summary in results.items():
+for cell_key, summary in results.items():
     if summary is None:
         status = "no summary"
     else:
@@ -139,27 +158,11 @@ for (ra, aspect), summary in results.items():
             f"Nu_mean={summary.get('Nu_mean', float('nan')):.3f}  "
             f"Vrms_mean={summary.get('Vrms_mean', float('nan')):.3f}"
         )
-    uw.pprint(f"  aspect={aspect}  Ra={ra:.0e}  {status}")
-
-# %% [markdown]
-"""
-## 4. Aggregate Nu(Ra) and V_rms(Ra) tables and figures
-
-These read each cell's ``run_summary.yaml``; any cell that hasn't yet
-reached steady state is left out of the table.
-"""
+    uw.pprint(f"  {cell_key}  {status}")
 
 # %%
-nu_csv = sweep.tabulate_nu_vs_ra(sweep_config)
-vrms_csv = sweep.tabulate_vrms_vs_ra(sweep_config)
-uw.pprint(f"Wrote {nu_csv}")
-uw.pprint(f"Wrote {vrms_csv}")
-
-# %%
-fig_nu = sweep.plot_nu_vs_ra(sweep_config)
-fig_vrms = sweep.plot_vrms_vs_ra(sweep_config)
-uw.pprint(f"Wrote {fig_nu}")
-uw.pprint(f"Wrote {fig_vrms}")
+# DAG view — confirms which products are cached / on-disk / missing.
+runner.dag()
 
 # %% [markdown]
 """
