@@ -8,15 +8,21 @@ See ``docs/developer/guides/workflow-packages.md`` for the full pattern.
 """
 
 from ._base import WorkflowConfig
+from ._cache import config_cache_key, config_snapshot
 from ._products import WorkflowProducts
 from ._run import RUN_NAME, Manifest, Run
 from ._runner import WorkflowRunner
 from ._utils import check_dependencies, parse_quantity, show_source, workflow_step
 
-# Public API version for the run-directory primitives (Run, Manifest,
-# manifest['workflow_api'] stamp).  Pre-1.0 — shape may shift as a
-# second consumer exercises the design.
-__api_version__ = "0.1"
+# Public API version for the run-directory + product-graph primitives.
+# Pre-1.0 — shape may shift as a second consumer exercises the design.
+#
+# 0.1 (step 5):    Run/Manifest lifted into the package; manifest
+#                  carries workflow_api stamp.
+# 0.2 (Phase A):   cache_key + inputs fields added to both Run.manifest
+#                  and WorkflowProducts entries; config_cache_key /
+#                  config_snapshot helpers exposed.
+__api_version__ = "0.2"
 
 
 def list_workflows(repo_root=None):
@@ -159,6 +165,8 @@ __all__ = [
     "WorkflowRunner",
     "__api_version__",
     "check_dependencies",
+    "config_cache_key",
+    "config_snapshot",
     "init_workflow",
     "list_workflows",
     "parse_quantity",

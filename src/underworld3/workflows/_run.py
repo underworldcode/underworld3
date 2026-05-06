@@ -101,6 +101,21 @@ class Manifest:
         return self.data.get("config_snapshot", {})
 
     @property
+    def cache_key(self) -> Optional[str]:
+        """Cache-key digest for the product this manifest describes.
+
+        Pre-0.2 manifests don't carry this; ``None`` then means "treat
+        as always-fresh" (the legacy behaviour).
+        """
+        return self.data.get("cache_key")
+
+    @property
+    def inputs(self) -> dict:
+        """Inputs the cache_key was derived from (config + upstream
+        product cache keys), or ``{}`` for pre-0.2 manifests."""
+        return self.data.get("inputs", {})
+
+    @property
     def started_at(self):
         return self.data.get("started_at")
 
@@ -176,15 +191,24 @@ class Run:
     def write_manifest(self, data: dict) -> None:
         """Write ``manifest.yaml`` with the given dict.
 
-        Auto-injects ``workflow_api`` set to the current package
-        ``__api_version__`` if the caller has not already supplied
-        the field.  Manifests written before this stamp existed read
-        back with ``manifest.workflow_api is None``.
+        Auto-injects two fields if the caller hasn't supplied them:
+
+        - ``workflow_api`` — the current package ``__api_version__``.
+        - ``cache_key`` — copied from ``config_hash`` for time-loop
+          run-directories where the run's identity is the only input.
+          Workflows producing run-directories that depend on upstream
+          products should set ``cache_key`` (and ``inputs``) on the
+          dict explicitly.
+
+        Manifests written before either stamp existed read back with
+        ``manifest.workflow_api is None`` / ``manifest.cache_key is None``.
         """
         from underworld3.workflows import __api_version__
 
         out = dict(data)
         out.setdefault("workflow_api", __api_version__)
+        if "cache_key" not in out and "config_hash" in out:
+            out["cache_key"] = out["config_hash"]
         Manifest(out).write(self.path)
 
     # --- checkpoint discovery -------------------------------------------

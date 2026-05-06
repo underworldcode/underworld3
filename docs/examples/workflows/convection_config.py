@@ -33,8 +33,6 @@ skip work.  Stalled runs (hit ``max_steps`` without converging) do
 (or call ``runner.rebuild("run_summary")``).
 """
 
-import hashlib
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -43,7 +41,14 @@ import numpy as np
 import sympy
 from pydantic import Field
 
-from underworld3.workflows import RUN_NAME, Run, WorkflowConfig, workflow_step  # noqa: F401
+from underworld3.workflows import (  # noqa: F401  (RUN_NAME re-exported for viz)
+    RUN_NAME,
+    Run,
+    WorkflowConfig,
+    config_cache_key,
+    config_snapshot,
+    workflow_step,
+)
 
 # Fields whose change invalidates the existing on-disk run.
 _IDENTITY_FIELDS = (
@@ -144,14 +149,12 @@ class ConvectionConfig(WorkflowConfig):
 
 
 def _config_hash(config: ConvectionConfig) -> str:
-    """16-char hex hash of identity fields only."""
-    fields = {f: getattr(config, f) for f in _IDENTITY_FIELDS}
-    s = json.dumps(fields, sort_keys=True, default=str)
-    return hashlib.sha256(s.encode()).hexdigest()[:16]
+    """16-char hex cache key over the identity fields."""
+    return config_cache_key(config, _IDENTITY_FIELDS)
 
 
 def _identity_snapshot(config: ConvectionConfig) -> dict:
-    return {f: getattr(config, f) for f in _IDENTITY_FIELDS}
+    return config_snapshot(config, _IDENTITY_FIELDS)
 
 
 def _check_compatibility(config: ConvectionConfig, output_dir: Path):

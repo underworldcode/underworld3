@@ -117,7 +117,7 @@ class WorkflowProducts:
 
     # ── Save ────────────────────────────────────────────────────────
 
-    def save(self, name: str, obj, **metadata):
+    def save(self, name: str, obj, *, cache_key=None, inputs=None, **metadata):
         """Save a product to disk.
 
         Type dispatch:
@@ -135,6 +135,17 @@ class WorkflowProducts:
             Product name (used as filename stem and manifest key).
         obj : object
             The object to save.
+        cache_key : str, optional
+            Hex digest of this product's inputs.  Used by
+            :meth:`fresh` to decide whether a future caller's expected
+            inputs match the cached version.  Pre-0.2 callers pass
+            nothing here; the entry is then treated as "always fresh"
+            on read (legacy behaviour).
+        inputs : dict, optional
+            The inputs *cache_key* was derived from — typically
+            ``{"config": {...}, "requires": {upstream_name: cache_key}}``.
+            Persisted alongside the digest so future readers can audit
+            what changed.
         **metadata
             Extra key-value pairs stored in the manifest entry.
         """
@@ -172,13 +183,18 @@ class WorkflowProducts:
 
         # Update manifest
         manifest = _load_manifest(self._manifest_path)
-        manifest[name] = {
+        entry = {
             "type": product_type,
             "files": files,
             "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+        if cache_key is not None:
+            entry["cache_key"] = cache_key
+        if inputs is not None:
+            entry["inputs"] = inputs
         if metadata:
-            manifest[name]["metadata"] = metadata
+            entry["metadata"] = metadata
+        manifest[name] = entry
         _save_manifest(self._manifest_path, manifest)
 
     def _save_mesh(self, name, mesh):
@@ -356,6 +372,33 @@ class WorkflowProducts:
             if (self._dir / f).exists():
                 return True
         return False
+
+    def cache_key_for(self, name: str) -> Optional[str]:
+        """Return the cache key recorded for product *name*.
+
+        ``None`` if the product has never been saved, *or* if it was
+        saved before cache-key tracking existed (pre-0.2 manifest).
+        Callers that treat ``None`` as "fresh" preserve the legacy
+        behaviour.
+        """
+        manifest = _load_manifest(self._manifest_path)
+        return manifest.get(name, {}).get("cache_key")
+
+    def fresh(self, name: str, expected_cache_key: str) -> bool:
+        """``True`` iff *name* exists with the expected cache key.
+
+        Used by :class:`WorkflowRunner` to decide whether a cached
+        product is still valid for the current inputs.  Mismatched
+        cache key ⇒ rebuild; missing entry ⇒ rebuild; pre-0.2
+        manifest entry (no cache_key recorded) ⇒ treated as fresh
+        (legacy behaviour, not stricter than today).
+        """
+        if not self.exists(name):
+            return False
+        recorded = self.cache_key_for(name)
+        if recorded is None:
+            return True
+        return recorded == expected_cache_key
 
     def list(self):
         """Display available products.
