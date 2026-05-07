@@ -300,10 +300,15 @@ class CellWiseIntegral:
         cdef Vec cgvec
         cgvec = a_global
 
-        ## Does this need to be consistent with everything else ?
-
+        # TODO(BUG): clone+createDefault+createDS gives dmc a single P1 field,
+        # but cgvec is packed for mesh.dm's multi-field layout — the integral
+        # reads the wrong DOFs and over-counts by ~2x on the unit square.
+        # Same bug as PR #172 (reverted in PR #173-followup). Tests in
+        # tests/test_0501_integrals.py::test_cellwise_integrate_* are xfail
+        # until this is rewritten to integrate against mesh.dm + getDS()
+        # directly (the pre-PR-172 Integral pattern).
         cdef DM dmc = self.mesh.dm.clone()
-        cdef FE fec = FE().createDefault(self.dim, 1, False, -1)
+        cdef FE fec = FE().createDefault(self.mesh.dim, 1, False, -1)
         dmc.setField(0, fec)
         dmc.createDS()
 
