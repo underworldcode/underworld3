@@ -633,6 +633,35 @@ relaxation-dominated problems, or use the exact-mesh `_sl` variant.
 The 60% wall-time savings of `_load_sl` at $c=1$ on continent
 isostasy do not transfer to the pure-relaxation regime.
 
+**Composition caveat — load-shortcut is single-physics-cohort.**
+The load variants keep the mesh at the start-of-step configuration
+during all intermediate stages. If the cohort includes other
+state variables that are *integrity-coupled* to the mesh — most
+importantly, swarms whose particles must remain inside the deforming
+domain because they carry material properties evaluated at Stokes
+integration points — then holding the mesh frozen while those
+variables advance at per-stage rates breaks the geometric consistency
+required for the Stokes assembly. Two compounding failure modes:
+
+1. *Particles drift outside the frozen-mesh cell layout* during
+   per-stage advection. Migration would relabel their cell
+   assignment, but the next stage's Stokes solve is on the same
+   frozen mesh — geometrically inconsistent with the new particle
+   positions.
+2. *Property projection becomes mesh-vs-swarm inconsistent.* The
+   Stokes assembly projects particle properties to integration
+   points; with swarm advanced but mesh frozen, the projection
+   uses fresh particle positions on stale integration-point
+   locations. Silent correctness bug, distinct from the
+   linearisation-vs-exponential issue above.
+
+**The load-shortcut variants are intended for free-surface-only
+cohorts (mesh + surface profile, no state-coupled swarms).** Once
+swarms or per-integration-point fields join the cohort, fall back
+to the exact-mesh `_sl` schemes which advance every cohort member
+to its true intermediate-stage configuration before the next stage's
+rate evaluation.
+
 ### Solution-state-driven Δt limiter for the load variants
 
 The validity condition $\Delta h_{\rm pred} \ll h$ can be enforced
