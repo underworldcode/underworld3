@@ -1,18 +1,30 @@
-"""Continent isostasy with TRUE FREE SURFACE (no sticky air).
+"""Cathles relaxing-topography benchmark — integrator-zoo on annulus.
 
-Mesh: rock-only annulus from r_inner=0.5 to r_o=1.0. The Upper
-boundary at r=r_o is the free surface (deformable, FSSA-friendly);
-Lower at r_inner is no-slip.
+Parallel implementation of `_phase_i_fs_continent_fs_snapshots.py`,
+sharing all scheme bodies but driving the *relaxation* benchmark
+(Case A in the paper) instead of forced-equilibrium continent isostasy
+(Case B).  Two callers exercise the same scheme kernels — useful for
+the eventual extraction of a "deformable surface" abstraction.
 
-Continent block: Lagrangian sector |θ|<θ_b ∩ r∈(r_min, r_o]
-inside the rock, density anomaly β.
+Setup
+-----
+- Annulus, r_inner=0.5, r_o=1.0, no buoyancy block, ambient ρ = 1.
+- Body force = −ρ r̂ (uniform gravity).
+- IC: surface deformed by `h(θ, 0) = A_0 sin(mode · θ)`, smoothed
+  inwards by the diffuser to yield the initial mesh shape.
+- Free surface on Upper boundary, no-slip on Lower.
+- The system relaxes monotonically toward `h → 0`.
 
-Body force = −(1 − β·B) · r̂, full gravity in ambient rock minus
-buoyancy of block. No air layer, no Heaviside subtraction.
+Analytic ground truth — Cathles half-space dispersion:
+    γ_k = ρ g / (2 η |k|)   (in our nondim:  γ_k = 1 / (2|k|))
+    h_k(t) = A_0 e^{−γ_k t} cos(k θ + φ_0)
 
-Schemes (RK2, RK4, curvS, midpoint) run with adaptive Δt; halfway
-and final mesh + B are captured to UW3-native HDF5 + pyvista VTU
-+ profile npz for later visualisation.
+The benchmark verifies that each scheme recovers γ_k to within its
+truncation order, and that volume conservation holds throughout decay.
+
+Schemes are byte-equivalent to the continent runner — same `_step`
+dispatch, same SL traceback, same surface-load infrastructure.
+Only `_build` and `main` differ (IC + diagnostics).
 """
 
 import os
@@ -31,12 +43,18 @@ OUT_DIR = "output"
 SNAP_DIR = os.path.join(OUT_DIR, "continent_fs_snapshots")
 
 
-def _build(res=20, beta=0.2, theta_block_half=0.4, r_min=0.7,
-           structured=False, v_degree=2, p_degree=1, stokes_tol=1.0e-5):
+def _build(res=20, mode=10, amp0=0.05, structured=False,
+           v_degree=2, p_degree=1, stokes_tol=1.0e-5):
+    """Build the relaxation benchmark setup.
+
+    mode: angular mode of the initial sinusoidal surface
+          deformation, h(θ, 0) = amp0 * sin(mode * θ).
+    amp0: amplitude of the initial perturbation (small enough that the
+          Cathles linearised dispersion γ_k = ρg/(2η|k|) holds).
+    """
     import underworld3 as uw
     r_inner, r_o = 0.5, 1.0
     cellsize = 1.0 / res
-    # qdegree must support the velocity space for isoparametric mapping
     qdeg = max(3, v_degree + 1)
 
     if structured:
@@ -55,33 +73,27 @@ def _build(res=20, beta=0.2, theta_block_half=0.4, r_min=0.7,
         )
     r, th = mesh.CoordinateSystem.R
 
-    # Variable name carries the element-pair so we never collide
-    # with a previously-built field at a different degree
     pair_tag = f"v{v_degree}p{p_degree}"
     Vr = uw.discretisation.MeshVariable(
-        f"Vr_cont_fs_snap_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
+        f"Vr_relax_sl_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
         degree=1, continuous=True, varsymbol=r"v_r")
     v = uw.discretisation.MeshVariable(
-        f"V_cont_fs_snap_{pair_tag}", mesh, vtype=uw.VarType.VECTOR,
+        f"V_relax_sl_{pair_tag}", mesh, vtype=uw.VarType.VECTOR,
         degree=v_degree, continuous=True, varsymbol=r"\mathbf{v}")
     p = uw.discretisation.MeshVariable(
-        f"P_cont_fs_snap_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
+        f"P_relax_sl_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
         degree=p_degree, continuous=True, varsymbol="p")
+    # Dummy element marker B kept for backwards-compatible shape with
+    # the continent runner (so downstream tools that read state['B']
+    # don't break). Always zero — no buoyancy in the relaxation case.
     B = uw.discretisation.MeshVariable(
-        f"B_cont_fs_snap_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
+        f"B_relax_sl_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
         degree=0, continuous=False, varsymbol=r"\beta")
-
-    centroids = mesh._centroids
-    cR = np.sqrt(centroids[:, 0] ** 2 + centroids[:, 1] ** 2)
-    cTH = np.arctan2(centroids[:, 1], centroids[:, 0])
-    in_block = ((np.abs(cTH) < theta_block_half)
-                & (cR > r_min) & (cR <= r_o))
-    B.data[:, 0] = in_block.astype(float)
+    B.data[:, 0] = 0.0
 
     X_initial = mesh.X.coords.copy()
     R_initial = np.sqrt(X_initial[:, 0] ** 2 + X_initial[:, 1] ** 2)
     THETA_initial = np.arctan2(X_initial[:, 1], X_initial[:, 0])
-    # In free-surface mesh, the deforming boundary is "Upper" (r=r_o)
     is_surface = np.abs(R_initial - r_o) < 0.5 * cellsize / r_o
     internal_idx = np.where(is_surface)[0]
     sort_order = np.argsort(THETA_initial[internal_idx])
@@ -91,20 +103,38 @@ def _build(res=20, beta=0.2, theta_block_half=0.4, r_min=0.7,
     diffuser = uw.systems.Poisson(mesh, Vr)
     diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
     diffuser.constitutive_model.Parameters.diffusivity = 1.0
+    diffuser.tolerance = 1.0e-3
+
+    # Apply the sinusoidal initial surface perturbation, smoothed
+    # into the interior by the diffuser. Surface BC =
+    #   amp0 * (r/r_o) * sin(mode * θ)
+    # so the displacement decays linearly inward (consistent with
+    # the radial-component-only kinematic update). The first call
+    # to .solve() creates the SNES (no _reset() before).
+    deform_fn = (r / r_o) * sympy.sin(mode * th) * amp0
+    diffuser.add_essential_bc(sympy.Matrix([deform_fn]),
+                              mesh.boundaries.Upper.name)
+    diffuser.add_essential_bc(sympy.Matrix([0.0]),
+                              mesh.boundaries.Lower.name)
+    diffuser.solve()
+    initial_displacement = np.asarray(uw.function.evaluate(
+        Vr.sym * mesh.CoordinateSystem.unit_e_0,
+        mesh.X.coords)).reshape(-1, 2)
+    mesh._deform_mesh(mesh.X.coords + initial_displacement)
+    # Reset the diffuser so subsequent step calls start clean.
+    diffuser._reset()
     diffuser.add_essential_bc(sympy.Matrix([0.0]),
                               mesh.boundaries.Upper.name)
     diffuser.add_essential_bc(sympy.Matrix([0.0]),
                               mesh.boundaries.Lower.name)
-    diffuser.tolerance = 1.0e-3
     diffuser.solve()
 
-    # Surface-load variable for the rk*_load_sl schemes: a scalar
-    # field whose surface DOFs encode predicted Δh, used as a
-    # natural-BC traction on the Upper boundary. Initialised to zero;
-    # zero-valued surface load = original free-surface BC, so this
-    # has no effect on schemes that don't write to it.
+    # Surface-load variable for the rk*_load_sl schemes (same as
+    # continent runner — kept byte-equivalent so the scheme bodies
+    # are identical). Use a distinct name so coexisting runs don't
+    # collide on UW3's variable registry.
     delta_h_load = uw.discretisation.MeshVariable(
-        f"dh_load_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
+        f"dh_load_relax_{pair_tag}", mesh, vtype=uw.VarType.SCALAR,
         degree=2, continuous=True, varsymbol=r"\delta h_{\rm load}")
     delta_h_load.data[:, 0] = 0.0
 
@@ -112,11 +142,9 @@ def _build(res=20, beta=0.2, theta_block_half=0.4, r_min=0.7,
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     stokes.penalty = 0.0
-    # Full buoyancy: ambient rock has density 1, block has (1−β),
-    # no air layer. Free surface at r_o is now "Upper" boundary.
-    stokes.bodyforce = (
-        -(1.0 - beta * B.sym[0]) * mesh.CoordinateSystem.unit_e_0
-    )
+    # Uniform body force: ambient density 1, no buoyancy block. The
+    # free surface relaxes purely under self-weight.
+    stokes.bodyforce = -1.0 * mesh.CoordinateSystem.unit_e_0
     stokes.tolerance = stokes_tol
     stokes.add_essential_bc((0.0, 0.0), mesh.boundaries.Lower.name)
     # Natural BC on Upper: surface traction = -ρ·g·Δh r̂ (linearised
@@ -571,6 +599,12 @@ def _step(state, scheme, dt_factor, dt_cap=None,
         # diffuser Poisson solve and the mesh deform/restore at every
         # intermediate stage. The mesh deforms ONCE per step at the
         # end, using the standard diffuser path.
+        #
+        # Saves per RK4 step: 3 diffuser solves + 3 mesh deform/restore.
+        # When swarms are added, also avoids 3 swarm migrations per step.
+        # Cost: each stage's Stokes solve sees a non-zero surface load
+        # whose JIT-compiled boundary integral runs at every quadrature
+        # point — small constant overhead.
         delta_h_load = state['delta_h_load']
         dh_surface_idx = state['dh_surface_idx']
         dh_surface_th  = state['dh_surface_th']
@@ -579,10 +613,12 @@ def _step(state, scheme, dt_factor, dt_cap=None,
         h0 = np.sqrt(upper_pos0[:, 0] ** 2 + upper_pos0[:, 1] ** 2) - r_o
 
         # Solution-only load-validity limiter: max|Δh|/max|h| < ratio_cap.
-        # See relax_sl_zoo.py for derivation. The linearised surface
-        # load is faithful only when the predicted increment per step
-        # is much smaller than the surface displacement itself; this
-        # check uses only the current u_n and h to enforce that.
+        # Δh predicted ≈ Δt × u_n at the current state (free from prior
+        # post-amble solve). When this ratio exceeds the cap, the
+        # linearised surface load is no longer a small perturbation
+        # on the equilibrium Stokes velocity field and the scheme will
+        # over-damp catastrophically (verified on Cathles relaxation,
+        # mode 10 at γΔt=1). Reduce Δt to enforce the cap.
         LOAD_VALIDITY_CAP = 0.25
         u_n_now = sample_un()
         h_inf = max(float(np.max(np.abs(h0))), 1.0e-10)
@@ -939,17 +975,17 @@ def _plot_profiles(schemes, labels, suffix=""):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--res', type=int, default=20)
-    p.add_argument('--n-steps', type=int, default=16)
+    p.add_argument('--n-steps', type=int, default=200)
     p.add_argument('--dt-factor', type=float, default=1.0)
-    p.add_argument('--h-eq', type=float, default=0.060,
-                   help="Approx equilibrium peak h_pole; halfway "
-                   "snapshot triggers when h_pole crosses h_eq/2.")
-    p.add_argument('--beta', type=float, default=0.2)
-    p.add_argument('--theta-block-half', type=float, default=0.4)
-    p.add_argument('--r-min', type=float, default=0.7)
-    p.add_argument('--plot-only', action='store_true',
-                   help="Skip simulation; render from existing VTU "
-                   "snapshots in output/continent_snapshots/.")
+    p.add_argument('--mode', type=int, default=10,
+                   help="Angular mode of initial sinusoidal "
+                   "perturbation h(θ,0)=amp0*sin(mode·θ).")
+    p.add_argument('--amp0', type=float, default=0.05,
+                   help="Initial amplitude of the surface perturbation.")
+    p.add_argument('--decay-target', type=float, default=0.05,
+                   help="Stop the run when |A_mode|/A_0 falls below "
+                   "this fraction (default 5%%, i.e. ~3 e-folding times).")
+    p.add_argument('--plot-only', action='store_true')
     p.add_argument('--structured', action='store_true',
                    help="Use the polar-quad structured annulus mesh.")
     p.add_argument('--dt-cap', type=float, default=None,
@@ -999,21 +1035,23 @@ def main():
     if args.schemes is not None:
         schemes = [s.strip() for s in args.schemes.split(',') if s.strip()]
     else:
-        schemes = ['rk2', 'rk4', 'curvS', 'midpoint']
-    labels = ['halfway', 'final']
-    h_half = args.h_eq / 2.0
+        schemes = ['rk4_sl']
+    # Cathles γ_k for the chosen mode (nondim ρg = η = 1).
+    gamma_analytic = 1.0 / (2.0 * abs(args.mode))
+    print(f"Cathles γ_k for mode {args.mode}: γ_analytic = "
+          f"{gamma_analytic:.6f}  (1/e time = {1.0/gamma_analytic:.2f})",
+          flush=True)
 
-    # Re-target SNAP_DIR for structured runs so we don't clobber
-    # unstructured snapshots
     global SNAP_DIR
     if args.structured:
-        SNAP_DIR = os.path.join(OUT_DIR, "continent_fs_snapshots_struct")
+        SNAP_DIR = os.path.join(OUT_DIR, "relax_sl_snapshots_struct")
+    else:
+        SNAP_DIR = os.path.join(OUT_DIR, "relax_sl_snapshots")
     if args.snap_suffix:
         SNAP_DIR = SNAP_DIR + args.snap_suffix
 
     if not args.plot_only:
         import time as _time
-        # Open work log once for this whole invocation (append mode)
         worklog_fh = None
         if args.work_log:
             os.makedirs(os.path.dirname(os.path.abspath(args.work_log))
@@ -1022,13 +1060,11 @@ def main():
             worklog_fh = open(args.work_log, 'a')
             if new_file:
                 worklog_fh.write(
-                    "scheme,step,t,dt,h_pole,area_uw,wall_step_s\n")
+                    "scheme,step,t,dt,A_mode,A_analytic,h_pole,area_uw,wall_step_s\n")
 
         for scheme in schemes:
             print(f"\n=== {scheme} ===", flush=True)
-            state = _build(res=args.res, beta=args.beta,
-                           theta_block_half=args.theta_block_half,
-                           r_min=args.r_min,
+            state = _build(res=args.res, mode=args.mode, amp0=args.amp0,
                            structured=args.structured,
                            v_degree=args.v_degree,
                            p_degree=args.p_degree,
@@ -1036,9 +1072,8 @@ def main():
             _reset_gamma_history()
             os.makedirs(SNAP_DIR, exist_ok=True)
 
-            captured_half = False
-            h_pole = 0.0
             t_sim = 0.0
+            stopped_on_decay = False
             for s in range(args.n_steps):
                 t_step_start = _time.time()
                 h_pole, dt = _step(state, scheme, args.dt_factor,
@@ -1047,57 +1082,72 @@ def main():
                                    dt_cap_c=args.dt_cap_c)
                 wall_step = _time.time() - t_step_start
                 t_sim += dt
+
+                # Surface profile + mode-amplitude diagnostic
+                mesh_p = state['mesh']
+                int_idx = state['internal_idx']
+                int_th = state['internal_th']
+                upos = mesh_p.X.coords[int_idx]
+                ur = np.sqrt(upos[:, 0] ** 2 + upos[:, 1] ** 2)
+                udr = ur - state['r_o']
+                # Project onto sin(mode·θ): A_mode = (2/2π) ∫ dr·sin(mode·θ) dθ
+                # Use a simple trap rule on sorted θ.
+                dth = np.empty(len(int_th))
+                dth[1:-1] = 0.5 * (int_th[2:] - int_th[:-2])
+                dth[0]  = 0.5 * (int_th[1] - (int_th[-1] - 2*np.pi))
+                dth[-1] = 0.5 * ((int_th[0] + 2*np.pi) - int_th[-2])
+                A_mode = float(np.sum(udr * np.sin(args.mode * int_th)
+                                      * dth) / np.pi)
+                A_analytic = args.amp0 * np.exp(-gamma_analytic * t_sim)
+
                 area_uw_step = float('nan')
                 if args.per_step_profile or args.work_log:
                     import underworld3 as uw_in
                     area_uw_step = abs(float(
                         uw_in.maths.Integral(state['mesh'], 1.0).evaluate()))
                 if args.per_step_profile:
-                    mesh_p = state['mesh']
-                    int_idx = state['internal_idx']
-                    int_th = state['internal_th']
-                    upos = mesh_p.X.coords[int_idx]
-                    ur = np.sqrt(upos[:, 0] ** 2 + upos[:, 1] ** 2)
-                    udr = ur - state['r_o']
                     np.savez(os.path.join(
                         SNAP_DIR, f"step_{scheme}_{s+1:04d}.npz"),
                         theta=int_th, dr=udr, h_pole=h_pole,
+                        A_mode=A_mode, A_analytic=A_analytic,
                         t=t_sim, dt=dt,
                         area_uw=area_uw_step,
                         area_uw_initial=state['area_uw_initial'])
                 if worklog_fh is not None:
                     worklog_fh.write(
                         f"{scheme},{s+1},{t_sim:.6e},{dt:.6e},"
+                        f"{A_mode:+.6e},{A_analytic:+.6e},"
                         f"{h_pole:+.6e},{area_uw_step:.6e},"
                         f"{wall_step:.4f}\n")
                     worklog_fh.flush()
-                print(f"  step {s+1}: h_pole={h_pole:+.4e} "
+                rel = abs(A_mode) / max(abs(args.amp0), 1.0e-12)
+                rel_a = abs(A_analytic) / max(abs(args.amp0), 1.0e-12)
+                print(f"  step {s+1}: A_mode={A_mode:+.4e} "
+                      f"(|A|/A0={rel:.3e}, analytic={rel_a:.3e}) "
                       f"Δt={dt:.3e} wall={wall_step:.2f}s "
                       f"t={t_sim:.2f}", flush=True)
-                if not captured_half and h_pole >= h_half:
-                    _capture(state, scheme, 'halfway', h_pole,
-                             beta=args.beta)
-                    captured_half = True
+                if rel < args.decay_target:
+                    print(f"  reached decay_target={args.decay_target}; "
+                          f"stopping at step {s+1}", flush=True)
+                    stopped_on_decay = True
+                    break
                 if args.target_time is not None and t_sim >= args.target_time:
                     print(f"  reached target_time={args.target_time}; "
                           f"stopping at step {s+1}", flush=True)
                     break
-            _capture(state, scheme, 'final', h_pole,
-                     beta=args.beta)
-
-            if not captured_half:
-                print(f"  WARNING: {scheme} never reached h_half="
-                      f"{h_half:.4e}", flush=True)
+            _capture(state, scheme, 'final', h_pole, beta=0.0)
+            if not stopped_on_decay:
+                print(f"  WARNING: {scheme} never reached decay_target "
+                      f"({args.decay_target}); ran {args.n_steps} steps",
+                      flush=True)
 
         if worklog_fh is not None:
             worklog_fh.close()
 
-    # Render plots from saved VTU + profile files
-    suffix = "_struct" if args.structured else ""
-    if args.snap_suffix:
-        suffix = suffix + args.snap_suffix
-    _plot_grid(schemes, labels, args.h_eq, suffix=suffix)
-    _plot_profiles(schemes, labels, suffix=suffix)
+    # No grid/profile rendering by default — analysis is via the
+    # work_log CSV and per-step npz files. The legacy _plot_grid/
+    # _plot_profiles helpers from the continent runner are still
+    # defined above and can be invoked manually if desired.
 
 
 if __name__ == "__main__":
