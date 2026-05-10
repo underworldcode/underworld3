@@ -1726,6 +1726,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         subdm.localToGlobal(self._lvec, self._gvec, addv=False)
         indexset.destroy()
+        subdm.destroy()
 
     @property
     def old_data(self) -> numpy.ndarray:

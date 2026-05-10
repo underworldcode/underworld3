@@ -56,6 +56,17 @@ class SolverBaseClass(uw_object):
         self.petsc_options_prefix = self.name
         self.petsc_options = PETSc.Options(self.petsc_options_prefix)
 
+        self.dm = None
+        self.dm_hierarchy = []
+        self.snes = None
+        self.petsc_fe_u = None
+        self.petsc_fe_p = None
+
+        # Solution decomposition caches (IS sets)
+        self._velocity_is = None
+        self._pressure_is = None
+        self._subdict = {}
+
     def _check_expression_meshes(self):
         """Check that all MeshVariable symbols in solver expressions
         belong to this solver's mesh.
@@ -664,6 +675,20 @@ class SolverBaseClass(uw_object):
         if self.dm is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver DM hierarchy", flush=True)
+
+            # Clean up field decomposition cache (Stokes specific but safe to check here)
+            if hasattr(self, "_pressure_is") and self._pressure_is is not None:
+                self._pressure_is.destroy()
+                self._pressure_is = None
+            if hasattr(self, "_velocity_is") and self._velocity_is is not None:
+                self._velocity_is.destroy()
+                self._velocity_is = None
+
+            if hasattr(self, "_subdict") and self._subdict:
+                for name, (is_set, subdm) in self._subdict.items():
+                    is_set.destroy()
+                    subdm.destroy()
+                self._subdict = {}
 
             if hasattr(self, "dm_hierarchy") and self.dm_hierarchy:
                 # Destroys each level — including dm_hierarchy[-1] which
@@ -1694,7 +1719,6 @@ class SNES_Scalar(SolverBaseClass):
         if mesh.qdegree < degree:
             print(f"Caution - the mesh quadrature ({mesh.qdegree})is lower")
             print(f"than {degree} which is required by the {self.name} solver")
-
 
         self.dm_hierarchy = mesh.clone_dm_hierarchy()
         self.dm = self.dm_hierarchy[-1]
@@ -3391,6 +3415,7 @@ class SNES_MultiComponent(SolverBaseClass):
                 print(f"SNES_MultiComponent ({self.name}): Discretisation does not need to be rebuilt", flush=True)
             return
 
+        # Keep a note of the coordinates that we use for this setup
         self.mesh_dm_coordinate_hash = mesh_dm_coord_hash
 
         cdef PtrContainer ext = self.compiled_extensions
@@ -5875,65 +5900,60 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if verbose and uw.mpi.rank == 0:
                  print(f"SNES Compute Boundary FEM Successfull", flush=True)
 
-        # get index set of pressure and velocity to separate solution from localvec
         # get local section
         local_section = self.dm.getLocalSection()
 
-        # Get the index sets for velocity and pressure fields
-        # Field numbers (adjust based on your setup)
-        velocity_field_num = 0
-        pressure_field_num = 1
+        # Get index sets for solution decomposition (velocity and pressure)
+        # We cache these to avoid expensive per-solve Python list allocations and IS creation
+        if not hasattr(self, "_pressure_is") or self._pressure_is is None:
 
-        # Function to get index set for a field
-        def get_local_field_is(section, field, unconstrained=False):
-            """
-            This function returns the index set of unconstrained points if True, or all points if False.
-            """
-            pStart, pEnd = section.getChart()
-            indices = []
-            for p in range(pStart, pEnd):
-                dof = section.getFieldDof(p, field)
-                if dof > 0:
-                    offset = section.getFieldOffset(p, field)
-                    if not unconstrained and self.Unknowns.p.continuous:
-                        indices.append(offset)
-                    else:
-                        cind = section.getFieldConstraintIndices(p, field)
-                        constrained = set(cind) if cind is not None else set()
-                        for i in range(dof):
-                            if i not in constrained:
-                                index = offset + i
-                                indices.append(index)
-            is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-            return is_field
+            # Function to get index set for a field
+            def get_local_field_is(section, field, unconstrained=False):
+                """
+                This function returns the index set of unconstrained points if True, or all points if False.
+                """
+                pStart, pEnd = section.getChart()
+                indices = []
+                for p in range(pStart, pEnd):
+                    dof = section.getFieldDof(p, field)
+                    if dof > 0:
+                        offset = section.getFieldOffset(p, field)
+                        if not unconstrained and self.Unknowns.p.continuous:
+                            indices.append(offset)
+                        else:
+                            cind = section.getFieldConstraintIndices(p, field)
+                            constrained = set(cind) if cind is not None else set()
+                            for i in range(dof):
+                                if i not in constrained:
+                                    index = offset + i
+                                    indices.append(index)
+                is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+                return is_field
 
-        # Get index sets for pressure (both constrained and unconstrained points)
-        # we need indexset of pressure field to separate the solution from localvec.
-        # so we don't care whether a point is constrained by bc or not
-        pressure_is = get_local_field_is(local_section, pressure_field_num)
+            # Field numbers (adjust based on your setup)
+            velocity_field_num = 0
+            pressure_field_num = 1
 
-        # Get the total number of entries in the local vector
-        size = self.dm.getLocalVec().getLocalSize()
-
-        # Create a list of all indices
-        all_indices = set(range(size))
-
-        # Get indices of the pressure field
-        pressure_indices = set(pressure_is.getIndices())
-
-        # Compute the complement for the velocity field
-        velocity_indices = sorted(list(all_indices - pressure_indices))
-
-        # Create the index set for velocity
-        velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
+            self._pressure_is = get_local_field_is(local_section, pressure_field_num)
+            
+            # Get indices for velocity (complement of pressure)
+            size = clvec.getLocalSize()
+            all_indices = set(range(size))
+            pressure_indices = set(self._pressure_is.getIndices())
+            velocity_indices = sorted(list(all_indices - pressure_indices))
+            self._velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
 
         # Copy solution back into pressure and velocity variables
         # with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
         for name, var in self.fields.items():
             if name=='velocity':
-                var.vec.array[:] = clvec.getSubVector(velocity_is).array[:]
+                subvec = clvec.getSubVector(self._velocity_is)
+                var.vec.array[:] = subvec.array[:]
+                clvec.restoreSubVector(self._velocity_is, subvec)
             elif name=='pressure':
-                var.vec.array[:] = clvec.getSubVector(pressure_is).array[:]
+                subvec = clvec.getSubVector(self._pressure_is)
+                var.vec.array[:] = subvec.array[:]
+                clvec.restoreSubVector(self._pressure_is, subvec)
         self.mesh._stale_lvec = True
 
         # Sync _gvec so downstream consumers (write, stats) see the result
@@ -5943,7 +5963,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if hasattr(target_var, "_canonical_data"):
                 target_var._canonical_data = None
 
-        self.dm.restoreGlobalVec(clvec)
+        # Clean up local vectors
+        self.dm.restoreLocalVec(clvec)
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()

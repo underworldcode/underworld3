@@ -35,12 +35,14 @@ class DMInterpolationCache:
         self.mesh = mesh
         self.name = name
         self._cache: Dict[Tuple[int, int], object] = {}  # Stores CachedDMInterpolationInfo
+        self.max_entries = 10
 
         # Statistics
         self._stats = {
             'hits': 0,
             'misses': 0,
             'invalidations': 0,
+            'evictions': 0,
             'time_saved': 0.0,
             'time_computing': 0.0,
         }
@@ -77,7 +79,8 @@ class DMInterpolationCache:
         if key in self._cache:
             # CACHE HIT!
             self._stats['hits'] += 1
-            cached_info = self._cache[key]
+            cached_info = self._cache.pop(key)
+            self._cache[key] = cached_info # LRU move to end
 
             return cached_info
         else:
@@ -103,6 +106,13 @@ class DMInterpolationCache:
 
         coords_hash = self._hash_coords(coords)
         key = (coords_hash, dofcount)
+
+        # LRU management: remove oldest entries if we exceed max_entries
+        if len(self._cache) >= self.max_entries:
+            # Remove oldest (first) item
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+            self._stats['evictions'] += 1
 
         self._cache[key] = cached_info  # Python GC keeps it alive
 
