@@ -4537,10 +4537,14 @@ class Swarm(Stateful, uw_object):
             #
             #
 
-        # Remove points no longer in the domain
+        # Re-route particles to their owning ranks and remove any that
+        # have genuinely left the domain. Use the default max_its so that
+        # boundary particles whose owner is the 2nd/3rd-closest centroid
+        # get reclaimed via the kdtree retry — max_its=1 here was an
+        # accidental regression that deleted boundary particles (issue #175,
+        # reported by @bknight1).
         self.migrate(
             delete_lost_points=True,
-            max_its=1,
         )
 
         return
