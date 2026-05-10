@@ -4,7 +4,10 @@ Lightweight memory-growth diagnostics.
 Designed to surface slow leaks in long parallel runs (HPC OOM-class bugs)
 without slowing normal use. Three signal sources:
 
-* **Process RSS** via :mod:`resource` (peak + current).
+* **Process RSS** — current resident-set size via :mod:`psutil` if available,
+  falling back to ``/proc/self/statm`` on Linux, then to :mod:`resource`'s
+  high-water-mark RSS as a last resort. Current RSS is preferred so that
+  freed memory shows up as a negative delta.
 * **Live ``uw.kdtree.KDTree`` count** — UW's nanoflann wrapper isn't visible
   to PETSc's object tracker, so it's a common silent-leak suspect.
 * **Per-class Python instance counts** for the ``underworld3`` package, gated
@@ -43,7 +46,6 @@ from __future__ import annotations
 import functools
 import gc
 import os
-import resource
 import sys
 from collections import Counter
 from contextlib import contextmanager
@@ -79,9 +81,33 @@ def disable() -> None:
 def _rss_mb() -> float:
     """Current resident-set size in MiB.
 
-    On Linux ``ru_maxrss`` is in KiB; on macOS it is in bytes. We probe the
-    platform once to avoid getting it wrong silently.
+    Prefers ``psutil.Process().memory_info().rss`` (true current RSS, drops
+    when memory is freed). Falls back to ``/proc/self/statm`` on Linux when
+    psutil isn't available, then to ``resource.ru_maxrss`` (peak/high-water
+    RSS — does not decrease) as a last resort. The fallback is good enough
+    for spotting growth, less good for spotting recovery.
     """
+    try:
+        import psutil
+
+        return psutil.Process().memory_info().rss / (1024 * 1024)
+    except ImportError:
+        pass
+
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/self/statm", "r") as f:
+                # statm: size resident shared text lib data dt (in pages)
+                resident_pages = int(f.read().split()[1])
+            page_size = os.sysconf("SC_PAGESIZE")
+            return (resident_pages * page_size) / (1024 * 1024)
+        except (OSError, ValueError):
+            pass
+
+    # Last resort: peak RSS — does NOT decrease, so growth shows but
+    # recovery does not. ru_maxrss is KiB on Linux, bytes on macOS.
+    import resource
+
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform == "darwin":
         return rss / (1024 * 1024)
@@ -152,7 +178,10 @@ def diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     delta: dict[str, Any] = {}
 
     drss = after["rss_mb"] - before["rss_mb"]
-    if drss != 0:
+    # Threshold below the format precision (0.01 MiB ≈ 10 KiB): smaller
+    # noise — inevitable when the source is RSS in KiB pages — would print
+    # as "+0.00 MiB" and defeat the "no change" fast path.
+    if abs(drss) >= 0.01:
         delta["rss_mb"] = drss
 
     kd_delta: dict[str, int] = {}
@@ -247,19 +276,23 @@ def instrument(label: str, full: bool = False, *, emit=print):
 def dump_petsc_leaks_at_finalize(filename: str | None = None) -> None:
     """Ask PETSc to dump unfreed objects at finalize.
 
-    Sets the runtime options ``-malloc_dump`` and ``-objects_dump`` so PETSc
-    writes its leak report when the process tears down. ``filename`` is
-    advisory — if provided, also sets ``-malloc_view`` / ``-options_view``
-    for a more verbose dump.
+    Sets the runtime options ``malloc_dump`` and ``objects_dump`` so PETSc
+    writes its leak report when the process tears down. When ``filename``
+    is given, also sets ``malloc_view`` to the same path for a more verbose
+    allocation dump.
 
-    Equivalent to running with ``-malloc_dump`` on the command line. Useful
-    when you can't change the launch command but can call this from Python
-    early in the run.
+    Note that ``petsc4py``'s :class:`Options` API expects keys *without* the
+    leading ``-`` that you'd type on the command line — same convention used
+    elsewhere in this codebase.
+
+    Equivalent to running with ``-malloc_dump -objects_dump`` on the command
+    line. Useful when you can't change the launch command but can call this
+    from Python early in the run.
     """
     from petsc4py import PETSc
 
     opts = PETSc.Options()
-    opts.setValue("-malloc_dump", "")
-    opts.setValue("-objects_dump", "")
+    opts.setValue("malloc_dump", "")
+    opts.setValue("objects_dump", "")
     if filename:
-        opts.setValue("-malloc_view", filename)
+        opts.setValue("malloc_view", filename)

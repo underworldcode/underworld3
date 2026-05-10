@@ -8,7 +8,6 @@ or isn't present — that's what users do with the tool, not what the tool
 itself can verify.
 """
 import gc
-import os
 import numpy as np
 import pytest
 
@@ -51,21 +50,35 @@ def test_snapshot_full_includes_py_classes():
 @pytest.mark.level_1
 @pytest.mark.tier_a
 def test_kdtree_live_count_tracks_construction_destruction():
-    """KDTree __cinit__/__dealloc__ must update the live-instance counter."""
+    """KDTree __cinit__/__dealloc__ must update the live-instance counter.
+
+    The test asserts only on deltas around the operation under test, never
+    on absolute counts, because earlier tests in the same pytest session
+    can leave KDTree references alive that the cyclic GC may collect at
+    any time, shifting the baseline.
+    """
     pts = np.random.random((20, 2))
 
-    before = uw.kdtree.live_count()
-    total_before = uw.kdtree.total_constructed()
+    # Flush any pending cyclic-GC clean-ups so the baseline doesn't shift
+    # under us between snapshots.
+    gc.collect()
+    before_live = uw.kdtree.live_count()
+    before_total = uw.kdtree.total_constructed()
 
     tree = uw.kdtree.KDTree(pts)
-    assert uw.kdtree.live_count() == before + 1
-    assert uw.kdtree.total_constructed() == total_before + 1
+    assert uw.kdtree.live_count() - before_live == 1
+    assert uw.kdtree.total_constructed() - before_total == 1
+
+    after_create_live = uw.kdtree.live_count()
 
     del tree
     gc.collect()
-    assert uw.kdtree.live_count() == before
-    # total_constructed never decreases
-    assert uw.kdtree.total_constructed() == total_before + 1
+
+    # The only thing we care about: this construction/destruction pair
+    # produced a +1/-1 swing relative to its immediate before/after, and
+    # total_constructed never went backwards.
+    assert uw.kdtree.live_count() - after_create_live == -1
+    assert uw.kdtree.total_constructed() >= before_total + 1
 
 
 @pytest.mark.level_1

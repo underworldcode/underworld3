@@ -16,10 +16,12 @@ cdef extern from "kdtree_interface.hpp" nogil:
         size_t knnSearch(const double* query_point, const size_t num_closest, long unsigned int* indices, double* out_dist_sqr )
 
 # Module-level live-instance counter for memory introspection.
-# Incremented in __cinit__ and decremented in __dealloc__ — Cython
-# guarantees deterministic destruction so this stays accurate across
-# normal use. Read via uw.utilities.memprobe.snapshot(), or directly
-# via uw.kdtree.live_count().
+# Incremented in __cinit__, decremented in __dealloc__. CPython refcounting
+# calls __dealloc__ promptly when the refcount hits zero, so the count is
+# accurate for typical use; it can lag if a KDTree ends up in a reference
+# cycle that only the cyclic garbage collector can break — call
+# gc.collect() before reading if that matters. Read via
+# uw.utilities.memprobe.snapshot() or directly via uw.kdtree.live_count().
 cdef long _live_instances = 0
 cdef long _total_constructed = 0
 

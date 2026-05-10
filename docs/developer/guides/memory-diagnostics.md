@@ -27,14 +27,22 @@ growing on every step.
 
 | Signal | Source | Cost |
 |---|---|---|
-| Process RSS (MiB) | `resource.getrusage` | free |
+| Process RSS (MiB, current) | `psutil.Process().memory_info().rss`, fallback `/proc/self/statm` (Linux), last resort `resource.ru_maxrss` | free |
 | KDTree live count | `uw.kdtree.live_count()` | free |
 | KDTree total constructed | `uw.kdtree.total_constructed()` | free |
 | Per-class Python instance counts | `gc.get_objects()` walk | slow — gated behind `full=True` |
 
+The RSS source is **current** RSS where possible — it should drop when memory
+is freed, not just rise. The last-resort `resource.ru_maxrss` fallback returns
+the **peak** (high-water-mark) RSS instead and never decreases, so on systems
+where neither psutil nor `/proc/self/statm` is available you'll see growth but
+not recovery; install `psutil` to fix that.
+
 `KDTree` instances are tracked via Cython class counters in `__cinit__` and
-`__dealloc__`. Cython's deterministic destruction makes the live count
-accurate without weak-references.
+`__dealloc__`. CPython refcounting calls `__dealloc__` promptly when the
+refcount hits zero, so the count is accurate for typical use; it can lag if a
+KDTree ends up in a reference cycle that only the cyclic garbage collector
+can break. Call `gc.collect()` before reading if that matters.
 
 PETSc-side object and allocation tracking is **not** parsed from Python —
 PETSc's own `-log_view` and `-malloc_dump` runtime flags give the same
