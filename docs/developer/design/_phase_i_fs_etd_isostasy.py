@@ -1,33 +1,39 @@
-"""Phase I-2D internal-boundary variant: free-surface relaxation with
-two layers.
+"""Phase I-2D isostatic-relaxation test: flat free surface, internal
+buoyant blob drives surface uplift to isostatic equilibrium.
 
-Structure adapted from `docs/examples/free_surface/advanced/AnnulusND_FS-OuterSphere.py`.
+Mesh: same as `_phase_i_fs_etd_internal.py` —
+  - r_inner = 0.5  (no-slip)
+  - r_o     = 1.0  (internal boundary = "free surface", flat IC)
+  - r_outer = 1.5  (no-slip)
+  - heavy fluid in r ≤ r_o (η=1, ρ=1), sticky air outside (η=0.1, ρ=0)
 
-Three radii:
-  - r_inner = 0.5  (inner mesh boundary, no-slip)
-  - r_o     = 1.0  (internal boundary — the "free surface")
-  - r_outer = 1.5  (outer mesh boundary, no-slip)
+Internal forcing: a buoyant Gaussian blob fixed in lab-frame
+coordinates at (r_b, θ_b) = (0.85, 0):
+    blob(x, y) = exp(-((x-x0)² + (y-y0)²)/(2σ²))
+The blob is *Eulerian* (fixed in space) — it represents a continuously-
+refreshed buoyant anomaly. Body force becomes
+    f = -(M(x,y) - M_ref(r) - α·blob(x,y)) · r̂
+so the buoyant region pushes upward radially. The surface bulges
+above the blob until the bulge's gravitational restoring force
+balances the blob's buoyancy — isostatic equilibrium.
 
-The mesh fills annular space between r_inner and r_outer.  A discontinuous
-P0 layer indicator M is set to 1 on elements initially below r_o (heavy
-fluid) and 0 on elements above r_o (sticky air).  Body force = -r̂·M
-(only the heavy layer feels gravity).  Viscosity = 0.01 + M (η ≈ 1
-in fluid, 0.01 in air).
+This test stresses the kinematic-ETD scheme's curvature-γ estimator
+in two ways:
+  1. Flat IC means h ≈ 0 initially, so the curvature regression
+     gets noise rather than the bulge wavenumber.
+  2. The relaxation rate near the bulge is set by the local η near
+     the surface above the blob, not by the global eta_eff=0.5
+     baked into the curvS implementation.
 
-Because the mesh contains BOTH heavy and light layers, the
-mean-density-subtracted body force `-(ρ - ρ_ref)·r̂` works correctly:
-ρ_ref(r) = M_initial(r) (1 inside r_o, 0 outside).  The anomaly is
-non-zero ONLY at elements that have moved across r_o due to mesh
-deformation:
-  - Heavy element above r_o (initially M=1, now in the air zone):
-    anomaly = +1, force inward → restoring
-  - Air element below r_o (initially M=0, now in the fluid zone):
-    anomaly = -1, force outward → restoring
-Both directions are restoring symmetrically.
+We expect:
+  - RK4 (no γ) → tracks equilibrium cleanly
+  - RK2 (no γ) → tracks equilibrium cleanly at moderate dt
+  - FE → undershoots (low-amplitude steady state) at moderate dt
+  - curvS-FSSA → potentially overshoots / oscillates due to wrong γ
+  - midpoint-FSSA → similar to curvS
 
-Schemes compared:
-  - FE+FSSA: forward Euler on the kinematic update + FSSA Robin BC
-  - kinematic ETD with curvature-derived γ: bounded saturation
+Schemes available (same as internal runner):
+  fe, rk2, rk4, curvS, midpoint × FSSA on/off.
 """
 
 import os
@@ -46,19 +52,35 @@ nest_asyncio.apply()
 OUT_DIR = "output"
 
 
-def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
-        adaptive_dt=False, verbose=True):
-    """One internal-boundary free-surface run."""
+def run(scheme, dt_factor, n_steps, res=20, blob_amp=0.5,
+        blob_eta_factor=1.0, adaptive_dt=False, cap_gdt=None,
+        cap_gamma=None, target_t=None, verbose=True):
+    """If cap_gdt is set and scheme.update ∈ {fe, rk2, rk4} (the
+    explicit schemes), the per-step Δt is additionally capped at
+    cap_gdt / γ_max where γ_max is estimated from the surface
+    curvature at the start of each step.  The (1-α)/γ-prefactor
+    schemes (curvS, midpoint) are not capped — they saturate at
+    u_n/γ regardless.
+
+    If target_t is set, loop runs until t ≥ target_t (or n_steps,
+    whichever comes first)."""
+    """One isostatic-relaxation run."""
     use_fssa, update = scheme
     label = (f"FSSA={int(use_fssa)}_UPD={update}_dtf{dt_factor:.2f}"
-             f"_internal")
+             f"_isostasy")
     if verbose:
         print(f"\n=== {label} ===", flush=True)
 
     r_inner = 0.5
-    r_o = 1.0  # Internal-boundary radius (rest position of "free surface")
+    r_o = 1.0
     r_outer = 1.5
     cellsize = 1.0 / res
+
+    # Buoyant blob parameters (Eulerian, fixed in lab frame)
+    x_b, y_b = 0.85, 0.0
+    sigma_b = 0.06
+    blob_fn = sympy.exp(
+        -((mesh_x_placeholder := None) or 0))  # built after mesh
 
     mesh = uw.meshing.AnnulusInternalBoundary(
         radiusOuter=r_outer,
@@ -75,6 +97,11 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
         print(f"  mesh: {mesh.X.coords.shape[0]} nodes, "
               f"{mesh._centroids.shape[0]} cells", flush=True)
 
+    # Build the Eulerian blob now that mesh.X is available
+    blob_fn = sympy.exp(
+        -((mesh.X[0] - x_b) ** 2 + (mesh.X[1] - y_b) ** 2)
+        / (2.0 * sigma_b ** 2))
+
     # MeshVariables
     Vr = uw.discretisation.MeshVariable(
         f"Vr_{label}", mesh, vtype=uw.VarType.SCALAR, degree=1,
@@ -85,7 +112,6 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
     p = uw.discretisation.MeshVariable(
         f"P_{label}", mesh, vtype=uw.VarType.SCALAR, degree=1,
         continuous=True, varsymbol="p")
-    # Layer indicator: P0 discontinuous, 1 in heavy layer, 0 in air
     M = uw.discretisation.MeshVariable(
         f"M_{label}", mesh, vtype=uw.VarType.SCALAR, degree=0,
         continuous=False, varsymbol=r"\rho")
@@ -95,7 +121,7 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
     M.data[:, 0] = np.asarray(uw.function.evaluate(
         layer_fn, M.coords)).flatten()
 
-    # Internal boundary node identification (after initial perturbation)
+    # Internal boundary node identification (flat IC — no perturbation)
     X_initial = mesh.X.coords.copy()
     R_initial = np.sqrt(X_initial[:, 0] ** 2 + X_initial[:, 1] ** 2)
     THETA_initial = np.arctan2(X_initial[:, 1], X_initial[:, 0])
@@ -113,43 +139,35 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
     diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
     diffuser.constitutive_model.Parameters.diffusivity = 1.0
 
-    # Apply the initial perturbation amp0·sin(mode·θ) to the
-    # internal boundary, smooth into the interior with the diffuser.
-    deform_fn = (r / r_o) * sympy.sin(mode * th) * amp0
+    # Trivial initial solve to initialize the diffuser's SNES — needed
+    # because we don't apply any initial perturbation in this test.
     diffuser.add_essential_bc(sympy.Matrix([0.0]),
                               mesh.boundaries.Upper.name)
-    diffuser.add_essential_bc(sympy.Matrix([deform_fn]),
+    diffuser.add_essential_bc(sympy.Matrix([0.0]),
                               mesh.boundaries.Internal.name)
     diffuser.add_essential_bc(sympy.Matrix([0.0]),
                               mesh.boundaries.Lower.name)
     diffuser.tolerance = 1.0e-3
     diffuser.solve()
 
-    displacement = np.asarray(uw.function.evaluate(
-        Vr.sym * mesh.CoordinateSystem.unit_e_0,
-        mesh.X.coords)).reshape(-1, 2)
-    mesh._deform_mesh(mesh.X.coords + displacement)
-
     # Stokes setup
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    # Viscosity contrast 10× (was 100× = 0.01 + M.sym[0]): air η=0.1,
-    # heavy fluid η=1.0.  Test whether the residual drift floor is
-    # from the layer-interface velocity gradient.
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 0.1 + 0.9 * M.sym[0]
+    eta_layered = 0.1 + 0.9 * M.sym[0]
+    if blob_eta_factor != 1.0:
+        eta_layered = eta_layered * (1.0 + (blob_eta_factor - 1.0) * blob_fn)
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_layered
     stokes.penalty = 0.0
-    # Body force: -r̂ · (M - M_ref(r)).  M is the per-element
-    # discontinuous P0 density (rides with the deforming mesh).
-    # M_ref is the rest-configuration angular mean: 1 inside r_o
-    # (heavy layer), 0 outside (air).  Force is non-zero only at
-    # elements that have moved across r_o due to deformation:
-    #   - heavy-element above r_o: anomaly = +1, force inward
-    #   - air-element below r_o:  anomaly = -1, force outward
-    # Both directions restore symmetrically.
-    # M_ref(r): sharp Piecewise (smooth tanh tested and was worse).
-    M_ref = sympy.Piecewise((1.0, r <= r_o), (0.0, True))
+    # Full buoyancy: heavy fluid (M=1) feels gravity, air (M=0) is
+    # weightless. The Eulerian blob is an additional buoyant anomaly.
+    # No (M - M_ref) subtraction: the previous formulation introduced
+    # a non-physical Heaviside step at r=r_o (M Lagrangian rides with
+    # the mesh, M_ref Eulerian fixed in space) that breaks RK4's
+    # smooth-trial-state assumption.  The Stokes solver finds the
+    # hydrostatic pressure self-consistently.
     stokes.bodyforce = (
-        -(M.sym[0] - M_ref) * mesh.CoordinateSystem.unit_e_0
+        -(M.sym[0] - blob_amp * blob_fn)
+        * mesh.CoordinateSystem.unit_e_0
     )
     stokes.tolerance = 1.0e-5
     stokes.add_essential_bc((0.0, 0.0), mesh.boundaries.Lower.name)
@@ -172,10 +190,11 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
 
     # Diagnostics buffers
     times = [0.0]
-    A_mode = []
-    A_max = []
-    # Midpoint-only: γ_n vs γ_{n+1/2} (mean over internal nodes) per step
-    gamma_pairs = []
+    h_max = []          # max |dr| over internal boundary
+    h_at_pole = []      # dr at the node closest to θ=0
+
+    # Index of node closest to θ=0 (where bulge peaks)
+    pole_idx_in_internal = int(np.argmin(np.abs(internal_th)))
 
     def _trap_weights(th_w):
         n = len(th_w)
@@ -184,11 +203,6 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
         dth[0] = 0.5 * (th_w[1] - (th_w[-1] - 2 * np.pi))
         dth[-1] = 0.5 * ((th_w[0] + 2 * np.pi) - th_w[-2])
         return dth
-
-    def project_mode_amp(boundary_disp, m=mode):
-        s = np.sin(m * internal_th)
-        dth = _trap_weights(internal_th)
-        return float(np.sum(boundary_disp * s * dth) / np.pi)
 
     def windowed_ks_squared(h_vals, half_window=4):
         n = len(h_vals)
@@ -228,22 +242,49 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
                 expr = expr + b[m] * sympy.sin(m * theta_sym)
         return expr
 
-    # Initial diagnostics
+    # Initial diagnostics (h ≡ 0 at flat IC)
     upper_pos = mesh.X.coords[internal_idx]
     upper_r = np.sqrt(upper_pos[:, 0] ** 2 + upper_pos[:, 1] ** 2)
     upper_dr = upper_r - r_o
-    A_mode.append(project_mode_amp(upper_dr))
-    A_max.append(float(np.abs(upper_dr).max()))
+    h_max.append(float(np.abs(upper_dr).max()))
+    h_at_pole.append(float(upper_dr[pole_idx_in_internal]))
     if verbose:
-        print(f"  step 0: A_mode={A_mode[-1]:+.4e} "
-              f"A_max={A_max[-1]:.4e}", flush=True)
+        print(f"  step 0: h_max={h_max[-1]:.4e} "
+              f"h_pole={h_at_pole[-1]:+.4e}", flush=True)
 
-    # Relaxation loop
     blow_up = False
     dt_history = []
+    is_explicit = update in ('fe', 'rk2', 'rk4')
     for step in range(n_steps):
+        if target_t is not None and times[-1] >= target_t:
+            break
+
+        # Adaptive timestep: re-evaluate at the current Stokes solution
+        # so Δt tracks the live CFL as velocities decay.
         if adaptive_dt:
-            delta_t.sym = dt_factor * stokes.estimate_dt()
+            dt_bulk = dt_factor * stokes.estimate_dt()
+            # Surface-stability cap (explicit schemes only):
+            #   γ_max from current curvature; Δt ≤ cap/γ_max.
+            if cap_gdt is not None and is_explicit:
+                if cap_gamma is not None:
+                    gamma_max = cap_gamma
+                else:
+                    upper_pos = mesh.X.coords[internal_idx]
+                    upper_r = np.sqrt(upper_pos[:, 0] ** 2
+                                      + upper_pos[:, 1] ** 2)
+                    upper_dr_now = upper_r - r_o
+                    ks_sq_now = (windowed_ks_squared(upper_dr_now,
+                                                     half_window=4)
+                                 / r_o ** 2)
+                    ks_now = np.sqrt(np.maximum(
+                        np.abs(ks_sq_now), (1.0 / r_o) ** 2))
+                    gamma_max = float(np.max(
+                        1.0 / (2.0 * 1.0 * ks_now)))
+                dt_surf = cap_gdt / max(gamma_max, 1e-12)
+                dt_eff = min(dt_bulk, dt_surf)
+            else:
+                dt_eff = dt_bulk
+            delta_t.sym = dt_eff
         dt_history.append(float(delta_t.value))
 
         # Diffuse current radial velocity into the interior
@@ -265,8 +306,6 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
             mesh._deform_mesh(mesh.X.coords + displacement)
 
         elif update == 'curvS':
-            # Kinematic ETD: γ from local curvature, update with
-            # the saturated factor (1-α)/γ · u_n.
             dt_val = float(delta_t.value)
             upper_pos = mesh.X.coords[internal_idx]
             upper_r = np.sqrt(upper_pos[:, 0] ** 2
@@ -274,15 +313,9 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
             upper_dr = upper_r - r_o
             ks_sq = windowed_ks_squared(upper_dr, half_window=4) / r_o ** 2
             ks = np.sqrt(np.maximum(np.abs(ks_sq), (1.0 / r_o) ** 2))
-            # γ = ρg/(2η|k|).  Half-space dispersion uses the
-            # viscosity of the *relaxing* fluid (the heavy layer
-            # below the surface), not an average with the air
-            # above.  Air contributes only an O(η_air/η_fluid)
-            # correction.  η_fluid = 1.0 here.
-            eta_eff = 1.0
+            eta_eff = 1.0  # heavy-fluid viscosity
             gamma = 1.0 / (2.0 * eta_eff * ks)
 
-            # Sample u_n via Vr (the diffused field) at internal nodes
             Vr_full = np.asarray(uw.function.evaluate(
                 Vr.sym, mesh.X.coords)).flatten()
             u_n = Vr_full[internal_idx]
@@ -312,24 +345,10 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
             mesh._deform_mesh(mesh.X.coords + inc_field)
 
         elif update == 'midpoint':
-            # RK2-flavoured kinematic ETD:
-            #  1) save mesh state at h^n
-            #  2) sample u_n^n, γ^n at h^n
-            #  3) take a half-step kinematic-ETD trial (curvS form, dt/2)
-            #     → mesh now at h^{n+1/2}
-            #  4) Stokes solve at h^{n+1/2}; diffuse v·r̂
-            #  5) sample u_n^{n+1/2}, γ^{n+1/2}
-            #  6) restore mesh to h^n via mesh._deform_mesh(saved_X)
-            #  7) full-step kinematic ETD with midpoint γ and u_n
-            #     → mesh ends at h^{n+1}
-            # Two Stokes solves per step (vs one in curvS).
             dt_val = float(delta_t.value)
-            eta_eff = 1.0  # heavy-fluid viscosity (relaxing fluid)
-
-            # --- (1) save state at h^n ---
+            eta_eff = 1.0  # heavy-fluid viscosity
             saved_X = mesh.X.coords.copy()
 
-            # --- (2) sample at h^n ---
             upper_pos = mesh.X.coords[internal_idx]
             upper_r = np.sqrt(upper_pos[:, 0] ** 2 + upper_pos[:, 1] ** 2)
             upper_dr_n = upper_r - r_o
@@ -342,7 +361,6 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
                 Vr.sym, mesh.X.coords)).flatten()
             u_n_at_n = Vr_full_n[internal_idx]
 
-            # --- (3) half-step kinematic-ETD trial increment ---
             half_dt = 0.5 * dt_val
             alpha_h = np.exp(-half_dt * gamma_n)
             gd_h = half_dt * gamma_n
@@ -368,7 +386,6 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
                 mesh.X.coords)).reshape(-1, 2)
             mesh._deform_mesh(mesh.X.coords + inc_field_half)
 
-            # --- (4) Stokes solve at h^{n+1/2}; diffuse v·r̂ ---
             stokes.solve(zero_init_guess=False)
             diffuser._reset()
             diffuser.add_essential_bc(sympy.Matrix([0.0]),
@@ -380,7 +397,6 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
                                       mesh.boundaries.Lower.name)
             diffuser.solve(zero_init_guess=False)
 
-            # --- (5) sample u_n^{n+1/2}, γ^{n+1/2} ---
             upper_pos_h = mesh.X.coords[internal_idx]
             upper_r_h = np.sqrt(upper_pos_h[:, 0] ** 2
                                 + upper_pos_h[:, 1] ** 2)
@@ -394,13 +410,8 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
                 Vr.sym, mesh.X.coords)).flatten()
             u_n_at_half = Vr_full_h[internal_idx]
 
-            gamma_pairs.append((float(np.mean(gamma_n)),
-                                float(np.mean(gamma_h))))
-
-            # --- (6) restore mesh to h^n ---
             mesh._deform_mesh(saved_X)
 
-            # --- (7) full-step kinematic ETD with midpoint γ and u_n ---
             alpha = np.exp(-dt_val * gamma_h)
             gd = dt_val * gamma_h
             phi1 = np.where(gd > 1e-6,
@@ -425,22 +436,15 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
             mesh._deform_mesh(mesh.X.coords + inc_field)
 
         elif update == 'rk2':
-            # Pure RK2 (midpoint method), no γ, no ETD prefactor.
-            #   k1 = u_n at h^n (sampled directly from v·r̂)
-            #   trial: h^n + (Δt/2)·k1 → Stokes solve, sample k2
-            #   restore mesh; full step: h^n + Δt·k2
-            # Two Stokes solves per step.
             dt_val = float(delta_t.value)
             saved_X = mesh.X.coords.copy()
             unit_r = mesh.CoordinateSystem.unit_e_0
             n_modes = max(2, len(internal_th) // 3)
 
-            # k1 from current Stokes solution (solved before loop body)
             k1 = np.asarray(uw.function.evaluate(
                 v.sym.dot(unit_r),
                 mesh.X.coords[internal_idx])).flatten()
 
-            # Trial deformation to h^n + (Δt/2)·k1
             inc_h = (dt_val * 0.5) * k1
             a_h, b_h = fourier_decompose(inc_h, n_modes)
             inc_fn_h = fourier_to_sympy(a_h, b_h, th)
@@ -456,13 +460,11 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
                 Vr.sym * unit_r, mesh.X.coords)).reshape(-1, 2)
             mesh._deform_mesh(mesh.X.coords + inc_field_h)
 
-            # k2 at midpoint mesh
             stokes.solve(zero_init_guess=False)
             k2 = np.asarray(uw.function.evaluate(
                 v.sym.dot(unit_r),
                 mesh.X.coords[internal_idx])).flatten()
 
-            # Restore and apply full step h^n + Δt·k2
             mesh._deform_mesh(saved_X)
             inc_full = dt_val * k2
             a_f, b_f = fourier_decompose(inc_full, n_modes)
@@ -480,22 +482,12 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
             mesh._deform_mesh(mesh.X.coords + inc_field)
 
         elif update == 'rk4':
-            # 4-stage Runge-Kutta, no γ, no ETD prefactor.
-            #   k1 = u_n(h^n)
-            #   k2 = u_n(h^n + (Δt/2)·k1)
-            #   k3 = u_n(h^n + (Δt/2)·k2)
-            #   k4 = u_n(h^n + Δt·k3)
-            #   h^{n+1} = h^n + (Δt/6)(k1 + 2k2 + 2k3 + k4)
-            # Four Stokes solves per step.
             dt_val = float(delta_t.value)
             saved_X = mesh.X.coords.copy()
             unit_r = mesh.CoordinateSystem.unit_e_0
             n_modes_rk = max(2, len(internal_th) // 3)
 
             def _set_trial(disp_at_internal):
-                # Restore mesh to h^n then deform by smoothed
-                # radial displacement matching disp_at_internal
-                # at internal-boundary nodes.
                 mesh._deform_mesh(saved_X)
                 ar, br = fourier_decompose(
                     disp_at_internal, n_modes_rk)
@@ -520,22 +512,16 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
                     v.sym.dot(unit_r),
                     mesh.X.coords[internal_idx])).flatten()
 
-            # k1 at h^n (Stokes already solved)
             k1 = _sample_un()
-
             _set_trial((dt_val * 0.5) * k1)
             stokes.solve(zero_init_guess=False)
             k2 = _sample_un()
-
             _set_trial((dt_val * 0.5) * k2)
             stokes.solve(zero_init_guess=False)
             k3 = _sample_un()
-
             _set_trial(dt_val * k3)
             stokes.solve(zero_init_guess=False)
             k4 = _sample_un()
-
-            # Final RK4 increment
             _set_trial((dt_val / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4))
 
         else:
@@ -543,47 +529,30 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
 
         stokes.solve(zero_init_guess=False)
 
-        # Record diagnostics
         upper_pos = mesh.X.coords[internal_idx]
         upper_r = np.sqrt(upper_pos[:, 0] ** 2 + upper_pos[:, 1] ** 2)
         upper_dr = upper_r - r_o
-        A_mode.append(project_mode_amp(upper_dr))
-        A_max.append(float(np.abs(upper_dr).max()))
+        h_max.append(float(np.abs(upper_dr).max()))
+        h_at_pole.append(float(upper_dr[pole_idx_in_internal]))
         times.append(times[-1] + float(delta_t.value))
 
         if verbose and (step % max(1, n_steps // 10) == 0
                         or step == n_steps - 1):
-            extra = ""
-            if update == 'midpoint' and gamma_pairs:
-                gn, gh = gamma_pairs[-1]
-                extra = f"  γ_n={gn:.3e} γ_½={gh:.3e}"
+            extra = (f"  Δt={dt_history[-1]:.3e}"
+                     if adaptive_dt else "")
             print(f"  step {step + 1}: t={times[-1]:.4e} "
-                  f"A_mode={A_mode[-1]:+.4e} "
-                  f"A_max={A_max[-1]:.4e}{extra}", flush=True)
+                  f"h_max={h_max[-1]:.4e} "
+                  f"h_pole={h_at_pole[-1]:+.4e}{extra}",
+                  flush=True)
 
-        if A_max[-1] > 10 * amp0:
+        if h_max[-1] > 0.5:
             print(f"  *** BLOW-UP at step {step + 1} ***", flush=True)
             blow_up = True
             break
 
-    # Final spectral diagnostic: Fourier decomposition of the
-    # final boundary deformation.  Used to identify which modes
-    # dominate the residual drift.
     upper_pos = mesh.X.coords[internal_idx]
     upper_r = np.sqrt(upper_pos[:, 0] ** 2 + upper_pos[:, 1] ** 2)
     final_dr = upper_r - r_o
-    n_modes_diag = min(20, len(internal_th) // 3)
-    a_final, b_final = fourier_decompose(final_dr, n_modes_diag)
-    if verbose:
-        print("\n  Fourier decomposition of final boundary δr:",
-              flush=True)
-        print(f"  {'mode':>4} {'a (cos)':>12} {'b (sin)':>12} "
-              f"{'|amplitude|':>12}", flush=True)
-        for m in range(n_modes_diag + 1):
-            amag = np.sqrt(a_final[m] ** 2 + b_final[m] ** 2)
-            print(f"  {m:>4d} {a_final[m]:>+12.4e} "
-                  f"{b_final[m]:>+12.4e} {amag:>12.4e}",
-                  flush=True)
 
     return {
         'label': label,
@@ -591,14 +560,11 @@ def run(scheme, dt_factor, n_steps, res=20, mode=10, amp0=0.05,
         'dt': float(delta_t.value),
         'times': np.asarray(times, dtype=float),
         'dt_history': np.asarray(dt_history),
-        'A_mode': np.asarray(A_mode),
-        'A_max': np.asarray(A_max),
+        'h_max': np.asarray(h_max),
+        'h_pole': np.asarray(h_at_pole),
         'blow_up': blow_up,
         'final_dr': final_dr,
         'final_th': internal_th,
-        'a_final': a_final,
-        'b_final': b_final,
-        'gamma_pairs': np.asarray(gamma_pairs) if gamma_pairs else None,
     }
 
 
@@ -606,7 +572,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--res', type=int, default=20)
     parser.add_argument('--n-steps', type=int, default=32)
-    parser.add_argument('--scheme', type=str, default='all',
+    parser.add_argument('--scheme', type=str, default='integrators',
                         choices=['all', 'fe-fssa', 'curvS-fssa',
                                  'fe-nofssa', 'curvS-nofssa',
                                  'fssa-vs-nofssa',
@@ -616,9 +582,26 @@ def main():
                                  'rk2-fssa', 'rk4-fssa',
                                  'integrators'])
     parser.add_argument('--dt-factor', type=float, default=1.0)
+    parser.add_argument('--blob-amp', type=float, default=0.5,
+                        help="Buoyant blob density anomaly amplitude.")
+    parser.add_argument('--blob-eta', type=float, default=1.0,
+                        help="Multiplier on η inside the blob (1 = "
+                        "uniform; >1 = high-η contrast).")
     parser.add_argument('--adaptive-dt', action='store_true',
                         help="Re-evaluate stokes.estimate_dt() each "
                         "step (Δt grows as velocities decay).")
+    parser.add_argument('--cap-gdt', action='store_true',
+                        help="Apply scheme-specific γΔt cap: 1.0 "
+                        "for FE, 2.0 for RK2, 2.78 for RK4. curvS / "
+                        "midpoint are unaffected (saturation).")
+    parser.add_argument('--cap-gamma', type=float, default=None,
+                        help="Override the curvature-derived γ_max "
+                        "with a fixed value (physical γ for the "
+                        "problem). Use when curvature estimator is "
+                        "unreliable, e.g. flat-IC isostasy.")
+    parser.add_argument('--target-t', type=float, default=None,
+                        help="Stop when times[-1] ≥ target_t "
+                        "(use with --n-steps as a max-step cap).")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -643,8 +626,6 @@ def main():
     elif args.scheme == 'midpoint-vs-curvS':
         run_list = [schemes['curvS-fssa'], schemes['midpoint-fssa']]
     elif args.scheme == 'integrators':
-        # Headline comparison: FE / RK2 / RK4 (all no-FSSA) +
-        # curvS-FSSA as the kinematic-ETD baseline.
         run_list = [schemes['fe-nofssa'], schemes['rk2-nofssa'],
                     schemes['rk4-nofssa'], schemes['curvS-fssa'],
                     schemes['midpoint-fssa']]
@@ -654,8 +635,17 @@ def main():
     results = []
     for s in run_list:
         try:
+            cap = None
+            if args.cap_gdt:
+                _, upd = s
+                cap = {'fe': 1.0, 'rk2': 2.0, 'rk4': 2.78}.get(upd)
             r = run(s, args.dt_factor, args.n_steps, res=args.res,
-                    adaptive_dt=args.adaptive_dt)
+                    blob_amp=args.blob_amp,
+                    blob_eta_factor=args.blob_eta,
+                    adaptive_dt=args.adaptive_dt,
+                    cap_gdt=cap,
+                    cap_gamma=args.cap_gamma,
+                    target_t=args.target_t)
             results.append(r)
         except Exception as e:
             print(f"  *** EXCEPTION in {s}: {e!r} ***", flush=True)
@@ -664,23 +654,35 @@ def main():
     if not results:
         return
 
+    eta_tag = f"_eta{args.blob_eta:.0f}" if args.blob_eta != 1.0 else ""
     adapt_tag = "_adt" if args.adaptive_dt else ""
-    tag = (f"dtf{args.dt_factor:.2f}_n{args.n_steps}_internal_"
-           f"res{args.res}{adapt_tag}")
+    cap_tag = "_cap" if args.cap_gdt else ""
+    targ_tag = (f"_T{int(args.target_t)}"
+                if args.target_t is not None else "")
+    tag = (f"dtf{args.dt_factor:.2f}_n{args.n_steps}"
+           f"_isostasy_res{args.res}{eta_tag}{adapt_tag}"
+           f"{cap_tag}{targ_tag}")
     out = os.path.join(OUT_DIR, f"phase_i2d_fs_etd_{tag}.npz")
     np.savez(out, **{
-        f"{r['label']}_t":    r['times'] for r in results
+        f"{r['label']}_t":      r['times'] for r in results
     }, **{
-        f"{r['label']}_A":    r['A_mode'] for r in results
+        f"{r['label']}_hmax":   r['h_max']  for r in results
     }, **{
-        f"{r['label']}_Amax": r['A_max']  for r in results
+        f"{r['label']}_hpole":  r['h_pole'] for r in results
+    }, **{
+        f"{r['label']}_finalDr":  r['final_dr'] for r in results
+    }, **{
+        f"{r['label']}_finalTh":  r['final_th'] for r in results
+    }, **{
+        f"{r['label']}_dthistory": r['dt_history'] for r in results
     })
     print(f"\nWrote {out}", flush=True)
 
     print("\nFinal-step summary:")
     for r in results:
-        print(f"  {r['label']:<50} A_mode={r['A_mode'][-1]:+.4e} "
-              f"A_max={r['A_max'][-1]:.4e}", flush=True)
+        print(f"  {r['label']:<55} "
+              f"h_max={r['h_max'][-1]:.4e} "
+              f"h_pole={r['h_pole'][-1]:+.4e}", flush=True)
 
 
 if __name__ == "__main__":

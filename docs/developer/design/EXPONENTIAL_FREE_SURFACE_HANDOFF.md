@@ -266,17 +266,123 @@ pixi run -e amr-dev python -u docs/developer/design/_phase_i_fs_etd_annulus.py \
 
 1. ✅ Buoyancy-driven kinematic ETD demonstrator works
    (bounded saturation at $h_{\text{eq}}$).
-2. ⏳ A scheme that stays close to the small-dt reference
-   trajectory at large $\Delta t$, without blowing up — see
-   priority 1 in the next-actions list.
-3. ⏳ Clean write-up: integrator works for driven problems;
-   for pure-relaxation problems, a higher-order or implicit
-   variant is needed for stability at large $\Delta t$.
+2. ✅ A scheme that stays close to the small-dt reference at
+   large $\Delta t$, without blowing up — RK4 (no γ) is the
+   answer. See "Session 3 findings" below.
+3. ⏳ Clean write-up incorporating the integrator-comparison
+   result; pivot to viscosity-contrast test (isostatic
+   relaxation of buoyant block) where curvature-γ is expected
+   to be a poor model of local relaxation rate.
 
 **Goal restated:** find an integrator that doesn't blow up as
 the timestep grows. Compare against the small-dt run as
 reference (not against the analytic exponential — analytic
 accuracy is a separate question for a different session). The
 first-order kinematic ETD already buys saturation in the driven
-case; for the homogeneous case, a higher-order scheme is the
-headline open task.
+case; for the homogeneous case, RK4 with no γ estimate beats
+all γ-prefactor variants on accuracy AND stability at large
+$\Delta t$.
+
+## Session 3 findings (2026-05-06): RK family beats ETD prefactor
+
+The priority-1 "midpoint-corrected $u_n$" candidate was
+implemented and found to be **strictly worse** than curvS-FSSA
+across all $\Delta t$-factors tested. Adding RK2 midpoint
+sampling on top of the (1-α)/γ prefactor compounds the
+prefactor's overshoot bias.
+
+The unexpected finding came from extending the comparison to
+**RK4 with no γ at all**: classical 4-stage Runge-Kutta
+sampling $u_n$ at four trial mesh positions. Across the dt
+range that admits it ($\gamma\Delta t \le 2.78$, here up to
+dt-factor=20), RK4 gives the **smallest error against the
+reference at any total Stokes-solve cost**.
+
+### Headline numbers (single-mode IC, res=20, internal boundary)
+
+Reference: FE-noFSSA at $\Delta t = 0.05\Delta t_{\text{est}}$,
+$n=200$. Fitted $\gamma_{\text{eff}} = 0.0457$.
+
+Error $|A_{\text{final}} - A_{\text{ref}}|$ at run's final $t$:
+
+| scheme | dtf=1 | dtf=10 | dtf=20 |
+| --- | ---: | ---: | ---: |
+| FE-noFSSA | 1.4e-3 | 1.0e-3 | 9.9e-3 (drunken-sailor) |
+| RK2 (no γ) | 6.5e-4 | 1.6e-3 | 1.1e-2 (blown up) |
+| **RK4 (no γ)** | **7.5e-4** | **3.0e-4** | **3.5e-5** |
+| curvS-FSSA | 7.4e-4 | 1.3e-2 | 1.7e-2 |
+| midpoint-FSSA | 7.4e-4 | 1.7e-2 | 2.2e-2 |
+
+Cost-per-step: FE 1×, RK2 2×, RK4 4×, curvS 1×, midpoint 2×
+Stokes solves.
+
+At dtf=20, n=4 (16 RK4 solves): RK4 reaches $t=147$ with error
+$3.5\times 10^{-5}$ — better than any scheme at any cost.
+
+### What this means
+
+1. **The kinematic ETD prefactor (1-α)/γ is L-stability, not
+   accuracy.** curvS-FSSA / midpoint-FSSA *never blow up* but
+   *systematically overshoot* the reference at large $\Delta t$.
+   They're the right choice when $\gamma$ is unknown or
+   spatially varying and you cannot guarantee
+   $\gamma\Delta t < 2$.
+
+2. **For homogeneous problems with bounded $\gamma\Delta t$,
+   RK4 wins on every metric**: smaller error, comparable or
+   lower total cost, retains stability up to the ~4× larger
+   $\Delta t$ admitted by its 4th-order Taylor match to the
+   exponential.
+
+3. **The midpoint hybrid (RK2 + ETD prefactor) is the worst of
+   both worlds.** The RK2 sampling and the prefactor both
+   correct in the same direction; combining them
+   over-corrects. Drop this candidate from the publication.
+
+### Open question for the next session: viscosity-contrast test
+
+The curvature-γ scheme uses a global $\eta_{\text{eff}} = 0.5$
+constant. On a problem with strong local viscosity contrast
+(e.g. a high-η buoyant block on a low-η substrate, isostatic
+relaxation), the local $\gamma$ varies dramatically across the
+surface, and the curvature estimator can't see it. This is
+where curvS / midpoint should fail — the prefactor will use
+the wrong $\gamma$ in regions, leading to either over- or
+under-correction. RK4 (no γ) doesn't care about $\eta$
+distribution at all and should track the reference cleanly.
+
+**Test setup**: 2D annulus with a buoyant Gaussian high-η blob
+near the surface, no initial perturbation, surface bulges
+upward to isostatic equilibrium. Known analytic equilibrium
+for the ideal half-space case (Cathles 1975). Compare:
+RK4-noFSSA, RK2-noFSSA, FE-noFSSA, curvS-FSSA, midpoint-FSSA.
+Expect: curvS / midpoint to either over- or under-shoot the
+equilibrium; RK4 to settle close to it.
+
+This is the natural extension after the headline integrator
+result lands cleanly.
+
+### Code state at end of session 3
+
+Files (all in `docs/developer/design/`):
+
+- `EXPONENTIAL_FREE_SURFACE.md` — design doc; new "Phase I-2D-
+  integrator" section documents the comparison
+- `EXPONENTIAL_FREE_SURFACE_HANDOFF.md` — this file
+- `_phase_i_fs_etd_internal.py` — schemes `fe`, `rk2`, `rk4`,
+  `curvS`, `midpoint` with FSSA on/off variants. CLI option
+  `--scheme integrators` runs the headline comparison set in
+  one Python process.
+- `_plot_phase_i_integrators.py` — trajectory + cost-vs-
+  accuracy plotter; works on the dtf{1,2,5,10,20} npz outputs.
+- `_plot_phase_i_midpoint.py` — earlier midpoint-vs-curvS
+  plotter (kept for reference).
+
+**Output files** (in `output/`, .gitignore'd):
+- `phase_i2d_fs_etd_dtf0.05_n200_internal_res20.npz` — reference
+- `phase_i2d_fs_etd_dtf{1.00,2.00,5.00,10.00,20.00}_n*_internal_res20.npz`
+  — sweep data
+- `phase_i2d_fs_integrators_trajectories.png` — 5 schemes ×
+  5 dt-factors trajectory grid
+- `phase_i2d_fs_integrators_cost.png` — error vs total Stokes
+  solves; A_max vs total Stokes solves

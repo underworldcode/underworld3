@@ -884,6 +884,603 @@ well-defined.
   but each evaluation is local. The Stokes solve still
   dominates total cost — same as in 2D.
 
+## Phase I-2D-integrator: RK family vs ETD-prefactor schemes
+
+Following the kinematic-ETD investigation, we ran a structured
+sweep comparing five integrators against the small-dt FE-noFSSA
+reference (FE-noFSSA at $\Delta t = 0.05\,\Delta t_{\text{est}}$,
+$n = 200$, $t_{\text{final}} = 18.4$, fitted
+$\gamma_{\text{eff}} = 0.0457$, in agreement with the half-space
+mode-10 prediction $\gamma = \rho g/(2\eta|k|) = 0.05$).
+
+Five schemes:
+
+1. **FE-noFSSA** — no corrections, stability by Δt alone.
+2. **RK2 (no γ)** — pure midpoint method. Two Stokes solves per
+   step. Stable for $\gamma\Delta t \le 2$.
+3. **RK4 (no γ)** — classical 4-stage Runge-Kutta. Four Stokes
+   solves per step. Stable for $\gamma\Delta t \le 2.78$.
+4. **curvS-FSSA** — kinematic ETD with curvature-derived γ
+   prefactor. One Stokes solve per step.
+5. **midpoint-FSSA** — RK2-sampled $u_n$ combined with the
+   curvature-γ ETD prefactor. Two Stokes solves per step.
+
+For each scheme we ran at $\Delta t$-factor in
+$\{1, 2, 5, 10, 20\}$ on the same internal-boundary mesh
+(res=20, single-mode IC at $\sin(10\theta)$, amp 0.05). The
+$\Delta t$-factor multiplies the PETSc estimate_dt, giving
+$\gamma\Delta t \in \{0.09, 0.18, 0.46, 0.92, 1.84\}$ across
+the sweep — spanning the FE-stable regime through to the
+near-RK2-instability boundary.
+
+Number of timesteps adjusts with $\Delta t$ so each run reaches
+$t \in [60, 150]$, giving roughly 1–3 e-folds of mode-10
+relaxation.
+
+### Results
+
+**Error vs reference** ($A_{\text{ref}}$ at each run's final $t$
+from the fitted exponential):
+
+| scheme | dtf=1 | dtf=2 | dtf=5 | dtf=10 | dtf=20 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FE-noFSSA | 1.4e-3 | 8.6e-4 | 1.4e-3 | 1.0e-3 | 9.9e-3* |
+| RK2 (no γ) | 6.5e-4 | 5.4e-4 | 5.4e-4 | 1.6e-3 | 1.1e-2* |
+| RK4 (no γ) | 7.5e-4 | 7.5e-4 | 2.4e-4 | 3.0e-4 | **3.5e-5** |
+| curvS-FSSA | 7.4e-4 | 1.7e-3 | 4.7e-3 | 1.3e-2 | 1.7e-2 |
+| midpoint-FSSA | 7.4e-4 | 2.7e-3 | 7.2e-3 | 1.7e-2 | 2.2e-2 |
+
+\* drunken-sailor onset (mode-10 amplitude inflates beyond
+reference).
+
+**Final $A_{\max}$** (blow-up if $\gg$ initial 0.05):
+
+| scheme | dtf=1 | dtf=20 |
+| --- | ---: | ---: |
+| FE-noFSSA | 3.5e-3 | 3.3e-2 (drunken-sailor) |
+| RK2 | 3.8e-3 | **8.1e-2 (blown up)** |
+| RK4 | 3.8e-3 | 2.5e-2 (bounded) |
+| curvS-FSSA | 5.1e-3 | 1.9e-2 |
+| midpoint-FSSA | 5.5e-3 | 2.2e-2 |
+
+### Reading
+
+1. **The kinematic ETD with curvature γ is a robustness hack,
+   not an accuracy improvement.** curvS-FSSA / midpoint-FSSA
+   never blow up across the dt range tested, but their
+   trajectories *systematically overshoot* the reference at
+   moderate-to-large $\gamma\Delta t$. Error grows from
+   $\sim 7\times 10^{-4}$ at dtf=1 to $\sim 1.7\times 10^{-2}$
+   at dtf=20 — accuracy degrades rapidly with $\Delta t$.
+
+2. **RK4 is the accuracy winner at any cost.** Even at
+   dt-factor=20 (γΔt ≈ 1.84) where pure FE drunken-sailors and
+   RK2 has blown up, RK4 stays bounded *and* gives the
+   smallest error against reference. At 16 Stokes solves total
+   (dtf=20, n=4) RK4 gives error $\sim 4\times 10^{-5}$ — an
+   order of magnitude better than RK2 at the same total cost.
+
+3. **Midpoint-FSSA loses to curvS-FSSA.** Adding the RK2
+   midpoint sampling on top of the (1-α)/γ ETD prefactor
+   compounds the overshoot bias from the prefactor. The two
+   "improvements" don't combine — the prefactor is already
+   doing what midpoint sampling would do, and stacking them
+   over-corrects. This was the priority-1 candidate in the
+   handoff and is now empirically rejected.
+
+4. **The ETD prefactor's value is L-stability**, not better
+   step-by-step accuracy. It buys you absolute boundedness
+   when γ is unknown / spatially varying / when you can't
+   guarantee γΔt < 2. For homogeneous problems where the
+   physics tells you γΔt is comfortable, RK4 with no γ
+   estimate is strictly better.
+
+### Decision (revised)
+
+The publication-track scheme is **RK4 (no γ) for accuracy** when
+the user can ensure $\gamma\Delta t < 2.78$, with **curvS-FSSA
+as the safe-default fallback** when γ is unknown. The midpoint
+hybrid is dropped.
+
+Cost analysis: RK4 takes 4× Stokes solves per step vs FE's 1×,
+but admits 4× larger Δt while remaining accurate and stable.
+Net cost-per-target-accuracy is *lower* for RK4 across the
+range tested. The kinematic ETD with curvature γ is not
+needed for accuracy on the homogeneous test; its role is
+robustness in regimes where γ varies (viscosity contrasts,
+internal forcing, finite-layer dispersion) — to be confirmed
+on the buoyant-block / isostatic-relaxation test where
+$\gamma$ is spatially structured.
+
+**Code:** `_phase_i_fs_etd_internal.py` schemes `fe`, `rk2`,
+`rk4`, `curvS`, `midpoint`. Plotter
+`_plot_phase_i_integrators.py` produces the trajectory and
+cost-vs-accuracy figures.
+
+**Plots:** `output/phase_i2d_fs_integrators_trajectories.png`
+(5 schemes × 5 dt-factors), `output/phase_i2d_fs_integrators_cost.png`
+(error vs total Stokes solves).
+
+## Phase I-2D-isostasy: where the ETD prefactor earns its keep
+
+The relaxation tests above use a fixed $\Delta t$ chosen up front
+from `stokes.estimate_dt()` × dt-factor. That choice masks the
+production failure mode the kinematic ETD was designed to fix:
+**adaptive $\Delta t$ growing as velocities decay.** A real code
+re-evaluates `estimate_dt()` each step. The CFL bound is set by
+the largest velocity in the domain. As the surface relaxes
+toward equilibrium, $|\mathbf{u}|$ falls, so estimate_dt grows.
+Eventually $\gamma\Delta t$ crosses the explicit-method
+stability boundary even though the system is "almost done"
+relaxing — drunken-sailor onset right at the end of the
+simulation.
+
+### Test setup
+
+Internal-boundary annulus (same as before), but with:
+- **Flat IC.** No initial perturbation; the surface starts
+  level at $r_o$.
+- **Internal forcing.** Eulerian buoyant blob at $(r,\theta) =
+  (0.85, 0)$, Gaussian $\sigma = 0.06$, density anomaly
+  $\alpha = 0.5$. The surface bulges upward to isostatic
+  equilibrium.
+- **Adaptive $\Delta t$.** `delta_t.sym = dt_factor *
+  stokes.estimate_dt()` re-evaluated each step.
+
+Reference: FE-noFSSA at fixed dt-factor=0.1, n=80 (small enough
+that adaptive doesn't matter). Final $h_{\text{eq}} \approx
+0.0268$.
+
+### Results (16 steps each, adaptive $\Delta t$)
+
+Final $h_{\text{pole}}$ (radial rise above the blob;
+equilibrium $\approx 0.0268$):
+
+| scheme | dtf=1 | dtf=2 | dtf=5 |
+| --- | ---: | ---: | ---: |
+| FE | +0.018 (low) | +0.038 (high) | +0.067 (DS) |
+| RK2 | +0.018 | +0.006 (asymm) | -0.042 (sign-flip) |
+| RK4 | +0.024 | +0.001 (asymm) | +0.009 (asymm) |
+| **curvS-FSSA** | **+0.027** | **+0.025** | **+0.019** |
+| **midpoint-FSSA** | **+0.026** | **+0.025** | **+0.019** |
+
+$\Delta t$ growth in 16 steps:
+- curvS at dtf=5: $\Delta t \to 151$, total $t \to 2420$
+- RK4 at dtf=5: $\Delta t \to 28$, total $t \to 447$
+
+The curvS / midpoint schemes ride the adaptive $\Delta t$ all
+the way out — saturation prevents drunken-sailor regardless of
+how big $\Delta t$ grows.
+
+### Reading
+
+1. **The (1-α)/γ prefactor is L-stability**, not better
+   per-step accuracy. The earlier comparison (fixed $\Delta t$,
+   sized for the worst-case CFL) hides this entirely — every
+   scheme is in its stable regime, and RK4 wins on
+   higher-order accuracy.
+
+2. **In the adaptive-$\Delta t$ regime that production codes
+   actually use, curvS / midpoint dominate.** They saturate at
+   $h_{\text{eq}} = u_n/\gamma$ regardless of $\Delta t$.
+   FE / RK2 / RK4 don't saturate; once $\gamma\Delta t$ crosses
+   their respective stability boundaries (2 for FE/RK2, 2.78
+   for RK4), the per-step displacement grows without bound.
+
+3. **At fixed $\Delta t$ pushed past the RK4 boundary**
+   (dtf=5, $\gamma\Delta t \approx 5$), RK4 *catastrophically
+   blows up* ($h_{\max} = 18.6$ vs initial 0), while curvS /
+   midpoint stay bounded at $\sim 0.02$. The prefactor
+   structurally cannot blow up.
+
+4. **The midpoint hybrid (RK2 + ETD prefactor) ≈ curvS** in
+   this regime. Its accuracy disadvantage from the
+   homogeneous-relaxation test doesn't penalise the isostasy
+   case, where saturation matters more than per-step
+   truncation. Both are good production candidates.
+
+### Decision (final)
+
+Two-track recommendation for the publication:
+
+- **Lead scheme: kinematic ETD with curvS / midpoint
+  prefactor.** This is the production case — adaptive
+  $\Delta t$, unknown $\gamma$, possibly varying $\eta$. The
+  saturation buys the user "set $\Delta t$ from the velocity
+  CFL and forget about the relaxation timescale" — a property
+  no explicit-RK scheme has.
+- **High-accuracy alternative: RK4 (no γ).** When the user
+  knows $\gamma$ stays bounded and wants the highest accuracy
+  per unit cost (e.g. benchmarks, validation runs).
+
+The midpoint hybrid is *not* dominated by curvS in the
+isostasy regime — they're functionally equivalent — so we keep
+it as an option. The earlier "midpoint loses to curvS" finding
+was specific to the homogeneous-relaxation test where
+adaptive-dt isn't engaged.
+
+**Plots:** `output/phase_i2d_fs_isostasy_trajectories_adt.png`
+(per-scheme trajectories at dt-factor 1, 2, 5),
+`output/phase_i2d_fs_isostasy_dthistory_adt.png` ($\Delta t$
+growth over the run, log axis), `output/phase_i2d_fs_isostasy_profile_adt.png`
+(final boundary $\delta r(\theta)$).
+
+**Code:** `_phase_i_fs_etd_isostasy.py` (CLI flag
+`--adaptive-dt`); `_plot_phase_i_isostasy.py --adaptive`.
+
+## Phase II-2D-continent: isostatic block and the volume-conservation regime
+
+The kinematic-ETD investigation (Phase I) settled on curvS-FSSA as
+the production-track scheme for relaxation problems. Phase II
+moved to a **driven-isostasy benchmark** to stress-test the
+schemes on a structurally different problem: a Lagrangian
+buoyant block (a "continent") embedded in the heavy fluid, with
+the surface above the block bulging upward to isostatic
+equilibrium.
+
+### Setup
+
+- **Mesh.** Annulus, $r_i = 0.5$, $r_o = 1.0$. Two variants:
+    - *Sticky-air*: `AnnulusInternalBoundary` with internal
+      boundary at $r_o$ as the "free surface" and an air layer
+      $r_o < r < r_{outer}$ with $\eta_{air}/\eta_{fluid} = 0.1$.
+    - *True free-surface*: `Annulus` (rock-only), with $r=r_o$
+      as the free surface — no air, no internal-boundary trick.
+- **Mesh resolution.** Both unstructured-triangle and
+  transfinite polar-quad ("structured") versions written.
+  Structured version uses 2 half-annuli per radial layer with
+  `setTransfiniteCurve` + `setTransfiniteSurface`. Critical:
+  `useMultipleTags=True, useRegions=True` in the UW3 `Mesh`
+  constructor — without it, Stokes silently segfaults on quads.
+- **Continent block.** Lagrangian P0 indicator $B$, set to 1 on
+  cell centroids inside the sector $|\theta| < \theta_{block}$
+  AND $r > r_{min}$. Default $\theta_{block} = 0.4$ rad,
+  $r_{min} = 0.7$, $\beta = 0.2$ (block is 20% lighter than
+  ambient rock).
+- **Body force.** Full buoyancy:
+  $\mathbf{f} = -(M - \beta B)\hat r$. Heavy rock (M=1) feels
+  full gravity; block (B=1, M=1) feels reduced gravity
+  $-(1-\beta)$; air (M=0) is weightless.
+
+### Body-force formulation (lessons)
+
+- The earlier "anomaly form"
+  $-(M - M_{\text{ref}}(r))\hat r$ — Lagrangian $M$, Eulerian
+  $M_{\text{ref}}$ as a Heaviside step at $r_o$ — is *non-physical*.
+  It introduces a step-jump in body force when cells cross
+  $r_o$, which RK4's trial stages stumble on. With full
+  buoyancy ($M$ alone, no subtraction) the Stokes solver finds
+  the hydrostatic pressure self-consistently and the artefact
+  goes away.
+- Sticky-air's $\eta_{air} = 0.1\,\eta_{fluid}$ adds spurious
+  lateral viscous drag against the bulge, suppressing the
+  natural lateral spreading that real isostasy would show.
+  True free-surface (no air) gives the cleaner physics.
+
+### What the schemes do (free-surface, structured mesh, dtf=1)
+
+Final $h_{\text{pole}}$ at $t \approx 600$, target uniform-bulge
+analytic estimate $h_b \approx 0.051$, peak-from-fine-Δt $\approx
+0.04$ (regional compensation):
+
+| scheme | h_pole (uncapped, adaptive Δt) |
+| --- | ---: |
+| FE | drift down, drunken-sailor |
+| RK2 | +0.022 (declines from peak ~0.025) |
+| RK4 | +0.017 (peaks ~0.034 then **wild oscillations**) |
+| curvS-FSSA | +0.039 (settles near peak) |
+| midpoint-FSSA | +0.040 (settles near peak) |
+
+curvS / midpoint converge to ~0.040; RK schemes show
+*declining* $h_{\text{pole}}$ that turns out to be a
+volume-conservation artefact rather than physical relaxation
+(see next subsection).
+
+### The headline finding: volume loss, not stability, is the binding constraint
+
+Volume change ΔA/A₀ over the run (initial annulus area
+$A_0 = \pi(r_o^2 - r_i^2) = 0.75\pi$):
+
+| scheme | halfway ΔA/A₀ | final ΔA/A₀ |
+| --- | ---: | ---: |
+| RK2 (uncap) | -0.08% | **-1.52%** |
+| RK4 (uncap) | -0.08% | **-4.46%** |
+| curvS | +0.20% | -0.08% |
+| midpoint | +0.11% | -0.28% |
+
+At halfway, all schemes are within 0.3% of perfect volume
+conservation. By final time, RK4 has lost **4.5%** of mass —
+that's the "decline of $h_{\text{pole}}$" we see. The bulge
+isn't physically receding; mass is leaking out through the
+incompressibility-projection error.
+
+### Capping Δt smooths the trajectory but doesn't fix volume loss
+
+Capping $\Delta t$ at the value reached at the halfway snapshot:
+
+| scheme | Δt cap | n_steps | final h_pole | final ΔA/A₀ |
+| --- | ---: | ---: | ---: | ---: |
+| RK2 uncap | adaptive | 24 | +0.022 | -1.52% |
+| RK2 cap=18 | min(adaptive, 18) | 30 | **+0.030** | -1.83% |
+| RK2 cap=9 (half) | min(adaptive, 9) | 60 | +0.031 | -1.85% |
+| RK4 uncap | adaptive | 24 | +0.017 | -4.46% |
+| RK4 cap=20 | min(adaptive, 20) | 30 | **+0.030** | -2.03% |
+| RK4 cap=10 (half) | min(adaptive, 10) | 60 | +0.029 | -2.07% |
+
+Two distinct effects:
+
+1. **Capping Δt → smoother trajectory.** RK4's wild
+   oscillations between Δt=11 and Δt=33 disappear. Final
+   $h_{\text{pole}}$ rises from 0.017 to 0.030 — the bulge
+   stays where the physics says it should, instead of
+   oscillating mass in and out.
+2. **Halving Δt → no improvement in volume conservation.**
+   Total volume drift is ≈ (per-step error) × n_steps, and
+   per-step error scales linearly with Δt. Halving Δt halves
+   per-step error but doubles n_steps; the total cancels.
+
+So **stability is not the binding constraint** at moderate
+$\gamma\Delta t$ on this problem; the binding constraint is
+the cumulative pressure-projection (incompressibility) error
+that compounds over time. To improve volume conservation
+beyond a few percent at this discretisation, the spatial
+discretisation has to change — not the timestep.
+
+curvS / midpoint stay below 0.3% volume drift the whole way
+because once $h \to h_{\text{eq}}$ the saturation prefactor
+$(1-\alpha)/\gamma$ → 0, so they take effectively zero
+displacement per step at equilibrium and don't accumulate
+further compressibility error.
+
+### Implication for the publication
+
+The kinematic-ETD prefactor's value comes from **two** sources,
+not one:
+
+1. **L-stability under arbitrary $\Delta t$** (the original
+   motivation): bounded by $u_n/\gamma$ regardless of how big
+   $\Delta t$ grows.
+2. **Bounded volume drift at long times** because the per-step
+   displacement self-limits as $u_n \to 0$. Explicit RK schemes
+   without the prefactor keep advancing per step, so their
+   compressibility error keeps compounding.
+
+For driven problems with adaptive Δt, the second property is
+arguably more important than the first. Production codes care
+about long-term mass conservation as much as they care about
+not blowing up.
+
+**Code:** `_phase_i_fs_etd_continent.py` (sticky-air),
+`_phase_i_fs_continent_fs_snapshots.py` (free-surface,
+captures UW3 HDF5 + pyvista VTU + profile npz checkpoints),
+`_structured_annulus.py` (transfinite polar-quad mesh in two
+variants: with and without internal boundary).
+
+**Plots:** `output/phase_i2d_fs_continent_fs_topo_vs_t.png`
+(h_pole vs t, uncapped/capped/half-cap),
+`output/phase_i2d_fs_continent_fs_capped_vs_uncapped.png`
+(surface profile and ΔA/A₀, halfway and final),
+`output/phase_i2d_fs_continent_fs_snapshots*.png`
+(deformed mesh + density per scheme).
+
+## Phase III-2D-continent: kinematic-update redesign closes volume conservation
+
+The handoff at the end of Phase II had two leading hypotheses for the
+1.5–2% volume drift of the explicit RK schemes on the continent
+benchmark: (a) the pressure space is too coarse (V2/P1 → V3/P2),
+or (b) the Stokes solver tolerance is too loose (1e-5 → 1e-7).
+Phase III tested both. **Both null results.** The problem was
+elsewhere — in the kinematic update itself.
+
+### Diagnosis: the radial-only kinematic update
+
+The original RK schemes (`fe`, `rk2`, `rk4` in
+`_phase_i_fs_continent_fs_snapshots.py`) sample only the
+**radial** component of velocity at the surface, decompose it on
+the boundary in Fourier modes, diffuse it as a scalar via Poisson
+into the interior, and map it to a purely radial mesh deformation.
+**The tangential velocity is discarded.** Mass that should be
+redistributed laterally by the surface flow has nowhere to go —
+each step compresses or stretches the rock radially without
+balancing it tangentially, accumulating as a bias toward
+contraction.
+
+This explains a long-standing puzzle from Phase II: total drift
+scales linearly with simulated time × Δt and is *independent of
+mesh resolution*. The error is structural in the kinematic
+discretisation, not in the spatial or temporal resolution of the
+Stokes solve.
+
+### Three candidate fixes (Phase III subsections)
+
+#### Phase III(a): V3/P2 element pair → null
+
+Bumping the Stokes pair from V2/P1 to V3/P2 (Q3-Q2 LBB-stable on
+quads) on the same continent benchmark, capped at Δt=18, n_steps=30:
+
+| pair | tol | halfway curved-ΔA | final curved-ΔA |
+| --- | --- | ---: | ---: |
+| V2/P1 | 1e-5 | −0.21% | −1.78% |
+| V3/P2 | 1e-5 | −0.22% | −1.86% (slightly worse) |
+
+V3/P2 is essentially indistinguishable on volume conservation —
+mildly *worse*, in fact, on this run. The pressure space is not the
+bottleneck.
+
+#### Phase III(b): Stokes solver tolerance → null
+
+Tightening from 1e-5 to 1e-7 with V2/P1, same Δt and n_steps:
+
+| pair | tol | halfway | final |
+| --- | --- | ---: | ---: |
+| V2/P1 | 1e-5 | −0.21% | −1.78% |
+| V2/P1 | 1e-7 | −0.21% | **−1.78%** (bit-identical) |
+
+The two runs produce identical numbers to all printed digits. The
+saddle-point solve is solving the discrete system to enough
+precision; the compressibility error is in the *discretisation*,
+not in the solve.
+
+#### Phase III(c): the kinematic update is the culprit
+
+Two replacements were tested.
+
+**Full-velocity advection** (`rk2_full`): deform every interior
+node by $\Delta t \cdot \mathbf{v}_{\text{node}}$ (both
+components), bypassing the radial-only diffuser. Same 30-step
+capped run:
+
+| scheme | final h_pole | final curved-ΔA |
+| --- | ---: | ---: |
+| `rk2` (radial-only) | +0.030 | −1.78% |
+| **`rk2_full`** | +0.020 | **−0.21%** |
+
+A factor-of-8.5 improvement. Volume conservation is now within the
+0.5% pass criterion. But the trajectory drops to h_pole=0.020, well
+under the equilibrium estimate of ~0.04. Either real lateral
+spreading or temporal under-resolution at Δt=18; a Δt=0.5x
+convergence run gives the same h_pole=0.0195 at total t=540, so
+the trajectory shape is dt-converged. After step ~40 the mesh
+distorts enough that the Stokes SNES line-search starts diverging
+— ALE-style mesh quality limits the practical run length and would
+require periodic regridding.
+
+**Semi-Lagrangian-horizontal surface advection** (`rk2_sl`,
+`rk4_sl`, `fe_sl`): keep the interior radial-only smoothing
+(mesh-friendly), but write the kinematic free-surface BC in its
+material-derivative form:
+
+$$\frac{\partial h}{\partial t} + \frac{u_t}{r_o}\frac{\partial h}{\partial \theta} = u_n$$
+
+Discretise the tangential transport semi-Lagrangianly: trace each
+surface point back along $u_t \Delta t / r_o$, sample $h$ at the
+trace-back angle via Fourier interpolation, and add the radial
+uplift:
+
+$$h^{n+1}(\theta) = h^n(\theta - u_t \Delta t / r_o) + \Delta t \cdot u_n$$
+
+Implemented as an *effective* normal velocity that the existing
+diffuser-Poisson path can take as its boundary condition:
+$u_n^{\text{eff}} = u_n + (h^n_{\text{traced}} - h^n)/\Delta t$.
+One Fourier evaluation per stage; no other code changes.
+
+| scheme | final h_pole | final curved-ΔA |
+| --- | ---: | ---: |
+| `rk2` (radial-only) | +0.030 | −1.78% |
+| `rk2_full` | +0.020 | −0.21% |
+| **`rk2_sl`** | **+0.036** | **−0.19%** |
+| **`rk4_sl`** (Δt cap=18) | +0.038 | **−0.004%** |
+| `rk2_sl` (dtf=0.5, cap=18) | +0.038 | −0.027% |
+
+The SL formulation is the strongest candidate: comparable volume
+conservation to `rk2_full`, the *correct* equilibrium height
+(~0.038, matching the Phase I curvS-FSSA equilibrium estimate),
+*and* it preserves mesh quality. RK4-SL hits 0.004% drift —
+beyond the publication-track stretch goal of 0.1% — without any
+saturation prefactor, so no systematic undershoot from a wrong-γ
+guess.
+
+### Phase III(d): the Δt-cap criterion — relaxation CFL with monotone γ history
+
+The cap=18 used in Phase II was empirically chosen from the
+"halfway-Δt" snapshot. For a production scheme the cap has to be
+**derived from the surface state**, with no hardcoded $\eta$ or
+$\rho g$.
+
+**The criterion.** For a relaxing system $\dot h = -\gamma h$,
+$\dot h / h \equiv u_n / h$ is exactly the relaxation rate $\gamma$
+— and crucially, it is **invariant to the system's proximity to
+equilibrium**: both numerator and denominator scale linearly with
+amplitude. The L²-weighted least-squares estimator that picks the
+dominant mode robustly is:
+
+$$\gamma_{\text{eff}} = \frac{\bigl|\langle u_n, h\rangle_S\bigr|}{\langle h, h\rangle_S}$$
+
+Absolute value handles both regimes (positive correlation during
+forced rise toward equilibrium; negative during pure relaxation).
+
+**The monotone-history fix.** The L² estimator gives the *dominant*
+(largest-amplitude) mode's $\gamma$, not the *fastest*. When the
+slow dominant mode lets $\Delta t$ grow large enough to destabilise
+a fast mode that's currently small in amplitude, that fast mode
+oscillates with growing amplitude — and only "shows up" in the L²
+estimator a step or two later, by which point the trajectory has
+been corrupted. The fix is to retain the maximum $\gamma_{\text{eff}}$
+ever observed:
+
+$$\gamma_{\text{used}} = \max\bigl(\gamma_{\text{eff,now}},\; \gamma_{\text{history}}\bigr)$$
+
+Once a fast mode reveals itself in the surface state, it stays
+binding. This is the **damping-requirement** form of the criterion:
+the cap is whatever $\Delta t$ keeps every previously-observed mode
+in the L-stable region of the integrator.
+
+**The cap.** $\Delta t \le c / \gamma_{\text{used}}$ with safety
+factor $c$. RK4 is stable to $\gamma \Delta t \approx 2.78$;
+truncation is ~5% per step at $\gamma\Delta t = 0.5$.
+
+**Empirical sweep on the continent benchmark, RK4-SL:**
+
+| c | derived Δt | final ΔA |
+| --- | ---: | ---: |
+| 0.5 | 8.11 | +0.007% |
+| 1.0 | 16.22 | **+0.001%** |
+
+$c=1.0$ recovers the empirically chosen cap=18 to within 10% from
+the surface state alone — and produces the best volume
+conservation we've seen on this benchmark. $c=0.5$ is more
+conservative; the marginally-larger drift comes from doubling the
+step count (per-step error × n_steps).
+
+### Generalisation — the recipe is field-agnostic
+
+The criterion is not specific to free surfaces. For any
+state-rate pair $(\phi, \dot\phi)$ that an integrator owns:
+
+$$\gamma_{\text{eff},\phi} = \frac{|\langle \dot\phi, \phi\rangle|}{\langle \phi, \phi\rangle},\quad \gamma_{\text{used},\phi} = \max(\gamma_{\text{now},\phi},\; \gamma_{\text{history},\phi})$$
+
+For VEP, $\phi = \sigma$ and $\dot\phi$ is the Jaumann rate (or
+$\Delta\sigma/\Delta t_{\text{prev}}$ from the trajectory) — the
+criterion captures the Maxwell time $\tau = \eta/G$ as a *measured*
+property of the current stress field, not a hardcoded constitutive
+constant. Multiple state-rate pairs combine as
+
+$$\Delta t = c \cdot \min\bigl(\Delta t_{\text{bulk-CFL}}, 1/\gamma_{\text{used},h}, 1/\gamma_{\text{used},\sigma}, \dots\bigr)$$
+
+This may explain Phase II of the VEP work, where BDF-1 was the
+only stable integrator for tight-yield TI faults: the
+"first-order-dissipation" finding may have been compensating for
+an under-conservative Δt; with the relaxation CFL on stress,
+higher-order schemes might be recovered.
+
+### Phase III decision — production scheme
+
+**Production scheme (continent isostasy and similar relaxation
+problems on a free surface):**
+
+- **Spatial:** V2/P1 Taylor–Hood, structured polar-quad annulus
+  (or unstructured-triangle); free surface (no sticky-air, no
+  Heaviside body-force trick).
+- **Kinematic update:** RK4 with semi-Lagrangian-horizontal
+  surface advection (`rk4_sl`).
+- **Δt:** $\Delta t = \min(\Delta t_{\text{bulk-CFL}}, c/\gamma_{\text{used}})$
+  with $c = 1.0$ and $\gamma_{\text{used}}$ tracked as the running
+  maximum of the L² regression of $|\langle u_n, h\rangle|/\langle h, h\rangle$.
+- **No FSSA prefactor required.**
+
+Stability constraint, not volume conservation, is now the binding
+constraint. The cap criterion provides the stability automatically
+from a single observable, with no hardcoded $\eta$ or $\rho g$.
+
+**Code:** `_phase_i_fs_continent_fs_snapshots.py` (schemes
+`rk4_sl`, `rk2_sl`, `fe_sl`, with `--dt-cap-mode relax`
+and `--dt-cap-c <c>`).
+
+**Plots:** `output/phase_i2d_fs_continent_sl_suite_topo_vs_t.png`
+(h_pole(t) for all variants, labelled by final ΔA),
+`output/phase_i2d_fs_continent_sl_suite_profiles.png`
+(surface profile dr(θ), halfway and final).
+
 ## References
 
 - Kaus, Mühlhaus & May (2010), PEPI: original FSSA paper.
