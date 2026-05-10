@@ -659,8 +659,13 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
         # Check both dicts for name collisions
         name_exists_persistent = name in UWexpression._expr_names
-        # Check ephemeral dict - need to look for any key starting with this name
-        name_exists_ephemeral = any(k[0] == name for k in UWexpression._ephemeral_expr_names)
+        # Check ephemeral dict - need to look for any key starting with this name.
+        # Snapshot keys via list(...) before iterating: the underlying dict can
+        # be mutated mid-iteration by weakref finalizers running asynchronously
+        # during cyclic GC, raising "dictionary changed size during iteration".
+        name_exists_ephemeral = any(
+            k[0] == name for k in list(UWexpression._ephemeral_expr_names)
+        )
 
         # Determine unique ID for disambiguation
         # When _unique_name_generation=True, ALWAYS use instance_no as _uw_id
