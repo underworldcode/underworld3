@@ -272,7 +272,7 @@ class SNES_Poisson(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the source term (handles units and scaling)."""
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         # Handle UWQuantity with units - enforce "units everywhere" principle
         if hasattr(value, "value") and hasattr(value, "units"):
@@ -478,7 +478,7 @@ class SNES_Darcy(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -627,7 +627,7 @@ class SNES_TransientDarcy(SNES_Darcy):
         self.theta = theta
         self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
         self._storage = sympy.sympify(1)
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         if DuDt is None:
             self.Unknowns.DuDt = Eulerian_DDt(
@@ -667,7 +667,7 @@ class SNES_TransientDarcy(SNES_Darcy):
 
     @storage.setter
     def storage(self, value):
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._storage = sympy.sympify(value)
 
     @property
@@ -677,7 +677,7 @@ class SNES_TransientDarcy(SNES_Darcy):
 
     @delta_t.setter
     def delta_t(self, value):
-        self.is_setup = False
+        self._needs_function_rewire = True
         if hasattr(value, "value"):
             self._delta_t.sym = value.value
         elif hasattr(value, "magnitude"):
@@ -798,7 +798,7 @@ class SNES_TransientDarcy(SNES_Darcy):
             self.delta_t = timestep
 
         if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
 
         if not self.is_setup:
@@ -958,7 +958,7 @@ class SNES_Richards(SNES_TransientDarcy):
 
     @water_content.setter
     def water_content(self, value):
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._water_content = sympy.sympify(value) if value is not None else None
 
     @property
@@ -972,7 +972,7 @@ class SNES_Richards(SNES_TransientDarcy):
 
     @capacity.setter
     def capacity(self, value):
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._capacity = sympy.sympify(value)
 
     @property
@@ -1143,7 +1143,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         )
 
         # this attrib records if we need to setup the problem (again)
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         self._constitutive_model = None
 
@@ -1185,7 +1185,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             Has no effect when ``F1_source is None``.
         """
         self._F1_jacobian_source = F1_source
-        self.is_setup = False
+        self._needs_function_rewire = True
         if F1_source is not None and linesearch is not None:
             self.petsc_options["snes_linesearch_type"] = linesearch
 
@@ -1237,7 +1237,9 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         zero_init_guess: bool = True,
         timestep: float = None,
         _force_setup: bool = False,
-        verbose=False,
+        verbose: bool = False,
+        debug: bool = False,
+        debug_name: str = None,
         evalf=False,
         order=None,
         picard: int = 0,
@@ -1297,19 +1299,19 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 order = self._order
 
             if _force_setup:
-                self.is_setup = False
+                self._needs_function_rewire = True
 
             # Re-setup when effective_order changes (DDt history ramp-up)
             _current_eff_order = self.constitutive_model.effective_order
             if not hasattr(self, '_prev_effective_order'):
                 self._prev_effective_order = None
             if _current_eff_order != self._prev_effective_order:
-                self.is_setup = False
+                self._needs_function_rewire = True
                 self.constitutive_model._solver_is_setup = False
             self._prev_effective_order = _current_eff_order
 
             if not self.constitutive_model._solver_is_setup:
-                self.is_setup = False
+                self._needs_function_rewire = True
                 self.DFDt.psi_fn = self.constitutive_model.flux.T
 
             if not self.is_setup:
@@ -1674,7 +1676,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @bodyforce.setter
     def bodyforce(self, value):
         """Set the body force vector (e.g., gravity, buoyancy)."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         if isinstance(value, uw.function.expressions.UWexpression):
             self._bodyforce.sym = value.sym
         else:
@@ -1715,7 +1717,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
         """Set the Schur complement preconditioner."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         symval = sympify(value)
         self._saddle_preconditioner = symval
 
@@ -1756,7 +1758,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         """Set the augmented Lagrangian penalty parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._penalty.sym = value
 
     # @property
@@ -1991,7 +1993,7 @@ class SNES_Projection(SNES_Scalar):
             verbose,
         )
 
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympy.sympify(0)
         self._uw_weighting_function = sympy.sympify(1)
         self._uw_function = sympy.Matrix([0])  # Default: project zero
@@ -2035,7 +2037,7 @@ class SNES_Projection(SNES_Scalar):
     @smoothing.setter
     def smoothing(self, smoothing_factor):
         """Set the smoothing regularization parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympify(smoothing_factor)
 
     @property
@@ -2046,7 +2048,7 @@ class SNES_Projection(SNES_Scalar):
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
         """Set the weighting function for the projection."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._uw_weighting_function = user_uw_function
 
 
@@ -2114,7 +2116,7 @@ class SNES_Vector_Projection(SNES_Vector):
             verbose,
         )
 
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
@@ -2171,7 +2173,7 @@ class SNES_Vector_Projection(SNES_Vector):
     @smoothing.setter
     def smoothing(self, smoothing_factor):
         """Set the smoothing regularization parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympify(smoothing_factor)
 
     @property
@@ -2182,7 +2184,7 @@ class SNES_Vector_Projection(SNES_Vector):
     @penalty.setter
     def penalty(self, value):
         """Set the divergence penalty parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         symval = sympify(value)
         self._penalty = symval
 
@@ -2194,7 +2196,7 @@ class SNES_Vector_Projection(SNES_Vector):
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
         """Set the weighting function for the projection."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._uw_weighting_function = user_uw_function
 
 
@@ -2342,7 +2344,7 @@ class SNES_Tensor_Projection(SNES_Projection):
     @uw_scalar_function.setter
     def uw_scalar_function(self, user_uw_function):
         """Set the scalar component function for current tensor element."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._uw_scalar_function = user_uw_function
 
 
@@ -2401,7 +2403,7 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
             verbose=verbose,
         )
 
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympify(0)
         self._uw_weighting_function = sympify(1)
         self._uw_function = sympy.zeros(1, self._n_components)
@@ -2431,7 +2433,7 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
 
     @smoothing.setter
     def smoothing(self, value):
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympify(value)
 
     @property
@@ -2441,7 +2443,7 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
 
     @uw_weighting_function.setter
     def uw_weighting_function(self, value):
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._uw_weighting_function = value
 
 
@@ -2555,7 +2557,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         # These are unique to the advection solver
         self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         self.restore_points_to_domain_func = restore_points_func
         ### Setup the history terms ... This version should not build anything
@@ -2670,7 +2672,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the volumetric source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -2730,7 +2732,17 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        self.is_setup = False
+        # Note: comparison must handle potential UWexpressions / UWQuantities
+        # Use .data or float() to get numeric values for stable comparison
+        try:
+            old_dt = float(self._delta_t.data)
+            new_dt = float(value.data) if hasattr(value, 'data') else float(value)
+            if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
+                return
+        except:
+            pass
+
+        self._needs_function_rewire = True
 
         # Handle Pint Quantities with time dimensions
         if hasattr(value, "dimensionality"):
@@ -2931,10 +2943,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if _force_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
 
         if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
 
         if not self.is_setup:
@@ -3052,7 +3064,7 @@ class SNES_Diffusion(SNES_Scalar):
 
         # These are unique to the advection solver
         self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         ### Setup the history terms ... This version should not build anything
         ### by default - it's the template / skeleton
@@ -3152,7 +3164,7 @@ class SNES_Diffusion(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the volumetric source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -3163,7 +3175,17 @@ class SNES_Diffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        self.is_setup = False
+        # Note: comparison must handle potential UWexpressions / UWQuantities
+        # Use .data or float() to get numeric values for stable comparison
+        try:
+            old_dt = float(self._delta_t.data)
+            new_dt = float(value.data) if hasattr(value, 'data') else float(value)
+            if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
+                return
+        except:
+            pass
+
+        self._needs_function_rewire = True
 
         # Handle Pint Quantities with time dimensions
         if hasattr(value, "dimensionality"):
@@ -3307,10 +3329,10 @@ class SNES_Diffusion(SNES_Scalar):
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if _force_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
 
         if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
             # self._flux =  self.constitutive_model.flux.T
             # self._flux_star =  self._flux.copy()
@@ -3450,7 +3472,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # These are unique to the advection solver
         self._delta_t = expression(r"\Delta t", sympy.oo, "Navier-Stokes timestep")
 
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._rho = expression(R"{\uprho}", rho, "Density")
         self._first_solve = True
 
@@ -3594,7 +3616,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep value."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._delta_t.sym = value
 
     @property
@@ -3605,7 +3627,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @rho.setter
     def rho(self, value):
         """Set the fluid density."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._rho.sym = value
 
     @property
@@ -3616,7 +3638,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @f.setter
     def f(self, value):
         """Set the volumetric source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -3675,7 +3697,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @bodyforce.setter
     def bodyforce(self, value):
         """Set the body force vector."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._bodyforce = self.mesh.vector.to_matrix(value)
 
     @property
@@ -3686,7 +3708,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
         """Set the Schur complement preconditioner."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         symval = sympify(value)
         self._saddle_preconditioner = symval
 
@@ -3698,7 +3720,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         """Set the augmented Lagrangian penalty parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._penalty.sym = value
 
     @timing.routine_timer_decorator
@@ -3732,10 +3754,10 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if _force_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
 
         if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
 
         if not self.is_setup:
