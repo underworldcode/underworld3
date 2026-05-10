@@ -15,6 +15,23 @@ cdef extern from "kdtree_interface.hpp" nogil:
         void find_closest_point( size_t  num_coords, const double* coords, long unsigned int* indices, double* out_dist_sqr, bool* found )
         size_t knnSearch(const double* query_point, const size_t num_closest, long unsigned int* indices, double* out_dist_sqr )
 
+# Module-level live-instance counter for memory introspection.
+# Incremented in __cinit__ and decremented in __dealloc__ — Cython
+# guarantees deterministic destruction so this stays accurate across
+# normal use. Read via uw.utilities.memprobe.snapshot(), or directly
+# via uw.kdtree.live_count().
+cdef long _live_instances = 0
+cdef long _total_constructed = 0
+
+def live_count():
+    """Number of KDTree instances currently alive on this rank."""
+    return _live_instances
+
+def total_constructed():
+    """Total KDTree instances ever constructed on this rank."""
+    return _total_constructed
+
+
 cdef class KDTree:
     """
     Unit-aware KD-Tree for spatial indexing and queries.
@@ -84,10 +101,16 @@ cdef class KDTree:
         self.points = points
         self.index = new KDTree_Interface(<const double *> &points[0][0], points.shape[0], points.shape[1])
 
+        global _live_instances, _total_constructed
+        _live_instances += 1
+        _total_constructed += 1
+
         super().__init__()
 
     def __dealloc__(self):
         del self.index
+        global _live_instances
+        _live_instances -= 1
 
     @property
     def n(self):
