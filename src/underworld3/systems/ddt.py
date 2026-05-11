@@ -54,15 +54,67 @@ import sympy
 from sympy import sympify
 import numpy as np
 
-from typing import Optional, Callable, Union
+from dataclasses import dataclass, field
+from typing import Any, Optional, Callable, Union
 
 import underworld3 as uw
 from underworld3 import VarType
 
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
+from underworld3.checkpoint.state import SnapshottableState
 
 from petsc4py import PETSc
+
+
+# ----- Snapshot state dataclasses for DDt flavors -----
+#
+# Per the design note's "General serialisation contract" section, each
+# DDt class exposes a derived State dataclass via ``.state``. The
+# private ``_dt_history`` / ``_history_initialised`` / etc. remain the
+# authoritative store; the dataclass is built on read and unpacked on
+# write. See ``src/underworld3/checkpoint/state.py``.
+#
+# PR 3 retrofits the Symbolic class. PR 4 will extend the pattern to
+# Eulerian, SemiLagrangian, Lagrangian, and Lagrangian_Swarm — each has
+# the same dt_history / history_initialised / n_solves_completed / dt
+# core plus a flavor-specific psi_star shape.
+
+
+@dataclass
+class DDtSymbolicState(SnapshottableState):
+    """Snapshot of a :class:`Symbolic` DDt instance's evolution state.
+
+    The ``Symbolic`` class is the pure-symbolic flavor of DDt — its
+    ``psi_star`` history slots hold sympy expressions rather than
+    mesh-variable references, so they are captured by value (sympy
+    objects are immutable, so list-of-references is faithful).
+
+    Attributes
+    ----------
+    _schema_version
+        Schema version for cross-UW3-version restore (v1.1 + v1.2).
+    dt_history
+        Previous timesteps for variable-Δt BDF; length equals
+        ``order``. May contain ``None`` entries during startup.
+    history_initialised
+        True after the first ``initialise_history`` call.
+    n_solves_completed
+        Number of post-solve updates completed (bounded by ``order``
+        for effective-order ramp-up).
+    dt
+        Current timestep value (most recently set).
+    psi_star
+        List of sympy expressions: history slots. Length equals
+        ``order``.
+    """
+
+    _schema_version: int = 1
+    dt_history: list = field(default_factory=list)
+    history_initialised: bool = False
+    n_solves_completed: int = 0
+    dt: Any = None
+    psi_star: list = field(default_factory=list)
 
 
 def _as_float(value):
@@ -472,7 +524,70 @@ class Symbolic(uw_object):
         _update_am_values(self._am_coeffs, 1, self.theta)
         _update_exp_values(self._exp_coeffs, None, None)
 
+        # Register with the active default model as a Snapshottable
+        # state-bearer. Safe if no model is active.
+        try:
+            import underworld3 as _uw
+
+            _uw.get_default_model()._register_state_bearer(self)
+        except Exception:
+            pass
+
         return
+
+    # ----- Unitary snapshot / restore -----
+    #
+    # Option (B)-style adapter per the design note: state is a derived
+    # dataclass that surfaces the mutable evolution-tracking attrs.
+    # The private ``_dt_history`` / ``_history_initialised`` / etc.
+    # remain the authoritative store; the State dataclass is built on
+    # read and unpacked on write.
+    #
+    # See ``docs/developer/design/in_memory_checkpoint_design.md`` and
+    # ``src/underworld3/checkpoint/state.py`` for the contract.
+
+    @property
+    def state(self) -> "DDtSymbolicState":
+        """Return a snapshot-of-state dataclass for this DDt instance."""
+        return DDtSymbolicState(
+            dt_history=list(self._dt_history),
+            history_initialised=bool(self._history_initialised),
+            n_solves_completed=int(self._n_solves_completed),
+            dt=self._dt,
+            psi_star=list(self.psi_star),
+        )
+
+    @state.setter
+    def state(self, s: "DDtSymbolicState") -> None:
+        """Write a captured state back. Reconciles derived coefficients."""
+        if s._schema_version != DDtSymbolicState._schema_version:
+            raise ValueError(
+                f"DDtSymbolicState schema version mismatch: snapshot "
+                f"{s._schema_version} vs current "
+                f"{DDtSymbolicState._schema_version}"
+            )
+        if len(s.dt_history) != len(self._dt_history):
+            raise ValueError(
+                f"dt_history length mismatch ({len(s.dt_history)} vs "
+                f"{len(self._dt_history)}); order changed since snapshot?"
+            )
+        if len(s.psi_star) != len(self.psi_star):
+            raise ValueError(
+                f"psi_star length mismatch ({len(s.psi_star)} vs "
+                f"{len(self.psi_star)}); order changed since snapshot?"
+            )
+        self._dt_history = list(s.dt_history)
+        self._history_initialised = bool(s.history_initialised)
+        self._n_solves_completed = int(s.n_solves_completed)
+        self._dt = s.dt
+        self.psi_star = list(s.psi_star)
+        # Re-derive BDF/AM coefficients so downstream reads see values
+        # consistent with the restored primary state without waiting
+        # for the next update_pre_solve.
+        _update_bdf_values(
+            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
+        )
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
     @property
     def psi_fn(self):

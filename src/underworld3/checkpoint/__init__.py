@@ -25,6 +25,7 @@ from .snapshot import (
     snapshot,
     restore,
 )
+from .state import Snapshottable, SnapshottableState
 
 __all__ = [
     "CheckpointBackend",
@@ -34,4 +35,6 @@ __all__ = [
     "SnapshotInvalidatedError",
     "snapshot",
     "restore",
+    "Snapshottable",
+    "SnapshottableState",
 ]

@@ -126,6 +126,14 @@ class Model(PintNativeModelMixin, BaseModel):
     _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
     _solvers: Dict[str, Any] = PrivateAttr(default_factory=dict)
 
+    # State-bearing objects (DDt instances, parameter-history holders,
+    # any helper that exposes a .state dataclass per the Snapshottable
+    # protocol — see src/underworld3/checkpoint/snapshot.py). WeakSet so
+    # the registry does not pin objects past their natural lifetime.
+    # Snapshot capture and restore iterate this registry; consumers
+    # other than checkpoint may also walk it.
+    _state_bearers: Any = PrivateAttr(default_factory=weakref.WeakSet)
+
     def __init__(self, name: Optional[str] = None, **kwargs):
         """
         Initialize a new Model instance.
@@ -564,6 +572,17 @@ class Model(PintNativeModelMixin, BaseModel):
     def get_solver(self, name: str):
         """Get a solver by name from the model registry"""
         return self._solvers.get(name)
+
+    def _register_state_bearer(self, obj) -> None:
+        """Register a Snapshottable object with this model.
+
+        Called by helper classes (DDt, parameter-history holders, ...)
+        in their ``__init__``. ``obj`` should expose a ``.state``
+        attribute returning a dataclass with ``_schema_version``.
+        Membership is via WeakSet, so registration does not extend
+        ``obj``'s lifetime.
+        """
+        self._state_bearers.add(obj)
 
     def snapshot(self, *, path: Optional[str] = None):
         """Capture a unitary in-memory snapshot of the model's state.

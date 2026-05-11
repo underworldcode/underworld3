@@ -245,3 +245,112 @@ def test_swarm_internal_variables_are_not_captured():
 
     assert "material" in captured_names
     assert not any(n.startswith("DMSwarm") for n in captured_names)
+
+
+# ----- State-as-dataclass contract: Symbolic DDt -----
+
+
+def _fresh_model_mesh_and_symbolic_ddt(order=2):
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    ddt = uw.systems.ddt.Symbolic(T.sym, order=order)
+    return uw, model, mesh, T, ddt
+
+
+def test_symbolic_ddt_registers_with_model():
+    """A fresh DDt auto-registers in Model._state_bearers."""
+    uw, model, mesh, T, ddt = _fresh_model_mesh_and_symbolic_ddt()
+    assert ddt in model._state_bearers
+
+
+def test_symbolic_ddt_state_is_a_snapshottable_dataclass():
+    """``.state`` returns a SnapshottableState (DDtSymbolicState) with the
+    expected schema version."""
+    from underworld3.checkpoint import SnapshottableState
+
+    uw, model, mesh, T, ddt = _fresh_model_mesh_and_symbolic_ddt(order=2)
+    state = ddt.state
+    assert isinstance(state, SnapshottableState)
+    assert state._schema_version == 1
+    # Fresh DDt: order-sized dt_history, not initialised, zero solves.
+    assert state.dt_history == [None, None]
+    assert state.history_initialised is False
+    assert state.n_solves_completed == 0
+
+
+def test_symbolic_ddt_roundtrip_recovers_state():
+    """Snapshot mid-trajectory, advance, restore, state equals captured."""
+    uw, model, mesh, T, ddt = _fresh_model_mesh_and_symbolic_ddt(order=2)
+
+    # Advance two solves so dt_history fills.
+    ddt.update_pre_solve(dt=0.1)
+    ddt.update_post_solve(dt=0.1)
+    ddt.update_pre_solve(dt=0.2)
+    ddt.update_post_solve(dt=0.2)
+    state_pre = ddt.state
+    # Sanity: history is populated.
+    assert state_pre.history_initialised is True
+    assert state_pre.n_solves_completed == 2
+    assert state_pre.dt_history == [0.2, 0.1]
+
+    snap = model.snapshot()
+
+    # Mutate: take another solve, dt_history changes.
+    ddt.update_pre_solve(dt=0.5)
+    ddt.update_post_solve(dt=0.5)
+    assert ddt.state.dt_history == [0.5, 0.2]
+
+    model.restore(snap)
+
+    # Primary state is back to captured.
+    state_post = ddt.state
+    assert state_post.dt_history == state_pre.dt_history
+    assert state_post.history_initialised == state_pre.history_initialised
+    assert state_post.n_solves_completed == state_pre.n_solves_completed
+    assert state_post.dt == state_pre.dt
+
+
+def test_symbolic_ddt_restore_rejects_wrong_schema_version():
+    """Hand-built state with wrong _schema_version is refused on apply."""
+    uw, model, mesh, T, ddt = _fresh_model_mesh_and_symbolic_ddt(order=2)
+    bad_state = ddt.state
+    bad_state._schema_version = 999
+
+    with pytest.raises(ValueError, match="schema version"):
+        ddt.state = bad_state
+
+
+def test_symbolic_ddt_restore_rejects_order_mismatch():
+    """Restoring a state captured at a different order raises (programming-
+    error guard; in practice this shouldn't happen within a single run)."""
+    uw, model, mesh, T, ddt = _fresh_model_mesh_and_symbolic_ddt(order=2)
+    bad_state = ddt.state
+    bad_state.dt_history = [0.1, 0.2, 0.3]  # length 3 != order 2
+
+    with pytest.raises(ValueError, match="dt_history length mismatch"):
+        ddt.state = bad_state
+
+
+def test_symbolic_ddt_snapshot_is_deep_copy():
+    """Mutating the live DDt after snapshot doesn't leak into the
+    captured state-bearer payload."""
+    uw, model, mesh, T, ddt = _fresh_model_mesh_and_symbolic_ddt(order=2)
+    ddt.update_pre_solve(dt=0.1)
+    ddt.update_post_solve(dt=0.1)
+
+    snap = model.snapshot()
+    captured_state = snap.state_bearers[0][1]  # (key, state)
+    captured_dt_history = list(captured_state.dt_history)
+
+    # Scribble the live DDt's internal state — must not leak into snapshot.
+    ddt._dt_history[0] = -999.0
+    ddt._n_solves_completed = 42
+
+    assert captured_state.dt_history == captured_dt_history
+    assert captured_state.n_solves_completed != 42

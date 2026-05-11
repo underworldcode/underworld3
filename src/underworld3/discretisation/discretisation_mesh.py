@@ -2595,6 +2595,11 @@ class Mesh(Stateful, uw_object):
         var_arrays: Dict[str, numpy.ndarray] = {}
         for var in self.vars.values():
             var._sync_lvec_to_gvec()
+            # Variables created but never touched have _gvec=None (lazy
+            # allocation in MeshVariable). They carry no data so they
+            # contribute nothing to the snapshot — skip cleanly.
+            if var._gvec is None:
+                continue
             var_arrays[var.clean_name] = numpy.asarray(var._gvec.array).copy()
         return {
             "name": self.name,

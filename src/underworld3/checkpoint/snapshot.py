@@ -36,12 +36,14 @@ are scheduled for follow-up PRs per the design note.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
 
 from .backend import CheckpointBackend, InMemoryBackend
+from .state import SnapshottableState
 
 
 SNAPSHOT_SCHEMA_VERSION = 1
@@ -126,6 +128,12 @@ class Snapshot:
     swarm_mesh_names: dict[str, str] = field(default_factory=dict)
     swarm_generations: dict[str, int] = field(default_factory=dict)
     swarmvar_names: dict[str, list[str]] = field(default_factory=dict)
+    # State-bearer captures: list of (stable_key, state_dataclass).
+    # stable_key is f"{type(obj).__name__}_{obj.instance_number}", matched
+    # at restore against the same key derived from currently-registered
+    # state-bearers. List preserves capture order — informational only,
+    # since lookup is by key.
+    state_bearers: list = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -184,6 +192,8 @@ def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
         _capture_mesh(snap, mesh)
     for swarm in list(model._swarms.values()):
         _capture_swarm(snap, swarm)
+    for obj in list(model._state_bearers):
+        _capture_state_bearer(snap, obj)
     return snap
 
 
@@ -205,6 +215,32 @@ def _capture_mesh(snap: Snapshot, mesh) -> None:
         snap.backend.save_vector(_meshvar_key(name, var_clean_name), gvec_array)
         var_names.append(var_clean_name)
     snap.meshvar_names[name] = var_names
+
+
+def _state_bearer_key(obj) -> str:
+    """Stable per-process key for a Snapshottable. ``instance_number``
+    comes from ``uw_object`` and is unique across the run."""
+    return f"{type(obj).__name__}_{obj.instance_number}"
+
+
+def _capture_state_bearer(snap: Snapshot, obj) -> None:
+    """Pull ``obj.state`` and store a deep copy.
+
+    Deep copy ensures later mutations on the live state-bearer don't
+    leak into the captured token. The dataclass itself is the storage
+    here (no separate backend.save_vector call) because state
+    dataclasses are small Python objects, not bulk numerical arrays.
+    v1.1's on-disk backend will route the dataclass through the
+    backend (HDF5 attrs/groups); v1 holds them in the in-memory Snapshot
+    directly.
+    """
+    state = obj.state
+    if not isinstance(state, SnapshottableState):
+        raise TypeError(
+            f"{type(obj).__name__}.state must be a SnapshottableState, "
+            f"got {type(state).__name__}"
+        )
+    snap.state_bearers.append((_state_bearer_key(obj), copy.deepcopy(state)))
 
 
 def _capture_swarm(snap: Snapshot, swarm) -> None:
@@ -301,6 +337,20 @@ def restore(model, snap: Snapshot) -> None:
             )
         payload = _build_swarm_payload(snap, swarm_name)
         swarm.apply_snapshot_payload(payload)
+
+    if snap.state_bearers:
+        bearers_by_key = {
+            _state_bearer_key(o): o for o in list(model._state_bearers)
+        }
+        for key, captured_state in snap.state_bearers:
+            obj = bearers_by_key.get(key)
+            if obj is None:
+                raise SnapshotInvalidatedError(
+                    f"state-bearer {key!r} from snapshot is not registered "
+                    f"on this Model; restore requires the originating "
+                    f"Model"
+                )
+            obj.state = copy.deepcopy(captured_state)
 
 
 def _build_mesh_payload(snap: Snapshot, mesh_name: str) -> dict:
