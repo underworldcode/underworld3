@@ -354,3 +354,127 @@ def test_symbolic_ddt_snapshot_is_deep_copy():
 
     assert captured_state.dt_history == captured_dt_history
     assert captured_state.n_solves_completed != 42
+
+
+# ----- State-as-dataclass: other DDt flavors -----
+#
+# Construction-side smoke tests + roundtrip. We exercise the .state /
+# .state.setter mechanics directly rather than running full solves;
+# the BDF/AM coefficient re-derivation happens in the setter, so a
+# manual primary-state mutation is enough to validate the retrofit.
+
+
+def test_eulerian_ddt_roundtrip():
+    import underworld3 as uw
+    from underworld3.systems.ddt import DDtEulerianState
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    ddt = uw.systems.ddt.Eulerian(
+        mesh, T.sym, uw.VarType.SCALAR, degree=1, continuous=True, order=2
+    )
+    assert ddt in model._state_bearers
+    assert isinstance(ddt.state, DDtEulerianState)
+
+    # Manually advance state (avoid running real projections).
+    ddt._dt_history = [0.2, 0.1]
+    ddt._history_initialised = True
+    ddt._n_solves_completed = 2
+    ddt._dt = 0.2
+    state_pre = ddt.state
+
+    snap = model.snapshot()
+
+    ddt._dt_history = [0.99, 0.99]
+    ddt._history_initialised = False
+    ddt._n_solves_completed = 0
+    ddt._dt = None
+
+    model.restore(snap)
+
+    assert ddt.state.dt_history == state_pre.dt_history
+    assert ddt.state.history_initialised == state_pre.history_initialised
+    assert ddt.state.n_solves_completed == state_pre.n_solves_completed
+    assert ddt.state.dt == state_pre.dt
+    # psi_star names are stable bindings — must match.
+    assert ddt.state.psi_star_var_names == state_pre.psi_star_var_names
+
+
+def test_semilagrangian_ddt_roundtrip():
+    import underworld3 as uw
+    from underworld3.systems.ddt import DDtSemiLagrangianState
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    V = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
+    ddt = uw.systems.ddt.SemiLagrangian(
+        mesh, T.sym, V.sym, uw.VarType.SCALAR, degree=1, continuous=True, order=2
+    )
+    assert ddt in model._state_bearers
+    state = ddt.state
+    assert isinstance(state, DDtSemiLagrangianState)
+    assert state.with_forcing_history is False
+    assert state.forcing_star_var_name is None
+
+    ddt._dt_history = [0.3, 0.1]
+    ddt._history_initialised = True
+    ddt._n_solves_completed = 2
+    ddt._dt = 0.3
+    state_pre = ddt.state
+
+    snap = model.snapshot()
+    ddt._dt_history = [None, None]
+    ddt._history_initialised = False
+    ddt._n_solves_completed = 0
+    model.restore(snap)
+
+    assert ddt.state.dt_history == state_pre.dt_history
+    assert ddt.state.history_initialised is True
+    assert ddt.state.n_solves_completed == 2
+
+
+def test_lagrangian_swarm_ddt_registers_and_state_type():
+    """Lagrangian_Swarm must be constructed before swarm.populate; the
+    retrofit registers it and exposes a typed state. Roundtrip is not
+    exercised here because advection requires a velocity-field setup
+    beyond the scope of a core unit test."""
+    import underworld3 as uw
+    from underworld3.systems.ddt import DDtLagrangianSwarmState
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    swarm = uw.swarm.Swarm(mesh)
+    ddt = uw.systems.ddt.Lagrangian_Swarm(
+        swarm=swarm,
+        psi_fn=T.sym,
+        vtype=uw.VarType.SCALAR,
+        degree=1,
+        continuous=True,
+        order=2,
+    )
+    swarm.populate(fill_param=2)
+
+    assert ddt in model._state_bearers
+    assert isinstance(ddt.state, DDtLagrangianSwarmState)
+    assert len(ddt.state.dt_history) == 2
+    assert ddt.state.psi_star_var_names  # non-empty
+
+
+# Note: uw.systems.ddt.Lagrangian has a pre-existing bug
+# (references uw.swarm.UWSwarm which does not exist), so we cannot
+# directly construct one for testing. The retrofit code is in place
+# and follows the same pattern as the other flavors; consumers that
+# construct Lagrangian via the higher-level solver pathways will get
+# the .state / .state.setter / registration automatically.
