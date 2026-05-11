@@ -113,3 +113,104 @@ def test_snapshot_path_is_v1_1_scope():
 
     with pytest.raises(NotImplementedError):
         model.snapshot(path="/tmp/should_not_be_written.h5")
+
+
+# ----- Swarm coverage -----
+
+
+def _fresh_model_mesh_and_swarm(with_material=True):
+    """Create a fresh model + mesh + swarm. Swarm-variable creation must
+    happen before populate(), so we build everything in one place.
+    """
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    swarm = uw.swarm.Swarm(mesh)
+    material = None
+    if with_material:
+        material = swarm.add_variable("material", 1, dtype=float)
+    swarm.populate(fill_param=2)
+    return uw, model, mesh, swarm, material
+
+
+def test_swarm_positions_and_variable_roundtrip():
+    """Snapshot, scramble swarm positions + svar, restore: both come back."""
+    uw, model, mesh, swarm, material = _fresh_model_mesh_and_swarm()
+
+    coords = swarm._particle_coordinates.data
+    material.data[:, 0] = 0.5 * coords[:, 0] + coords[:, 1]
+    coords_pre = coords.copy()
+    material_pre = np.asarray(material.data).copy()
+
+    snap = model.snapshot()
+
+    coord_field = swarm.dm.getField("DMSwarmPIC_coor").reshape((-1, swarm.dim))
+    coord_field[...] = -99.0
+    swarm.dm.restoreField("DMSwarmPIC_coor")
+    material.data[...] = -99.0
+
+    model.restore(snap)
+
+    assert np.allclose(swarm._particle_coordinates.data, coords_pre)
+    assert np.allclose(np.asarray(material.data), material_pre)
+
+
+def test_swarm_population_generation_starts_at_zero_and_bumps():
+    """Sanity-check the counter bumps on each mutation category."""
+    uw, model, mesh, swarm, _ = _fresh_model_mesh_and_swarm(with_material=False)
+    after_populate = swarm._population_generation
+    swarm.migrate(remove_sent_points=True)
+    after_migrate = swarm._population_generation
+    swarm.add_particles_with_coordinates(np.array([[0.5, 0.5]]))
+    after_add_local = swarm._population_generation
+    swarm.add_particles_with_global_coordinates(np.array([[0.25, 0.25]]))
+    after_add_global = swarm._population_generation
+
+    assert after_populate >= 1
+    assert after_migrate > after_populate
+    assert after_add_local > after_migrate
+    assert after_add_global > after_add_local
+
+
+def test_swarm_migrate_invalidates_restore():
+    """A migrate() call between snapshot and restore makes restore refuse."""
+    from underworld3.checkpoint import SnapshotInvalidatedError
+
+    uw, model, mesh, swarm, _ = _fresh_model_mesh_and_swarm()
+
+    snap = model.snapshot()
+    swarm.migrate(remove_sent_points=True)
+
+    with pytest.raises(SnapshotInvalidatedError, match="_population_generation"):
+        model.restore(snap)
+
+
+def test_swarm_add_particles_invalidates_restore():
+    """add_particles_with_coordinates between snapshot and restore raises."""
+    from underworld3.checkpoint import SnapshotInvalidatedError
+
+    uw, model, mesh, swarm, _ = _fresh_model_mesh_and_swarm()
+
+    snap = model.snapshot()
+    swarm.add_particles_with_coordinates(np.array([[0.5, 0.5]]))
+
+    with pytest.raises(SnapshotInvalidatedError, match="_population_generation"):
+        model.restore(snap)
+
+
+def test_swarm_internal_variables_are_not_captured():
+    """Internal DMSwarm_* variables stay out of the snapshot key list."""
+    uw, model, mesh, swarm, _ = _fresh_model_mesh_and_swarm()
+
+    snap = model.snapshot()
+    keys = snap.backend.list_vectors()
+    swarmvar_keys = [k for k in keys if k.startswith(f"swarm:{id(swarm)}:var:")]
+    captured_names = {k.split(":var:")[1].split(":data")[0] for k in swarmvar_keys}
+
+    # User variable present, PETSc-internal ones absent.
+    assert "material" in captured_names
+    assert not any(n.startswith("DMSwarm") for n in captured_names)
