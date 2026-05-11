@@ -7,10 +7,31 @@ restored back onto the same :class:`underworld3.Model` instance; across
 processes (v1.1, on-disk backend) the model is initialised from the
 snapshot rather than restored to a previous state.
 
+Forward-compatibility for v1.2 (mesh-adapt rebuild on restore)
+---------------------------------------------------------------
+The snapshot module is structured so that v1.2 can replace the
+``_mesh_version`` refusal with a true mesh-DM rebuild without touching
+this module. Two principles support this:
+
+- **Capture by stable name, not by Python id.** Meshes are keyed by
+  ``mesh.name``, swarms by ``f"swarm_{instance_number}"``. Within a
+  single process this is overkill (object id would work); but it
+  trivialises v1.1 cross-process restore and v1.2 mesh-rebuild (where
+  the wrapper object survives but its DM is destroyed and recreated).
+
+- **Wrappers, not the snapshot module, decide how to apply a payload.**
+  ``Mesh.apply_snapshot_payload()`` and ``Swarm.apply_snapshot_payload()``
+  receive a self-contained dict and decide what to do with it. v1
+  implementations are in-place writes; v1.2's mesh implementation can
+  inspect the topology slot of the payload (left ``None`` by v1
+  capture) and rebuild the DM if needed, without any change to the
+  capture / orchestration here.
+
 This module implements the v1 scope: mesh coordinates and mesh-variable
-DOFs. Swarm coverage, solver-internal Python state, on-disk backend,
-schema versioning, and cross-process restore are scheduled for follow-up
-PRs per the design note.
+DOFs, plus swarm positions and user swarm-variable data with
+rebuild-on-restore semantics. Solver-internal Python state, on-disk
+backend, schema versioning, mesh-DM rebuild, and cross-process restore
+are scheduled for follow-up PRs per the design note.
 """
 
 from __future__ import annotations
@@ -29,15 +50,28 @@ SNAPSHOT_SCHEMA_VERSION = 1
 class SnapshotInvalidatedError(RuntimeError):
     """Raised when a snapshot can no longer be restored faithfully.
 
-    Triggers in v1: mesh ``_mesh_version`` differs from the snapshot
-    (mesh has been adapted; DM identity has changed), or a registered
-    mesh / mesh-variable named in the snapshot is no longer present on
-    the target :class:`underworld3.Model`.
+    Triggers in v1:
 
-    Future triggers (subsequent PRs): swarm population-generation
-    counter mismatch, on-disk schema version that has no migration
-    path.
+    - A captured mesh / swarm / variable name is no longer present on
+      the target :class:`underworld3.Model`.
+    - Mesh ``_mesh_version`` differs from the snapshot's captured
+      value. v1 treats this as fatal because the captured DOF arrays
+      are sized for the pre-adapt section. **v1.2 will replace this
+      refusal with a mesh-rebuild path** on the same principle as the
+      swarm rebuild — see the design note's mesh-adapt scope section.
+
+    Notably **not** a trigger: swarm population mutation
+    (populate / migrate / add_particles / remesh) between capture and
+    restore. The swarm restore path *rebuilds* the local particle
+    population from the snapshot, so intervening mutations are exactly
+    what restore is for. The ``_population_generation`` counter on the
+    swarm is informational, not a restore gate.
     """
+
+
+def _swarm_stable_name(swarm) -> str:
+    """Per-process stable name for a swarm. Uses uw_object instance number."""
+    return f"swarm_{swarm.instance_number}"
 
 
 @dataclass
@@ -45,69 +79,99 @@ class Snapshot:
     """Unitary state token.
 
     Produced by :func:`snapshot`; consumed by :func:`restore`. Holds a
-    backend (where the bulk arrays live) plus per-Model bookkeeping —
-    which meshes were captured, which mesh variables were captured
-    under each mesh, and the mesh-version counters that gate
-    within-process restore.
+    backend (where the bulk arrays live) plus per-model bookkeeping —
+    which meshes and swarms were captured, in what order, with what
+    variable sets.
 
     Attributes
     ----------
     backend
-        Where the captured arrays live. v1 always uses
-        :class:`InMemoryBackend`; v1.1 will add on-disk backends.
+        Where the captured arrays and small metadata live.
     schema_version
         Snapshot file-format version. Restore refuses on mismatch in
         v1; v1.1's migration registry will lift older versions to the
         current schema for on-disk restore only.
-    mesh_keys
-        Stable ordering of captured mesh identifiers (``id(mesh)``);
-        determines restore order.
+    mesh_names
+        Capture order of mesh names. ``mesh.name`` is the stable key.
     mesh_versions
-        Per-mesh ``_mesh_version`` at the moment of capture. Restore
-        compares against the current value; mismatch ⇒
-        :class:`SnapshotInvalidatedError`.
+        Per-mesh ``_mesh_version`` at the moment of capture. v1
+        compares strictly; v1.2 will rebuild on mismatch.
     meshvar_names
-        Mapping ``mesh_id → [var.clean_name, ...]`` — the mesh
-        variables captured for that mesh, in capture order.
+        Mapping ``mesh_name → [var clean_name, ...]``.
+    swarm_names
+        Capture order of swarm stable names
+        (``f"swarm_{instance_number}"``).
+    swarm_mesh_names
+        Mapping ``swarm_name → mesh_name`` so restore can verify the
+        swarm's parent mesh is still the captured one.
+    swarm_generations
+        Captured ``_population_generation`` per swarm — informational
+        metadata; *not* a restore gate. Useful for logs and debugging
+        ("this snapshot was taken at generation 7; the current swarm
+        is at 12").
+    swarmvar_names
+        Mapping ``swarm_name → [user-var clean_name, ...]``. Internal
+        DMSwarm-prefixed variables are filtered out.
     metadata
-        User-visible bookkeeping (simulation time, step counter, free
-        text). Not load-bearing for restore correctness.
+        Free-form user/system metadata (simulation time, step counter,
+        ...). Not load-bearing for restore correctness.
     """
 
     backend: CheckpointBackend
     schema_version: int = SNAPSHOT_SCHEMA_VERSION
-    mesh_keys: list[int] = field(default_factory=list)
-    mesh_versions: dict[int, int] = field(default_factory=dict)
-    meshvar_names: dict[int, list[str]] = field(default_factory=dict)
+    mesh_names: list[str] = field(default_factory=list)
+    mesh_versions: dict[str, int] = field(default_factory=dict)
+    meshvar_names: dict[str, list[str]] = field(default_factory=dict)
+    swarm_names: list[str] = field(default_factory=list)
+    swarm_mesh_names: dict[str, str] = field(default_factory=dict)
+    swarm_generations: dict[str, int] = field(default_factory=dict)
+    swarmvar_names: dict[str, list[str]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def _mesh_coords_key(mesh_id: int) -> str:
-    return f"mesh:{mesh_id}:coords"
+# ----- Backend key conventions -----
+
+def _mesh_coords_key(mesh_name: str) -> str:
+    return f"mesh:{mesh_name}:coords"
 
 
-def _meshvar_key(mesh_id: int, var_clean_name: str) -> str:
-    return f"mesh:{mesh_id}:var:{var_clean_name}:gvec"
+def _meshvar_key(mesh_name: str, var_clean_name: str) -> str:
+    return f"mesh:{mesh_name}:var:{var_clean_name}:gvec"
 
+
+def _swarm_coords_key(swarm_name: str) -> str:
+    return f"swarm:{swarm_name}:coords"
+
+
+def _swarmvar_key(swarm_name: str, var_clean_name: str) -> str:
+    return f"swarm:{swarm_name}:var:{var_clean_name}:data"
+
+
+def _is_internal_swarmvar(var_name: str) -> bool:
+    """Filter PETSc-managed internal swarm variables from user capture.
+
+    ``DMSwarmPIC_coor`` is captured separately via the particle-coords
+    path. ``DMSwarm_X0`` and ``DMSwarm_remeshed`` carry recycle-related
+    bookkeeping that is regenerated on next solve and is out of scope
+    for v1 capture.
+    """
+    return var_name.startswith("DMSwarm")
+
+
+# ----- Capture (orchestration) -----
 
 def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
     """Capture a unitary snapshot of the model's current state.
 
-    Parameters
-    ----------
-    model
-        The :class:`underworld3.Model` whose registered meshes and
-        mesh variables should be captured.
-    path
-        Reserved for the v1.1 on-disk backend. Passing a non-``None``
-        value raises :class:`NotImplementedError` in v1.
+    Captures, in v1: each registered mesh's deformed coordinates and
+    every mesh-variable's global-vector DOFs; each registered swarm's
+    per-rank particle coordinates and user swarm-variable arrays.
 
-    Returns
-    -------
-    Snapshot
-        Token suitable for passing to :func:`restore` on the same
-        ``model`` instance within the same process. v1 captures mesh
-        coordinates and mesh-variable global-vector DOF values.
+    Pass ``path=...`` once the v1.1 on-disk backend lands. v1 raises
+    ``NotImplementedError``.
+
+    See ``docs/developer/design/in_memory_checkpoint_design.md`` for
+    the design rationale and scope boundaries.
     """
     if path is not None:
         raise NotImplementedError(
@@ -116,44 +180,69 @@ def snapshot(model, *, path: Optional[str] = None) -> Snapshot:
         )
 
     snap = Snapshot(backend=InMemoryBackend())
-    for mesh_id, mesh in list(model._meshes.items()):
-        _capture_mesh(snap, mesh_id, mesh)
+    for mesh in list(model._meshes.values()):
+        _capture_mesh(snap, mesh)
+    for swarm in list(model._swarms.values()):
+        _capture_swarm(snap, swarm)
     return snap
 
 
-def _capture_mesh(snap: Snapshot, mesh_id: int, mesh) -> None:
-    if mesh_id in snap.mesh_keys:
-        return
-    snap.mesh_keys.append(mesh_id)
-    snap.mesh_versions[mesh_id] = int(getattr(mesh, "_mesh_version", 0))
+def _capture_mesh(snap: Snapshot, mesh) -> None:
+    payload = mesh.snapshot_payload()
+    name = payload["name"]
+    if name in snap.mesh_names:
+        raise RuntimeError(
+            f"duplicate mesh name {name!r} in snapshot capture; mesh names "
+            f"must be unique within a Model"
+        )
+    snap.mesh_names.append(name)
+    snap.mesh_versions[name] = payload["mesh_version"]
 
-    coords = np.asarray(mesh.X.coords)
-    snap.backend.save_vector(_mesh_coords_key(mesh_id), coords)
+    snap.backend.save_vector(_mesh_coords_key(name), payload["coords"])
 
     var_names: list[str] = []
-    for var in mesh.vars.values():
-        var._sync_lvec_to_gvec()
-        gvec_array = np.asarray(var._gvec.array)
-        snap.backend.save_vector(_meshvar_key(mesh_id, var.clean_name), gvec_array)
-        var_names.append(var.clean_name)
-    snap.meshvar_names[mesh_id] = var_names
+    for var_clean_name, gvec_array in payload["vars"].items():
+        snap.backend.save_vector(_meshvar_key(name, var_clean_name), gvec_array)
+        var_names.append(var_clean_name)
+    snap.meshvar_names[name] = var_names
 
+
+def _capture_swarm(snap: Snapshot, swarm) -> None:
+    payload = swarm.snapshot_payload()
+    name = payload["name"]
+    if name in snap.swarm_names:
+        raise RuntimeError(
+            f"duplicate swarm name {name!r} in snapshot capture"
+        )
+    snap.swarm_names.append(name)
+    snap.swarm_mesh_names[name] = payload["mesh_name"]
+    snap.swarm_generations[name] = payload["population_generation"]
+
+    snap.backend.save_vector(_swarm_coords_key(name), payload["coords"])
+
+    var_names: list[str] = []
+    for var_clean_name, data in payload["vars"].items():
+        snap.backend.save_vector(_swarmvar_key(name, var_clean_name), data)
+        var_names.append(var_clean_name)
+    snap.swarmvar_names[name] = var_names
+
+
+# ----- Restore (orchestration) -----
 
 def restore(model, snap: Snapshot) -> None:
     """Restore the model from a snapshot.
 
-    Restore order (within-process; cross-process is v1.1):
+    Mesh restore in v1 writes captured coords + DOFs back in place. If
+    the mesh's ``_mesh_version`` has moved since capture, restore
+    raises :class:`SnapshotInvalidatedError` — this becomes a rebuild
+    path in v1.2.
 
-    1. Mesh coordinates (via :meth:`Mesh._deform_mesh`, which rebuilds
-       coordinate caches and notifies registered callbacks).
-    2. Mesh-variable DOFs (global vector written, then synced to local
-       vector via ``subdm.globalToLocal``).
-    3. ``_mesh_version`` is verified equal to the capture value before
-       any write; mismatch raises :class:`SnapshotInvalidatedError`.
-
-    Future PRs extend the order to: swarm positions + migrate → swarm
-    variable values → solver-internal Python state (DDt history,
-    parameter mutation history) → generation-counter validation last.
+    Swarm restore *rebuilds* the local particle population: clears
+    current particles, re-adds at captured coords, writes captured
+    per-variable data back in order. This is the rebuild-on-restore
+    semantics described in the design note's "Restore semantics for
+    swarms" section — restore is precisely *for* the case where
+    particles have moved / been added / been removed since capture.
 
     Parameters
     ----------
@@ -166,8 +255,9 @@ def restore(model, snap: Snapshot) -> None:
     Raises
     ------
     SnapshotInvalidatedError
-        Mesh ``_mesh_version`` has changed since capture, or a
-        captured mesh / variable is no longer registered on the model.
+        Captured mesh / swarm / variable is no longer registered on
+        the model, or mesh ``_mesh_version`` has moved since capture
+        (mesh-adapt is v1.2 scope).
     TypeError
         ``snap`` is not a :class:`Snapshot`.
     """
@@ -181,53 +271,66 @@ def restore(model, snap: Snapshot) -> None:
             f"current {SNAPSHOT_SCHEMA_VERSION}; on-disk migration is v1.1"
         )
 
-    for mesh_id in snap.mesh_keys:
-        mesh = model._meshes.get(mesh_id)
+    meshes_by_name = {m.name: m for m in model._meshes.values()}
+    swarms_by_name = {_swarm_stable_name(s): s for s in model._swarms.values()}
+
+    for mesh_name in snap.mesh_names:
+        mesh = meshes_by_name.get(mesh_name)
         if mesh is None:
             raise SnapshotInvalidatedError(
-                f"mesh id {mesh_id} from snapshot is not registered on this "
-                f"Model; within-process restore requires the originating Model"
+                f"mesh {mesh_name!r} from snapshot is not registered on "
+                f"this Model; within-process restore requires the originating "
+                f"Model"
             )
-        current_version = int(getattr(mesh, "_mesh_version", 0))
-        captured_version = snap.mesh_versions[mesh_id]
-        if current_version != captured_version:
+        payload = _build_mesh_payload(snap, mesh_name)
+        mesh.apply_snapshot_payload(payload)
+
+    for swarm_name in snap.swarm_names:
+        swarm = swarms_by_name.get(swarm_name)
+        if swarm is None:
             raise SnapshotInvalidatedError(
-                f"mesh._mesh_version moved from {captured_version} to "
-                f"{current_version} since snapshot — likely mesh.adapt() or "
-                f"deform_mesh() invalidated the DM identity"
+                f"swarm {swarm_name!r} from snapshot is not registered on "
+                f"this Model"
             )
-        _restore_mesh(snap, mesh_id, mesh)
+        expected_mesh_name = snap.swarm_mesh_names[swarm_name]
+        if swarm.mesh.name != expected_mesh_name:
+            raise SnapshotInvalidatedError(
+                f"swarm {swarm_name!r} parent mesh changed from "
+                f"{expected_mesh_name!r} to {swarm.mesh.name!r} since "
+                f"snapshot"
+            )
+        payload = _build_swarm_payload(snap, swarm_name)
+        swarm.apply_snapshot_payload(payload)
 
 
-def _restore_mesh(snap: Snapshot, mesh_id: int, mesh) -> None:
-    coords = snap.backend.load_vector(_mesh_coords_key(mesh_id))
-    expected_shape = np.asarray(mesh.X.coords).shape
-    if coords.shape != expected_shape:
-        raise SnapshotInvalidatedError(
-            f"mesh coordinate shape changed: snapshot {coords.shape} vs "
-            f"current {expected_shape}"
-        )
-    mesh._deform_mesh(coords)
+def _build_mesh_payload(snap: Snapshot, mesh_name: str) -> dict:
+    return {
+        "name": mesh_name,
+        "captured_mesh_version": snap.mesh_versions[mesh_name],
+        "coords": snap.backend.load_vector(_mesh_coords_key(mesh_name)),
+        # Topology is None in v1; v1.2 mesh-rebuild path will populate
+        # this slot (e.g., section view data) without bumping the
+        # schema version, because v1 reads ignore the key.
+        "topology": None,
+        "vars": {
+            var_clean_name: snap.backend.load_vector(
+                _meshvar_key(mesh_name, var_clean_name)
+            )
+            for var_clean_name in snap.meshvar_names[mesh_name]
+        },
+    }
 
-    current_vars = {var.clean_name: var for var in mesh.vars.values()}
-    for var_clean_name in snap.meshvar_names[mesh_id]:
-        var = current_vars.get(var_clean_name)
-        if var is None:
-            raise SnapshotInvalidatedError(
-                f"mesh variable {var_clean_name!r} from snapshot is not "
-                f"present on mesh; restore requires the same variable set"
+
+def _build_swarm_payload(snap: Snapshot, swarm_name: str) -> dict:
+    return {
+        "name": swarm_name,
+        "mesh_name": snap.swarm_mesh_names[swarm_name],
+        "captured_population_generation": snap.swarm_generations[swarm_name],
+        "coords": snap.backend.load_vector(_swarm_coords_key(swarm_name)),
+        "vars": {
+            var_clean_name: snap.backend.load_vector(
+                _swarmvar_key(swarm_name, var_clean_name)
             )
-        var._sync_lvec_to_gvec()  # ensures _gvec exists with a current size
-        saved = snap.backend.load_vector(_meshvar_key(mesh_id, var_clean_name))
-        current_shape = np.asarray(var._gvec.array).shape
-        if saved.shape != current_shape:
-            raise SnapshotInvalidatedError(
-                f"variable {var_clean_name!r} gvec shape changed: snapshot "
-                f"{saved.shape} vs current {current_shape}"
-            )
-        var._gvec.array[...] = saved
-        iset, subdm = mesh.dm.createSubDM(var.field_id)
-        subdm.globalToLocal(var._gvec, var._lvec, addv=False)
-        iset.destroy()
-        subdm.destroy()
-        mesh._stale_lvec = True
+            for var_clean_name in snap.swarmvar_names[swarm_name]
+        },
+    }

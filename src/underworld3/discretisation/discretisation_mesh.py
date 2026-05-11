@@ -2567,6 +2567,102 @@ class Mesh(Stateful, uw_object):
         uw.mpi.barrier()  # should not be required
         viewer.destroy()
 
+    # ----- Unitary snapshot / restore -----
+    #
+    # See ``src/underworld3/checkpoint/snapshot.py`` and
+    # ``docs/developer/design/in_memory_checkpoint_design.md``. v1
+    # captures deformed coords + per-MV global-vector DOFs; v1.2 will
+    # add topology / section capture so the DM can be rebuilt on
+    # restore after ``mesh.adapt()``.
+
+    def snapshot_payload(self) -> dict:
+        """Return a self-contained dict describing this mesh's state.
+
+        The returned dict is consumed by
+        :mod:`underworld3.checkpoint.snapshot` capture. Keys:
+
+        - ``name``: stable string identifier for the mesh.
+        - ``mesh_version``: current ``_mesh_version`` integer.
+        - ``coords``: deformed mesh coordinates (numpy array).
+        - ``vars``: ``{var.clean_name: gvec_array.copy()}`` for every
+          mesh variable on this mesh.
+
+        v1.2 will additionally populate a ``topology`` key with
+        section / DM-topology data sufficient to rebuild the DM on
+        restore.
+        """
+        coords = numpy.asarray(self.X.coords).copy()
+        var_arrays: Dict[str, numpy.ndarray] = {}
+        for var in self.vars.values():
+            var._sync_lvec_to_gvec()
+            var_arrays[var.clean_name] = numpy.asarray(var._gvec.array).copy()
+        return {
+            "name": self.name,
+            "mesh_version": int(getattr(self, "_mesh_version", 0)),
+            "coords": coords,
+            "vars": var_arrays,
+        }
+
+    def apply_snapshot_payload(self, payload: dict) -> None:
+        """Restore this mesh from a payload produced by :meth:`snapshot_payload`.
+
+        v1 implementation writes coordinates and per-variable DOFs
+        back in place. The captured DOF arrays must match the current
+        section, which means ``_mesh_version`` must equal the captured
+        value — mesh-adapt during the interval would have resized the
+        section and is detected as a v1 refusal here.
+
+        v1.2 will replace the ``_mesh_version`` refusal with a
+        rebuild-from-payload path: destroy the current DM, rebuild
+        from ``payload["topology"]``, allocate vectors, write DOFs,
+        and re-bind MeshVariable / Swarm wrappers. The interface stays
+        the same; only this method's body changes.
+        """
+        from underworld3.checkpoint.snapshot import SnapshotInvalidatedError
+
+        current_version = int(getattr(self, "_mesh_version", 0))
+        captured_version = int(payload["captured_mesh_version"])
+        if current_version != captured_version:
+            raise SnapshotInvalidatedError(
+                f"mesh {self.name!r}: _mesh_version moved from "
+                f"{captured_version} to {current_version} since snapshot. "
+                f"mesh.adapt() rebuild on restore is scheduled for v1.2; "
+                f"v1 refuses rather than corrupt the DOF arrays"
+            )
+
+        coords = numpy.asarray(payload["coords"])
+        expected_shape = numpy.asarray(self.X.coords).shape
+        if coords.shape != expected_shape:
+            raise SnapshotInvalidatedError(
+                f"mesh {self.name!r}: coordinate shape changed "
+                f"({coords.shape} vs current {expected_shape}); programming "
+                f"error since _mesh_version matched"
+            )
+        self._deform_mesh(coords)
+
+        current_vars = {var.clean_name: var for var in self.vars.values()}
+        for var_clean_name, saved_array in payload["vars"].items():
+            var = current_vars.get(var_clean_name)
+            if var is None:
+                raise SnapshotInvalidatedError(
+                    f"mesh {self.name!r}: variable {var_clean_name!r} "
+                    f"from snapshot is no longer present"
+                )
+            var._sync_lvec_to_gvec()
+            current_shape = numpy.asarray(var._gvec.array).shape
+            if saved_array.shape != current_shape:
+                raise SnapshotInvalidatedError(
+                    f"mesh {self.name!r}: variable {var_clean_name!r} gvec "
+                    f"shape changed ({saved_array.shape} vs current "
+                    f"{current_shape})"
+                )
+            var._gvec.array[...] = saved_array
+            iset, subdm = self.dm.createSubDM(var.field_id)
+            subdm.globalToLocal(var._gvec, var._lvec, addv=False)
+            iset.destroy()
+            subdm.destroy()
+            self._stale_lvec = True
+
     @timing.routine_timer_decorator
     def write(self, filename: str, index: Optional[int] = None):
         """
