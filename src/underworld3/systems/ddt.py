@@ -1765,8 +1765,14 @@ class SemiLagrangian(uw_object):
 
             except Exception:
                 # Fallback to projection solver for expressions that can't be directly evaluated
-                # (e.g., containing derivatives)
-                self._psi_star_projection_solver.uw_function = self.psi_fn
+                # (e.g., containing derivatives — true for the NS viscous flux every step).
+                # Route via _build_projection_source so the (1, Nc) row-matrix flattening
+                # required by SNES_MultiComponent_Projection is applied for tensor vtypes.
+                # Without this, a (dim, dim) tensor function meets a (1, Nc) solver field
+                # and SymPy raises "Matrix size mismatch: (1, Nc) + (dim, dim)" (issue #180).
+                self._psi_star_projection_solver.uw_function = self._build_projection_source(
+                    self.psi_fn
+                )
                 self._psi_star_projection_solver.smoothing = 0.0
                 self._psi_star_projection_solver.solve(verbose=verbose)
 
