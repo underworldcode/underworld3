@@ -1042,12 +1042,21 @@ class PICSwarm(Stateful, uw_object):
         if self.vtype == uw.VarType.MATRIX:
             return i + j * self.shape[0]
 
+    def _get_kdtree(self):
+        """
+        Return a cached KDTree for the swarm particle coordinates.
+        Invalidated automatically whenever particles migrate or positions change.
+        """
+        if not hasattr(self, "_index") or self._index is None:
+            with self.access():
+                self._index = uw.kdtree.KDTree(self.data)
+
+        return self._index
+
     @timing.routine_timer_decorator
     def _get_map(self, var):
         # generate tree if not avaiable
-        if not self._index:
-            with self.access():
-                self._index = uw.kdtree.KDTree(self.data)
+        kd = self._get_kdtree()
 
         # get or generate map
         meshvar_coords = var._meshVar.coords
@@ -1062,7 +1071,7 @@ class PICSwarm(Stateful, uw_object):
         digest = h.intdigest()
         if digest not in self._nnmapdict:
             # self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
-            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1, sqr_dists=False)[0]
+            self._nnmapdict[digest] = kd.query(meshvar_coords, k=1, sqr_dists=False)[1]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator

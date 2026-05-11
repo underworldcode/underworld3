@@ -1100,8 +1100,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         # 1 - Average particles to nodes with distance weighted average
 
-        # Use non-dimensional coordinates for internal KDTree (matches swarm.data coordinate system)
-        kd = uw.kdtree.KDTree(meshVar.coords_nd)
+        # Use cached KDTree for interpolation (avoids redundant index construction)
+        kd = meshVar._get_kdtree()
 
         with self.swarm.access():
             d, n = kd.query(self.swarm.data, k=1, sqr_dists=False)  # need actual distances
@@ -1414,15 +1414,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             D = raw_data[not_remeshed].copy()
 
             kdt = uw.kdtree.KDTree(self.swarm._particle_coordinates.data[not_remeshed, :])
+            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
         else:
             D = raw_data.copy()
-            kdt = uw.kdtree.KDTree(self.swarm._particle_coordinates.data[:, :])
-
-            # kdt.build_index()
-
+            # Use cached KDTree for standard swarms
+            kdt = self.swarm._get_kdtree()
             values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
-
-            del kdt
 
         return values
 
@@ -2314,12 +2311,12 @@ class IndexSwarmVariable(SwarmVariable):
         """
         if self.update_type == 0:
             # Use non-dimensional coordinates for internal level set KDTree
-            kd = uw.kdtree.KDTree(self._meshLevelSetVars[0].coords_nd)
+            kd = self._meshLevelSetVars[0]._get_kdtree()
 
             n_distance, n_indices = kd.query(
                 self.swarm._particle_coordinates.data, k=self.nnn, sqr_dists=False
             )
-            kd_swarm = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
+            kd_swarm = self.swarm._get_kdtree()
             # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
             d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1, sqr_dists=False)
 
@@ -2629,6 +2626,22 @@ class Swarm(Stateful, uw_object):
         for var in list(self._vars.values()):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
+
+        # Invalidate cached spatial index
+        self._kdtree = None
+
+    def _get_kdtree(self):
+        """
+        Return a cached KDTree for the swarm particle coordinates.
+        Invalidated automatically whenever particles migrate or positions change.
+        """
+        # Note: self.data returns unit-aware array if units are active,
+        # but kdtree construction expects non-dimensional values.
+        # Use _particle_coordinates.data directly.
+        if not hasattr(self, "_kdtree") or self._kdtree is None:
+            self._kdtree = uw.kdtree.KDTree(self._particle_coordinates.data)
+
+        return self._kdtree
 
     def _route_by_nearest_centroid(self):
         """Migrate every particle to the rank whose domain-centroid is closest.
@@ -4279,8 +4292,7 @@ class Swarm(Stateful, uw_object):
     @timing.routine_timer_decorator
     def _get_map(self, var):
         # generate tree if not avaiable
-        if not self._index:
-            self._index = uw.kdtree.KDTree(self.data)
+        kd = self._get_kdtree()
 
         # get or generate map
         meshvar_coords = var._meshVar.coords
@@ -4294,7 +4306,7 @@ class Swarm(Stateful, uw_object):
         h.update(meshvar_coords)
         digest = h.intdigest()
         if digest not in self._nnmapdict:
-            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1, sqr_dists=False)[1]
+            self._nnmapdict[digest] = kd.query(meshvar_coords, k=1, sqr_dists=False)[1]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator
