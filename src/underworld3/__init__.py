@@ -207,6 +207,7 @@ import underworld3.model
 import underworld3.parameters
 import underworld3.materials
 import underworld3.discretisation.persistence
+import underworld3.checkpoint
 
 from .model import (
     Model,

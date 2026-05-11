@@ -565,6 +565,36 @@ class Model(PintNativeModelMixin, BaseModel):
         """Get a solver by name from the model registry"""
         return self._solvers.get(name)
 
+    def snapshot(self, *, path: Optional[str] = None):
+        """Capture a unitary in-memory snapshot of the model's state.
+
+        v1 covers mesh coordinates and mesh-variable DOFs across every
+        registered mesh. Subsequent PRs extend coverage to swarms and
+        solver-internal Python state.
+
+        Pass ``path=...`` to write to an HDF5 file once the on-disk
+        backend lands (v1.1); v1 raises ``NotImplementedError``.
+
+        See ``docs/developer/design/in_memory_checkpoint_design.md``
+        for the full design.
+        """
+        from underworld3.checkpoint import snapshot as _snapshot
+
+        return _snapshot(self, path=path)
+
+    def restore(self, snap) -> None:
+        """Restore the model from a :class:`underworld3.checkpoint.Snapshot`.
+
+        Within-process restore: ``snap`` must have been produced by
+        :meth:`snapshot` on this same ``Model`` instance. Raises
+        :class:`underworld3.checkpoint.SnapshotInvalidatedError` if
+        the mesh has been adapted, or a captured mesh / variable is
+        no longer registered.
+        """
+        from underworld3.checkpoint import restore as _restore
+
+        return _restore(self, snap)
+
     def define_parameter(self, name: str, ptype=None, **kwargs):
         """
         Define a new parameter with validation rules.
