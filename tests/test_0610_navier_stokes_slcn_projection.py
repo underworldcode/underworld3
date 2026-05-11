@@ -1,22 +1,18 @@
 """
-Regression test for the NavierStokesSLCN DFDt projection source shape.
+Regression test for the NavierStokesSLCN DFDt projection fallback.
 
 When ``SNES_MultiComponent_Projection`` was wired into the ``SemiLagrangian``
 DDt path, the ``psi_fn`` setter and ``_setup_projections`` were updated to
 flatten the source tensor to a ``(1, Nc)`` row matrix via
 ``_build_projection_source``. The fallback path inside ``update_pre_solve``
 (taken when ``uw.function.evaluate`` raises on expressions containing
-derivatives — which is the NavierStokes viscous flux every step) missed
-the migration and assigned ``self.psi_fn`` directly, producing:
+derivatives — true for the NavierStokes viscous flux every step) missed the
+migration and assigned ``self.psi_fn`` directly, producing:
 
     sympy.matrices.exceptions.ShapeError:
         Matrix size mismatch: (1, 3) + (2, 2).
 
 See: https://github.com/underworldcode/underworld3/issues/180
-
-The test does one ``solve(timestep=dt)`` of NavierStokesSLCN on a tiny mesh.
-Before the fix this raises ``ShapeError`` from the DDt fallback. After the
-fix it converges normally.
 """
 import pytest
 import sympy
@@ -26,6 +22,7 @@ import underworld3 as uw
 @pytest.mark.level_2
 @pytest.mark.tier_a
 def test_navier_stokes_slcn_solve_does_not_raise_shape_error():
+    """First solve completes without ShapeError from the DDt projection fallback."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
         maxCoords=(1.0, 1.0),

@@ -1776,6 +1776,17 @@ class SemiLagrangian(uw_object):
                 self._psi_star_projection_solver.smoothing = 0.0
                 self._psi_star_projection_solver.solve(verbose=verbose)
 
+                # For tensor vtypes the projection writes into the flat (1, Nc) variable,
+                # so we must fan it back out to psi_star[0] — otherwise subsequent
+                # history operations read a stale tensor. Mirrors the same fan-out in
+                # initialise_history() (~line 1540).
+                if getattr(self, '_psi_star_use_multicomponent', False):
+                    for k, (i, j) in enumerate(self._psi_star_indep_indices):
+                        vals = self._psi_star_flat_var.array[:, 0, k]
+                        self.psi_star[0].array[:, i, j] = vals
+                        if i != j:
+                            self.psi_star[0].array[:, j, i] = vals
+
         # 3. Compute the upstream values from the psi_fn
 
         # We use the u_star variable as a working value here so we have to work backwards
