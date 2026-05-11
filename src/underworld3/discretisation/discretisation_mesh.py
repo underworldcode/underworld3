@@ -594,14 +594,18 @@ class Mesh(Stateful, uw_object):
         # to handle that so we just wrap it here.
 
         def mesh_update_callback(array, change_context):
+            mesh = array.owner
+            if mesh is None:
+                return
+
             print(f"Mesh update callback - mesh deform")
-            coords = array.reshape(-1, array.owner.cdim)
-            self._deform_mesh(coords, verbose=True)
+            coords = array.reshape(-1, mesh.cdim)
+            mesh._deform_mesh(coords, verbose=True)
 
             # Increment mesh version to notify registered swarms of coordinate changes
-            with self._mesh_update_lock:
-                self._mesh_version += 1
-                print(f"Mesh version incremented to {self._mesh_version}")
+            with mesh._mesh_update_lock:
+                mesh._mesh_version += 1
+                print(f"Mesh version incremented to {mesh._mesh_version}")
 
             return
 
@@ -1337,10 +1341,14 @@ class Mesh(Stateful, uw_object):
             )
 
             def mesh_update_callback(array, change_context):
-                coords = array.reshape(-1, array.owner.cdim)
-                self._deform_mesh(coords, verbose=False)
-                with self._mesh_update_lock:
-                    self._mesh_version += 1
+                mesh = array.owner
+                if mesh is None:
+                    return
+
+                coords = array.reshape(-1, mesh.cdim)
+                mesh._deform_mesh(coords, verbose=False)
+                with mesh._mesh_update_lock:
+                    mesh._mesh_version += 1
                 return
 
             self._coords.add_callback(mesh_update_callback)
