@@ -955,9 +955,11 @@ class _BaseMeshVariable(Stateful, uw_object):
             print("Building K-D tree", flush=True)
 
         # Use non-dimensional coordinates for internal RBF interpolation KDTree
-        mesh_kdt = uw.kdtree.KDTree(self.coords_nd)
-        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
-        del mesh_kdt
+        if not hasattr(self, "_kdtree") or self._kdtree is None or getattr(self, "_kdtree_mesh_version", -1) != self.mesh._mesh_version:
+            self._kdtree = uw.kdtree.KDTree(self.coords_nd)
+            self._kdtree_mesh_version = self.mesh._mesh_version
+            
+        values = self._kdtree.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
 
         return values
 

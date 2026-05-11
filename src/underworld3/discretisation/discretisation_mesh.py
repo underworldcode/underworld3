@@ -3455,10 +3455,18 @@ class Mesh(Stateful, uw_object):
     def _get_domain_centroids(self):
 
         import numpy as np
+        from underworld3.utilities import gather_data
 
         domain_centroid = self._centroids.mean(axis=0)
         all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.dim)
         return all_centroids
+
+    def _get_domain_kdtree(self):
+        import underworld3 as uw
+        if not hasattr(self, "_domain_kdtree") or self._domain_kdtree is None:
+            centroids = self._get_domain_centroids()
+            self._domain_kdtree = uw.kdtree.KDTree(centroids)
+        return self._domain_kdtree
 
     def get_min_radius_old(self) -> float:
         """

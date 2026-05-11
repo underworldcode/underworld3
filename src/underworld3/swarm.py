@@ -3320,8 +3320,7 @@ class Swarm(Stateful, uw_object):
         if delete_lost_points is None:
             delete_lost_points = self.clip_to_mesh
 
-        centroids = self.mesh._get_domain_centroids()
-        mesh_domain_kdtree = uw.kdtree.KDTree(centroids)
+        mesh_domain_kdtree = self.mesh._get_domain_kdtree()
 
         # This will only worry about particles that are not already claimed !
         #
