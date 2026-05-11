@@ -298,35 +298,52 @@ Tokens are plain Python / numpy — never PETSc Vec or DM handles.
 On-disk "tokens" are paths to single HDF5 files. Either way, the
 DM-lifecycle hazards identified in earlier work do not apply.
 
-## Generation counter for swarm invalidation
+## Restore semantics for swarms — rebuild, do not refuse
 
-Snapshots are valid until the population that produced them changes.
-The audit identified the mutation sites:
+**Correction (2026-05-11, post-review).** An earlier draft of this
+section proposed using a per-swarm `_population_generation` counter as
+an *invalidation gate*: if the counter at restore differs from the
+counter at capture, raise rather than restore. That design is wrong.
+The whole point of the toolkit is to undo state changes — including
+particle motion / migration / repopulation between capture and
+restore. Refusing on counter mismatch breaks the central use cases (RK
+staging, backtrack-on-instability, adaptive Δt retry — all of which
+*will* migrate particles between capture and restore).
 
-| file | line(s) | call |
+**The correct semantics: restore rebuilds the swarm's particle
+population from the snapshot.** Specifically:
+
+1. Clear the swarm's current local particles.
+2. Re-add the captured per-rank coordinates via
+   `add_particles_with_coordinates(saved_local_coords, migrate=False)`.
+   The mesh partition is deterministic and unchanged within v1 scope
+   (mesh-version check still applies), so particles that were local at
+   capture are local at restore — no migration step needed.
+3. Write the captured per-particle variable data back into the
+   newly-added particles, in their captured order.
+
+The `Swarm._population_generation` counter is still useful as
+*informational metadata* — it can flag in logs / metadata what
+happened between capture and restore, it can feed cache invalidation
+in other consumers, it can power future optimisations (e.g., a fast
+in-place restore when the counter happens to match). But it is **not**
+a restore gate.
+
+Mutation sites where the counter is incremented (current line numbers
+re-derived per audit; the design's correctness does not depend on the
+exact set as long as we over-bump rather than under-bump):
+
+| file | site | call |
 |---|---|---|
-| `swarm.py` | 3083, 3085, 3109 | `populate()` → `dm.addNPoints()` |
-| `swarm.py` | 3365 | `add_particles_with_coordinates()` |
-| `swarm.py` | 3449 | `add_particles_with_global_coordinates()` |
-| `swarm.py` | 3223, 3382 | `migrate(remove_sent_points=True)` |
-| `swarm.py` | 4298 | remesh/repopulate path |
-| `discretisation_mesh.py` | 3090 | `Mesh.adapt()` (indirect via `_mesh_version`) |
+| `swarm.py` | end of `populate()` | covers internal `dm.addNPoints()` calls |
+| `swarm.py` | `Swarm.migrate()` after `migration_disabled` early-exit | bumps unconditionally; conservative no-op safe |
+| `swarm.py` | after `dm.migrate()` in `add_particles_with_coordinates()` | direct PETSc DM call, not via `Swarm.migrate` |
+| `swarm.py` | after `addNPoints` in `add_particles_with_global_coordinates()` | catches `migrate=False` callers |
+| `swarm.py` | `advection()` remesh path after re-injection `addNPoints` | recycle-mode reinitialisation |
 
-A single `Swarm._population_generation` counter, incremented at all
-seven sites, is sufficient. `Mesh._mesh_version` already exists for the
-mesh-side analogue.
-
-```python
-def swarm.restore(token):
-    if swarm._population_generation != token.generation_at_snapshot:
-        raise SnapshotInvalidatedError(
-            "swarm population changed since snapshot — restore not safe")
-    # ... write positions back, write svar values back, migrate
-```
-
-Constraint documented as part of the contract: snapshots cannot survive
-a population-change event. Consumers that take long-lived snapshots
-across such events get a clear error rather than silent corruption.
+`Mesh._mesh_version` is a separate counter on the mesh side. In v1
+the mesh-version mismatch *does* refuse restore — see the next
+section.
 
 ## Architectural work required
 
@@ -361,9 +378,14 @@ In rough dependency order:
    history (`parameters.py:145`), any solver convergence-tracking
    state (audit pending). Each retrofit is small; total bounded by
    the number of classes (probably under ten).
-5. **Swarm `_population_generation` counter.** Bumped at the seven
-   identified sites; checked on restore (within-process only — see
-   item 6 for the cross-process semantics).
+5. **Swarm rebuild on restore + informational
+   `_population_generation` counter.** Snapshot captures per-rank
+   particle coordinates and per-variable arrays. Restore clears the
+   current local population and re-adds the captured particles at
+   their captured coords (see "Restore semantics for swarms" section
+   above for the corrected design). The counter is bumped at every
+   identified mutation site for informational use; it is **not** an
+   invalidation gate.
 6. **Schema versioning + migration registry.** Each `State` dataclass
    carries a `_schema_version` integer. A central registry maps
    `(class, version)` to migration functions that lift older State
@@ -388,12 +410,20 @@ In rough dependency order:
 
 ## Scope boundaries (NOT in v1)
 
-- **Mesh adaptation roundtrip.** A snapshot taken before a mesh
-  adaptation event cannot be restored after the adaptation — the DM
-  identity has changed. Documented as a contract limitation; the
-  generation-counter pattern detects and refuses for in-memory
-  restores. (For on-disk restore in a fresh process, the question
-  doesn't arise — the model is being initialised from the snapshot.)
+- **Mesh adaptation roundtrip — scheduled for v1.2, not a permanent
+  limitation.** A snapshot taken before a `mesh.adapt()` event in v1
+  refuses restore via the `_mesh_version` check, because the captured
+  DOF arrays are sized for the pre-adapt section and writing them
+  in-place into the post-adapt DM would corrupt the run. **v1.2 will
+  replace the refusal with a mesh-rebuild path**: capture enough
+  topology / section info to destroy the post-adapt DM and rebuild
+  the pre-adapt one, then write DOFs into the rebuilt DM. The
+  principle is the same as the swarm rebuild (capture-the-state,
+  rebuild-on-restore); the implementation is more invasive because
+  every MeshVariable / Swarm / solver holds references into the DM
+  and those wrappers need to re-bind. v1's snapshot **captures the
+  topology / section info even though v1 restore ignores it**, so the
+  payload is forward-compatible with v1.2 without a schema bump.
 - **Replacing the existing `write_timestep` path.** The selective
   per-variable on-disk path continues unchanged. The new full-state
   on-disk backend is additive and serves a different need (faithful
