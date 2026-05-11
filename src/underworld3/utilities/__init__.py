@@ -83,3 +83,4 @@ from .unit_aware_array import (
 )
 
 from . import retention_curves
+from . import memprobe

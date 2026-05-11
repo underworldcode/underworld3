@@ -62,6 +62,7 @@ from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
 from underworld3.cython.generic_solvers import SNES_MultiComponent
 from underworld3 import VarType
 import underworld3.timing as timing
+from underworld3.utilities import memprobe
 from underworld3.utilities._api_tools import (
     uw_object,
     SymbolicProperty,
@@ -1232,6 +1233,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self.Unknowns.DFDt.enable_source_snapshot()
 
     @timing.routine_timer_decorator
+    @memprobe.instrument("Stokes.solve")
     def solve(
         self,
         zero_init_guess: bool = True,
@@ -3724,6 +3726,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._penalty.sym = value
 
     @timing.routine_timer_decorator
+    @memprobe.instrument("NavierStokes.solve")
     def solve(
         self,
         zero_init_guess: bool = True,
