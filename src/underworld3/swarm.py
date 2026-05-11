@@ -2493,12 +2493,6 @@ class Swarm(Stateful, uw_object):
         # Mesh version tracking for coordinate change detection
         self._mesh_version = mesh._mesh_version
 
-        # Snapshot/restore invalidation counter: bumped on every
-        # particle-population mutation (populate, add_particles_*,
-        # migrate, advection remesh). See
-        # docs/developer/design/in_memory_checkpoint_design.md.
-        self._population_generation = 0
-
         # Register this swarm with the mesh for coordinate change notifications
         mesh.register_swarm(self)
 
@@ -3292,9 +3286,6 @@ class Swarm(Stateful, uw_object):
                     offset = swarm_orig_size * i
                     self._remeshed.data[offset::, 0] = i
 
-        # Snapshot invalidation: particle population just changed.
-        self._population_generation += 1
-
         return
 
     @timing.routine_timer_decorator
@@ -3323,12 +3314,6 @@ class Swarm(Stateful, uw_object):
 
         if self._migration_disabled:
             return
-
-        # Snapshot invalidation: migration may move or drop particles,
-        # changing per-rank population identity. Conservative bump even
-        # if the call is ultimately a no-op — over-bumping is safe,
-        # under-bumping risks silent corruption on restore.
-        self._population_generation += 1
 
         from time import time
 
@@ -3551,10 +3536,6 @@ class Swarm(Stateful, uw_object):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
 
-        # Snapshot invalidation: addNPoints + dm.migrate is a direct
-        # PETSc call path that does not go through Swarm.migrate.
-        self._population_generation += 1
-
         return npoints
 
     @timing.routine_timer_decorator
@@ -3622,10 +3603,6 @@ class Swarm(Stateful, uw_object):
 
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
-
-        # Snapshot invalidation: population changed even if the caller
-        # opts out of the post-add migration (migrate=False).
-        self._population_generation += 1
 
         # Add new points with provided coords
         # Record the current rank (migration needs to know where we start from !)
@@ -4492,9 +4469,6 @@ class Swarm(Stateful, uw_object):
             num_remeshed_points = self.mesh.particle_X_orig.shape[0]
 
             self.dm.addNPoints(num_remeshed_points)
-
-            # Snapshot invalidation: remesh just re-injected particles.
-            self._population_generation += 1
 
             ## cellid = self.dm.getField("DMSwarm_cellid")
             coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
