@@ -607,14 +607,17 @@ class Mesh(Stateful, uw_object):
                 # been garbage collected but the NDArray proxy still exists.
                 return
 
-            print(f"Mesh update callback - mesh deform")
+            if verbose:
+                uw.pprint(0, f"Mesh update callback - mesh deform")
+
             coords = array.reshape(-1, mesh.cdim)
-            mesh._deform_mesh(coords, verbose=True)
+            mesh._deform_mesh(coords, verbose=verbose)
 
             # Increment mesh version to notify registered swarms of coordinate changes
             with mesh._mesh_update_lock:
                 mesh._mesh_version += 1
-                print(f"Mesh version incremented to {mesh._mesh_version}")
+                if verbose:
+                    uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
 
             return
 
@@ -3795,12 +3798,15 @@ class Mesh(Stateful, uw_object):
 
             # Rebuild the callback for mesh deformation
             def mesh_update_callback(array, change_context):
-                print(f"Mesh update callback - mesh deform")
+                if verbose:
+                    uw.pprint(0, f"Mesh update callback - mesh deform")
+
                 coords = array.reshape(-1, array.owner.cdim)
-                self._deform_mesh(coords, verbose=True)
+                self._deform_mesh(coords, verbose=verbose)
                 with self._mesh_update_lock:
                     self._mesh_version += 1
-                    print(f"Mesh version incremented to {self._mesh_version}")
+                    if verbose:
+                        uw.pprint(0, f"Mesh version incremented to {self._mesh_version}")
                 return
 
             self._coords.add_callback(mesh_update_callback)
