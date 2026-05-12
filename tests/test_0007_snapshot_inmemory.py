@@ -479,6 +479,118 @@ def test_lagrangian_ddt_roundtrip():
     assert ddt.state.psi_star_var_names == state_pre.psi_star_var_names
 
 
+# ----- End-to-end back-stepping demonstration -----
+#
+# Everything above this comment is unit-style: build a thing, snapshot,
+# scribble, restore, check equality. This block exercises the toolkit's
+# actual reason for existing: a *real* time-stepping use case where the
+# consumer takes a step, detects it was bad, snapshots back, and retries
+# with smaller Δt. The pattern is canonical adaptive-Δt CFL control;
+# the snapshot mechanism is the thing that makes "snap back" possible
+# without manually unwinding mesh / swarm / DDt state.
+
+
+def test_backstepping_cfl_recovery_end_to_end():
+    """Canonical adaptive-Δt back-step demonstration.
+
+    Set up a swarm advecting in a known velocity field, with a
+    material variable carried along and a Symbolic DDt accumulating
+    BDF history. Take one too-large Δt step → CFL violation
+    (max-particle-displacement exceeds the mesh cell radius). Detect
+    it. Restore the snapshot. Retry with a smaller Δt → CFL satisfied,
+    state evolves cleanly. The full triple of state (swarm positions,
+    material variable, DDt history) is recovered on restore.
+    """
+    import underworld3 as uw
+    import sympy
+    import numpy as np
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0
+    )
+
+    # Outward-radial velocity from the box centre. |V| ranges from 0
+    # at the centre to ~0.71 at the corners — pick Δt to give a
+    # genuine CFL violation rather than tweak parameters to fit.
+    x, y = mesh.X
+    V_fn = sympy.Matrix([[x - 0.5, y - 0.5]]).T
+
+    swarm = uw.swarm.Swarm(mesh)
+    material = swarm.add_variable("material", 1, dtype=float)
+    swarm.populate(fill_param=2)
+    coords_initial = swarm._particle_coordinates.data.copy()
+    material.data[:, 0] = coords_initial[:, 0]  # carry x as marker
+    material_initial = np.asarray(material.data).copy()
+
+    # A separate DDt manages BDF history for a scalar field on the
+    # mesh. Advance it manually past startup so its captured state is
+    # non-trivial.
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    ddt = uw.systems.ddt.Symbolic(T.sym, order=2)
+    ddt._dt_history = [0.05, 0.05]
+    ddt._history_initialised = True
+    ddt._n_solves_completed = 2
+    ddt._dt = 0.05
+    ddt_state_initial = ddt.state
+
+    # The user's CFL threshold: a particle moving more than one cell
+    # radius in a single step has crossed an element. min_radius is
+    # the standard UW3 cell-size proxy.
+    cfl_threshold = mesh.get_min_radius()
+
+    # Take the snapshot *before* the speculative step. Everything that
+    # will be touched gets captured.
+    snap = model.snapshot()
+
+    # Speculative step at the candidate Δt. Bigger than the user
+    # thinks is safe — they'll check after and back-step if it isn't.
+    candidate_dt = 0.5
+    swarm.advection(V_fn, delta_t=candidate_dt, step_limit=False)
+
+    # CFL check: max displacement among local particles.
+    coords_after_bad = swarm._particle_coordinates.data
+    max_disp_bad = np.max(
+        np.linalg.norm(coords_after_bad - coords_initial, axis=1)
+    )
+    assert max_disp_bad > cfl_threshold, (
+        f"speculative step at dt={candidate_dt} should violate CFL "
+        f"(max_disp={max_disp_bad:.4f} vs threshold {cfl_threshold:.4f})"
+    )
+
+    # Back-step. Everything captured is brought back to the snapshot
+    # point — swarm positions, the material variable carried with the
+    # swarm, and the DDt's BDF history.
+    model.restore(snap)
+
+    assert np.allclose(swarm._particle_coordinates.data, coords_initial), (
+        "particle positions did not roll back after restore"
+    )
+    assert np.allclose(np.asarray(material.data), material_initial), (
+        "swarm-variable data did not roll back after restore"
+    )
+    assert ddt.state.dt_history == ddt_state_initial.dt_history, (
+        "DDt history did not roll back after restore"
+    )
+    assert ddt.state.n_solves_completed == ddt_state_initial.n_solves_completed
+
+    # Retry with a smaller Δt. CFL now satisfied.
+    retry_dt = candidate_dt / 10.0
+    swarm.advection(V_fn, delta_t=retry_dt, step_limit=False)
+
+    coords_after_good = swarm._particle_coordinates.data
+    max_disp_good = np.max(
+        np.linalg.norm(coords_after_good - coords_initial, axis=1)
+    )
+    assert max_disp_good < cfl_threshold, (
+        f"retry at dt={retry_dt} should satisfy CFL "
+        f"(max_disp={max_disp_good:.4f} vs threshold {cfl_threshold:.4f})"
+    )
+    # Sanity: smaller dt produced strictly smaller displacement.
+    assert max_disp_good < max_disp_bad / 5.0
+
+
 def test_lagrangian_swarm_ddt_registers_and_state_type():
     """Lagrangian_Swarm must be constructed before swarm.populate; the
     retrofit registers it and exposes a typed state. Roundtrip is not
