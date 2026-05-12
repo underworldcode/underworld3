@@ -395,6 +395,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             """Callback to sync variable changes back to PETSc (like swarm.points)"""
             var = array.owner
             if var is None:
+                # This guard handles cases where the array is modified during
+                # object teardown (e.g. at application exit), where the owning
+                # Python variable has already been garbage collected.
                 return
 
             # Only act on data-changing operations (following swarm.points pattern)

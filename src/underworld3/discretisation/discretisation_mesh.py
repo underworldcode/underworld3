@@ -285,6 +285,11 @@ class Mesh(Stateful, uw_object):
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
+
+        # _mesh_update_lock: Re-entrant lock to coordinate mesh deformation.
+        # Held by mesh_update_callback during _deform_mesh(). Checked by
+        # MeshVariable callbacks (blocking=False) to skip PETSc sync during
+        # sensitive coordinate changes.
         self._mesh_update_lock = threading.RLock()
 
         comm = PETSc.COMM_WORLD
@@ -1785,42 +1790,43 @@ class Mesh(Stateful, uw_object):
         The coord array that is passed in should match the shape of self.data
         """
 
-        coord_vec = self.dm.getCoordinatesLocal()
-        coords = coord_vec.array.reshape(-1, self.cdim)
-        coords[...] = new_coords[...]
+        with self._mesh_update_lock:
+            coord_vec = self.dm.getCoordinatesLocal()
+            coords = coord_vec.array.reshape(-1, self.cdim)
+            coords[...] = new_coords[...]
 
-        self.dm.setCoordinatesLocal(coord_vec)
-        self.nuke_coords_and_rebuild()
+            self.dm.setCoordinatesLocal(coord_vec)
+            self.nuke_coords_and_rebuild()
 
-        # Rebuild the _coords array view.  nuke_coords_and_rebuild may
-        # replace the coordinate vector internally (createCoordinateSpace),
-        # leaving self._coords as a stale numpy view of the old buffer.
-        import underworld3.utilities
-        old_callbacks = getattr(self._coords, "_callbacks", [])
-        self._coords = underworld3.utilities.NDArray_With_Callback(
-            numpy.ndarray.view(
-                self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
-            ),
-            owner=self,
-        )
-        for cb in old_callbacks:
-            self._coords.add_callback(cb)
+            # Rebuild the _coords array view.  nuke_coords_and_rebuild may
+            # replace the coordinate vector internally (createCoordinateSpace),
+            # leaving self._coords as a stale numpy view of the old buffer.
+            import underworld3.utilities
+            old_callbacks = getattr(self._coords, "_callbacks", [])
+            self._coords = underworld3.utilities.NDArray_With_Callback(
+                numpy.ndarray.view(
+                    self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
+                ),
+                owner=self,
+            )
+            for cb in old_callbacks:
+                self._coords.add_callback(cb)
 
-        # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
-        # ("Trust JIT cache: skip DM rebuild on constant-only parameter
-        # changes") a solver with is_setup=True trusts its cached PETSc DM
-        # / SNES assembly and skips rebuild on the next solve(). After a
-        # coordinate change the cached DM still carries pre-deform
-        # coordinates, so F(v_prev) ≈ 0 and the solver converges in 0
-        # iterations without updating the solution. mesh.adapt() already
-        # does this; _deform_mesh must match.
-        for solver in self._equation_systems_register:
-            if solver is not None and hasattr(solver, "is_setup"):
-                solver.is_setup = False
+            # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
+            # ("Trust JIT cache: skip DM rebuild on constant-only parameter
+            # changes") a solver with is_setup=True trusts its cached PETSc DM
+            # / SNES assembly and skips rebuild on the next solve(). After a
+            # coordinate change the cached DM still carries pre-deform
+            # coordinates, so F(v_prev) ≈ 0 and the solver converges in 0
+            # iterations without updating the solution. mesh.adapt() already
+            # does this; _deform_mesh must match.
+            for solver in self._equation_systems_register:
+                if solver is not None and hasattr(solver, "is_setup"):
+                    solver.is_setup = False
 
-        # Propagate coordinate changes to registered submeshes
-        for submesh in self._registered_submeshes:
-            submesh.sync_coordinates_from_parent()
+            # Propagate coordinate changes to registered submeshes
+            for submesh in self._registered_submeshes:
+                submesh.sync_coordinates_from_parent()
 
         return
 

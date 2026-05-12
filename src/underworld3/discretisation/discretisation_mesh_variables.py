@@ -494,6 +494,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             """Callback to sync variable changes back to PETSc (like mesh.points)"""
             var = array.owner
             if var is None:
+                # Array is being accessed during object teardown (owner is gone)
                 return
 
             # Only act on data-changing operations (following mesh.points pattern)
