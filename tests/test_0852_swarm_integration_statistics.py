@@ -122,7 +122,11 @@ class TestSwarmIntegrationStatistics:
         # Arithmetic mean: biased toward left half values
         # (75% particles at x ≈ 0.25) + (25% particles at x ≈ 0.75)
         # ≈ 0.75 * (1 + 0.25) + 0.25 * (1 + 0.75) = 1.375
-        arithmetic_mean = s_var.array.mean()
+        # 
+        # CRITICAL MPI FIX: Use global swarm statistics for arithmetic mean
+        # to ensure comparison with integration mean (which is always global)
+        # works correctly on all ranks.
+        arithmetic_mean = s_var.global_sum() / s_var.global_size()
 
         # Integration-based mean: weights by volume equally
         # ∫∫(1 + x) dA = [x + 0.5x²]₀¹ × 1 = (1 + 0.5) = 1.5
