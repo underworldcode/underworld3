@@ -151,3 +151,56 @@ def test_instrument_decorator_emits_when_enabled(capsys):
     assert f(3) == 6
     captured = capsys.readouterr()
     assert "[memprobe] test-fn" in captured.out
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_mesh_variable_kdtree_caching():
+    """MeshVariable._get_kdtree must cache the tree and reuse it."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("v", mesh, 1)
+
+    gc.collect()
+    before_total = uw.kdtree.total_constructed()
+
+    # First access builds
+    kd1 = v._get_kdtree()
+    assert uw.kdtree.total_constructed() - before_total == 1
+
+    # Second access reuses
+    kd2 = v._get_kdtree()
+    assert uw.kdtree.total_constructed() - before_total == 1
+    assert kd1 is kd2
+
+    # Mesh deformation/version change invalidates
+    mesh._mesh_version += 1
+    kd3 = v._get_kdtree()
+    assert uw.kdtree.total_constructed() - before_total == 2
+    assert kd3 is not kd1
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_swarm_kdtree_caching():
+    """Swarm._get_kdtree must cache the tree and reuse it."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.populate(fill_param=1)
+
+    gc.collect()
+    before_total = uw.kdtree.total_constructed()
+
+    # First access builds
+    kd1 = swarm._get_kdtree()
+    assert uw.kdtree.total_constructed() - before_total == 1
+
+    # Second access reuses
+    kd2 = swarm._get_kdtree()
+    assert uw.kdtree.total_constructed() - before_total == 1
+    assert kd1 is kd2
+
+    # Migration/Invalidation should drop the cache
+    swarm._invalidate_canonical_data()
+    kd3 = swarm._get_kdtree()
+    assert uw.kdtree.total_constructed() - before_total == 2
+    assert kd3 is not kd1

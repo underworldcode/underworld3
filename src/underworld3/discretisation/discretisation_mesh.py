@@ -1244,7 +1244,7 @@ class Mesh(Stateful, uw_object):
 
         # Use cached KDTree from coordinate variable
         tree = self.X._get_kdtree()
-        dists, indices = tree.query(self.parent.X.coords, sqr_dists=False)
+        dists, indices = tree.query(self.parent.X.coords_nd, sqr_dists=False)
         matched = dists < 1.0e-10
 
         # parent_rows[i] -> sub_rows[i]: matched vertex pairs
@@ -1435,7 +1435,7 @@ class Mesh(Stateful, uw_object):
             return self._dof_maps[key]
 
         tree = sub_var._get_kdtree()
-        dists, indices = tree.query(parent_var.coords, sqr_dists=False)
+        dists, indices = tree.query(parent_var.coords_nd, sqr_dists=False)
         matched = dists < 1.0e-10
 
         # indices[matched] maps parent row → sub row
