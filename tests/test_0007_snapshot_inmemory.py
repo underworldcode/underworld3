@@ -441,6 +441,44 @@ def test_semilagrangian_ddt_roundtrip():
     assert ddt.state.n_solves_completed == 2
 
 
+def test_lagrangian_ddt_roundtrip():
+    """Lagrangian creates its own internal swarm; the fix in this PR
+    restored uw.swarm.Swarm in __init__ (was a typo'd UWSwarm)."""
+    import underworld3 as uw
+    from underworld3.systems.ddt import DDtLagrangianState
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    V = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
+    ddt = uw.systems.ddt.Lagrangian(
+        mesh=mesh, psi_fn=T.sym, V_fn=V.sym,
+        vtype=uw.VarType.SCALAR, degree=1, continuous=True, order=2,
+    )
+    assert ddt in model._state_bearers
+    assert isinstance(ddt.state, DDtLagrangianState)
+
+    ddt._dt_history = [0.2, 0.1]
+    ddt._history_initialised = True
+    ddt._n_solves_completed = 2
+    ddt._dt = 0.2
+    state_pre = ddt.state
+
+    snap = model.snapshot()
+    ddt._dt_history = [None, None]
+    ddt._history_initialised = False
+    ddt._n_solves_completed = 0
+    model.restore(snap)
+
+    assert ddt.state.dt_history == state_pre.dt_history
+    assert ddt.state.history_initialised is True
+    assert ddt.state.n_solves_completed == 2
+    assert ddt.state.psi_star_var_names == state_pre.psi_star_var_names
+
+
 def test_lagrangian_swarm_ddt_registers_and_state_type():
     """Lagrangian_Swarm must be constructed before swarm.populate; the
     retrofit registers it and exposes a typed state. Roundtrip is not
@@ -472,9 +510,3 @@ def test_lagrangian_swarm_ddt_registers_and_state_type():
     assert ddt.state.psi_star_var_names  # non-empty
 
 
-# Note: uw.systems.ddt.Lagrangian has a pre-existing bug
-# (references uw.swarm.UWSwarm which does not exist), so we cannot
-# directly construct one for testing. The retrofit code is in place
-# and follows the same pattern as the other flavors; consumers that
-# construct Lagrangian via the higher-level solver pathways will get
-# the .state / .state.setter / registration automatically.

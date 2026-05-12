@@ -2528,7 +2528,7 @@ class Lagrangian(uw_object):
         super().__init__()
 
         # create a new swarm to manage here
-        dudt_swarm = uw.swarm.UWSwarm(mesh)
+        dudt_swarm = uw.swarm.Swarm(mesh)
 
         self.mesh = mesh
         self.swarm = dudt_swarm
