@@ -601,6 +601,10 @@ class Mesh(Stateful, uw_object):
         def mesh_update_callback(array, change_context):
             mesh = array.owner
             if mesh is None:
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or during mesh
+                # replacement), where the owning Python mesh object has already
+                # been garbage collected but the NDArray proxy still exists.
                 return
 
             print(f"Mesh update callback - mesh deform")

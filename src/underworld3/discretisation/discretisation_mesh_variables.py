@@ -494,7 +494,10 @@ class _BaseMeshVariable(Stateful, uw_object):
             """Callback to sync variable changes back to PETSc (like mesh.points)"""
             var = array.owner
             if var is None:
-                # Array is being accessed during object teardown (owner is gone)
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or mesh rebuilds),
+                # where the owning Python variable has already been garbage
+                # collected but the NDArray proxy still exists.
                 return
 
             # Only act on data-changing operations (following mesh.points pattern)
