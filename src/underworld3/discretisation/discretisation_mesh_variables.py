@@ -2547,10 +2547,10 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         # Create NDArray_With_Callback with proper shape and data
         from underworld3.utilities import NDArray_With_Callback
-
-        array_obj = NDArray_With_Callback(flat_petsc_data)
+        array_obj = NDArray_With_Callback(flat_petsc_data, owner=self)
 
         # Single canonical callback for PETSc synchronization
+
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
             var = array.owner
