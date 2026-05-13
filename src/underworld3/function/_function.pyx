@@ -549,44 +549,73 @@ def _project_to_work_variable(expr, mesh, smoothing=1e-6):
         Work variable containing projected nodal values
     """
     import underworld3 as uw
+    import sympy
 
-    # Handle matrix expressions - need multi-component work variable
-    # TODO(BUG): This fails for dim×dim matrices (e.g. 2×2 stress tensor)
-    # because MeshVariable can't infer vtype from num_components=4 (flat int).
-    # Needs: pass num_components=(rows,cols) with vtype=TENSOR, and use
-    # Tensor_Projection instead of per-component scalar Projection.
-    # Currently, callers like SemiLagrangian.update_pre_solve fall back to
-    # their own projection solver via except-clause when this fails.
+    # Handle matrix/tensor expressions — need a multi-component projection.
+    # Implementation: project the (rows, cols) expression into a flat
+    # (1, Nc) MATRIX work variable using SNES_MultiComponent_Projection
+    # (one solve, shared DM), then fan the result out into a (rows, cols)
+    # shaped work variable so the caller's ``work_var.sym`` preserves the
+    # original tensor shape.
     if hasattr(expr, 'shape') and expr.shape != (1, 1):
         rows, cols = expr.shape
         n_components = rows * cols
 
-        # Get or create multi-component work variable
-        cache_key = f'_eval_work_{n_components}'
+        shape_key = f'{rows}x{cols}'
+        cache_key = f'_eval_work_{shape_key}'
+        flat_key = f'{cache_key}_flat'
+        projector_key = f'{cache_key}_projector'
+
         if not hasattr(mesh, cache_key):
+            # Tensor-shaped result variable that the caller sees via .sym
+            if rows == mesh.dim and cols == mesh.dim:
+                vtype_out = uw.VarType.TENSOR
+            else:
+                vtype_out = uw.VarType.MATRIX
             work_var = uw.discretisation.MeshVariable(
-                cache_key, mesh, num_components=n_components, degree=1
+                cache_key,
+                mesh,
+                (rows, cols),
+                vtype=vtype_out,
+                degree=1,
             )
             setattr(mesh, cache_key, work_var)
-            # Create projectors for each component
-            projectors = []
-            for c in range(n_components):
-                proj = uw.systems.Projection(mesh, work_var, scalar_component=c)
-                proj.petsc_options["snes_rtol"] = 1e-6
-                projectors.append(proj)
-            setattr(mesh, f'{cache_key}_projectors', projectors)
+
+            # Flat (1, Nc) target for the multi-component projector
+            flat_var = uw.discretisation.MeshVariable(
+                flat_key,
+                mesh,
+                (1, n_components),
+                vtype=uw.VarType.MATRIX,
+                degree=1,
+            )
+            setattr(mesh, flat_key, flat_var)
+
+            projector = uw.systems.MultiComponent_Projection(
+                mesh,
+                u_Field=flat_var,
+                n_components=n_components,
+                degree=1,
+            )
+            projector.petsc_options["snes_rtol"] = 1e-6
+            setattr(mesh, projector_key, projector)
 
         work_var = getattr(mesh, cache_key)
-        projectors = getattr(mesh, f'{cache_key}_projectors')
+        flat_var = getattr(mesh, flat_key)
+        projector = getattr(mesh, projector_key)
 
-        # Project each component
-        idx = 0
-        for i in range(rows):
-            for j in range(cols):
-                projectors[idx].uw_function = expr[i, j]
-                projectors[idx].smoothing = smoothing
-                projectors[idx].solve(zero_init_guess=False)
-                idx += 1
+        # Build flat row-matrix source: [[expr[0,0], expr[0,1], ..., expr[r-1,c-1]]]
+        flat_source = sympy.Matrix(
+            [[expr[i, j] for i in range(rows) for j in range(cols)]]
+        )
+        projector.uw_function = flat_source
+        projector.smoothing = smoothing
+        projector.solve(zero_init_guess=False)
+
+        # Fan flat result back to the tensor work variable
+        for idx in range(n_components):
+            i, j = divmod(idx, cols)
+            work_var.array[:, i, j] = flat_var.array[:, 0, idx]
 
         return work_var
 
