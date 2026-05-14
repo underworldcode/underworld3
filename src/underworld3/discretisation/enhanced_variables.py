@@ -554,6 +554,10 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         """RBF interpolation."""
         return self._base_var.rbf_interpolate(*args, **kwargs)
 
+    def _get_kdtree(self):
+        """KDTree access."""
+        return self._base_var._get_kdtree()
+
     def pack_raw_data_to_petsc(self, *args, **kwargs):
         """Pack raw data to PETSc format."""
         return self._base_var.pack_raw_data_to_petsc(*args, **kwargs)
