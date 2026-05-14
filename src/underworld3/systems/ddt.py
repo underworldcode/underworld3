@@ -1139,6 +1139,20 @@ class SemiLagrangian(uw_object):
         :meth:`update_forcing_history` (direct nodal evaluation of
         ``forcing_fn`` — typically the constitutive model's strain-rate
         symbol).
+    theta : float, default=0.5
+        Adams-Moulton θ for the implicit flux integrator at order 1.
+        The order-1 AM coefficients are ``[θ, 1-θ]``:
+
+        - ``θ = 0.5`` → Crank-Nicolson (trapezoidal, second-order
+          accurate, A-stable). Default, matches legacy SLCN behaviour.
+        - ``θ = 1.0`` → Backward Euler (L-stable, monotone for
+          diffusion, first-order accurate). Use for stiff parabolic
+          terms (under-resolved sharp gradients on deformed cells)
+          where CN's lack of L-stability causes sign-flip ringing
+          on stiff modes.
+
+        Settable after construction as a property:
+        ``adv_diff.DuDt.theta = 1.0``.
 
     Notes
     -----
@@ -1173,6 +1187,7 @@ class SemiLagrangian(uw_object):
         preserve_moments=False,
         with_forcing_history: bool = False,
         monotone_mode: Optional[str] = None,
+        theta: float = 0.5,
     ):
         super().__init__()
 
@@ -1200,6 +1215,18 @@ class SemiLagrangian(uw_object):
         # Settable after construction:
         #   ``adv_diff.DuDt.monotone_mode = "clamp"``
         self.monotone_mode = monotone_mode
+        # Adams-Moulton θ for the implicit flux at order 1.
+        # The order-1 AM coefficients are ``[θ, 1-θ]``:
+        #   θ=0.5  → Crank-Nicolson (A-stable, 2nd order accuracy on
+        #            flux; NOT L-stable — stiff modes get amplification
+        #            factor → -1, can ring on under-resolved sharp
+        #            gradients in deformed cells)
+        #   θ=1.0  → Backward Euler (L-stable, monotone for diffusion;
+        #            1st order accuracy on flux)
+        # Default 0.5 preserves the legacy SLCN behaviour.
+        # Settable after construction:
+        #   ``adv_diff.DuDt.theta = 1.0``
+        self.theta = float(theta)
 
         # Forcing-history storage. Allocated only if requested. Populated
         # each step via update_forcing_history(forcing_fn) — used by ETD-2
@@ -1310,7 +1337,7 @@ class SemiLagrangian(uw_object):
         self._exp_coeffs = _create_exp_coefficients(self.instance_number)
         # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
-        _update_am_values(self._am_coeffs, 1, 0.5)
+        _update_am_values(self._am_coeffs, 1, self.theta)
         _update_exp_values(self._exp_coeffs, None, None)
 
         # Working variable that has a potentially different discretisation from psi_star
@@ -1696,7 +1723,7 @@ class SemiLagrangian(uw_object):
 
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
-        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain in preparation for the next timestep
