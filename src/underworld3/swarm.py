@@ -393,17 +393,25 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         # Single callback function (following swarm_update_callback pattern)
         def variable_update_callback(array, change_context):
             """Callback to sync variable changes back to PETSc (like swarm.points)"""
+            var = array.owner
+            if var is None:
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or mesh rebuilds),
+                # where the owning Python variable has already been garbage
+                # collected but the NDArray proxy still exists.
+                return
+
             # Only act on data-changing operations (following swarm.points pattern)
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
 
             # Skip updates during coordinate changes to prevent corruption
-            if hasattr(self.swarm, "_migration_disabled") and self.swarm._migration_disabled:
+            if hasattr(var.swarm, "_migration_disabled") and var.swarm._migration_disabled:
                 return
 
             # Persist changes to PETSc (like swarm callback updates coordinates)
-            self.pack_uw_data_to_petsc(array, sync=True)
+            var.pack_uw_data_to_petsc(array, sync=True)
 
         # Register the callback (following swarm.points pattern)
         array_obj.add_callback(variable_update_callback)

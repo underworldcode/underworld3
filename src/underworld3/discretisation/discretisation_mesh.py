@@ -285,6 +285,11 @@ class Mesh(Stateful, uw_object):
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
+
+        # _mesh_update_lock: Re-entrant lock to coordinate mesh deformation.
+        # Held by mesh_update_callback during _deform_mesh(). Checked by
+        # MeshVariable callbacks (blocking=False) to skip PETSc sync during
+        # sensitive coordinate changes.
         self._mesh_update_lock = threading.RLock()
 
         comm = PETSc.COMM_WORLD
@@ -594,14 +599,25 @@ class Mesh(Stateful, uw_object):
         # to handle that so we just wrap it here.
 
         def mesh_update_callback(array, change_context):
-            print(f"Mesh update callback - mesh deform")
-            coords = array.reshape(-1, array.owner.cdim)
-            self._deform_mesh(coords, verbose=True)
+            mesh = array.owner
+            if mesh is None:
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or during mesh
+                # replacement), where the owning Python mesh object has already
+                # been garbage collected but the NDArray proxy still exists.
+                return
+
+            if verbose:
+                uw.pprint(0, f"Mesh update callback - mesh deform")
+
+            coords = array.reshape(-1, mesh.cdim)
+            mesh._deform_mesh(coords, verbose=verbose)
 
             # Increment mesh version to notify registered swarms of coordinate changes
-            with self._mesh_update_lock:
-                self._mesh_version += 1
-                print(f"Mesh version incremented to {self._mesh_version}")
+            with mesh._mesh_update_lock:
+                mesh._mesh_version += 1
+                if verbose:
+                    uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
 
             return
 
@@ -1337,10 +1353,14 @@ class Mesh(Stateful, uw_object):
             )
 
             def mesh_update_callback(array, change_context):
-                coords = array.reshape(-1, array.owner.cdim)
-                self._deform_mesh(coords, verbose=False)
-                with self._mesh_update_lock:
-                    self._mesh_version += 1
+                mesh = array.owner
+                if mesh is None:
+                    return
+
+                coords = array.reshape(-1, mesh.cdim)
+                mesh._deform_mesh(coords, verbose=False)
+                with mesh._mesh_update_lock:
+                    mesh._mesh_version += 1
                 return
 
             self._coords.add_callback(mesh_update_callback)
@@ -1777,42 +1797,43 @@ class Mesh(Stateful, uw_object):
         The coord array that is passed in should match the shape of self.data
         """
 
-        coord_vec = self.dm.getCoordinatesLocal()
-        coords = coord_vec.array.reshape(-1, self.cdim)
-        coords[...] = new_coords[...]
+        with self._mesh_update_lock:
+            coord_vec = self.dm.getCoordinatesLocal()
+            coords = coord_vec.array.reshape(-1, self.cdim)
+            coords[...] = new_coords[...]
 
-        self.dm.setCoordinatesLocal(coord_vec)
-        self.nuke_coords_and_rebuild()
+            self.dm.setCoordinatesLocal(coord_vec)
+            self.nuke_coords_and_rebuild()
 
-        # Rebuild the _coords array view.  nuke_coords_and_rebuild may
-        # replace the coordinate vector internally (createCoordinateSpace),
-        # leaving self._coords as a stale numpy view of the old buffer.
-        import underworld3.utilities
-        old_callbacks = getattr(self._coords, "_callbacks", [])
-        self._coords = underworld3.utilities.NDArray_With_Callback(
-            numpy.ndarray.view(
-                self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
-            ),
-            owner=self,
-        )
-        for cb in old_callbacks:
-            self._coords.add_callback(cb)
+            # Rebuild the _coords array view.  nuke_coords_and_rebuild may
+            # replace the coordinate vector internally (createCoordinateSpace),
+            # leaving self._coords as a stale numpy view of the old buffer.
+            import underworld3.utilities
+            old_callbacks = getattr(self._coords, "_callbacks", [])
+            self._coords = underworld3.utilities.NDArray_With_Callback(
+                numpy.ndarray.view(
+                    self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
+                ),
+                owner=self,
+            )
+            for cb in old_callbacks:
+                self._coords.add_callback(cb)
 
-        # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
-        # ("Trust JIT cache: skip DM rebuild on constant-only parameter
-        # changes") a solver with is_setup=True trusts its cached PETSc DM
-        # / SNES assembly and skips rebuild on the next solve(). After a
-        # coordinate change the cached DM still carries pre-deform
-        # coordinates, so F(v_prev) ≈ 0 and the solver converges in 0
-        # iterations without updating the solution. mesh.adapt() already
-        # does this; _deform_mesh must match.
-        for solver in self._equation_systems_register:
-            if solver is not None and hasattr(solver, "is_setup"):
-                solver.is_setup = False
+            # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
+            # ("Trust JIT cache: skip DM rebuild on constant-only parameter
+            # changes") a solver with is_setup=True trusts its cached PETSc DM
+            # / SNES assembly and skips rebuild on the next solve(). After a
+            # coordinate change the cached DM still carries pre-deform
+            # coordinates, so F(v_prev) ≈ 0 and the solver converges in 0
+            # iterations without updating the solution. mesh.adapt() already
+            # does this; _deform_mesh must match.
+            for solver in self._equation_systems_register:
+                if solver is not None and hasattr(solver, "is_setup"):
+                    solver.is_setup = False
 
-        # Propagate coordinate changes to registered submeshes
-        for submesh in self._registered_submeshes:
-            submesh.sync_coordinates_from_parent()
+            # Propagate coordinate changes to registered submeshes
+            for submesh in self._registered_submeshes:
+                submesh.sync_coordinates_from_parent()
 
         return
 
@@ -3777,12 +3798,15 @@ class Mesh(Stateful, uw_object):
 
             # Rebuild the callback for mesh deformation
             def mesh_update_callback(array, change_context):
-                print(f"Mesh update callback - mesh deform")
+                if verbose:
+                    uw.pprint(0, f"Mesh update callback - mesh deform")
+
                 coords = array.reshape(-1, array.owner.cdim)
-                self._deform_mesh(coords, verbose=True)
+                self._deform_mesh(coords, verbose=verbose)
                 with self._mesh_update_lock:
                     self._mesh_version += 1
-                    print(f"Mesh version incremented to {self._mesh_version}")
+                    if verbose:
+                        uw.pprint(0, f"Mesh version incremented to {self._mesh_version}")
                 return
 
             self._coords.add_callback(mesh_update_callback)
