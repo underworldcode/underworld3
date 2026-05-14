@@ -1139,6 +1139,20 @@ class SemiLagrangian(uw_object):
         :meth:`update_forcing_history` (direct nodal evaluation of
         ``forcing_fn`` — typically the constitutive model's strain-rate
         symbol).
+    theta : float, default=0.5
+        Adams-Moulton θ for the implicit flux integrator at order 1.
+        The order-1 AM coefficients are ``[θ, 1-θ]``:
+
+        - ``θ = 0.5`` → Crank-Nicolson (trapezoidal, second-order
+          accurate, A-stable). Default, matches legacy SLCN behaviour.
+        - ``θ = 1.0`` → Backward Euler (L-stable, monotone for
+          diffusion, first-order accurate). Use for stiff parabolic
+          terms (under-resolved sharp gradients on deformed cells)
+          where CN's lack of L-stability causes sign-flip ringing
+          on stiff modes.
+
+        Settable after construction as a property:
+        ``adv_diff.DuDt.theta = 1.0``.
 
     Notes
     -----
