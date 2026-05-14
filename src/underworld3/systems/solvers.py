@@ -2496,6 +2496,28 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         Time derivative operator for the unknown.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
+    monotone_mode : str or None, optional
+        Monotonicity limiter for the semi-Lagrangian trace-back.
+        Forwarded to the internally-constructed ``SemiLagrangian_DDt``
+        instances for ``DuDt`` and ``DFDt``.
+
+        - ``None`` (default): pure FE trace-back. Can overshoot at
+          non-nodal upstream points in cells with sharp gradients
+          (e.g. thin boundary layers in deformed cells); legacy
+          behaviour.
+        - ``"clamp"``: clip the FE trace-back result to
+          ``[nbr_min, nbr_max]`` of the ``k = dim + 1`` nearest
+          ``psi_star`` DOFs. Bit-identical to pure FE in smooth
+          regions; bounds overshoots where the FE interpolant would
+          otherwise leave the local data range.
+        - ``"pick"``: keep the FE result where in-bounds; for
+          out-of-bounds DOFs only, re-evaluate via Shepard's-method
+          RBF. More conservative than clamp at the catastrophe edge.
+
+        When a user supplies a pre-built ``DuDt``, this kwarg is
+        applied to the internally-constructed ``DFDt`` only — the
+        user's ``DuDt`` already encodes whatever ``monotone_mode``
+        it was constructed with.
 
     Notes
     -----
@@ -2536,6 +2558,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         verbose=False,
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        monotone_mode: Optional[str] = None,
     ):
         ## Parent class will set up default values etc
         super().__init__(
@@ -2581,6 +2604,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 bcs=self.essential_bcs,
                 order=1,
                 smoothing=0.0,
+                monotone_mode=monotone_mode,
             )
 
         else:
@@ -2612,6 +2636,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             bcs=None,
             order=order,
             smoothing=0.0,
+            monotone_mode=monotone_mode,
         )
 
         return
