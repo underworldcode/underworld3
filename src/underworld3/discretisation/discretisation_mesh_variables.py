@@ -492,36 +492,44 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Single callback function (following mesh_update_callback pattern)
         def variable_update_callback(array, change_context):
             """Callback to sync variable changes back to PETSc (like mesh.points)"""
+            var = array.owner
+            if var is None:
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or mesh rebuilds),
+                # where the owning Python variable has already been garbage
+                # collected but the NDArray proxy still exists.
+                return
+
             # Only act on data-changing operations (following mesh.points pattern)
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
 
             # Prevent recursion by checking if we're already in a callback
-            if hasattr(self, "_in_callback") and self._in_callback:
+            if hasattr(var, "_in_callback") and var._in_callback:
                 return
 
             # Set recursion guard
-            self._in_callback = True
+            var._in_callback = True
 
             try:
                 # Skip updates during mesh coordinate changes to prevent corruption
                 # Check if mesh is currently being updated
-                if hasattr(self.mesh, "_mesh_update_lock"):
+                if hasattr(var.mesh, "_mesh_update_lock"):
                     # Try to acquire lock without blocking - if we can't, skip update
-                    if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
                         return
                     try:
                         # Persist changes to PETSc (like mesh callback updates coordinates)
-                        self.pack_uw_data_to_petsc(array, sync=True)
+                        var.pack_uw_data_to_petsc(array, sync=True)
                     finally:
-                        self.mesh._mesh_update_lock.release()
+                        var.mesh._mesh_update_lock.release()
                 else:
                     # Fallback if no lock exists
-                    self.pack_uw_data_to_petsc(array, sync=True)
+                    var.pack_uw_data_to_petsc(array, sync=True)
             finally:
                 # Clear recursion guard
-                self._in_callback = False
+                var._in_callback = False
 
         # Register the callback (following mesh.points pattern)
         array_obj.add_callback(variable_update_callback)
@@ -556,34 +564,38 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Callback for flat data format
         def flat_data_update_callback(array, change_context):
             """Callback to sync flat data changes back to PETSc"""
+            var = array.owner
+            if var is None:
+                return
+
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
 
             # Prevent recursion by checking if we're already in a callback
-            if hasattr(self, "_in_flat_callback") and self._in_flat_callback:
+            if hasattr(var, "_in_flat_callback") and var._in_flat_callback:
                 return
 
             # Set recursion guard
-            self._in_flat_callback = True
+            var._in_flat_callback = True
 
             try:
                 # Skip updates during mesh coordinate changes to prevent corruption
-                if hasattr(self.mesh, "_mesh_update_lock"):
-                    if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                if hasattr(var.mesh, "_mesh_update_lock"):
+                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
                         return
                     try:
                         # Use pack_raw for flat data format
-                        self.pack_raw_data_to_petsc(array, sync=True)
+                        var.pack_raw_data_to_petsc(array, sync=True)
                     finally:
-                        self.mesh._mesh_update_lock.release()
+                        var.mesh._mesh_update_lock.release()
                 else:
                     # Fallback if no lock exists
-                    self.pack_raw_data_to_petsc(array, sync=True)
+                    var.pack_raw_data_to_petsc(array, sync=True)
             finally:
                 # Clear recursion guard
-                self._in_flat_callback = False
+                var._in_flat_callback = False
 
         # Register the callback
         array_obj.add_callback(flat_data_update_callback)
@@ -914,6 +926,22 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             return data_array_3d
 
+    def _get_kdtree(self):
+        """
+        Return a cached KDTree for this variable's DOF locations.
+        Rebuilds automatically if the parent mesh has deformed.
+        """
+        # Use non-dimensional coordinates for internal caching (avoids UnitAwareArray overhead)
+        if (
+            not hasattr(self, "_kdtree")
+            or self._kdtree is None
+            or getattr(self, "_kdtree_mesh_version", -1) != self.mesh._mesh_version
+        ):
+            self._kdtree = uw.kdtree.KDTree(self.coords_nd)
+            self._kdtree_mesh_version = self.mesh._mesh_version
+
+        return self._kdtree
+
     def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
         """Interpolate variable data to new coordinates using RBF.
 
@@ -954,10 +982,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
 
-        # Use non-dimensional coordinates for internal RBF interpolation KDTree
-        mesh_kdt = uw.kdtree.KDTree(self.coords_nd)
-        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
-        del mesh_kdt
+        # Use cached KDTree for interpolation
+        kdt = self._get_kdtree()
+        values = kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
 
         return values
 
@@ -2535,12 +2562,16 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         # Create NDArray_With_Callback with proper shape and data
         from underworld3.utilities import NDArray_With_Callback
-
-        array_obj = NDArray_With_Callback(flat_petsc_data)
+        array_obj = NDArray_With_Callback(flat_petsc_data, owner=self)
 
         # Single canonical callback for PETSc synchronization
+
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
+            var = array.owner
+            if var is None:
+                return
+
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
@@ -2556,26 +2587,26 @@ class _BaseMeshVariable(Stateful, uw_object):
 
             canonical_array = np.atleast_2d(array)
 
-            if canonical_array.shape != (canonical_array.shape[0], self.num_components):
+            if canonical_array.shape != (canonical_array.shape[0], var.num_components):
                 # Only reshape if we actually need to
-                canonical_array = canonical_array.reshape(-1, self.num_components)
+                canonical_array = canonical_array.reshape(-1, var.num_components)
 
             # Skip updates during mesh coordinate changes to prevent corruption
-            if hasattr(self.mesh, "_mesh_update_lock"):
-                if not self.mesh._mesh_update_lock.acquire(blocking=False):
+            if hasattr(var.mesh, "_mesh_update_lock"):
+                if not var.mesh._mesh_update_lock.acquire(blocking=False):
                     return
                 try:
                     # STEP 1: Sync to PETSc using established method with correct shape
-                    self.pack_raw_data_to_petsc(canonical_array, sync=True)
+                    var.pack_raw_data_to_petsc(canonical_array, sync=True)
                 finally:
-                    self.mesh._mesh_update_lock.release()
+                    var.mesh._mesh_update_lock.release()
             else:
                 # Fallback if no lock exists
-                self.pack_raw_data_to_petsc(canonical_array, sync=True)
+                var.pack_raw_data_to_petsc(canonical_array, sync=True)
 
             # STEP 2: Handle variable-specific updates (extensible like SwarmVariable)
-            if hasattr(self, "_on_data_changed"):
-                self._on_data_changed()
+            if hasattr(var, "_on_data_changed"):
+                var._on_data_changed()
 
         array_obj.add_callback(canonical_data_callback)
         return array_obj

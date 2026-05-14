@@ -1,9 +1,36 @@
-from libc.stdlib cimport malloc
+from libc.stdlib cimport malloc, free
 
 cdef class PtrContainer:
 
+    def __cinit__(self):
+        self.fns_residual = NULL
+        self.fns_bcs = NULL
+        self.fns_jacobian = NULL
+        self.fns_bd_residual = NULL
+        self.fns_bd_jacobian = NULL
+
+    def __dealloc__(self):
+        if self.fns_residual != NULL:
+            free(self.fns_residual)
+        if self.fns_bcs != NULL:
+            free(self.fns_bcs)
+        if self.fns_jacobian != NULL:
+            free(self.fns_jacobian)
+        if self.fns_bd_residual != NULL:
+            free(self.fns_bd_residual)
+        if self.fns_bd_jacobian != NULL:
+            free(self.fns_bd_jacobian)
+
     cpdef allocate(self, int n_res, int n_bcs, int n_jac, int n_bd_res, int n_bd_jac):
         """Allocate function pointer arrays of the given sizes."""
+
+        # Free existing memory if already allocated
+        if self.fns_residual != NULL: free(self.fns_residual)
+        if self.fns_bcs != NULL:      free(self.fns_bcs)
+        if self.fns_jacobian != NULL: free(self.fns_jacobian)
+        if self.fns_bd_residual != NULL: free(self.fns_bd_residual)
+        if self.fns_bd_jacobian != NULL: free(self.fns_bd_jacobian)
+
         self.fns_residual    = <PetscDSResidualFn*>   malloc(n_res    * sizeof(PetscDSResidualFn))
         self.fns_bcs         = <PetscDSResidualFn*>   malloc(n_bcs    * sizeof(PetscDSResidualFn))
         self.fns_jacobian    = <PetscDSJacobianFn*>   malloc(n_jac    * sizeof(PetscDSJacobianFn))
