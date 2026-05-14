@@ -1255,11 +1255,12 @@ class Mesh(Stateful, uw_object):
         Uses coordinate matching at extraction time (before any
         deformation). Cached permanently since topology doesn't change.
         """
-        if hasattr(self, '_vertex_map') and self._vertex_map is not None:
+        if hasattr(self, "_vertex_map") and self._vertex_map is not None:
             return self._vertex_map
 
-        tree = uw.kdtree.KDTree(self.X.coords)
-        dists, indices = tree.query(self.parent.X.coords, sqr_dists=False)
+        # Use cached KDTree from coordinate variable
+        tree = self.X._get_kdtree()
+        dists, indices = tree.query(self.parent.X.coords_nd, sqr_dists=False)
         matched = dists < 1.0e-10
 
         # parent_rows[i] -> sub_rows[i]: matched vertex pairs
@@ -1453,8 +1454,8 @@ class Mesh(Stateful, uw_object):
         if key in self._dof_maps:
             return self._dof_maps[key]
 
-        tree = uw.kdtree.KDTree(sub_var.coords)
-        dists, indices = tree.query(parent_var.coords, sqr_dists=False)
+        tree = sub_var._get_kdtree()
+        dists, indices = tree.query(parent_var.coords_nd, sqr_dists=False)
         matched = dists < 1.0e-10
 
         # indices[matched] maps parent row → sub row
@@ -3476,10 +3477,23 @@ class Mesh(Stateful, uw_object):
     def _get_domain_centroids(self):
 
         import numpy as np
+        from underworld3.utilities import gather_data
 
         domain_centroid = self._centroids.mean(axis=0)
         all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.dim)
         return all_centroids
+
+    def _get_domain_kdtree(self):
+        import underworld3 as uw
+        if (
+            not hasattr(self, "_domain_kdtree")
+            or self._domain_kdtree is None
+            or getattr(self, "_domain_kdtree_version", -1) != self._mesh_version
+        ):
+            centroids = self._get_domain_centroids()
+            self._domain_kdtree = uw.kdtree.KDTree(centroids)
+            self._domain_kdtree_version = self._mesh_version
+        return self._domain_kdtree
 
     def get_min_radius_old(self) -> float:
         """

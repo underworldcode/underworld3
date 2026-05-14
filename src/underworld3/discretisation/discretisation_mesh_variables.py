@@ -926,6 +926,22 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             return data_array_3d
 
+    def _get_kdtree(self):
+        """
+        Return a cached KDTree for this variable's DOF locations.
+        Rebuilds automatically if the parent mesh has deformed.
+        """
+        # Use non-dimensional coordinates for internal caching (avoids UnitAwareArray overhead)
+        if (
+            not hasattr(self, "_kdtree")
+            or self._kdtree is None
+            or getattr(self, "_kdtree_mesh_version", -1) != self.mesh._mesh_version
+        ):
+            self._kdtree = uw.kdtree.KDTree(self.coords_nd)
+            self._kdtree_mesh_version = self.mesh._mesh_version
+
+        return self._kdtree
+
     def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
         """Interpolate variable data to new coordinates using RBF.
 
@@ -966,10 +982,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
 
-        # Use non-dimensional coordinates for internal RBF interpolation KDTree
-        mesh_kdt = uw.kdtree.KDTree(self.coords_nd)
-        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
-        del mesh_kdt
+        # Use cached KDTree for interpolation
+        kdt = self._get_kdtree()
+        values = kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
 
         return values
 
