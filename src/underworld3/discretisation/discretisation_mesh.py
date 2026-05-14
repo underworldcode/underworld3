@@ -1810,6 +1810,19 @@ class Mesh(Stateful, uw_object):
             if solver is not None and hasattr(solver, "is_setup"):
                 solver.is_setup = False
 
+        # Invalidate caches whose contents become stale when mesh
+        # coordinates change. Matches the cache hygiene already
+        # performed by mesh.adapt() and _legacy_access. Without these,
+        # uw.function.evaluate (and any user code that keys lookups
+        # off _topology_version) can return values computed against
+        # the pre-deform mesh.
+        self._evaluation_hash = None
+        self._evaluation_interpolated_results = None
+        if hasattr(self, '_dminterpolation_cache'):
+            self._dminterpolation_cache.invalidate_all(
+                reason="mesh deformed")
+        self._topology_version += 1
+
         # Propagate coordinate changes to registered submeshes
         for submesh in self._registered_submeshes:
             submesh.sync_coordinates_from_parent()
