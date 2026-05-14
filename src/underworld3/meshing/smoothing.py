@@ -9,6 +9,12 @@ Use after a mesh deformation has left some cells highly distorted
 surface). Topology is unchanged — vertex indices, DOFs, and the
 parallel partition are all preserved; only coordinates move.
 
+Parallel: the per-sweep update is a local scipy CSR Mat-Vec on the
+local DMPlex chart (which already includes ghost vertices). A
+halo exchange via PETSc localToGlobal/globalToLocal on the
+coordinate DM runs between sweeps so each rank's ghost-vertex
+copies see the new owned values from neighbours.
+
 Future extensions (separate PRs):
   - PR B: nicer pinning API (per-boundary explicit lists, callable
     masks)
@@ -37,6 +43,30 @@ def _auto_pinned_labels(mesh) -> tuple:
         if name and name not in skip:
             names.append(name)
     return tuple(names)
+
+
+def _owned_vertex_mask(dm):
+    """Return a local-chart boolean mask: True for owned vertices,
+    False for ghosts (leaves of the point StarForest).
+
+    In serial (size == 1), every local vertex is owned.
+    """
+    pStart, pEnd = dm.getDepthStratum(0)
+    n_verts = pEnd - pStart
+    is_owned = np.ones(n_verts, dtype=bool)
+    sf = dm.getPointSF()
+    if sf is None:
+        return is_owned
+    try:
+        _n_roots, leaves, _remote = sf.getGraph()
+    except Exception:
+        return is_owned
+    if leaves is None or len(leaves) == 0:
+        return is_owned
+    for leaf in leaves:
+        if pStart <= leaf < pEnd:
+            is_owned[leaf - pStart] = False
+    return is_owned
 
 
 def _build_adjacency(mesh, pinned_labels):
@@ -141,11 +171,13 @@ def smooth_mesh_interior(
 
     Notes
     -----
-    **Parallel safety**: currently a serial scipy CSR matrix-vector
-    operation on the local DMPlex chart. Running under
-    ``mpi.size > 1`` raises ``NotImplementedError``. A future change
-    will replace the scipy Mat-Vec with a PETSc Mat-Vec with halo
-    exchange between sweeps.
+    **Parallel implementation**: per-sweep update is a local scipy
+    CSR Mat-Vec on the local DMPlex chart, which includes ghost
+    (off-rank) vertices as neighbours of owned vertices. Only owned
+    interior vertices are written each sweep; a halo exchange via
+    ``coordDM.localToGlobal`` (INSERT) + ``globalToLocal`` pushes
+    those new owned values out to the ghost copies on receiving
+    ranks before the next sweep's Mat-Vec.
 
     **Topology preservation**: vertex IDs, DOF mappings, and the
     rank partition are unchanged. Only coordinates move. Anything
@@ -172,12 +204,6 @@ def smooth_mesh_interior(
 
         smooth_mesh_interior(mesh, pinned_labels=[])
     """
-    if uw.mpi.size > 1:
-        raise NotImplementedError(
-            "smooth_mesh_interior is currently serial-only. "
-            "Parallel (PETSc Mat-Vec) implementation pending — "
-            "see docs/developer/subsystems/mesh-smoothing.md.")
-
     if pinned_labels is None:
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)
@@ -192,23 +218,55 @@ def smooth_mesh_interior(
     cache = _ADJ_CACHE.get(cache_key)
     if cache is None:
         A, is_pinned = _build_adjacency(mesh, pinned_labels)
-        _ADJ_CACHE[cache_key] = (A, is_pinned)
+        is_owned = _owned_vertex_mask(dm)
+        _ADJ_CACHE[cache_key] = (A, is_pinned, is_owned)
     else:
-        A, is_pinned = cache
+        A, is_pinned, is_owned = cache
 
-    is_interior = ~is_pinned
-    coords = np.asarray(mesh.X.coords, dtype=np.double).copy()
+    # Owned interior vertices are the writes per sweep.
+    # Ghost-vertex values come from the halo exchange.
+    is_int_owned = is_owned & ~is_pinned
+
+    coord_dm = dm.getCoordinateDM()
+    local_vec = dm.getCoordinatesLocal()
+    global_vec = dm.getCoordinates()
+    cdim = mesh.cdim
+    parallel = uw.mpi.size > 1
+
+    # Working buffer (initially copies the local Vec contents, which
+    # already includes ghosts in parallel).
+    coords = np.asarray(
+        local_vec.array, dtype=np.double).reshape(-1, cdim).copy()
 
     for sweep in range(n_iters):
         avg = A @ coords
-        new_int = ((1.0 - alpha) * coords[is_interior]
-                   + alpha * avg[is_interior])
+        new_int = ((1.0 - alpha) * coords[is_int_owned]
+                   + alpha * avg[is_int_owned])
         if verbose:
-            disp = np.linalg.norm(new_int - coords[is_interior])
-            print(f"  smooth_mesh_interior sweep "
-                  f"{sweep+1}/{n_iters}: "
-                  f"||Δx||_interior = {disp:.3e}", flush=True)
-        coords[is_interior] = new_int
+            disp = float(np.linalg.norm(
+                new_int - coords[is_int_owned]))
+            if parallel:
+                disp = uw.mpi.comm.allreduce(
+                    disp ** 2) ** 0.5
+            uw.pprint(
+                f"  smooth_mesh_interior sweep "
+                f"{sweep+1}/{n_iters}: "
+                f"||Δx||_interior = {disp:.3e}")
+        coords[is_int_owned] = new_int
+
+        if parallel:
+            # Halo exchange so the next sweep's Mat-Vec sees the
+            # updated owned-vertex values on every rank's ghost copies.
+            # 1. write our owned updates into the local Vec
+            local_vec.array[:] = coords.ravel()
+            # 2. localToGlobal with INSERT — push owned to global
+            coord_dm.localToGlobal(
+                local_vec, global_vec, addv=False)
+            # 3. globalToLocal — refresh ghost copies from new owned
+            coord_dm.globalToLocal(global_vec, local_vec)
+            # 4. read back into our numpy buffer
+            coords[:] = np.asarray(
+                local_vec.array).reshape(-1, cdim)
 
     # Single DM-coords update at the end: one rebuild, not N.
     mesh._deform_mesh(coords)
