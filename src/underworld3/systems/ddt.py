@@ -1172,6 +1172,7 @@ class SemiLagrangian(uw_object):
         smoothing=0.0,
         preserve_moments=False,
         with_forcing_history: bool = False,
+        monotone_mode: Optional[str] = None,
     ):
         super().__init__()
 
@@ -1185,6 +1186,20 @@ class SemiLagrangian(uw_object):
         self.order = order
         self.preserve_moments = preserve_moments
         self.with_forcing_history = with_forcing_history
+        # Monotonicity limiter for the SL trace-back result. Bound
+        # the FE-interpolated upstream sample to the local data range
+        # of psi_star at each trace-back point. Cures the FE Lagrange
+        # overshoot pattern in cells with sharp gradients while
+        # preserving FE accuracy elsewhere.
+        #   None    → pure FE (legacy; can overshoot at non-nodal
+        #             points in cells with sharp gradients)
+        #   "clamp" → B.2: clip FE result to [nbr_min, nbr_max] of
+        #             the k=dim+1 nearest psi_star DOFs
+        #   "pick"  → B.1: keep FE if in nbr bounds, else re-evaluate
+        #             via RBF (Shepard) at out-of-bounds DOFs
+        # Settable after construction:
+        #   ``adv_diff.DuDt.monotone_mode = "clamp"``
+        self.monotone_mode = monotone_mode
 
         # Forcing-history storage. Allocated only if requested. Populated
         # each step via update_forcing_history(forcing_fn) — used by ETD-2
@@ -1636,6 +1651,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
         store_result: Optional[bool] = True,
+        monotone_mode: Optional[str] = "__instance__",
     ):
         """Sample upstream values along characteristics before solve.
 
@@ -1651,9 +1667,18 @@ class SemiLagrangian(uw_object):
             existing psi_star levels upstream. Used by VE_Stokes where
             psi_star[0] already contains the projected actual stress from
             the previous solve.
+        monotone_mode : str or None, optional
+            Override the instance ``self.monotone_mode`` for this call.
+            Default ``"__instance__"`` (sentinel) means "use whatever is
+            on the instance". Pass ``None``, ``"clamp"``, or ``"pick"``
+            to force a particular mode for one call.
         """
 
         self._dt = dt
+
+        # Resolve monotone_mode: explicit kwarg overrides instance attr.
+        if monotone_mode == "__instance__":
+            monotone_mode = getattr(self, "monotone_mode", None)
 
         if not self._history_initialised:
             self.initialise_history()
@@ -1903,6 +1928,7 @@ class SemiLagrangian(uw_object):
             v_mid_result = uw.function.global_evaluate(
                 self.V_fn,
                 mid_pt_coords,
+                evalf=evalf,
             )
 
             # CRITICAL: Preserve UnitAwareArray through slicing
@@ -1967,9 +1993,16 @@ class SemiLagrangian(uw_object):
 
             # Evaluate psi_star at upstream coordinates
             # global_evaluate now returns dimensional results (gateway fix 2025-11-28)
+            # When evalf=True, route through RBF (Shepard, bounded by
+            # neighbour values) instead of FE shape functions. FE
+            # Lagrange P3 can overshoot at non-nodal upstream points
+            # in cells with sharp gradients — observed as the 'pepper'
+            # DOF scatter that ignites catastrophic ringing on free-
+            # surface convection at high Ra.
             value_at_end_points = uw.function.global_evaluate(
                 expr_to_evaluate,
                 end_pt_coords,
+                evalf=evalf,
             )
 
             # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned
@@ -1977,6 +2010,87 @@ class SemiLagrangian(uw_object):
             psi_star_units = self.psi_star[i].units
             if psi_star_units is not None and not isinstance(value_at_end_points, UnitAwareArray):
                 value_at_end_points = UnitAwareArray(value_at_end_points, units=psi_star_units)
+
+            # Monotonicity limiter (B.1 / B.2). Bound the FE/RBF
+            # trace-back result to the local data range of psi_star
+            # near each upstream coord.
+            #   monotone_mode = "clamp" → B.2: clip to [nbr_min, nbr_max]
+            #   monotone_mode = "pick"  → B.1: keep FE in bounds, else RBF
+            if monotone_mode in ("clamp", "pick"):
+                # Convert end_pt_coords to ND space matching the
+                # psi_star DOF coords so the kdtree query compares
+                # like-with-like. Same pattern as the
+                # psi_star_0_coords → psi_star_0_coords_nd conversion
+                # above. In unit-aware runs `end_pt_coords` is
+                # dimensional (e.g. metres) while
+                # `psi_star[i].coords_nd` is [0,1] non-dimensional,
+                # so without this conversion the kdtree picks wrong
+                # neighbours.
+                if hasattr(end_pt_coords, "magnitude"):
+                    epc_raw = uw.non_dimensionalise(end_pt_coords)
+                    if isinstance(epc_raw, UnitAwareArray):
+                        epc_nd = np.array(epc_raw)
+                    elif hasattr(epc_raw, "magnitude"):
+                        epc_nd = epc_raw.magnitude
+                    else:
+                        epc_nd = np.asarray(epc_raw)
+                else:
+                    epc_nd = np.asarray(end_pt_coords)
+                psi_coords_nd = np.asarray(self.psi_star[i].coords_nd)
+                if hasattr(psi_coords_nd, "magnitude"):
+                    psi_coords_nd = np.asarray(psi_coords_nd.magnitude)
+                nnn = self.mesh.dim + 1
+                kdt = uw.kdtree.KDTree(
+                    np.ascontiguousarray(psi_coords_nd))
+                _, idxs = kdt.query(
+                    np.ascontiguousarray(epc_nd), k=nnn,
+                    sqr_dists=False)
+                psi_data = np.asarray(self.psi_star[i].data)
+                # Flatten trailing dims to compute per-coord nbr stats,
+                # then restore the original shape afterwards.
+                psi_data_flat = psi_data.reshape(psi_data.shape[0], -1)
+                nbr_vals = psi_data_flat[idxs]
+                nbr_min = nbr_vals.min(axis=1)
+                nbr_max = nbr_vals.max(axis=1)
+                veep_np = np.asarray(value_at_end_points)
+                orig_shape = veep_np.shape
+                veep_flat = veep_np.reshape(nbr_min.shape)
+                if monotone_mode == "clamp":
+                    veep_lim = np.clip(veep_flat, nbr_min, nbr_max)
+                else:
+                    # B.1 "pick": re-evaluate via RBF only at the
+                    # subset of upstream coords whose FE result is
+                    # out-of-bounds. Keeps pick-mode cost dominated
+                    # by the cheap FE pass when most DOFs are
+                    # in-bounds; the RBF eval is the expensive part
+                    # so we don't want it for points we're going to
+                    # keep anyway.
+                    out_of_bounds = ((veep_flat < nbr_min)
+                                     | (veep_flat > nbr_max))
+                    oob_mask = out_of_bounds.any(axis=tuple(
+                        range(1, out_of_bounds.ndim)))
+                    veep_lim = veep_flat.copy()
+                    if oob_mask.any():
+                        oob_coords = end_pt_coords[oob_mask]
+                        value_rbf_oob = uw.function.global_evaluate(
+                            expr_to_evaluate, oob_coords, evalf=True)
+                        vrbf_flat = np.asarray(value_rbf_oob).reshape(
+                            (-1,) + veep_flat.shape[1:])
+                        # Within the oob subset, only overwrite
+                        # entries that are individually out of bounds
+                        # (multi-component case).
+                        sub_oob = out_of_bounds[oob_mask]
+                        veep_sub = veep_lim[oob_mask]
+                        veep_sub = np.where(
+                            sub_oob, vrbf_flat, veep_sub)
+                        veep_lim[oob_mask] = veep_sub
+                value_at_end_points = veep_lim.reshape(orig_shape)
+                # Re-wrap units after numpy ops, if needed.
+                if (psi_star_units is not None
+                        and not isinstance(value_at_end_points,
+                                           UnitAwareArray)):
+                    value_at_end_points = UnitAwareArray(
+                        value_at_end_points, units=psi_star_units)
 
             self.psi_star[i].array[...] = value_at_end_points
 
