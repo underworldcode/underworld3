@@ -37,8 +37,15 @@ _ADJ_CACHE: dict = {}
 
 
 def _auto_pinned_labels(mesh) -> tuple:
-    """All non-sentinel boundary labels on the mesh."""
-    skip = {"All_Boundaries", "Null_Boundary"}
+    """All non-sentinel geometric boundary labels on the mesh.
+
+    Skips ``All_Boundaries`` / ``Null_Boundary`` (sentinels) and
+    known non-geometric pressure-pin markers such as ``Centre`` on
+    the Annulus (a single-point marker whose underlying ``DMLabel``
+    has an invalid communicator and hard-crashes any
+    ``getNumValues`` / ``getValueIS`` / ``view`` call).
+    """
+    skip = {"All_Boundaries", "Null_Boundary", "Centre"}
     names = []
     for member in mesh.boundaries:
         name = getattr(member, "name", None)
@@ -73,7 +80,10 @@ def _owned_vertex_mask(dm):
 
 def _pinned_mask(dm, pinned_labels):
     """Local-chart boolean mask: True where the vertex belongs to any
-    of ``pinned_labels``."""
+    of ``pinned_labels``. Tolerates labels that are present but
+    empty (e.g. the ``Centre`` pressure-pin marker on an Annulus,
+    whose underlying ``DMLabel`` has no strata and whose
+    ``getValueIS()`` hard-crashes if called)."""
     pStart, pEnd = dm.getDepthStratum(0)
     n_verts = pEnd - pStart
     is_pinned = np.zeros(n_verts, dtype=bool)
@@ -81,11 +91,19 @@ def _pinned_mask(dm, pinned_labels):
         label = dm.getLabel(lname)
         if label is None:
             continue
-        vIS = label.getValueIS()
+        try:
+            if label.getNumValues() == 0:
+                continue
+            vIS = label.getValueIS()
+        except Exception:
+            continue
         if vIS is None:
             continue
         for val in vIS.getIndices():
-            iset = label.getStratumIS(int(val))
+            try:
+                iset = label.getStratumIS(int(val))
+            except Exception:
+                continue
             if iset is None:
                 continue
             for idx in iset.getIndices():
