@@ -1844,6 +1844,37 @@ class Mesh(Stateful, uw_object):
                 self._dminterpolation_cache.invalidate_all(
                     reason="mesh deformed")
             self._topology_version += 1
+            # Bump the geometry-version counter so version-keyed
+            # kdtree navigation caches rebuild against the new DOF
+            # positions: _BaseMeshVariable._get_kdtree and
+            # Mesh._get_domain_kdtree both gate their rebuild on
+            # `_mesh_version`. PR #182 introduced those version-keyed
+            # caches; the mesh.X.coords callback path bumps
+            # _mesh_version, but direct _deform_mesh() calls (every
+            # free-surface RK stage) bypass that callback. Without
+            # this bump the navigation kdtrees stay frozen on the
+            # undeformed mesh — back-advected SL samples land at the
+            # wrong DOFs, corrupting the temperature field. PR #188
+            # added _topology_version invalidation but missed this.
+            self._mesh_version += 1
+            # Also nuke any *user-installed* navigation caches that
+            # key off coord-array identity. A runner's
+            # restore_points_to_domain typically installs a
+            # `_restore_kdt` / `_restore_coords_id` pair on the mesh,
+            # rebuilding the kdtree only when `id(mesh.X.coords)`
+            # changes. _deform_mesh replaces self._coords with a new
+            # object, but CPython reuses freed ids, so the fresh
+            # coords array can land on the SAME id() as the old one —
+            # the staleness check then false-negatives and the stale
+            # restore-kdtree is reused, snapping back-advected SL
+            # particles to pre-deform DOF positions (smeared T,
+            # damped free-surface convection feedback). Explicitly
+            # clearing these defeats the id()-reuse hazard. PR #188
+            # captured the generic cache invalidation above but
+            # dropped this runner-navigation-cache clear.
+            for _nav_attr in ("_restore_kdt", "_restore_coords_id"):
+                if hasattr(self, _nav_attr):
+                    setattr(self, _nav_attr, None)
 
             # Propagate coordinate changes to registered submeshes
             for submesh in self._registered_submeshes:
