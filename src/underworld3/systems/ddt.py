@@ -1817,10 +1817,27 @@ class SemiLagrangian(uw_object):
 
             except Exception:
                 # Fallback to projection solver for expressions that can't be directly evaluated
-                # (e.g., containing derivatives)
-                self._psi_star_projection_solver.uw_function = self.psi_fn
+                # (e.g., containing derivatives — true for the NS viscous flux every step).
+                # Route via _build_projection_source so the (1, Nc) row-matrix flattening
+                # required by SNES_MultiComponent_Projection is applied for tensor vtypes.
+                # Without this, a (dim, dim) tensor function meets a (1, Nc) solver field
+                # and SymPy raises "Matrix size mismatch: (1, Nc) + (dim, dim)" (issue #180).
+                self._psi_star_projection_solver.uw_function = self._build_projection_source(
+                    self.psi_fn
+                )
                 self._psi_star_projection_solver.smoothing = 0.0
                 self._psi_star_projection_solver.solve(verbose=verbose)
+
+                # For tensor vtypes the projection writes into the flat (1, Nc) variable,
+                # so we must fan it back out to psi_star[0] — otherwise subsequent
+                # history operations read a stale tensor. Mirrors the same fan-out in
+                # initialise_history() (~line 1540).
+                if getattr(self, '_psi_star_use_multicomponent', False):
+                    for k, (i, j) in enumerate(self._psi_star_indep_indices):
+                        vals = self._psi_star_flat_var.array[:, 0, k]
+                        self.psi_star[0].array[:, i, j] = vals
+                        if i != j:
+                            self.psi_star[0].array[:, j, i] = vals
 
         # 3. Compute the upstream values from the psi_fn
 
