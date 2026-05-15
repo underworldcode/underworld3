@@ -79,12 +79,21 @@ def _owned_vertex_mask(dm):
 
 
 def _pinned_mask(dm, pinned_labels):
-    """Local-chart boolean mask: True where the vertex belongs to any
-    of ``pinned_labels``. Tolerates labels that are present but
-    empty (e.g. the ``Centre`` pressure-pin marker on an Annulus,
-    whose underlying ``DMLabel`` has no strata and whose
-    ``getValueIS()`` hard-crashes if called)."""
+    """Local-chart boolean mask: True where the vertex belongs to (or
+    is the endpoint of an edge in) any of ``pinned_labels``.
+
+    UW3 mesh generators tag boundaries by EDGE rather than by
+    vertex; the vertex stratum sometimes misses 1-2 endpoint
+    vertices at the gmsh seam (e.g. θ=0°/180° on the Annulus outer
+    rim). Pinning by vertex-stratum-only would leave those
+    "seam" vertices free, and the smoother would pull them
+    inward. Taking the closure of the tagged edges recovers them.
+
+    Tolerates labels that are present but empty (e.g. the
+    ``Centre`` pressure-pin marker on an Annulus, whose underlying
+    ``DMLabel`` has no strata and hard-crashes any query)."""
     pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
     n_verts = pEnd - pStart
     is_pinned = np.zeros(n_verts, dtype=bool)
     for lname in pinned_labels:
@@ -108,7 +117,14 @@ def _pinned_mask(dm, pinned_labels):
                 continue
             for idx in iset.getIndices():
                 if pStart <= idx < pEnd:
+                    # Tagged vertex — pin directly.
                     is_pinned[idx - pStart] = True
+                elif eStart <= idx < eEnd:
+                    # Tagged edge — pin both endpoint vertices.
+                    cone = dm.getCone(idx)
+                    for c in cone:
+                        if pStart <= c < pEnd:
+                            is_pinned[c - pStart] = True
     return is_pinned
 
 
