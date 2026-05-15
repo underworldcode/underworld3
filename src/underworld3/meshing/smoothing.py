@@ -9,11 +9,13 @@ Use after a mesh deformation has left some cells highly distorted
 surface). Topology is unchanged — vertex indices, DOFs, and the
 parallel partition are all preserved; only coordinates move.
 
-Parallel: the per-sweep update is a local scipy CSR Mat-Vec on the
-local DMPlex chart (which already includes ghost vertices). A
-halo exchange via PETSc localToGlobal/globalToLocal on the
-coordinate DM runs between sweeps so each rank's ghost-vertex
-copies see the new owned values from neighbours.
+Parallel: a PETSc parallel AIJ matrix represents the vertex-vertex
+adjacency. Each rank inserts entries for every edge it sees locally
+using GLOBAL vertex indices; ``mat.assemble()`` combines cross-rank
+contributions so that owned-vertex rows are complete after assembly.
+Without this, UW3's default cell-overlap-0 distribution under-counts
+neighbours for vertices on the rank partition boundary, producing
+visibly wrong updates along the rank cut.
 
 Future extensions (separate PRs):
   - PR B: nicer pinning API (per-boundary explicit lists, callable
@@ -46,10 +48,10 @@ def _auto_pinned_labels(mesh) -> tuple:
 
 
 def _owned_vertex_mask(dm):
-    """Return a local-chart boolean mask: True for owned vertices,
-    False for ghosts (leaves of the point StarForest).
-
-    In serial (size == 1), every local vertex is owned.
+    """Local-chart boolean mask: True for owned vertices, False for
+    ghosts (leaves of the point StarForest). Used by the parallel
+    tests; the smoother itself derives ownership from the global
+    section attached to its scalar DM clone.
     """
     pStart, pEnd = dm.getDepthStratum(0)
     n_verts = pEnd - pStart
@@ -69,46 +71,11 @@ def _owned_vertex_mask(dm):
     return is_owned
 
 
-def _build_adjacency(mesh, pinned_labels):
-    """Build row-normalised vertex-vertex adjacency + pinned mask.
-
-    Returns
-    -------
-    A : scipy.sparse.csr_matrix
-        Row-normalised so ``A @ x`` gives the average of each vertex's
-        edge-neighbour ``x`` values.
-    is_pinned : numpy.ndarray of bool, shape (n_local_verts,)
-        True where the vertex belongs to any of ``pinned_labels``.
-    """
-    from scipy.sparse import csr_matrix
-
-    dm = mesh.dm
-    pStart, pEnd = dm.getDepthStratum(0)      # vertex stratum
-    eStart, eEnd = dm.getDepthStratum(1)      # edge stratum (2D / 3D)
+def _pinned_mask(dm, pinned_labels):
+    """Local-chart boolean mask: True where the vertex belongs to any
+    of ``pinned_labels``."""
+    pStart, pEnd = dm.getDepthStratum(0)
     n_verts = pEnd - pStart
-
-    rows, cols = [], []
-    for e in range(eStart, eEnd):
-        cone = dm.getCone(e)
-        # An edge's cone is its two endpoint vertices (any mesh).
-        if len(cone) != 2:
-            continue
-        v0, v1 = cone[0] - pStart, cone[1] - pStart
-        if 0 <= v0 < n_verts and 0 <= v1 < n_verts:
-            rows.append(v0); cols.append(v1)
-            rows.append(v1); cols.append(v0)
-
-    rows = np.asarray(rows, dtype=np.int64)
-    cols = np.asarray(cols, dtype=np.int64)
-    data = np.ones_like(rows, dtype=np.float64)
-    A_pat = csr_matrix((data, (rows, cols)),
-                       shape=(n_verts, n_verts))
-    n_nbr = np.asarray(A_pat.sum(axis=1)).ravel()
-    n_nbr_safe = np.where(n_nbr > 0, n_nbr, 1.0)
-    inv = 1.0 / n_nbr_safe
-    A = csr_matrix((data * inv[rows], (rows, cols)),
-                   shape=(n_verts, n_verts))
-
     is_pinned = np.zeros(n_verts, dtype=bool)
     for lname in pinned_labels:
         label = dm.getLabel(lname)
@@ -124,7 +91,109 @@ def _build_adjacency(mesh, pinned_labels):
             for idx in iset.getIndices():
                 if pStart <= idx < pEnd:
                     is_pinned[idx - pStart] = True
-    return A, is_pinned
+    return is_pinned
+
+
+def _build_scalar_dm(dm):
+    """A clone of the topological DM with a 1-dof-per-vertex local
+    section. Used to size the adjacency Mat and to produce the global
+    vertex numbering."""
+    from petsc4py import PETSc
+    chart_start, chart_end = dm.getChart()
+    pStart, pEnd = dm.getDepthStratum(0)
+    section = PETSc.Section().create(comm=dm.getComm())
+    section.setChart(chart_start, chart_end)
+    for p in range(chart_start, chart_end):
+        section.setDof(p, 1 if pStart <= p < pEnd else 0)
+    section.setUp()
+    dm_scalar = dm.clone()
+    dm_scalar.setLocalSection(section)
+    return dm_scalar
+
+
+def _build_adjacency_matrix(mesh):
+    """Build the parallel vertex-vertex adjacency as a PETSc AIJ Mat.
+
+    Each rank inserts entries for every locally-visible edge using
+    GLOBAL vertex indices; ``mat.assemble()`` combines cross-rank
+    contributions, so that after assembly an owned-vertex row has
+    every neighbour it would in a serial run — even when the
+    incident edge lives in a cell owned by another rank that is not
+    in this rank's overlap.
+
+    Returns
+    -------
+    A : PETSc.Mat
+        Unweighted vertex-vertex adjacency, entries are 1.0 where an
+        edge exists. Divide the result of ``A @ x`` by the degree
+        vector to get the neighbour average.
+    dm_scalar : PETSc.DMPlex
+        Clone of ``mesh.dm`` with a 1-dof-per-vertex section. Owns
+        the parallel layout for the Mat and any vectors of the same
+        shape.
+    local_to_global_owned : numpy.ndarray, shape (n_owned,)
+        ``local_to_global_owned[i]`` is the offset (in the *local*
+        owned portion of the global Vec) at which the ``i``-th
+        OWNED local vertex appears. Use this to pack/unpack between
+        ``coords[is_owned, d]`` and ``vec.array``.
+    """
+    from petsc4py import PETSc
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+
+    dm_scalar = _build_scalar_dm(dm)
+    gsection = dm_scalar.getGlobalSection()
+
+    def gidx(p):
+        off = gsection.getOffset(p)
+        return off if off >= 0 else -(off + 1)
+
+    A = dm_scalar.createMatrix()
+    A.setOption(A.Option.NEW_NONZERO_LOCATION_ERR, False)
+    A.setOption(A.Option.IGNORE_OFF_PROC_ENTRIES, False)
+
+    for e in range(eStart, eEnd):
+        cone = dm.getCone(e)
+        if len(cone) != 2:
+            continue
+        v0, v1 = cone[0], cone[1]
+        if not (pStart <= v0 < pEnd and pStart <= v1 < pEnd):
+            continue
+        g0, g1 = gidx(v0), gidx(v1)
+        A.setValues([g0], [g1], [1.0], PETSc.InsertMode.INSERT)
+        A.setValues([g1], [g0], [1.0], PETSc.InsertMode.INSERT)
+    A.assemble()
+    return A, dm_scalar, gsection
+
+
+def _build_local_to_owned_map(dm, gsection, vec):
+    """Compute, for each local owned vertex, its position in the
+    rank's slice of the global Vec.
+
+    Returns (owned_local_indices, owned_vec_positions, is_owned_local)
+    where:
+      * owned_local_indices : local-chart indices of owned vertices
+        (shape n_owned, dtype int64)
+      * owned_vec_positions : positions in vec.array (same shape)
+      * is_owned_local : bool mask over the local chart
+    """
+    pStart, pEnd = dm.getDepthStratum(0)
+    n_local = pEnd - pStart
+    rstart, rend = vec.getOwnershipRange()
+    is_owned = np.zeros(n_local, dtype=bool)
+    owned_local = []
+    owned_vec_pos = []
+    for v in range(pStart, pEnd):
+        off = gsection.getOffset(v)
+        if off < 0:
+            continue  # ghost
+        is_owned[v - pStart] = True
+        owned_local.append(v - pStart)
+        owned_vec_pos.append(off - rstart)
+    return (np.asarray(owned_local, dtype=np.int64),
+            np.asarray(owned_vec_pos, dtype=np.int64),
+            is_owned)
 
 
 def smooth_mesh_interior(
@@ -171,13 +240,15 @@ def smooth_mesh_interior(
 
     Notes
     -----
-    **Parallel implementation**: per-sweep update is a local scipy
-    CSR Mat-Vec on the local DMPlex chart, which includes ghost
-    (off-rank) vertices as neighbours of owned vertices. Only owned
-    interior vertices are written each sweep; a halo exchange via
-    ``coordDM.localToGlobal`` (INSERT) + ``globalToLocal`` pushes
-    those new owned values out to the ghost copies on receiving
-    ranks before the next sweep's Mat-Vec.
+    **Parallel implementation**: the vertex-vertex adjacency is
+    assembled as a parallel PETSc AIJ matrix; each rank inserts
+    entries for every locally-visible edge using GLOBAL vertex
+    indices and ``mat.assemble()`` routes cross-rank contributions
+    so that owned-vertex rows are complete after assembly. The
+    per-sweep update is then a per-component ``A.mult`` followed by
+    a pointwise divide by the precomputed degree vector. Results
+    are bit-identical (to a single ULP) between serial and parallel
+    runs at any rank count.
 
     **Topology preservation**: vertex IDs, DOF mappings, and the
     rank partition are unchanged. Only coordinates move. Anything
@@ -217,15 +288,33 @@ def smooth_mesh_interior(
 
     cache = _ADJ_CACHE.get(cache_key)
     if cache is None:
-        A, is_pinned = _build_adjacency(mesh, pinned_labels)
-        is_owned = _owned_vertex_mask(dm)
-        _ADJ_CACHE[cache_key] = (A, is_pinned, is_owned)
+        A, dm_scalar, gsection = _build_adjacency_matrix(mesh)
+        # A scratch global Vec of the right shape — also used to read
+        # the ownership range when packing/unpacking coord components.
+        x_vec = A.createVecRight()
+        y_vec = A.createVecLeft()
+        ones = A.createVecLeft()
+        ones.set(1.0)
+        degrees = A.createVecLeft()
+        A.mult(ones, degrees)
+        owned_local, owned_vec_pos, is_owned = (
+            _build_local_to_owned_map(dm, gsection, x_vec))
+        is_pinned = _pinned_mask(dm, pinned_labels)
+        _ADJ_CACHE[cache_key] = (
+            A, dm_scalar, gsection, x_vec, y_vec, degrees,
+            owned_local, owned_vec_pos, is_owned, is_pinned)
     else:
-        A, is_pinned, is_owned = cache
+        (A, dm_scalar, gsection, x_vec, y_vec, degrees,
+         owned_local, owned_vec_pos, is_owned, is_pinned) = cache
 
-    # Owned interior vertices are the writes per sweep.
-    # Ghost-vertex values come from the halo exchange.
+    # is_int_owned over the LOCAL chart — selects interior owned
+    # vertices for displacement reporting.
     is_int_owned = is_owned & ~is_pinned
+    # Subset of owned_local that's also interior (i.e. not pinned)
+    # — used to write the per-sweep updates into the numpy buffer.
+    int_mask_on_owned = ~is_pinned[owned_local]
+    int_owned_local = owned_local[int_mask_on_owned]
+    int_owned_vec_pos = owned_vec_pos[int_mask_on_owned]
 
     coord_dm = dm.getCoordinateDM()
     local_vec = dm.getCoordinatesLocal()
@@ -233,18 +322,27 @@ def smooth_mesh_interior(
     cdim = mesh.cdim
     parallel = uw.mpi.size > 1
 
-    # Working buffer (initially copies the local Vec contents, which
-    # already includes ghosts in parallel).
     coords = np.asarray(
         local_vec.array, dtype=np.double).reshape(-1, cdim).copy()
 
     for sweep in range(n_iters):
-        avg = A @ coords
-        new_int = ((1.0 - alpha) * coords[is_int_owned]
-                   + alpha * avg[is_int_owned])
+        new_int = np.empty((int_owned_local.shape[0], cdim),
+                           dtype=np.double)
+        # For each coordinate component, do A @ coord_comp (PETSc
+        # handles cross-rank communication), then divide by degree
+        # to get the per-vertex neighbour average.
+        for d in range(cdim):
+            x_vec.array[owned_vec_pos] = coords[owned_local, d]
+            A.mult(x_vec, y_vec)
+            y_vec.pointwiseDivide(y_vec, degrees)
+            avg_owned = np.asarray(y_vec.array)
+            new_int[:, d] = (
+                (1.0 - alpha) * coords[int_owned_local, d]
+                + alpha * avg_owned[int_owned_vec_pos])
+
         if verbose:
             disp = float(np.linalg.norm(
-                new_int - coords[is_int_owned]))
+                new_int - coords[int_owned_local]))
             if parallel:
                 disp = uw.mpi.comm.allreduce(
                     disp ** 2) ** 0.5
@@ -252,21 +350,21 @@ def smooth_mesh_interior(
                 f"  smooth_mesh_interior sweep "
                 f"{sweep+1}/{n_iters}: "
                 f"||Δx||_interior = {disp:.3e}")
-        coords[is_int_owned] = new_int
+
+        coords[int_owned_local] = new_int
 
         if parallel:
-            # Halo exchange so the next sweep's Mat-Vec sees the
-            # updated owned-vertex values on every rank's ghost copies.
-            # 1. write our owned updates into the local Vec
+            # Halo exchange so the next sweep sees updated owned
+            # values on every rank's ghost copies. (PETSc's mat.mult
+            # handles cross-rank READS internally via the matrix's
+            # column communication, so this halo exchange is only
+            # needed to keep the LOCAL coord array consistent for
+            # the final ``mesh._deform_mesh`` call.)
             local_vec.array[:] = coords.ravel()
-            # 2. localToGlobal with INSERT — push owned to global
             coord_dm.localToGlobal(
                 local_vec, global_vec, addv=False)
-            # 3. globalToLocal — refresh ghost copies from new owned
             coord_dm.globalToLocal(global_vec, local_vec)
-            # 4. read back into our numpy buffer
             coords[:] = np.asarray(
                 local_vec.array).reshape(-1, cdim)
 
-    # Single DM-coords update at the end: one rebuild, not N.
     mesh._deform_mesh(coords)
