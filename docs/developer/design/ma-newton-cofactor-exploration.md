@@ -401,3 +401,46 @@ Net: compact Cartesian `|X−P|²` Lorentzian about the feature point
 safe and good for boundary *quality* but is not the lever for a
 tangential pull. Drop the polar-separable formulation. Figures
 `/tmp/metric_mesh/ma_polar_slip{,_v2}.png`, `ma_lorentzian_slip.png`.
+
+### Angular OT target vs anisotropic scalar (2026-05-18) — (2) is a dead end
+
+User: the metric should exploit the *abundant tangential* node
+budget (slide spare angular nodes toward the feature) rather than
+the *scarce pinned radial* one. Built (1) the exact 1-D angular OT
+as the target for (2) a new opt-in `move_anisotropy=(w_r,w_θ)`
+that rescales the realised displacement in the local
+radial/tangential frame. Angle-only feature ρ(θ)=1+AMP/(1+(Δθ/Wθ)²),
+AMP=8, res-24:
+
+| | far/near | frac@θ₀ | minA | radial drift |
+|---|---|---|---|---|
+| undeformed | 1.00 | 0.159 | 0.547 | 0 |
+| **(1) exact angular OT [TARGET]** | **2.21** | **0.415** | 0.209 | 1e-16 |
+| (2) winslow isotropic | 0.98 | 0.158 | 0.356 | 6.8e-2 |
+| (2) winslow tangential-preferred | 0.99 | 0.158 | 0.392 | 7.9e-3 |
+
+- **(1) is exactly right** — rakes spare angular nodes into the θ₀
+  sector (frac 0.16→0.42, far/near 2.2), radius untouched (drift
+  1e-16), no tangle. For separable/structured features the explicit
+  1-D OT is the correct tool, used *directly*.
+- **(2) is a structural dead end.** Scalar BFO on the same metric
+  produces ≈zero angular concentration (far/near 0.98, frac 0.158 ≈
+  uniform) for *any* weighting. `move_anisotropy` works as designed
+  — it suppresses *spurious radial* drift (6.8e-2→8e-3) — but there
+  is no angular concentration to preserve: the scalar potential
+  never generates the coherent tangential transport. Reweighting
+  can shape transport the solver produces, not manufacture
+  transport it does not.
+- **Root cause = the foundational cap, both directions.** A scalar
+  equidistribution potential with fixed topology cannot deliver
+  large coherent *bulk* transport — radial (the ~1.7 cap) *or*
+  tangential (here). Hoop/fixed-topology stiffness cuts both ways.
+
+Verdict: "(1) as a target for (2)" *proves (2) cannot reach it*.
+Use the explicit 1-D OT directly for separable features
+(directional / dimensional-split redistribution); the generalisable
+heavy route is a true anisotropic metric-*tensor* adaptation — not
+anisotropic diffusivity / move-weighting on the scalar potential.
+`move_anisotropy` is kept as an opt-in *quality* knob (suppresses
+off-direction drift), not a concentrator. Script
+`ma_angular_ot_target.py`; fig `/tmp/metric_mesh/ma_angular_ot.png`.

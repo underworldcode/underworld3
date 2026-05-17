@@ -902,7 +902,8 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                       n_outer=1, n_picard=25, relax=1.0,
                       step_frac=None, picard_relax=0.4,
                       outer_tol=1.0e-3, boundary_slip=False,
-                      linear_solver="direct", phi_degree=2):
+                      linear_solver="direct", phi_degree=2,
+                      move_anisotropy=None):
     r"""Metric-driven mesh equidistribution — Benamou–Froese–Oberman
     convex-branch Monge–Ampère (PRESERVED; not the default path).
 
@@ -1112,6 +1113,33 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         disp = np.asarray(
             uw.function.evaluate(gradphi.sym, old_coords)
         ).reshape(old_coords.shape)
+
+        # Directional move-weighting (approach (2), opt-in): the
+        # annulus node budget is anisotropic — radial is scarce and
+        # pinned, tangential is abundant and free ("spare" angular
+        # nodes). A scalar equidistribution is isotropic and cannot
+        # express "prefer tangential"; here we rescale the realised
+        # displacement in the local radial/tangential frame
+        # (move_anisotropy=(w_r, w_θ)) so the same metric is met
+        # mostly by sliding nodes around rather than crushing
+        # radially. This is the BFO-consistent lightweight version
+        # (the φ-Poisson operator / BFO branch algebra is untouched
+        # — only the move is reweighted). Centre = mesh centroid
+        # (origin for a centred annulus). Default None ⇒ unchanged.
+        if move_anisotropy is not None and cdim == 2:
+            w_r, w_t = (float(move_anisotropy[0]),
+                        float(move_anisotropy[1]))
+            ctr = old_coords.mean(axis=0)
+            rv = old_coords - ctr
+            rn = np.linalg.norm(rv, axis=1)
+            ok = rn > 1.0e-30
+            rhat = np.zeros_like(rv)
+            rhat[ok] = rv[ok] / rn[ok, None]
+            that = np.stack([-rhat[:, 1], rhat[:, 0]], axis=1)
+            d_r = (disp * rhat).sum(axis=1)
+            d_t = (disp * that).sum(axis=1)
+            disp = (w_r * d_r[:, None] * rhat
+                    + w_t * d_t[:, None] * that)
 
         step = relax * disp
         if step_frac is not None and np.isfinite(step_frac):
