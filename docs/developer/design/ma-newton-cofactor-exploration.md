@@ -285,3 +285,42 @@ to pay for itself). The mechanism is geometric — independent of
   the GAMG question — is the next per-timestep-scaling work item
   (the res-16 warm≈cold result does not extrapolate). Scripts add
   `ma_p1_gamg_scaling.py`.
+
+### d/n is anisotropy/sliver-blind — rim over-collapse (2026-05-17)
+
+User flagged the P2 rim cells as far tighter than the nominal 1/3.
+`scripts/ma_radial_anisotropy.py` (res-16, AMP=8, vs undeformed):
+
+| | band-mean radial (rim) | **min radial** | minA/meanA |
+|---|---|---|---|
+| undeformed | 1.00 | 1.00 | 0.575 |
+| P1 | 0.65 | 0.43 | 0.240 |
+| P2 | 0.38 (~1/3) | **0.14 (~1/7)** | **0.019** |
+| P3 | 0.38 | 0.13 | 0.026 |
+
+The reported deep/near ≈1.71 is a **per-node mean of all incident
+edges** — it averages the collapsed *radial* edges with the
+frozen/expanded *tangential* ones (tangential edges actually grow in
+the interior; see the figure) and so hides a near-degenerate radial
+sliver layer. Band-mean radial ≈0.38× matches the isotropic edge
+criterion, but the **thinnest layer is ≈0.14× (~1/7)** and the
+smallest cell is ~1/52 of the mean area.
+
+**Mechanism:** the outer ring is *pinned* (it is the boundary) and
+the metric peaks *exactly at* r=R_O — equidistribution demands
+maximal density where nodes cannot move, so it jams the next
+ring(s) against the fixed wall into one sliver layer, **independent
+of AMP**. The isotropic `AMP = 1/s² − 1` design rule is wrong here:
+in an annulus all transport is radial (tangential node count
+frozen) *and* a boundary-peaked metric against a pinned boundary
+over-collapses the wall layer.
+
+**Consequences:** (1) d/n is fine as a *regression/consistency*
+guard but does **not** certify mesh quality near a boundary-peaked
+feature — use `minA/meanA` or a radial/tangential split. (2) Levers:
+offset the Gaussian peak inward (`r=R_O−k·W`, k≈2–3) so the band
+sits where nodes can redistribute on both sides; or cap AMP to a
+quality floor (`minA/meanA ≥ 0.1` ⇒ AMP ≲ 3); or design the metric
+from the *pinned-boundary 1-D radial OT*, not the isotropic rule.
+Fig `/tmp/metric_mesh/ma_radial_profile.png`; script
+`ma_radial_anisotropy.py`.
