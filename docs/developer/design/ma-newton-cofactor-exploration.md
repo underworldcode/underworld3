@@ -359,3 +359,45 @@ move). Interior blob (0.78,0), AMP=8, `ma_localised_reach_gamg.py`
   the blanket "GAMG fragile" should be read as "fragile only for a
   metric peaked on the pinned boundary". Scripts:
   `ma_localised_reach_gamg.py`, `ma_heavytail_metric.py`.
+
+### Polar metric + boundary slip — settled negative (2026-05-18)
+
+Tested "define the metric in (r,θ) so it pulls in θ" + boundary
+slip. `ma_polar_lorentzian_slip{,_v2}.py`, `ma_lorentzian_slip_final.py`,
+interior/near-rim feature, AMP=8 res-24 (compact Cartesian
+Lorentzian at an *interior* point gave far/near 2.74 — the
+reference):
+
+| variant | far/near | rim drift | GAMG |
+|---|---|---|---|
+| polar, chord 2(1−cosΔθ) | 1.38 | — | ✓ |
+| polar, true wrapped angle, balanced cores | 1.12 | 1e-16 | ✓ |
+| compact Cartesian Lorentzian near rim, slip off | 1.21 | 1e-16 | ✓ |
+| …slip on | 1.12 (minA 0.32→0.48) | 3e-16 | ✓ |
+
+1. **Separable (r,θ) Lorentzian is the wrong shape** — an
+   anisotropic spoke, not a blob: the chord `2(1−cosΔθ)` saturates
+   at the antipode (no angular reach); the balanced/true-angle
+   version is a low-gradient radial ridge the smoother washes out
+   (far/near≈1.1, ≈ no-op). Use a **compact `|X−P|²` Lorentzian
+   about the feature point** — it has the correct combined
+   radial+angular extent and pulls in θ automatically (far/near
+   2.74 at an interior point).
+2. **Slip works mechanically, is not a concentrator.** Rim radial
+   drift ~1e-16 (nodes provably stay on the ring); GAMG robust
+   (~31 it) throughout. But slip ON near a boundary feature
+   *relaxes* the mesh (far/near 1.21→1.12, minA 0.32→0.48) — it
+   removes the hard pin so the rim equalises; it does NOT drag rim
+   nodes tangentially toward θ₀ (rim count near θ₀ 16→18). Slip
+   buys boundary *quality*, not feature *concentration*.
+3. **Boundary-proximal features are choked.** The same compact
+   Lorentzian gives far/near 2.74 at r₀=0.78 (interior) but only
+   1.21 at r₀=0.88 (near rim) — no node room between feature and
+   pinned wall; slip relaxes rather than fills. Same fixed-node +
+   pinned-boundary limit, feature side.
+
+Net: compact Cartesian `|X−P|²` Lorentzian about the feature point
+(pulls in θ inherently); keep features with interior room; slip is
+safe and good for boundary *quality* but is not the lever for a
+tangential pull. Drop the polar-separable formulation. Figures
+`/tmp/metric_mesh/ma_polar_slip{,_v2}.png`, `ma_lorentzian_slip.png`.
