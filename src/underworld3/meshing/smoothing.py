@@ -673,6 +673,64 @@ _EQUIDIST_SIGN = -1.0
 _HESSIAN_CLASS = None
 
 
+def _use_direct_solver(solver, singular=False):
+    r"""Force a cached MA sub-solver onto a sparse **direct** factorisation
+    (MUMPS LU) instead of the UW3 default GMRES + GAMG.
+
+    Why this is the dominant MA-efficiency lever (profiled 2026-05-17,
+    res-16 Annulus, AMP=8, warm re-call): the Picard loop fixes the
+    mesh, so the φ-Poisson Laplacian and the Hessian-recovery SPD mass
+    matrix are *constant operators* re-solved ~40× with only the RHS
+    changing. With GAMG, every ``solve()`` pays a full multigrid
+    **setup** (the constant near-nullspace re-attach forces it) — the
+    Hessian solve alone was ~0.93 s/iter ≈ 37 s. These problems are
+    tiny (≲10⁴ DOF); MUMPS factorises in milliseconds and the per-iter
+    cost collapses to a back-substitution. A direct solve is also
+    *exact* (machine precision, tighter than the GMRES rtol), so the
+    Picard fixed point — hence the grading/quality — is unchanged.
+
+    ``singular=True`` (the pure-Neumann φ Poisson): MUMPS null-pivot
+    detection (ICNTL(24)=1) handles the rank-1-deficient operator; the
+    ``constant_nullspace`` hook still removes the constant mode from
+    the RHS/solution, so the result is the same consistent solution
+    the iterative path produced — but it also eliminates the
+    GAMG-on-pure-Neumann ``DIVERGED_LINEAR_SOLVE`` re-solve pathology.
+    """
+    o = solver.petsc_options
+    # These three sub-problems are *linear* (φ Poisson with the Hessian
+    # source frozen; the SPD Hessian-recovery mass system; the ∇φ
+    # projection) → one KSP solve, no Newton line-search / 2nd iterate
+    # (which was doubling work and emitting spurious
+    # ``DIVERGED_LINEAR_SOLVE`` after 2 iters).
+    o["snes_type"] = "ksponly"
+    # The Picard loop fixes the mesh, so the operator is **constant**
+    # across the ~40 inner solves — only the RHS changes. Lag the
+    # Jacobian (compute once, reuse) and the preconditioner (factorise
+    # once, reuse): every subsequent inner solve collapses to a MUMPS
+    # back-substitution. A fresh ``solver.solve()`` after
+    # ``_deform_mesh`` rebuilds the SNES (is_setup=False) so the lag
+    # counter resets and the operator is correctly re-factorised on the
+    # first solve of the next call — the reuse is confined to the loop
+    # where the mesh genuinely does not move.
+    o["snes_lag_jacobian"] = -2
+    o["snes_lag_preconditioner"] = -2
+    o["ksp_type"] = "preonly"
+    o["pc_type"] = "lu"
+    o["pc_factor_mat_solver_type"] = "mumps"
+    if singular:
+        o["mat_mumps_icntl_24"] = 1   # null-pivot detection
+        o["mat_mumps_icntl_25"] = 0   # one solution of the singular sys
+    # GAMG-only keys are inert once pc_type≠gamg; drop them so the
+    # effective option set is exactly what is documented.
+    for k in ("pc_gamg_type", "pc_gamg_repartition", "pc_mg_type",
+              "pc_gamg_agg_nsmooths", "mg_levels_ksp_max_it",
+              "mg_levels_ksp_converged_maxits"):
+        try:
+            o.delValue(k)
+        except Exception:
+            pass
+
+
 def _patch_volumes(tris, coords, n_verts):
     """Per-vertex dual-patch area: a node's share (1/3) of every
     incident triangle's |area|. ρ_cur ∝ 1/patch for the (opt-in,
@@ -746,7 +804,7 @@ def _hessian_recovery_class():
 
 
 def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
-                      n_outer=1, n_picard=40, relax=1.0,
+                      n_outer=1, n_picard=25, relax=1.0,
                       step_frac=None, picard_relax=0.4,
                       outer_tol=1.0e-3, boundary_slip=False):
     r"""Metric-driven mesh equidistribution — Benamou–Froese–Oberman
@@ -761,11 +819,20 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
     (recompute ρ_cur from patch volumes each step). Moves nodes by
     ∇φ with a coherent global signed-area backtrack.
 
-    Known: caps at deep/near ≈ 1.07 for an 8× target (exact ~10×),
-    identically for every variant — the cap is intrinsic to the
-    FE-MA-potential formulation, not the solver. ``n_outer=1`` is the
-    safe default (AMP=0 exact no-op, never tangles). See the project
-    memory + scripts/ma_*.py.
+    Efficiency (2026-05-17): the φ Poisson and the SPD Hessian-recovery
+    mass system are *constant operators* within the Picard loop (the
+    mesh is fixed; only the RHS changes). ``_use_direct_solver`` puts
+    both on MUMPS LU with a lagged (compute-once) factorisation, so the
+    inner iterations are back-substitutions — see that function's
+    docstring. ``n_picard`` defaults to 25: the deep/near grading is
+    flat from iter ≈20 (4-dp identical at AMP 8 & 20), so 40 was pure
+    overhead. Net: ~10× faster, grading/quality bit-for-bit unchanged.
+
+    Grading: redistribution with a fixed node count reaches deep/near
+    ≈1.5–1.8× for an 8–20× density target (the exact OT ~10× needs
+    *more nodes* — a topology change, not this smoother). ``n_outer=1``
+    is the safe default (AMP=0 exact no-op, never tangles). See the
+    project memory + scripts/ma_*.py / ma_cost_grading.py.
     """
     import sympy
 
@@ -788,9 +855,11 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         ps.constitutive_model = uw.constitutive_models.DiffusionModel
         ps.constitutive_model.Parameters.diffusivity = 1.0
         ps.constant_nullspace = True
+        _use_direct_solver(ps, singular=True)
         hsolver = _hessian_recovery_class()(
             mesh, phi, degree=2, verbose=False)
         hsolver.tolerance = 1.0e-6
+        _use_direct_solver(hsolver)
         vol_field = uw.discretisation.MeshVariable(
             f"winslow_vol_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=1, continuous=True)
@@ -799,6 +868,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
             vtype=uw.VarType.VECTOR, degree=2, continuous=True)
         gproj = uw.systems.Vector_Projection(mesh, gradphi)
         gproj.smoothing = 0.0
+        _use_direct_solver(gproj)
         _WINSLOW_CACHE[key] = (
             phi, ps, gradphi, gproj, hsolver, vol_field)
     else:

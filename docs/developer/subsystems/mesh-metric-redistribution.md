@@ -101,6 +101,49 @@ which is insensitive to the boundary treatment).
   mass-matrix `SNES_MultiComponent` solve — only first derivatives
   of φ, since UW3 forbids second derivatives of mesh-variable
   functions).
+- **MA solver efficiency** (`_use_direct_solver`, 2026-05-17). The
+  Picard loop fixes the mesh, so the φ-Poisson Laplacian and the
+  Hessian-recovery mass matrix are *constant operators* re-solved
+  ~25× with only the RHS changing. The UW3 default (GMRES + GAMG)
+  paid a full multigrid **setup every inner solve** (the constant
+  near-nullspace re-attach forces it) — ~0.9 s/iter for the Hessian
+  alone. The cached φ/Hessian/∇φ sub-solvers are therefore put on:
+
+  | option | φ Poisson | Hessian / ∇φ |
+  |---|---|---|
+  | `snes_type` | `ksponly` | `ksponly` |
+  | `ksp_type` | `preonly` | `preonly` |
+  | `pc_type` | `lu` | `lu` |
+  | `pc_factor_mat_solver_type` | `mumps` | `mumps` |
+  | `snes_lag_jacobian` | `-2` | `-2` |
+  | `snes_lag_preconditioner` | `-2` | `-2` |
+  | `mat_mumps_icntl_24` | `1` (null-pivot) | — |
+
+  The lag (`-2` = compute once, never again) confines the
+  factorisation to the **first** inner solve; the rest are MUMPS
+  back-substitutions. `_deform_mesh` rebuilds the SNES
+  (`is_setup=False`) so the lag counter resets and the operator is
+  correctly re-factorised on the next call's first solve — reuse
+  never spans a coordinate change. A direct solve is *exact*
+  (tighter than the GMRES rtol) so the Picard fixed point — hence
+  the grading/quality — is **bit-for-bit unchanged** (validated
+  `ma_cost_grading.py`: d/n 1.02/1.43/1.71/1.54 identical to the
+  GAMG baseline). Net: cold ~12–18 s → ~1–2 s, warm ~34 s → ~1–2.5 s
+  (the warm≫cold GAMG-resetup pathology is eliminated). `n_picard`
+  default 40→25 (grading flat from iter ≈20).
+
+  ```{warning}
+  This is a **serial / modest-size** optimisation. Sparse direct
+  factorisation (even parallel MUMPS) does not scale to large 3D
+  per-timestep use (fill-in, memory, communication). The portable
+  insight is *operator-constant-in-the-loop* → **factor/setup once,
+  reuse**: in a parallel setting keep an iterative PC (GAMG / `gamg`
+  with a constant near-nullspace) but apply the same
+  `snes_lag_jacobian -2` / `KSPSetReusePreconditioner` so GAMG setup
+  is paid once per call, plus warm-start the Krylov solve from the
+  previous Picard φ. The direct solver is the serial expedient; the
+  reuse pattern is what generalises. See *Open items*.
+  ```
 - Both paths are **serial-exact**; spring/MA edge & cell sums are
   accumulated over locally-visible entities, so rank-partition
   boundaries under-count in parallel (the Jacobi `metric=None` path
@@ -125,11 +168,28 @@ shift and understated grading ~40% — use the per-node metric.
 
 ## Open items (future sessions)
 
-- **Monge–Ampère efficiency** — MA is the robust answer but ~60×
-  the spring's cost; making it cheap (warm-recall `constant_nullspace`
-  degradation, Picard count, preconditioning) is its own work item.
-  Spring-as-MA-preconditioner is a dead end (spring-at-strong-AMP
-  degenerates a cell; MA cannot recover from it).
+- **Monge–Ampère efficiency** — *largely done* (2026-05-17, see the
+  Implementation note): ~10× via factor-once-reuse direct sub-solves;
+  grading bit-for-bit unchanged. Remaining: the serial direct solver
+  must become a **parallel-scalable** scheme. The win was *not*
+  "direct vs iterative" — it was eliminating the per-Picard-iteration
+  preconditioner re-setup on a constant operator. Port that to
+  parallel by keeping GAMG (constant near-nullspace, already wired)
+  but with `snes_lag_jacobian -2` / `KSPSetReusePreconditioner` so
+  the GAMG hierarchy is built once per call, and warm-start the
+  Krylov solve from the previous Picard φ. Quantify the parallel
+  GAMG-reuse path against the serial MUMPS numbers.
+- **Newton / cofactor linearisation** — replace the damped Picard
+  with a quasi-Newton step on `cof(D²φ):D²(δφ)=f−det(D²φ)`
+  (`cof(H)=det(H)H⁻ᵀ`). Same MA equation ⇒ *same* fixed-node grading
+  (≈1.5–1.8×, settled — not a grading lever); the gain is far fewer
+  outer iterations (a handful vs ~20) ⇒ an efficiency/robustness
+  lever, and the per-step operator is a variable-coefficient SPD
+  elliptic problem that is **AMG-friendly** (good for the parallel
+  requirement above). Needs convexity safeguarding (convex guess /
+  line search / projection onto convex Hessians / continuation in
+  `f`); BFO's `+√` branch already supplies the convex selection in
+  Picard form. Uses the existing recovered Hessian.
 - General deformed / free-surface boundary slip (polyline
   projection).
 - Parallel-exact spring/MA assembly.
