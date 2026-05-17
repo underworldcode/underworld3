@@ -672,6 +672,13 @@ _EQUIDIST_SIGN = -1.0
 
 _HESSIAN_CLASS = None
 
+# Cached anisotropic-mover state keyed by (mesh-id, pinned-labels,
+# topology, solver, φ-order, slip): the ∇ρ projector, the
+# eigen-clamped metric-tensor field D, and the cdim displacement
+# Poisson solvers (all sharing the tensor operator _c = D). Rebuilt
+# on a topology change (a new key).
+_ANISO_CACHE: dict = {}
+
 
 def _use_direct_solver(solver, singular=False):
     r"""Force a cached MA sub-solver onto a sparse **direct** factorisation
@@ -1192,6 +1199,365 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
             break
 
 
+def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
+                         n_outer=5, beta=200.0, aniso_cap=8.0,
+                         boundary_slip=False, linear_solver="direct",
+                         phi_degree=2, move_anisotropy=None,
+                         metric_role="M", outer_tol=1.0e-4):
+    r"""Anisotropic metric-tensor mesh redistribution — approach (3).
+
+    The settled scalar equidistribution paths (``_winslow_spring``,
+    ``_winslow_elliptic``) cannot do coherent *anisotropic* bulk
+    transport on a fixed topology — a scalar potential is isotropic,
+    so an annulus radial feature over-collapses one pinned-boundary
+    sliver layer while the tangential edges sit frozen (see the
+    project memory + the design doc's angular-OT section). This is
+    the **tensor** mover: it solves the M-weighted Laplace smooth of
+    the coordinate map with an *anisotropic* metric tensor, so cells
+    are reshaped (short across the feature, long along it) and the
+    slivers / wasted isotropic resolution are removed.
+
+    Construction (verified — ``scripts/ma_metric_tensor_viz.py``):
+    from a scalar density ``ρ`` (typically Lagrangian
+    ``f(r0.sym)``), the *projected* gradient ``∇ρ`` (a first
+    derivative only — UW3-clean) builds, per node,
+
+    .. math::
+
+        M \;=\; \tfrac1{h_0^2}\!\left[\,I
+              + \beta\,\hat g\hat g^{\mathsf T}
+                (|\nabla\rho|/\nabla\rho_{\mathrm{ref}})^2\right],
+
+    eigen-clamped so the spacing ratio ``≤ aniso_cap`` (``≤8:1`` by
+    default). The eigenframe **auto-aligns to the feature** from the
+    Cartesian ``∇ρ`` alone — no ``(r,θ)`` frame is specified.
+
+    Mover: solve, per physical coordinate component ``c``, the
+    displacement form of the M-weighted Laplace (Winslow) map
+
+    .. math::
+
+        \nabla\!\cdot(D\,\nabla u_c) \;=\;
+            -\,\nabla\!\cdot(D\,e_c)
+          \;=\; -\textstyle\sum_j \partial_j D_{jc},
+        \qquad u_c = 0 \text{ on the pinned boundary},
+
+    with ``D = M`` (the eigen-clamped metric). Then
+    ``ψ_c = x_c + u_c`` is exactly the M-harmonic coordinate map
+    ``∇·(D∇ψ_c)=0``, ``ψ=x`` on the boundary; the direct Winslow
+    smoother clusters nodes where ``D`` is large (fine spacing), so
+    ``D = M`` grades the mesh toward the metric. The two components
+    share the **same** tensor operator (``_c = D``, the
+    ``_CofDiff``-style ``DiffusionModel`` pattern) and the
+    factor-once-reuse direct solver. **Linear** — one solve per
+    component per outer step, no Picard (much cheaper than the BFO
+    ``_winslow_elliptic``). Homogeneous Dirichlet ``u=0`` on the
+    pinned boundary makes the per-component operator non-singular —
+    no ``constant_nullspace``, side-stepping the GAMG-pure-Neumann
+    fragility entirely (``boundary_slip=True`` falls back to the
+    pure-Neumann + ring-projection treatment of
+    ``_winslow_elliptic``). ``n_outer`` composes the map (re-project
+    ``∇ρ`` / rebuild ``D`` on the moved mesh — the standard MMPDE
+    outer iteration). Reuses ``_winslow_elliptic``'s coherent global
+    signed-area backtrack, ``boundary_slip`` and ``move_anisotropy``.
+
+    .. warning::
+
+       (3) improves cell **alignment / quality** and removes the
+       slivers + wasted isotropic resolution; it does **not** beat
+       the fixed node-count grading cap (≈1.5–1.8× for an 8–20×
+       density target — that needs ``mesh.adapt``, a topology
+       change). For a *separable* feature the explicit 1-D OT
+       (``scripts/ma_analytic_check.py`` /
+       ``ma_angular_ot_target.py``) is exact and strictly cheaper;
+       (3) earns its keep on the general **non-separable** case.
+       Validate with anisotropy-aware diagnostics
+       (radial/tangential edge split + minA/meanA, *not* the
+       anisotropy-blind d/n).
+
+    Parameters mirror ``_winslow_elliptic`` where shared.
+    ``beta`` / ``aniso_cap`` shape the metric tensor (anisotropy
+    strength / max spacing ratio). ``metric_role`` (``"M"`` default,
+    or ``"Minv"``) is an experimental knob — the overall scale of
+    ``D`` is irrelevant to ``∇·(D∇u)=src`` (both sides scale
+    together); only the anisotropy + spatial variation matter.
+    """
+    import sympy
+
+    pinned_labels = tuple(pinned_labels)
+    cdim = mesh.cdim
+    if cdim != 2:
+        raise NotImplementedError(
+            "_winslow_anisotropic: 2D triangle meshes only "
+            "(the eigen-clamp + Annulus diagnostics are 2D)")
+    if linear_solver not in ("direct", "gamg"):
+        raise ValueError(
+            f"linear_solver must be 'direct' or 'gamg', "
+            f"got {linear_solver!r}")
+    if metric_role not in ("M", "Minv"):
+        raise ValueError(
+            f"metric_role must be 'M' or 'Minv', got {metric_role!r}")
+
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    cStart, cEnd = dm.getHeightStratum(0)
+    cone_size = dm.getConeSize(cStart) if cEnd > cStart else 0
+    phi_degree = int(phi_degree)
+    aux_degree = max(1, phi_degree - 1)
+    key = (id(mesh), pinned_labels, pEnd - pStart, cEnd - cStart,
+           cone_size, linear_solver, phi_degree, bool(boundary_slip))
+
+    cache = _ANISO_CACHE.get(key)
+    if cache is None:
+        if linear_solver == "gamg":
+            def _wire(s, singular=False, elliptic=True):
+                _use_iterative_solver(s, singular, elliptic)
+        else:
+            def _wire(s, singular=False, elliptic=True):
+                _use_direct_solver(s, singular)
+
+        X = mesh.CoordinateSystem.X
+        # Projected ∇ρ — first derivative only (UW3-clean), the
+        # same construction verified in ma_metric_tensor_viz. ρ may
+        # be Lagrangian f(r0.sym): metric.diff(X) then differentiates
+        # through the frozen r0 field (FE ∂r0/∂x), so ∇ρ is
+        # re-evaluated on the moved mesh each outer step (MMPDE).
+        grho = uw.discretisation.MeshVariable(
+            f"aniso_grho_{id(mesh)}", mesh,
+            vtype=uw.VarType.VECTOR, degree=aux_degree,
+            continuous=True)
+        gproj = uw.systems.Vector_Projection(mesh, grho)
+        gproj.smoothing = 0.0
+        gproj.uw_function = sympy.Matrix(
+            [metric.diff(X[i]) for i in range(cdim)]).T
+        _wire(gproj, elliptic=False)
+
+        # Eigen-clamped metric tensor field D (filled numerically
+        # per outer step). Init to the identity so an unsolved D is
+        # a harmless isotropic operator.
+        Df = uw.discretisation.MeshVariable(
+            f"aniso_D_{id(mesh)}", mesh,
+            vtype=uw.VarType.TENSOR, degree=aux_degree,
+            continuous=True)
+        Df.array[:, 0, 0] = 1.0
+        Df.array[:, 1, 1] = 1.0
+        Df.array[:, 0, 1] = 0.0
+        Df.array[:, 1, 0] = 0.0
+        Dsym = Df.sym                      # 2×2 sympy Matrix (stable)
+
+        class _TensorDiff(uw.constitutive_models.DiffusionModel):
+            def _build_c_tensor(self):
+                self._c = Dsym
+
+        # boundary_slip ⇒ pure-Neumann per component (constant
+        # nullspace, ring-projected in the move — exactly the
+        # _winslow_elliptic slip treatment). Default (pinned) ⇒
+        # homogeneous Dirichlet u=0 → non-singular, no nullspace.
+        singular = bool(boundary_slip)
+        usolvers, ufields = [], []
+        for c in range(cdim):
+            uc = uw.discretisation.MeshVariable(
+                f"aniso_u{c}_{id(mesh)}", mesh,
+                vtype=uw.VarType.SCALAR, degree=phi_degree,
+                continuous=True)
+            ps = uw.systems.Poisson(mesh, uc)
+            ps.constitutive_model = _TensorDiff
+            # f_c = div(column c of D) = Σ_j ∂D_{jc}/∂x_j. UW3
+            # SNES_Poisson is F0=-f ⇒ strong form ∇·(D∇u)=-ps.f;
+            # we want ∇·(D∇u_c) = -div_c ⇒ ps.f = +div_c. (First
+            # derivative of the projected D field — UW3-legal.)
+            src = sympy.Integer(0)
+            for j in range(cdim):
+                src = src + Dsym[j, c].diff(X[j])
+            ps.f = sympy.Matrix([[src]])
+            if singular:
+                ps.constant_nullspace = True
+            else:
+                for lbl in pinned_labels:
+                    try:
+                        ps.add_dirichlet_bc(0.0, lbl)
+                    except Exception:
+                        pass
+            _wire(ps, singular=singular, elliptic=True)
+            usolvers.append(ps)
+            ufields.append(uc)
+
+        _ANISO_CACHE[key] = (grho, gproj, Df, usolvers, ufields)
+    else:
+        grho, gproj, Df, usolvers, ufields = cache
+
+    _zig = (linear_solver != "gamg")
+
+    for outer in range(n_outer):
+        dm = mesh.dm
+        pStart, pEnd = dm.getDepthStratum(0)
+        n_verts = pEnd - pStart
+        is_bnd = _pinned_mask(dm, pinned_labels)
+        tris = _tri_cells(dm)
+        old_coords = np.asarray(mesh.X.coords).copy()
+        _cdim = mesh.cdim
+
+        # Boundary tangential slip — identical per-ring radius
+        # projection to _winslow_elliptic (the radial DOF is
+        # removed, so slip nodes provably stay on their ring; one
+        # node/ring anchors the rotation gauge).
+        if boundary_slip and is_bnd.any():
+            bc = np.nonzero(is_bnd)[0]
+            c0 = old_coords[bc].mean(axis=0)
+            rg = np.round(
+                np.linalg.norm(old_coords[bc] - c0, axis=1), 6)
+            is_anchor = np.zeros(n_verts, dtype=bool)
+            slip_center = np.zeros((n_verts, _cdim))
+            slip_rtarget = np.zeros(n_verts)
+            for rv in np.unique(rg):
+                grp = bc[rg == rv]
+                rc = old_coords[grp].mean(axis=0)
+                is_anchor[grp[np.argmax(
+                    (old_coords[grp] - rc)[:, 0])]] = True
+                slip_center[grp] = rc
+                slip_rtarget[grp] = np.linalg.norm(
+                    old_coords[grp] - rc, axis=1)
+            is_slip = is_bnd & ~is_anchor
+            is_pinned = is_anchor
+            _sidx = np.nonzero(is_slip)[0]
+            _sctr = slip_center[_sidx]
+            _srad = slip_rtarget[_sidx]
+
+            def _project(Y):
+                v = Y[_sidx] - _sctr
+                nrm = np.linalg.norm(v, axis=1)
+                nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
+                Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
+                return Y
+        else:
+            is_pinned = is_bnd
+
+            def _project(Y):
+                return Y
+
+        # --- build the eigen-clamped metric tensor field D --------
+        gproj.solve()
+        Dcoords = np.asarray(Df.coords)
+        gvec = np.asarray(
+            uw.function.evaluate(grho.sym, Dcoords)
+        ).reshape(-1, cdim)
+        ep = _edge_pairs(dm)
+        if ep.shape[0]:
+            h0 = float(np.linalg.norm(
+                old_coords[ep[:, 1]] - old_coords[ep[:, 0]],
+                axis=1).mean())
+        else:
+            h0 = 1.0
+        if uw.mpi.size > 1:
+            h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+        gn = np.linalg.norm(gvec, axis=1)
+        gmax = float(gn.max()) if gn.size else 0.0
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            gmax = uw.mpi.comm.allreduce(gmax, op=_MPI.MAX)
+        # CRITICAL no-op guard: uniform ρ ⇒ ∇ρ ≡ 0, but the L2
+        # projection of the zero function leaves ~1e-18 round-off.
+        # Normalising by that noisy max would make (|∇ρ|/gref)² ~ O(1)
+        # from pure round-off → a fabricated huge anisotropy and a
+        # spurious move. Any *real* feature gradient is O(AMP/WIDTH)
+        # ~ O(1–100); g_eps=1e-9 is ~9 orders above projection noise
+        # and ~10 below the weakest meaningful feature, so AMP=0 is
+        # an exact isotropic no-op while AMP>0 is bit-identical to
+        # the verified ma_metric_tensor_viz construction.
+        g_eps = 1.0e-9
+        gref = gmax if gmax > g_eps else 1.0
+        base = 1.0 / h0 ** 2
+        lam_lo = 1.0 / h0 ** 2                      # coarsest
+        lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
+        Dout = np.empty((Dcoords.shape[0], 2, 2))
+        eye2 = np.eye(2)
+        for i in range(Dcoords.shape[0]):
+            g = gvec[i]
+            gni = gn[i]
+            if gni > g_eps and gmax > g_eps:
+                gh = g / gni
+                M = base * (eye2 + beta * (gni / gref) ** 2
+                            * np.outer(gh, gh))
+            else:
+                M = base * eye2
+            w, V = np.linalg.eigh(M)
+            w = np.clip(w, lam_lo, lam_hi)
+            if metric_role == "Minv":
+                w = 1.0 / w
+            Dout[i] = (V * w) @ V.T
+        Df.array[:, 0, 0] = Dout[:, 0, 0]
+        Df.array[:, 0, 1] = Dout[:, 0, 1]
+        Df.array[:, 1, 0] = Dout[:, 1, 0]
+        Df.array[:, 1, 1] = Dout[:, 1, 1]
+
+        # --- solve the cdim displacement components ----------------
+        disp = np.zeros_like(old_coords)
+        for c in range(cdim):
+            usolvers[c].solve(zero_init_guess=_zig)
+            disp[:, c] = np.asarray(
+                uw.function.evaluate(ufields[c].sym, old_coords)
+            ).reshape(-1)
+
+        # Directional move-weighting (opt-in; same frame + default
+        # None ⇒ unchanged as _winslow_elliptic).
+        if move_anisotropy is not None and cdim == 2:
+            w_r, w_t = (float(move_anisotropy[0]),
+                        float(move_anisotropy[1]))
+            ctr = old_coords.mean(axis=0)
+            rv = old_coords - ctr
+            rn = np.linalg.norm(rv, axis=1)
+            ok = rn > 1.0e-30
+            rhat = np.zeros_like(rv)
+            rhat[ok] = rv[ok] / rn[ok, None]
+            that = np.stack([-rhat[:, 1], rhat[:, 0]], axis=1)
+            d_r = (disp * rhat).sum(axis=1)
+            d_t = (disp * that).sum(axis=1)
+            disp = (w_r * d_r[:, None] * rhat
+                    + w_t * d_t[:, None] * that)
+
+        # --- coherent global signed-area backtrack + slip + move --
+        free = ~is_pinned
+        scale = 1.0
+        new_coords = old_coords.copy()
+        if tris is not None:
+            a0 = _signed_areas(old_coords, tris)
+            orient = np.sign(np.median(a0)) or 1.0
+            for _bt in range(10):
+                trial = old_coords.copy()
+                trial[free] += scale * disp[free]
+                trial = _project(trial)
+                a1min = float(
+                    (_signed_areas(trial, tris) * orient).min())
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    a1min = uw.mpi.comm.allreduce(
+                        a1min, op=_MPI.MIN)
+                if a1min > 0.0:
+                    new_coords = trial
+                    break
+                scale *= 0.5
+            else:
+                scale = 0.0
+                new_coords = old_coords.copy()
+        else:
+            new_coords[free] += disp[free]
+            new_coords = _project(new_coords)
+
+        mesh._deform_mesh(new_coords)
+
+        d = float(np.linalg.norm(
+            new_coords - old_coords, axis=1).max())
+        if uw.mpi.size > 1:
+            d = uw.mpi.comm.allreduce(d ** 2) ** 0.5
+        if verbose:
+            uw.pprint(
+                f"  anisotropic mover outer {outer+1}/{n_outer}: "
+                f"h0={h0:.3e}  scale={scale:.3f}  "
+                f"max|Δx|={d:.3e}")
+        if d < outer_tol:
+            break
+
+
 def _build_local_to_owned_map(dm, gsection, vec):
     """Compute, for each local owned vertex, its position in the
     rank's slice of the global Vec.
@@ -1308,6 +1674,18 @@ def smooth_mesh_interior(
           **Monge–Ampère** equidistribution. Highest-fidelity
           *isotropic* refinement and robust to the boundary
           treatment, but ~60× costlier than the spring.
+        * ``"anisotropic"`` — **tensor** metric mover: an
+          M-weighted Laplace (Winslow) smooth of the coordinate
+          map with an eigen-clamped, gradient-derived *anisotropic*
+          metric tensor. Reshapes cells (short across a feature,
+          long along it) and removes the slivers / wasted isotropic
+          resolution the scalar paths leave near a boundary-peaked
+          feature. Linear (one solve/component/step — cheaper than
+          ``"ma"``). It improves cell **alignment / quality**, not
+          the grading magnitude (see the cap note below); for a
+          *separable* feature the explicit 1-D OT is exact and
+          cheaper — ``"anisotropic"`` earns its keep on the general
+          non-separable case.
 
         With a fixed node count neither can exceed ≈1.3–1.8×
         deep/near grading (the optimal-transport ≈10× needs *more
@@ -1390,11 +1768,18 @@ def smooth_mesh_interior(
         elif method in ("ma", "monge-ampere", "monge_ampere"):
             _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                               boundary_slip=boundary_slip)
+        elif method in ("anisotropic", "aniso", "tensor"):
+            _winslow_anisotropic(mesh, metric, pinned_labels,
+                                 verbose,
+                                 boundary_slip=boundary_slip)
         else:
             raise ValueError(
                 f"smooth_mesh_interior: unknown method {method!r}; "
-                f"use 'spring' (default, fast volumetric) or "
-                f"'ma' (Monge–Ampère, robust, ~60× costlier).")
+                f"use 'spring' (default, fast volumetric), "
+                f"'ma' (Monge–Ampère, isotropic, ~60× costlier) or "
+                f"'anisotropic' (tensor metric — reshapes cells / "
+                f"removes slivers; does not beat the node-count "
+                f"cap).")
         return
 
     dm = mesh.dm
