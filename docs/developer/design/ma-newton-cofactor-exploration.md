@@ -324,3 +324,38 @@ quality floor (`minA/meanA ≥ 0.1` ⇒ AMP ≲ 3); or design the metric
 from the *pinned-boundary 1-D radial OT*, not the isotropic rule.
 Fig `/tmp/metric_mesh/ma_radial_profile.png`; script
 `ma_radial_anisotropy.py`.
+
+### Localised features: GAMG is robust + the "snuggle" metric fix (2026-05-17)
+
+User: nodes should "snuggle up close to the feature"; the rim
+example was "too local" (bulk has no metric gradient → doesn't
+move). Interior blob (0.78,0), AMP=8, `ma_localised_reach_gamg.py`
++ `ma_heavytail_metric.py`:
+
+| metric | far/near (resolution) | inward (distant→feature) | minA | GAMG |
+|---|---|---|---|---|
+| Gaussian W=0.12 | 2.42 | +0.008 | 0.105 | ✓ ~30 it |
+| Gaussian W=0.30 | 1.55 | +0.010 | 0.267 | ✓ ~30 it |
+| **Lorentzian (core 0.12 + 1/d² tail)** | **2.74** | **+0.025** | 0.089 | ✓ ~31 it |
+
+- **A wider Gaussian is the WRONG fix.** One Gaussian width sets
+  *both* the resolution scale and the reach: narrow ⇒ sharp but
+  isolated pucker (bulk idle); broad ⇒ global motion but the
+  feature washes out (far/near→1.5). The fix is a **heavy-tailed
+  (Lorentzian) monitor**: a sharp core (best feature resolution,
+  far/near 2.74) + a slow `1/d²` tail (∇ρ≠0 everywhere ⇒ distant
+  nodes migrate IN ~3× more). The whole mesh rakes coherently
+  toward the feature (`/tmp/metric_mesh/ma_heavytail.png`). Mild
+  quality cost (minA 0.089 vs 0.105), no tangle. This is the
+  standard r-adaptation lesson (monitor needs global reach — heavy
+  tail or post-smoothing — not a narrow bump).
+- **GAMG is ROBUST for localised interior cases — revises the
+  earlier verdict.** Every metric shape × width × resolution
+  converged in ~27–54 iters, cost competitive with direct, *zero*
+  failures. The earlier GAMG fragility was **specifically** the
+  boundary-peaked-metric-against-pinned-boundary pathology (metric
+  spiking where the operator is pinned/singular). For the realistic
+  localised-feature use case the parallel GAMG path is viable —
+  the blanket "GAMG fragile" should be read as "fragile only for a
+  metric peaked on the pinned boundary". Scripts:
+  `ma_localised_reach_gamg.py`, `ma_heavytail_metric.py`.
