@@ -1656,6 +1656,64 @@ class SNES_Scalar(SolverBaseClass):
 
         self.is_setup = False
 
+        # Optional constant nullspace for pure-Neumann scalar
+        # problems (e.g. an equidistribution / mesh-motion
+        # potential). Off by default; see ``constant_nullspace``.
+        self._constant_nullspace = False
+
+    @property
+    def constant_nullspace(self):
+        """Attach a constant nullspace to the Jacobian before solve.
+
+        For a scalar problem with only natural (Neumann) boundary
+        conditions the operator is singular up to an additive
+        constant. Set ``True`` to attach a constant
+        ``PETSc.NullSpace`` to the Jacobian (and its transpose /
+        the preconditioner), which both projects the constant mode
+        out of the Krylov solve and makes PETSc remove the
+        (consistent) component of the RHS — the scalar analogue of
+        the Stokes pressure-nullspace handling. The RHS must be
+        compatible (zero mean) for the Neumann problem to be
+        solvable.
+        """
+        return self._constant_nullspace
+
+    @constant_nullspace.setter
+    def constant_nullspace(self, value):
+        self._constant_nullspace = bool(value)
+
+    def _attach_constant_nullspace(self):
+        """Attach a constant nullspace to the (already set-up) SNES
+        Jacobian. Scalar analogue of ``_attach_stokes_nullspace``."""
+        if not self._constant_nullspace:
+            return
+
+        self.snes.setUp()
+
+        jacobian = self.snes.getJacobian()
+        operator_matrix = jacobian[0]
+        preconditioner_matrix = jacobian[1] if len(jacobian) > 1 else None
+
+        nullspace = PETSc.NullSpace().create(
+            constant=True, comm=self.dm.comm)
+
+        operator_matrix.setNullSpace(nullspace)
+        operator_matrix.setTransposeNullSpace(nullspace)
+        # GAMG (the default PC) builds its coarse hierarchy from the
+        # near-nullspace; for a pure-Neumann operator the constant
+        # mode MUST be supplied here or the PC setup fails
+        # (DIVERGED_LINEAR_SOLVE at 0 iterations on re-solves).
+        operator_matrix.setNearNullSpace(nullspace)
+
+        if preconditioner_matrix is not None:
+            preconditioner_matrix.setNullSpace(nullspace)
+            preconditioner_matrix.setTransposeNullSpace(nullspace)
+            preconditioner_matrix.setNearNullSpace(nullspace)
+
+        if self.verbose and uw.mpi.rank == 0:
+            print(f"SNES_Scalar ({self.name}): attached constant "
+                  f"nullspace", flush=True)
+
     @property
     def tolerance(self):
         """
@@ -2200,6 +2258,11 @@ class SNES_Scalar(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants()
+
+        # Pure-Neumann scalar problems: attach a constant nullspace
+        # to the (now set-up) Jacobian. No-op unless
+        # ``constant_nullspace`` was set.
+        self._attach_constant_nullspace()
 
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)

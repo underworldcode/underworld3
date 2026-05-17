@@ -17,11 +17,45 @@ Without this, UW3's default cell-overlap-0 distribution under-counts
 neighbours for vertices on the rank partition boundary, producing
 visibly wrong updates along the rank cut.
 
+Two operators:
+  - ``metric=None`` (default): the graph-Laplacian Jacobi sweeps
+    described above — equalises connectivity, makes cells equant.
+  - ``metric=<expr>``: an **elastic-spring network** relaxed
+    toward equilibrium (the default metric path). Every edge is a
+    spring whose *rest length* is ``∝ ρ_tgt^(-1/dim)`` (finer where
+    ``ρ_tgt = metric`` is large), normalised so the mean rest
+    length equals the current mean edge length (scale preserved —
+    pure redistribution). A position-based Jacobi relaxation moves
+    interior nodes toward rest-length-consistent positions; a
+    coherent global signed-area backtrack prevents inversion. A
+    Lagrangian density (``r0`` set once to the original radius,
+    then ``f(r0.sym)``) keeps the rest lengths fixed per material
+    point. **Status: under development** — the fixed-topology
+    Jacobi relaxation currently reaches only weak grading
+    (deep/near ≈ 1.03 for an 8× target) and can stall against the
+    tangle guard; a proper equilibrium solve / preconditioning is
+    being investigated.
+
+The optimal-transport / Monge–Ampère mesh-potential approach
+(``_winslow_elliptic``, preserved, not the default) was
+exhaustively investigated 2026-05-16 and found to cap at the same
+~1.07 for every variant (linear / recovered-Hessian / convex-branch
+BFO / outer composition). That *every* dissimilar method
+(graph-Laplacian, weighted-Laplacian, MA-all-variants, elastic
+spring) converges to deep/near ≈ 1.03–1.07 while the *exact*
+equidistribution at the same fixed topology is ~10× points to a
+common missing ingredient (large coherent long-range node
+transport is throttled by pinned-boundary + tangle-guard local
+relaxation). Open investigation: elastic-spring redistribution as
+a *preconditioner* for the MA solve. See ``scripts/ma_*.py`` and
+the project memory.
+
 Future extensions (separate PRs):
   - PR B: nicer pinning API (per-boundary explicit lists, callable
     masks)
-  - PR C: non-uniform metric (swarm-anchored target spacing,
-    mirroring ``mesh.adapt`` semantics)
+  - parallel-exact spring forces (cross-rank edge-force assembly,
+    mirroring the Jacobi-path adjacency Mat); currently the spring
+    path is serial-exact (rank-boundary nodes under-count forces)
 """
 
 from typing import Optional, Sequence
@@ -165,11 +199,8 @@ def _build_adjacency_matrix(mesh):
         Clone of ``mesh.dm`` with a 1-dof-per-vertex section. Owns
         the parallel layout for the Mat and any vectors of the same
         shape.
-    local_to_global_owned : numpy.ndarray, shape (n_owned,)
-        ``local_to_global_owned[i]`` is the offset (in the *local*
-        owned portion of the global Vec) at which the ``i``-th
-        OWNED local vertex appears. Use this to pack/unpack between
-        ``coords[is_owned, d]`` and ``vec.array``.
+    gsection : PETSc.Section
+        Global section of ``dm_scalar`` — the owned-vertex numbering.
     """
     from petsc4py import PETSc
     dm = mesh.dm
@@ -199,6 +230,741 @@ def _build_adjacency_matrix(mesh):
         A.setValues([g1], [g0], [1.0], PETSc.InsertMode.INSERT)
     A.assemble()
     return A, dm_scalar, gsection
+
+
+# Cached spring-smoother topology state keyed by (mesh-id,
+# pinned-labels, topology): the edge vertex-index pairs and per-node
+# incident-edge degree. Rebuilt automatically on a topology change
+# (remesh / adapt / repartition), which produces a new cache key.
+_SPRING_CACHE: dict = {}
+
+
+def _min_incident_edge(dm, coords):
+    """Per-vertex minimum incident edge length (local-chart
+    v-pStart order). Used as an optional secondary per-node cap on
+    the spring step (the primary tangle guard is the coherent global
+    signed-area backtrack in ``_winslow_spring``)."""
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+    h = np.full(pEnd - pStart, np.inf)
+    for e in range(eStart, eEnd):
+        cone = dm.getCone(e)
+        if len(cone) != 2:
+            continue
+        v0, v1 = cone[0], cone[1]
+        if not (pStart <= v0 < pEnd and pStart <= v1 < pEnd):
+            continue
+        i0, i1 = v0 - pStart, v1 - pStart
+        L = float(np.linalg.norm(coords[i0] - coords[i1]))
+        if L < h[i0]:
+            h[i0] = L
+        if L < h[i1]:
+            h[i1] = L
+    return h
+
+
+def _tri_cells(dm):
+    """Triangle vertex-index triples (local-chart, v-pStart order).
+
+    Returns an ``(n_tri, 3)`` int array, or ``None`` if the mesh is
+    not all-triangle (then the global signed-area backtrack is
+    skipped and only the optional per-node edge cap guards against
+    tangling).
+    """
+    cStart, cEnd = dm.getHeightStratum(0)
+    pStart, pEnd = dm.getDepthStratum(0)
+    tris = []
+    for c in range(cStart, cEnd):
+        closure = dm.getTransitiveClosure(c)[0]
+        vs = [p - pStart for p in closure if pStart <= p < pEnd]
+        if len(vs) != 3:
+            return None
+        tris.append(vs)
+    if not tris:
+        return None
+    return np.asarray(tris, dtype=np.int64)
+
+
+def _signed_areas(coords, tris):
+    """Signed area of each triangle (sign = orientation)."""
+    a = coords[tris[:, 0]]
+    b = coords[tris[:, 1]]
+    c = coords[tris[:, 2]]
+    return 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+                  - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+
+
+def _edge_pairs(dm):
+    """``(n_edge, 2)`` int array of edge endpoint vertex indices in
+    local-chart (v - pStart) order — the spring network's bars.
+
+    Skips edges whose endpoints are not both in the local vertex
+    stratum (rank-ghost incomplete edges); the spring path is
+    serial-exact (see module docstring)."""
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+    pairs = []
+    for e in range(eStart, eEnd):
+        cone = dm.getCone(e)
+        if len(cone) != 2:
+            continue
+        v0, v1 = cone[0], cone[1]
+        if not (pStart <= v0 < pEnd and pStart <= v1 < pEnd):
+            continue
+        pairs.append((v0 - pStart, v1 - pStart))
+    if not pairs:
+        return np.zeros((0, 2), dtype=np.int64)
+    return np.asarray(pairs, dtype=np.int64)
+
+
+def _winslow_spring(mesh, metric, pinned_labels, verbose,
+                    n_sweeps=300, relax=None, step_frac=None,
+                    boundary_slip=False, shape_w=1.0, size_w=8.0):
+    r"""Metric-driven mesh grading by elastic-spring equilibrium.
+
+    Every mesh edge is a linear spring whose *rest length* is set
+    from the target density,
+
+    .. math::
+
+        L^0_{ij} \;\propto\; \rho_{\mathrm{tgt}}^{-1/d},
+
+    scaled once so the total rest length equals the total current
+    edge length (overall scale preserved — pure redistribution).
+    The interior nodes are moved to the **mechanical equilibrium**
+    by *minimising the truss energy*
+
+    .. math::
+
+        E(\mathbf{x}) \;=\; \tfrac12 \sum_{e}
+        \big(\,|\mathbf{x}_i-\mathbf{x}_j| - L^0_e\,\big)^2
+
+    over the free (non-pinned) nodes with **nonlinear conjugate
+    gradients** (Polak–Ribière⁺) and an Armijo line search whose
+    trial step is rejected if any cell would invert. Solving the
+    equilibrium — rather than creeping with damped Jacobi sweeps,
+    which stall against a per-sweep global tangle freeze — is what
+    lets the absolute rest-length target actually grade the mesh
+    toward spacing ``∝ ρ_tgt^{-1/d}``.
+
+    ``ρ_tgt`` is Lagrangian (``metric = f(r0)`` with ``r0`` a frozen
+    mesh variable), so the rest lengths are fixed per material node
+    (computed once) and the *design* grading is restored even after
+    the mesh deformed. Uniform ``ρ_tgt`` ⇒ all rest lengths equal
+    the mean edge length ⇒ only a benign mild regularisation toward
+    uniform spacing (no grading change).
+
+    ``n_sweeps`` caps the CG iterations (CG converges far faster
+    than the old Jacobi sweep budget). ``relax`` / ``step_frac`` are
+    unused on the equilibrium path (the CG line search controls the
+    step and the inversion guard) and are kept only for signature
+    stability. ``n_iters`` / ``alpha`` do not apply.
+    """
+    pinned_labels = tuple(pinned_labels)
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    cStart, cEnd = dm.getHeightStratum(0)
+    cone_size = dm.getConeSize(cStart) if cEnd > cStart else 0
+    n_verts = pEnd - pStart
+    key = (id(mesh), pinned_labels,
+           n_verts, cEnd - cStart, cone_size)
+
+    cache = _SPRING_CACHE.get(key)
+    if cache is None:
+        edges = _edge_pairs(dm)
+        if edges.shape[0] == 0:
+            return
+        deg = np.bincount(
+            edges.ravel(), minlength=n_verts).astype(np.double)
+        deg[deg == 0.0] = 1.0
+        _SPRING_CACHE[key] = (edges, deg)
+    else:
+        edges, deg = cache
+
+    is_bnd = _pinned_mask(dm, pinned_labels)
+    tris = _tri_cells(dm)
+    cdim = mesh.cdim
+    v0 = edges[:, 0]
+    v1 = edges[:, 1]
+
+    coords = np.asarray(mesh.X.coords, dtype=np.double).copy()
+
+    # Boundary tangential slip. Fully locking every boundary node
+    # freezes the rim's angular distribution, so near a feature the
+    # interior must distort (the "touchy"/anisotropic refinement).
+    # Instead let boundary nodes SLIDE ALONG the boundary while
+    # staying EXACTLY ON it: each ring gets its OWN centre (robust
+    # if rings are not perfectly concentric) and every slip node is
+    # snapped back to its original distance from that centre after
+    # each step — so a slip node can change θ but can NEVER move
+    # off / away from the surface (the radial DOF is removed, not
+    # just penalised). One node per ring is a hard anchor (kills
+    # the ring's rigid-rotation gauge). The global inversion guard
+    # also blocks a slip node overtaking a neighbour (boundary
+    # self-tangle). TODO: a general deformed / free-surface
+    # boundary needs projection onto the boundary polyline, not a
+    # per-ring radius — circular form is exact for the Annulus.
+    if boundary_slip and is_bnd.any():
+        bc = np.nonzero(is_bnd)[0]
+        c0 = coords[bc].mean(axis=0)
+        rg = np.round(np.linalg.norm(coords[bc] - c0, axis=1), 6)
+        is_anchor = np.zeros(n_verts, dtype=bool)
+        slip_center = np.zeros((n_verts, cdim))
+        slip_rtarget = np.zeros(n_verts)
+        for rv in np.unique(rg):
+            grp = bc[rg == rv]
+            rc = coords[grp].mean(axis=0)        # this ring's centre
+            is_anchor[grp[np.argmax(
+                (coords[grp] - rc)[:, 0])]] = True
+            slip_center[grp] = rc
+            slip_rtarget[grp] = np.linalg.norm(
+                coords[grp] - rc, axis=1)
+        is_slip = is_bnd & ~is_anchor
+        is_pinned = is_anchor
+        sidx = np.nonzero(is_slip)[0]
+        s_ctr = slip_center[sidx]
+        s_rad = slip_rtarget[sidx]
+
+        def _project(Y):
+            v = Y[sidx] - s_ctr
+            nrm = np.linalg.norm(v, axis=1)
+            nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
+            Y[sidx] = s_ctr + v * (s_rad / nrm)[:, None]
+            return Y
+    else:
+        is_pinned = is_bnd
+        is_slip = np.zeros(n_verts, dtype=bool)
+
+        def _project(Y):
+            return Y
+
+    free = ~is_pinned
+
+    # ===== Volumetric spring network (shape ⟂ size, decoupled) ====
+    # EQUAL edge springs (uniform rest length L̄ = current mean
+    # edge) are a pure SHAPE regulariser → equant cells, resists
+    # the slivers/degeneracy the graded-edge form produced. The
+    # SIZE grading lives entirely in a per-CELL area ("volumetric")
+    # constraint: each triangle's area is driven to a target
+    # A0 ∝ 1/ρ_tgt (scaled so ΣA0 = Σ(initial area) ⇒ total area
+    # conserved, pure redistribution). Both energy terms are
+    # written as *relative* squared errors so the shape/size
+    # weights (shape_w, size_w) are pure dimensionless knobs.
+    e_vec = coords[v1] - coords[v0]
+    L_cur = np.linalg.norm(e_vec, axis=1)
+    sum_L = float(L_cur.sum())
+    n_e = float(L_cur.size)
+    if uw.mpi.size > 1:
+        sum_L = uw.mpi.comm.allreduce(sum_L)
+        n_e = uw.mpi.comm.allreduce(n_e)
+    Lbar = sum_L / max(n_e, 1.0)          # uniform edge rest length
+    L0 = np.full_like(L_cur, Lbar)
+    L0_mean = Lbar
+
+    # Per-cell target area from ρ_tgt at the (initial) centroid.
+    # Lagrangian metric ⇒ computed ONCE (rides material points).
+    if tris is not None:
+        ca = coords[tris[:, 0]]
+        cb = coords[tris[:, 1]]
+        cc = coords[tris[:, 2]]
+        cent = (ca + cb + cc) / 3.0
+        rho_c = np.asarray(
+            uw.function.evaluate(metric, cent)).reshape(-1)
+        rho_c = np.maximum(rho_c, 1.0e-30)
+        a_init = np.abs(_signed_areas(coords, tris))
+        inv = 1.0 / rho_c
+        sA = float(a_init.sum())
+        sI = float(inv.sum())
+        if uw.mpi.size > 1:
+            sA = uw.mpi.comm.allreduce(sA)
+            sI = uw.mpi.comm.allreduce(sI)
+        A0 = (sA / max(sI, 1.0e-30)) * inv     # ΣA0 = Σa_init
+        A0 = np.maximum(A0, 1.0e-30)
+        ti0, ti1, ti2 = tris[:, 0], tris[:, 1], tris[:, 2]
+    else:
+        A0 = None
+
+    # ---- Solve the truss EQUILIBRIUM, not Jacobi creep ----------
+    # Minimise the spring energy  E(x) = ½ Σ_e (|x_i−x_j| − L0_e)²
+    # over the interior nodes (boundary pinned) by nonlinear
+    # conjugate gradients (Polak–Ribière⁺) with an Armijo line
+    # search whose trial step is REJECTED if any cell would invert
+    # — the tangle guard is inside the optimiser, so it converges to
+    # the true equilibrium instead of stalling against a per-sweep
+    # global freeze (the Jacobi relaxation's failure mode).
+    free_idx = np.nonzero(free)[0]
+    n_free = int(free_idx.size)
+    if n_free == 0:
+        mesh._deform_mesh(coords)
+        return
+
+    if tris is not None:
+        orient = np.sign(np.median(_signed_areas(coords, tris)))
+        orient = orient if orient != 0.0 else 1.0
+
+    def _allsum(s):
+        if uw.mpi.size > 1:
+            return uw.mpi.comm.allreduce(float(s))
+        return float(s)
+
+    def _feasible(X):
+        if tris is None:
+            return True
+        amin = float((_signed_areas(X, tris) * orient).min())
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            amin = uw.mpi.comm.allreduce(amin, op=_MPI.MIN)
+        return amin > 0.0
+
+    have_area = (A0 is not None) and (cdim == 2)
+
+    def _tri_signed(X):
+        a, b, c = X[ti0], X[ti1], X[ti2]
+        return 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+                      - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+
+    def _energy(X):
+        ev = X[v1] - X[v0]
+        L = np.sqrt((ev * ev).sum(axis=1))
+        re = (L - Lbar) / Lbar               # relative edge error
+        E = shape_w * _allsum((re * re).sum())
+        if have_area:
+            area = orient * _tri_signed(X)
+            ra = (area - A0) / A0            # relative area error
+            E += size_w * _allsum((ra * ra).sum())
+        return E
+
+    def _energy_grad(X):
+        ev = X[v1] - X[v0]
+        L = np.sqrt((ev * ev).sum(axis=1))
+        Ls = np.maximum(L, 1.0e-30)
+        re = (L - Lbar) / Lbar
+        E = shape_w * _allsum((re * re).sum())
+        G = np.zeros_like(X)
+        # equal-spring shape term: 2·shape_w·re/(Lbar·L)·ev
+        ce = (2.0 * shape_w * re / (Lbar * Ls))[:, None]
+        np.add.at(G, v1, ce * ev)
+        np.add.at(G, v0, -ce * ev)
+        if have_area:
+            a, b, c = X[ti0], X[ti1], X[ti2]
+            S = 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+                       - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+            area = orient * S
+            ra = (area - A0) / A0
+            E += size_w * _allsum((ra * ra).sum())
+            # ∂(area)/∂· = orient · ∂S/∂· (signed-area vertex grads)
+            fac = (2.0 * size_w * ra / A0 * orient)[:, None]
+            gA = np.empty_like(a)
+            gB = np.empty_like(a)
+            gC = np.empty_like(a)
+            gA[:, 0] = 0.5 * (b[:, 1] - c[:, 1])
+            gA[:, 1] = 0.5 * (c[:, 0] - b[:, 0])
+            gB[:, 0] = 0.5 * (c[:, 1] - a[:, 1])
+            gB[:, 1] = 0.5 * (a[:, 0] - c[:, 0])
+            gC[:, 0] = 0.5 * (a[:, 1] - b[:, 1])
+            gC[:, 1] = 0.5 * (b[:, 0] - a[:, 0])
+            np.add.at(G, ti0, fac * gA)
+            np.add.at(G, ti1, fac * gB)
+            np.add.at(G, ti2, fac * gC)
+        G[~free] = 0.0
+        return E, G
+
+    # Jacobi (diagonal) preconditioner: the truss Hessian is
+    # graph-Laplacian-structured (cond ~ (1/h)²), so plain CG crawls
+    # for fine meshes. M⁻¹ = diag(1/deg) — the Laplacian diagonal
+    # scale, free here since `deg` is already cached — clusters the
+    # spectrum and gives the order-of-magnitude convergence speed-up
+    # that turns "stuck at ~1.04" into the true graded minimum.
+    invdeg = (1.0 / deg)[:, None]
+
+    X = _project(coords.copy())
+    E, G = _energy_grad(X)
+    g0 = max(_allsum((G * G).sum()) ** 0.5, 1.0e-30)
+    r = -G
+    s = r * invdeg
+    s[~free] = 0.0
+    d = s.copy()
+    delta_new = _allsum((r * s).sum())
+    dmax = max(float(np.linalg.norm(d[free_idx], axis=1).max()),
+               1.0e-30)
+    if uw.mpi.size > 1:
+        from mpi4py import MPI as _MPI
+        dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
+    t0 = 0.5 * L0_mean / dmax
+    c_arm = 1.0e-4
+    max_iter = int(n_sweeps)
+    for it in range(max_iter):
+        gnorm = _allsum((G * G).sum()) ** 0.5
+        if gnorm <= 1.0e-8 * g0:
+            break
+        slope = _allsum((G * d).sum())       # = −(r·d)
+        if slope >= 0.0:                     # not descent → restart
+            d = s.copy()
+            slope = _allsum((G * d).sum())
+            if slope >= 0.0:
+                break
+        t = t0
+        accepted = False
+        for _ls in range(50):
+            Xt = X.copy()
+            Xt[free_idx] += t * d[free_idx]
+            Xt = _project(Xt)                # slip nodes → boundary
+            if _feasible(Xt):
+                Et = _energy(Xt)
+                if Et <= E + c_arm * t * slope:
+                    accepted = True
+                    break
+            t *= 0.5
+        if not accepted:
+            break                            # at equilibrium / stuck
+        Et, Gt = _energy_grad(Xt)
+        r_new = -Gt
+        s_new = r_new * invdeg
+        s_new[~free] = 0.0
+        delta_old = delta_new
+        delta_mid = _allsum((r_new * s).sum())
+        delta_new = _allsum((r_new * s_new).sum())
+        beta = max(0.0, (delta_new - delta_mid)
+                   / max(delta_old, 1.0e-30))   # preconditioned PR⁺
+        X, E, G = Xt, Et, Gt
+        d = s_new + beta * d
+        s = s_new
+        t0 = min(2.0 * t, 100.0 * t0)        # grow but stay sane
+
+        if verbose and (it % 25 == 0 or it == max_iter - 1):
+            ev = X[v1] - X[v0]
+            L = np.sqrt((ev * ev).sum(axis=1))
+            rms = (_allsum(((L - L0) ** 2).sum())
+                   / max(_allsum(L0.size), 1.0)) ** 0.5
+            uw.pprint(
+                f"  spring PCG iter {it+1}/{max_iter}: "
+                f"E={E:.4e}  rms(L-L0)/L0="
+                f"{rms / max(L0_mean, 1e-30):.3e}  |g|={gnorm:.2e}")
+
+    coords = X
+    mesh._deform_mesh(coords)
+
+
+# ======================================================================
+#  Monge–Ampère mesh-equidistribution machinery (PRESERVED, not the
+#  default metric path). Exhaustively investigated 2026-05-16: every
+#  FE-MA-potential variant (linear / recovered-Hessian smoothed &
+#  variational / BFO convex-branch + damping / outer composition)
+#  caps at deep/near ≈ 1.07 for an 8× target vs an exact ~10× — see
+#  the project memory and scripts/ma_*.py. Kept because (a) the
+#  "bit-identical across variants" result suggests a common missing
+#  ingredient worth understanding, and (b) the elastic-spring
+#  redistribution may work as a *preconditioner* for the MA solve
+#  (a graded starting mesh might let MA escape the weak branch) —
+#  an open investigation. Call _winslow_elliptic() directly to use.
+# ======================================================================
+
+# Cached MA solver state keyed by (mesh-id, pinned-labels, topology):
+# the φ Poisson, the variational Hessian-recovery solver, ∇φ
+# projector, the ρ_cur proxy field. Rebuilt on a topology change.
+_WINSLOW_CACHE: dict = {}
+
+# Sign of the BFO source vs UW3's SNES_Poisson convention
+# (SNES_Poisson F0 = -f, strong form Δφ = -ps.f). With this sign the
+# validated linear first iterate Δφ = (c/ρ_tgt - 1) grades the right
+# way (nodes toward high target density).
+_EQUIDIST_SIGN = -1.0
+
+_HESSIAN_CLASS = None
+
+
+def _patch_volumes(tris, coords, n_verts):
+    """Per-vertex dual-patch area: a node's share (1/3) of every
+    incident triangle's |area|. ρ_cur ∝ 1/patch for the (opt-in,
+    n_outer>1) outer MA composition; at equidistribution
+    ``patch · ρ_tgt`` is uniform. Serial-exact (parallel under-counts
+    at rank-partition boundaries — acceptable for serial validation).
+    """
+    area = np.abs(_signed_areas(coords, tris)) / 3.0
+    patch = np.zeros(n_verts, dtype=np.double)
+    for k in range(3):
+        np.add.at(patch, tris[:, k], area)
+    patch[patch <= 0.0] = patch[patch > 0.0].mean()
+    return patch
+
+
+def _hessian_recovery_class():
+    r"""Lazily build (and memoise) the variationally-consistent
+    Hessian-recovery solver class.
+
+    Recovers ``H_ij ≈ ∂²φ/∂x_i∂x_j`` from an external scalar field
+    ``φ`` by the *weak* (integrated-by-parts) form — the plan's
+    :math:`R_H`: ``∫H_ij τ_ij + ∫(∂φ/∂x_i)(∂τ_ij/∂x_j) = 0`` ⇒
+    ``H_ij = ∂²φ/∂x_i∂x_j``. Only **first** derivatives of ``φ``
+    appear (UW3 forbids second derivatives of mesh-variable
+    functions); the operator is the SPD mass matrix (no nullspace).
+    Defined lazily to avoid an import cycle (meshing→systems/cython).
+    """
+    global _HESSIAN_CLASS
+    if _HESSIAN_CLASS is not None:
+        return _HESSIAN_CLASS
+
+    import sympy
+    from underworld3.cython.generic_solvers import SNES_MultiComponent
+    from underworld3.utilities._api_tools import Template
+
+    class _HessianRecovery(SNES_MultiComponent):
+        def __init__(self, mesh, phi_field, degree=2, verbose=False):
+            self._phi = phi_field
+            super().__init__(
+                mesh, n_components=mesh.cdim * mesh.cdim,
+                degree=degree, verbose=verbose)
+            self._smoothing = sympy.sympify(0)
+            self._constitutive_model = (
+                uw.constitutive_models.Constitutive_Model(
+                    self.Unknowns))
+
+        def _hessian_source(self):
+            cdim = self.mesh.cdim
+            X = self.mesh.CoordinateSystem.X
+            phi = self._phi.sym[0]
+            rows = []
+            for i in range(cdim):
+                for j in range(cdim):
+                    row = [sympy.Integer(0)] * cdim
+                    row[j] = phi.diff(X[i])
+                    rows.append(row)
+            return sympy.Matrix(rows)
+
+        F0 = Template(
+            r"f_0\left(\mathbf{u}\right)",
+            lambda self: self.u.sym,
+            "Hessian-recovery mass term: f_0 = H.")
+
+        F1 = Template(
+            r"\mathbf{F}_1\left(\mathbf{u}\right)",
+            lambda self: self._hessian_source(),
+            "Hessian-recovery weak source: F_1 = e_j ∂φ/∂x_i.")
+
+    _HESSIAN_CLASS = _HessianRecovery
+    return _HESSIAN_CLASS
+
+
+def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
+                      n_outer=1, n_picard=40, relax=1.0,
+                      step_frac=None, picard_relax=0.4,
+                      outer_tol=1.0e-3, boundary_slip=False):
+    r"""Metric-driven mesh equidistribution — Benamou–Froese–Oberman
+    convex-branch Monge–Ampère (PRESERVED; not the default path).
+
+    Solves ``det(I+D²φ)=g``, ``g=c·ρ_cur/ρ_tgt``, by a damped Picard
+    on the convex-branch source
+    ``Δφ = √((φxx−φyy)²+4φxy²+4g) − 2`` (the +√ selects the Brenier
+    branch), with the variationally-consistent recovered Hessian
+    (``_hessian_recovery_class``) and the pure-Neumann
+    ``constant_nullspace`` φ Poisson. ``n_outer>1`` composes maps
+    (recompute ρ_cur from patch volumes each step). Moves nodes by
+    ∇φ with a coherent global signed-area backtrack.
+
+    Known: caps at deep/near ≈ 1.07 for an 8× target (exact ~10×),
+    identically for every variant — the cap is intrinsic to the
+    FE-MA-potential formulation, not the solver. ``n_outer=1`` is the
+    safe default (AMP=0 exact no-op, never tangles). See the project
+    memory + scripts/ma_*.py.
+    """
+    import sympy
+
+    pinned_labels = tuple(pinned_labels)
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    cStart, cEnd = dm.getHeightStratum(0)
+    cone_size = dm.getConeSize(cStart) if cEnd > cStart else 0
+    key = (id(mesh), pinned_labels,
+           pEnd - pStart, cEnd - cStart, cone_size)
+
+    cdim = mesh.cdim
+
+    cache = _WINSLOW_CACHE.get(key)
+    if cache is None:
+        phi = uw.discretisation.MeshVariable(
+            f"winslow_phi_{id(mesh)}", mesh,
+            vtype=uw.VarType.SCALAR, degree=3, continuous=True)
+        ps = uw.systems.Poisson(mesh, phi)
+        ps.constitutive_model = uw.constitutive_models.DiffusionModel
+        ps.constitutive_model.Parameters.diffusivity = 1.0
+        ps.constant_nullspace = True
+        hsolver = _hessian_recovery_class()(
+            mesh, phi, degree=2, verbose=False)
+        hsolver.tolerance = 1.0e-6
+        vol_field = uw.discretisation.MeshVariable(
+            f"winslow_vol_{id(mesh)}", mesh,
+            vtype=uw.VarType.SCALAR, degree=1, continuous=True)
+        gradphi = uw.discretisation.MeshVariable(
+            f"winslow_gphi_{id(mesh)}", mesh,
+            vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+        gproj = uw.systems.Vector_Projection(mesh, gradphi)
+        gproj.smoothing = 0.0
+        _WINSLOW_CACHE[key] = (
+            phi, ps, gradphi, gproj, hsolver, vol_field)
+    else:
+        phi, ps, gradphi, gproj, hsolver, vol_field = cache
+
+    X = mesh.CoordinateSystem.X
+    grad_phi = sympy.Matrix(
+        [phi.sym[0].diff(X[i]) for i in range(cdim)]).T
+    Hf = hsolver.u.sym
+    Hmat = sympy.Matrix(cdim, cdim,
+                        lambda i, j: Hf[i * cdim + j])
+    gproj.uw_function = grad_phi
+    omega = float(picard_relax)
+
+    for outer in range(n_outer):
+        dm = mesh.dm
+        is_bnd = _pinned_mask(dm, pinned_labels)
+        tris = _tri_cells(dm)
+        pStart, pEnd = dm.getDepthStratum(0)
+        n_verts = pEnd - pStart
+        old_coords = np.asarray(mesh.X.coords).copy()
+        _cdim = mesh.cdim
+
+        # Boundary tangential slip (same per-ring radius projection
+        # as the spring). MA's natural Neumann BC (∇φ·n̂=0) already
+        # makes ∇φ tangential at the boundary, so letting boundary
+        # nodes move by ∇φ then snapping back to their ring radius
+        # is the redistribution the formulation naturally wants —
+        # fully pinning them discards it. Nodes provably stay on
+        # the surface (radial DOF removed; drift ~machine ε). One
+        # node/ring anchors the rotation gauge.
+        if boundary_slip and is_bnd.any():
+            bc = np.nonzero(is_bnd)[0]
+            c0 = old_coords[bc].mean(axis=0)
+            rg = np.round(
+                np.linalg.norm(old_coords[bc] - c0, axis=1), 6)
+            is_anchor = np.zeros(n_verts, dtype=bool)
+            slip_center = np.zeros((n_verts, _cdim))
+            slip_rtarget = np.zeros(n_verts)
+            for rv in np.unique(rg):
+                grp = bc[rg == rv]
+                rc = old_coords[grp].mean(axis=0)
+                is_anchor[grp[np.argmax(
+                    (old_coords[grp] - rc)[:, 0])]] = True
+                slip_center[grp] = rc
+                slip_rtarget[grp] = np.linalg.norm(
+                    old_coords[grp] - rc, axis=1)
+            is_slip = is_bnd & ~is_anchor
+            is_pinned = is_anchor
+            _sidx = np.nonzero(is_slip)[0]
+            _sctr = slip_center[_sidx]
+            _srad = slip_rtarget[_sidx]
+
+            def _project(Y):
+                v = Y[_sidx] - _sctr
+                nrm = np.linalg.norm(v, axis=1)
+                nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
+                Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
+                return Y
+        else:
+            is_pinned = is_bnd
+
+            def _project(Y):
+                return Y
+
+        if tris is not None and n_outer > 1:
+            patch = _patch_volumes(tris, old_coords, n_verts)
+            patch /= float(np.mean(patch))
+        else:
+            patch = np.ones(n_verts, dtype=np.double)
+        _va = vol_field.array
+        _va[...] = patch.reshape(_va.shape)
+
+        rho_t = np.asarray(
+            uw.function.evaluate(metric, old_coords)).reshape(-1)
+        b = rho_t * patch
+        inv_sqrt_b_mean = float(np.mean(1.0 / np.sqrt(b)))
+        if uw.mpi.size > 1:
+            inv_sqrt_b_mean = uw.mpi.comm.allreduce(
+                inv_sqrt_b_mean) / uw.mpi.size
+        c = 1.0 / (inv_sqrt_b_mean ** 2)
+
+        g = c / (metric * vol_field.sym[0])
+        if cdim == 2:
+            Hxx = Hf[0]
+            Hxy = (Hf[1] + Hf[2]) / 2
+            Hyy = Hf[3]
+            f_src = sympy.sqrt(
+                (Hxx - Hyy) ** 2 + 4 * Hxy ** 2 + 4 * g) - 2
+        else:
+            f_src = (g - 1.0) - Hmat.det()
+        ps.f = sympy.Matrix([[_EQUIDIST_SIGN * f_src]])
+
+        hsolver.u.array[...] = 0.0
+
+        prev_change = None
+        for it in range(n_picard):
+            phi_prev = np.asarray(phi.array).copy()
+            ps.solve(zero_init_guess=True)
+            phi.array[...] = ((1.0 - omega) * phi_prev
+                              + omega * np.asarray(phi.array))
+            hsolver.solve()
+            change = float(np.abs(
+                np.asarray(phi.array) - phi_prev).max())
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                change = uw.mpi.comm.allreduce(
+                    change, op=_MPI.MAX)
+            if prev_change is not None and change < 1.0e-6:
+                break
+            prev_change = change
+
+        gproj.solve()
+        disp = np.asarray(
+            uw.function.evaluate(gradphi.sym, old_coords)
+        ).reshape(old_coords.shape)
+
+        step = relax * disp
+        if step_frac is not None and np.isfinite(step_frac):
+            h = _min_incident_edge(dm, old_coords)
+            mag = np.linalg.norm(step, axis=1)
+            cap = step_frac * h
+            clip = np.isfinite(cap) & (mag > cap) & (mag > 0.0)
+            sc = np.ones_like(mag)
+            sc[clip] = cap[clip] / mag[clip]
+            step = step * sc[:, None]
+
+        free = ~is_pinned
+        scale = 1.0
+        new_coords = old_coords.copy()
+        if tris is not None:
+            a0 = _signed_areas(old_coords, tris)
+            orient = np.sign(np.median(a0)) or 1.0
+            for _bt in range(10):
+                trial = old_coords.copy()
+                trial[free] += scale * step[free]
+                trial = _project(trial)      # slip → ring (∥ only)
+                a1min = float(
+                    (_signed_areas(trial, tris) * orient).min())
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    a1min = uw.mpi.comm.allreduce(
+                        a1min, op=_MPI.MIN)
+                if a1min > 0.0:
+                    new_coords = trial
+                    break
+                scale *= 0.5
+            else:
+                scale = 0.0
+                new_coords = old_coords.copy()
+        else:
+            new_coords[free] += step[free]
+            new_coords = _project(new_coords)
+
+        mesh._deform_mesh(new_coords)
+
+        d = float(np.linalg.norm(
+            new_coords - old_coords, axis=1).max())
+        if uw.mpi.size > 1:
+            d = uw.mpi.comm.allreduce(d ** 2) ** 0.5
+        if verbose:
+            uw.pprint(
+                f"  equidistribute MA outer {outer+1}/{n_outer}: "
+                f"c={c:.4f}  scale={scale:.3f}  max|Δx|={d:.3e}")
+        if d < outer_tol:
+            break
 
 
 def _build_local_to_owned_map(dm, gsection, vec):
@@ -235,24 +1001,45 @@ def smooth_mesh_interior(
     pinned_labels: Optional[Sequence[str]] = None,
     n_iters: int = 5,
     alpha: float = 0.5,
+    metric=None,
+    method: str = "spring",
+    boundary_slip: bool = False,
     verbose: bool = False,
 ):
-    r"""Apply Winslow Jacobi smoothing to a mesh's interior vertices.
+    r"""Smooth a mesh's interior vertices, optionally toward a
+    spatially-varying target spacing.
 
-    Each interior vertex is replaced by a blend of its current
-    position and the unweighted mean of its edge-neighbour positions:
+    **Default (``metric=None``)** — graph-Laplacian Jacobi: each
+    interior vertex is blended toward the plain mean of its edge
+    neighbours,
 
     .. math::
 
         x_i^{n+1} = (1 - \alpha)\, x_i^n
                     + \alpha \cdot \frac{1}{|N(i)|}
-                    \sum_{j \in N(i)} x_j^n
+                    \sum_{j \in N(i)} x_j^n ,
+
+    over ``n_iters`` sweeps. Equalises connectivity → equant cells.
+
+    **With a ``metric``** — an elastic-spring network relaxed to
+    equilibrium. Every edge is a linear spring with rest length
+    ``∝ ρ_tgt^{-1/d}`` (``ρ_tgt = metric``), scaled so the mean rest
+    length equals the current mean edge length (overall scale
+    preserved — pure redistribution). Damped Jacobi force iteration
+    relaxes interior nodes to force balance, with a coherent global
+    signed-area backtrack guaranteeing no cell inverts. The rest
+    length is an *absolute* target, so the mesh genuinely grades
+    toward spacing ``∝ ρ_tgt^{-1/d}`` (a regime the weighted
+    Laplacian / Jacobi cannot reach). ``n_iters`` and ``alpha`` are
+    ignored on this path (it has its own internal sweep budget). A
+    Lagrangian density (``f(r0.sym)`` peaked at the original outer
+    radius) keeps the rest lengths fixed per material point, so the
+    *design* boundary-layer grading is restored even after
+    free-surface deformation.
 
     Vertices in any of ``pinned_labels`` are held fixed (preserves
     boundary geometry). The mesh's coordinate vector is updated in
-    place via ``mesh._deform_mesh`` once after all sweeps — so the
-    DM rebuild / cache invalidation cost is paid once rather than
-    per sweep.
+    place via ``mesh._deform_mesh`` once at the end.
 
     Parameters
     ----------
@@ -265,24 +1052,72 @@ def smooth_mesh_interior(
         stays put. Pass an explicit list to release some boundaries.
     n_iters : int, default 5
         Number of Jacobi sweeps. 5-10 is typical for surface-
-        deformation cleanup.
+        deformation cleanup. **Ignored when ``metric`` is given**
+        (the spring path has its own internal sweep budget).
     alpha : float, default 0.5
-        Under-relaxation in ``(0, 1]``. 1.0 is pure Jacobi; smaller
-        is more damped (slower but safer on irregular meshes).
+        Under-relaxation in ``(0, 1]`` for the Jacobi path. 1.0 is
+        pure Jacobi; smaller is more damped. **Ignored when
+        ``metric`` is given.**
+    metric : sympy / UW expression, optional
+        Target *density* :math:`\rho_{\mathrm{tgt}}` (larger ⇒
+        finer cells). Typically ``f(r0.sym)`` for a refinement
+        function ``f`` of a Lagrangian state variable ``r0`` (a
+        degree-1 scalar MeshVariable set once to the original
+        coordinate and never reassigned, so its value rides each
+        material point through deformation). Should be strictly
+        positive and finite. ``None`` (default) ⇒ the
+        graph-Laplacian Jacobi path, unchanged behaviour
+        bit-for-bit.
+    method : {"spring", "ma"}, default "spring"
+        Metric-grading solver (ignored when ``metric is None``):
+
+        * ``"spring"`` — *volumetric* elastic-spring equilibrium:
+          equal edge springs (shape regulariser, equant cells, no
+          slivers) + a per-cell area constraint
+          ``A0 ∝ 1/ρ_tgt`` (the size grading), minimised by
+          preconditioned nonlinear CG. **Fast** (~0.3 s on a
+          res-16 Annulus), robust, scales with the metric
+          amplitude; slightly anisotropic at sharp interior
+          features.
+        * ``"ma"`` — Benamou–Froese–Oberman convex-branch
+          **Monge–Ampère** equidistribution. Highest-fidelity
+          *isotropic* refinement and robust to the boundary
+          treatment, but ~60× costlier than the spring.
+
+        With a fixed node count neither can exceed ≈1.3–1.8×
+        deep/near grading (the optimal-transport ≈10× needs *more
+        nodes* — a topology change, not this smoother). See
+        ``docs/developer/subsystems/mesh-metric-redistribution.md``.
+    boundary_slip : bool, default False
+        Let boundary nodes slide tangentially along their boundary
+        (snapped back to the boundary each step — they cannot leave
+        it; serial circular/spherical boundaries only). Strongly
+        helps the spring (+~10 % grading, faster); near-no-op for
+        ``ma`` (its natural Neumann BC already handles the
+        boundary). Off by default — for a free surface the boundary
+        is the moving surface, so sliding interacts with the
+        free-surface coupling; enable per use-context.
     verbose : bool, default False
-        Print per-sweep RMS interior displacement.
+        Print per-sweep (Jacobi) or periodic (spring/MA) progress.
 
     Notes
     -----
-    **Parallel implementation**: the vertex-vertex adjacency is
-    assembled as a parallel PETSc AIJ matrix; each rank inserts
-    entries for every locally-visible edge using GLOBAL vertex
-    indices and ``mat.assemble()`` routes cross-rank contributions
-    so that owned-vertex rows are complete after assembly. The
-    per-sweep update is then a per-component ``A.mult`` followed by
-    a pointwise divide by the precomputed degree vector. Results
-    are bit-identical (to a single ULP) between serial and parallel
-    runs at any rank count.
+    **Parallel implementation (Jacobi path)**: the vertex-vertex
+    adjacency is assembled as a parallel PETSc AIJ matrix; each rank
+    inserts entries for every locally-visible edge using GLOBAL
+    vertex indices and ``mat.assemble()`` routes cross-rank
+    contributions so that owned-vertex rows are complete after
+    assembly. The per-sweep update is a per-component ``A.mult``
+    followed by a pointwise divide by the precomputed degree vector.
+    Results are bit-identical (to a single ULP) between serial and
+    parallel runs at any rank count.
+
+    **Spring path**: serial-exact. Edge forces are accumulated over
+    locally-visible edges only, so rank-partition-boundary nodes
+    under-count their incident forces in parallel (a future PR can
+    assemble the edge forces cross-rank like the Jacobi adjacency
+    Mat). The edge list and per-node degree are cached against the
+    topology key and rebuilt only on a topology change.
 
     **Topology preservation**: vertex IDs, DOF mappings, and the
     rank partition are unchanged. Only coordinates move. Anything
@@ -308,10 +1143,34 @@ def smooth_mesh_interior(
     Pin nothing (free-floating; rare — boundary will collapse)::
 
         smooth_mesh_interior(mesh, pinned_labels=[])
+
+    Restore a design grading via a Lagrangian refinement metric::
+
+        r0 = uw.discretisation.MeshVariable(
+            "r0", mesh, uw.VarType.SCALAR, degree=1)
+        X0 = np.asarray(mesh.X.coords)
+        r0.data[:, 0] = np.sqrt((X0 ** 2).sum(axis=1))   # set once
+        # ... deformation that crushes near-surface cells ...
+        f = 1 + 8 * sympy.exp(-((r0.sym[0] - 1.0) / 0.12) ** 2)
+        smooth_mesh_interior(mesh, metric=f)
     """
     if pinned_labels is None:
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)
+
+    if metric is not None:
+        if method == "spring":
+            _winslow_spring(mesh, metric, pinned_labels, verbose,
+                            boundary_slip=boundary_slip)
+        elif method in ("ma", "monge-ampere", "monge_ampere"):
+            _winslow_elliptic(mesh, metric, pinned_labels, verbose,
+                              boundary_slip=boundary_slip)
+        else:
+            raise ValueError(
+                f"smooth_mesh_interior: unknown method {method!r}; "
+                f"use 'spring' (default, fast volumetric) or "
+                f"'ma' (Monge–Ampère, robust, ~60× costlier).")
+        return
 
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
