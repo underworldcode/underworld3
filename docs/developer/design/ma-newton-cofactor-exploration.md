@@ -444,3 +444,35 @@ anisotropic diffusivity / move-weighting on the scalar potential.
 `move_anisotropy` is kept as an opt-in *quality* knob (suppresses
 off-direction drift), not a concentrator. Script
 `ma_angular_ot_target.py`; fig `/tmp/metric_mesh/ma_angular_ot.png`.
+
+### (3) metric-tensor machinery — construction verified (2026-05-18)
+
+`ma_metric_tensor_viz.py`: scalar density ρ(x) → `M = (1/h0²)[I +
+β ĝĝᵀ(|∇ρ|/∇ρ_ref)²]`, eigen-clamped to spacing ∈ [H_MIN,H_MAX]
+(≤8:1). Desired-cell ellipses drawn on a clean polar sample grid for
+a radial feature ρ(r) and an angular feature ρ(θ). Result is
+correct and confirms the design:
+
+- Radial feature → ellipses **tangentially elongated** (short ⟂ r,
+  long along the ring); circular where ∇ρ→0 (crest, far field).
+- Angular feature → ellipses **radially elongated** (short ⟂ θ,
+  long in r), concentrated in the θ₀ sector.
+- **The eigenframe auto-aligns to r̂ / θ̂ with no (r,θ) frame
+  specified anywhere** — M was fed only the Cartesian ∇ρ. This is
+  the resolution of the user's (r,θ) puzzle: scalar density in,
+  tensor alignment emergent from its gradient; API stays scalar.
+- Max anisotropy = the eigen-clamp band (8.3:1), as designed.
+
+Honest nuance (visible in the figure): a *gradient*-based metric
+refines where ρ **changes** (the flanks) and is isotropic at a
+smooth peak (∇ρ=0) and far away. Correct for "resolve the feature's
+structure"; for small cells at the feature *core* use smoothed
+`|∇ρ|` or the Hessian-based `M=|H(ρ)|` (curvature-aligned; needs the
+recovered-Hessian path, extra cost). Gradient form is the
+first-derivative, UW3-clean first cut.
+
+Status: the metric *construction* (the ~1-day half) is verified and
+cheap. Remaining for (3): the anisotropic **mover** (metric-Winslow
+/ M-weighted displacement solve — the medium-effort half), with the
+standing caveat that it improves cell alignment/quality, not the
+fixed-node-count cap. Fig `/tmp/metric_mesh/ma_metric_tensor.png`.
