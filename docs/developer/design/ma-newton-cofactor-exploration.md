@@ -259,3 +259,29 @@ mild-spring→MA does converge but is **net slower than MA-only**
 to pay for itself). The mechanism is geometric — independent of
 φ-order or solver speed — so the conclusion stands, and with MA now
 ~0.8 s the spring complexity is even less attractive. Not pursued.
+
+### P1 vs P2 × GAMG, scaling with #triangles (check, 2026-05-17)
+
+`scripts/ma_p1_gamg_scaling.py`, AMP=8, RES 16→64 (1.5k→22.7k tris):
+
+- **P1 does not rescue GAMG.** When P1+GAMG converges it is
+  textbook-good — **18–22 iters, N-independent** (vs P2's
+  77→99→103, slowly growing) — confirming P1 is genuinely more
+  AMG-friendly. *But it still fails erratically*: P1+GAMG diverges
+  at res-32 (10000 its) and res-64 (r=-4, d/n collapses to 1.021
+  no-op). P2+GAMG fails at 16 and 32. Neither order is reliable
+  across the sweep — the pure-Neumann + warm-resolve breakdown is
+  **order-independent and resolution-erratic**. Direct (MUMPS) is
+  `✓` at every (res, order).
+- Grading holds at every resolution: P1 ≈1.40 (1.397–1.421), P2
+  ≈1.71–1.75 — P1 is ~18 % weaker *everywhere*, not a grading
+  option regardless of solver.
+- **More important side-finding (direct path):** the *warm* cost
+  scales badly with N. P2-direct warm: 1.3 s (res-16) → 17.8 s
+  (res-48) → **46.4 s (res-64)**, far above cold (9.5 s at res-64).
+  The per-call post-`_deform_mesh` rebuild + MUMPS refactorisation +
+  cache-invalidated `evaluate()` re-interpolation is O(N)-growing
+  and re-opens a warm≫cold gap at realistic resolution. This — not
+  the GAMG question — is the next per-timestep-scaling work item
+  (the res-16 warm≈cold result does not extrapolate). Scripts add
+  `ma_p1_gamg_scaling.py`.
