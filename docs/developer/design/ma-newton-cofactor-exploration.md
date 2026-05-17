@@ -154,3 +154,108 @@ previous Picard φ. Parallel-scalable, keeps BFO's robust convex-branch
 structure, preserves grading. This — not Newton — is the parallel
 work item. Script: `scripts/ma_newton_phase0.py`; data
 `/tmp/metric_mesh/ma_newton_phase0.npz`.
+
+## BFO + GAMG-reuse parallel prototype — tested, fragile (2026-05-17)
+
+Wired as a *selectable* path: `_winslow_elliptic(...,
+linear_solver="gamg")` (default stays `"direct"`).
+`_use_iterative_solver`: FGMRES + GAMG(SOR smoother) for the elliptic
+φ-Poisson — CG was *not* justified there (UW3 DMPlex-FEM assembly +
+Neumann/nullspace gives no exact symmetry guarantee, and the SOR
+smoother is non-symmetric ⇒ non-SPD preconditioner; FGMRES tolerates
+both); CG + Jacobi for the provably-SPD mass systems.
+`snes_lag_jacobian=-2` / `snes_lag_preconditioner=-2` so the GAMG
+hierarchy is built **once per call** and reused across the ~25 Picard
+iters (verified: φ-KSP iter count flat ≈75 once warm), Krylov
+warm-started from the previous Picard φ.
+
+The reuse mechanism works and **grading is bit-for-bit preserved
+where it converges**. But the path is **not robust and does not
+scale here** (`scripts/ma_solver_scaling.py`, AMP=8, direct = serial
+MUMPS):
+
+| RES | nodes | direct cold/warm | gamg cold/warm | d/n dir/gmg |
+|----|------|------------------|----------------|-------------|
+| 24 | 1748 | 3.1 / 3.8 s | 27.7 / 27.6 s | 1.712 / **1.007** ⚠ |
+| 32 | 3059 | 6.9 / 8.7 s | 7.2 / 15.1 s | 1.722 / 1.722 |
+| 48 | 6655 | 11.5 / 23.2 s | 16.3 / **69.2** s | 1.729 / 1.729 |
+
+- **res-24 fails outright** — `DIVERGED_LINEAR_SOLVE` after 0 iters,
+  φ≈0, d/n 1.007 (no-op). A *correctness* failure at one resolution
+  while 32/48 converge: the hallmark of the documented
+  GAMG-on-pure-Neumann + `constant_nullspace` + warm-resolve
+  fragility (see the `_attach_constant_nullspace` code comment and
+  `project-ma-efficiency-direct-solver`).
+- Where it converges it is **2–3× slower than direct** and the
+  **warm≫cold degradation returns** (res-48: gamg warm 69 s vs cold
+  16 s) — the precise pathology the direct path *eliminated*. The
+  gamg/direct ratio is erratic (7.3 / 1.75 / 3.0), **not** shrinking
+  with N: no scalability signal at feasible 2D sizes.
+
+### Two challenges that reshaped the verdict
+
+**(a) "Did you wire the nullspace in?"** Verified at runtime: yes —
+on the gamg path `ps.constant_nullspace=True` attaches the constant
+`MatNullSpace` to the operator, the near-nullspace *and* the KSP
+operator, cold *and* warm. The divergence is **not** a missing/
+unprojected nullspace; the warm KSP runs to `its=10000`,
+`reason=-3` (DIVERGED_ITS) — a GAMG *convergence* failure. The
+direct path masks this entirely (MUMPS `icntl_24` null-pivot
+detection solves the singular system irrespective of the PETSc
+nullspace), which is why the iterative path is the first place a
+conditioning problem surfaces.
+
+**(b) "Why P3?"** No good reason — inherited from the original BFO
+implementation. Sweeping φ∈{P1,P2,P3} × {direct,gamg}
+(`scripts/ma_phi_order.py`):
+
+| effect | finding |
+|---|---|
+| grading is set by φ **order**, not the solver | P2 ≡ P3 (≈1.71); **P1 is ~18 % weaker** (≈1.40) — P1 is *not* grading-equivalent, P2 is the floor |
+| P3 is a **major GAMG confound** | res-24: P2+gamg converges (its=77, d/n 1.709 ✓) exactly where P3+gamg catastrophically fails (10000 its, d/n 1.007 ✗) |
+| P2 does **not** fully cure GAMG | res-32 P2 *warm* still diverges — GAMG remains erratic across (res, cold/warm) even at P2 |
+
+### Bankable win, independent of the parallel question
+
+φ=P2 ≡ P3 grading to ~3 dp across AMP 0/2/8/20 on the **direct**
+path (1.022/1.434/1.707/1.542 vs the recorded 1.02/1.43/1.71/1.54;
+AMP=0 no-op exact; no tangle) at **~2× lower cost** (smaller
+matrices — which also *helps* the direct factorisation scale, the
+exact opposite of a scaling concern). **`phi_degree` default is now
+2.** Canonical `cost_compare.py` at P2: MA cold ≈0.7–0.9 s (vs ~12–18 s
+original), grading bit-for-bit. Combined with the factor-once-reuse
+work this is ~15–20× over the original GAMG baseline.
+
+### Verdict & recommendation
+
+GAMG's failure was *partly* an own-goal (P3) — at P2 it converges in
+many more cases — but P2 still leaves it **erratic on the warm
+(post-`_deform_mesh`) re-solve**, so it is not a robust parallel
+path yet. Combined with: no alternative AMG in this build (hypre/ML
+absent), 2D sparse-direct being near-optimal at every feasible size,
+and (decisively) the user's accepted position — **MUMPS direct is
+fine for now; smaller matrices (P2) only help its scaling.** Keep
+`linear_solver="direct"` (MUMPS — itself MPI-parallel) as the
+validated path; retain `"gamg"` as experimental/documented-fragile
+(do not delete — lag/reuse machinery is correct). A robust iterative
+path would still need the pure-Neumann operator de-fragilised
+(single Dirichlet pin, not the constant nullspace — ∇φ is unaffected
+by the additive constant) and/or hypre, and is **gated behind**
+parallel-exact assembly + 3D (the smoother is 2D-triangle-only,
+serial-exact-assembly-only — the linear solver is *not* the parallel
+bottleneck yet). Scripts: `ma_gamg_vs_direct.py`,
+`ma_solver_scaling.py`, `ma_phi_order.py`, `ma_phi2_validate.py`.
+
+### Spring as the MA initial guess — settled (do not re-run)
+
+Asked whether seeding MA from the cheap `_winslow_spring` result
+helps convergence. This is **settled-rejected** in
+`project-ma-recovered-hessian-picard-inadequate`: spring-as-MA-
+preconditioner is dead — at full AMP the spring drives a cell to
+near-degeneracy and MA's signed-area backtrack *prevents* inversion
+but cannot *cure* an already-degenerate start (it freezes); a
+mild-spring→MA does converge but is **net slower than MA-only**
+(the spring pass costs without cutting MA's ~25 Picard iters enough
+to pay for itself). The mechanism is geometric — independent of
+φ-order or solver speed — so the conclusion stands, and with MA now
+~0.8 s the spring complexity is even less attractive. Not pursued.

@@ -128,21 +128,37 @@ which is insensitive to the boundary treatment).
   (tighter than the GMRES rtol) so the Picard fixed point — hence
   the grading/quality — is **bit-for-bit unchanged** (validated
   `ma_cost_grading.py`: d/n 1.02/1.43/1.71/1.54 identical to the
-  GAMG baseline). Net: cold ~12–18 s → ~1–2 s, warm ~34 s → ~1–2.5 s
-  (the warm≫cold GAMG-resetup pathology is eliminated). `n_picard`
-  default 40→25 (grading flat from iter ≈20).
+  GAMG baseline). `n_picard` default 40→25 (grading flat from
+  iter ≈20).
+- **φ order: `phi_degree` default 3 → 2.** The deep/near grading is
+  set by the φ *order*, not the solver: P2 ≡ P3 to ~3 dp across
+  AMP 0/2/8/20 (matches the recorded baseline; AMP=0 no-op exact;
+  no tangle) at **~2× lower cost** (smaller matrices — which also
+  *help* the direct factorisation scale). **P1 is not
+  grading-equivalent** (≈1.40 vs 1.71 at AMP=8, ~18 % weaker) — P2
+  is the floor. Net with the reuse work: cold ~12–18 s → **~0.7–0.9 s**
+  (canonical `cost_compare.py`), grading bit-for-bit, ≈15–20×.
 
   ```{warning}
-  This is a **serial / modest-size** optimisation. Sparse direct
-  factorisation (even parallel MUMPS) does not scale to large 3D
-  per-timestep use (fill-in, memory, communication). The portable
-  insight is *operator-constant-in-the-loop* → **factor/setup once,
-  reuse**: in a parallel setting keep an iterative PC (GAMG / `gamg`
-  with a constant near-nullspace) but apply the same
-  `snes_lag_jacobian -2` / `KSPSetReusePreconditioner` so GAMG setup
-  is paid once per call, plus warm-start the Krylov solve from the
-  previous Picard φ. The direct solver is the serial expedient; the
-  reuse pattern is what generalises. See *Open items*.
+  Sparse direct factorisation does not scale to large-3D parallel
+  per-timestep use, so a `linear_solver="gamg"` path applying the
+  same factor/setup-once-reuse to FGMRES + GAMG was prototyped
+  (selectable; `"direct"` remains the default and sole validated
+  path). Findings: the constant nullspace **is** correctly wired
+  (verified — not the failure); P3 was a **major GAMG confound**
+  (P2+gamg converges where P3+gamg catastrophically diverges to a
+  no-op); but even at P2 the *warm* (post-`_deform_mesh`) GAMG
+  re-solve stays erratic, and this build has no alternative AMG
+  (hypre/ML absent). The reuse *pattern* is sound; GAMG on this
+  pure-Neumann operator is not robust here. Accepted position:
+  **MUMPS direct is fine for now** (it is itself MPI-parallel) and
+  the P2 size reduction only helps it. A robust iterative path would
+  still need the pure-Neumann operator de-fragilised (single
+  Dirichlet pin, not the constant nullspace — ∇φ unaffected by the
+  additive constant) and/or hypre, and is **gated behind** the
+  smoother first becoming parallel-exact in *assembly* + 3D (the
+  solver is not the parallel bottleneck yet). Full results:
+  `docs/developer/design/ma-newton-cofactor-exploration.md`.
   ```
 - Both paths are **serial-exact**; spring/MA edge & cell sums are
   accumulated over locally-visible entities, so rank-partition
@@ -168,28 +184,28 @@ shift and understated grading ~40% — use the per-node metric.
 
 ## Open items (future sessions)
 
-- **Monge–Ampère efficiency** — *largely done* (2026-05-17, see the
-  Implementation note): ~10× via factor-once-reuse direct sub-solves;
-  grading bit-for-bit unchanged. Remaining: the serial direct solver
-  must become a **parallel-scalable** scheme. The win was *not*
-  "direct vs iterative" — it was eliminating the per-Picard-iteration
-  preconditioner re-setup on a constant operator. Port that to
-  parallel by keeping GAMG (constant near-nullspace, already wired)
-  but with `snes_lag_jacobian -2` / `KSPSetReusePreconditioner` so
-  the GAMG hierarchy is built once per call, and warm-start the
-  Krylov solve from the previous Picard φ. Quantify the parallel
-  GAMG-reuse path against the serial MUMPS numbers.
-- **Newton / cofactor linearisation** — replace the damped Picard
-  with a quasi-Newton step on `cof(D²φ):D²(δφ)=f−det(D²φ)`
-  (`cof(H)=det(H)H⁻ᵀ`). Same MA equation ⇒ *same* fixed-node grading
-  (≈1.5–1.8×, settled — not a grading lever); the gain is far fewer
-  outer iterations (a handful vs ~20) ⇒ an efficiency/robustness
-  lever, and the per-step operator is a variable-coefficient SPD
-  elliptic problem that is **AMG-friendly** (good for the parallel
-  requirement above). Needs convexity safeguarding (convex guess /
-  line search / projection onto convex Hessians / continuation in
-  `f`); BFO's `+√` branch already supplies the convex selection in
-  Picard form. Uses the existing recovered Hessian.
+- **Monge–Ampère efficiency** — *done* (2026-05-17): ~10× via
+  factor-once-reuse direct sub-solves, grading bit-for-bit unchanged
+  (see the Implementation note). Two follow-on directions were then
+  explored and **both closed negative** (see the design doc
+  `ma-newton-cofactor-exploration.md`):
+  - *Newton / cofactor linearisation* — tested (Phase 0). Same MA
+    equation ⇒ same fixed-node grading (settled, not a lever), and it
+    is *less robust* than BFO at the recovered-Hessian quality
+    available (all standard convexity safeguards fail to reach BFO's
+    fixed point). UW3 forbids 2nd derivatives of mesh-var functions
+    so a sharp `D²φ` isn't available. Do not pursue.
+  - *BFO + GAMG-reuse* (parallel path) — prototyped as
+    `linear_solver="gamg"`. Reuse pattern fires; nullspace verified
+    correctly wired (not the failure); P3 was a major confound
+    (P2+gamg converges where P3+gamg diverges) but even at P2 the
+    warm re-solve stays erratic; no alternative AMG in this build.
+    Accepted: MUMPS direct (itself MPI-parallel) for now, and the
+    P2 size cut only helps it. A robust iterative path needs a
+    single-Dirichlet-pin (not the constant nullspace) and/or hypre,
+    gated behind parallel-exact assembly + 3D (the solver is not the
+    bottleneck yet). *Bankable spin-off: `phi_degree` default 3→2 —
+    grading-identical, ~2× cheaper, see the Implementation note.*
 - General deformed / free-surface boundary slip (polyline
   projection).
 - Parallel-exact spring/MA assembly.

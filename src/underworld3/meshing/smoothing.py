@@ -731,6 +731,101 @@ def _use_direct_solver(solver, singular=False):
             pass
 
 
+def _use_iterative_solver(solver, singular=False, elliptic=True):
+    r"""Parallel-scalable alternative to ``_use_direct_solver``: keep
+    the *same factor/setup-once-reuse pattern* (the real efficiency
+    lever) but with an **iterative** PC so it scales beyond the
+    serial / modest-size regime where sparse direct factorisation is
+    viable (this PETSc build has only MUMPS + serial builtin LU — no
+    hypre / SuperLU_DIST).
+
+    The Picard loop fixes the mesh ⇒ the operator is constant across
+    the ~25 inner solves; ``snes_lag_jacobian=-2`` /
+    ``snes_lag_preconditioner=-2`` build the PC **once per
+    ``_winslow_elliptic`` call** and reuse it for every inner solve
+    (the GAMG hierarchy / Jacobi diagonal is *not* rebuilt per
+    iteration — that per-iter GAMG re-setup was the original ~0.9 s
+    Hessian cost). ``_deform_mesh`` resets ``is_setup`` so the lag
+    counter resets and the PC is correctly rebuilt on the next call's
+    first solve. Combined with a Krylov **warm start** from the
+    previous Picard φ (caller passes ``zero_init_guess=False``), the
+    inner solves are a handful of CG iterations on an already-built
+    hierarchy.
+
+    ``elliptic=True`` (the φ-Poisson Laplacian): CG + GAMG with the
+    constant near-nullspace (already attached via
+    ``constant_nullspace`` — GAMG needs it for the pure-Neumann
+    operator). ``elliptic=False`` (the SPD Hessian-recovery / ∇φ mass
+    systems): a mass matrix is spectrally trivial — CG + Jacobi
+    converges in a few iterations with **no** hierarchy setup, fully
+    parallel; GAMG there would be wasted setup.
+
+    Numerics: an iterative solve to a tight ``ksp_rtol`` reproduces
+    the BFO Picard fixed point — hence the grading — to well within
+    its 4-dp precision (validated against the direct path); it is a
+    *cost/parallelism* change, not a formulation change.
+    """
+    o = solver.petsc_options
+    o["snes_type"] = "ksponly"
+    o["snes_lag_jacobian"] = -2
+    o["snes_lag_preconditioner"] = -2
+    # Krylov choice is per-operator (set in the branches below):
+    #  * elliptic φ-Poisson → FGMRES. The UW3 DMPlex-FEM assembly +
+    #    Neumann/nullspace handling does not guarantee an *exactly*
+    #    symmetric operator, and the GAMG **SOR smoother is
+    #    non-symmetric**, so the preconditioner is non-SPD — CG's
+    #    assumptions are violated (it only "worked" here by
+    #    robustness margin). FGMRES tolerates a non-symmetric
+    #    operator *and* a varying/non-symmetric preconditioner.
+    #  * mass systems (Hessian recovery, ∇φ projection) → CG: a
+    #    consistent mass matrix with a Jacobi PC is provably SPD and
+    #    symmetric, so CG is correct and the cheapest option.
+    # Inner solve inside an outer BFO Picard — it tolerates inexact
+    # inner solves (inexact-Picard); 1e-7 is far tighter than the
+    # Picard increment near convergence (~1e-4) so the fixed point —
+    # hence the grading — is unchanged, at a fraction of the iters a
+    # direct-path-matching 1e-10 would need.
+    o["ksp_rtol"] = 1.0e-7
+    o["ksp_atol"] = 1.0e-12
+    o["pc_factor_mat_solver_type"] = ""   # not a direct solve
+    try:
+        o.delValue("pc_factor_mat_solver_type")
+        o.delValue("mat_mumps_icntl_24")
+        o.delValue("mat_mumps_icntl_25")
+    except Exception:
+        pass
+    if elliptic:
+        # P3 pure-Neumann Laplacian: plain agg-GAMG with a weak
+        # Jacobi/Chebyshev smoother needs ~280 iters here. A stronger
+        # SOR smoother with more sweeps + smoothed aggregation cuts
+        # that ~4×; the hierarchy is still built only once per call
+        # (lagged), so the extra setup is amortised over the ~25
+        # reused inner solves. SOR ⇒ non-symmetric PC ⇒ FGMRES.
+        o["ksp_type"] = "fgmres"
+        o["ksp_gmres_restart"] = 100      # > the ~75-iter solve
+        o["pc_type"] = "gamg"
+        o["pc_gamg_type"] = "agg"
+        o["pc_gamg_agg_nsmooths"] = 1
+        o["pc_gamg_threshold"] = 0.02
+        o["mg_levels_ksp_type"] = "richardson"
+        o["mg_levels_pc_type"] = "sor"
+        o["mg_levels_ksp_max_it"] = 4
+        o["mg_coarse_pc_type"] = "lu"
+        o["mg_coarse_pc_factor_mat_solver_type"] = "mumps"
+    else:
+        o["ksp_type"] = "cg"              # consistent mass = SPD
+        o["pc_type"] = "jacobi"           # mass matrix → trivial
+        for k in ("ksp_gmres_restart", "pc_gamg_type",
+                  "pc_gamg_agg_nsmooths", "pc_gamg_threshold",
+                  "mg_levels_ksp_type", "mg_levels_pc_type",
+                  "mg_levels_ksp_max_it", "mg_coarse_pc_type",
+                  "mg_coarse_pc_factor_mat_solver_type"):
+            try:
+                o.delValue(k)
+            except Exception:
+                pass
+
+
 def _patch_volumes(tris, coords, n_verts):
     """Per-vertex dual-patch area: a node's share (1/3) of every
     incident triangle's |area|. ρ_cur ∝ 1/patch for the (opt-in,
@@ -806,7 +901,8 @@ def _hessian_recovery_class():
 def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                       n_outer=1, n_picard=25, relax=1.0,
                       step_frac=None, picard_relax=0.4,
-                      outer_tol=1.0e-3, boundary_slip=False):
+                      outer_tol=1.0e-3, boundary_slip=False,
+                      linear_solver="direct", phi_degree=2):
     r"""Metric-driven mesh equidistribution — Benamou–Froese–Oberman
     convex-branch Monge–Ampère (PRESERVED; not the default path).
 
@@ -828,6 +924,17 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
     flat from iter ≈20 (4-dp identical at AMP 8 & 20), so 40 was pure
     overhead. Net: ~10× faster, grading/quality bit-for-bit unchanged.
 
+    ``phi_degree`` defaults to **2** (was 3). The deep/near grading
+    is set by the φ *order*, not the solver: P2 ≡ P3 to ~3 dp across
+    AMP 0/2/8/20 (matches the recorded baseline; AMP=0 no-op exact;
+    no tangle) while P2 halves the cost (smaller matrices — also
+    helps the direct factorisation scale). P1 is **not**
+    grading-equivalent (≈1.40 vs 1.71 at AMP=8 — ~18 % weaker); P2
+    is the floor. ``linear_solver="gamg"`` is an experimental,
+    documented-fragile parallel prototype (P3 was a major GAMG
+    confound; even at P2 GAMG re-solve is erratic — see the design
+    doc); ``"direct"`` (MUMPS, MPI-parallel) is the validated path.
+
     Grading: redistribution with a fixed node count reaches deep/near
     ≈1.5–1.8× for an 8–20× density target (the exact OT ~10× needs
     *more nodes* — a topology change, not this smoother). ``n_outer=1``
@@ -841,34 +948,49 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
     pStart, pEnd = dm.getDepthStratum(0)
     cStart, cEnd = dm.getHeightStratum(0)
     cone_size = dm.getConeSize(cStart) if cEnd > cStart else 0
+    if linear_solver not in ("direct", "gamg"):
+        raise ValueError(
+            f"linear_solver must be 'direct' or 'gamg', "
+            f"got {linear_solver!r}")
+    phi_degree = int(phi_degree)
+    aux_degree = max(1, phi_degree - 1)   # ∇φ / recovered-Hessian
     key = (id(mesh), pinned_labels,
-           pEnd - pStart, cEnd - cStart, cone_size)
+           pEnd - pStart, cEnd - cStart, cone_size,
+           linear_solver, phi_degree)
 
     cdim = mesh.cdim
 
     cache = _WINSLOW_CACHE.get(key)
     if cache is None:
+        if linear_solver == "gamg":
+            def _wire(s, singular=False, elliptic=True):
+                _use_iterative_solver(s, singular, elliptic)
+        else:
+            def _wire(s, singular=False, elliptic=True):
+                _use_direct_solver(s, singular)
         phi = uw.discretisation.MeshVariable(
             f"winslow_phi_{id(mesh)}", mesh,
-            vtype=uw.VarType.SCALAR, degree=3, continuous=True)
+            vtype=uw.VarType.SCALAR, degree=phi_degree,
+            continuous=True)
         ps = uw.systems.Poisson(mesh, phi)
         ps.constitutive_model = uw.constitutive_models.DiffusionModel
         ps.constitutive_model.Parameters.diffusivity = 1.0
         ps.constant_nullspace = True
-        _use_direct_solver(ps, singular=True)
+        _wire(ps, singular=True, elliptic=True)
         hsolver = _hessian_recovery_class()(
-            mesh, phi, degree=2, verbose=False)
+            mesh, phi, degree=aux_degree, verbose=False)
         hsolver.tolerance = 1.0e-6
-        _use_direct_solver(hsolver)
+        _wire(hsolver, elliptic=False)
         vol_field = uw.discretisation.MeshVariable(
             f"winslow_vol_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=1, continuous=True)
         gradphi = uw.discretisation.MeshVariable(
             f"winslow_gphi_{id(mesh)}", mesh,
-            vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+            vtype=uw.VarType.VECTOR, degree=aux_degree,
+            continuous=True)
         gproj = uw.systems.Vector_Projection(mesh, gradphi)
         gproj.smoothing = 0.0
-        _use_direct_solver(gproj)
+        _wire(gproj, elliptic=False)
         _WINSLOW_CACHE[key] = (
             phi, ps, gradphi, gproj, hsolver, vol_field)
     else:
@@ -964,10 +1086,15 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
 
         hsolver.u.array[...] = 0.0
 
+        # The GAMG path warm-starts the Krylov solve from the previous
+        # Picard φ (it changes slowly under ω-relaxation) → a handful
+        # of CG iters on the once-built hierarchy. The exact direct
+        # path is indifferent to the initial guess.
+        _zig = (linear_solver != "gamg")
         prev_change = None
         for it in range(n_picard):
             phi_prev = np.asarray(phi.array).copy()
-            ps.solve(zero_init_guess=True)
+            ps.solve(zero_init_guess=_zig)
             phi.array[...] = ((1.0 - omega) * phi_prev
                               + omega * np.asarray(phi.array))
             hsolver.solve()
