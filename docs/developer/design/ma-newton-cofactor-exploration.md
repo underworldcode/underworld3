@@ -476,3 +476,54 @@ cheap. Remaining for (3): the anisotropic **mover** (metric-Winslow
 / M-weighted displacement solve — the medium-effort half), with the
 standing caveat that it improves cell alignment/quality, not the
 fixed-node-count cap. Fig `/tmp/metric_mesh/ma_metric_tensor.png`.
+
+---
+
+## NEXT-PHASE KICKOFF BRIEF (read this first in a new session)
+
+**Goal:** build the anisotropic *mover* for approach (3). The metric
+*construction* is done & verified (`ma_metric_tensor_viz.py`,
+`M = (1/h0²)[I + β ĝĝᵀ(|∇ρ|/ref)²]`, eigen-clamped). What remains is
+the solver that moves nodes to satisfy a tensor metric M(x).
+
+**Read before starting (do NOT re-derive / re-explore):**
+- Memory `project-ma-efficiency-direct-solver` — the settled
+  dead-ends. Do not retry: Newton/cofactor; GAMG on a
+  boundary-peaked/pinned metric; polar-separable metrics; boundary
+  slip as a *concentrator*; anisotropic *reweighting of the scalar
+  BFO* (`move_anisotropy`) as a concentrator. All proven dead.
+- This design doc, the "(3) metric-tensor machinery" + the angular-
+  OT section (why scalar BFO can't do coherent bulk transport — the
+  fixed-topology cap, both directions).
+- `src/underworld3/meshing/smoothing.py`: the cache/lag/MUMPS infra,
+  `_use_direct_solver` / `_use_iterative_solver`, `linear_solver`,
+  `phi_degree=2` default, `move_anisotropy` (keep as a quality knob),
+  and the Phase-0 `_CofDiff` pattern (script
+  `ma_newton_phase0.py`) — the working example of a variable
+  *tensor*-coefficient `SNES_Scalar` in UW3 (reuse this for M).
+
+**Concrete plan:** a metric-Winslow / MMPDE M-weighted displacement
+solve — `∇·(M ∇ξ)=0`-type vector system (or the M-weighted Laplace
+smooth of the coordinate map), M the gradient-derived tensor field
+above, move = the solved displacement, with the existing signed-area
+backtrack + `boundary_slip`. Reuse: the tensor-constitutive pattern
+(`_CofDiff`-style `DiffusionModel` subclass with `_c = M`), the
+factor-once-reuse solver options, the cache. Validate on the SAME
+model problems with the SAME honest, anisotropy-aware diagnostics
+(`ma_radial_anisotropy.py`: minA + radial/tangential split, NOT
+d/n) and against the explicit 1-D OT target (`ma_angular_ot_target.py`,
+`ma_analytic_check.py`).
+
+**Standing caveat (accepted by the user):** (3) improves cell
+alignment/quality and removes the slivers/wasted-isotropic-resolution
+— it does **not** beat the fixed node-count cap (that needs
+`mesh.adapt`). For separable features the explicit 1-D OT (method 1)
+stays exact and strictly cheaper; (3) earns its keep only for the
+general non-separable case. Gradient-based M refines feature *edges*;
+Hessian-based `M=|H(ρ)|` (curvature-aligned, needs the recovered-
+Hessian path) is the follow-up if core-resolution is needed.
+
+**Scope estimate:** ~1–2 weeks to a validated prototype on the
+Annulus model problems. New feature branch off
+`feature/winslow-mesh-smoother`. Effort is the solver + its
+validation arc, not the metric (done).
