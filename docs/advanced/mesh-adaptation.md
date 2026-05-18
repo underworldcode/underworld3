@@ -428,10 +428,13 @@ Key knobs (via `method_kwargs`): `aniso_cap` (max cell anisotropy
 — the binding stability lever; ≈2 robust, ≳6 folds), `relax`
 (damping), `n_outer` (composed damped steps), `linear_solver`
 (`"direct"` MUMPS, or `"gamg"` for the parallel-scalable path —
-validated bit-parity). Full architecture, validation and limits:
-{doc}`/developer/subsystems/mesh-metric-redistribution` and the
-design note `docs/developer/design/ma-newton-cofactor-exploration.md`
-("(3) anisotropic mover — IMPLEMENTED & VALIDATED").
+validated bit-parity). The full mathematical derivation (OT /
+Monge–Ampère, the metric-tensor / Winslow mover, dynamic field
+handling, Nusselt) is in
+{doc}`/developer/design/mesh-adaptation-formulation`; operational
+detail in {doc}`/developer/subsystems/mesh-metric-redistribution`;
+the dated R&D log in
+`docs/developer/design/ma-newton-cofactor-exploration.md`.
 
 ---
 

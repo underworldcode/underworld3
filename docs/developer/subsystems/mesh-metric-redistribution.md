@@ -5,6 +5,13 @@ density* field. Vertex indices, DOF maps and the parallel partition
 are **unchanged** — only coordinates move (contrast `mesh.adapt()`,
 which remeshes / changes topology).
 
+> **Mathematics:** the full derivations (optimal-transport /
+> Monge–Ampère, the volumetric spring, the anisotropic
+> metric-tensor / Winslow mover, the gradient-metric construction,
+> dynamic field handling, and the Nusselt diagnostic) are in
+> {doc}`/developer/design/mesh-adaptation-formulation`. This page is
+> the operational guide.
+
 ```python
 import underworld3 as uw
 from underworld3.meshing import smooth_mesh_interior
