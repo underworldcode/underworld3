@@ -371,21 +371,39 @@ class TestPerformanceExpectations:
         assert g is not f1
         assert len(_lambdify_cache) == 2, "distinct expression must be cached separately"
 
-    def test_rbf_modes_consistent(self, setup_mesh, sample_points):
-        """rbf=True and rbf=False agree for a pure-sympy expression.
+    def test_evaluate_cache_stable_across_calls(self, setup_mesh, sample_points):
+        """Regression guard for #194 (aggregate cache behaviour, no timing).
 
-        Replaces a former wall-clock "rbf=False not slow" assertion with
-        the meaningful, timing-free property: the two evaluation paths
-        must produce the same numbers for an expression that contains no
-        mesh-variable symbols.
+        Repeated identical ``uw.function.evaluate`` calls must reach a
+        bounded steady state in ``_lambdify_cache`` -- not grow one entry
+        per call. Before the #194 fix the cache grew [1,2,3,4,...] because
+        a fresh ``sympy.Dummy`` (volatile ``dummy_index`` in ``srepr``)
+        was minted every call, so the cache key never matched. Also
+        asserts results are identical across calls (no behavioural change
+        from the cache-key canonicalisation).
         """
+        from underworld3.function.pure_sympy_evaluator import (
+            _lambdify_cache,
+            clear_lambdify_cache,
+        )
+
         x = setup_mesh.X[0]
         expr = sympy.erf(5 * x - 2) / 2
 
-        r_rbf = uw.function.evaluate(expr, sample_points, rbf=True)
-        r_norbf = uw.function.evaluate(expr, sample_points, rbf=False)
+        clear_lambdify_cache()
+        ref = uw.function.evaluate(expr, sample_points, rbf=True)
+        size_after_first = len(_lambdify_cache)
+        assert size_after_first >= 1, "first call did not populate the cache"
 
-        assert np.allclose(r_rbf.flatten(), r_norbf.flatten())
+        for _ in range(8):
+            r = uw.function.evaluate(expr, sample_points, rbf=True)
+            assert np.allclose(r.flatten(), ref.flatten())
+
+        # Steady state: no growth after the first compile (cache hits).
+        assert len(_lambdify_cache) == size_after_first, (
+            f"lambdify cache grew {size_after_first} -> {len(_lambdify_cache)} "
+            f"across identical evaluate() calls -- regression of #194"
+        )
 
 
 if __name__ == "__main__":

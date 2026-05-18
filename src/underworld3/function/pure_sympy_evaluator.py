@@ -137,6 +137,19 @@ def _expr_hash(expr):
     str
         Hash string
     """
+    # sympy.Dummy carries a volatile, globally-unique dummy_index that
+    # srepr embeds. The evaluate() coordinate-substitution path mints a
+    # fresh Dummy per call, so an otherwise-identical expression would
+    # hash differently every call and never hit the cache (issue #194).
+    # Canonicalise dummies to name-stable Symbols before srepr. This only
+    # affects the cache *key*; the real sympy.lambdify() call still uses
+    # the original expr/symbols, so numerics are unchanged. The cache key
+    # also separately carries the symbol-name tuple, so name-keying here
+    # is safe and deterministic.
+    dummies = expr.atoms(sympy.Dummy)
+    if dummies:
+        expr = expr.xreplace({d: sympy.Symbol(d.name) for d in dummies})
+
     # Use sympy's srepr for consistent string representation
     expr_str = sympy.srepr(expr)
     return hashlib.md5(expr_str.encode()).hexdigest()
