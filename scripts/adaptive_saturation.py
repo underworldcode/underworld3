@@ -34,7 +34,7 @@ from underworld3.meshing import (
 p = argparse.ArgumentParser()
 p.add_argument("--model", required=True,
                choices=["ref24", "u16", "a16", "a16p", "a16s",
-                        "a16x"])
+                        "a16x", "a16y"])
 p.add_argument("--Ra", type=float, default=1.0e5)
 p.add_argument("--adapt-every", type=int, default=5)
 p.add_argument("--max-steps", type=int, default=500)
@@ -48,8 +48,8 @@ p.add_argument("--resume", action="store_true",
 args = p.parse_args()
 
 RES = 24 if args.model == "ref24" else 16
-ADAPT = args.model in ("a16", "a16p", "a16s", "a16x")
-PRISTINE = args.model in ("a16p", "a16s", "a16x")  # from X0
+ADAPT = args.model in ("a16", "a16p", "a16s", "a16x", "a16y")
+PRISTINE = args.model in ("a16p", "a16s", "a16x", "a16y")
 
 # Per-model metric strength. a16p = the conservative validated
 # defaults (was tuned vs the now-removed cumulative over-
@@ -58,10 +58,17 @@ PRISTINE = args.model in ("a16p", "a16s", "a16x")  # from X0
 # gentler relax + more n_outer per the validation arc; amp 8→16).
 # Pristine re-mesh keeps each event a single uniform→graded map,
 # so the static single-adaptation Pareto applies (no compounding).
+# `beta` (mover anisotropy strength) and `aniso_cap` (eigen-clamp)
+# are the EFFECTIVE knobs; `amp` cancels for the anisotropic mover
+# (no-op, see scripts/_amp_check.py). Existing entries keep
+# beta=200 (the mover default they actually ran with).
 _MP = {
-    "a16":  dict(amp=8.0,  aniso_cap=2.0, relax=0.2,  n_outer=8),
-    "a16p": dict(amp=8.0,  aniso_cap=2.0, relax=0.2,  n_outer=8),
-    "a16s": dict(amp=16.0, aniso_cap=4.0, relax=0.05, n_outer=25),
+    "a16":  dict(amp=8.0,  aniso_cap=2.0, relax=0.2,  n_outer=8,
+                 beta=200.0),
+    "a16p": dict(amp=8.0,  aniso_cap=2.0, relax=0.2,  n_outer=8,
+                 beta=200.0),
+    "a16s": dict(amp=16.0, aniso_cap=4.0, relax=0.05, n_outer=25,
+                 beta=200.0),
     # a16x: amp 16→24. WARNING — for the anisotropic mover `amp`
     # is a NO-OP: M is built from |∇ρ|/max|∇ρ|, and with
     # ρ=1+amp·t both scale with amp ⇒ it cancels exactly (verified
@@ -71,7 +78,15 @@ _MP = {
     # `beta` in the mover (wider band); the percentile window in
     # metric_density_from_gradient reshapes *where* it refines.
     # (`amp` IS effective for the isotropic spring/MA methods.)
-    "a16x": dict(amp=24.0, aniso_cap=4.0, relax=0.05, n_outer=25),
+    "a16x": dict(amp=24.0, aniso_cap=4.0, relax=0.05, n_outer=25,
+                 beta=200.0),
+    # a16y = GENUINELY more aggressive: the real levers — sharper
+    # peak (aniso_cap 4→5, the binding lever; ≥6 folds) + wider
+    # refined band (beta 200→300), with extra damping (relax
+    # 0.05→0.04, n_outer 25→30) so cap=5 stays non-folding under
+    # pristine re-mesh. NOT amp (no-op for the mover).
+    "a16y": dict(amp=16.0, aniso_cap=5.0, relax=0.04, n_outer=30,
+                 beta=300.0),
 }
 MP = _MP.get(args.model, _MP["a16p"])
 r_inner, r_o = 0.5, 1.0
@@ -193,7 +208,8 @@ def adapt_local_fe_interp(mesh, T, stokes):
         mesh, metric=rho, method="anisotropic",
         method_kwargs=dict(aniso_cap=MP["aniso_cap"],
                            relax=MP["relax"],
-                           n_outer=MP["n_outer"]))
+                           n_outer=MP["n_outer"],
+                           beta=MP["beta"]))
     new_X = np.asarray(mesh.X.coords).copy()
     new_Tx = np.asarray(T.coords).copy()
     mesh._deform_mesh(old_X)
@@ -240,7 +256,8 @@ def adapt_pristine(mesh, T, stokes, X0, X0_Tx):
         mesh, metric=rho, method="anisotropic",
         method_kwargs=dict(aniso_cap=MP["aniso_cap"],
                            relax=MP["relax"],
-                           n_outer=MP["n_outer"]))
+                           n_outer=MP["n_outer"],
+                           beta=MP["beta"]))
     new_X = np.asarray(mesh.X.coords).copy()
     new_Tx = np.asarray(T.coords).copy()
     # (4) FE-remap the pristine-mesh T onto the new graded mesh

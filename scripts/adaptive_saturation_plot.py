@@ -29,7 +29,9 @@ MODELS = [("ref24", 24, "k", "ref uniform res-24"),
           ("a16s", 16, "#2ca02c",
            "res-16 + adapt (pristine, AGGRESSIVE)"),
           ("a16x", 16, "#9467bd",
-           "res-16 + adapt (pristine, amp=24 bunching)")]
+           "res-16 + adapt (pristine, amp=24 ≡ a16s [amp no-op])"),
+          ("a16y", 16, "#8c564b",
+           "res-16 + adapt (pristine, cap=5 β=300 — true strong)")]
 
 
 def latest_ckpt(tag):
