@@ -21,6 +21,93 @@ Underworld3 needs to support solving different equations on different subsets of
 
 5. **Normalised `Gamma_N`** (merged) — `mesh.Gamma_N` now returns a unit normal. Penalty and Nitsche BCs are mesh-independent.
 
+## Two Submesh Flavours: Subdomain and Resolution Level
+
+A *submesh* in UW3 is any mesh pulled out of a parent mesh that retains a
+lineage link (`parent`, registration in `parent._registered_submeshes`)
+and supports explicit field transfer back and forth. There are two
+flavours, and they share one usage pattern:
+
+> **get a submesh → build a solver on it → map fields back and forth**
+
+| | Subdomain | Resolution level |
+|---|---|---|
+| Constructor | `mesh.extract_region("Inner")` | `coarsened_companion(fine, levels=1)` |
+| PETSc mechanism | `DMPlexFilter` (cell subset) | `dm.refine()` nested hierarchy |
+| Parent ↔ child map | `getSubpointIS()` (point-level) | nested `createInjection` / `createInterpolation` (DOF-level) |
+| Transfer fidelity | exact (shared nodes) | exact (nested FE) |
+| Example | `docs/examples/submesh_investigation/test_region_ds_submesh.py` | `docs/examples/submesh_investigation/example_refined_companion.py` |
+
+Both examples solve the **same** annulus + radial-buoyancy Stokes problem
+so the flavours are directly comparable: one solves on a *subdomain* of
+the annulus, the other on a *coarser resolution* of the whole annulus,
+and both map the solution back to the parent.
+
+### Design contract for the resolution-level flavour: refine-DM mode only
+
+A resolution level is extractable **only when a genuine nested
+refinement hierarchy exists** (the mesh was built with
+`refinement >= 1`). The hierarchy is the source of truth; any level can
+be pulled out as a standalone solver-ready `uw.Mesh`, exactly as a
+subdomain is pulled out with `extract_region`.
+
+**If there is no refinement relationship the operation is unavailable.**
+There is deliberately:
+
+- **no geometric / `DMPlexComputeInterpolatorGeneral` fallback**, and
+- **no KDTree coordinate-matching fallback**.
+
+`coarsened_companion` raises a clear error on a non-refined mesh rather
+than silently degrading to an approximate transfer.
+
+Transfer between levels uses PETSc's *nested* interpolator/injector
+(`plex.c:10328`, `DMPlexComputeInterpolatorNested` /
+`DMPlexComputeInjectorFEM`), which is:
+
+- **exact** — the prolongation is the FE embedding; injection is a pure
+  scatter of coincident DOFs;
+- **parallel-local** — the injector builds per-rank `COMM_SELF` scatters
+  (`plexfem.c:3739-3741`); `DMRefine` preserves the coarse partition, so
+  no MPI communication is needed for restrict/prolongate;
+- **not dependent on point location** — no grid hashing, no geometry
+  search.
+
+```{note}
+The nested path triggers only when the fine DM's `getCoarseDM()` *is*
+the coarse DM and the regular-refinement flag is set. Independently
+cloning two hierarchy levels breaks this and petsc4py exposes no setter
+to restore it. The working construction is to build the transfer pair by
+**refining a single-field clone of the coarse level**
+(`dm_f = dm_c.refine()`): `refine()` itself establishes the linkage and
+the flag. See `refined_pair_prototype.py` (`_linked_pair`).
+```
+
+Empirically (box and annulus, P2 velocity), prolongating a coarse Stokes
+solution to the fine mesh and sampling it back recovers the coarse
+solution to **O(1e-15)** — machine precision — with the geometric escape
+hatch deliberately removed, proving the transfer is genuinely the nested
+operator.
+
+```python
+fine   = uw.meshing.Annulus(radiusOuter=1.5, radiusInner=0.5,
+                            cellSize=1/16, refinement=2)
+coarse = coarsened_companion(fine, levels=1)   # parent = fine
+
+v_c = uw.discretisation.MeshVariable("V", coarse, coarse.dim, degree=2)
+stokes = Stokes(coarse, velocityField=v_c, ...)   # solve cheaply, coarse
+stokes.solve()
+
+v_f = uw.discretisation.MeshVariable("Vf", fine, fine.dim, degree=2)
+prolongate(coarse, v_c, v_f)                      # exact, fills all fine DOFs
+```
+
+Status: prototype + both parallel examples + gating tests
+(`test_refined_pair_solver.py`) + contract test
+(`test_refined_pair_contract.py`) all passing. The investigation under
+`docs/examples/submesh_investigation/` is the sign-off artifact;
+promotion of `coarsened_companion` into the `Mesh` API proper is a
+follow-up.
+
 ## Design Principles
 
 ### 1. Separate meshes, separate variables, explicit copies
