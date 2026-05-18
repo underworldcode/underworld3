@@ -817,3 +817,72 @@ cross-rank version is the remaining piece, not the solver.)
   characterised but not automated).
 - **Free-surface / deformed-boundary slip** (polyline projection —
   shared open item with spring/MA).
+
+---
+
+## NEXT-PHASE KICKOFF BRIEF — dynamic adaptive convection (read first)
+
+**Phase just closed (2026-05-18):** the anisotropic mover is a
+validated 2D prototype, GAMG-parity, ~O(N), and the **API is
+locked in**:
+
+- `uw.meshing.smooth_mesh_interior(mesh, metric=ρ,
+  method="anisotropic", method_kwargs=dict(aniso_cap=2.0,
+  relax=0.2, n_outer=12, linear_solver="direct"))`
+- `uw.meshing.metric_density_from_gradient(mesh, field, amp=8.0,
+  lo_percentile=50, hi_percentile=97)` → the Lagrangian
+  `ρ = 1+amp·t` density (the relative analogue of
+  `adaptivity.metric_from_gradient`; cached for per-step use).
+- Docs: `docs/advanced/mesh-adaptation.md` (peer to `mesh.adapt`),
+  `docs/developer/subsystems/mesh-metric-redistribution.md`,
+  this design note.
+- Test harness: `scripts/adaptive_convection_harness.py`.
+
+**Goal of the next phase:** a *correct* dynamic-adaptive
+convection solve — coarse adaptively-snuggled mesh reproducing a
+fine uniform reference. The harness already runs the comparison
+(Ra=1e5, uniform res-24 reference vs res-16 adaptive,
+`Nu(t)`/`vrms(t)` rms error, figure).
+
+**THE open piece — the node-update / ALE correction.** When the
+mover displaces nodes by `Δx` over the step interval `Δt`, the
+mesh has velocity `v_mesh = Δx/Δt`. The SLCN advection–diffusion
+must transport along the material velocity *relative to the moving
+mesh*: `V_fn = v_fluid − v_mesh` for the post-adapt step (ALE), or
+T must be conservatively remapped onto the moved nodes. Without it
+the pure coordinate move is read as a spurious advection of T.
+**Precedent is settled in this codebase:** the free-surface ALE
+finding (memory `project_freesurface_ale_design` — a Lagrangian
+mesh move needs `V_fn = v − v_mesh` or convection is
+non-physically damped, Nu ~57 vs 143). The hook is
+`apply_adaptation_correction` in the harness: `--correction none`
+is the uncorrected baseline (expected to drift — it *quantifies*
+the error the correction must remove); `--correction ale` raises
+with the spec. **Acceptance test:** harness `rms ΔNu(adaptive
+res-16 vs uniform res-24)` small with the correction, large
+without.
+
+**Other follow-ups, priority order:**
+1. ALE correction + harness acceptance (above) — the headline.
+2. **3D port** — scoped ~1–2 days. The solver core is already
+   dimension-general; the 2D-specific work is the tet
+   signed-volume inversion backtrack (`_tri_cells`/`_signed_areas`
+   → tet) + dropping the `cdim!=2` guard + ~5 generalised lines.
+   **The metric stays `1/h²` per principal direction in 3D — it is
+   NOT `1/h³`** (a Riemannian metric measures *edge length*, which
+   is 1-D regardless of embedding dimension: `eᵀMe=1` ⇒ eigenvalue
+   `1/h²`; dimension enters only the complexity integral
+   `∫√(det M)` via `det M = ∏1/hᵢ²`). For the *mover* the overall
+   `D` scale is moreover irrelevant (the displacement PDE is
+   invariant under `D→αD`) — only the anisotropy/contrast ratios
+   matter, so 3D needs no scaling change at all.
+3. Parallel-exact cross-rank assembly + MPI weak-scaling (GAMG
+   solver path already validated bit-parity).
+4. Hessian metric `M=|H(ρ)|` for feature-*core* resolution.
+5. `aniso_cap`/`relax`/`n_outer` auto-tuning to a `minA/meanA`
+   floor.
+
+**How to resume:** run
+`python scripts/adaptive_convection_harness.py --correction none`
+for the baseline error, then implement `apply_adaptation_correction`
+(`--correction ale`) and re-run to show the gap closes.
