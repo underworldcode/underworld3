@@ -622,3 +622,150 @@ def test_lagrangian_swarm_ddt_registers_and_state_type():
     assert ddt.state.psi_star_var_names  # non-empty
 
 
+# ----- Bit-identical continuation (the core production guarantee) -----
+#
+# Everything above proves *state equality after restore*. That is
+# necessary but not the actual guarantee a backtracking consumer
+# relies on. The guarantee is: after restore, *continuing the
+# simulation* reproduces the trajectory of a run that never took the
+# discarded step. These two tests assert that, bit-for-bit
+# (np.array_equal — no tolerance), with a swarm + mesh variable +
+# Symbolic DDt all live so the mesh -> swarm -> state-bearer restore
+# ordering is exercised together.
+
+
+def _build_continuation_fixture():
+    """Mesh + swarm(+material) + a driven mesh variable + Symbolic DDt.
+
+    Returns everything needed to run a deterministic step loop.
+    """
+    import underworld3 as uw
+    import sympy
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 6.0
+    )
+    x_sym, y_sym = mesh.X
+    V_fn = sympy.Matrix([[x_sym - 0.5, y_sym - 0.5]]).T
+
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    T.array[:, 0, 0] = 0.0
+
+    swarm = uw.swarm.Swarm(mesh)
+    material = swarm.add_variable("material", 1, dtype=float)
+    swarm.populate(fill_param=2)
+    material.data[:, 0] = np.linalg.norm(
+        swarm._particle_coordinates.data - 0.5, axis=1
+    )
+
+    ddt = uw.systems.ddt.Symbolic(T.sym, order=2)
+
+    return uw, model, mesh, V_fn, T, swarm, material, ddt
+
+
+def _step(uw, V_fn, T, swarm, ddt, dt):
+    """One deterministic step: advect swarm, evolve T by a fixed rule,
+    advance the DDt history. No solver, no randomness."""
+    ddt.update_pre_solve(dt)
+    swarm.advection(V_fn, delta_t=dt, step_limit=False)
+    # Deterministic, history-free field update so T carries evolving
+    # state through the mesh-variable snapshot path.
+    T.array[:, 0, 0] = T.array[:, 0, 0] + dt
+    ddt.update_post_solve(dt)
+
+
+def _capture_full_state(T, swarm, material, ddt):
+    """Everything that must match for bit-identical continuation."""
+    return {
+        "T": np.asarray(T.array[...]).copy(),
+        "coords": swarm._particle_coordinates.data.copy(),
+        "material": np.asarray(material.data).copy(),
+        "dt_history": list(ddt.state.dt_history),
+        "n_solves": ddt.state.n_solves_completed,
+        "ddt_dt": ddt.state.dt,
+    }
+
+
+def _assert_bit_identical(a, b, label):
+    assert np.array_equal(a["T"], b["T"]), f"{label}: T differs"
+    assert np.array_equal(a["coords"], b["coords"]), (
+        f"{label}: swarm coords differ"
+    )
+    assert np.array_equal(a["material"], b["material"]), (
+        f"{label}: swarm material differs"
+    )
+    assert a["dt_history"] == b["dt_history"], (
+        f"{label}: DDt dt_history differs ({a['dt_history']} vs "
+        f"{b['dt_history']})"
+    )
+    assert a["n_solves"] == b["n_solves"], f"{label}: DDt n_solves differs"
+    assert a["ddt_dt"] == b["ddt_dt"], f"{label}: DDt dt differs"
+
+
+def test_continuation_deterministic_after_restore():
+    """snapshot S -> K steps -> A; restore(S) -> K steps -> B.
+    A and B must be bit-identical. Proves restore leaves no residual
+    state that perturbs subsequent evolution."""
+    uw, model, mesh, V_fn, T, swarm, material, ddt = (
+        _build_continuation_fixture()
+    )
+
+    # Advance to a non-trivial state before snapshotting (fill DDt
+    # history, move particles off their lattice).
+    for _ in range(3):
+        _step(uw, V_fn, T, swarm, ddt, 0.05)
+
+    snap = model.snapshot()
+
+    # Branch A: K steps straight from S.
+    for _ in range(5):
+        _step(uw, V_fn, T, swarm, ddt, 0.05)
+    state_A = _capture_full_state(T, swarm, material, ddt)
+
+    # Branch B: restore S, then the identical K steps.
+    model.restore(snap)
+    for _ in range(5):
+        _step(uw, V_fn, T, swarm, ddt, 0.05)
+    state_B = _capture_full_state(T, swarm, material, ddt)
+
+    _assert_bit_identical(state_A, state_B, "deterministic-continuation")
+
+
+def test_continuation_bit_identical_across_stash_and_recover():
+    """The real 'git stash for steps' guarantee:
+
+      control:  S -> K good steps                       -> ctrl
+      stash:    S -> bad disruptive step -> restore(S)
+                  -> same K good steps                  -> stash
+
+    ctrl and stash must be bit-identical: the discarded step must
+    leave no trace whatsoever after restore + continuation."""
+    uw, model, mesh, V_fn, T, swarm, material, ddt = (
+        _build_continuation_fixture()
+    )
+
+    for _ in range(3):
+        _step(uw, V_fn, T, swarm, ddt, 0.05)
+
+    snap = model.snapshot()
+
+    # Control: K good steps from S.
+    for _ in range(5):
+        _step(uw, V_fn, T, swarm, ddt, 0.05)
+    ctrl = _capture_full_state(T, swarm, material, ddt)
+
+    # Stash scenario: back to S, take a deliberately disruptive step
+    # (10x Δt — large advection, big T jump, DDt history shift), then
+    # discard it via restore and run the intended K good steps.
+    model.restore(snap)
+    _step(uw, V_fn, T, swarm, ddt, 0.5)  # the regretted step
+    model.restore(snap)
+    for _ in range(5):
+        _step(uw, V_fn, T, swarm, ddt, 0.05)
+    stash = _capture_full_state(T, swarm, material, ddt)
+
+    _assert_bit_identical(ctrl, stash, "stash-and-recover")
+
+
