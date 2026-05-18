@@ -15,9 +15,9 @@ single-field sub-DMs) -- no KDTree.
 This is investigation code under docs/examples/, not a merged API.
 """
 
+import weakref
 from enum import Enum
 
-import numpy as np
 from petsc4py import PETSc
 
 import underworld3 as uw
@@ -124,8 +124,13 @@ def coarsened_companion(fine_mesh, levels=1, verbose=False):
     companion._parent_mesh_version = fine_mesh._mesh_version
     companion.regions = fine_mesh.regions
     companion._dof_maps = {}
-    companion._interp_cache = {}          # (id(cv), id(fv)) -> (Mat, Vec)
-    companion._inject_cache = {}          # (id(cv), id(fv)) -> Mat (MATSCATTER)
+    # Keyed weakly by the variable objects (not id()) so a GC'd variable
+    # can't alias a stale entry with a mismatched FE layout. Nested:
+    # coarse_var -> { fine_var -> cached tuple }.
+    #   _interp_cache value: (matInterp, vecScale, dm_c, dm_f)
+    #   _inject_cache value: (injectMat, dm_c, dm_f)
+    companion._interp_cache = weakref.WeakKeyDictionary()
+    companion._inject_cache = weakref.WeakKeyDictionary()
     companion._companion_levels = levels
     companion._is_coarsened_companion = True
     fine_mesh._registered_submeshes.add(companion)
@@ -189,15 +194,22 @@ def _var_global_vec(var, sfdm):
 
 
 def _write_global_vec_to_var(var, sfdm, g):
-    """Single-field-DM global Vec -> variable data."""
+    """Single-field-DM global Vec -> variable data.
+
+    Invalidates the same higher-level caches the core code clears on a
+    direct PETSc write (see discretisation_mesh.py _re_extract_from_parent):
+    ``.array`` / ``.data`` are copies built from the PETSc vec, so they go
+    stale unless cleared here.
+    """
     loc = sfdm.getLocalVec()
     sfdm.globalToLocal(g, loc, addv=False)
     var._set_vec(available=True)
     var.vec.array[...] = loc.array
     var._lvec.array[...] = var.vec.array
     sfdm.restoreLocalVec(loc)
-    if hasattr(var, "_canonical_data"):
-        var._canonical_data = None
+    for attr in ("_canonical_data", "_cached_data_array"):
+        if hasattr(var, attr):
+            setattr(var, attr, None)
 
 
 def _linked_pair(companion, coarse_var, fine_var):
@@ -226,28 +238,52 @@ def _linked_pair(companion, coarse_var, fine_var):
     return dm_c, dm_f
 
 
+def _cache_lookup(cache, coarse_var, fine_var):
+    inner = cache.get(coarse_var)
+    return inner.get(fine_var) if inner is not None else None
+
+
+def _cache_store(cache, coarse_var, fine_var, value):
+    inner = cache.get(coarse_var)
+    if inner is None:
+        inner = weakref.WeakKeyDictionary()
+        cache[coarse_var] = inner
+    inner[fine_var] = value
+    return value
+
+
 def _get_interpolation(companion, coarse_var, fine_var):
-    """Build & cache the nested FE prolongation coarse -> fine."""
-    key = (id(coarse_var), id(fine_var))
-    if key in companion._interp_cache:
-        return companion._interp_cache[key]
+    """Build & cache the nested FE prolongation coarse -> fine.
+
+    Cached value: (matInterp, vecScale, dm_c, dm_f).
+    """
+    hit = _cache_lookup(companion._interp_cache, coarse_var, fine_var)
+    if hit is not None:
+        return hit
 
     dm_c, dm_f = _linked_pair(companion, coarse_var, fine_var)
     matInterp, vecScale = dm_c.createInterpolation(dm_f)
-    companion._interp_cache[key] = (matInterp, vecScale, dm_c, dm_f)
-    return companion._interp_cache[key]
+    return _cache_store(
+        companion._interp_cache, coarse_var, fine_var,
+        (matInterp, vecScale, dm_c, dm_f),
+    )
 
 
 def _get_injection(companion, coarse_var, fine_var):
-    """Build & cache the injection scatter (MATSCATTER) coarse <-> fine."""
-    key = (id(coarse_var), id(fine_var))
-    if key in companion._inject_cache:
-        return companion._inject_cache[key]
+    """Build & cache the injection scatter (MATSCATTER) coarse <-> fine.
+
+    Cached value: (injectMat, dm_c, dm_f).
+    """
+    hit = _cache_lookup(companion._inject_cache, coarse_var, fine_var)
+    if hit is not None:
+        return hit
 
     dm_c, dm_f = _linked_pair(companion, coarse_var, fine_var)
     injectMat = dm_c.createInjection(dm_f)  # MATSCATTER wrapping a VecScatter
-    companion._inject_cache[key] = (injectMat, dm_c, dm_f)
-    return companion._inject_cache[key]
+    return _cache_store(
+        companion._inject_cache, coarse_var, fine_var,
+        (injectMat, dm_c, dm_f),
+    )
 
 
 def prolongate(companion, coarse_var, fine_var):
@@ -255,8 +291,12 @@ def prolongate(companion, coarse_var, fine_var):
     matInterp, _, dm_c, dm_f = _get_interpolation(companion, coarse_var, fine_var)
     gc = _var_global_vec(coarse_var, dm_c)
     gf = dm_f.createGlobalVector()
-    matInterp.mult(gc, gf)
-    _write_global_vec_to_var(fine_var, dm_f, gf)
+    try:
+        matInterp.mult(gc, gf)
+        _write_global_vec_to_var(fine_var, dm_f, gf)
+    finally:
+        gc.destroy()
+        gf.destroy()
 
 
 def restrict(companion, fine_var, coarse_var, weighted=True):
@@ -266,10 +306,14 @@ def restrict(companion, fine_var, coarse_var, weighted=True):
     )
     gf = _var_global_vec(fine_var, dm_f)
     gc = dm_c.createGlobalVector()
-    matInterp.multTranspose(gf, gc)
-    if weighted and vecScale is not None:
-        gc.pointwiseMult(gc, vecScale)
-    _write_global_vec_to_var(coarse_var, dm_c, gc)
+    try:
+        matInterp.multTranspose(gf, gc)
+        if weighted and vecScale is not None:
+            gc.pointwiseMult(gc, vecScale)
+        _write_global_vec_to_var(coarse_var, dm_c, gc)
+    finally:
+        gf.destroy()
+        gc.destroy()
 
 
 def sample(companion, fine_var, coarse_var):
@@ -277,10 +321,14 @@ def sample(companion, fine_var, coarse_var):
     injectMat, dm_c, dm_f = _get_injection(companion, coarse_var, fine_var)
     gf = _var_global_vec(fine_var, dm_f)
     gc = dm_c.createGlobalVector()
-    # MATSCATTER from createInjection maps fine -> coarse via multTranspose;
-    # mult maps coarse -> fine. Verified empirically in the A/B test.
-    injectMat.multTranspose(gf, gc)
-    _write_global_vec_to_var(coarse_var, dm_c, gc)
+    try:
+        # MATSCATTER from createInjection maps fine -> coarse via
+        # multTranspose; mult maps coarse -> fine.
+        injectMat.multTranspose(gf, gc)
+        _write_global_vec_to_var(coarse_var, dm_c, gc)
+    finally:
+        gf.destroy()
+        gc.destroy()
 
 
 def inject(companion, coarse_var, fine_var):
@@ -291,6 +339,10 @@ def inject(companion, coarse_var, fine_var):
     injectMat, dm_c, dm_f = _get_injection(companion, coarse_var, fine_var)
     gc = _var_global_vec(coarse_var, dm_c)
     gf = dm_f.createGlobalVector()
-    gf.set(0.0)
-    injectMat.mult(gc, gf)
-    _write_global_vec_to_var(fine_var, dm_f, gf)
+    try:
+        gf.set(0.0)
+        injectMat.mult(gc, gf)
+        _write_global_vec_to_var(fine_var, dm_f, gf)
+    finally:
+        gc.destroy()
+        gf.destroy()
