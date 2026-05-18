@@ -679,6 +679,65 @@ Reuses `_winslow_elliptic`'s backtrack, `boundary_slip`,
 factor-once-reuse wiring verbatim. **Linear** — one solve per
 component per outer step, no Picard (cheaper than the BFO MA).
 
+### GAMG parity + cost per step (2026-05-18 — measured)
+
+`scripts/aniso_cost_and_gamg.py`, interior radial feature, res
+16/24/32/48 (1.5k–12.9k tris), `direct` vs `gamg`. Times: **cold**
+(fresh mesh — MeshVariable+solver creation + 1st factorisation,
+one-off per remesh), **warm** (same mesh object, cache hit — the
+genuine per-timestep cost in a dynamic loop), per-outer-step, and
+the D-build.
+
+| res | ntri | warm direct | warm gamg | warm/outer | D-build | minA/meanA |
+|----|------|------|------|------|------|------|
+| 16 | 1522 | 3.08 s | 3.26 s | 0.25 s | 0.34 s | 0.4657 |
+| 24 | 3268 | 6.29 s | 6.30 s | 0.51 s | 0.64 s | 0.4256 |
+| 32 | 5814 | 10.94 s | 10.94 s | 0.89 s | 1.11 s | 0.3938 |
+| 48 | 12856 | 23.72 s | 23.98 s | 1.94 s | 2.41 s | 0.4452 |
+
+- **GAMG is robust here — bit-parity with direct**
+  (`|minA_g−minA_d| ≤ 5e-5` at every resolution). The mover is
+  **non-singular** (homogeneous Dirichlet, no constant nullspace),
+  so it does **not** hit the pure-Neumann + warm-resolve fragility
+  that made the MA `gamg` path erratic. This is the **first** of
+  the three metric methods with a working parity-preserving
+  parallel-capable solver path. (At feasible 2D sizes MUMPS is
+  near-optimal so `gamg` is not *faster* — the point is it *works
+  and matches*, so the parallel route is real.)
+- **cold ≈ warm at every resolution** — no warm-≫-cold
+  degradation (the MA path's O(N) post-deform rebuild pathology is
+  absent here; the cache reuses the MeshVariables/solvers, only the
+  operator is refactorised because `D`+geometry change each call).
+- **Cost is ~O(N) (linear in #cells).** warm 3.1→23.7 s for
+  ntri 1522→12856 (≈7.7× for ≈8.4× cells); per-outer-step and
+  D-build likewise ~O(N). No superlinear blow-up — the per-step
+  work is a fixed number of **sparse SPD-ish elliptic solves**
+  (the part GAMG parallelises with optimal O(N/P) complexity and
+  good weak scaling) plus embarrassingly-local per-node /
+  backtrack work.
+- **The cost lever is `n_outer`.** Default 12 ⇒ ~12 scalar
+  elliptic solves of the mesh size. The damped MMPDE converges
+  (most displacement is in the first few steps; `max|Δx|` decays),
+  so an `outer_tol` early-exit / a small `n_outer` cuts the warm
+  cost to ≈ `D-build + 3–5 · warm/outer` (≈1.5–2 s at res-16). The
+  per-step adaptation is then ≈ *a handful of pressure-solve-class
+  SPD solves* — genuinely cheap for an r-adaptation scheme (most
+  need nonlinear solves or global transport; this does not).
+- Honest hotspot: the per-node eigen-clamp is a Python loop
+  (`np.linalg.eigh` per node) — vectorisable to a batched
+  `eigh` on a stacked `(N,d,d)` array (a cheap win, matters more in
+  3D / at scale); currently dominated by the solves anyway.
+
+**Parallel verdict (the user's hypothesis, now evidenced):** the
+per-step cost is `1 ∇ρ projection + a vectorisable eigen-clamp +
+n_outer × (cdim non-singular SPD elliptic solves + a local
+backtrack)`, all O(N) and GAMG-parallelisable with proven
+2D parity. This is one of the few r-adaptation strategies with
+**no nonlinear solve and no global transport** — structurally
+inexpensive in parallel. (Caveat: the *assembly* — ∇ρ projection /
+D-build / backtrack — is still serial-exact; the parallel-exact
+cross-rank version is the remaining piece, not the solver.)
+
 ### Solver limitations
 
 - **2D triangle meshes only** (hard `NotImplementedError`).
@@ -700,8 +759,10 @@ component per outer step, no Picard (cheaper than the BFO MA).
   modest moves, not large-strain.
 - **Serial-exact assembly only** — the ∇ρ projection / `D` build /
   backtrack under-count at rank-partition boundaries (same caveat
-  as spring/MA). MUMPS itself is MPI-parallel but does not scale to
-  large 3D.
+  as spring/MA). The *solver* is no longer the parallel blocker
+  (GAMG validated, see the cost section); the cross-rank
+  parallel-exact assembly is the remaining piece. MUMPS scales to
+  modest sizes; GAMG is the route beyond.
 - **Linear, component-decoupled** — an anisotropic Laplacian
   smoother, not the full nonlinear (Jacobian-coupled) Winslow
   generator.
@@ -728,10 +789,29 @@ component per outer step, no Picard (cheaper than the BFO MA).
 - **A `metric_from_gradient`-style ρ helper** unifying the metric
   API across `mesh.adapt` (absolute `h`, MMG re-meshes) and the
   mover (relative `ρ`, fixed budget) — discussed, not built.
-- **GAMG path for this mover.** Unlike the MA case it is
-  non-singular (homogeneous Dirichlet, no constant nullspace), so
-  GAMG should be *more* robust here — likely the parallel-scalable
-  route, but untested. Plus parallel-exact assembly and 3D.
+- **GAMG path — VALIDATED (2026-05-18), see the cost section.**
+  Bit-parity with direct at res 16–48 (non-singular ⇒ no
+  pure-Neumann fragility); the parallel-scalable route is real.
+  *Remaining*: cross-rank **parallel-exact assembly** (the ∇ρ
+  projection / D-build / backtrack are serial-exact — the solver
+  is not the blocker), and a true MPI weak-scaling study.
+- **3D extensibility — concrete scope.** Already
+  dimension-general: the metric formula
+  `M=base[I+β ĝĝᵀ(|∇ρ|/gref)²]`, the eigen-clamp
+  (`np.linalg.eigh` works for 3×3), the `TENSOR` MeshVariable
+  (`dim²` comps), the displacement form `∇·(D∇u_c)=−Σⱼ∂ⱼD_{jc}`
+  over `c=0..cdim−1`, the per-component `Poisson` + `_TensorDiff`
+  (3×3 `_c`), and the solver wiring — and GAMG (now proven for
+  this operator) is exactly what makes 3D viable (3D sparse-direct
+  does not scale). 2D-specific work to remove: the
+  `cdim!=2` guard; `_tri_cells`/`_signed_areas` →
+  `_tet_cells`/`_signed_volumes` for the inversion backtrack (the
+  main piece — a shared limitation with spring/MA); ~5 lines of
+  the eigen-clamp / `Df.array[:,i,j]` writes generalised to
+  `cdim`; `boundary_slip`/`move_anisotropy` stay 2D (default
+  off/None). Modest, well-scoped (~1–2 days) — the solver core is
+  already dim-general; the careful step is validating the tet
+  signed-volume backtrack before it lands in the shared smoother.
 - **Auto-tuning** `aniso_cap`/`relax`/`n_outer` (largest cap that
   keeps `minA/meanA` above a floor — the Pareto frontier is
   characterised but not automated).

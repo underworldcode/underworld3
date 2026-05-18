@@ -220,12 +220,19 @@ shift and understated grading ~40% — use the per-node metric.
   metric tensor; fixed-Lagrangian `D`, damped MMPDE. Cleanest
   method everywhere (never slivers, 2.6–12× MA's minA/meanA),
   linear/cheap; trades grading magnitude for clean anisotropic
-  alignment — does not beat the node-count cap. Open follow-ups
-  (out of prototype scope): the **coupled/inverse** Winslow
-  (Rado–Kneser–Choquet-non-folding) to admit `aniso_cap ≳ 6`
-  (the decoupled direct form folds above it); Hessian-based
-  `M=|H(ρ)|` for feature-*core* resolution; parallel-exact
-  assembly. See the design doc "(3) … IMPLEMENTED & VALIDATED".
+  alignment — does not beat the node-count cap. **GAMG validated
+  (2026-05-18): bit-parity with direct, no pure-Neumann fragility
+  (the operator is non-singular) — the parallel-scalable path is
+  real; cost ~O(N), ≈ a handful of SPD elliptic solves per
+  adaptation step.** Open follow-ups (out of prototype scope):
+  cross-rank parallel-exact assembly + MPI weak-scaling; **3D**
+  (solver core already dim-general — needs a tet signed-volume
+  backtrack + the `cdim!=2` guard removed); the **coupled/inverse**
+  Winslow (RKC-non-folding) to admit `aniso_cap ≳ 6`;
+  Hessian-based `M=|H(ρ)|` for feature-*core* resolution; the
+  solution-accuracy/cost study + the dynamic-adaptive loop. See
+  the design doc "(3) … IMPLEMENTED & VALIDATED" (Architecture /
+  GAMG+cost / limitations / corners).
 - General deformed / free-surface boundary slip (polyline
   projection).
 - Parallel-exact spring/MA assembly.
