@@ -625,4 +625,115 @@ Open follow-ups (out of prototype scope): the **coupled/inverse**
 Winslow (RKC-non-folding) to admit `aniso_cap ≳ 6`; Hessian-based
 `M=|H(ρ)|` for feature-core resolution; parallel-exact assembly.
 Scripts: `aniso_smoke.py`, `aniso_param_sweep.py`,
-`aniso_validate_{radial,angular,nonsep}.py`.
+`aniso_validate_{radial,angular,nonsep}.py`,
+`aniso_blob_metric.py` (target-vs-realised), `aniso_convection_demo.py`
+(Ra=1e5 → refine on ∇T).
+
+### Architecture (pipeline & components)
+
+`_winslow_anisotropic` in `src/underworld3/meshing/smoothing.py`;
+reached via `smooth_mesh_interior(mesh, metric=ρ,
+method="anisotropic")`. `ρ` is a target *density* (larger ⇒ finer)
+— typically a Lagrangian `f(frozen_field.sym)`.
+
+**Cache build (once per mesh/topology/params key):**
+
+1. `grho` — projected `∇ρ`: a `Vector_Projection` with
+   `uw_function = [ρ.diff(Xᵢ)]`, `smoothing=0`. A *first* derivative
+   of the Lagrangian density only (UW3-legal).
+2. `Df` — a `TENSOR` MeshVariable holding the metric tensor;
+   initialised to the identity.
+3. `_TensorDiff(DiffusionModel)` — `_build_c_tensor` sets
+   `_c = Df.sym` (the `_CofDiff` pattern from `ma_newton_phase0.py`:
+   a variable tensor-coefficient `SNES_Scalar`).
+4. Per coordinate component `c`: a scalar `uw.systems.Poisson` with
+   that constitutive tensor, source
+   `f_c = Σⱼ ∂D_{jc}/∂xⱼ`, **homogeneous Dirichlet `u_c=0`** on the
+   pinned boundary (non-singular → no `constant_nullspace` → no
+   GAMG-pure-Neumann fragility), wired to `_use_direct_solver`
+   (MUMPS, factor-once-reuse) or the `_use_iterative_solver` GAMG
+   path. (`boundary_slip=True` ⇒ pure-Neumann + `constant_nullspace`
+   + ring-projection instead, as in `_winslow_elliptic`.)
+
+**Per call:**
+
+5. **Build `D` ONCE on the undeformed mesh.** `gproj.solve()`;
+   per node `M = (1/h₀²)[I + β ĝĝᵀ(|∇ρ|/gref)²]`; eigen-decompose;
+   **clamp eigenvalues** to `[1/h_max², 1/h_min²]` (the `aniso_cap`
+   band); reassemble → write `Df`. A scale-aware `g_eps=1e-9` floor
+   makes uniform ρ an exact no-op (rejects the ~1e-18 projection
+   round-off of a zero gradient). `D` is thereafter **fixed and
+   Lagrangian** — it rides material points through `_deform_mesh`;
+   re-projecting it each step is the positive-feedback collapse
+   (settled).
+6. **Damped MMPDE outer loop** (`n_outer` steps): solve the `cdim`
+   displacement Poissons `∇·(D∇u_c) = −Σⱼ∂ⱼD_{jc}` (so `ψ=x+u` is
+   the M-harmonic coordinate map); optional `move_anisotropy`
+   reweight; `step = relax·disp`; **coherent global signed-area
+   backtrack** (halve the scale until no triangle inverts) + slip
+   ring-projection; `mesh._deform_mesh`; stop when
+   `max|Δx| < outer_tol`.
+
+Reuses `_winslow_elliptic`'s backtrack, `boundary_slip`,
+`move_anisotropy`, the solver cache and the MUMPS
+factor-once-reuse wiring verbatim. **Linear** — one solve per
+component per outer step, no Picard (cheaper than the BFO MA).
+
+### Solver limitations
+
+- **2D triangle meshes only** (hard `NotImplementedError`).
+- **Decoupled direct Winslow form → no Rado–Kneser–Choquet
+  non-folding guarantee.** Stable only for modest anisotropy:
+  `aniso_cap≈2` (robust default), `≈4` with gentler `relax` + more
+  `n_outer`, **`≳6` folds regardless**. The backtrack prevents
+  *inversion*, not extreme squashing — a property of the
+  formulation, not a tuning miss.
+- **Fixed node budget** — relative redistribution only; cannot
+  beat the node-count cap. For *separable* features the explicit
+  1-D OT is exact and strictly cheaper.
+- **Gradient metric resolves edges/fronts, not cores** —
+  isotropic-coarse (de-refined) where `∇ρ=0` (a smooth peak). Right
+  tool for boundary layers / interfaces / fronts; wrong tool for
+  resolving a smooth peak's centre (→ Hessian metric).
+- **Metric is Lagrangian-fixed** (built once). A tensor metric
+  should co-rotate with large deformation; we don't — fine for
+  modest moves, not large-strain.
+- **Serial-exact assembly only** — the ∇ρ projection / `D` build /
+  backtrack under-count at rank-partition boundaries (same caveat
+  as spring/MA). MUMPS itself is MPI-parallel but does not scale to
+  large 3D.
+- **Linear, component-decoupled** — an anisotropic Laplacian
+  smoother, not the full nonlinear (Jacobian-coupled) Winslow
+  generator.
+
+### Corners still unexplored
+
+- **Solution-accuracy proof.** Validated mesh *quality + alignment*
+  only — NOT yet that it *helps the PDE* (lower T-discretisation
+  error / better Nu at fixed node count vs a uniform mesh). That
+  accuracy/cost study is the real payoff and is untested.
+- **Dynamic-adaptive loop.** The demo is static ("20 steps then
+  refine once", `aniso_convection_demo.py`). Re-refining every N
+  steps with the metric riding the flow (ALE-style, interacting
+  with SLCN advection / the free-surface ALE) — the production use
+  case — is unexplored.
+- **Coupled / inverse Winslow** (computational ξ harmonic in
+  physical space → RKC-non-folding) to safely admit `aniso_cap ≳ 6`
+  and stronger alignment. The heavy MMPDE (map inversion /
+  resampling).
+- **Hessian metric `M=|H(ρ)|`** (curvature-aligned) for feature-
+  *core* resolution — reuse the recovered-Hessian path
+  (`_hessian_recovery_class`; first-derivative L2 recovery, since
+  UW3 forbids 2nd derivatives of mesh-var functions).
+- **A `metric_from_gradient`-style ρ helper** unifying the metric
+  API across `mesh.adapt` (absolute `h`, MMG re-meshes) and the
+  mover (relative `ρ`, fixed budget) — discussed, not built.
+- **GAMG path for this mover.** Unlike the MA case it is
+  non-singular (homogeneous Dirichlet, no constant nullspace), so
+  GAMG should be *more* robust here — likely the parallel-scalable
+  route, but untested. Plus parallel-exact assembly and 3D.
+- **Auto-tuning** `aniso_cap`/`relax`/`n_outer` (largest cap that
+  keeps `minA/meanA` above a floor — the Pareto frontier is
+  characterised but not automated).
+- **Free-surface / deformed-boundary slip** (polyline projection —
+  shared open item with spring/MA).
