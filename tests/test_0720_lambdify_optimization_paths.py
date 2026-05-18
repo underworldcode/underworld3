@@ -317,51 +317,75 @@ class TestDetectionMechanism:
 
 
 class TestPerformanceExpectations:
-    """Test that performance is as expected (not exact timing, just sanity checks)."""
+    """Verify the lambdify cache *behaviour* (cache hit on repeat), not
+    wall-clock timing.
 
-    def test_lambdify_caching(self, setup_mesh, sample_points):
-        """Cached lambdified evaluations should be fast."""
-        import time
+    One-off wall-clock assertions are inherently flaky on shared CI
+    runners. The property we actually care about is behavioural: an
+    identical lambdify request must reuse the cached function object
+    rather than recompiling. These tests exercise the cache contract
+    (``get_cached_lambdified``) directly, so they are deterministic.
+    """
 
+    def test_lambdify_cache_hit(self):
+        """``get_cached_lambdified`` returns the *same* object on a repeat.
+
+        Validates the cache mechanism's contract directly:
+        - first request for an expression compiles and stores one entry;
+        - an identical request returns the very same function object and
+          adds no entry (a genuine cache hit);
+        - a structurally different expression is cached separately
+          (the key actually discriminates).
+        """
+        from underworld3.function.pure_sympy_evaluator import (
+            _lambdify_cache,
+            clear_lambdify_cache,
+            get_cached_lambdified,
+        )
+
+        a, b = sympy.symbols("a b")
+        expr = sympy.erf(5 * a - 2) / 2 + sympy.sin(b)
+        symbols = (a, b)
+
+        clear_lambdify_cache()
+        assert len(_lambdify_cache) == 0
+
+        # Cache miss: compiles and stores exactly one entry.
+        f1 = get_cached_lambdified(expr, symbols)
+        assert len(_lambdify_cache) == 1, "first call did not populate the cache"
+
+        # Cache hit: identical request -> same object, no new entry.
+        f2 = get_cached_lambdified(expr, symbols)
+        assert f2 is f1, "identical request did not return the cached function"
+        assert len(_lambdify_cache) == 1, "cache hit must not add an entry"
+
+        # The cached function is correct.
+        val = f1(0.4, 0.7)
+        assert np.isclose(
+            val, float(sympy.erf(5 * 0.4 - 2) / 2 + sympy.sin(0.7))
+        )
+
+        # A different expression is a distinct cache entry (key discriminates).
+        other = sympy.erf(5 * a - 2) / 2 + sympy.cos(b)
+        g = get_cached_lambdified(other, symbols)
+        assert g is not f1
+        assert len(_lambdify_cache) == 2, "distinct expression must be cached separately"
+
+    def test_rbf_modes_consistent(self, setup_mesh, sample_points):
+        """rbf=True and rbf=False agree for a pure-sympy expression.
+
+        Replaces a former wall-clock "rbf=False not slow" assertion with
+        the meaningful, timing-free property: the two evaluation paths
+        must produce the same numbers for an expression that contains no
+        mesh-variable symbols.
+        """
         x = setup_mesh.X[0]
         expr = sympy.erf(5 * x - 2) / 2
 
-        # First call (compilation)
-        start = time.time()
-        result1 = uw.function.evaluate(expr, sample_points, rbf=True)
-        time1 = time.time() - start
+        r_rbf = uw.function.evaluate(expr, sample_points, rbf=True)
+        r_norbf = uw.function.evaluate(expr, sample_points, rbf=False)
 
-        # Cached call
-        start = time.time()
-        result2 = uw.function.evaluate(expr, sample_points, rbf=True)
-        time2 = time.time() - start
-
-        # Cached should be faster or at least not slower
-        # (For small evaluations, overhead dominates so speedup may be small)
-        assert time2 <= time1 * 2, f"Cached call slower than first: {time2} vs {time1}"
-
-        # Both should be reasonably fast (< 10ms for 3 points)
-        assert time2 < 0.01, f"Cached call too slow: {time2}s"
-
-        # Results should be identical
-        assert np.allclose(result1.flatten(), result2.flatten())
-
-    def test_rbf_false_not_slow(self, setup_mesh, sample_points):
-        """rbf=False should not be dramatically slower for pure sympy."""
-        import time
-
-        x = setup_mesh.X[0]
-        expr = sympy.erf(5 * x - 2) / 2
-
-        # Warm up cache
-        _ = uw.function.evaluate(expr, sample_points, rbf=False)
-
-        # Cached call with rbf=False should be fast (< 10ms for 3 points)
-        start = time.time()
-        result = uw.function.evaluate(expr, sample_points, rbf=False)
-        elapsed = time.time() - start
-
-        assert elapsed < 0.01, f"rbf=False too slow: {elapsed}s (should be < 10ms)"
+        assert np.allclose(r_rbf.flatten(), r_norbf.flatten())
 
 
 if __name__ == "__main__":
