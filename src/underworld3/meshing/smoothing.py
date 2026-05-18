@@ -1200,10 +1200,11 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
 
 
 def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
-                         n_outer=5, beta=200.0, aniso_cap=8.0,
-                         boundary_slip=False, linear_solver="direct",
-                         phi_degree=2, move_anisotropy=None,
-                         metric_role="M", outer_tol=1.0e-4):
+                         n_outer=12, relax=0.2, beta=200.0,
+                         aniso_cap=2.0, boundary_slip=False,
+                         linear_solver="direct", phi_degree=2,
+                         move_anisotropy=None, metric_role="M",
+                         outer_tol=1.0e-4):
     r"""Anisotropic metric-tensor mesh redistribution — approach (3).
 
     The settled scalar equidistribution paths (``_winslow_spring``,
@@ -1276,11 +1277,34 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
        anisotropy-blind d/n).
 
     Parameters mirror ``_winslow_elliptic`` where shared.
-    ``beta`` / ``aniso_cap`` shape the metric tensor (anisotropy
-    strength / max spacing ratio). ``metric_role`` (``"M"`` default,
-    or ``"Minv"``) is an experimental knob — the overall scale of
-    ``D`` is irrelevant to ``∇·(D∇u)=src`` (both sides scale
-    together); only the anisotropy + spatial variation matter.
+
+    The **decoupled direct** Winslow form (each physical coordinate
+    M-harmonic, independently) has no Rado–Kneser–Choquet
+    non-folding guarantee, so its stable regime is bounded by the
+    metric anisotropy/contrast. Empirically (interior radial
+    feature, the validation arc) there is a clean Pareto frontier:
+
+    * ``aniso_cap=2``, ``relax≈0.1–0.2`` → minA/meanA ≈ 0.5 (a
+      near-pristine, valid, feature-aligned mesh — cleaner than the
+      isotropic MA ≈0.18 / spring ≈0.25 which sliver), modest 2:1
+      cell alignment. **The robust default.**
+    * higher ``aniso_cap`` is only stable with a *gentler* ``relax``
+      + more ``n_outer`` (cap 4 needs relax ≈0.05, n_outer ≳25 →
+      minA ≈0.35, sharper alignment). ``aniso_cap ≳ 6`` folds the
+      decoupled map regardless — it would need the coupled / inverse
+      Winslow (the heavy MMPDE, out of this prototype's scope).
+
+    So (3) trades grading *magnitude* for clean anisotropic *cell
+    alignment* — exactly its intended role (see the warning above).
+    ``relax`` (default 0.2) under-relaxes the per-step displacement;
+    ``n_outer`` (default 12) composes the damped steps toward the
+    fixed-D M-harmonic map. ``beta`` (default 200) sets how fast the
+    metric saturates the ``aniso_cap`` eigen-clamp (the clamp, not
+    ``beta``, is the binding anisotropy lever). ``metric_role``
+    (``"M"`` default, or ``"Minv"``) is an experimental knob — the
+    overall scale of ``D`` is irrelevant to ``∇·(D∇u)=src`` (both
+    sides scale together); only the anisotropy + spatial variation
+    matter.
     """
     import sympy
 
@@ -1388,6 +1412,70 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
 
     _zig = (linear_solver != "gamg")
 
+    # ---- build the eigen-clamped metric tensor field D ONCE ------
+    # on the *undeformed* mesh (the design metric), then hold it
+    # fixed and Lagrangian (the field rides material points through
+    # _deform_mesh, exactly as _winslow_spring computes its
+    # rest-lengths / A0 once). Re-projecting ∇ρ on the progressively
+    # distorted mesh inside the outer loop is a positive feedback —
+    # D blows up on squashed cells → catastrophic over-collapse
+    # (verified failure mode). With D fixed the outer loop is a
+    # *stable damped fixed-point iteration* of one linear operator
+    # toward the M-harmonic map; no feedback.
+    dm = mesh.dm
+    old0 = np.asarray(mesh.X.coords).copy()
+    gproj.solve()
+    Dcoords = np.asarray(Df.coords)
+    gvec = np.asarray(
+        uw.function.evaluate(grho.sym, Dcoords)).reshape(-1, cdim)
+    ep = _edge_pairs(dm)
+    if ep.shape[0]:
+        h0 = float(np.linalg.norm(
+            old0[ep[:, 1]] - old0[ep[:, 0]], axis=1).mean())
+    else:
+        h0 = 1.0
+    if uw.mpi.size > 1:
+        h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+    gn = np.linalg.norm(gvec, axis=1)
+    gmax = float(gn.max()) if gn.size else 0.0
+    if uw.mpi.size > 1:
+        from mpi4py import MPI as _MPI
+        gmax = uw.mpi.comm.allreduce(gmax, op=_MPI.MAX)
+    # CRITICAL no-op guard: uniform ρ ⇒ ∇ρ ≡ 0, but the L2
+    # projection of the zero function leaves ~1e-18 round-off.
+    # Normalising by that noisy max would make (|∇ρ|/gref)² ~ O(1)
+    # from pure round-off → a fabricated huge anisotropy and a
+    # spurious move. Any *real* feature gradient is O(AMP/WIDTH)
+    # ~ O(1–100); g_eps=1e-9 is ~9 orders above projection noise
+    # and ~10 below the weakest meaningful feature, so AMP=0 is an
+    # exact isotropic no-op while AMP>0 is bit-identical to the
+    # verified ma_metric_tensor_viz construction.
+    g_eps = 1.0e-9
+    gref = gmax if gmax > g_eps else 1.0
+    base = 1.0 / h0 ** 2
+    lam_lo = 1.0 / h0 ** 2                      # coarsest
+    lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
+    Dout = np.empty((Dcoords.shape[0], 2, 2))
+    eye2 = np.eye(2)
+    for i in range(Dcoords.shape[0]):
+        g = gvec[i]
+        gni = gn[i]
+        if gni > g_eps and gmax > g_eps:
+            gh = g / gni
+            M = base * (eye2 + beta * (gni / gref) ** 2
+                        * np.outer(gh, gh))
+        else:
+            M = base * eye2
+        w, V = np.linalg.eigh(M)
+        w = np.clip(w, lam_lo, lam_hi)
+        if metric_role == "Minv":
+            w = 1.0 / w
+        Dout[i] = (V * w) @ V.T
+    Df.array[:, 0, 0] = Dout[:, 0, 0]
+    Df.array[:, 0, 1] = Dout[:, 0, 1]
+    Df.array[:, 1, 0] = Dout[:, 1, 0]
+    Df.array[:, 1, 1] = Dout[:, 1, 1]
+
     for outer in range(n_outer):
         dm = mesh.dm
         pStart, pEnd = dm.getDepthStratum(0)
@@ -1435,60 +1523,9 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             def _project(Y):
                 return Y
 
-        # --- build the eigen-clamped metric tensor field D --------
-        gproj.solve()
-        Dcoords = np.asarray(Df.coords)
-        gvec = np.asarray(
-            uw.function.evaluate(grho.sym, Dcoords)
-        ).reshape(-1, cdim)
-        ep = _edge_pairs(dm)
-        if ep.shape[0]:
-            h0 = float(np.linalg.norm(
-                old_coords[ep[:, 1]] - old_coords[ep[:, 0]],
-                axis=1).mean())
-        else:
-            h0 = 1.0
-        if uw.mpi.size > 1:
-            h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
-        gn = np.linalg.norm(gvec, axis=1)
-        gmax = float(gn.max()) if gn.size else 0.0
-        if uw.mpi.size > 1:
-            from mpi4py import MPI as _MPI
-            gmax = uw.mpi.comm.allreduce(gmax, op=_MPI.MAX)
-        # CRITICAL no-op guard: uniform ρ ⇒ ∇ρ ≡ 0, but the L2
-        # projection of the zero function leaves ~1e-18 round-off.
-        # Normalising by that noisy max would make (|∇ρ|/gref)² ~ O(1)
-        # from pure round-off → a fabricated huge anisotropy and a
-        # spurious move. Any *real* feature gradient is O(AMP/WIDTH)
-        # ~ O(1–100); g_eps=1e-9 is ~9 orders above projection noise
-        # and ~10 below the weakest meaningful feature, so AMP=0 is
-        # an exact isotropic no-op while AMP>0 is bit-identical to
-        # the verified ma_metric_tensor_viz construction.
-        g_eps = 1.0e-9
-        gref = gmax if gmax > g_eps else 1.0
-        base = 1.0 / h0 ** 2
-        lam_lo = 1.0 / h0 ** 2                      # coarsest
-        lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
-        Dout = np.empty((Dcoords.shape[0], 2, 2))
-        eye2 = np.eye(2)
-        for i in range(Dcoords.shape[0]):
-            g = gvec[i]
-            gni = gn[i]
-            if gni > g_eps and gmax > g_eps:
-                gh = g / gni
-                M = base * (eye2 + beta * (gni / gref) ** 2
-                            * np.outer(gh, gh))
-            else:
-                M = base * eye2
-            w, V = np.linalg.eigh(M)
-            w = np.clip(w, lam_lo, lam_hi)
-            if metric_role == "Minv":
-                w = 1.0 / w
-            Dout[i] = (V * w) @ V.T
-        Df.array[:, 0, 0] = Dout[:, 0, 0]
-        Df.array[:, 0, 1] = Dout[:, 0, 1]
-        Df.array[:, 1, 0] = Dout[:, 1, 0]
-        Df.array[:, 1, 1] = Dout[:, 1, 1]
+        # D is fixed & Lagrangian (built once, above) — no
+        # re-projection feedback. The outer loop is a damped
+        # fixed-point iteration toward the fixed M-harmonic map.
 
         # --- solve the cdim displacement components ----------------
         disp = np.zeros_like(old_coords)
@@ -1515,6 +1552,18 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             disp = (w_r * d_r[:, None] * rhat
                     + w_t * d_t[:, None] * that)
 
+        # Damped MMPDE step. The *direct* Winslow form (physical
+        # coords as M-harmonic functions of themselves) has no
+        # Rado–Kneser–Choquet non-folding guarantee — applied as a
+        # single elliptic jump it overshoots and the signed-area
+        # backtrack thrashes into a degenerate sliver. The standard
+        # remedy is to integrate the mesh PDE as a damped gradient
+        # flow: under-relax the displacement and compose over
+        # n_outer steps (the metric is re-projected each step). This
+        # is the exact analogue of _winslow_elliptic's picard_relax
+        # (the BFO path needs ω≈0.4 or its Hessian grows unbounded).
+        step = float(relax) * disp
+
         # --- coherent global signed-area backtrack + slip + move --
         free = ~is_pinned
         scale = 1.0
@@ -1524,7 +1573,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             orient = np.sign(np.median(a0)) or 1.0
             for _bt in range(10):
                 trial = old_coords.copy()
-                trial[free] += scale * disp[free]
+                trial[free] += scale * step[free]
                 trial = _project(trial)
                 a1min = float(
                     (_signed_areas(trial, tris) * orient).min())
@@ -1540,7 +1589,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                 scale = 0.0
                 new_coords = old_coords.copy()
         else:
-            new_coords[free] += disp[free]
+            new_coords[free] += step[free]
             new_coords = _project(new_coords)
 
         mesh._deform_mesh(new_coords)
