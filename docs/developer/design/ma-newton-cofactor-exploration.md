@@ -527,3 +527,102 @@ Hessian path) is the follow-up if core-resolution is needed.
 Annulus model problems. New feature branch off
 `feature/winslow-mesh-smoother`. Effort is the solver + its
 validation arc, not the metric (done).
+
+---
+
+## (3) anisotropic mover — IMPLEMENTED & VALIDATED (2026-05-18)
+
+Branch `feature/anisotropic-metric-mover` (off
+`feature/winslow-mesh-smoother`). `_winslow_anisotropic` in
+`smoothing.py`; `smooth_mesh_interior(..., method="anisotropic")`.
+
+### Formulation (as built)
+
+Displacement form of the **decoupled direct** M-weighted Laplace
+(Winslow) coordinate map. Per physical component `c`:
+
+$$ \nabla\!\cdot(D\nabla u_c) = -\textstyle\sum_j\partial_j D_{jc},
+   \qquad u_c=0 \text{ on the pinned boundary}, $$
+
+so `ψ_c = x_c + u_c` solves `∇·(D∇ψ_c)=0`, `ψ=x` on the boundary
+(the direct Winslow smoother — clusters nodes where `D` is large).
+`D = M` (the verified eigen-clamped `M = (1/h0²)[I + β ĝĝᵀ
+(|∇ρ|/gref)²]`). The two components share the *same* tensor
+operator `_c = D` via a `_CofDiff`-style `DiffusionModel`
+subclass; reuses `_use_direct_solver` (factor-once), the cache,
+the signed-area backtrack, `boundary_slip`, `move_anisotropy`.
+**Linear** — one solve/component/step, no Picard (cheaper than the
+BFO `_winslow_elliptic`). Homogeneous Dirichlet ⇒ non-singular ⇒
+**no `constant_nullspace`**, side-stepping the GAMG-pure-Neumann
+fragility entirely.
+
+### Two formulation findings (do NOT re-derive)
+
+1. **The metric must be built ONCE and held fixed & Lagrangian**
+   (like `_winslow_spring`'s rest-lengths/A0). Re-projecting ∇ρ on
+   the progressively distorted mesh inside the outer loop is a
+   *positive feedback* — `D` blows up on squashed cells →
+   catastrophic over-collapse (minA/meanA → 1e-3). With `D` fixed,
+   the outer loop is a stable damped fixed-point iteration of one
+   linear operator toward the M-harmonic map.
+2. **The decoupled direct Winslow form has no
+   Rado–Kneser–Choquet non-folding guarantee**, so its stable
+   regime is bounded by the metric anisotropy/contrast. A single
+   un-damped elliptic jump folds; under-relaxation (`relax`) +
+   `n_outer` damped steps is required (the analogue of the BFO
+   `picard_relax=0.4`). Characterised Pareto frontier
+   (`scripts/aniso_param_sweep.py`, interior radial feature): `β`
+   is *not* the binding lever — the **eigen-clamp `aniso_cap`** is.
+
+   | `aniso_cap` | needs | minA/meanA | note |
+   |---|---|---|---|
+   | 2 | `relax≈0.1–0.2` | **≈0.47–0.50** | robust default |
+   | 4 | `relax≈0.05`, `n_outer≳25` | ≈0.35 | sharper, still clean |
+   | ≳6 | — | ≲0.02 (folds) | needs coupled/inverse Winslow |
+
+   Defaults shipped: `aniso_cap=2`, `relax=0.2`, `n_outer=12`,
+   `β=200`. AMP=0 is an **exact isotropic no-op** (a scale-aware
+   `g_eps=1e-9` floor rejects the ~1e-18 projection round-off of a
+   uniform-ρ zero gradient — without it the noisy `gref` fabricated
+   O(1) anisotropy).
+
+### Validation arc (anisotropy-aware: radial/tangential split +
+minA/meanA, NOT the anisotropy-blind d/n; grids rendered)
+
+| problem (res, AMP=8) | metric | (3) minA/meanA | isotropic MA | spring |
+|---|---|---|---|---|
+| radial @R_O (pathology) | — | **0.240** | 0.019 | 0.177 |
+| radial interior r=0.70 | — | **0.466** | 0.182 | 0.253 |
+| angular-only (separable) | — | **0.243** | 0.144 | — |
+| non-separable blob | — | **0.295** | 0.109 | 0.119 |
+
+- **(3) is the cleanest method everywhere** — 2.6–12× better
+  minA/meanA than the isotropic MA, never slivers, linear/cheap
+  (~3 s res-16, no Picard).
+- **Concentration is milder** than MA (radial interior far/near ≈
+  MA; non-separable far/near 1.10 vs MA 1.37; angular ≈ uniform).
+  (3) trades grading *magnitude* for clean anisotropic *cell
+  alignment* — exactly its intended role.
+- **Separable features confirm the settled cap**: angular-only
+  (3) ≈ uniform concentration (far/near 1.02, frac@θ0 0.160) — it
+  CANNOT beat the explicit 1-D OT (`ma_angular_ot_target.py`
+  target far/near 2.21), same fixed-topology limit as the scalar
+  paths. (3) is for the **non-separable** case + quality, not
+  separable concentration.
+- Figures: `/tmp/metric_mesh/aniso_radial_peak{1p00,0p70}.png`,
+  `aniso_angular.png`, `aniso_nonsep.png` (the non-separable zoom
+  is the clearest: MA/spring pull a degenerate slivered knot into
+  the blob; (3) gives a clean, well-shaped, blob-aligned
+  densification).
+
+### Verdict
+
+A **validated prototype matching the brief**: (3) improves cell
+alignment/quality and removes the slivers/wasted isotropic
+resolution; it does **not** beat the fixed node-count cap (the
+explicit 1-D OT stays exact + cheaper for separable features).
+Open follow-ups (out of prototype scope): the **coupled/inverse**
+Winslow (RKC-non-folding) to admit `aniso_cap ≳ 6`; Hessian-based
+`M=|H(ρ)|` for feature-core resolution; parallel-exact assembly.
+Scripts: `aniso_smoke.py`, `aniso_param_sweep.py`,
+`aniso_validate_{radial,angular,nonsep}.py`.

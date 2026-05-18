@@ -9,8 +9,9 @@ which remeshes / changes topology).
 import underworld3 as uw
 from underworld3.meshing import smooth_mesh_interior
 
-smooth_mesh_interior(mesh, metric=f, method="spring")   # fast
-smooth_mesh_interior(mesh, metric=f, method="ma")       # robust
+smooth_mesh_interior(mesh, metric=f, method="spring")       # fast
+smooth_mesh_interior(mesh, metric=f, method="ma")           # robust
+smooth_mesh_interior(mesh, metric=f, method="anisotropic")  # cleanest, aligned
 ```
 
 ## When to use it
@@ -49,23 +50,30 @@ f = 1 + 8 * sympy.exp(-((r0.sym[0] - 1.0) / 0.12) ** 2)  # design grading
 `metric=None` (default) is the original graph-Laplacian Jacobi
 smoother (equalises connectivity; no grading) — unchanged.
 
-## The two solvers
+## The three solvers
 
-| | `method="spring"` (default) | `method="ma"` |
-|---|---|---|
-| Operator | Volumetric elastic-spring equilibrium | Benamou–Froese–Oberman Monge–Ampère |
-| Idea | *equal* edge springs (shape → equant cells, no slivers) **+** per-cell area constraint `A0 ∝ 1/ρ_tgt` (size) | `det(I+D²φ)=g`, move by ∇φ, recovered-Hessian damped Picard, pure-Neumann + constant nullspace |
-| Cost (res-16 Annulus) | **~0.3 s** | ~12–20 s (~60×) |
-| Grading (AMP=8 / 20) | 1.65 / 1.79 | 1.71 / 1.54 |
-| Interior-feature fidelity | good, slightly anisotropic | **clean, isotropic** |
-| Mesh quality | healthy, never degenerates | healthy |
-| Boundary sensitivity | high (see `boundary_slip`) | low (natural Neumann handles it) |
+| | `method="spring"` (default) | `method="ma"` | `method="anisotropic"` |
+|---|---|---|---|
+| Operator | Volumetric elastic-spring equilibrium | Benamou–Froese–Oberman Monge–Ampère | Decoupled direct M-weighted Laplace (Winslow) coordinate map |
+| Idea | *equal* edge springs (shape) **+** per-cell `A0 ∝ 1/ρ_tgt` (size) | `det(I+D²φ)=g`, move by ∇φ, recovered-Hessian damped Picard | `∇·(D∇u_c)=-Σ∂_jD_{jc}`, `D` = eigen-clamped gradient-derived **tensor** `M`, fixed Lagrangian, damped MMPDE |
+| Refinement | isotropic | isotropic | **anisotropic** (cells short ⟂ feature, long along it) |
+| Cost (res-16 Annulus) | **~0.3 s** | ~12–20 s (~60×) | ~3 s (linear, no Picard) |
+| Grading magnitude | 1.65 / 1.79 | 1.71 / 1.54 | mild (trades magnitude for alignment) |
+| Mesh quality (minA/meanA) | healthy | healthy but **slivers near a sharp feature** (≈0.02–0.18) | **cleanest — never slivers** (≈0.24–0.50, 2.6–12× MA) |
+| Boundary sensitivity | high (see `boundary_slip`) | low (natural Neumann) | low (homogeneous Dirichlet, non-singular) |
 
 **Recommendation:** `spring` for routine per-step use in
-time-stepping (cheap, robust). `ma` when refinement *quality*
-around a localised feature matters and the cost is affordable
-(it is the bullet-proof answer; its efficiency is the subject of
-follow-up work — see *Open items*).
+time-stepping (cheap, robust). `ma` when isotropic refinement
+*magnitude* around a localised feature matters and the cost is
+affordable. `anisotropic` when **cell alignment / quality**
+matters — it is the cleanest (never slivers, linear/cheap) and
+reshapes cells to the feature, but deliberately grades *gently*:
+it does **not** beat the fixed node-count cap, and for a
+*separable* feature the explicit 1-D OT (radial/angular
+cumulative-mass inversion) is exact and strictly cheaper —
+`anisotropic` earns its keep on the general **non-separable**
+case. See `docs/developer/design/ma-newton-cofactor-exploration.md`
+("(3) anisotropic mover — IMPLEMENTED & VALIDATED").
 
 ### `boundary_slip`
 
@@ -206,6 +214,18 @@ shift and understated grading ~40% — use the per-node metric.
     gated behind parallel-exact assembly + 3D (the solver is not the
     bottleneck yet). *Bankable spin-off: `phi_degree` default 3→2 —
     grading-identical, ~2× cheaper, see the Implementation note.*
+- **Anisotropic tensor mover** (`method="anisotropic"`) — *done*
+  (2026-05-18, validated prototype). Decoupled direct M-weighted
+  Laplace coordinate map with the eigen-clamped gradient-derived
+  metric tensor; fixed-Lagrangian `D`, damped MMPDE. Cleanest
+  method everywhere (never slivers, 2.6–12× MA's minA/meanA),
+  linear/cheap; trades grading magnitude for clean anisotropic
+  alignment — does not beat the node-count cap. Open follow-ups
+  (out of prototype scope): the **coupled/inverse** Winslow
+  (Rado–Kneser–Choquet-non-folding) to admit `aniso_cap ≳ 6`
+  (the decoupled direct form folds above it); Hessian-based
+  `M=|H(ρ)|` for feature-*core* resolution; parallel-exact
+  assembly. See the design doc "(3) … IMPLEMENTED & VALIDATED".
 - General deformed / free-surface boundary slip (polyline
   projection).
 - Parallel-exact spring/MA assembly.
