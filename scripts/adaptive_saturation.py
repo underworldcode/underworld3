@@ -62,13 +62,15 @@ _MP = {
     "a16":  dict(amp=8.0,  aniso_cap=2.0, relax=0.2,  n_outer=8),
     "a16p": dict(amp=8.0,  aniso_cap=2.0, relax=0.2,  n_outer=8),
     "a16s": dict(amp=16.0, aniso_cap=4.0, relax=0.05, n_outer=25),
-    # a16x = "slightly more aggressive bunching": amp 16→24 (the
-    # density-bunching intensity). aniso_cap kept at 4 — it is the
-    # binding stability lever (≥6 folds); the eigen-clamp caps
-    # worst-case compression regardless of amp, and pristine
-    # re-mesh prevents compounding, so the higher amp just
-    # saturates the clamp over a broader band (stronger pull, same
-    # quality floor).
+    # a16x: amp 16→24. WARNING — for the anisotropic mover `amp`
+    # is a NO-OP: M is built from |∇ρ|/max|∇ρ|, and with
+    # ρ=1+amp·t both scale with amp ⇒ it cancels exactly (verified
+    # to machine ε, scripts/_amp_check.py). a16x ≡ a16s in metric;
+    # kept only as a control / extra movie. To actually intensify
+    # bunching change `aniso_cap` (sharper peak, ≥6 folds) and/or
+    # `beta` in the mover (wider band); the percentile window in
+    # metric_density_from_gradient reshapes *where* it refines.
+    # (`amp` IS effective for the isotropic spring/MA methods.)
     "a16x": dict(amp=24.0, aniso_cap=4.0, relax=0.05, n_outer=25),
 }
 MP = _MP.get(args.model, _MP["a16p"])

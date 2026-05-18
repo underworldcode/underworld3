@@ -84,7 +84,8 @@ Setting this equal to $g$ and solving the resulting quadratic for the
 Laplacian $\Delta\varphi=\varphi_{xx}+\varphi_{yy}$ gives the two
 roots; the **convex (Brenier) branch** is the $+\sqrt{\cdot}$ one:
 
-$$ \boxed{\;\Delta\varphi \;=\;
+$$
+  \boxed{\;\Delta\varphi \;=\;
    \sqrt{(\varphi_{xx}-\varphi_{yy})^2 + 4\,\varphi_{xy}^2 + 4\,g}
    \;-\;2\;}
 $$
@@ -102,8 +103,10 @@ The equation is solved by a **damped Picard iteration**: each iterate
 solves a *constant-coefficient* Poisson problem for $\varphi$ with the
 above source evaluated at the previous Hessian, then under-relaxes,
 
-$$ \varphi \;\leftarrow\; (1-\omega)\,\varphi
-   \;+\;\omega\,\varphi^{\text{solve}}, \qquad \omega\approx 0.4 ; $$
+$$
+   \varphi \;\leftarrow\; (1-\omega)\,\varphi
+   \;+\;\omega\,\varphi^{\text{solve}}, \qquad \omega\approx 0.4 ; 
+$$
 
 without the relaxation the recovered Hessian grows unbounded and the
 (otherwise well-posed) Neumann solve diverges. The Poisson operator is
@@ -114,11 +117,13 @@ Because UW3 forbids second derivatives of mesh-variable functions, the
 Hessian is obtained by a **variationally-consistent first-derivative
 recovery** — the SPD mass-matrix system
 
-$$ \int H_{ij}\,\tau_{ij}\,dV \;+\;
+$$
+  \int H_{ij}\,\tau_{ij}\,dV \;+\;
    \int \frac{\partial\varphi}{\partial x_i}\,
         \frac{\partial\tau_{ij}}{\partial x_j}\,dV \;=\;0
    \quad\Longrightarrow\quad
-   H_{ij}\approx\frac{\partial^2\varphi}{\partial x_i\partial x_j}, $$
+   H_{ij}\approx\frac{\partial^2\varphi}{\partial x_i\partial x_j}, 
+$$
 
 i.e. the weak form of $\int H_{ij}\tau_{ij}=-\int\partial^2_{ij}\varphi\,
 \tau_{ij}$ integrated by parts (boundary term dropped = natural). Only
@@ -139,7 +144,9 @@ angular $\rho(\theta)$) the exact equidistribution map is a 1-D
 **cumulative-mass inversion**, computable to machine precision with no
 FE solve: place node radii $r_k$ so that equal target mass
 
-$$ m(r)=\int_{R_i}^{r}\rho(s)\,s\,\mathrm{d}s $$
+$$
+m(r)=\int_{R_i}^{r}\rho(s)\,s\,\mathrm{d}s 
+$$
 
 (the $s\,\mathrm{d}r$ is the 2-D polar area element) lies between
 consecutive shells, $r_k=m^{-1}(k/N)$. This is the optimal-transport
@@ -149,6 +156,7 @@ it is the tool of choice. It also serves as the ground-truth target
 against which the FE strategies are measured.
 
 ```{note}
+
 **Why the single FE Monge–Ampère solve caps at ≈1.5–1.8×.** Every
 FE-MA-potential variant (linear Picard; recovered-Hessian Picard,
 smoothed and variational; BFO convex-branch + damping; outer map
@@ -161,6 +169,7 @@ recovery, branch, resolution, or single-vs-composed solves. The coupled
 $(\varphi,H)$ Newton SNES solves the same equation ⇒ same ceiling.
 Strategy C exists because a *scalar* potential cannot deliver coherent
 *anisotropic* bulk transport at fixed topology either.
+
 ```
 
 ## 3. Strategy B — Volumetric elastic-spring equilibrium
@@ -171,7 +180,8 @@ regulariser that drives cells equant and kills slivers; the *size*
 grading lives entirely in a per-cell area target. Minimise the truss
 energy
 
-$$ E(\mathbf x)\;=\; w_{\text{shape}}
+$$ 
+  E(\mathbf x)\;=\; w_{\text{shape}}
      \sum_{e}\Bigl(\tfrac{|\mathbf x_i-\mathbf x_j|-\bar L}{\bar L}\Bigr)^{2}
    \;+\; w_{\text{size}}
      \sum_{t}\Bigl(\tfrac{A_t-A^0_t}{A^0_t}\Bigr)^{2},
@@ -201,7 +211,8 @@ From the scalar density $\rho$, form the *projected* gradient
 $\nabla\rho$ (a **first** derivative — UW3-clean; via a
 `Vector_Projection`), and at each node build
 
-$$ \boxed{\;M \;=\; \frac{1}{h_0^{2}}
+$$ 
+\boxed{\;M \;=\; \frac{1}{h_0^{2}}
    \Bigl[\, I \;+\; \beta\,\hat{\mathbf g}\hat{\mathbf g}^{\mathsf T}
    \bigl(|\nabla\rho|/\nabla\rho_{\mathrm{ref}}\bigr)^{2}\Bigr],\qquad
    \hat{\mathbf g}=\nabla\rho/|\nabla\rho|\;}
@@ -237,10 +248,12 @@ anisotropy is bounded by the eigen-clamp band.
 Solve the displacement form of the M-weighted Laplace map, **per
 physical coordinate component $c$**,
 
-$$ \boxed{\;\nabla\!\cdot\!\bigl(D\,\nabla u_c\bigr)
+$$ 
+   \boxed{\;\nabla\!\cdot\!\bigl(D\,\nabla u_c\bigr)
    \;=\; -\,\nabla\!\cdot\!\bigl(D\,\mathbf e_c\bigr)
    \;=\; -\sum_j \partial_j D_{jc},\qquad
    u_c=0 \ \text{on the pinned boundary},\;}
+   
 $$
 
 with $D=M$ the eigen-clamped tensor (`src = Σ_j Dsym[j,c].diff(X[j])`).
@@ -297,6 +310,28 @@ analogue of `uw.adaptivity.metric_from_gradient` (which maps the same
 normalised $|\nabla f|$ to an **absolute** target edge length
 $h\in[h_{\min},h_{\max}]$ for the MMG re-mesher). The distinction is the
 *node budget*:
+
+```{important}
+**`amp` is a no-op for the anisotropic mover (Strategy C); the
+effective metric-construction knobs are the percentile window and,
+in the mover, `aniso_cap`/$\beta$.** Strategy C builds $M$ from
+$|\nabla\rho|/g_{\mathrm{ref}}$ with $g_{\mathrm{ref}}=\max|\nabla\rho|$
+(§4.1). With $\rho=1+\texttt{amp}\cdot t$ both $|\nabla\rho|$ and
+$g_{\mathrm{ref}}$ scale linearly with `amp`, so it **cancels
+exactly** — $M$ is independent of `amp` (verified to machine
+precision; `amp`=16 vs 24 give bit-identical metrics). What does
+*not* cancel is the **percentile window**
+$(g_{\mathrm{lo}},g_{\mathrm{hi}})$: it reshapes $t$ (which gradient
+quantile is clipped flat vs in the linear ramp), hence $\nabla t$,
+hence $M$ — so it is the metric-construction tuning knob for the
+mover (choose *which* gradient strength triggers refinement). To
+make the bunching genuinely stronger use `aniso_cap` (sharper peak,
+stability-limited) and/or $\beta$ (wider refined band, safe), not
+`amp`. `amp` *is* a real bunching intensity for the **isotropic**
+spring / Monge–Ampère methods (where the absolute $\rho$ magnitude
+enters $A^0\propto1/\rho$ and $g\propto1/\rho$) — it is
+method-dependent.
+```
 
 | | `mesh.adapt` (MMG) | `smooth_mesh_interior` (this) |
 |---|---|---|
