@@ -1644,6 +1644,7 @@ def smooth_mesh_interior(
     metric=None,
     method: str = "spring",
     boundary_slip: bool = False,
+    method_kwargs: Optional[dict] = None,
     verbose: bool = False,
 ):
     r"""Smooth a mesh's interior vertices, optionally toward a
@@ -1749,6 +1750,34 @@ def smooth_mesh_interior(
         boundary). Off by default — for a free surface the boundary
         is the moving surface, so sliding interacts with the
         free-surface coupling; enable per use-context.
+    method_kwargs : dict, optional
+        Extra tuning forwarded to the chosen metric solver (ignored
+        when ``metric is None``). Keeps the shared signature clean
+        while exposing the per-method knobs. For
+        ``method="anisotropic"`` the validated knobs are:
+
+        * ``aniso_cap`` (default 2.0) — max cell anisotropy /
+          spacing ratio. The **binding stability lever**: ≈2 is
+          robust, ≈4 needs a gentler ``relax`` + more ``n_outer``,
+          ``≳6`` folds the decoupled direct form.
+        * ``relax`` (default 0.2) — per-step under-relaxation of
+          the damped MMPDE iteration.
+        * ``n_outer`` (default 12) — composed damped steps
+          (early-exits on ``outer_tol``).
+        * ``linear_solver`` (``"direct"`` default, MUMPS, or
+          ``"gamg"`` — validated bit-parity here, the
+          parallel-scalable path).
+        * ``beta`` (default 200) — how fast the metric saturates
+          the ``aniso_cap`` clamp (the clamp, not ``beta``, is the
+          lever). ``move_anisotropy`` — optional radial/tangential
+          move reweight (quality knob).
+
+        Example::
+
+            smooth_mesh_interior(
+                mesh, metric=rho, method="anisotropic",
+                method_kwargs=dict(aniso_cap=2.0, relax=0.2,
+                                   n_outer=12))
     verbose : bool, default False
         Print per-sweep (Jacobi) or periodic (spring/MA) progress.
 
@@ -1811,16 +1840,17 @@ def smooth_mesh_interior(
     pinned_labels = tuple(pinned_labels)
 
     if metric is not None:
+        mk = dict(method_kwargs or {})
         if method == "spring":
             _winslow_spring(mesh, metric, pinned_labels, verbose,
-                            boundary_slip=boundary_slip)
+                            boundary_slip=boundary_slip, **mk)
         elif method in ("ma", "monge-ampere", "monge_ampere"):
             _winslow_elliptic(mesh, metric, pinned_labels, verbose,
-                              boundary_slip=boundary_slip)
+                              boundary_slip=boundary_slip, **mk)
         elif method in ("anisotropic", "aniso", "tensor"):
             _winslow_anisotropic(mesh, metric, pinned_labels,
                                  verbose,
-                                 boundary_slip=boundary_slip)
+                                 boundary_slip=boundary_slip, **mk)
         else:
             raise ValueError(
                 f"smooth_mesh_interior: unknown method {method!r}; "
@@ -1920,3 +1950,127 @@ def smooth_mesh_interior(
                 local_vec.array).reshape(-1, cdim)
 
     mesh._deform_mesh(coords)
+
+
+# Cached (∇field projector, |∇field| density) per (mesh, degree,
+# name, topology) so metric_density_from_gradient is cheap and
+# leak-free when called every step in an adaptive loop.
+_MDG_CACHE: dict = {}
+
+
+def metric_density_from_gradient(
+    mesh,
+    field,
+    *,
+    amp: float = 8.0,
+    lo_percentile: float = 50.0,
+    hi_percentile: float = 97.0,
+    degree: int = 1,
+    name: Optional[str] = None,
+):
+    r"""Build a target-**density** metric ``ρ ∝ normalised |∇field|``
+    for the metric movers — the relative, fixed-node-budget
+    analogue of :func:`underworld3.adaptivity.metric_from_gradient`
+    (which maps ``|∇field|`` to an *absolute* target edge length
+    for the MMG re-mesher; the mover has a fixed node budget so it
+    redistributes *relatively* instead).
+
+    .. math::
+
+        \rho = 1 + \mathrm{amp}\cdot t,\qquad
+        t = \mathrm{clip}\!\Big(
+            \frac{|\nabla\mathrm{field}| - g_{lo}}
+                 {g_{hi} - g_{lo}}, 0, 1\Big),
+
+    with ``g_lo, g_hi`` the lo/hi percentiles of ``|∇field|`` (the
+    same percentile-window idea as the adaptation metric).
+    ``|∇field|`` is L2-projected (a *first* derivative — UW3-clean)
+    and the normalised ``t`` is stored in a **frozen Lagrangian
+    scalar field**, so the returned metric rides material points —
+    required by the movers, which build the metric once on the
+    undeformed mesh. Pass the result straight to
+    :func:`smooth_mesh_interior`::
+
+        rho = metric_density_from_gradient(mesh, T, amp=8.0)
+        smooth_mesh_interior(mesh, metric=rho,
+                             method="anisotropic")
+
+    The projector/fields are cached per ``(mesh, degree, name,
+    topology)``, so calling this **every step** in an adaptive loop
+    is cheap and does not leak MeshVariables. Each call re-projects
+    and re-freezes ``t`` at the *current* field state.
+
+    Parameters
+    ----------
+    mesh : underworld3 mesh
+    field : scalar MeshVariable or sympy scalar expression
+        The field whose gradient drives refinement (e.g. ``T``).
+    amp : float, default 8.0
+        Bunching intensity: ``ρ_max = 1 + amp`` where ``|∇field|``
+        is strongest. Larger ⇒ stronger redistribution.
+    lo_percentile, hi_percentile : float, default 50 / 97
+        ``|∇field|`` normalisation window (cf. the 5th/95th of
+        ``adaptivity.metric_from_gradient``). Raise ``lo`` to push
+        refinement only into the steepest fronts.
+    degree : int, default 1
+        Polynomial degree of the projected-gradient / density
+        fields (1 matches the anisotropic mover's default
+        ``aux_degree``).
+    name : str, optional
+        Cache disambiguator. Pass distinct names if you build
+        several independent gradient metrics on the *same* mesh
+        simultaneously (otherwise they share the cache slot).
+
+    Returns
+    -------
+    sympy expression
+        ``1 + amp * t.sym[0]`` — Lagrangian, frozen at call time.
+    """
+    import sympy
+
+    cdim = mesh.cdim
+    X = mesh.CoordinateSystem.X
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    cStart, cEnd = dm.getHeightStratum(0)
+    tag = name or "mdg"
+    key = (id(mesh), int(degree), tag,
+           pEnd - pStart, cEnd - cStart)
+
+    cache = _MDG_CACHE.get(key)
+    if cache is None:
+        g = uw.discretisation.MeshVariable(
+            f"mdg_g_{id(mesh):x}_{tag}{degree}", mesh,
+            vtype=uw.VarType.VECTOR, degree=int(degree),
+            continuous=True)
+        gp = uw.systems.Vector_Projection(mesh, g)
+        gp.smoothing = 0.0
+        rho0 = uw.discretisation.MeshVariable(
+            f"mdg_rho_{id(mesh):x}_{tag}{degree}", mesh,
+            vtype=uw.VarType.SCALAR, degree=int(degree),
+            continuous=True)
+        _MDG_CACHE[key] = (g, gp, rho0)
+    else:
+        g, gp, rho0 = cache
+
+    f_sym = (field.sym[0] if hasattr(field, "sym")
+             else sympy.sympify(field))
+    gp.uw_function = sympy.Matrix(
+        [f_sym.diff(X[i]) for i in range(cdim)]).T
+    gp.solve()
+    gmag = np.linalg.norm(np.asarray(uw.function.evaluate(
+        g.sym, rho0.coords)).reshape(-1, cdim), axis=1)
+    g_lo = float(np.percentile(gmag, lo_percentile))
+    g_hi = float(np.percentile(gmag, hi_percentile))
+    # No-op guard: a uniform field has |∇field| ≡ 0, but the L2
+    # projection leaves ~1e-18 round-off. Percentile-normalising
+    # that noise would fabricate a spurious [0,1] metric (the same
+    # failure the mover's own g_eps floor fixes). Any real field
+    # gradient is many orders above 1e-9 ⇒ a (near-)constant field
+    # yields ρ ≡ 1 (no refinement) exactly.
+    if g_hi <= 1.0e-9:
+        rho0.data[:, 0] = 0.0
+    else:
+        rho0.data[:, 0] = np.clip(
+            (gmag - g_lo) / max(g_hi - g_lo, 1.0e-30), 0.0, 1.0)
+    return 1.0 + float(amp) * rho0.sym[0]

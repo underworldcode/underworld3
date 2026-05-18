@@ -52,6 +52,7 @@ from .faults import (
 
 from .smoothing import (
     smooth_mesh_interior,
+    metric_density_from_gradient,
 )
 
 # Make all functions available at module level for backward compatibility
@@ -88,4 +89,5 @@ __all__ = [
     "FaultCollection",
     # Mesh smoothing
     "smooth_mesh_interior",
+    "metric_density_from_gradient",
 ]
