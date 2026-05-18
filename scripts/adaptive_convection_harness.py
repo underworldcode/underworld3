@@ -98,21 +98,50 @@ def build(res, tag):
     return mesh, v, P, T, stokes, adv, unit_r
 
 
-def nusselt(mesh, T, cellsize):
-    th = np.linspace(0, 2 * np.pi, 401, endpoint=False)
-    p1 = np.column_stack([(r_o - 1.5 * cellsize) * np.cos(th),
-                          (r_o - 1.5 * cellsize) * np.sin(th)])
-    p2 = np.column_stack([(r_o - 0.5 * cellsize) * np.cos(th),
-                          (r_o - 0.5 * cellsize) * np.sin(th)])
-    T1 = np.asarray(uw.function.evaluate(T.sym[0], p1))
-    T2 = np.asarray(uw.function.evaluate(T.sym[0], p2))
-    dTdr = float(np.mean(T2 - T1) / cellsize)
-    # Nu = (actual outward flux) / (conductive flux)
-    #    = (-dT/dr) / (-dT_cond/dr),  -dT_cond/dr = +1/(r_o-r_inner)
-    #    = -dTdr * (r_o - r_inner).
-    # (The inherited fixed_mesh_convection form divided by the
-    #  *signed* conductive gradient -1/Δ → returned -Nu; fixed here.)
-    return -dTdr * (r_o - r_inner)
+# Analytic steady-conduction flux through the annulus outer
+# boundary: true ∇²T=0 solution is LOGARITHMIC ⇒
+# Q_cond = 2π / ln(R_o/R_i).
+_Q_COND = 2.0 * np.pi / np.log(r_o / r_inner)
+
+
+_NU_CACHE = {}
+_R_MID = 0.5 * (r_inner + r_o)
+
+
+def nusselt(mesh, T, v=None, cellsize=None):
+    r"""Nu = total radial heat flow through the interior mid-shell
+    / conductive flow. q_r = v_r·T - ∂T/∂r projected to a nodal
+    field, integrated on r=(R_i+R_o)/2 — shell-independent at
+    steady state and immune to thermal-BL resolution (validated:
+    scripts/_nu_proper.py — analytic conduction ⇒ Nu=1.0000;
+    settled checkpoints shell-consistent and ≈ the boundary
+    method). Q_cond = 2π/ln(R_o/R_i) (annular log conduction).
+    Cached per mesh. v required for the advective term."""
+    key = id(mesh)
+    cache = _NU_CACHE.get(key)
+    if cache is None:
+        qf = uw.discretisation.MeshVariable(
+            f"nu_qr_{key:x}", mesh, vtype=uw.VarType.SCALAR,
+            degree=2, continuous=True)
+        proj = uw.systems.Projection(mesh, qf)
+        proj.smoothing = 0.0
+        X = mesh.CoordinateSystem.X
+        er = mesh.CoordinateSystem.unit_e_0
+        gradT_r = (T.sym[0].diff(X[0]) * er[0]
+                   + T.sym[0].diff(X[1]) * er[1])
+        vr = ((v.sym[0] * er[0] + v.sym[1] * er[1])
+              if v is not None else sympy.Integer(0))
+        proj.uw_function = vr * T.sym[0] - gradT_r
+        _NU_CACHE[key] = (qf, proj)
+    else:
+        qf, proj = cache
+    proj.solve()
+    th = np.linspace(0, 2 * np.pi, 720, endpoint=False)
+    pts = np.column_stack([_R_MID * np.cos(th),
+                           _R_MID * np.sin(th)])
+    q = np.asarray(uw.function.evaluate(
+        qf.sym[0], pts)).reshape(-1)
+    return float(q.mean() * _R_MID * 2.0 * np.pi) / _Q_COND
 
 
 def vrms(mesh, v):
@@ -207,7 +236,7 @@ def run(mesh, v, P, T, stokes, adv, cellsize, adaptive, tag):
         if adaptive and (s + 1) % args.adapt_every == 0:
             adapt_with_correction(args.correction, mesh, T, v, P,
                                   stokes, dt)
-        Nu = nusselt(mesh, T, cellsize)
+        Nu = nusselt(mesh, T, v)
         vr = vrms(mesh, v)
         hist_t.append(t_sim)
         hist_Nu.append(Nu)
