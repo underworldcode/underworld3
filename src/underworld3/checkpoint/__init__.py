@@ -26,6 +26,7 @@ from .snapshot import (
     restore,
 )
 from .state import Snapshottable, SnapshottableState
+from .tracker import ModelTracker, TrackerState
 
 __all__ = [
     "CheckpointBackend",
@@ -37,4 +38,6 @@ __all__ = [
     "restore",
     "Snapshottable",
     "SnapshottableState",
+    "ModelTracker",
+    "TrackerState",
 ]
