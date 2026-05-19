@@ -462,6 +462,10 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         """Load from HDF5 plex vector."""
         return self._base_var.load_from_h5_plex_vector(*args, **kwargs)
 
+    def read_checkpoint(self, *args, **kwargs):
+        """Load from a PETSc DMPlex checkpoint file."""
+        return self._base_var.read_checkpoint(*args, **kwargs)
+
     def write(self, *args, **kwargs):
         """Write variable data to HDF5 file."""
         return self._base_var.write(*args, **kwargs)

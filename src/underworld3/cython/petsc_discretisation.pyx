@@ -60,6 +60,34 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         return cell_radii, cell_centroids
 
 
+def petsc_dmplex_load_local_vector(dm, viewer, sectiondm, sf, data_name):
+        """
+        Load a DMPlex checkpoint section and vector through PETSc's local-vector path.
+
+        petsc4py's DMPlex.sectionLoad wrapper always requests both the global and
+        local data SFs. For restart files whose section contains local overlap dofs,
+        the global-data SF construction can fail before the local path is usable.
+        This wrapper follows the PETSc API directly and requests only localDataSF.
+        """
+
+        cdef DM c_dm = dm
+        cdef Viewer c_viewer = viewer
+        cdef DM c_sectiondm = sectiondm
+        cdef SF c_sf = sf
+        cdef Vec c_vec
+        cdef PetscSF local_sf = NULL
+        load_vec = None
+
+        CHKERRQ(DMPlexSectionLoad(c_dm.dm, c_viewer.vwr, c_sectiondm.dm, c_sf.sf, NULL, &local_sf))
+        load_vec = sectiondm.createLocalVec()
+        load_vec.setName(data_name)
+        c_vec = load_vec
+        CHKERRQ(DMPlexLocalVectorLoad(c_dm.dm, c_viewer.vwr, c_sectiondm.dm, local_sf, c_vec.vec))
+        CHKERRQ(PetscSFDestroy(&local_sf))
+
+        return load_vec
+
+
 def petsc_dm_create_submesh_from_label(incoming_dm, label_name, label_value, marked_faces=False):
         """
         Extract a submesh from a DMPlex using a label.

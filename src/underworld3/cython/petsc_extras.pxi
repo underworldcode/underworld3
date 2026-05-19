@@ -5,10 +5,11 @@ from petsc4py.PETSc cimport DS,  PetscDS
 from petsc4py.PETSc cimport Vec, PetscVec
 from petsc4py.PETSc cimport Mat, PetscMat
 from petsc4py.PETSc cimport IS,  PetscIS
+from petsc4py.PETSc cimport SF,  PetscSF
 from petsc4py.PETSc cimport FE,  PetscFE
 from petsc4py.PETSc cimport DMLabel, PetscDMLabel
 from petsc4py.PETSc cimport PetscQuadrature, PetscSection
-from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, PetscViewer
+from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, Viewer, PetscViewer
 
 
 from underworld3.cython.petsc_types cimport PetscBool, PetscInt, PetscReal, PetscScalar
@@ -70,6 +71,9 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSAddBdResidual( PetscDS, PetscInt, PetscDSBdResidualFn, PetscDSBdResidualFn )
 
     PetscErrorCode DMPlexCreateSubmesh(PetscDM, PetscDMLabel label, PetscInt value, PetscBool markedFaces, PetscDM *subdm)
+    PetscErrorCode DMPlexSectionLoad(PetscDM, PetscViewer, PetscDM, PetscSF, PetscSF *, PetscSF *)
+    PetscErrorCode DMPlexLocalVectorLoad(PetscDM, PetscViewer, PetscDM, PetscSF, PetscVec)
+    PetscErrorCode PetscSFDestroy(PetscSF *)
     PetscErrorCode UW_DMPlexFilter(PetscDM, PetscDMLabel, PetscInt, PetscBool, PetscBool, PetscDM *)
     PetscErrorCode DMGetLabel(PetscDM dm, const char name[], PetscDMLabel *label)
 
