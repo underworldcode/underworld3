@@ -4187,16 +4187,43 @@ class Swarm(Stateful, uw_object):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
 
-        # The clear+re-add path bumped _population_generation already
-        # (we don't bump on removePoint, but addNPoints isn't bumped
-        # either — these are raw PETSc calls). For consistency with
-        # other mutation paths, bump explicitly here.
+        # The raw PETSc primitives used above (removePoint loop +
+        # addNPoints + direct field writes) deliberately bypass
+        # Swarm.migrate / add_particles_with_coordinates, so they do
+        # not touch _population_generation. Bump it explicitly here
+        # for consistency with the other mutation sites — a restore
+        # IS a population change, downstream consumers should see it.
+        # (Comment rewritten per Copilot review on #195.)
         self._population_generation += 1
 
-        # Step 3: write captured per-variable data.
-        current_vars = {var.clean_name: var for var in self._vars.values()}
+        # Step 3: write captured per-variable data. Per Copilot
+        # review on #195, also raise on the inverse direction —
+        # any user swarm variable on the LIVE swarm that wasn't in
+        # the snapshot would retain stale/uninitialised contents
+        # after the clear+addNPoints reallocation, which is exactly
+        # the silent-incoherence failure we want loud rather than
+        # quiet. The contract is symmetric with the mesh-variable
+        # restore: same variable set on both sides.
+        current_user_vars = {
+            var.clean_name: var
+            for var in self._vars.values()
+            if not var.name.startswith("DMSwarm")
+        }
+        captured_names = set(payload["vars"].keys())
+        live_names = set(current_user_vars.keys())
+        extras = live_names - captured_names
+        if extras:
+            raise SnapshotInvalidatedError(
+                f"swarm {self._snapshot_stable_name()!r}: variables "
+                f"{sorted(extras)!r} exist on the live swarm but were "
+                f"not in the snapshot. Restore would leave them with "
+                f"incoherent data after the population rebuild — add "
+                f"them before the snapshot was taken, or remove them "
+                f"before restoring."
+            )
+
         for var_clean_name, saved in payload["vars"].items():
-            var = current_vars.get(var_clean_name)
+            var = current_user_vars.get(var_clean_name)
             if var is None:
                 raise SnapshotInvalidatedError(
                     f"swarm {self._snapshot_stable_name()!r}: variable "

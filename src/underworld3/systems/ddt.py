@@ -576,7 +576,13 @@ class Symbolic(uw_object):
             import underworld3 as _uw
 
             _uw.get_default_model()._register_state_bearer(self)
-        except Exception:
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
             pass
 
         return
@@ -947,7 +953,13 @@ class Eulerian(uw_object):
             import underworld3 as _uw
 
             _uw.get_default_model()._register_state_bearer(self)
-        except Exception:
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
             pass
 
         return
@@ -1591,7 +1603,13 @@ class SemiLagrangian(uw_object):
             import underworld3 as _uw
 
             _uw.get_default_model()._register_state_bearer(self)
-        except Exception:
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
             pass
 
         return
@@ -2571,7 +2589,13 @@ class Lagrangian(uw_object):
             import underworld3 as _uw
 
             _uw.get_default_model()._register_state_bearer(self)
-        except Exception:
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
             pass
 
         return
@@ -2917,7 +2941,13 @@ class Lagrangian_Swarm(uw_object):
             import underworld3 as _uw
 
             _uw.get_default_model()._register_state_bearer(self)
-        except Exception:
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
             pass
 
         return

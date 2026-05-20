@@ -40,9 +40,15 @@ import pytest
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_a]
 
-# Restore-vs-pristine reproducibility floor for this setup (measured).
+# Restore-vs-pristine reproducibility floor for this setup.
 # The regretted-step guarantee is asserted bit-exact (np.array_equal);
 # only the never-stashed-control comparison uses this tolerance.
+#
+# The measured floor on this setup is ~7e-7 (see commit 3efc31b);
+# the assertion threshold is set ~14× looser at 1e-5 deliberately,
+# as headroom for variability across PETSc versions / BLAS libs /
+# MPI ranks on CI. Do not tighten without measuring on the target
+# environments first. (Comment added per Copilot review on #195.)
 _RESTORE_FLOOR_ATOL = 1.0e-5
 
 
