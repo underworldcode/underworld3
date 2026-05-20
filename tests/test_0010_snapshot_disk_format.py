@@ -446,3 +446,164 @@ def test_read_snapshot_rejects_missing_state_bearer(tmp_path):
 
     with pytest.raises(ValueError, match="state-bearer .* not registered"):
         uw.checkpoint.read_snapshot(model2, path)
+
+
+# ----- Phase 3b: swarms in sidecars -----
+
+
+def _fresh_model_mesh_swarm():
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    swarm = uw.swarm.Swarm(mesh)
+    material = swarm.add_variable("material", 1, dtype=float)
+    swarm.populate(fill_param=2)
+    material.data[:, 0] = swarm._particle_coordinates.data[:, 0]
+    return uw, model, mesh, swarm, material
+
+
+def test_swarm_sidecar_lands_in_bulk_dir(tmp_path):
+    """A registered swarm produces its own h5 sidecar in the bulk dir
+    with predictable name; wrapper carries the external_file ref."""
+    import os
+    import h5py
+    import underworld3 as uw
+
+    uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    bulk = str(tmp_path / "run.snap.bulk")
+    files = sorted(os.listdir(bulk))
+    swarm_sidecars = [f for f in files if f.endswith(".swarm.h5")]
+    assert len(swarm_sidecars) == 1
+
+    with h5py.File(path, "r") as f:
+        sw = f["swarms"]
+        assert sw.attrs["filled_by"] == "phase3b"
+        assert len(sw.keys()) == 1
+        swarm_safe = list(sw.keys())[0]
+        sg = sw[swarm_safe]
+        assert sg.attrs["external_file"] == swarm_sidecars[0]
+        assert sg.attrs["mesh_name"] == mesh.name
+        # User-added variables surface in /swarms/{name}/variables/
+        assert "material" in sg["variables"]
+
+
+def test_swarm_sidecar_is_inspectable(tmp_path):
+    """The swarm sidecar itself has h5-inspectable structure: top-
+    level attrs, /coordinates dataset, /variables/{name} datasets
+    with attrs. h5ls -v on the sidecar tells you what it holds."""
+    import os
+    import h5py
+    import underworld3 as uw
+
+    uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    bulk = str(tmp_path / "run.snap.bulk")
+    swarm_sidecar = [
+        f for f in os.listdir(bulk) if f.endswith(".swarm.h5")
+    ][0]
+
+    with h5py.File(os.path.join(bulk, swarm_sidecar), "r") as f:
+        # File-level attrs identify the file without UW3 in the loop.
+        assert int(f.attrs["num_particles_local"]) > 0
+        assert int(f.attrs["dim"]) == 2
+        assert str(f.attrs["mesh_name"]) == mesh.name
+        # Bulk in standard h5 places
+        assert "coordinates" in f
+        assert f["coordinates"].shape[1] == 2
+        # User var present with metadata
+        v = f["variables"]["material"]
+        assert int(v.attrs["num_components"]) == 1
+
+
+def test_swarm_round_trips_through_disk_snapshot(tmp_path):
+    """The whole swarm — particle coords + svar data — round-trips
+    exactly through write→scribble→read."""
+    import os
+    import underworld3 as uw
+
+    uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
+    coords_pre = swarm._particle_coordinates.data.copy()
+    material_pre = np.asarray(material.data).copy()
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Scribble: corrupt coords directly via the PETSc field, scribble
+    # material via the standard array view.
+    coord_field = swarm.dm.getField("DMSwarmPIC_coor").reshape(
+        (-1, swarm.dim)
+    )
+    coord_field[...] = -99.0
+    swarm.dm.restoreField("DMSwarmPIC_coor")
+    material.data[...] = -99.0
+
+    uw.checkpoint.read_snapshot(model, path)
+
+    assert np.array_equal(swarm._particle_coordinates.data, coords_pre), (
+        "particle coords not bit-exact after disk-snapshot restore"
+    )
+    assert np.array_equal(np.asarray(material.data), material_pre), (
+        "swarm material not bit-exact after disk-snapshot restore"
+    )
+
+
+def test_swarm_restore_recovers_after_particle_count_change(tmp_path):
+    """Mirror of the in-memory rebuild-on-restore guarantee, but on
+    disk: snapshot a swarm, mutate its population (add particles),
+    restore — the original local population (count + coords + var
+    data) is fully reconstructed."""
+    import underworld3 as uw
+
+    uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
+    n_pre = swarm.dm.getLocalSize()
+    coords_pre = swarm._particle_coordinates.data.copy()
+    material_pre = np.asarray(material.data).copy()
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Mutate the population — add two extra particles. Local count
+    # changes.
+    swarm.add_particles_with_coordinates(
+        np.array([[0.4, 0.4], [0.6, 0.6]])
+    )
+    assert swarm.dm.getLocalSize() != n_pre
+
+    uw.checkpoint.read_snapshot(model, path)
+
+    assert swarm.dm.getLocalSize() == n_pre, (
+        "restore did not roll back to the captured particle count"
+    )
+    assert np.array_equal(swarm._particle_coordinates.data, coords_pre)
+    assert np.array_equal(np.asarray(material.data), material_pre)
+
+
+def test_swarm_internals_not_in_sidecar(tmp_path):
+    """The PETSc-internal swarm variables (DMSwarmPIC_coor, DMSwarm_X0,
+    DMSwarm_remeshed) are filtered at capture — they're not in the
+    sidecar's /variables group. Same rule as in-memory capture."""
+    import os
+    import h5py
+    import underworld3 as uw
+
+    uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    bulk = str(tmp_path / "run.snap.bulk")
+    sidecar = [f for f in os.listdir(bulk) if f.endswith(".swarm.h5")][0]
+    with h5py.File(os.path.join(bulk, sidecar), "r") as f:
+        var_names = set(f["variables"].keys())
+    assert "material" in var_names
+    assert not any(n.startswith("DMSwarm") for n in var_names)

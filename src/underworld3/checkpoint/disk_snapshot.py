@@ -371,6 +371,46 @@ def write_snapshot(model, path: str) -> str:
                     bg = ps_group.create_group(key)
                     _write_state_bearer_to_group(bg, obj)
 
+    # Phase 3b: swarms — one sidecar file per swarm in the bulk dir,
+    # referenced from /swarms/{swarm_safe}/ in the wrapper.
+    swarm_records: list[dict] = []
+    for swarm in list(model._swarms.values()):
+        swarm_safe = _swarm_safe_name(swarm)
+        sidecar_name = _swarm_sidecar_filename(swarm_safe)
+        sidecar_path = os.path.join(bulk_dir, sidecar_name)
+        # h5py-direct write (single-rank in this phase; MPI is phase 6).
+        with uw.selective_ranks(0) as rank0:
+            if rank0:
+                rec = _write_swarm_to_sidecar(swarm, sidecar_path)
+                rec["safe_name"] = swarm_safe
+                rec["external_file"] = sidecar_name
+                swarm_records.append(rec)
+        uw.mpi.barrier()
+
+    if swarm_records:
+        with uw.selective_ranks(0) as rank0:
+            if rank0:
+                with h5py.File(path, "a") as f:
+                    sw_group = f[_GROUP_SWARMS]
+                    sw_group.attrs["filled_by"] = "phase3b"
+                    for rec in swarm_records:
+                        g = sw_group.create_group(rec["safe_name"])
+                        g.attrs["mesh_name"] = rec["mesh_name"]
+                        g.attrs["num_particles_local"] = rec[
+                            "num_particles_local"
+                        ]
+                        g.attrs["population_generation"] = rec[
+                            "population_generation"
+                        ]
+                        g.attrs["external_file"] = rec["external_file"]
+                        vars_g = g.create_group("variables")
+                        for var_rec in rec["vars"]:
+                            v = vars_g.create_group(_sanitise(var_rec["name"]))
+                            v.attrs["name"] = var_rec["name"]
+                            v.attrs["num_components"] = var_rec[
+                                "num_components"
+                            ]
+
     uw.mpi.barrier()
     return path
 
@@ -445,6 +485,168 @@ def read_snapshot(model, path: str) -> None:
                         f"that is not registered on this model"
                     )
                 _read_state_bearer_into(ps_group[key], obj)
+
+        # Phase 3b: restore swarms from sidecars.
+        if _GROUP_SWARMS in f:
+            sw_group = f[_GROUP_SWARMS]
+            swarms_by_safe = {
+                _swarm_safe_name(s): s for s in list(model._swarms.values())
+            }
+            for swarm_safe in sw_group.keys():
+                g = sw_group[swarm_safe]
+                swarm = swarms_by_safe.get(swarm_safe)
+                if swarm is None:
+                    raise ValueError(
+                        f"snapshot at {path} contains swarm {swarm_safe!r} "
+                        f"that is not registered on this model"
+                    )
+                external_file = str(g.attrs["external_file"])
+                _read_swarm_from_sidecar(
+                    swarm, os.path.join(bulk_dir, external_file)
+                )
+
+
+# ----- Phase 3b: swarm sidecars --------------------------------------------
+#
+# Swarms always go to their own per-swarm sidecar file from day one,
+# per Louis's "bulk is a problem with swarms, always" — no inline-vs-
+# split toggle. The wrapper's /swarms/{swarm_safe}/ records metadata
+# + an `@external_file` ref pointing at the sidecar in the bulk dir.
+#
+# The sidecar is h5py-direct (no PETSc). Swarms aren't DMPlex
+# section/vec; they're per-particle numpy arrays.
+#
+# Single-rank now; MPI gets phase 6 treatment (per-rank sidecars or
+# parallel-HDF5).
+
+
+def _swarm_safe_name(swarm) -> str:
+    """Stable name for a swarm in the snapshot layout. Mirrors the
+    in-memory snapshot's `_snapshot_stable_name`."""
+    raw = getattr(swarm, "name", None) or f"swarm_{swarm.instance_number}"
+    return _sanitise(raw)
+
+
+def _swarm_sidecar_filename(swarm_safe: str) -> str:
+    return f"{swarm_safe}.swarm.h5"
+
+
+def _write_swarm_to_sidecar(swarm, sidecar_path: str) -> dict:
+    """Write a swarm's local-particle state to a sidecar h5 file.
+
+    Returns a record dict the caller uses to populate the wrapper's
+    /swarms/{name}/ group.
+    """
+    import h5py
+
+    coord_field = swarm.dm.getField("DMSwarmPIC_coor").reshape(
+        (-1, swarm.dim)
+    )
+    coords = np.asarray(coord_field).copy()
+    swarm.dm.restoreField("DMSwarmPIC_coor")
+
+    var_records: list[dict] = []
+    with h5py.File(sidecar_path, "w") as f:
+        # File-level metadata — h5ls -v on the sidecar tells you what
+        # it is without needing UW3 (matches the wrapper's bar).
+        f.attrs["num_particles_local"] = int(coords.shape[0])
+        f.attrs["dim"] = int(swarm.dim)
+        f.attrs["mesh_name"] = str(swarm.mesh.name)
+        f.attrs["population_generation"] = int(swarm._population_generation)
+
+        f.create_dataset("coordinates", data=coords)
+
+        vars_g = f.create_group("variables")
+        for var in list(swarm._vars.values()):
+            # Filter PETSc-internal variables — same rule as the
+            # in-memory swarm capture.
+            if var.name.startswith("DMSwarm"):
+                continue
+            data = np.asarray(var.data).copy()
+            d = vars_g.create_dataset(var.clean_name, data=data)
+            d.attrs["num_components"] = int(var.num_components)
+            d.attrs["dtype"] = str(data.dtype)
+            var_records.append({
+                "name": var.clean_name,
+                "num_components": int(var.num_components),
+            })
+
+    return {
+        "num_particles_local": int(coords.shape[0]),
+        "mesh_name": str(swarm.mesh.name),
+        "population_generation": int(swarm._population_generation),
+        "vars": var_records,
+    }
+
+
+def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
+    """Restore swarm state from a sidecar file. Mirrors
+    :meth:`Swarm.apply_snapshot_payload` exactly — clear local
+    particles, re-add at saved coords, write var data back."""
+    import h5py
+
+    with h5py.File(sidecar_path, "r") as f:
+        saved_coords = np.asarray(f["coordinates"][...])
+        captured_mesh_name = str(f.attrs.get("mesh_name", ""))
+        var_data: dict[str, np.ndarray] = {}
+        if "variables" in f:
+            for name in f["variables"].keys():
+                var_data[name] = np.asarray(f["variables"][name][...])
+
+    if captured_mesh_name and captured_mesh_name != swarm.mesh.name:
+        raise ValueError(
+            f"sidecar at {sidecar_path}: parent mesh was "
+            f"{captured_mesh_name!r}, target swarm is on {swarm.mesh.name!r}"
+        )
+
+    # Clear local population. removePoint is O(1) per call (last point),
+    # so this is O(N) total — same approach as Swarm.apply_snapshot_payload.
+    while swarm.dm.getLocalSize() > 0:
+        swarm.dm.removePoint()
+
+    n_saved = int(saved_coords.shape[0])
+    if n_saved > 0:
+        swarm.dm.finalizeFieldRegister()
+        swarm.dm.addNPoints(npoints=n_saved)
+
+        coord_field = swarm.dm.getField("DMSwarmPIC_coor").reshape(
+            (-1, swarm.dim)
+        )
+        coord_field[...] = saved_coords
+        swarm.dm.restoreField("DMSwarmPIC_coor")
+
+        rank_field = swarm.dm.getField("DMSwarm_rank")
+        rank_field[...] = uw.mpi.rank
+        swarm.dm.restoreField("DMSwarm_rank")
+
+    # Invalidate canonical-data caches so subsequent var.data reads
+    # re-resolve to the rebuilt PETSc fields.
+    if hasattr(swarm._particle_coordinates, "_canonical_data"):
+        swarm._particle_coordinates._canonical_data = None
+    for var in swarm._vars.values():
+        if hasattr(var, "_canonical_data"):
+            var._canonical_data = None
+
+    # Restore counted as a population change (matches in-memory path).
+    swarm._population_generation += 1
+
+    # Write per-variable captured data back into the freshly-rebuilt
+    # swarm.
+    current_vars = {v.clean_name: v for v in swarm._vars.values()}
+    for var_name, saved in var_data.items():
+        var = current_vars.get(var_name)
+        if var is None:
+            raise ValueError(
+                f"sidecar variable {var_name!r} is not present on the "
+                f"target swarm; restore requires the same variable set"
+            )
+        current = np.asarray(var.data)
+        if current.shape != saved.shape:
+            raise ValueError(
+                f"swarm variable {var_name!r} shape mismatch on restore: "
+                f"sidecar {saved.shape} vs current {current.shape}"
+            )
+        current[...] = saved
 
 
 # ----- Phase 3a: state-bearer (Snapshottable) serialisation ----------------
