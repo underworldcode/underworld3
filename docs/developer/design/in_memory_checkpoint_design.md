@@ -263,19 +263,21 @@ different need: faithful state restore for algorithmic uses where
 
 ## API shape
 
-Full-state always; backend chosen at snapshot time by passing (or
-omitting) a path.
+Full-state always; backend chosen at save time by passing (or
+omitting) a ``file=``. (Final names landed after a phase-5 rename
+pass that replaced the draft ``snapshot``/``restore`` verbs — see
+the user guide at ``docs/advanced/snapshot-restore.md``.)
 
 ```python
-# Backend selection — same capture, different storage layer
-token = model.snapshot()                        # in-memory (default)
-model.snapshot(path='step42.snap.h5')           # on-disk full-state
+# Same call, different storage — dispatch on whether a file is given.
+token = model.save_state()                       # in-memory (default)
+model.save_state(file='step42.snap.h5')          # on-disk full-state
 
-model.restore(token)                            # in-memory restore
-model.restore('step42.snap.h5')                 # on-disk restore
+model.load_state(token)                          # in-memory restore
+model.load_state('step42.snap.h5')               # on-disk restore
 
 # Existing per-variable selective on-disk path is unchanged:
-mesh.write_timestep('step42.h5', ...)           # visualisation; not full-state
+mesh.write_timestep('step42.h5', ...)            # visualisation; not full-state
 ```
 
 Backends share a single `Snapshot` structure — only the serialisation
