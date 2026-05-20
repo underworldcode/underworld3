@@ -27,6 +27,12 @@ from .snapshot import (
 )
 from .state import Snapshottable, SnapshottableState
 from .tracker import ModelTracker, TrackerState
+from .disk_snapshot import (
+    DISK_SNAPSHOT_SCHEMA_VERSION,
+    inspect_snapshot,
+    read_snapshot_metadata,
+    write_snapshot_skeleton,
+)
 
 __all__ = [
     "CheckpointBackend",
@@ -40,4 +46,8 @@ __all__ = [
     "SnapshottableState",
     "ModelTracker",
     "TrackerState",
+    "DISK_SNAPSHOT_SCHEMA_VERSION",
+    "inspect_snapshot",
+    "read_snapshot_metadata",
+    "write_snapshot_skeleton",
 ]
