@@ -29,7 +29,9 @@ from .state import Snapshottable, SnapshottableState
 from .tracker import ModelTracker, TrackerState
 from .disk_snapshot import (
     DISK_SNAPSHOT_SCHEMA_VERSION,
+    extract_var_via_bridge,
     inspect_snapshot,
+    is_snapshot_wrapper,
     read_snapshot,
     read_snapshot_metadata,
     write_snapshot,
@@ -49,7 +51,9 @@ __all__ = [
     "ModelTracker",
     "TrackerState",
     "DISK_SNAPSHOT_SCHEMA_VERSION",
+    "extract_var_via_bridge",
     "inspect_snapshot",
+    "is_snapshot_wrapper",
     "read_snapshot",
     "read_snapshot_metadata",
     "write_snapshot",

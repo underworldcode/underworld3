@@ -589,6 +589,55 @@ def test_swarm_restore_recovers_after_particle_count_change(tmp_path):
     assert np.array_equal(np.asarray(material.data), material_pre)
 
 
+# ----- Phase 4: read_timestep is format-aware -----
+
+
+def test_read_timestep_reads_v1_1_snapshot_via_dispatch(tmp_path):
+    """The selective-read entry point users already know
+    (``var.read_timestep(...)``) reads a v1.1 snapshot wrapper too —
+    the format detection is hidden inside the call. Same-mesh read
+    is bit-exact because the KDTree query lands exactly on the
+    captured DOF coordinates."""
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    T.array[:, 0, 0] = 5.0 * T.coords[:, 0] + 3.0
+    T_pre = np.asarray(T.array[...]).copy()
+
+    path = str(tmp_path / "run.snap.h5")
+    model.save_state(file=path)
+
+    # Scribble T, then re-load via the legacy read_timestep API —
+    # but pointed at the v1.1 wrapper. Format dispatch handles it.
+    T.array[...] = -99.0
+    T.read_timestep(path, "T", 0)
+
+    assert np.allclose(np.asarray(T.array[...]), T_pre, atol=1e-12), (
+        f"read_timestep against v1.1 snapshot not bit-exact: "
+        f"max|d| = {float(np.max(np.abs(np.asarray(T.array[...]) - T_pre))):.3e}"
+    )
+
+
+def test_read_timestep_legacy_path_unchanged(tmp_path):
+    """Belt-and-braces: pointing read_timestep at a legacy
+    write_timestep file still uses the legacy code path (not the v1.1
+    bridge)."""
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    T.array[:, 0, 0] = 7.0
+    T_pre = np.asarray(T.array[...]).copy()
+
+    # Write via legacy write_timestep — different format, same content.
+    mesh.write_timestep(
+        "legacy", index=0, outputPath=str(tmp_path), meshVars=[T]
+    )
+
+    T.array[...] = -99.0
+    T.read_timestep("legacy", "T", 0, outputPath=str(tmp_path))
+    assert np.allclose(np.asarray(T.array[...]), T_pre, atol=1e-12)
+
+
 def test_swarm_internals_not_in_sidecar(tmp_path):
     """The PETSc-internal swarm variables (DMSwarmPIC_coor, DMSwarm_X0,
     DMSwarm_remeshed) are filtered at capture — they're not in the

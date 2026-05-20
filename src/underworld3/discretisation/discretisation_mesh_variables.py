@@ -1206,14 +1206,38 @@ class _BaseMeshVariable(Stateful, uw_object):
         ``file_size`` per rank.
         """
 
-        output_base_name = os.path.join(outputPath, data_filename)
-        data_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
-
-        if not os.path.isfile(os.path.abspath(data_file)):
-            raise RuntimeError(f"{os.path.abspath(data_file)} does not exist")
-
+        # Format dispatch: ``data_filename`` may be either the
+        # legacy ``write_timestep`` prefix (in which case we
+        # reconstruct the per-variable file path the usual way) or a
+        # v1.1 snapshot wrapper path produced by
+        # ``model.save_state(file=…)``. The format-detection logic is
+        # hidden from the user — same call, both formats.
         import h5py
         import numpy as np
+        from underworld3.checkpoint.disk_snapshot import (
+            is_snapshot_wrapper as _is_snapshot_wrapper,
+            extract_var_via_bridge as _extract_var_via_bridge,
+        )
+
+        output_base_name = os.path.join(outputPath, data_filename)
+        legacy_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
+
+        is_v1_1 = (
+            os.path.isfile(data_filename)
+            and not data_filename.endswith(
+                f".mesh.{data_name}.{index:05}.h5"
+            )
+            and _is_snapshot_wrapper(data_filename)
+        )
+
+        if is_v1_1:
+            data_file = data_filename
+        else:
+            data_file = legacy_file
+            if not os.path.isfile(os.path.abspath(data_file)):
+                raise RuntimeError(
+                    f"{os.path.abspath(data_file)} does not exist"
+                )
 
         # ``self.num_components`` is correct for SCALAR (1), VECTOR (dim),
         # TENSOR (dim**2) and SYM_TENSOR (dim*(dim+1)/2). ``self.shape[1]``
@@ -1236,10 +1260,21 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         if uw.mpi.rank == 0:
             if verbose:
-                print(f"Reading data file {data_file}", flush=True)
-            with h5py.File(data_file, "r") as h5f:
-                X_src = h5f["fields"]["coordinates"][()].reshape(-1, dim)
-                D_src = h5f["fields"][data_name][()].reshape(-1, n_components)
+                print(
+                    f"Reading data file {data_file} "
+                    f"(format: {'v1.1 snapshot' if is_v1_1 else 'legacy timestep'})",
+                    flush=True,
+                )
+            if is_v1_1:
+                X_src, D_src = _extract_var_via_bridge(data_file, data_name)
+                X_src = X_src.reshape(-1, dim)
+                D_src = D_src.reshape(-1, n_components)
+            else:
+                with h5py.File(data_file, "r") as h5f:
+                    X_src = h5f["fields"]["coordinates"][()].reshape(-1, dim)
+                    D_src = h5f["fields"][data_name][()].reshape(
+                        -1, n_components
+                    )
         else:
             X_src = np.empty((0, dim), dtype=np.double)
             D_src = np.empty((0, n_components), dtype=np.double)

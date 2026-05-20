@@ -815,6 +815,81 @@ def _read_state_bearer_into(group, obj) -> None:
     obj.state = dataclasses.replace(current_state, **overrides)
 
 
+def is_snapshot_wrapper(path: str) -> bool:
+    """Quick check whether ``path`` is a v1.1 snapshot wrapper file.
+
+    Used by :meth:`MeshVariable.read_timestep` to dispatch between
+    the legacy per-variable layout and the v1.1 sidecar format —
+    same user call, different storage, hidden behind the function.
+    """
+    import h5py
+
+    try:
+        with h5py.File(path, "r") as f:
+            return _GROUP_METADATA in f and _GROUP_MESHES in f
+    except (OSError, KeyError):
+        return False
+
+
+def extract_var_via_bridge(wrapper_path: str, var_name: str):
+    """Bridge for selective per-variable reads of v1.1 snapshots.
+
+    Given the wrapper path and a variable name, returns
+    ``(coords, values)`` numpy arrays — exactly what
+    :meth:`MeshVariable.read_timestep` produces on rank 0 from the
+    legacy layout. The rest of read_timestep's swarm-routing +
+    KDTree machinery is format-agnostic; this bridge is what makes
+    ``read_timestep`` work transparently against new files.
+
+    Mechanism: load the source mesh from the .mesh.h5 sidecar,
+    rebuild the source variable with the correct shape, load DOFs
+    via #146's ``read_checkpoint``, then read out ``var.coords`` +
+    ``var.array``.
+    """
+    import h5py
+
+    bulk_dir = _bulk_dir_for(wrapper_path)
+    found = None
+    with h5py.File(wrapper_path, "r") as f:
+        for mesh_safe in f[_GROUP_MESHES].keys():
+            mg = f[_GROUP_MESHES][mesh_safe]
+            for var_safe in mg["variables"].keys():
+                v_attrs = mg["variables"][var_safe].attrs
+                if str(v_attrs["name"]) == var_name:
+                    found = (
+                        str(mg.attrs["mesh_file"]),
+                        str(v_attrs["external_file"]),
+                        int(v_attrs["degree"]),
+                        int(v_attrs["components"]),
+                        bool(v_attrs["continuous"]),
+                    )
+                    break
+            if found:
+                break
+    if found is None:
+        raise ValueError(
+            f"variable {var_name!r} not found in v1.1 snapshot {wrapper_path}"
+        )
+
+    mesh_file_rel, var_file_rel, degree, components, continuous = found
+    # Rebuild a transient source mesh + variable to read DOFs into.
+    # We deliberately don't register them with the live model — these
+    # are throwaway and exit scope on return.
+    src_mesh = uw.discretisation.Mesh(os.path.join(bulk_dir, mesh_file_rel))
+    src_var = uw.discretisation.MeshVariable(
+        var_name, src_mesh, components, degree=degree, continuous=continuous,
+    )
+    src_var.read_checkpoint(
+        os.path.join(bulk_dir, var_file_rel), data_name=var_name
+    )
+
+    coords = np.asarray(src_var.coords).copy()
+    values = np.asarray(src_var.array[...]).reshape(
+        coords.shape[0], components
+    ).copy()
+    return coords, values
+
+
 def inspect_snapshot(path: str) -> str:
     """Human-readable one-shot summary of a snapshot file's metadata.
 
