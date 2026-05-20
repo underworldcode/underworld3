@@ -54,15 +54,113 @@ import sympy
 from sympy import sympify
 import numpy as np
 
-from typing import Optional, Callable, Union
+from dataclasses import dataclass, field
+from typing import Any, Optional, Callable, Union
 
 import underworld3 as uw
 from underworld3 import VarType
 
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
+from underworld3.checkpoint.state import SnapshottableState
 
 from petsc4py import PETSc
+
+
+# ----- Snapshot state dataclasses for DDt flavors -----
+#
+# Per the design note's "General serialisation contract" section, each
+# DDt class exposes a derived State dataclass via ``.state``. The
+# private ``_dt_history`` / ``_history_initialised`` / etc. remain the
+# authoritative store; the dataclass is built on read and unpacked on
+# write. See ``src/underworld3/checkpoint/state.py``.
+#
+# PR 3 retrofits the Symbolic class. PR 4 will extend the pattern to
+# Eulerian, SemiLagrangian, Lagrangian, and Lagrangian_Swarm — each has
+# the same dt_history / history_initialised / n_solves_completed / dt
+# core plus a flavor-specific psi_star shape.
+
+
+@dataclass
+class _DDtCoreState(SnapshottableState):
+    """Common evolution-tracking fields shared by every DDt flavor.
+
+    Each concrete flavor extends this with its own psi_star
+    representation (sympy expressions for Symbolic; mesh-variable
+    names for Eulerian / SemiLagrangian; swarm-variable names for
+    Lagrangian / Lagrangian_Swarm). The actual variable DOF / particle
+    data lives in the mesh-variable or swarm-variable path of the
+    snapshot — these State dataclasses carry only the metadata needed
+    to re-bind on restore.
+    """
+
+    _schema_version: int = 1
+    dt_history: list = field(default_factory=list)
+    history_initialised: bool = False
+    n_solves_completed: int = 0
+    dt: Any = None
+
+
+@dataclass
+class DDtSymbolicState(_DDtCoreState):
+    """Snapshot of a :class:`Symbolic` DDt instance's evolution state.
+
+    ``Symbolic`` is the pure-symbolic flavor — ``psi_star`` history
+    slots hold sympy expressions (immutable), captured by value.
+    """
+
+    psi_star: list = field(default_factory=list)
+
+
+@dataclass
+class DDtEulerianState(_DDtCoreState):
+    """Snapshot of an :class:`Eulerian` DDt instance.
+
+    ``psi_star`` is a list of :class:`MeshVariable` objects; their
+    DOF arrays travel via the mesh-variable snapshot path. This State
+    only records the variable names for restore-side verification
+    that the binding still holds.
+    """
+
+    psi_star_var_names: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DDtSemiLagrangianState(_DDtCoreState):
+    """Snapshot of a :class:`SemiLagrangian` DDt instance.
+
+    Like :class:`DDtEulerianState`, plus an optional ``forcing_star``
+    variable (when ``with_forcing_history=True``) used by ETD-2
+    integration of the Maxwell relaxation operator.
+    """
+
+    psi_star_var_names: list[str] = field(default_factory=list)
+    forcing_star_var_name: Optional[str] = None
+    with_forcing_history: bool = False
+
+
+@dataclass
+class DDtLagrangianState(_DDtCoreState):
+    """Snapshot of a :class:`Lagrangian` DDt instance.
+
+    ``psi_star`` is a list of :class:`SwarmVariable` objects on this
+    DDt's internal swarm. Their data travels via the swarm-variable
+    snapshot path.
+    """
+
+    psi_star_var_names: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DDtLagrangianSwarmState(_DDtCoreState):
+    """Snapshot of a :class:`Lagrangian_Swarm` DDt instance.
+
+    Same shape as :class:`DDtLagrangianState`; the difference is
+    operational (Lagrangian creates its own swarm, Lagrangian_Swarm
+    uses a user-provided one) rather than state-shaped.
+    """
+
+    psi_star_var_names: list[str] = field(default_factory=list)
 
 
 def _as_float(value):
@@ -472,7 +570,76 @@ class Symbolic(uw_object):
         _update_am_values(self._am_coeffs, 1, self.theta)
         _update_exp_values(self._exp_coeffs, None, None)
 
+        # Register with the active default model as a Snapshottable
+        # state-bearer. Safe if no model is active.
+        try:
+            import underworld3 as _uw
+
+            _uw.get_default_model()._register_state_bearer(self)
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
+            pass
+
         return
+
+    # ----- Unitary snapshot / restore -----
+    #
+    # Option (B)-style adapter per the design note: state is a derived
+    # dataclass that surfaces the mutable evolution-tracking attrs.
+    # The private ``_dt_history`` / ``_history_initialised`` / etc.
+    # remain the authoritative store; the State dataclass is built on
+    # read and unpacked on write.
+    #
+    # See ``docs/developer/design/in_memory_checkpoint_design.md`` and
+    # ``src/underworld3/checkpoint/state.py`` for the contract.
+
+    @property
+    def state(self) -> "DDtSymbolicState":
+        """Return a snapshot-of-state dataclass for this DDt instance."""
+        return DDtSymbolicState(
+            dt_history=list(self._dt_history),
+            history_initialised=bool(self._history_initialised),
+            n_solves_completed=int(self._n_solves_completed),
+            dt=self._dt,
+            psi_star=list(self.psi_star),
+        )
+
+    @state.setter
+    def state(self, s: "DDtSymbolicState") -> None:
+        """Write a captured state back. Reconciles derived coefficients."""
+        if s._schema_version != DDtSymbolicState._schema_version:
+            raise ValueError(
+                f"DDtSymbolicState schema version mismatch: snapshot "
+                f"{s._schema_version} vs current "
+                f"{DDtSymbolicState._schema_version}"
+            )
+        if len(s.dt_history) != len(self._dt_history):
+            raise ValueError(
+                f"dt_history length mismatch ({len(s.dt_history)} vs "
+                f"{len(self._dt_history)}); order changed since snapshot?"
+            )
+        if len(s.psi_star) != len(self.psi_star):
+            raise ValueError(
+                f"psi_star length mismatch ({len(s.psi_star)} vs "
+                f"{len(self.psi_star)}); order changed since snapshot?"
+            )
+        self._dt_history = list(s.dt_history)
+        self._history_initialised = bool(s.history_initialised)
+        self._n_solves_completed = int(s.n_solves_completed)
+        self._dt = s.dt
+        self.psi_star = list(s.psi_star)
+        # Re-derive BDF/AM coefficients so downstream reads see values
+        # consistent with the restored primary state without waiting
+        # for the next update_pre_solve.
+        _update_bdf_values(
+            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
+        )
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
     @property
     def psi_fn(self):
@@ -782,7 +949,59 @@ class Eulerian(uw_object):
         _update_am_values(self._am_coeffs, 1, self.theta)
         _update_exp_values(self._exp_coeffs, None, None)
 
+        try:
+            import underworld3 as _uw
+
+            _uw.get_default_model()._register_state_bearer(self)
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
+            pass
+
         return
+
+    @property
+    def state(self) -> "DDtEulerianState":
+        """Return a snapshot-of-state dataclass for this Eulerian DDt."""
+        return DDtEulerianState(
+            dt_history=list(self._dt_history),
+            history_initialised=bool(self._history_initialised),
+            n_solves_completed=int(self._n_solves_completed),
+            dt=self._dt,
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+        )
+
+    @state.setter
+    def state(self, s: "DDtEulerianState") -> None:
+        if s._schema_version != DDtEulerianState._schema_version:
+            raise ValueError(
+                f"DDtEulerianState schema version mismatch: snapshot "
+                f"{s._schema_version} vs current "
+                f"{DDtEulerianState._schema_version}"
+            )
+        if len(s.dt_history) != len(self._dt_history):
+            raise ValueError(
+                f"dt_history length mismatch ({len(s.dt_history)} vs "
+                f"{len(self._dt_history)}); order changed since snapshot?"
+            )
+        current_names = [ps.clean_name for ps in self.psi_star]
+        if s.psi_star_var_names and s.psi_star_var_names != current_names:
+            raise ValueError(
+                f"psi_star variable names changed since snapshot: "
+                f"{s.psi_star_var_names} vs {current_names}"
+            )
+        self._dt_history = list(s.dt_history)
+        self._history_initialised = bool(s.history_initialised)
+        self._n_solves_completed = int(s.n_solves_completed)
+        self._dt = s.dt
+        _update_bdf_values(
+            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
+        )
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
     @property
     def psi_fn(self):
@@ -1422,7 +1641,72 @@ class SemiLagrangian(uw_object):
 
         self.I = uw.maths.Integral(mesh, None)
 
+        try:
+            import underworld3 as _uw
+
+            _uw.get_default_model()._register_state_bearer(self)
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
+            pass
+
         return
+
+    @property
+    def state(self) -> "DDtSemiLagrangianState":
+        return DDtSemiLagrangianState(
+            dt_history=list(self._dt_history),
+            history_initialised=bool(self._history_initialised),
+            n_solves_completed=int(self._n_solves_completed),
+            dt=self._dt,
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+            forcing_star_var_name=(
+                self.forcing_star.clean_name
+                if self.forcing_star is not None else None
+            ),
+            with_forcing_history=bool(self.with_forcing_history),
+        )
+
+    @state.setter
+    def state(self, s: "DDtSemiLagrangianState") -> None:
+        if s._schema_version != DDtSemiLagrangianState._schema_version:
+            raise ValueError(
+                f"DDtSemiLagrangianState schema version mismatch: snapshot "
+                f"{s._schema_version} vs current "
+                f"{DDtSemiLagrangianState._schema_version}"
+            )
+        if len(s.dt_history) != len(self._dt_history):
+            raise ValueError(
+                f"dt_history length mismatch ({len(s.dt_history)} vs "
+                f"{len(self._dt_history)}); order changed since snapshot?"
+            )
+        current_names = [ps.clean_name for ps in self.psi_star]
+        if s.psi_star_var_names and s.psi_star_var_names != current_names:
+            raise ValueError(
+                f"psi_star variable names changed since snapshot: "
+                f"{s.psi_star_var_names} vs {current_names}"
+            )
+        if s.with_forcing_history != bool(self.with_forcing_history):
+            raise ValueError(
+                f"with_forcing_history flag differs between snapshot "
+                f"({s.with_forcing_history}) and current "
+                f"({self.with_forcing_history})"
+            )
+        self._dt_history = list(s.dt_history)
+        self._history_initialised = bool(s.history_initialised)
+        self._n_solves_completed = int(s.n_solves_completed)
+        self._dt = s.dt
+        _update_bdf_values(
+            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
+        )
+        # SemiLagrangian's update_pre_solve uses theta=0.5 directly
+        # (it doesn't take a theta argument in __init__), so the setter
+        # matches that.
+        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
 
     @property
     def psi_fn(self):
@@ -2459,7 +2743,58 @@ class Lagrangian(uw_object):
 
         dudt_swarm.populate(fill_param)
 
+        try:
+            import underworld3 as _uw
+
+            _uw.get_default_model()._register_state_bearer(self)
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
+            pass
+
         return
+
+    @property
+    def state(self) -> "DDtLagrangianState":
+        return DDtLagrangianState(
+            dt_history=list(self._dt_history),
+            history_initialised=bool(self._history_initialised),
+            n_solves_completed=int(self._n_solves_completed),
+            dt=self._dt,
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+        )
+
+    @state.setter
+    def state(self, s: "DDtLagrangianState") -> None:
+        if s._schema_version != DDtLagrangianState._schema_version:
+            raise ValueError(
+                f"DDtLagrangianState schema version mismatch: snapshot "
+                f"{s._schema_version} vs current "
+                f"{DDtLagrangianState._schema_version}"
+            )
+        if len(s.dt_history) != len(self._dt_history):
+            raise ValueError(
+                f"dt_history length mismatch ({len(s.dt_history)} vs "
+                f"{len(self._dt_history)}); order changed since snapshot?"
+            )
+        current_names = [ps.clean_name for ps in self.psi_star]
+        if s.psi_star_var_names and s.psi_star_var_names != current_names:
+            raise ValueError(
+                f"psi_star variable names changed since snapshot: "
+                f"{s.psi_star_var_names} vs {current_names}"
+            )
+        self._dt_history = list(s.dt_history)
+        self._history_initialised = bool(s.history_initialised)
+        self._n_solves_completed = int(s.n_solves_completed)
+        self._dt = s.dt
+        _update_bdf_values(
+            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
+        )
+        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
@@ -2760,7 +3095,58 @@ class Lagrangian_Swarm(uw_object):
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
         _update_am_values(self._am_coeffs, 1, 0.5)
 
+        try:
+            import underworld3 as _uw
+
+            _uw.get_default_model()._register_state_bearer(self)
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (import not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
+            pass
+
         return
+
+    @property
+    def state(self) -> "DDtLagrangianSwarmState":
+        return DDtLagrangianSwarmState(
+            dt_history=list(self._dt_history),
+            history_initialised=bool(self._history_initialised),
+            n_solves_completed=int(self._n_solves_completed),
+            dt=self._dt,
+            psi_star_var_names=[ps.clean_name for ps in self.psi_star],
+        )
+
+    @state.setter
+    def state(self, s: "DDtLagrangianSwarmState") -> None:
+        if s._schema_version != DDtLagrangianSwarmState._schema_version:
+            raise ValueError(
+                f"DDtLagrangianSwarmState schema version mismatch: snapshot "
+                f"{s._schema_version} vs current "
+                f"{DDtLagrangianSwarmState._schema_version}"
+            )
+        if len(s.dt_history) != len(self._dt_history):
+            raise ValueError(
+                f"dt_history length mismatch ({len(s.dt_history)} vs "
+                f"{len(self._dt_history)}); order changed since snapshot?"
+            )
+        current_names = [ps.clean_name for ps in self.psi_star]
+        if s.psi_star_var_names and s.psi_star_var_names != current_names:
+            raise ValueError(
+                f"psi_star variable names changed since snapshot: "
+                f"{s.psi_star_var_names} vs {current_names}"
+            )
+        self._dt_history = list(s.dt_history)
+        self._history_initialised = bool(s.history_initialised)
+        self._n_solves_completed = int(s.n_solves_completed)
+        self._dt = s.dt
+        _update_bdf_values(
+            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
+        )
+        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
