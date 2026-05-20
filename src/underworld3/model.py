@@ -134,6 +134,13 @@ class Model(PintNativeModelMixin, BaseModel):
     # other than checkpoint may also walk it.
     _state_bearers: Any = PrivateAttr(default_factory=weakref.WeakSet)
 
+    # Model-dwelling tracker: the snapshot-managed record of where a
+    # run is (time, step, dt) plus any user-registered quantities.
+    # Auto-registered as a state-bearer in __init__ so snapshot /
+    # restore manage it automatically. See
+    # src/underworld3/checkpoint/tracker.py.
+    _tracker: Any = PrivateAttr(default=None)
+
     def __init__(self, name: Optional[str] = None, **kwargs):
         """
         Initialize a new Model instance.
@@ -150,6 +157,13 @@ class Model(PintNativeModelMixin, BaseModel):
             kwargs["name"] = name
 
         super().__init__(**kwargs)
+
+        # Model-dwelling tracker, auto-registered so snapshot/restore
+        # manage time/step/dt and any user-added quantities for free.
+        from underworld3.checkpoint.tracker import ModelTracker
+
+        self._tracker = ModelTracker()
+        self._register_state_bearer(self._tracker)
 
         # Set initial state if not provided
         if self.state == ModelState.CONFIGURED:
@@ -572,6 +586,18 @@ class Model(PintNativeModelMixin, BaseModel):
     def get_solver(self, name: str):
         """Get a solver by name from the model registry"""
         return self._solvers.get(name)
+
+    @property
+    def tracker(self):
+        """Snapshot-managed record of where this run is.
+
+        Holds ``time`` / ``step`` / ``dt`` (pre-seeded conventions)
+        plus any quantity you assign — ``model.tracker.foo = ...``.
+        Everything on the tracker is captured by :meth:`snapshot` and
+        reverted by :meth:`restore`; loose Python variables are not.
+        Solvers do not depend on it; using it is optional.
+        """
+        return self._tracker
 
     def _register_state_bearer(self, obj) -> None:
         """Register a Snapshottable object with this model.

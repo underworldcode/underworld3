@@ -345,7 +345,14 @@ def test_symbolic_ddt_snapshot_is_deep_copy():
     ddt.update_post_solve(dt=0.1)
 
     snap = model.snapshot()
-    captured_state = snap.state_bearers[0][1]  # (key, state)
+    # Find the DDt's captured state by type — state_bearers is
+    # unordered and now also contains the model tracker.
+    from underworld3.systems.ddt import DDtSymbolicState
+
+    captured_state = next(
+        st for _key, st in snap.state_bearers
+        if isinstance(st, DDtSymbolicState)
+    )
     captured_dt_history = list(captured_state.dt_history)
 
     # Scribble the live DDt's internal state — must not leak into snapshot.

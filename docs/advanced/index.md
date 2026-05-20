@@ -49,6 +49,13 @@ Darcy flow, Richards equation, and variably-saturated groundwater modelling.
 
 **[→ Porous Media Flow](porous-flow.md)**
 
+### State Snapshots & Restore
+A "stash for timesteps": snapshot the full model state, try a step,
+restore exactly if you don't like it. For backtracking, adaptive Δt,
+and predictor–corrector workflows.
+
+**[→ State Snapshots & Restore](snapshot-restore.md)**
+
 ### Troubleshooting
 Common issues, debugging strategies, and solutions.
 
@@ -85,6 +92,7 @@ custom-meshes
 curved-boundary-conditions
 mesh-adaptation
 porous-flow
+snapshot-restore
 troubleshooting
 api-patterns
 SWARM-INTEGRATION-STATISTICS
