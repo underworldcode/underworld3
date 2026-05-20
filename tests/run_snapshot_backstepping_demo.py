@@ -7,7 +7,7 @@ to the mesh cell radius (CFL ratio). The story:
   - timestep forward at small Δt for a while (CFL well under 1),
   - take a snapshot,
   - try one too-large Δt (CFL spikes far above 1),
-  - detect the bad step, call ``model.restore(snap)``,
+  - detect the bad step, call ``model.load_state(snap)``,
   - replay the same time interval with many small steps (CFL stays small),
   - continue past the speculative end-time.
 
@@ -82,7 +82,7 @@ def main(out_path: str = "snapshot_backstepping_demo.png"):
         cfl_kept.append(disp / cfl_threshold)
 
     t_snap = t
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # --- Phase 2: speculative big step ---
     disp_bad = take_step(candidate_dt)
@@ -90,7 +90,7 @@ def main(out_path: str = "snapshot_backstepping_demo.png"):
     cfl_bad = disp_bad / cfl_threshold
 
     # --- CFL violated → restore ---
-    model.restore(snap)
+    model.load_state(snap)
 
     # --- Phase 3: substep replay ---
     times_recovered = []
@@ -171,7 +171,7 @@ def main(out_path: str = "snapshot_backstepping_demo.png"):
     ax.text(
         0.5 * (t_snap + t_bad_end),
         0.4 * cfl_bad,
-        "model.restore(snap)",
+        "model.load_state(snap)",
         ha="center", va="center", fontsize=10, color="0.35",
         style="italic",
         bbox=dict(facecolor="white", edgecolor="0.7", boxstyle="round,pad=0.25"),
@@ -200,7 +200,7 @@ def main(out_path: str = "snapshot_backstepping_demo.png"):
     ax.set_xlabel("simulation time  t")
     ax.set_ylabel("CFL ratio  =  max per-step displacement / cell radius")
     ax.set_title(
-        "Adaptive-Δt back-stepping  •  model.snapshot() / model.restore()",
+        "Adaptive-Δt back-stepping  •  model.save_state() / model.load_state()",
         pad=22,
     )
     ax.legend(loc="upper right", frameon=False)

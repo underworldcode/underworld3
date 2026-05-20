@@ -5,14 +5,14 @@ Companion to ``run_snapshot_backstepping_demo.py``. That script answers
 spatial panels at the four moments that matter:
 
     [initial state (snapshot taken here)]      [after speculative bad step]
-    [after model.restore(snap)]                [after substep recovery to same t]
+    [after model.load_state(snap)]                [after substep recovery to same t]
 
 Each panel shows the swarm particles coloured by their carried
 material value (initial radial position), with the domain boundary
 drawn as context. The diagonal pairs tell two stories:
 
   - top-left vs. bottom-left should be **visually identical**. That's
-    the proof that model.restore(snap) put the captured state back
+    the proof that model.load_state(snap) put the captured state back
     exactly. If the figure ever stops showing two identical panels
     in that diagonal, the snapshot mechanism has broken.
 
@@ -69,7 +69,7 @@ def main(out_path: str = "snapshot_backstepping_spatial.png"):
 
     # Take the snapshot — this is the state that bottom-left will
     # have to match after restore.
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # --- Speculative big step ---
     swarm.advection(V_fn, delta_t=candidate_dt, step_limit=False)
@@ -79,8 +79,8 @@ def main(out_path: str = "snapshot_backstepping_spatial.png"):
     )
     cfl_bad = max_disp_bad / cfl_threshold
 
-    # --- model.restore(snap) ---
-    model.restore(snap)
+    # --- model.load_state(snap) ---
+    model.load_state(snap)
     state_after_restore = _capture(swarm, material)
 
     # --- Substep recovery to the same target time ---
@@ -121,7 +121,7 @@ def main(out_path: str = "snapshot_backstepping_spatial.png"):
         (
             axes[1, 0],
             state_after_restore,
-            "After model.restore(snap)",
+            "After model.load_state(snap)",
             "t = 0.00  •  visually identical to top-left",
         ),
         (

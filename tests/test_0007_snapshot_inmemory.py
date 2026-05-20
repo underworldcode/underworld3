@@ -24,12 +24,12 @@ def test_meshvariable_in_memory_roundtrip():
     T.array[:, 0, 0] = T.coords[:, 0] + 2.0 * T.coords[:, 1]
     pre_array = np.asarray(T.array[...]).copy()
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     T.array[...] = -42.0
     assert not np.allclose(np.asarray(T.array[...]), pre_array), "scribble didn't take"
 
-    model.restore(snap)
+    model.load_state(snap)
 
     assert np.allclose(np.asarray(T.array[...]), pre_array, atol=0.0, rtol=0.0), (
         "MeshVariable.array is not bit-equivalent after restore"
@@ -49,12 +49,12 @@ def test_multiple_meshvariables_roundtrip():
     T_pre = np.asarray(T.array[...]).copy()
     V_pre = np.asarray(V.array[...]).copy()
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     T.array[...] = 0.0
     V.array[...] = 0.0
 
-    model.restore(snap)
+    model.load_state(snap)
 
     assert np.allclose(np.asarray(T.array[...]), T_pre)
     assert np.allclose(np.asarray(V.array[...]), V_pre)
@@ -66,7 +66,7 @@ def test_snapshot_is_independent_of_subsequent_writes():
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
     T.array[:, 0, 0] = 5.0
 
-    snap = model.snapshot()
+    snap = model.save_state()
     T.array[...] = -1.0
 
     # The backend still holds the captured value, not the post-write value.
@@ -87,14 +87,14 @@ def test_mesh_version_invalidates_restore():
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
     T.array[:, 0, 0] = 1.0
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Simulate a mesh-mutation event (e.g. adapt(), or any deformation
     # routed through the high-level callback that bumps _mesh_version).
     mesh._mesh_version += 1
 
     with pytest.raises(SnapshotInvalidatedError, match="_mesh_version"):
-        model.restore(snap)
+        model.load_state(snap)
 
 
 def test_restore_rejects_non_snapshot():
@@ -103,16 +103,7 @@ def test_restore_rejects_non_snapshot():
     _ = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
     with pytest.raises(TypeError):
-        model.restore({"not": "a snapshot"})
-
-
-def test_snapshot_path_is_v1_1_scope():
-    """Passing path= raises NotImplementedError until the on-disk backend lands."""
-    uw, model, mesh = _fresh_model_and_mesh()
-    _ = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
-
-    with pytest.raises(NotImplementedError):
-        model.snapshot(path="/tmp/should_not_be_written.h5")
+        model.load_state({"not": "a snapshot"})
 
 
 # ----- Swarm coverage (rebuild-on-restore semantics) -----
@@ -150,14 +141,14 @@ def test_swarm_no_change_roundtrip():
     coords_pre = _swarm_coords(swarm)
     material_pre = np.asarray(material.data).copy()
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     coord_field = swarm.dm.getField("DMSwarmPIC_coor").reshape((-1, swarm.dim))
     coord_field[...] = -99.0
     swarm.dm.restoreField("DMSwarmPIC_coor")
     material.data[...] = -99.0
 
-    model.restore(snap)
+    model.load_state(snap)
 
     assert np.allclose(_swarm_coords(swarm), coords_pre)
     assert np.allclose(np.asarray(material.data), material_pre)
@@ -172,14 +163,14 @@ def test_swarm_restore_after_migrate():
     material_pre = np.asarray(material.data).copy()
     pop_gen_pre = swarm._population_generation
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Mutate: migrate() will bump the counter regardless of whether
     # particles actually moved. Restore must succeed anyway.
     swarm.migrate(remove_sent_points=True)
     assert swarm._population_generation > pop_gen_pre, "migrate didn't bump counter"
 
-    model.restore(snap)
+    model.load_state(snap)
 
     assert np.allclose(_swarm_coords(swarm), coords_pre), (
         "restore did not recover particle coords across a migrate event"
@@ -197,14 +188,14 @@ def test_swarm_restore_after_add_particles():
     material_pre = np.asarray(material.data).copy()
     npre = swarm.dm.getLocalSize()
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     swarm.add_particles_with_coordinates(
         np.array([[0.5, 0.5], [0.25, 0.75]])
     )
     assert swarm.dm.getLocalSize() != npre, "add_particles didn't grow swarm"
 
-    model.restore(snap)
+    model.load_state(snap)
 
     assert swarm.dm.getLocalSize() == npre, (
         "restore did not roll back to the captured particle count"
@@ -218,7 +209,7 @@ def test_swarm_population_generation_is_informational_not_a_gate():
     uw, model, mesh, swarm, _ = _fresh_model_mesh_and_swarm()
     gen_at_capture = swarm._population_generation
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     swarm.migrate(remove_sent_points=True)
     swarm.add_particles_with_coordinates(np.array([[0.5, 0.5]]))
@@ -226,7 +217,7 @@ def test_swarm_population_generation_is_informational_not_a_gate():
     assert gen_during > gen_at_capture
 
     # Restore is expected to *succeed*, not raise.
-    model.restore(snap)
+    model.load_state(snap)
 
     # And the counter has moved on from where it was at capture,
     # because restore itself counts as a population change.
@@ -237,7 +228,7 @@ def test_swarm_internal_variables_are_not_captured():
     """Internal DMSwarm_* variables stay out of the snapshot key list."""
     uw, model, mesh, swarm, material = _fresh_model_mesh_and_swarm()
 
-    snap = model.snapshot()
+    snap = model.save_state()
     keys = snap.backend.list_vectors()
     swarm_name = swarm._snapshot_stable_name()
     svar_keys = [k for k in keys if k.startswith(f"swarm:{swarm_name}:var:")]
@@ -299,14 +290,14 @@ def test_symbolic_ddt_roundtrip_recovers_state():
     assert state_pre.n_solves_completed == 2
     assert state_pre.dt_history == [0.2, 0.1]
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Mutate: take another solve, dt_history changes.
     ddt.update_pre_solve(dt=0.5)
     ddt.update_post_solve(dt=0.5)
     assert ddt.state.dt_history == [0.5, 0.2]
 
-    model.restore(snap)
+    model.load_state(snap)
 
     # Primary state is back to captured.
     state_post = ddt.state
@@ -344,7 +335,7 @@ def test_symbolic_ddt_snapshot_is_deep_copy():
     ddt.update_pre_solve(dt=0.1)
     ddt.update_post_solve(dt=0.1)
 
-    snap = model.snapshot()
+    snap = model.save_state()
     # Find the DDt's captured state by type — state_bearers is
     # unordered and now also contains the model tracker.
     from underworld3.systems.ddt import DDtSymbolicState
@@ -394,14 +385,14 @@ def test_eulerian_ddt_roundtrip():
     ddt._dt = 0.2
     state_pre = ddt.state
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     ddt._dt_history = [0.99, 0.99]
     ddt._history_initialised = False
     ddt._n_solves_completed = 0
     ddt._dt = None
 
-    model.restore(snap)
+    model.load_state(snap)
 
     assert ddt.state.dt_history == state_pre.dt_history
     assert ddt.state.history_initialised == state_pre.history_initialised
@@ -437,11 +428,11 @@ def test_semilagrangian_ddt_roundtrip():
     ddt._dt = 0.3
     state_pre = ddt.state
 
-    snap = model.snapshot()
+    snap = model.save_state()
     ddt._dt_history = [None, None]
     ddt._history_initialised = False
     ddt._n_solves_completed = 0
-    model.restore(snap)
+    model.load_state(snap)
 
     assert ddt.state.dt_history == state_pre.dt_history
     assert ddt.state.history_initialised is True
@@ -474,11 +465,11 @@ def test_lagrangian_ddt_roundtrip():
     ddt._dt = 0.2
     state_pre = ddt.state
 
-    snap = model.snapshot()
+    snap = model.save_state()
     ddt._dt_history = [None, None]
     ddt._history_initialised = False
     ddt._n_solves_completed = 0
-    model.restore(snap)
+    model.load_state(snap)
 
     assert ddt.state.dt_history == state_pre.dt_history
     assert ddt.state.history_initialised is True
@@ -549,7 +540,7 @@ def test_backstepping_cfl_recovery_end_to_end():
 
     # Take the snapshot *before* the speculative step. Everything that
     # will be touched gets captured.
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Speculative step at the candidate Δt. Bigger than the user
     # thinks is safe — they'll check after and back-step if it isn't.
@@ -569,7 +560,7 @@ def test_backstepping_cfl_recovery_end_to_end():
     # Back-step. Everything captured is brought back to the snapshot
     # point — swarm positions, the material variable carried with the
     # swarm, and the DDt's BDF history.
-    model.restore(snap)
+    model.load_state(snap)
 
     assert np.allclose(swarm._particle_coordinates.data, coords_initial), (
         "particle positions did not roll back after restore"
@@ -724,7 +715,7 @@ def test_continuation_deterministic_after_restore():
     for _ in range(3):
         _step(uw, V_fn, T, swarm, ddt, 0.05)
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Branch A: K steps straight from S.
     for _ in range(5):
@@ -732,7 +723,7 @@ def test_continuation_deterministic_after_restore():
     state_A = _capture_full_state(T, swarm, material, ddt)
 
     # Branch B: restore S, then the identical K steps.
-    model.restore(snap)
+    model.load_state(snap)
     for _ in range(5):
         _step(uw, V_fn, T, swarm, ddt, 0.05)
     state_B = _capture_full_state(T, swarm, material, ddt)
@@ -756,7 +747,7 @@ def test_continuation_bit_identical_across_stash_and_recover():
     for _ in range(3):
         _step(uw, V_fn, T, swarm, ddt, 0.05)
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Control: K good steps from S.
     for _ in range(5):
@@ -766,9 +757,9 @@ def test_continuation_bit_identical_across_stash_and_recover():
     # Stash scenario: back to S, take a deliberately disruptive step
     # (10x Δt — large advection, big T jump, DDt history shift), then
     # discard it via restore and run the intended K good steps.
-    model.restore(snap)
+    model.load_state(snap)
     _step(uw, V_fn, T, swarm, ddt, 0.5)  # the regretted step
-    model.restore(snap)
+    model.load_state(snap)
     for _ in range(5):
         _step(uw, V_fn, T, swarm, ddt, 0.05)
     stash = _capture_full_state(T, swarm, material, ddt)

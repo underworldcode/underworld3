@@ -112,12 +112,12 @@ def main():
     pre_count = comm.allreduce(swarm.dm.getLocalSize(), op=MPI.SUM)
     pre_ddt = (list(ddt.state.dt_history), ddt.state.n_solves_completed)
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # --- Property 1 + 2: a migration-inducing step, then restore ---
     step(uw, V_fn, T, swarm, ddt, 0.3)  # bigger dt -> more migration
     mid_count = comm.allreduce(swarm.dm.getLocalSize(), op=MPI.SUM)
-    model.restore(snap)
+    model.load_state(snap)
     post = global_sorted_particles(swarm, gid, material)
     post_count = comm.allreduce(swarm.dm.getLocalSize(), op=MPI.SUM)
     post_ddt = (list(ddt.state.dt_history), ddt.state.n_solves_completed)
@@ -126,15 +126,15 @@ def main():
     ddt_ok = pre_ddt == post_ddt
 
     # --- Property 3: bit-identical continuation across a stash ---
-    snap2 = model.snapshot()
+    snap2 = model.save_state()
     for _ in range(4):
         step(uw, V_fn, T, swarm, ddt, 0.1)
     ctrl = global_sorted_particles(swarm, gid, material)
     ctrl_ddt = (list(ddt.state.dt_history), ddt.state.n_solves_completed)
 
-    model.restore(snap2)
+    model.load_state(snap2)
     step(uw, V_fn, T, swarm, ddt, 0.5)  # the regretted step
-    model.restore(snap2)
+    model.load_state(snap2)
     for _ in range(4):
         step(uw, V_fn, T, swarm, ddt, 0.1)
     stash = global_sorted_particles(swarm, gid, material)

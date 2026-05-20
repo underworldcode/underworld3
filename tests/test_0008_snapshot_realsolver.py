@@ -105,14 +105,14 @@ def test_realsolver_restore_recovers_solution_field():
         adv_diff.solve(timestep=1.0e-3)
 
     pre_T = _capture(T)
-    snap = model.snapshot()
+    snap = model.save_state()
 
     adv_diff.solve(timestep=5.0)  # absurd Δt: converges, over-diffused
     assert not np.allclose(_capture(T), pre_T, atol=1e-8), (
         "the regretted solve was not actually disruptive"
     )
 
-    model.restore(snap)
+    model.load_state(snap)
     assert np.array_equal(_capture(T), pre_T), (
         "solution field not exactly recovered after restore"
     )
@@ -132,18 +132,18 @@ def test_realsolver_regretted_step_leaves_no_trace():
 
     for _ in range(3):
         adv_diff.solve(timestep=1.0e-3)
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # B: restore, then K good solves.
-    model.restore(snap)
+    model.load_state(snap)
     for _ in range(4):
         adv_diff.solve(timestep=1.0e-3)
     B = _capture(T)
 
     # C: restore, a regretted solve, restore, the same K good solves.
-    model.restore(snap)
+    model.load_state(snap)
     adv_diff.solve(timestep=5.0)
-    model.restore(snap)
+    model.load_state(snap)
     for _ in range(4):
         adv_diff.solve(timestep=1.0e-3)
     C = _capture(T)
@@ -165,7 +165,7 @@ def test_realsolver_continuation_within_solver_tolerance():
 
     for _ in range(3):
         adv_diff.solve(timestep=1.0e-3)
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Control: never snapshotted/restored — straight K solves.
     for _ in range(4):
@@ -173,9 +173,9 @@ def test_realsolver_continuation_within_solver_tolerance():
     ctrl = _capture(T)
 
     # Stash path: restore, regretted solve, restore, same K solves.
-    model.restore(snap)
+    model.load_state(snap)
     adv_diff.solve(timestep=5.0)
-    model.restore(snap)
+    model.load_state(snap)
     for _ in range(4):
         adv_diff.solve(timestep=1.0e-3)
     stash = _capture(T)

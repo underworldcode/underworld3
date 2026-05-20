@@ -34,13 +34,13 @@ def test_tracker_builtins_revert_on_restore():
     model.tracker.step = 7
     model.tracker.dt = 0.05
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     model.tracker.time = 99.0
     model.tracker.step = 999
     model.tracker.dt = 1.0
 
-    model.restore(snap)
+    model.load_state(snap)
 
     assert model.tracker.time == 3.14
     assert model.tracker.step == 7
@@ -53,9 +53,9 @@ def test_tracker_user_quantity_reverts():
     uw, model = _fresh_model()
     model.tracker.my_diagnostic = 42.0
 
-    snap = model.snapshot()
+    snap = model.save_state()
     model.tracker.my_diagnostic = -1.0
-    model.restore(snap)
+    model.load_state(snap)
 
     assert model.tracker.my_diagnostic == 42.0
 
@@ -67,11 +67,11 @@ def test_tracker_numpy_quantity_reverts_by_value():
     arr = np.array([1.0, 2.0, 3.0])
     model.tracker.history = arr
 
-    snap = model.snapshot()
+    snap = model.save_state()
     model.tracker.history[:] = -9.0  # in-place mutation
     assert np.allclose(model.tracker.history, -9.0)
 
-    model.restore(snap)
+    model.load_state(snap)
     assert np.allclose(model.tracker.history, [1.0, 2.0, 3.0])
 
 
@@ -81,11 +81,11 @@ def test_tracker_quantity_added_after_snapshot_is_dropped_on_restore():
     uw, model = _fresh_model()
     model.tracker.a = 1.0
 
-    snap = model.snapshot()
+    snap = model.save_state()
     model.tracker.b = 2.0  # created after snapshot
     assert "b" in model.tracker
 
-    model.restore(snap)
+    model.load_state(snap)
     assert "a" in model.tracker
     assert "b" not in model.tracker
 
@@ -99,13 +99,13 @@ def test_tracker_is_what_makes_state_revertible():
     loose_time = 0.0
     model.tracker.time = 0.0
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Advance both the loose variable and the tracked one.
     loose_time = 5.0
     model.tracker.time = 5.0
 
-    model.restore(snap)
+    model.load_state(snap)
 
     # The loose variable is untouched by restore (the language can't
     # know about it); the tracked one rolled back.
@@ -122,10 +122,10 @@ def test_tracker_state_roundtrip_is_bit_identical():
     model.tracker.payload = np.arange(5).astype(float)
     state_pre = model.tracker.state
 
-    snap = model.snapshot()
+    snap = model.save_state()
     model.tracker.time = 12345.0
     model.tracker.payload[:] = 0.0
-    model.restore(snap)
+    model.load_state(snap)
 
     state_post = model.tracker.state
     assert state_post.managed["time"] == state_pre.managed["time"]
@@ -158,7 +158,7 @@ def test_tracker_continuation_with_solver_loop():
     for _ in range(3):
         do_step(0.05)
 
-    snap = model.snapshot()
+    snap = model.save_state()
     t_snap, s_snap = model.tracker.time, model.tracker.step
 
     # Regretted big step.
@@ -166,7 +166,7 @@ def test_tracker_continuation_with_solver_loop():
     assert model.tracker.step == s_snap + 1
     assert model.tracker.time != t_snap
 
-    model.restore(snap)
+    model.load_state(snap)
     assert model.tracker.time == t_snap
     assert model.tracker.step == s_snap
 
