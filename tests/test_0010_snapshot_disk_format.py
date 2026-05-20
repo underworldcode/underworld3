@@ -45,7 +45,9 @@ def test_skeleton_writes_expected_group_structure(tmp_path):
 
     with h5py.File(path, "r") as f:
         top = set(f.keys())
-    assert top == {"metadata", "mesh", "variables", "swarms", "python_state"}
+    # Variables nest under each mesh (/meshes/{name}/variables/...) so
+    # they are not a top-level group.
+    assert top == {"metadata", "meshes", "swarms", "python_state"}
 
 
 def test_metadata_is_inspectable_without_uw3(tmp_path):
@@ -165,6 +167,156 @@ def test_skeleton_groups_have_filled_by_marker(tmp_path):
     uw.checkpoint.write_snapshot_skeleton(model, path)
 
     with h5py.File(path, "r") as f:
-        for name in ("mesh", "variables", "swarms", "python_state"):
+        for name in ("meshes", "swarms", "python_state"):
             assert "filled_by" in f[name].attrs
             assert str(f[name].attrs["filled_by"]) == ""
+
+
+# ----- Phase 2: mesh + mesh-variable bulk via #146 -----
+
+
+def _fresh_model_mesh_and_vars():
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    uw.use_strict_units(False)
+    uw.use_nondimensional_scaling(False)
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 4.0
+    )
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    V = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
+    return uw, model, mesh, T, V
+
+
+def test_write_snapshot_produces_wrapper_and_bulk_dir(tmp_path):
+    """The two artifacts the convention promises: wrapper file +
+    sibling .bulk/ directory containing PETSc HDF5 files."""
+    import os
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    T.array[:, 0, 0] = 5.0
+    V.array[:, 0, 0] = -3.0
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    bulk = str(tmp_path / "run.snap.bulk")
+    assert os.path.exists(path)
+    assert os.path.isdir(bulk)
+    # #146-format files in the bulk dir.
+    files = sorted(os.listdir(bulk))
+    # At least: mesh file + one file per variable.
+    assert any(f.endswith(".mesh.00000.h5") for f in files)
+    assert any("T.00000.h5" in f for f in files)
+    assert any("V.00000.h5" in f for f in files)
+
+
+def test_write_snapshot_populates_wrapper_layout(tmp_path):
+    """The wrapper carries the per-mesh + per-variable metadata that
+    makes 'what's in this snapshot?' answerable from h5py alone."""
+    import h5py
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    T.array[:, 0, 0] = 1.0
+    V.array[:, 0, 0] = 2.0
+    V.array[:, 0, 1] = 3.0
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    with h5py.File(path, "r") as f:
+        assert f["meshes"].attrs["filled_by"] == "phase2"
+        # One mesh subgroup
+        mesh_names = list(f["meshes"].keys())
+        assert len(mesh_names) == 1
+        mg = f["meshes"][mesh_names[0]]
+        # Per-mesh attrs
+        assert mg.attrs["name"] == mesh.name
+        assert mg.attrs["mesh_file"].endswith(".mesh.00000.h5")
+        # Variables subgroup
+        var_names = sorted(mg["variables"].keys())
+        assert var_names == ["T", "V"]
+        # Per-var attrs include shape info + external_file pointer.
+        v_attrs = mg["variables"]["V"].attrs
+        assert v_attrs["components"] == 2
+        assert v_attrs["degree"] == 2
+        assert v_attrs["external_file"].endswith("V.00000.h5")
+
+
+def test_write_read_snapshot_bit_exact_roundtrip(tmp_path):
+    """The core phase-2 guarantee: write a snapshot, scribble all
+    variables, read snapshot back, all variables match write-time
+    values bit-for-bit (#146's PETSc DMPlex same-rank reload, just
+    delivered via the wrapper)."""
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    T.array[:, 0, 0] = 5.0 * T.coords[:, 0] - 2.0
+    V.array[:, 0, 0] = 3.0 * V.coords[:, 0]
+    V.array[:, 0, 1] = 7.0 * V.coords[:, 1]
+    T_pre = np.asarray(T.array[...]).copy()
+    V_pre = np.asarray(V.array[...]).copy()
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Scribble.
+    T.array[...] = -99.0
+    V.array[...] = -99.0
+
+    uw.checkpoint.read_snapshot(model, path)
+
+    assert np.array_equal(np.asarray(T.array[...]), T_pre), (
+        f"T not bit-exact after read_snapshot — max|d|="
+        f"{float(np.max(np.abs(np.asarray(T.array[...]) - T_pre))):.3e}"
+    )
+    assert np.array_equal(np.asarray(V.array[...]), V_pre), (
+        f"V not bit-exact after read_snapshot — max|d|="
+        f"{float(np.max(np.abs(np.asarray(V.array[...]) - V_pre))):.3e}"
+    )
+
+
+def test_read_snapshot_rejects_missing_bulk_dir(tmp_path):
+    """If the user moves the wrapper without the bulk dir, read fails
+    with a clear pointer rather than an obscure h5py error."""
+    import os
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Delete the bulk dir to simulate the move-the-wrapper-only mistake.
+    import shutil
+    shutil.rmtree(str(tmp_path / "run.snap.bulk"))
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    with pytest.raises(FileNotFoundError, match="bulk directory missing"):
+        uw.checkpoint.read_snapshot(model, path)
+
+
+def test_read_snapshot_rejects_mismatched_mesh(tmp_path):
+    """If the target model's meshes don't match the snapshot's, raise
+    clearly — mesh-rebuild on read is v1.2 scope."""
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Fresh model with a *different* mesh — write_snapshot's mesh.name
+    # won't match.
+    uw.reset_default_model()
+    model2 = uw.get_default_model()
+    other = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(2.0, 2.0), cellSize=1.0 / 3.0,
+    )
+    # Don't reuse the original mesh's name — make the lookup miss.
+    other.name = "definitely_a_different_mesh"
+
+    with pytest.raises(ValueError, match="not registered on this model"):
+        uw.checkpoint.read_snapshot(model2, path)

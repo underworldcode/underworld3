@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 from typing import Any, Optional
 
 import numpy as np
@@ -46,16 +47,17 @@ import underworld3 as uw
 DISK_SNAPSHOT_SCHEMA_VERSION = 1
 
 # Top-level group names — fixed; renaming would be a schema-version bump.
+# Variables are NOT a top-level group; they nest under each mesh:
+# /meshes/{name}/variables/{var}.  Swarms similarly carry their own
+# variables when phase 3 lands.
 _GROUP_METADATA = "metadata"
-_GROUP_MESH = "mesh"
-_GROUP_VARIABLES = "variables"
+_GROUP_MESHES = "meshes"
 _GROUP_SWARMS = "swarms"
 _GROUP_PYTHON_STATE = "python_state"
 
 _TOP_LEVEL_GROUPS = (
     _GROUP_METADATA,
-    _GROUP_MESH,
-    _GROUP_VARIABLES,
+    _GROUP_MESHES,
     _GROUP_SWARMS,
     _GROUP_PYTHON_STATE,
 )
@@ -180,8 +182,7 @@ def write_snapshot_skeleton(model, path: str) -> str:
             # see the file's intended shape from day one — phases 2/3
             # populate them.
             for name in (
-                _GROUP_MESH,
-                _GROUP_VARIABLES,
+                _GROUP_MESHES,
                 _GROUP_SWARMS,
                 _GROUP_PYTHON_STATE,
             ):
@@ -235,6 +236,188 @@ def read_snapshot_metadata(path: str) -> dict:
                 pass
 
     return md
+
+
+# ----- Phase 2: mesh + meshvar bulk via #146's PETSc primitives -----
+#
+# Layout convention:
+#
+#   /path/to/run.snap.h5              wrapper (metadata, h5py-readable)
+#   /path/to/run.snap.bulk/           companion directory (one per snapshot)
+#       {mesh_safe}.mesh.00000.h5     mesh DM dump (PETSc HDF5)
+#       {mesh_safe}.{var_clean}.00000.h5  per-variable section + vec (PETSc HDF5)
+#       ... one set per (mesh, var) ...
+#
+# The bulk-dir path is derived from the wrapper path by convention, so a
+# user opening just the wrapper file can find the bulk. They are a unit
+# for portability — move them together.
+
+
+def _bulk_dir_for(wrapper_path: str) -> str:
+    """Convention: wrapper at `run.snap.h5` ⇒ bulk at `run.snap.bulk/`."""
+    base = wrapper_path[:-3] if wrapper_path.endswith(".h5") else wrapper_path
+    return base + ".bulk"
+
+
+def _sanitise(name: str) -> str:
+    """Sanitise a mesh / variable name for use as a filename component.
+
+    Replaces anything that isn't alphanumeric or in ``._-`` with ``_``.
+    Falls back to ``unnamed`` if the result is empty. The original name
+    is preserved in HDF5 group attrs as the ``@name`` field.
+    """
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    return safe or "unnamed"
+
+
+def write_snapshot(model, path: str) -> str:
+    """Write a complete on-disk snapshot of the model's mesh + mesh-variable
+    state (phase 2 scope; swarms and python_state land in phase 3).
+
+    Produces two artifacts:
+
+    - ``path`` — the wrapper HDF5 file with rich metadata and the group
+      structure inspectable via ``h5ls``.
+    - ``_bulk_dir_for(path)`` — companion directory containing the
+      PETSc HDF5 files (mesh DM + per-variable section/vec) produced
+      by #146's :meth:`Mesh.write_checkpoint`.
+
+    The two are a unit; move them together. Returns the wrapper path.
+    """
+    import h5py
+
+    # Phase-1 layer: metadata + skeleton groups.
+    write_snapshot_skeleton(model, path)
+    bulk_dir = _bulk_dir_for(path)
+
+    # rank-0 creates the bulk directory; collective ops below need it
+    # to exist on the rank doing the PETSc-HDF5 write (which is rank 0
+    # in this single-file write — actually PETSc's HDF5 viewer is
+    # collective, so all ranks participate).
+    with uw.selective_ranks(0) as rank0:
+        if rank0:
+            os.makedirs(bulk_dir, exist_ok=True)
+    uw.mpi.barrier()
+
+    # For each registered mesh, drive #146's write_checkpoint into the
+    # bulk directory. write_checkpoint is collective (PETSc HDF5
+    # viewer), so all ranks must participate.
+    mesh_records: list[dict] = []
+    for mesh in list(model._meshes.values()):
+        mesh_safe = _sanitise(mesh.name)
+        mesh_vars = list(mesh.vars.values())
+        # Filter to allocated variables — same skip rule as the in-memory
+        # path: lazy-allocated vars with _gvec == None have no data.
+        mesh_vars = [v for v in mesh_vars if v._gvec is not None]
+
+        mesh.write_checkpoint(
+            mesh_safe,
+            outputPath=bulk_dir,
+            meshVars=mesh_vars,
+            index=0,
+        )
+
+        mesh_records.append({
+            "name": mesh.name,
+            "safe_name": mesh_safe,
+            "mesh_file": f"{mesh_safe}.mesh.00000.h5",
+            "vars": [
+                {
+                    "name": v.clean_name,
+                    "components": int(v.num_components),
+                    "degree": int(v.degree),
+                    "continuous": bool(v.continuous),
+                    # Per-variable file produced by Mesh.write_checkpoint
+                    # at outputPath: "{base}.{var.clean_name}.{index:05}.h5".
+                    "external_file": (
+                        f"{mesh_safe}.{v.clean_name}.00000.h5"
+                    ),
+                }
+                for v in mesh_vars
+            ],
+        })
+
+    # Reopen the wrapper to populate /meshes with the per-mesh records
+    # and to mark the groups filled.
+    with uw.selective_ranks(0) as rank0:
+        if rank0:
+            with h5py.File(path, "a") as f:
+                meshes_group = f[_GROUP_MESHES]
+                meshes_group.attrs["filled_by"] = "phase2"
+                meshes_group.attrs["bulk_dir"] = os.path.basename(bulk_dir)
+
+                for rec in mesh_records:
+                    g = meshes_group.create_group(rec["safe_name"])
+                    g.attrs["name"] = rec["name"]
+                    g.attrs["mesh_file"] = rec["mesh_file"]
+
+                    vars_g = g.create_group("variables")
+                    for var_rec in rec["vars"]:
+                        v = vars_g.create_group(_sanitise(var_rec["name"]))
+                        v.attrs["name"] = var_rec["name"]
+                        v.attrs["components"] = var_rec["components"]
+                        v.attrs["degree"] = var_rec["degree"]
+                        v.attrs["continuous"] = var_rec["continuous"]
+                        v.attrs["external_file"] = var_rec["external_file"]
+
+    uw.mpi.barrier()
+    return path
+
+
+def read_snapshot(model, path: str) -> None:
+    """Load mesh-variable DOFs from an on-disk snapshot into the model.
+
+    The model must already have the same meshes (by name) and the
+    same variables (by ``clean_name``) registered — this is the
+    same-rank-count restart path that mirrors :func:`restore` for the
+    in-memory snapshot. Cross-run / rebuild-on-load is v1.2 scope.
+
+    Bulk data is read via #146's :meth:`MeshVariable.read_checkpoint`;
+    no KDTree remapping (that's phase 4's compatibility layer in
+    ``read_timestep``).
+    """
+    import h5py
+
+    md = read_snapshot_metadata(path)
+    bulk_dir = _bulk_dir_for(path)
+    if not os.path.isdir(bulk_dir):
+        raise FileNotFoundError(
+            f"snapshot bulk directory missing: {bulk_dir} (expected next "
+            f"to wrapper {path})"
+        )
+
+    # Build {original_name -> registered Mesh} for lookup
+    meshes_by_name = {m.name: m for m in model._meshes.values()}
+
+    with h5py.File(path, "r") as f:
+        meshes_group = f[_GROUP_MESHES]
+        for mesh_safe in meshes_group.keys():
+            g = meshes_group[mesh_safe]
+            mesh_name = str(g.attrs.get("name", mesh_safe))
+            mesh = meshes_by_name.get(mesh_name)
+            if mesh is None:
+                raise ValueError(
+                    f"snapshot at {path} contains mesh {mesh_name!r} which "
+                    f"is not registered on this model "
+                    f"(registered: {sorted(meshes_by_name.keys())})"
+                )
+
+            current_vars = {v.clean_name: v for v in mesh.vars.values()}
+            vars_g = g["variables"]
+            for var_safe in vars_g.keys():
+                v_attrs = vars_g[var_safe].attrs
+                var_name = str(v_attrs["name"])
+                external_file = str(v_attrs["external_file"])
+                var = current_vars.get(var_name)
+                if var is None:
+                    raise ValueError(
+                        f"snapshot variable {var_name!r} not registered on "
+                        f"mesh {mesh_name!r}"
+                    )
+                var.read_checkpoint(
+                    os.path.join(bulk_dir, external_file),
+                    data_name=var_name,
+                )
 
 
 def inspect_snapshot(path: str) -> str:
