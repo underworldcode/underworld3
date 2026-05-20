@@ -320,3 +320,129 @@ def test_read_snapshot_rejects_mismatched_mesh(tmp_path):
 
     with pytest.raises(ValueError, match="not registered on this model"):
         uw.checkpoint.read_snapshot(model2, path)
+
+
+# ----- Phase 3a: state-bearer (Snapshottable) serialisation -----
+
+
+def test_tracker_round_trips_through_disk_snapshot(tmp_path):
+    """ModelTracker is always auto-registered as a state-bearer, so
+    every snapshot must round-trip its time/step/dt and any
+    user-added managed quantities exactly."""
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    model.tracker.time = 3.14
+    model.tracker.step = 42
+    model.tracker.dt = 0.05
+    model.tracker.my_diagnostic = 99.0
+    model.tracker.history_arr = np.array([1.0, 2.0, 3.0])
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Scribble everything tracker-side.
+    model.tracker.time = -1.0
+    model.tracker.step = -1
+    model.tracker.dt = -1.0
+    model.tracker.my_diagnostic = -1.0
+    model.tracker.history_arr = np.array([-1.0, -1.0, -1.0])
+
+    uw.checkpoint.read_snapshot(model, path)
+
+    assert model.tracker.time == 3.14
+    assert model.tracker.step == 42
+    assert model.tracker.dt == 0.05
+    assert model.tracker.my_diagnostic == 99.0
+    assert np.array_equal(
+        np.asarray(model.tracker.history_arr), np.array([1.0, 2.0, 3.0])
+    )
+
+
+def test_python_state_group_is_inspectable(tmp_path):
+    """An external h5py reader sees the per-bearer groups under
+    /python_state with class info + a managed dict for the tracker."""
+    import h5py
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    model.tracker.time = 1.0
+    model.tracker.step = 2
+    model.tracker.my_q = 7.0
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    with h5py.File(path, "r") as f:
+        ps = f["python_state"]
+        assert ps.attrs["filled_by"] == "phase3a"
+
+        tracker_keys = [k for k in ps.keys() if k.startswith("ModelTracker_")]
+        assert len(tracker_keys) == 1
+        tg = ps[tracker_keys[0]]
+        assert tg.attrs["__bearer_class__"] == "ModelTracker"
+        assert tg.attrs["__state_class__"] == "TrackerState"
+        # TrackerState.managed is a dict, stored as a sub-group.
+        assert "managed" in tg and isinstance(tg["managed"], h5py.Group)
+        managed = tg["managed"]
+        # Pre-seeded conventions present.
+        assert "time" in managed.attrs
+        assert float(managed.attrs["time"]) == 1.0
+        assert int(managed.attrs["step"]) == 2
+        # User-added quantity present.
+        assert "my_q" in managed.attrs
+        assert float(managed.attrs["my_q"]) == 7.0
+
+
+def test_ddt_symbolic_state_round_trips_primary_fields(tmp_path):
+    """A Symbolic DDt has dt_history, history_initialised,
+    n_solves_completed, dt round-tripped via the generic dataclass
+    serialiser. psi_star (sympy) is documented as skipped — the
+    primary BDF-control fields are what matter for re-continuing."""
+    import underworld3 as uw
+    import sympy
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    ddt = uw.systems.ddt.Symbolic(T.sym, order=2)
+    ddt._dt_history = [0.05, 0.03]
+    ddt._history_initialised = True
+    ddt._n_solves_completed = 2
+    ddt._dt = 0.05
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Scribble the primary fields.
+    ddt._dt_history = [None, None]
+    ddt._history_initialised = False
+    ddt._n_solves_completed = 0
+    ddt._dt = None
+
+    uw.checkpoint.read_snapshot(model, path)
+
+    assert ddt.state.dt_history == [0.05, 0.03]
+    assert ddt.state.history_initialised is True
+    assert ddt.state.n_solves_completed == 2
+    assert ddt.state.dt == 0.05
+
+
+def test_read_snapshot_rejects_missing_state_bearer(tmp_path):
+    """If a state-bearer exists in the snapshot but not on the load-
+    target model, raise — same-rank/same-model contract."""
+    import underworld3 as uw
+
+    # Source model has a Symbolic DDt; snapshot it.
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    ddt = uw.systems.ddt.Symbolic(T.sym, order=2)
+    ddt._dt_history = [0.05, 0.05]
+
+    path = str(tmp_path / "run.snap.h5")
+    uw.checkpoint.write_snapshot(model, path)
+
+    # Target model has no DDt.
+    uw, model2, mesh2, T2, V2 = _fresh_model_mesh_and_vars()
+    # Force name match so the mesh part loads.
+    mesh2.name = mesh.name
+
+    with pytest.raises(ValueError, match="state-bearer .* not registered"):
+        uw.checkpoint.read_snapshot(model2, path)

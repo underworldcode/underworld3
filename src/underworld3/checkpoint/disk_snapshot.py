@@ -34,6 +34,7 @@ UW3 imports.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import os
@@ -360,6 +361,16 @@ def write_snapshot(model, path: str) -> str:
                         v.attrs["continuous"] = var_rec["continuous"]
                         v.attrs["external_file"] = var_rec["external_file"]
 
+                # Phase 3a: state-bearer dataclass serialisation.
+                ps_group = f[_GROUP_PYTHON_STATE]
+                ps_group.attrs["filled_by"] = "phase3a"
+                for obj in list(model._state_bearers):
+                    key = f"{type(obj).__name__}_{obj.instance_number}"
+                    if key in ps_group:
+                        continue   # idempotent if write_snapshot called twice
+                    bg = ps_group.create_group(key)
+                    _write_state_bearer_to_group(bg, obj)
+
     uw.mpi.barrier()
     return path
 
@@ -418,6 +429,188 @@ def read_snapshot(model, path: str) -> None:
                     os.path.join(bulk_dir, external_file),
                     data_name=var_name,
                 )
+
+        # Phase 3a: restore state-bearer dataclasses.
+        if _GROUP_PYTHON_STATE in f:
+            ps_group = f[_GROUP_PYTHON_STATE]
+            bearers_by_key = {
+                f"{type(o).__name__}_{o.instance_number}": o
+                for o in list(model._state_bearers)
+            }
+            for key in ps_group.keys():
+                obj = bearers_by_key.get(key)
+                if obj is None:
+                    raise ValueError(
+                        f"snapshot at {path} contains state-bearer {key!r} "
+                        f"that is not registered on this model"
+                    )
+                _read_state_bearer_into(ps_group[key], obj)
+
+
+# ----- Phase 3a: state-bearer (Snapshottable) serialisation ----------------
+#
+# Each registered state-bearer (DDt instances, ModelTracker, future
+# helpers) exposes a `.state` property returning a SnapshottableState
+# dataclass. We serialise each dataclass's fields into a per-bearer
+# HDF5 group under /python_state, keyed by the same stable name the
+# in-memory snapshot uses: f"{type(obj).__name__}_{obj.instance_number}".
+#
+# Serialisation is *generic over dataclass fields* — no per-class
+# special code. Handled value types: None, bool, int, float, str,
+# numpy.ndarray, list (JSON-encoded), dict (recursive subgroup). Other
+# types (notably sympy expressions in DDtSymbolicState.psi_star) are
+# marked with `<field>_skipped` and not round-tripped — documented as
+# a v1.x limitation; consumers either use a non-Symbolic DDt flavor
+# or accept the psi_star reset.
+
+
+_NULL_SENTINEL = "__none__"
+_TYPE_ATTR = "__bearer_class__"
+_DATACLASS_ATTR = "__state_class__"
+
+
+def _is_h5_attr_scalar(value: Any) -> bool:
+    return isinstance(value, (bool, int, float, str)) and not isinstance(
+        value, bool
+    ) or isinstance(value, (bool, str))
+
+
+def _serialise_field(h5group, name: str, value: Any) -> None:
+    """Write a Python value into an HDF5 group as attr/dataset/subgroup.
+
+    The shape of the storage records the type:
+      - attr scalar (int/float/bool/str) for scalars
+      - attr `<name>` = '__none__' for None
+      - attr `<name>__json` for JSON-encodable lists / nested simple structures
+      - dataset `<name>` for numpy arrays
+      - subgroup `<name>` for dict values, recursing
+      - attr `<name>__skipped` = '<type>' for anything else
+    """
+    if value is None:
+        h5group.attrs[name] = _NULL_SENTINEL
+        return
+    if isinstance(value, (bool, int, float)):
+        h5group.attrs[name] = value
+        return
+    if isinstance(value, str):
+        h5group.attrs[name] = value
+        return
+    if isinstance(value, np.ndarray):
+        if name in h5group:
+            del h5group[name]
+        h5group.create_dataset(name, data=value)
+        return
+    if isinstance(value, dict):
+        if name in h5group:
+            del h5group[name]
+        sub = h5group.create_group(name)
+        for k, v in value.items():
+            _serialise_field(sub, str(k), v)
+        return
+    if isinstance(value, (list, tuple)):
+        try:
+            h5group.attrs[name + "__json"] = json.dumps(list(value))
+            return
+        except (TypeError, ValueError):
+            h5group.attrs[name + "__skipped"] = (
+                f"unserialisable list (len={len(value)}, "
+                f"first-type={type(value[0]).__name__ if value else 'empty'})"
+            )
+            return
+    h5group.attrs[name + "__skipped"] = (
+        f"unserialisable type {type(value).__name__}"
+    )
+
+
+def _group_to_dict(h5group) -> dict:
+    """Read a subgroup back as a plain dict — symmetric to the dict
+    branch of :func:`_serialise_field`. Recurses for nested groups."""
+    import h5py
+
+    out: dict = {}
+    for k in h5group.attrs.keys():
+        if k.endswith("__skipped"):
+            continue
+        if k.endswith("__json"):
+            out[k[: -len("__json")]] = json.loads(h5group.attrs[k])
+            continue
+        v = h5group.attrs[k]
+        if isinstance(v, str) and v == _NULL_SENTINEL:
+            out[k] = None
+        elif isinstance(v, np.generic):
+            out[k] = v.item()
+        else:
+            out[k] = v
+    for k in h5group.keys():
+        item = h5group[k]
+        if isinstance(item, h5py.Group):
+            out[k] = _group_to_dict(item)
+        else:
+            out[k] = np.asarray(item[...])
+    return out
+
+
+def _deserialise_field(h5group, name: str, fallback: Any) -> Any:
+    """Inverse of :func:`_serialise_field`. Returns ``fallback`` if the
+    field was skipped at write time, so we don't clobber a sensible
+    default with a placeholder."""
+    import h5py
+
+    if name in h5group:
+        item = h5group[name]
+        if isinstance(item, h5py.Group):
+            return _group_to_dict(item)
+        return np.asarray(item[...])  # h5py.Dataset
+
+    if name in h5group.attrs:
+        v = h5group.attrs[name]
+        if isinstance(v, str) and v == _NULL_SENTINEL:
+            return None
+        if isinstance(v, np.generic):
+            return v.item()
+        return v
+
+    if (name + "__json") in h5group.attrs:
+        return json.loads(h5group.attrs[name + "__json"])
+
+    if (name + "__skipped") in h5group.attrs:
+        # Skipped at write time — keep the current value rather than
+        # clobber it with a placeholder.
+        return fallback
+
+    return fallback
+
+
+def _write_state_bearer_to_group(group, obj) -> None:
+    """Serialise a Snapshottable's .state into the given HDF5 group."""
+    state = obj.state
+    group.attrs[_TYPE_ATTR] = type(obj).__name__
+    group.attrs[_DATACLASS_ATTR] = type(state).__name__
+    group.attrs["instance_number"] = int(obj.instance_number)
+
+    for f in dataclasses.fields(state):
+        _serialise_field(group, f.name, getattr(state, f.name))
+
+
+def _read_state_bearer_into(group, obj) -> None:
+    """Restore a Snapshottable's .state from a group written by
+    :func:`_write_state_bearer_to_group`. Uses the live ``obj.state``
+    as a type template — fields that were skipped at write time keep
+    their current value rather than being clobbered by a placeholder.
+    """
+    current_state = obj.state
+    captured_class = str(group.attrs.get(_DATACLASS_ATTR, ""))
+    if captured_class and captured_class != type(current_state).__name__:
+        raise ValueError(
+            f"state-bearer class mismatch: snapshot expects "
+            f"{captured_class}, current is {type(current_state).__name__}"
+        )
+
+    overrides = {}
+    for f in dataclasses.fields(current_state):
+        new_val = _deserialise_field(group, f.name, getattr(current_state, f.name))
+        overrides[f.name] = new_val
+    obj.state = dataclasses.replace(current_state, **overrides)
 
 
 def inspect_snapshot(path: str) -> str:
