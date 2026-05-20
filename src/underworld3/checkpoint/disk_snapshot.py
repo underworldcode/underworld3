@@ -371,38 +371,59 @@ def write_snapshot(model, path: str) -> str:
                     bg = ps_group.create_group(key)
                     _write_state_bearer_to_group(bg, obj)
 
-    # Phase 3b: swarms — one sidecar file per swarm in the bulk dir,
-    # referenced from /swarms/{swarm_safe}/ in the wrapper.
+    # Phase 3b + 6: swarms — per-rank sidecar files in the bulk dir,
+    # referenced from /swarms/{swarm_safe}/ via a sidecar_pattern attr.
+    # Every rank writes its own sidecar; all-ranks-participate so the
+    # bulk dir is complete before the wrapper records the layout.
+    rank = int(uw.mpi.rank)
+    size = int(uw.mpi.size)
     swarm_records: list[dict] = []
     for swarm in list(model._swarms.values()):
         swarm_safe = _swarm_safe_name(swarm)
-        sidecar_name = _swarm_sidecar_filename(swarm_safe)
+        sidecar_name = _swarm_sidecar_filename(swarm_safe, rank, size)
         sidecar_path = os.path.join(bulk_dir, sidecar_name)
-        # h5py-direct write (single-rank in this phase; MPI is phase 6).
-        with uw.selective_ranks(0) as rank0:
-            if rank0:
-                rec = _write_swarm_to_sidecar(swarm, sidecar_path)
-                rec["safe_name"] = swarm_safe
-                rec["external_file"] = sidecar_name
-                swarm_records.append(rec)
-        uw.mpi.barrier()
+        rec = _write_swarm_to_sidecar(swarm, sidecar_path)
+        rec["safe_name"] = swarm_safe
+        rec["sidecar_pattern"] = _swarm_sidecar_pattern(swarm_safe)
+        swarm_records.append(rec)
+    uw.mpi.barrier()
 
+    # Wrapper update is rank-0-only; gather global counts across
+    # ranks first so the wrapper carries a complete inventory.
     if swarm_records:
+        try:
+            from mpi4py import MPI
+
+            comm = MPI.COMM_WORLD
+            global_counts = {
+                rec["safe_name"]: int(
+                    comm.allreduce(rec["num_particles_local"], op=MPI.SUM)
+                )
+                for rec in swarm_records
+            }
+        except ImportError:
+            global_counts = {
+                rec["safe_name"]: int(rec["num_particles_local"])
+                for rec in swarm_records
+            }
+
         with uw.selective_ranks(0) as rank0:
             if rank0:
                 with h5py.File(path, "a") as f:
                     sw_group = f[_GROUP_SWARMS]
-                    sw_group.attrs["filled_by"] = "phase3b"
+                    sw_group.attrs["filled_by"] = "phase3b+phase6"
+                    sw_group.attrs["mpi_size_at_write"] = size
                     for rec in swarm_records:
                         g = sw_group.create_group(rec["safe_name"])
                         g.attrs["mesh_name"] = rec["mesh_name"]
-                        g.attrs["num_particles_local"] = rec[
-                            "num_particles_local"
+                        g.attrs["num_particles_global"] = global_counts[
+                            rec["safe_name"]
                         ]
                         g.attrs["population_generation"] = rec[
                             "population_generation"
                         ]
-                        g.attrs["external_file"] = rec["external_file"]
+                        g.attrs["sidecar_pattern"] = rec["sidecar_pattern"]
+                        g.attrs["mpi_size_at_write"] = size
                         vars_g = g.create_group("variables")
                         for var_rec in rec["vars"]:
                             v = vars_g.create_group(_sanitise(var_rec["name"]))
@@ -486,12 +507,25 @@ def read_snapshot(model, path: str) -> None:
                     )
                 _read_state_bearer_into(ps_group[key], obj)
 
-        # Phase 3b: restore swarms from sidecars.
+        # Phase 3b + 6: restore swarms from per-rank sidecars.
         if _GROUP_SWARMS in f:
             sw_group = f[_GROUP_SWARMS]
+            if "mpi_size_at_write" in sw_group.attrs:
+                write_size = int(sw_group.attrs["mpi_size_at_write"])
+                if write_size != int(uw.mpi.size):
+                    raise ValueError(
+                        f"snapshot at {path} was written on {write_size} "
+                        f"MPI rank(s); this run is on {uw.mpi.size}. "
+                        f"Cross-rank-count restore is not supported by the "
+                        f"snapshot mechanism — use mesh.write_timestep for "
+                        f"that case."
+                    )
+
             swarms_by_safe = {
                 _swarm_safe_name(s): s for s in list(model._swarms.values())
             }
+            rank = int(uw.mpi.rank)
+            size = int(uw.mpi.size)
             for swarm_safe in sw_group.keys():
                 g = sw_group[swarm_safe]
                 swarm = swarms_by_safe.get(swarm_safe)
@@ -500,9 +534,11 @@ def read_snapshot(model, path: str) -> None:
                         f"snapshot at {path} contains swarm {swarm_safe!r} "
                         f"that is not registered on this model"
                     )
-                external_file = str(g.attrs["external_file"])
+                # Resolve the per-rank sidecar name from the pattern.
+                pattern = str(g.attrs["sidecar_pattern"])
+                sidecar_name = pattern.format(rank=rank, size=size)
                 _read_swarm_from_sidecar(
-                    swarm, os.path.join(bulk_dir, external_file)
+                    swarm, os.path.join(bulk_dir, sidecar_name)
                 )
 
 
@@ -527,8 +563,20 @@ def _swarm_safe_name(swarm) -> str:
     return _sanitise(raw)
 
 
-def _swarm_sidecar_filename(swarm_safe: str) -> str:
-    return f"{swarm_safe}.swarm.h5"
+def _swarm_sidecar_filename(swarm_safe: str, rank: int, size: int) -> str:
+    """Per-rank sidecar (phase 6 — parallel-safe).
+
+    Each rank writes its own swarm sidecar; restoring requires the
+    same rank count. The filename carries both the writer's rank and
+    the total rank count so each file is self-describing.
+    """
+    return f"{swarm_safe}.swarm.rank{rank:04d}of{size:04d}.h5"
+
+
+def _swarm_sidecar_pattern(swarm_safe: str) -> str:
+    """Pattern stored in the wrapper for readers to fill in their own
+    (rank, size) when locating their sidecar."""
+    return f"{swarm_safe}.swarm.rank{{rank:04d}}of{{size:04d}}.h5"
 
 
 def _write_swarm_to_sidecar(swarm, sidecar_path: str) -> dict:
@@ -553,6 +601,11 @@ def _write_swarm_to_sidecar(swarm, sidecar_path: str) -> dict:
         f.attrs["dim"] = int(swarm.dim)
         f.attrs["mesh_name"] = str(swarm.mesh.name)
         f.attrs["population_generation"] = int(swarm._population_generation)
+        # Parallel-write provenance — each per-rank sidecar carries
+        # its writer's identity so the reader can sanity-check it
+        # opened the right file.
+        f.attrs["mpi_rank"] = int(uw.mpi.rank)
+        f.attrs["mpi_size_at_write"] = int(uw.mpi.size)
 
         f.create_dataset("coordinates", data=coords)
 
@@ -588,11 +641,26 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
     with h5py.File(sidecar_path, "r") as f:
         saved_coords = np.asarray(f["coordinates"][...])
         captured_mesh_name = str(f.attrs.get("mesh_name", ""))
+        captured_rank = int(f.attrs.get("mpi_rank", 0))
+        captured_size = int(f.attrs.get("mpi_size_at_write", 1))
         var_data: dict[str, np.ndarray] = {}
         if "variables" in f:
             for name in f["variables"].keys():
                 var_data[name] = np.asarray(f["variables"][name][...])
 
+    if captured_size != uw.mpi.size:
+        raise ValueError(
+            f"sidecar at {sidecar_path}: was written on "
+            f"{captured_size} MPI rank(s); this run is on {uw.mpi.size}. "
+            f"Cross-rank-count snapshot restore is out of scope — restart "
+            f"on the same rank count or use mesh.write_timestep for the "
+            f"flexible-restart path."
+        )
+    if captured_rank != uw.mpi.rank:
+        raise ValueError(
+            f"sidecar at {sidecar_path}: written by rank {captured_rank}; "
+            f"this is rank {uw.mpi.rank}. Wrong per-rank sidecar opened."
+        )
     if captured_mesh_name and captured_mesh_name != swarm.mesh.name:
         raise ValueError(
             f"sidecar at {sidecar_path}: parent mesh was "

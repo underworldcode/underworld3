@@ -470,8 +470,10 @@ def _fresh_model_mesh_swarm():
 
 def test_swarm_sidecar_lands_in_bulk_dir(tmp_path):
     """A registered swarm produces its own h5 sidecar in the bulk dir
-    with predictable name; wrapper carries the external_file ref."""
+    with predictable name (per-rank); wrapper records the sidecar
+    pattern + rank count."""
     import os
+    import re
     import h5py
     import underworld3 as uw
 
@@ -481,17 +483,26 @@ def test_swarm_sidecar_lands_in_bulk_dir(tmp_path):
 
     bulk = str(tmp_path / "run.snap.bulk")
     files = sorted(os.listdir(bulk))
-    swarm_sidecars = [f for f in files if f.endswith(".swarm.h5")]
-    assert len(swarm_sidecars) == 1
+    # Per-rank pattern: <safe>.swarm.rank{R:04d}of{S:04d}.h5
+    swarm_sidecars = [
+        f for f in files
+        if re.match(r".*\.swarm\.rank\d{4}of\d{4}\.h5$", f)
+    ]
+    assert len(swarm_sidecars) >= 1  # at least rank-0 file on single-rank
 
     with h5py.File(path, "r") as f:
         sw = f["swarms"]
-        assert sw.attrs["filled_by"] == "phase3b"
+        assert sw.attrs["filled_by"] == "phase3b+phase6"
+        assert "mpi_size_at_write" in sw.attrs
         assert len(sw.keys()) == 1
         swarm_safe = list(sw.keys())[0]
         sg = sw[swarm_safe]
-        assert sg.attrs["external_file"] == swarm_sidecars[0]
+        # Wrapper records pattern (not a specific file) — readers
+        # fill in their own rank.
+        assert "sidecar_pattern" in sg.attrs
+        assert "{rank" in str(sg.attrs["sidecar_pattern"])
         assert sg.attrs["mesh_name"] == mesh.name
+        assert int(sg.attrs["num_particles_global"]) > 0
         # User-added variables surface in /swarms/{name}/variables/
         assert "material" in sg["variables"]
 
@@ -510,7 +521,7 @@ def test_swarm_sidecar_is_inspectable(tmp_path):
 
     bulk = str(tmp_path / "run.snap.bulk")
     swarm_sidecar = [
-        f for f in os.listdir(bulk) if f.endswith(".swarm.h5")
+        f for f in os.listdir(bulk) if ".swarm.rank" in f
     ][0]
 
     with h5py.File(os.path.join(bulk, swarm_sidecar), "r") as f:
@@ -651,7 +662,7 @@ def test_swarm_internals_not_in_sidecar(tmp_path):
     model.save_state(file=path)
 
     bulk = str(tmp_path / "run.snap.bulk")
-    sidecar = [f for f in os.listdir(bulk) if f.endswith(".swarm.h5")][0]
+    sidecar = [f for f in os.listdir(bulk) if ".swarm.rank" in f][0]
     with h5py.File(os.path.join(bulk, sidecar), "r") as f:
         var_names = set(f["variables"].keys())
     assert "material" in var_names
