@@ -610,35 +610,78 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         self._state_bearers.add(obj)
 
-    def snapshot(self, *, path: Optional[str] = None):
-        """Capture a unitary in-memory snapshot of the model's state.
+    def save_state(self, *, file: Optional[str] = None):
+        """Save the model's current state — memory or disk, one entry point.
 
-        v1 covers mesh coordinates and mesh-variable DOFs across every
-        registered mesh. Subsequent PRs extend coverage to swarms and
-        solver-internal Python state.
+        Without ``file``, captures an in-memory :class:`Snapshot`
+        token suitable for in-run backtracking ("stash for
+        timesteps"). The token is plain Python / numpy — fast to
+        produce, fast to restore, does not survive the process.
 
-        Pass ``path=...`` to write to an HDF5 file once the on-disk
-        backend lands (v1.1); v1 raises ``NotImplementedError``.
+        With ``file=<path>``, writes a persistent on-disk snapshot at
+        that path (plus a sibling ``.bulk/`` directory holding the
+        bulk PETSc + swarm sidecars). Survives the process; suitable
+        for restart, postprocessing, transferring runs.
 
-        See ``docs/developer/design/in_memory_checkpoint_design.md``
-        for the full design.
+        Either way the captured state is the full model: all
+        registered meshes and mesh-variables, all swarms with
+        per-particle data, all solver-internal state-bearers
+        (:class:`ModelTracker`, ``DDt`` instances, anything else
+        exposing the ``Snapshottable`` contract).
+
+        Parameters
+        ----------
+        file : str, optional
+            Path to write a disk snapshot to. If omitted, an in-memory
+            token is returned instead.
+
+        Returns
+        -------
+        Snapshot
+            When called without ``file`` — pass to
+            :meth:`load_state` to restore.
+        str
+            When ``file`` is given — the path the snapshot was
+            written to (same as ``file``).
         """
         from underworld3.checkpoint import snapshot as _snapshot
+        from underworld3.checkpoint import write_snapshot as _write_snapshot
 
-        return _snapshot(self, path=path)
+        if file is None:
+            return _snapshot(self)
+        return _write_snapshot(self, file)
 
-    def restore(self, snap) -> None:
-        """Restore the model from a :class:`underworld3.checkpoint.Snapshot`.
+    def load_state(self, source) -> None:
+        """Restore the model from a previously saved state — memory or disk.
 
-        Within-process restore: ``snap`` must have been produced by
-        :meth:`snapshot` on this same ``Model`` instance. Raises
-        :class:`underworld3.checkpoint.SnapshotInvalidatedError` if
-        the mesh has been adapted, or a captured mesh / variable is
-        no longer registered.
+        ``source`` is either:
+
+          - a :class:`Snapshot` token returned by an earlier
+            ``save_state()`` call (in-memory restore — bit-exact),
+          - a path string to a disk-snapshot file (disk restore —
+            same-rank, same-model contract; mesh-rebuild on read is
+            v1.2 scope).
+
+        Raises
+        ------
+        TypeError
+            ``source`` is neither a :class:`Snapshot` nor a string.
+        :class:`SnapshotInvalidatedError`
+            The captured state no longer matches what is registered
+            (mesh adapted, state-bearer missing, ...).
         """
+        from underworld3.checkpoint import Snapshot
         from underworld3.checkpoint import restore as _restore
+        from underworld3.checkpoint import read_snapshot as _read_snapshot
 
-        return _restore(self, snap)
+        if isinstance(source, Snapshot):
+            return _restore(self, source)
+        if isinstance(source, (str, os.PathLike)):
+            return _read_snapshot(self, str(source))
+        raise TypeError(
+            f"load_state expects a Snapshot token or a path string, "
+            f"got {type(source).__name__}"
+        )
 
     def define_parameter(self, name: str, ptype=None, **kwargs):
         """

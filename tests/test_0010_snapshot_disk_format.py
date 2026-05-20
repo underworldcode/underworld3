@@ -201,7 +201,7 @@ def test_write_snapshot_produces_wrapper_and_bulk_dir(tmp_path):
     V.array[:, 0, 0] = -3.0
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     bulk = str(tmp_path / "run.snap.bulk")
     assert os.path.exists(path)
@@ -226,7 +226,7 @@ def test_write_snapshot_populates_wrapper_layout(tmp_path):
     V.array[:, 0, 1] = 3.0
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     with h5py.File(path, "r") as f:
         assert f["meshes"].attrs["filled_by"] == "phase2"
@@ -262,13 +262,13 @@ def test_write_read_snapshot_bit_exact_roundtrip(tmp_path):
     V_pre = np.asarray(V.array[...]).copy()
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Scribble.
     T.array[...] = -99.0
     V.array[...] = -99.0
 
-    uw.checkpoint.read_snapshot(model, path)
+    model.load_state(path)
 
     assert np.array_equal(np.asarray(T.array[...]), T_pre), (
         f"T not bit-exact after read_snapshot — max|d|="
@@ -288,7 +288,7 @@ def test_read_snapshot_rejects_missing_bulk_dir(tmp_path):
 
     uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Delete the bulk dir to simulate the move-the-wrapper-only mistake.
     import shutil
@@ -296,7 +296,7 @@ def test_read_snapshot_rejects_missing_bulk_dir(tmp_path):
 
     uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
     with pytest.raises(FileNotFoundError, match="bulk directory missing"):
-        uw.checkpoint.read_snapshot(model, path)
+        model.load_state(path)
 
 
 def test_read_snapshot_rejects_mismatched_mesh(tmp_path):
@@ -306,7 +306,7 @@ def test_read_snapshot_rejects_mismatched_mesh(tmp_path):
 
     uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Fresh model with a *different* mesh — write_snapshot's mesh.name
     # won't match.
@@ -319,7 +319,7 @@ def test_read_snapshot_rejects_mismatched_mesh(tmp_path):
     other.name = "definitely_a_different_mesh"
 
     with pytest.raises(ValueError, match="not registered on this model"):
-        uw.checkpoint.read_snapshot(model2, path)
+        model2.load_state(path)
 
 
 # ----- Phase 3a: state-bearer (Snapshottable) serialisation -----
@@ -339,7 +339,7 @@ def test_tracker_round_trips_through_disk_snapshot(tmp_path):
     model.tracker.history_arr = np.array([1.0, 2.0, 3.0])
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Scribble everything tracker-side.
     model.tracker.time = -1.0
@@ -348,7 +348,7 @@ def test_tracker_round_trips_through_disk_snapshot(tmp_path):
     model.tracker.my_diagnostic = -1.0
     model.tracker.history_arr = np.array([-1.0, -1.0, -1.0])
 
-    uw.checkpoint.read_snapshot(model, path)
+    model.load_state(path)
 
     assert model.tracker.time == 3.14
     assert model.tracker.step == 42
@@ -371,7 +371,7 @@ def test_python_state_group_is_inspectable(tmp_path):
     model.tracker.my_q = 7.0
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     with h5py.File(path, "r") as f:
         ps = f["python_state"]
@@ -410,7 +410,7 @@ def test_ddt_symbolic_state_round_trips_primary_fields(tmp_path):
     ddt._dt = 0.05
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Scribble the primary fields.
     ddt._dt_history = [None, None]
@@ -418,7 +418,7 @@ def test_ddt_symbolic_state_round_trips_primary_fields(tmp_path):
     ddt._n_solves_completed = 0
     ddt._dt = None
 
-    uw.checkpoint.read_snapshot(model, path)
+    model.load_state(path)
 
     assert ddt.state.dt_history == [0.05, 0.03]
     assert ddt.state.history_initialised is True
@@ -437,7 +437,7 @@ def test_read_snapshot_rejects_missing_state_bearer(tmp_path):
     ddt._dt_history = [0.05, 0.05]
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Target model has no DDt.
     uw, model2, mesh2, T2, V2 = _fresh_model_mesh_and_vars()
@@ -445,7 +445,7 @@ def test_read_snapshot_rejects_missing_state_bearer(tmp_path):
     mesh2.name = mesh.name
 
     with pytest.raises(ValueError, match="state-bearer .* not registered"):
-        uw.checkpoint.read_snapshot(model2, path)
+        model2.load_state(path)
 
 
 # ----- Phase 3b: swarms in sidecars -----
@@ -477,7 +477,7 @@ def test_swarm_sidecar_lands_in_bulk_dir(tmp_path):
 
     uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     bulk = str(tmp_path / "run.snap.bulk")
     files = sorted(os.listdir(bulk))
@@ -506,7 +506,7 @@ def test_swarm_sidecar_is_inspectable(tmp_path):
 
     uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     bulk = str(tmp_path / "run.snap.bulk")
     swarm_sidecar = [
@@ -537,7 +537,7 @@ def test_swarm_round_trips_through_disk_snapshot(tmp_path):
     material_pre = np.asarray(material.data).copy()
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Scribble: corrupt coords directly via the PETSc field, scribble
     # material via the standard array view.
@@ -548,7 +548,7 @@ def test_swarm_round_trips_through_disk_snapshot(tmp_path):
     swarm.dm.restoreField("DMSwarmPIC_coor")
     material.data[...] = -99.0
 
-    uw.checkpoint.read_snapshot(model, path)
+    model.load_state(path)
 
     assert np.array_equal(swarm._particle_coordinates.data, coords_pre), (
         "particle coords not bit-exact after disk-snapshot restore"
@@ -571,7 +571,7 @@ def test_swarm_restore_recovers_after_particle_count_change(tmp_path):
     material_pre = np.asarray(material.data).copy()
 
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     # Mutate the population — add two extra particles. Local count
     # changes.
@@ -580,7 +580,7 @@ def test_swarm_restore_recovers_after_particle_count_change(tmp_path):
     )
     assert swarm.dm.getLocalSize() != n_pre
 
-    uw.checkpoint.read_snapshot(model, path)
+    model.load_state(path)
 
     assert swarm.dm.getLocalSize() == n_pre, (
         "restore did not roll back to the captured particle count"
@@ -599,7 +599,7 @@ def test_swarm_internals_not_in_sidecar(tmp_path):
 
     uw, model, mesh, swarm, material = _fresh_model_mesh_swarm()
     path = str(tmp_path / "run.snap.h5")
-    uw.checkpoint.write_snapshot(model, path)
+    model.save_state(file=path)
 
     bulk = str(tmp_path / "run.snap.bulk")
     sidecar = [f for f in os.listdir(bulk) if f.endswith(".swarm.h5")][0]
