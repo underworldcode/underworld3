@@ -1382,7 +1382,10 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                          boundary_slip=False,
                          linear_solver="direct", phi_degree=2,
                          move_anisotropy=None, metric_role="M",
-                         outer_tol=1.0e-4):
+                         outer_tol=1.0e-4,
+                         rest_size_cap_max=None,
+                         rest_size_cap_min=None,
+                         rest_spring_K=1.0):
     r"""Anisotropic metric-tensor mesh redistribution — approach (3).
 
     The settled scalar equidistribution paths (``_winslow_spring``,
@@ -1862,6 +1865,58 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             d_t = (disp * that).sum(axis=1)
             disp = (w_r * d_r[:, None] * rhat
                     + w_t * d_t[:, None] * that)
+
+        # --- per-cell Lagrangian rest-size spring -----------------
+        # When `rest_size_cap_max` / `rest_size_cap_min` are set,
+        # add a restoring force to each vertex that pulls it
+        # toward its rest position (`old0`, captured before the
+        # mover started) whenever an incident cell's mean edge
+        # would overshoot the cap under the proposed move.
+        #
+        # Motivation: the metric-mover is a local graph-Laplacian
+        # — nodes cannot transport across high-gradient ridges,
+        # so cells *adjacent* to a refinement zone absorb most
+        # of the freed area while cells topologically isolated
+        # from the refinement stay near rest size. Without a
+        # spring, the adjacent cells then over-coarsen by
+        # ~2× the cap on the stagnant-lid test. The spring
+        # restores those cells by literally pulling their nodes
+        # back along the original positions, weighted by how
+        # much the local cell would exceed the cap.
+        if (rest_size_cap_max is not None
+                or rest_size_cap_min is not None):
+            proposed = old_coords + float(relax) * disp
+            p = proposed[tris]
+            e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
+            e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
+            e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
+            mean_h = (e0 + e1 + e2) / 3.0
+            # Per-cell fractional excess vs cap (max(h)/cap - 1
+            # for coarsening, min/h - 1 for refinement). Both ≥ 0.
+            if rest_size_cap_max is not None:
+                over = np.maximum(
+                    mean_h / float(rest_size_cap_max) - 1.0, 0.0)
+            else:
+                over = np.zeros_like(mean_h)
+            if rest_size_cap_min is not None:
+                under = np.maximum(
+                    float(rest_size_cap_min)
+                    / np.maximum(mean_h, 1.0e-30) - 1.0, 0.0)
+            else:
+                under = np.zeros_like(mean_h)
+            # Per-vertex restoring weight ← Σ over incident cells.
+            # K controls overall spring stiffness; the per-iter
+            # effective pull is `relax · K · excess` toward rest.
+            restore_w = np.zeros(old_coords.shape[0])
+            cell_w = float(rest_spring_K) * (over + under)
+            np.add.at(restore_w, tris[:, 0], cell_w)
+            np.add.at(restore_w, tris[:, 1], cell_w)
+            np.add.at(restore_w, tris[:, 2], cell_w)
+            # Add the restoring contribution to disp. (Divide by
+            # relax so the downstream `step = relax · disp` gives
+            # the intended fraction restore_w · (rest - current).)
+            spring_disp = restore_w[:, None] * (old0 - old_coords)
+            disp = disp + spring_disp / max(float(relax), 1.0e-30)
 
         # Damped MMPDE step. The *direct* Winslow form (physical
         # coords as M-harmonic functions of themselves) has no
@@ -2949,25 +3004,42 @@ def follow_metric(
         gradient_smoothing_length=gradient_smoothing_length,
         name=name,
     )
-    # Resolve auto coarsening for the R cap
+    # Resolve auto coarsening
     if coarsening is None or coarsening == "auto":
         coar_val = float(refinement) ** (1.0 / mesh.cdim)
     else:
         coar_val = float(coarsening)
     # Mover's `resolution_ratio` is a SYMMETRIC eigenvalue clamp
-    # (h ∈ [h0/R, h0·R]). Anisotropic cells let the achieved
-    # max-edge overshoot the eigenvalue cap, so we set R based
-    # on the *coarsening* side: R = coarsening. That keeps the
-    # max-edge close to h0·coarsening (the user-facing spec
-    # the user said to honour first), at the cost of clamping
-    # h_min at h0/coarsening too. The METRIC ρ itself encodes
-    # the asymmetric envelope and aims for h_min = h0/refinement
-    # in the densest cells; when refinement > coarsening the
-    # achievable h_min is set by the mover's clamp rather than
-    # the metric. Documented in the docstring.
-    R = float(coar_val)
+    # (h ∈ [h0/R, h0·R]) — too loose for either side on its own.
+    # We pass R = max(refinement, coarsening) so the clamp doesn't
+    # bind tightly, then rely on the per-cell *rest-size spring*
+    # (below) to enforce the literal cell-size envelope.
+    R = max(float(refinement), coar_val)
 
-    mover_kwargs = dict(relax=0.2, n_outer=12)
+    # Compute the background cell size once. The spring's caps
+    # are referred to this h0 (same as the mover's internal h0).
+    from underworld3.meshing.smoothing import _edge_pairs
+    ep = _edge_pairs(mesh.dm)
+    coords = np.asarray(mesh.X.coords)
+    if ep.shape[0]:
+        h0 = float(np.linalg.norm(
+            coords[ep[:, 1]] - coords[ep[:, 0]], axis=1).mean())
+    else:
+        h0 = 1.0
+    if uw.mpi.size > 1:
+        h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+
+    mover_kwargs = dict(
+        relax=0.2,
+        n_outer=12,
+        # Per-cell Lagrangian rest-size spring: literal cell-size
+        # cap enforced by pulling vertices back toward their
+        # rest positions when an incident cell exceeds the cap.
+        # h0 is the undeformed mean edge length.
+        rest_size_cap_max=h0 * coar_val,
+        rest_size_cap_min=h0 / float(refinement),
+        rest_spring_K=1.0,
+    )
     if method_kwargs:
         mover_kwargs.update(method_kwargs)
 

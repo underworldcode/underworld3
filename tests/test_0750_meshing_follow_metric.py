@@ -187,6 +187,38 @@ def test_follow_metric_refinement_envelope_approximate():
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
+def test_follow_metric_coarsening_envelope_approximate():
+    """Achieved h_max is within ~30% of h0·coarsening on the
+    sharp-tanh annulus problem.
+
+    Before the per-cell rest-size spring was added to the mover,
+    h_max overshot the spec by 50-130%. The spring restores
+    over-coarsened cells by pulling their nodes back toward the
+    rest positions, tightening the cap. The remaining ~15-30%
+    overshoot reflects the unavoidable trade-off between metric
+    fidelity (which the SNES wants) and cap enforcement (which
+    the spring wants); 30% is a wide enough tolerance that it's
+    not flaky on this fixture problem.
+    """
+    m0, _ = _build_annulus_with_field()
+    _, _, h0 = _cell_h_stats(m0)
+    for ref, coar in [(1.5, "auto"), (2.0, "auto"), (2.0, 2.0),
+                       (3.0, "auto")]:
+        m, T = _build_annulus_with_field()
+        uw.meshing.follow_metric(
+            m, T, refinement=ref, coarsening=coar,
+            skip_threshold=None)
+        _, h_max, _ = _cell_h_stats(m)
+        coar_val = (ref**0.5) if coar == "auto" else float(coar)
+        target_h_max = h0 * coar_val
+        # Allow up to 30% over spec
+        assert h_max / target_h_max < 1.30, (
+            f"ref={ref}, coar={coar}: achieved h_max/target = "
+            f"{h_max/target_h_max:.3f}, want < 1.30")
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
 def test_follow_metric_skip_threshold_skips_aligned_mesh():
     """A mesh that's already aligned (here: any uniform mesh with
     the field still in the natural shape) gets the skip-on-align
