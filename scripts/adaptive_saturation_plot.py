@@ -31,7 +31,23 @@ MODELS = [("ref24", 24, "k", "ref uniform res-24"),
           ("a16x", 16, "#9467bd",
            "res-16 + adapt (pristine, amp=24 ≡ a16s [amp no-op])"),
           ("a16y", 16, "#8c564b",
-           "res-16 + adapt (pristine, cap=5 β=300 — true strong)")]
+           "res-16 + adapt (pristine, cap=5 β=300 — true strong)"),
+          ("a16z", 16, "#17becf",
+           "res-16 + adapt (pristine, pct 85/99 — budget conc.)"),
+          ("a16c", 16, "#d62728",
+           "res-16 + adapt (pristine, coarsen_cap=4 — over-coarse)"),
+          ("a16c2", 16, "#e377c2",
+           "res-16 + adapt (pristine, coarsen_cap=2)"),
+          ("a16c15", 16, "#7f7f7f",
+           "res-16 + adapt (pristine, coarsen_cap=1.5)"),
+          ("a16e", 16, "#2ca02c",
+           "res-16 + adapt (equidistribution, resolution_ratio=2)"),
+          ("a16ed", 16, "#ff7f0e",
+           "res-16 + adapt (equidist R=2 + EMA-G damping)"),
+          ("a16r15", 16, "#1f77b4",
+           "res-16 + adapt (equidist R=1.5 — CORRECTED prod)"),
+          ("a16r15e", 16, "#9467bd",
+           "res-16 + adapt (equidist R=1.5 + EMA-G damping)")]
 
 
 def latest_ckpt(tag):
