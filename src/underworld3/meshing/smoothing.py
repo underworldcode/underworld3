@@ -1790,6 +1790,17 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     Df.array[:, 1, 0] = Dout[:, 1, 0]
     Df.array[:, 1, 1] = Dout[:, 1, 1]
 
+    # Pre-compute the undeformed-mesh median cell area, used by the
+    # backtrack's sliver guard. Captured ONCE before the iteration
+    # loop so the floor doesn't shrink as cells refine — the same
+    # absolute floor is enforced throughout.
+    _tris_for_a0 = _tri_cells(mesh.dm)
+    if _tris_for_a0 is not None and _tris_for_a0.size:
+        _a0_undeformed_med = float(np.median(np.abs(
+            _signed_areas(old0, _tris_for_a0))))
+    else:
+        _a0_undeformed_med = 0.0
+
     for outer in range(n_outer):
         dm = mesh.dm
         pStart, pEnd = dm.getDepthStratum(0)
@@ -1916,14 +1927,21 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                     / np.maximum(min_h, 1.0e-30) - 1.0, 0.0)
             else:
                 under = np.zeros_like(min_h)
-            # Per-vertex restoring weight ← Σ over incident cells.
-            # K controls overall spring stiffness; the per-iter
-            # effective pull is `relax · K · excess` toward rest.
+            # Per-vertex restoring weight ← Σ over incident cells,
+            # CAPPED AT 1. Without the cap, a vertex incident on
+            # several violating cells accumulates restore_w > 1
+            # and the spring overshoots its rest position
+            # (`new = old + restore_w · (rest - old)` lands past
+            # `rest`), pulling two vertices together and creating
+            # degenerate (near-zero-area) triangles. Capping at 1
+            # makes the worst-case per-iteration motion "exactly
+            # back to rest", never further.
             restore_w = np.zeros(old_coords.shape[0])
             cell_w = float(rest_spring_K) * (over + under)
             np.add.at(restore_w, tris[:, 0], cell_w)
             np.add.at(restore_w, tris[:, 1], cell_w)
             np.add.at(restore_w, tris[:, 2], cell_w)
+            np.minimum(restore_w, 1.0, out=restore_w)
             # Add the restoring contribution to disp. (Divide by
             # relax so the downstream `step = relax · disp` gives
             # the intended fraction restore_w · (rest - current).)
@@ -1949,17 +1967,32 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         if tris is not None:
             a0 = _signed_areas(old_coords, tris)
             orient = np.sign(np.median(a0)) or 1.0
+            # Minimum acceptable cell area for the backtrack. The
+            # original test (`a1min > 0`) only catches *flipped*
+            # cells; near-degenerate cells with three near-collinear
+            # vertices pass it but produce invisible sliver
+            # triangles. Require min area > a fixed fraction of
+            # the **undeformed-mesh** median cell area
+            # (`_a0_undeformed_med`, captured before the iteration
+            # loop). A refinement of 3 in 2D legitimately shrinks
+            # cells by 3²=9× in area, so a floor at 1% of the
+            # undeformed median rejects degenerate slivers (which
+            # are 1000× smaller) without rejecting legitimate
+            # refinement.
+            a_min_floor = 0.01 * _a0_undeformed_med
             for _bt in range(10):
                 trial = old_coords.copy()
                 trial[free] += scale * step[free]
                 trial = _project(trial)
-                a1min = float(
-                    (_signed_areas(trial, tris) * orient).min())
+                a_signed = _signed_areas(trial, tris) * orient
+                a1min = float(a_signed.min())
                 if uw.mpi.size > 1:
                     from mpi4py import MPI as _MPI
                     a1min = uw.mpi.comm.allreduce(
                         a1min, op=_MPI.MIN)
-                if a1min > 0.0:
+                # Accept only if no cell flipped AND no cell
+                # collapsed below the area floor.
+                if a1min > a_min_floor:
                     new_coords = trial
                     break
                 scale *= 0.5
