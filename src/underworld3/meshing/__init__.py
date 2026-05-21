@@ -54,6 +54,7 @@ from .smoothing import (
     smooth_mesh_interior,
     metric_density_from_gradient,
     mesh_metric_mismatch,
+    follow_metric,
     ADAPT_STRATEGIES,
 )
 
@@ -93,5 +94,6 @@ __all__ = [
     "smooth_mesh_interior",
     "metric_density_from_gradient",
     "mesh_metric_mismatch",
+    "follow_metric",
     "ADAPT_STRATEGIES",
 ]

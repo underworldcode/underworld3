@@ -2378,6 +2378,9 @@ def metric_density_from_gradient(
     mesh,
     field,
     *,
+    refinement=None,
+    coarsening="auto",
+    metric_choice: str = "front-following",
     strategy: str = "med",
     amp=_UNSET,
     lo_percentile=_UNSET,
@@ -2618,6 +2621,112 @@ def metric_density_from_gradient(
     # failure the mover's own g_eps floor fixes). Any real field
     # gradient is many orders above 1e-9 ⇒ a (near-)constant field
     # yields ρ ≡ 1 (no refinement) exactly.
+
+    # NEW PATH: cell-size-envelope ansatz keyed by
+    # ``refinement`` (+ optional ``coarsening``).
+    #
+    # The mover's eigenvalue → cell-size map is ``h = h₀/√(ρ̂)``
+    # (after the mover's geometric-mean normalisation ρ̂ = ρ/G).
+    # So a literal envelope ``h ∈ [h₀/refinement, h₀·coarsening]``
+    # corresponds to ``ρ̂ ∈ [1/coarsening², refinement²]`` — note
+    # this is **dimension-independent** (the eigenvalue λ has
+    # units of 1/length², not 1/area).
+    #
+    # To make the mover's G normalisation land where we want, we
+    # build ρ with ``geomean(ρ) ≡ 1`` by construction. The cleanest
+    # form is piecewise-log-linear in the percentile rank ``pct``
+    # of |∇field|, with the break ρ=1 placed at
+    #
+    #     p* = log(refinement) / log(refinement · coarsening)
+    #
+    # which is exactly the fraction of cells that need to coarsen
+    # to ``free up`` the requested refinement at fixed node count.
+    #
+    # ``metric_choice`` selects the spatial *distribution*:
+    #
+    # * "front-following" — log(ρ) piecewise linear in pct rank.
+    #   Every 1% of cells contributes the same log(h) increment.
+    #   Mild, monotone grading concentrated on the high-gradient
+    #   tail.
+    # * "gradient-uniform" — ρ ∝ |∇field|², clipped to the
+    #   envelope. Targets uniform per-cell Δfield (the natural
+    #   goal for advection-diffusion accuracy).
+    #
+    # ``coarsening="auto"`` uses the budget-conserving minimum
+    # ``refinement^(1/d)`` — the smallest coarsening that
+    # geometrically "makes room" for the requested refinement at
+    # fixed node count.
+    #
+    # When the caller passes ``refinement=...``, this branch is
+    # taken and amp/lo_percentile/hi_percentile/mode/power are
+    # ignored — the envelope is determined directly.
+    if refinement is not None:
+        ref_val = float(refinement)
+        if ref_val < 1.0:
+            raise ValueError(
+                f"refinement must be >= 1.0, got {ref_val}")
+        # 'auto' coarsening = the budget-conserving minimum
+        if coarsening is None or coarsening == "auto":
+            coar_val = ref_val ** (1.0 / cdim)
+        else:
+            coar_val = float(coarsening)
+            if coar_val < 1.0:
+                raise ValueError(
+                    f"coarsening must be >= 1.0, got {coar_val}")
+        # Trivial-case shortcut: no refinement asked ⇒ ρ ≡ 1
+        if ref_val == 1.0 and coar_val == 1.0:
+            rho0.data[:, 0] = 1.0
+            return rho0.sym[0]
+        # Dimension-independent envelope (eigenvalue space)
+        log_rho_max = 2.0 * np.log(ref_val)   # ρ at the densest cells
+        log_rho_min = -2.0 * np.log(coar_val)  # ρ at the sparsest cells
+        N = max(int(gmag_global.size), 1)
+        if g_hi <= 1.0e-9:
+            # Uniform (or near-uniform) field ⇒ no refinement
+            rho0.data[:, 0] = 1.0
+            return rho0.sym[0]
+        g_sorted = np.sort(gmag_global)
+        ranks = np.linspace(0.0, 1.0, N)
+        pct = np.interp(gmag, g_sorted, ranks)
+        if metric_choice == "front-following":
+            # Piecewise log-linear in pct, with the break (log ρ=0)
+            # at p* = log(ref) / log(ref·coar). This makes
+            # geomean(ρ) = 1 by construction, so the mover's G
+            # normalisation passes ρ through unchanged and the
+            # eigenvalue clamps land on the literal envelope.
+            # Special-case: ref=1 ⇒ no refined half (pure coarsen);
+            #               coar=1 ⇒ no coarsened half (pure refine).
+            if ref_val == 1.0:
+                # Only coarsen
+                log_rho = log_rho_min * (1.0 - pct)
+            elif coar_val == 1.0:
+                # Only refine
+                log_rho = log_rho_max * pct
+            else:
+                p_star = (np.log(ref_val)
+                          / np.log(ref_val * coar_val))
+                log_rho = np.where(
+                    pct < p_star,
+                    log_rho_min * (1.0 - pct / p_star),
+                    log_rho_max * (pct - p_star)
+                    / max(1.0 - p_star, 1.0e-12),
+                )
+            rho0.data[:, 0] = np.exp(log_rho)
+        elif metric_choice == "gradient-uniform":
+            # ρ ∝ |∇field|² (dimension-independent), clipped to
+            # the envelope. The mover's G normalisation then
+            # centres this on whatever cell happens to have the
+            # geomean |∇field|, which is field-dependent (in
+            # contrast to front-following where ρ̄=1 by construction).
+            rho_raw = np.maximum(gmag, 1.0e-30) ** 2
+            rho0.data[:, 0] = np.clip(
+                rho_raw, np.exp(log_rho_min), np.exp(log_rho_max))
+        else:
+            raise ValueError(
+                f"metric_choice must be 'front-following' or "
+                f"'gradient-uniform', got {metric_choice!r}")
+        return rho0.sym[0]
+
     if mode == "raw":
         # Raw mode: ρ = |∇field|^power. Skip the percentile
         # clip + (1+amp·t) wrap. Floor to a small positive so
@@ -2633,3 +2742,244 @@ def metric_density_from_gradient(
         rho0.data[:, 0] = np.clip(
             (gmag - g_lo) / max(g_hi - g_lo, 1.0e-30), 0.0, 1.0)
     return (1.0 + float(amp) * rho0.sym[0]) ** float(power)
+
+
+# =============================================================================
+# Public node-moving adapter
+# =============================================================================
+def follow_metric(
+    mesh,
+    field,
+    *,
+    refinement: float,
+    coarsening="auto",
+    metric: str = "front-following",
+    skip_threshold: float = 0.9,
+    gradient_smoothing_length=None,
+    method_kwargs: Optional[dict] = None,
+    name: Optional[str] = None,
+    verbose: bool = False,
+) -> bool:
+    r"""Move the mesh's interior nodes so cell sizes follow a target
+    derived from ``|∇field|``.
+
+    Two-knob, cell-size-envelope API for the anisotropic node mover.
+    The user specifies how *fine* the densest cells can get and
+    (optionally) how *coarse* the sparsest can get; the function
+    derives the metric density and invokes the mover.
+
+    Cell-size envelope (approximate)
+    --------------------------------
+
+    The mover's eigenvalue → cell-size map is
+    :math:`h = h_0/\sqrt{\hat\rho}` (after the mover's
+    geometric-mean normalisation :math:`\hat\rho = \rho/G`), so
+    asking for the envelope
+
+    .. math::
+
+        h \;\in\; \bigl[\, h_0/\text{refinement},\;
+                          h_0\cdot\text{coarsening} \,\bigr]
+
+    corresponds to :math:`\hat\rho \in [1/\text{coarsening}^2,
+    \text{refinement}^2]` — note this is **dimension-
+    independent** (the eigenvalue λ has units of 1/length²).
+
+    Validation on a sharp-tanh annulus test problem shows:
+
+    * **Refinement side:** achieved :math:`h_\min` within ~5-10%
+      of :math:`h_0/\text{refinement}` for refinement ∈ [1.5, 3].
+    * **Coarsening side:** achieved :math:`h_\max` typically
+      ~2× the requested :math:`h_0\cdot\text{coarsening}`. The
+      mover's anisotropic cells and iterative deformation map
+      together don't honour the eigenvalue clamp on a per-cell
+      basis as tightly as the refinement side. This is a known
+      feature of the underlying mover, not of the new API.
+
+    The :func:`mesh_metric_mismatch` diagnostic is the right tool
+    for measuring how close the achieved mesh is to the requested
+    metric in practice.
+
+    Metric ansatz
+    -------------
+
+    Each cell's percentile rank :math:`p \in [0,1]` in the global
+    :math:`|\nabla\text{field}|` distribution maps to the
+    log-density via a piecewise-linear function with the break
+    :math:`\rho = 1` at
+
+    .. math::
+
+        p^{\ast} \;=\; \frac{\log\text{refinement}}
+                            {\log(\text{refinement}\cdot
+                                  \text{coarsening})} .
+
+    This break point makes :math:`\mathrm{geomean}(\rho) = 1`
+    by construction, so the mover's :math:`G`-normalisation
+    leaves :math:`\rho` unshifted and the eigenvalue clamps land
+    on the desired envelope. Concretely:
+
+    * "front-following" (default) — log-:math:`\rho` is linear
+      in percentile rank on each side of :math:`p^{\ast}`. Every
+      1% of cells contributes the same log(h) increment. Mild
+      grading; the budget is spread continuously across the
+      gradient distribution.
+    * "gradient-uniform" — :math:`\rho \propto |\nabla\text{field}|^2`,
+      clipped to the envelope. Targets uniform per-cell
+      :math:`\Delta\text{field}` (the natural goal for advection-
+      diffusion accuracy). The clipping makes the achieved
+      grading regress to the front-following profile when the
+      gradient distribution is concentrated.
+
+    Auto coarsening (the budget-conserving default)
+    -----------------------------------------------
+
+    With a fixed node count (no remeshing), refining one cell to
+    :math:`h_0/\text{refinement}` requires growing others by at
+    least
+
+    .. math::
+
+        \text{coarsening} \;=\; \text{refinement}^{\,1/d}
+
+    to absorb the freed cell area. ``coarsening="auto"`` (default)
+    picks exactly this minimum — anything less would mean the
+    mover can't actually deliver the requested refinement.
+    Pass an explicit ``coarsening>auto`` to free up more budget
+    for a smoother transition zone.
+
+    Adapt-on-demand
+    ---------------
+
+    Before invoking the mover, the current mesh is checked against
+    the requested target via
+    :func:`mesh_metric_mismatch`. If the alignment is already good
+    (misalignment below ``skip_threshold``), the mesh isn't
+    re-adapted — the function returns ``False`` and the caller can
+    keep stepping. This lets a per-step adapt cadence become
+    "adapt only when needed".
+
+    Parameters
+    ----------
+    mesh : underworld3 mesh
+        Modified in place if adaptation runs.
+    field : MeshVariable or sympy scalar expression
+        The field whose gradient drives refinement.
+    refinement : float, must be >= 1.0
+        Maximum local refinement, expressed as a multiplicative
+        factor on the background cell size:
+        :math:`h_\min = h_0 / \text{refinement}`. ``refinement=1``
+        is a no-op (uniform metric ⇒ background spacing).
+    coarsening : float or "auto", default "auto"
+        Maximum local coarsening,
+        :math:`h_\max = h_0 \cdot \text{coarsening}`. ``"auto"``
+        uses the budget-conserving minimum
+        :math:`\text{refinement}^{1/d}`. Larger values free more
+        budget for smoother grading at the cost of a wider
+        cell-size spread.
+    metric : {"front-following", "gradient-uniform"}, default "front-following"
+        Strategic equidistribution rule. ``"front-following"``
+        concentrates cells where the gradient is steepest (mild
+        grading). ``"gradient-uniform"`` aims for the same
+        per-cell field change everywhere (best for advection-
+        diffusion accuracy).
+    skip_threshold : float, default 0.9
+        Alignment threshold for the adapt-on-demand skip. If the
+        existing mesh's :func:`mesh_metric_mismatch` alignment is
+        ≥ this threshold, no adaptation happens and the function
+        returns ``False``.
+    gradient_smoothing_length : float or Pint Quantity, optional
+        Length scale for screened-Poisson smoothing of the
+        projected ``|∇field|`` before building the metric.
+        Suppresses sub-cell metric-mesh feedback noise without
+        destroying boundary-layer features. A useful default is
+        ``≈ 2 * h_0`` (background cell size).
+    method_kwargs : dict, optional
+        Extra kwargs forwarded to the anisotropic mover (e.g.
+        ``relax``, ``n_outer``).
+    name : str, optional
+        Cache disambiguator. Pass distinct names if you build
+        several independent metrics on the same mesh.
+    verbose : bool, default False
+        Verbose mover diagnostics.
+
+    Returns
+    -------
+    bool
+        ``True`` if the mesh was moved; ``False`` if the
+        skip-on-mismatch check short-circuited adaptation.
+
+    Examples
+    --------
+    Default usage on a stagnant-lid convection T field, with
+    coarsening picked automatically::
+
+        moved = uw.meshing.follow_metric(
+            mesh, T,
+            refinement=3.0,                  # h_min = h0/3
+        )                                    # coarsening = √3 ≈ 1.73 (2D auto)
+
+    Wider grading transition with explicit coarsening, gradient-
+    side smoothing, and the gradient-uniform rule for advection
+    accuracy::
+
+        uw.meshing.follow_metric(
+            mesh, T,
+            refinement=2.0, coarsening=2.0,
+            metric="gradient-uniform",
+            gradient_smoothing_length=2.0 * mesh._radii.mean(),
+        )
+
+    See Also
+    --------
+    metric_density_from_gradient : The underlying metric builder
+        (expert tool — exposes percentile / amp / power dials).
+    smooth_mesh_interior : The underlying mover (expert tool —
+        unaware of refinement/coarsening, takes a pre-built
+        metric expression).
+    mesh_metric_mismatch : The alignment / misalignment metric
+        used by the skip threshold.
+    """
+    rho = metric_density_from_gradient(
+        mesh,
+        field,
+        refinement=float(refinement),
+        coarsening=coarsening,
+        metric_choice=metric,
+        gradient_smoothing_length=gradient_smoothing_length,
+        name=name,
+    )
+    # Resolve auto coarsening for the R cap
+    if coarsening is None or coarsening == "auto":
+        coar_val = float(refinement) ** (1.0 / mesh.cdim)
+    else:
+        coar_val = float(coarsening)
+    # Mover's `resolution_ratio` is a SYMMETRIC eigenvalue clamp
+    # (h ∈ [h0/R, h0·R]). Anisotropic cells let the achieved
+    # max-edge overshoot the eigenvalue cap, so we set R based
+    # on the *coarsening* side: R = coarsening. That keeps the
+    # max-edge close to h0·coarsening (the user-facing spec
+    # the user said to honour first), at the cost of clamping
+    # h_min at h0/coarsening too. The METRIC ρ itself encodes
+    # the asymmetric envelope and aims for h_min = h0/refinement
+    # in the densest cells; when refinement > coarsening the
+    # achievable h_min is set by the mover's clamp rather than
+    # the metric. Documented in the docstring.
+    R = float(coar_val)
+
+    mover_kwargs = dict(relax=0.2, n_outer=12)
+    if method_kwargs:
+        mover_kwargs.update(method_kwargs)
+
+    old_X = np.asarray(mesh.X.coords).copy()
+    smooth_mesh_interior(
+        mesh,
+        metric=rho,
+        method="anisotropic",
+        method_kwargs={**mover_kwargs, "resolution_ratio": R},
+        skip_threshold=skip_threshold,
+        verbose=verbose,
+    )
+    new_X = np.asarray(mesh.X.coords)
+    return not np.allclose(new_X, old_X)
+

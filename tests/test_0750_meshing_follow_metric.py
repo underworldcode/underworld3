@@ -1,0 +1,203 @@
+"""Locks the uw.meshing.follow_metric() public API.
+
+Two-knob, cell-size-envelope adapter for the anisotropic node mover.
+The user passes:
+
+    refinement  : factor by which the finest cells are smaller than h0
+    coarsening  : factor by which the coarsest cells are bigger than h0
+                  ("auto" = refinement**(1/d), the budget-conserving
+                  minimum)
+    metric      : "front-following" or "gradient-uniform"
+
+These tests pin the metric construction (refinement=1 is a no-op,
+ρ_min/ρ_max envelope is correct, geomean(ρ) ≈ 1 by construction so
+the mover's G normalisation is bypassed) and end-to-end that the
+mover actually moves the mesh and lands an approximate cell-size
+envelope.
+
+The mover's achieved cell-size envelope is APPROXIMATE — anisotropic
+cells + iterative deformation map mean the eigenvalue clamp doesn't
+literally bound the achieved h_max on a per-cell basis. Validation
+on a sharp-tanh annulus shows:
+
+* refinement side: achieved h_min within ~5-10% of h0/refinement
+* coarsening side: achieved h_max within ~2× of h0·coarsening
+
+The tests here use loose tolerances reflecting that empirical reality.
+"""
+import numpy as np
+import pytest
+import sympy
+
+import underworld3 as uw
+from underworld3.meshing import smoothing as _sm
+
+
+def _build_annulus_with_field():
+    """Return a fresh annulus + a sharp tanh T field that mimics a
+    thermal boundary layer near r=0.7."""
+    m = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0,
+                           cellSize=0.08, qdegree=3)
+    T = uw.discretisation.MeshVariable(
+        "T", m, vtype=uw.VarType.SCALAR, degree=2, continuous=True)
+    proj = uw.systems.Projection(m, T)
+    proj.smoothing = 0.0
+    x, y = m.X
+    proj.uw_function = 0.5 * (
+        1.0 + sympy.tanh(40.0 * (0.7 - sympy.sqrt(x*x + y*y))))
+    proj.solve()
+    return m, T
+
+
+def _cell_h_stats(mesh):
+    """Per-cell mean-edge h, returns (min, max, mean)."""
+    tris = _sm._tri_cells(mesh.dm)
+    p = np.asarray(mesh.X.coords)[tris]
+    h = (np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
+         + np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
+         + np.linalg.norm(p[:, 0] - p[:, 2], axis=1)) / 3.0
+    return float(h.min()), float(h.max()), float(h.mean())
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_refinement_one_is_noop_metric():
+    """refinement=1, coarsening=1: metric is uniformly 1 (no adapt)."""
+    m, T = _build_annulus_with_field()
+    rho = uw.meshing.metric_density_from_gradient(
+        m, T, refinement=1.0, coarsening=1.0, name="check_ref1")
+    rho_vals = np.asarray(
+        uw.function.evaluate(rho, m.X.coords)).reshape(-1)
+    assert np.allclose(rho_vals, 1.0)
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_envelope_in_rho_space_d_independent():
+    """For any (refinement, coarsening), the metric ρ has the
+    envelope [1/coarsening², refinement²] independent of d."""
+    m, T = _build_annulus_with_field()
+    for ref, coar in [(2.0, "auto"), (2.0, 1.5), (3.0, 2.0)]:
+        rho = uw.meshing.metric_density_from_gradient(
+            m, T, refinement=ref, coarsening=coar,
+            name=f"env_{ref}_{coar}")
+        rho_vals = np.asarray(
+            uw.function.evaluate(rho, m.X.coords)).reshape(-1)
+        coar_val = (ref ** 0.5) if coar == "auto" else float(coar)
+        expected_max = ref ** 2
+        expected_min = 1.0 / coar_val ** 2
+        # Tolerance: percentile clipping + FE interpolation noise
+        assert rho_vals.max() == pytest.approx(expected_max, rel=0.05), (
+            f"({ref}, {coar}): ρ_max = {rho_vals.max()}, "
+            f"expected ≈ {expected_max}")
+        assert rho_vals.min() == pytest.approx(expected_min, rel=0.05), (
+            f"({ref}, {coar}): ρ_min = {rho_vals.min()}, "
+            f"expected ≈ {expected_min}")
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_geomean_rho_is_unity_front_following():
+    """The piecewise-log-linear ansatz has geomean(ρ) = 1 by
+    construction so the mover's G normalisation passes through."""
+    m, T = _build_annulus_with_field()
+    rho = uw.meshing.metric_density_from_gradient(
+        m, T, refinement=2.0, coarsening="auto",
+        metric_choice="front-following", name="g1")
+    rho_vals = np.asarray(
+        uw.function.evaluate(rho, m.X.coords)).reshape(-1)
+    log_geomean = float(np.mean(np.log(rho_vals)))
+    # Tight: the analytic break-point makes this exactly 0 in the
+    # absence of FE interpolation noise.
+    assert abs(log_geomean) < 0.05, (
+        f"geomean(ρ) log = {log_geomean}, expected ≈ 0")
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_auto_coarsening_is_d_th_root_of_refinement():
+    """coarsening='auto' uses the budget-conserving minimum
+    refinement**(1/d) — verified by setting the equivalent
+    explicit coarsening and checking ρ is identical."""
+    m, T = _build_annulus_with_field()
+    d = m.cdim
+    ref = 3.0
+    rho_auto = uw.meshing.metric_density_from_gradient(
+        m, T, refinement=ref, coarsening="auto", name="auto")
+    rho_explicit = uw.meshing.metric_density_from_gradient(
+        m, T, refinement=ref, coarsening=ref ** (1.0/d),
+        name="explicit")
+    v_a = np.asarray(uw.function.evaluate(rho_auto, m.X.coords)).reshape(-1)
+    v_e = np.asarray(uw.function.evaluate(rho_explicit, m.X.coords)).reshape(-1)
+    assert np.allclose(v_a, v_e)
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_invalid_args():
+    """refinement<1 and coarsening<1 must raise."""
+    m, T = _build_annulus_with_field()
+    with pytest.raises(ValueError, match="refinement must be >= 1.0"):
+        uw.meshing.metric_density_from_gradient(
+            m, T, refinement=0.5, name="badref")
+    with pytest.raises(ValueError, match="coarsening must be >= 1.0"):
+        uw.meshing.metric_density_from_gradient(
+            m, T, refinement=2.0, coarsening=0.5, name="badcoar")
+    with pytest.raises(ValueError, match="metric_choice must be"):
+        uw.meshing.metric_density_from_gradient(
+            m, T, refinement=2.0, metric_choice="unknown",
+            name="badmc")
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_follow_metric_moves_mesh():
+    """follow_metric returns True when the mesh is actually moved."""
+    m, T = _build_annulus_with_field()
+    old_X = np.asarray(m.X.coords).copy()
+    moved = uw.meshing.follow_metric(
+        m, T, refinement=2.0, skip_threshold=None)
+    new_X = np.asarray(m.X.coords)
+    assert moved is True
+    assert not np.allclose(new_X, old_X)
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_follow_metric_refinement_envelope_approximate():
+    """Achieved h_min is within ~15% of h0/refinement on the sharp-
+    tanh annulus problem. Refinement side is the tighter of the
+    two — coarsening side is intrinsically looser (anisotropic
+    cells)."""
+    m0, _ = _build_annulus_with_field()
+    _, _, h0 = _cell_h_stats(m0)
+
+    for ref, ref_tol in [(1.5, 0.15), (2.0, 0.15), (3.0, 0.15)]:
+        m, T = _build_annulus_with_field()
+        uw.meshing.follow_metric(
+            m, T, refinement=ref, skip_threshold=None)
+        h_min, h_max, _ = _cell_h_stats(m)
+        target_h_min = h0 / ref
+        # Refinement side: within ref_tol of target (i.e. achieved
+        # h_min is no more than ref_tol below target).
+        assert h_min / target_h_min == pytest.approx(1.0, abs=ref_tol), (
+            f"refinement={ref}: achieved h_min/target = "
+            f"{h_min/target_h_min:.3f}")
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_follow_metric_skip_threshold_skips_aligned_mesh():
+    """A mesh that's already aligned (here: any uniform mesh with
+    the field still in the natural shape) gets the skip-on-align
+    short-circuit when skip_threshold is permissive."""
+    m, T = _build_annulus_with_field()
+    # First adapt — mesh moves
+    moved1 = uw.meshing.follow_metric(
+        m, T, refinement=2.0, skip_threshold=None)
+    assert moved1 is True
+    # Second adapt with a relatively tight threshold — should skip
+    # because the mesh is already well-aligned to T.
+    moved2 = uw.meshing.follow_metric(
+        m, T, refinement=2.0, skip_threshold=0.9)
+    assert moved2 is False
