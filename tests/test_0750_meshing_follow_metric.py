@@ -237,6 +237,35 @@ def test_follow_metric_coarsening_envelope_approximate():
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
+def test_follow_metric_no_slivers_after_adaptive_polish():
+    """The adaptive Jacobi polish loop should drive the worst
+    cell-shape quality above `polish_quality_target` (default 0.3)
+    on the sharp-tanh annulus problem. Cells with q < 0.3 are
+    visible slivers; q=1 is equilateral. This locks the contract
+    that follow_metric's built-in polish eliminates the slivers
+    its mover would otherwise leave behind."""
+    import numpy as np
+    for ref in [2.0, 3.0]:
+        m, T = _build_annulus_with_field()
+        uw.meshing.follow_metric(
+            m, T, refinement=ref, skip_threshold=None)
+        tris = _sm._tri_cells(m.dm)
+        p = np.asarray(m.X.coords)[tris]
+        e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
+        e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
+        e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
+        A = np.abs(_sm._signed_areas(np.asarray(m.X.coords), tris))
+        q = 4.0 * np.sqrt(3.0) * A / (e0**2 + e1**2 + e2**2 + 1e-30)
+        # No slivers after polish (well below the equilateral q=1
+        # but well above the visible-sliver threshold q≈0.3).
+        assert q.min() >= 0.3, (
+            f"refinement={ref}: q_min={q.min():.3f} "
+            f"(want ≥ 0.3 — adaptive polish should have run "
+            f"more iterations)")
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
 def test_follow_metric_skip_threshold_skips_aligned_mesh():
     """A mesh that's already aligned (here: any uniform mesh with
     the field still in the natural shape) gets the skip-on-align

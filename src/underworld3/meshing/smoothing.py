@@ -2856,7 +2856,8 @@ def follow_metric(
     metric: str = "front-following",
     skip_threshold: float = 0.9,
     gradient_smoothing_length=None,
-    polish_iters: int = 1,
+    polish_max_iters: int = 5,
+    polish_quality_target: float = 0.3,
     polish_alpha: float = 0.2,
     method_kwargs: Optional[dict] = None,
     name: Optional[str] = None,
@@ -2996,17 +2997,25 @@ def follow_metric(
         Suppresses sub-cell metric-mesh feedback noise without
         destroying boundary-layer features. A useful default is
         ``≈ 2 * h_0`` (background cell size).
-    polish_iters : int, default 1
-        Number of Jacobi (graph-Laplacian) polish iterations
-        applied AFTER the anisotropic mover. Each iteration
-        averages every interior vertex toward the mean of its
-        edge neighbours, gently rounding out the remaining
-        slivers without (significantly) undoing the metric
-        distribution. ``polish_iters=1`` is the production
-        default; ``=0`` disables; ``≥3`` further improves cell
-        quality at the cost of ~5-10% refinement loss per step.
+    polish_max_iters : int, default 5
+        Maximum Jacobi (graph-Laplacian) polish iterations
+        applied AFTER the anisotropic mover. The polish runs
+        adaptively: each iteration averages every interior
+        vertex toward the mean of its edge neighbours
+        (cell-quality cleanup), and the loop stops as soon as
+        the worst cell-shape quality exceeds
+        ``polish_quality_target``. ``polish_max_iters=0``
+        disables the polish entirely.
+    polish_quality_target : float, default 0.3
+        Adaptive-polish stopping criterion: target minimum
+        cell shape quality
+        :math:`q = 4\sqrt{3}\,A/(e_0^2+e_1^2+e_2^2)`. ``q=1``
+        is equilateral; ``q<0.3`` is the threshold below which
+        cells look like visible slivers. Lower values allow
+        more sliver-y cells through; higher values demand
+        more polish iterations.
     polish_alpha : float, default 0.2
-        Under-relaxation in ``(0, 1]`` for the polish Jacobi
+        Under-relaxation in ``(0, 1]`` for each Jacobi
         sweep. Lower = gentler.
     name : str, optional
         Cache disambiguator. Pass distinct names if you build
@@ -3110,21 +3119,46 @@ def follow_metric(
     )
     new_X = np.asarray(mesh.X.coords)
     moved = not np.allclose(new_X, old_X)
-    # Optional Jacobi polish: gentle graph-Laplacian smoothing
-    # of interior nodes toward neighbour-centroid average. This
-    # cleans up the few remaining cells held at the sliver-floor
-    # by the backtrack — the metric-aware mover places nodes
-    # where the metric wants them, and the polish then evens
-    # out the cell shapes without (significantly) redistributing
-    # the nodes. polish_iters=1, alpha=0.2 eliminates the
-    # ~1 sliver per mesh while costing ~5-10% refinement
-    # relaxation; larger polish trades more refinement for more
-    # uniform cells. polish_iters=0 disables.
-    if moved and polish_iters > 0:
-        smooth_mesh_interior(
-            mesh,
-            n_iters=int(polish_iters),
-            alpha=float(polish_alpha),
-        )
+    # ADAPTIVE Jacobi polish: gentle graph-Laplacian smoothing
+    # of interior nodes toward neighbour-centroid average,
+    # repeated until the worst cell-shape quality
+    #
+    #     q = 4√3 · A / (e₀² + e₁² + e₂²)
+    #
+    # exceeds ``polish_quality_target`` (default 0.3 — the
+    # threshold below which cells look like visible slivers; an
+    # equilateral has q=1, a degenerate sliver q→0). Capped at
+    # ``polish_max_iters`` so pathological cases can't run away.
+    #
+    # The polish doesn't significantly undo the metric
+    # distribution (each step is averaging toward neighbours,
+    # not enforcing any spatial target), so the BL refinement
+    # stays intact while sliver cells get rounded out.
+    # `polish_max_iters=0` disables entirely.
+    if moved and polish_max_iters > 0:
+        tris_polish = _tri_cells(mesh.dm)
+        for _polish_iter in range(int(polish_max_iters)):
+            # Check current shape quality
+            p = np.asarray(mesh.X.coords)[tris_polish]
+            e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
+            e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
+            e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
+            A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
+                                       tris_polish))
+            q = (4.0 * np.sqrt(3.0) * A
+                 / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
+            q_min = float(q.min())
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                q_min = uw.mpi.comm.allreduce(
+                    q_min, op=_MPI.MIN)
+            if verbose:
+                uw.pprint(
+                    f"  follow_metric polish iter {_polish_iter}: "
+                    f"q_min={q_min:.3f} (target {polish_quality_target:.2f})")
+            if q_min >= float(polish_quality_target):
+                break
+            smooth_mesh_interior(
+                mesh, n_iters=1, alpha=float(polish_alpha))
     return moved
 
