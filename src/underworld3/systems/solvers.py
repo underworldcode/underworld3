@@ -1948,15 +1948,75 @@ class SNES_Projection(SNES_Scalar):
     well-defined at mesh nodes (e.g., derivatives or flux components). More
     broadly, it is a projection from one basis to another.
 
-    The projection is implemented by solving:
+    Strong form (the screened-Poisson smoother)
+    -------------------------------------------
+
+    The projection is implemented by solving
 
     .. math::
 
-        -\nabla \cdot \underbrace{\left[ \alpha \nabla u \right]}_{\mathbf{F}}
-        - \underbrace{\left[ u - \tilde{f} \right]}_{\mathbf{h}} = 0
+        u - \nabla \cdot \left( \alpha \nabla u \right) = \tilde{f},
 
-    The term :math:`\mathbf{F}` provides optional smoothing regularization.
-    Setting :math:`\alpha = 0` gives a pure L2 projection.
+    or equivalently, in the more familiar Helmholtz form
+
+    .. math::
+
+        u - \alpha \, \nabla^{2} u \;=\; \tilde{f}.
+
+    With :math:`\alpha = 0` this is a pure pointwise L2 projection of
+    :math:`\tilde f` onto the discrete space of :math:`u`. With
+    :math:`\alpha > 0` it is a *screened-Poisson smoother*: the equation
+    enforces a balance between fidelity to :math:`\tilde f` and curvature of
+    :math:`u`. The natural length scale that emerges from this balance is
+
+    .. math::
+
+        L \;=\; \sqrt{\alpha},
+
+    so :math:`\alpha` has dimensions of **length squared**. The free-space
+    Green's function of the operator decays as
+    :math:`\exp(-r/L)` (in 2D it is
+    :math:`G(r) \propto K_{0}(r/L)/L^{2}`), so the solution behaves like a
+    Gaussian-like convolution of :math:`\tilde f` of width :math:`L` —
+    obtained implicitly by one elliptic solve, without ever assembling
+    the kernel. Features in :math:`\tilde f` of scale much smaller than
+    :math:`L` are attenuated; features much larger than :math:`L` pass
+    through essentially unchanged.
+
+    Weak form
+    ---------
+
+    Multiplying by a test function :math:`v` and integrating by parts gives
+    the symmetric weak form actually assembled by PETSc:
+
+    .. math::
+
+        \int_\Omega (u - \tilde f)\, v \; + \;
+        \int_\Omega \alpha \, \nabla u \cdot \nabla v
+        \;=\; 0,
+
+    which is exactly minimising
+    :math:`\tfrac{1}{2}\!\int (u-\tilde f)^2 + \tfrac{\alpha}{2}\!\int
+    |\nabla u|^2` — a Tikhonov-regularised L2 projection.
+
+    Setting the smoothing length
+    ----------------------------
+
+    Two equivalent accessors are provided:
+
+    * :attr:`smoothing` — set the coefficient :math:`\alpha` directly
+      (units of length²). Historically used with tiny values (e.g.
+      :math:`10^{-6}`) as a *numerical* regulariser, which corresponds to
+      a sub-grid :math:`L` and produces no physical smoothing.
+    * :attr:`smoothing_length` — set :math:`L` directly (length units,
+      unit-aware via :func:`underworld3.non_dimensionalise`). This is the
+      recommended path when you actually want the projection to act as
+      a low-pass filter of a chosen physical scale.
+
+    See Also
+    --------
+    SNES_Vector_Projection : Vector field projection.
+    SNES_Tensor_Projection : Tensor field projection.
 
     Parameters
     ----------
@@ -1972,11 +2032,6 @@ class SNES_Projection(SNES_Scalar):
         Name for the solver instance.
     verbose : bool, default=False
         Enable verbose output.
-
-    See Also
-    --------
-    SNES_Vector_Projection : Vector field projection.
-    SNES_Tensor_Projection : Tensor field projection.
     """
 
     @timing.routine_timer_decorator
@@ -2033,7 +2088,40 @@ class SNES_Projection(SNES_Scalar):
 
     @property
     def smoothing(self):
-        """Smoothing regularization parameter for the projection."""
+        r"""Smoothing coefficient :math:`\alpha` of the screened-Poisson form.
+
+        The projection solves
+        :math:`u - \nabla\!\cdot\!(\alpha\,\nabla u) = \tilde f`, so
+        :math:`\alpha` has dimensions of **length²** and the implied
+        smoothing length is :math:`L = \sqrt{\alpha}`. The free-space
+        Green's function decays as :math:`\exp(-r/L)`, giving the
+        projection the action of a Gaussian-like convolution of width
+        :math:`L` — without ever forming the kernel.
+
+        See the class docstring for the full derivation.
+
+        Two usage patterns
+        ~~~~~~~~~~~~~~~~~~
+
+        * **Pure L2 projection** — ``smoothing = 0`` (or omit). No
+          regularisation; ``u`` is the best L2 fit to ``ũ``.
+        * **Genuine length-scale smoother** — set
+          :attr:`smoothing_length` to the desired physical length
+          (unit-aware), or equivalently
+          ``smoothing = L**2``. The output is ``ũ`` smoothed at
+          scale ``L``.
+
+        .. note::
+
+           Historical UW3 code occasionally sets ``smoothing`` to a
+           tiny number (e.g. ``1e-6``) as a *numerical* regulariser
+           against rank deficiency. That value corresponds to
+           :math:`L \approx 10^{-3}` in the problem's ND length
+           units — almost always well below the cell size, so it
+           does no useful smoothing. Use a true sub-grid value only
+           if you need that regularisation; for filtering, use
+           :attr:`smoothing_length`.
+        """
         return self._smoothing
 
     @smoothing.setter
@@ -2041,6 +2129,98 @@ class SNES_Projection(SNES_Scalar):
         """Set the smoothing regularization parameter."""
         self._needs_function_rewire = True
         self._smoothing = sympify(smoothing_factor)
+
+    @property
+    def smoothing_length(self):
+        r"""Smoothing length scale :math:`L` (length units, **unit-aware**).
+
+        L-valued view on :attr:`smoothing` with the convention
+        :math:`L = \sqrt{\alpha}`. Setting ``smoothing_length = L``
+        is equivalent to setting ``smoothing = L**2``, but is the
+        natural physical knob because :math:`L` is what the
+        smoother actually filters by.
+
+        Mathematical meaning
+        --------------------
+
+        The projection then solves the screened-Poisson equation
+
+        .. math::
+
+            u \;-\; L^{2}\,\nabla^{2} u \;=\; \tilde f,
+
+        whose Green's function decays as :math:`\exp(-r/L)`. In
+        practice this acts like a Gaussian convolution of width
+        :math:`L`:
+
+        * features in :math:`\tilde f` with spatial scale
+          :math:`\ll L` are damped (roughly as
+          :math:`1/(1+k^{2}L^{2})` for a wavenumber :math:`k`);
+        * features with scale :math:`\gg L` are preserved;
+        * features at :math:`\sim L` are attenuated by a factor
+          near ``1/2``.
+
+        Choosing :math:`L` smaller than the local mesh size has
+        essentially no effect (the field is already band-limited
+        by the discretisation). A useful default for *light*
+        de-noising is :math:`L \approx 1\!-\!2\,h`, where
+        :math:`h` is a representative cell size.
+
+        Units
+        -----
+
+        The setter accepts a plain number (assumed already
+        non-dimensional), a pint ``Quantity`` with length units,
+        or any unit-aware object understood by
+        :func:`underworld3.non_dimensionalise`. Internally the
+        squared non-dimensional value is stored in
+        ``self._smoothing`` (so ``smoothing`` and
+        ``smoothing_length`` stay consistent).
+
+        The getter returns a Pint ``Quantity`` with length units
+        when a scaling context is configured; otherwise the plain
+        non-dimensional float :math:`\sqrt{\alpha}`.
+        """
+        import sympy
+        s = self._smoothing
+        try:
+            sval = float(s)
+        except (TypeError, ValueError):
+            return sympy.sqrt(s)
+        if sval < 0:
+            return None
+        L_nd = sval ** 0.5
+        # Re-dimensionalise to length units if a scaling context
+        # is set; fall back to the plain ND float otherwise.
+        try:
+            return uw.scaling.dimensionalise(
+                L_nd, uw.scaling.units.meter)
+        except Exception:
+            return L_nd
+
+    @smoothing_length.setter
+    def smoothing_length(self, L):
+        """Set the smoothing length scale.
+
+        Accepts a Pint Quantity (with length units), a UnitAware
+        scalar, or a plain non-dimensional number. The value is
+        non-dimensionalised through the active scaling context
+        before being squared and stored as ``self._smoothing``.
+        """
+        self._needs_function_rewire = True
+        # Unit-aware: route through non_dimensionalise so the
+        # caller can pass `2.0 * uw.scaling.units.meter` or a
+        # plain float interchangeably.
+        try:
+            L_nd = uw.non_dimensionalise(L)
+        except Exception:
+            # Fall back to magnitude-or-float coercion if the
+            # value doesn't carry/expect units.
+            if hasattr(L, "magnitude"):
+                L_nd = L.magnitude
+            else:
+                L_nd = L
+        self._smoothing = sympify(L_nd) ** 2
 
     @property
     def uw_weighting_function(self):
@@ -2068,23 +2248,39 @@ class SNES_Vector_Projection(SNES_Vector):
     r"""
     Vector projection solver for mapping vector functions to mesh variables.
 
-    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
-    is a vector function that can be evaluated within an element and
-    :math:`\mathbf{u}` is a vector mesh variable with associated shape functions.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where
+    :math:`\tilde{\mathbf{f}}` is a vector function that can be evaluated
+    within an element and :math:`\mathbf{u}` is a vector mesh variable
+    with associated shape functions.
 
-    Typically used to obtain a continuous representation of a vector function
-    not well-defined at mesh nodes (e.g., gradient or flux vectors).
+    Typically used to obtain a continuous representation of a vector
+    function not well-defined at mesh nodes (e.g., gradient or flux
+    vectors), or as a length-scale-aware smoother of an existing vector
+    field.
 
-    The projection is implemented by solving:
+    Strong form (screened-Poisson, vector-valued)
+    ---------------------------------------------
 
     .. math::
 
-        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
-        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
-        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
+        \mathbf{u} \;-\; \nabla \cdot \left( \alpha\, \nabla \mathbf{u}
+        \right)
+        \;+\; \lambda \left( \nabla \cdot \mathbf{u} \right) \mathbf{I}
+        \;=\; \tilde{\mathbf{f}} .
 
-    The term :math:`\mathbf{F}` provides optional smoothing regularization.
-    Setting :math:`\alpha = 0` gives a pure L2 projection.
+    The :math:`\alpha`-term is the same screened-Poisson smoother as
+    in :class:`SNES_Projection`, applied component-wise: it has the same
+    :math:`L = \sqrt{\alpha}` smoothing-length interpretation and the
+    same :math:`\exp(-r/L)` Green's function. The extra :math:`\lambda`
+    term is a divergence penalty (see :attr:`penalty`) — set it nonzero
+    when you want an approximately solenoidal projection of
+    :math:`\tilde{\mathbf{f}}`.
+
+    Setting :math:`\alpha = 0` (and :math:`\lambda = 0`) gives a pure
+    pointwise L2 projection. See :class:`SNES_Projection` for the full
+    mathematical context; the relationship between :attr:`smoothing`
+    (units length²) and :attr:`smoothing_length` (units length) is the
+    same as for the scalar projection.
 
     Parameters
     ----------
@@ -2099,7 +2295,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     See Also
     --------
-    SNES_Projection : Scalar field projection.
+    SNES_Projection : Scalar field projection (full mathematical detail).
     SNES_Tensor_Projection : Tensor field projection.
     """
 
@@ -2169,7 +2365,18 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @property
     def smoothing(self):
-        """Smoothing regularization parameter for the projection."""
+        r"""Smoothing coefficient :math:`\alpha` (units **length²**).
+
+        Coefficient of the :math:`\nabla\!\cdot\!(\alpha\,\nabla
+        \mathbf u)` term in the vector screened-Poisson equation
+        (see the class docstring). Acts component-wise; the
+        smoothing length is :math:`L = \sqrt{\alpha}` and the
+        Green's function decays as :math:`\exp(-r/L)`.
+
+        Use :attr:`smoothing_length` for the L-valued, unit-aware
+        knob. See :attr:`SNES_Projection.smoothing` for the full
+        derivation and usage patterns.
+        """
         return self._smoothing
 
     @smoothing.setter
@@ -2179,8 +2386,63 @@ class SNES_Vector_Projection(SNES_Vector):
         self._smoothing = sympify(smoothing_factor)
 
     @property
+    def smoothing_length(self):
+        r"""Smoothing length :math:`L` (length units, **unit-aware**).
+
+        L-valued view on :attr:`smoothing`, with
+        :math:`L = \sqrt{\alpha}`. The projection then acts as a
+        component-wise screened-Poisson smoother
+        :math:`\mathbf u - L^{2}\,\nabla^{2}\mathbf u =
+        \tilde{\mathbf f}`, i.e. a Gaussian-like convolution of
+        width :math:`L` applied to each Cartesian component of
+        the input vector field.
+
+        Choose :math:`L \gtrsim h` (a cell size) for noticeable
+        smoothing; :math:`L < h` does essentially nothing because
+        the discretisation already band-limits at that scale.
+        See :attr:`SNES_Projection.smoothing_length` for the full
+        mathematical and units discussion.
+        """
+        import sympy
+        s = self._smoothing
+        try:
+            sval = float(s)
+        except (TypeError, ValueError):
+            return sympy.sqrt(s)
+        if sval < 0:
+            return None
+        L_nd = sval ** 0.5
+        try:
+            return uw.scaling.dimensionalise(
+                L_nd, uw.scaling.units.meter)
+        except Exception:
+            return L_nd
+
+    @smoothing_length.setter
+    def smoothing_length(self, L):
+        """Set the smoothing length scale (unit-aware)."""
+        self._needs_function_rewire = True
+        try:
+            L_nd = uw.non_dimensionalise(L)
+        except Exception:
+            if hasattr(L, "magnitude"):
+                L_nd = L.magnitude
+            else:
+                L_nd = L
+        self._smoothing = sympify(L_nd) ** 2
+
+    @property
     def penalty(self):
-        """Divergence penalty parameter for incompressibility."""
+        r"""Divergence penalty :math:`\lambda` for (approx.) incompressibility.
+
+        Coefficient of the :math:`\lambda (\nabla\!\cdot\!\mathbf u)
+        \mathbf I` term in the vector projection. Large positive
+        values bias the projection toward
+        :math:`\nabla\!\cdot\!\mathbf u = 0`, i.e. a solenoidal
+        approximation of :math:`\tilde{\mathbf f}`. Has no length
+        interpretation — unlike :attr:`smoothing` it does not
+        introduce a filter scale.
+        """
         return self._penalty
 
     @penalty.setter
@@ -2206,23 +2468,33 @@ class SNES_Tensor_Projection(SNES_Projection):
     r"""
     Tensor projection solver for mapping tensor functions to mesh variables.
 
-    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
-    is a tensor-valued function that can be evaluated within an element and
-    :math:`\mathbf{u}` is a tensor mesh variable with associated shape functions.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where
+    :math:`\tilde{\mathbf{f}}` is a tensor-valued function that can be
+    evaluated within an element and :math:`\mathbf{u}` is a tensor mesh
+    variable with associated shape functions.
 
-    Typically used to obtain a continuous representation of a tensor function
-    not well-defined at mesh nodes (e.g., stress or strain tensors).
+    Typically used to obtain a continuous representation of a tensor
+    function not well-defined at mesh nodes (e.g., stress or strain
+    tensors), with optional length-scale smoothing.
 
-    The projection is implemented by solving:
+    Strong form (screened-Poisson, applied component-wise)
+    ------------------------------------------------------
+
+    Internally the solve is decomposed into scalar sub-problems, one per
+    tensor component :math:`u_{ij}`; each sub-problem is
 
     .. math::
 
-        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
-        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
-        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
+        u_{ij} \;-\; \nabla \cdot \left( \alpha\, \nabla u_{ij}
+        \right) \;=\; \tilde{f}_{ij},
 
-    The term :math:`\mathbf{F}` provides optional smoothing regularization.
-    Setting :math:`\alpha = 0` gives a pure L2 projection.
+    identical to :class:`SNES_Projection`. The smoothing length is
+    :math:`L = \sqrt{\alpha}` and the Green's function decays as
+    :math:`\exp(-r/L)`; setting :math:`\alpha = 0` gives a pure
+    pointwise L2 projection. See :class:`SNES_Projection` for the full
+    derivation, the choice between :attr:`smoothing` (length²) and
+    :attr:`smoothing_length` (length, unit-aware), and guidance on
+    picking :math:`L` relative to the cell size.
 
     Parameters
     ----------
@@ -2240,11 +2512,13 @@ class SNES_Tensor_Projection(SNES_Projection):
     Notes
     -----
     Currently implemented component-wise as there is no native solver
-    for tensor unknowns.
+    for tensor unknowns. Each component sees the same :math:`\alpha`,
+    so the effective smoothing length :math:`L` is uniform across the
+    tensor entries.
 
     See Also
     --------
-    SNES_Projection : Scalar field projection.
+    SNES_Projection : Scalar field projection (full mathematical detail).
     SNES_Vector_Projection : Vector field projection.
     """
 
@@ -2360,16 +2634,27 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
     :class:`SNES_Tensor_Projection`, which tears down and rebuilds the
     PETSc DM on every inner iteration.
 
-    The projection is block-diagonal across components: each component
-    satisfies the scalar problem
+    Strong form (block-diagonal screened Poisson)
+    ---------------------------------------------
+
+    There is no cross-component coupling, so each component
+    :math:`u_k,\ k=1,\dots,N_c` satisfies the same scalar
+    screened-Poisson equation as :class:`SNES_Projection`,
 
     .. math::
 
-        -\nabla \cdot \left[ \alpha \nabla u_k \right]
-        - \left[ u_k - \tilde f_k \right] = 0
+        u_k \;-\; \nabla \cdot \left( \alpha\, \nabla u_k \right)
+        \;=\; \tilde f_k.
 
-    with no cross-component coupling. Setting :math:`\alpha = 0` gives a
-    pure L2 projection per component.
+    Setting :math:`\alpha = 0` gives a pure pointwise L2 projection per
+    component. The smoothing length is :math:`L = \sqrt{\alpha}` and the
+    Green's function decays as :math:`\exp(-r/L)` — the same Gaussian-like
+    convolution interpretation as the scalar case. All components share a
+    single :math:`\alpha`, so the smoothing scale :math:`L` is uniform
+    across the multi-component target. Use :attr:`smoothing` to set
+    :math:`\alpha` (units length²) or :attr:`smoothing_length` for the
+    L-valued, unit-aware knob. See :class:`SNES_Projection` for the full
+    derivation and guidance.
 
     Parameters
     ----------
@@ -2384,7 +2669,7 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
 
     See Also
     --------
-    SNES_Projection : Scalar projection (Nc=1).
+    SNES_Projection : Scalar projection (Nc=1) — full mathematical detail.
     SNES_Tensor_Projection : Legacy per-component cycling projector.
     """
 
@@ -2430,13 +2715,64 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
 
     @property
     def smoothing(self):
-        """Smoothing regularisation parameter."""
+        r"""Smoothing coefficient :math:`\alpha` (units **length²**).
+
+        Coefficient of the :math:`\nabla\!\cdot\!(\alpha\,\nabla
+        u_k)` term in each component's screened-Poisson sub-problem
+        (see the class docstring). One :math:`\alpha` is shared
+        across all :math:`N_c` components, so the implied smoothing
+        length :math:`L = \sqrt{\alpha}` is uniform.
+
+        Use :attr:`smoothing_length` for the L-valued, unit-aware
+        knob. See :attr:`SNES_Projection.smoothing` for the full
+        derivation and the Gaussian-like convolution interpretation.
+        """
         return self._smoothing
 
     @smoothing.setter
     def smoothing(self, value):
         self._needs_function_rewire = True
         self._smoothing = sympify(value)
+
+    @property
+    def smoothing_length(self):
+        r"""Smoothing length :math:`L` (length units, **unit-aware**).
+
+        L-valued view on :attr:`smoothing`, with
+        :math:`L = \sqrt{\alpha}`. Each component then satisfies
+        :math:`u_k - L^{2}\,\nabla^{2} u_k = \tilde f_k`, i.e. a
+        Gaussian-like convolution of width :math:`L` applied
+        independently to each component of the multi-component
+        target. See :attr:`SNES_Projection.smoothing_length` for the
+        full mathematical and units discussion.
+        """
+        import sympy
+        s = self._smoothing
+        try:
+            sval = float(s)
+        except (TypeError, ValueError):
+            return sympy.sqrt(s)
+        if sval < 0:
+            return None
+        L_nd = sval ** 0.5
+        try:
+            return uw.scaling.dimensionalise(
+                L_nd, uw.scaling.units.meter)
+        except Exception:
+            return L_nd
+
+    @smoothing_length.setter
+    def smoothing_length(self, L):
+        """Set the smoothing length scale (unit-aware)."""
+        self._needs_function_rewire = True
+        try:
+            L_nd = uw.non_dimensionalise(L)
+        except Exception:
+            if hasattr(L, "magnitude"):
+                L_nd = L.magnitude
+            else:
+                L_nd = L
+        self._smoothing = sympify(L_nd) ** 2
 
     @property
     def uw_weighting_function(self):
