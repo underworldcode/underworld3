@@ -1354,9 +1354,14 @@ class SemiLagrangian(uw_object):
             units=psi_units,  # Inherit units from psi_fn
         )
 
-        # We just need one swarm since this is inherently a sequential operation
-        nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
-        self._nswarm_psi = nswarm
+        # Historically this allocated a NodalPointSwarm cache here, but
+        # the actual trace-back path uses ``uw.function.global_evaluate``
+        # on the upstream coords directly — the swarm was vestigial and
+        # nothing reads ``_nswarm_psi`` anywhere in the codebase. Skip
+        # the allocation; on manifold meshes it would fail anyway because
+        # DMSwarm's built-in coord field is dim-sized while manifold
+        # coords are cdim-sized.
+        self._nswarm_psi = None
 
         # The projection operator for mapping swarm values to the mesh - needs to be different for
         # each variable type, unfortunately ...

@@ -175,12 +175,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         mesh = swarm.mesh
 
         if vtype == None:
+            # Note: on a cd-1 mesh (dim < cdim, e.g. SphericalManifold),
+            # vector fields are stored with ``cdim`` components in the
+            # embedded coordinate space (tangent-constrained 3-vectors
+            # on a 2-manifold) and the SwarmVariable coord cache is
+            # built with size == mesh.cdim. We accept either dim or
+            # cdim as a vector match; on volume meshes dim == cdim so
+            # the two branches coincide.
             if isinstance(size, int) and size == 1:
                 vtype = uw.VarType.SCALAR
-            elif isinstance(size, int) and size == mesh.dim:
+            elif isinstance(size, int) and (size == mesh.dim or size == mesh.cdim):
                 vtype = uw.VarType.VECTOR
             elif isinstance(size, tuple):
-                if size[0] == mesh.dim and size[1] == mesh.dim:
+                if (
+                    (size[0] == mesh.dim and size[1] == mesh.dim)
+                    or (size[0] == mesh.cdim and size[1] == mesh.cdim)
+                ):
                     vtype = uw.VarType.TENSOR
                 else:
                     vtype = uw.VarType.MATRIX
