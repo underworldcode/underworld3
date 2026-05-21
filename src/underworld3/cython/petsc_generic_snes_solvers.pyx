@@ -1646,6 +1646,15 @@ class SNES_Scalar(SolverBaseClass):
         self.boundary_conditions = False
         # self._constitutive_model = None
 
+        # Constant-nullspace handling. When True, attach a MatNullSpace
+        # with the constant mode to the Jacobian operator before each
+        # KSP solve. Needed for scalar problems on a closed manifold or
+        # a fully-Neumann domain where the operator (e.g. Laplacian)
+        # has a 1-D constant kernel and the linear system is otherwise
+        # singular. Default False — every solver with any Dirichlet BC
+        # or reaction term is non-singular and shouldn't pay the cost.
+        self._petsc_use_constant_nullspace = False
+
         self.verbose = verbose
 
         self._rebuild_after_mesh_update = self._build  # Maybe just reboot the dm
@@ -1654,6 +1663,30 @@ class SNES_Scalar(SolverBaseClass):
 
         self.mesh._equation_systems_register.append(self)
 
+        self.is_setup = False
+
+    @property
+    def petsc_use_constant_nullspace(self):
+        """Whether to attach a constant MatNullSpace to the Jacobian.
+
+        Set to ``True`` for scalar problems whose linear operator has a
+        constant kernel and no Dirichlet boundary conditions to break
+        it — fully-Neumann domains or closed manifolds (e.g. a Poisson
+        problem on a periodic box or on a spherical surface). PETSc
+        projects the right-hand side onto the orthogonal complement of
+        the nullspace and selects the minimum-norm solution from the
+        null-affine family, so the system becomes uniquely solvable up
+        to that nullspace.
+
+        Default ``False`` — any solver with at least one Dirichlet BC
+        or a reaction term is non-singular and shouldn't pay the
+        projection cost.
+        """
+        return self._petsc_use_constant_nullspace
+
+    @petsc_use_constant_nullspace.setter
+    def petsc_use_constant_nullspace(self, value):
+        self._petsc_use_constant_nullspace = bool(value)
         self.is_setup = False
 
     @property
@@ -2081,8 +2114,47 @@ class SNES_Scalar(SolverBaseClass):
 
             UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
 
+        if self._petsc_use_constant_nullspace:
+            self._attach_constant_nullspace()
+
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
+
+    def _attach_constant_nullspace(self):
+        """Attach a constant ``MatNullSpace`` to the Jacobian.
+
+        Calls ``snes.setUp()`` to materialise the Jacobian template,
+        then sets a constant-mode nullspace on the operator and
+        preconditioner matrices (and their transposes — the projector
+        is symmetric). PETSc projects each KSP right-hand side onto
+        the orthogonal complement of the nullspace before solving and
+        returns the minimum-norm solution within the affine null
+        space.
+
+        Used by scalar Poisson on a fully-Neumann domain or a closed
+        manifold. See :attr:`petsc_use_constant_nullspace`.
+        """
+        self.snes.setUp()
+        jacobian = self.snes.getJacobian()
+        operator_matrix = jacobian[0]
+        preconditioner_matrix = jacobian[1] if len(jacobian) > 1 else None
+
+        nullspace = PETSc.NullSpace().create(
+            constant=True, vectors=(), comm=self.dm.comm,
+        )
+
+        operator_matrix.setNullSpace(nullspace)
+        operator_matrix.setTransposeNullSpace(nullspace)
+        if (preconditioner_matrix is not None
+                and preconditioner_matrix.handle != operator_matrix.handle):
+            preconditioner_matrix.setNullSpace(nullspace)
+            preconditioner_matrix.setTransposeNullSpace(nullspace)
+
+        if self.verbose and uw.mpi.rank == 0:
+            print(
+                f"SNES_Scalar ({self.name}): attached constant nullspace",
+                flush=True,
+            )
 
     @timing.routine_timer_decorator
     def solve(self,
