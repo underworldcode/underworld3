@@ -70,6 +70,56 @@ import underworld3 as uw
 _ADJ_CACHE: dict = {}
 
 
+# Named adaptation strategies (off / vlow / low / med / high /
+# extreme). Each maps to a coherent set of (amp, percentile
+# window, power, R, skip_threshold) values. Use the
+# ``strategy=`` kwarg on :func:`metric_density_from_gradient`
+# and :func:`smooth_mesh_interior` to dial intensity; individual
+# kwargs still work and override the strategy choice where given.
+ADAPT_STRATEGIES = {
+    "off":     dict(amp=0.0, lo_percentile=0.0,
+                    hi_percentile=100.0, power=1.0,
+                    resolution_ratio=1.0,
+                    skip_threshold=None,
+                    description="no adaptation (no-op)"),
+    "vlow":    dict(amp=4.0, lo_percentile=80.0,
+                    hi_percentile=99.0, power=1.0,
+                    resolution_ratio=1.2,
+                    skip_threshold=0.9,
+                    description="hardly any refinement; "
+                                "top 20% gradient cells only"),
+    "low":     dict(amp=6.0, lo_percentile=70.0,
+                    hi_percentile=97.0, power=1.0,
+                    resolution_ratio=1.3,
+                    skip_threshold=0.9,
+                    description="gentle front bunching"),
+    "med":     dict(amp=7.0, lo_percentile=60.0,
+                    hi_percentile=97.0, power=1.0,
+                    resolution_ratio=1.4,
+                    skip_threshold=0.9,
+                    description="moderate front bunching "
+                                "(default)"),
+    "high":    dict(amp=8.0, lo_percentile=50.0,
+                    hi_percentile=97.0, power=1.0,
+                    resolution_ratio=1.5,
+                    skip_threshold=0.9,
+                    description="front-following — historical "
+                                "production point"),
+    "extreme": dict(amp=8.0, lo_percentile=50.0,
+                    hi_percentile=97.0, power=1.5,
+                    resolution_ratio=2.0,
+                    skip_threshold=0.9,
+                    description="midway to gradient-uniform; "
+                                "near the danger zone for the "
+                                "mover — use deliberately"),
+}
+
+# Sentinel used to detect whether a kwarg was explicitly set by
+# the caller versus left at the function default. Lets us layer
+# strategy defaults beneath explicit user overrides cleanly.
+_UNSET = object()
+
+
 def _auto_pinned_labels(mesh) -> tuple:
     """All non-sentinel geometric boundary labels on the mesh.
 
@@ -292,6 +342,110 @@ def _signed_areas(coords, tris):
     c = coords[tris[:, 2]]
     return 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
                   - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+
+
+def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
+    r"""Geometric mismatch between the current mesh and what the
+    equidistribution rule would prescribe from ``metric``.
+
+    Per cell compute the equidistribution-prescribed area
+    ``A_target = A_total · (1/ρ_c) / Σ(1/ρ)`` (the conservation
+    law of §1 in ``mesh-adaptation-formulation.md``). When the
+    mover's eigen-clamp ``[h0/R, h0·R]`` is in play, clip the
+    target so it represents what the mover can *actually*
+    achieve, not the unbounded ideal. Then
+
+    .. math::
+
+        \delta_c = \tfrac12\,\log\!\Big(
+            \frac{A_{\mathrm{actual},c}}{A_{\mathrm{target},c}}\Big)
+
+    (signed, log-space symmetric: a 2× refine needed = +0.35;
+    a 2× coarsen needed = -0.35). Scale-invariant under
+    ``ρ → αρ``.
+
+    Returns ``{"rms": ..., "max": ..., "median_abs": ...}``
+    summarising ``|δ|`` over cells. A mesh already at the
+    mover's achievable equidistribution gives ~0; the
+    pre-adapted mesh against a strongly-peaked metric gives
+    O(1) or larger.
+
+    Cheap: one ``metric`` evaluate at cell centroids + a few
+    NumPy reductions. Used by
+    :func:`smooth_mesh_interior(skip_threshold=...)` to skip
+    adapting when the mesh is already aligned with the target.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        Triangle mesh (only 2-D for now).
+    metric : sympy / UW expression
+        The target *density* ρ (larger ⇒ finer cells) — same
+        object you would pass to ``smooth_mesh_interior``.
+    resolution_ratio : float, optional
+        The mover's eigen-clamp ``R``. When given, the
+        equidistribution target areas are clipped to
+        ``[A_mean / R², A_mean · R²]`` — the achievable band the
+        mover honours — so a perfectly-adapted mesh measures
+        ``δ ≈ 0``. Without it, mismatch is measured against the
+        unbounded equidistribution target (so even a
+        perfectly-adapted mesh has ``δ ≠ 0`` against the
+        unreachable ideal).
+
+    Returns
+    -------
+    dict
+        ``{"rms": float, "max": float, "median_abs": float}``.
+    """
+    import underworld3 as _uw
+
+    coords = np.asarray(mesh.X.coords)
+    tris = _tri_cells(mesh.dm)
+    if tris is None:
+        raise NotImplementedError(
+            "mesh_metric_mismatch: triangle mesh required")
+    A_actual = np.abs(_signed_areas(coords, tris))
+    centroids = coords[tris].mean(axis=1)
+    rho = np.asarray(_uw.function.evaluate(
+        metric, centroids)).reshape(-1)
+    rho = np.maximum(rho, 1.0e-12)   # guard
+    inv_rho = 1.0 / rho
+    A_target = A_actual.sum() * inv_rho / inv_rho.sum()
+    if resolution_ratio is not None:
+        R = float(resolution_ratio)
+        A_mean = A_actual.sum() / len(A_actual)
+        # Clip target areas to the mover's achievable band
+        # [A_mean/R², A_mean·R²] (h in [h0/R, h0·R] ⇒
+        # A in [h0²/R², h0²·R²] = [A_mean/R², A_mean·R²]).
+        A_target = np.clip(A_target, A_mean / R ** 2,
+                           A_mean * R ** 2)
+    delta = 0.5 * np.log(A_actual / A_target)
+    abs_delta = np.abs(delta)
+
+    # Alignment — Pearson r of log(1/A_c) with log(ρ_c).
+    # Equidistribution gives log(1/A) ∝ (1/d)·log(ρ) ⇒ r → 1.
+    # Uniform mesh has nearly-zero sd(log A) ⇒ r ≈ 0.
+    # An over-aggressive mover that overshoots in proportional
+    # fashion still has r ≈ 1 (just with the wrong slope), so r
+    # measures whether cell density is *aligned with* the metric,
+    # independent of grading magnitude. This is the right signal
+    # for "is this mesh built around this metric?" — and the
+    # appropriate skip-or-adapt criterion in a dynamic loop.
+    log_density = -np.log(A_actual)
+    log_rho = np.log(rho)
+    if log_density.std() > 1.0e-12 and log_rho.std() > 1.0e-12:
+        alignment = float(np.corrcoef(log_density, log_rho)[0, 1])
+    else:
+        alignment = 0.0
+    # Misalignment: 0 = perfectly aligned, 1 = orthogonal.
+    misalignment = float(
+        np.sqrt(max(0.0, 1.0 - max(0.0, alignment) ** 2)))
+
+    return dict(rms=float(np.sqrt(np.mean(delta ** 2))),
+                max=float(abs_delta.max()),
+                median_abs=float(np.median(abs_delta)),
+                alignment=alignment,
+                misalignment=misalignment)
 
 
 def _edge_pairs(dm):
@@ -679,6 +833,12 @@ _HESSIAN_CLASS = None
 # on a topology change (a new key).
 _ANISO_CACHE: dict = {}
 
+# Per-(mesh,config) running state for the equidistribution
+# normaliser's temporal damping: the EMA of ln G carried across
+# adaptation events (same key as _ANISO_CACHE). Empty ⇒ first
+# event seeds it. Only touched in the resolution_ratio>1 regime.
+_GEMA_STATE: dict = {}
+
 
 def _use_direct_solver(solver, singular=False):
     r"""Force a cached MA sub-solver onto a sparse **direct** factorisation
@@ -710,6 +870,16 @@ def _use_direct_solver(solver, singular=False):
     # (which was doubling work and emitting spurious
     # ``DIVERGED_LINEAR_SOLVE`` after 2 iters).
     o["snes_type"] = "ksponly"
+    # ksponly does exactly ONE linear KSP solve (no Newton). Default
+    # snes_max_it leaves snes->iter=0, so if a converged-reason
+    # viewer is on (a user's global -snes_converged_reason, an outer
+    # debug flag, …) PETSc mislabels the *successful* linear solve
+    # as "DIVERGED_MAX_IT iterations 0" and floods the log with
+    # phantom failures. snes_max_it=1 ⇒ the single solve counts as
+    # one converged iteration ⇒ reason = CONVERGED, not a fake
+    # DIVERGED. Numerically inert (the KSP solve is identical) —
+    # purely stops these linear sub-solves masquerading as failures.
+    o["snes_max_it"] = 1
     # The Picard loop fixes the mesh, so the operator is **constant**
     # across the ~40 inner solves — only the RHS changes. Lag the
     # Jacobian (compute once, reuse) and the preconditioner (factorise
@@ -774,6 +944,10 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
     """
     o = solver.petsc_options
     o["snes_type"] = "ksponly"
+    # See _use_direct_solver: snes_max_it=1 stops a converged-reason
+    # viewer mislabelling these linear ksponly sub-solves as
+    # "DIVERGED_MAX_IT iterations 0". Numerically inert.
+    o["snes_max_it"] = 1
     o["snes_lag_jacobian"] = -2
     o["snes_lag_preconditioner"] = -2
     # Krylov choice is per-operator (set in the branches below):
@@ -1201,7 +1375,11 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
 
 def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                          n_outer=12, relax=0.2, beta=200.0,
-                         aniso_cap=2.0, boundary_slip=False,
+                         resolution_ratio=1.0,
+                         geom_mean_smoothing=0.25,
+                         aniso_to_base=False,
+                         aniso_cap=2.0, coarsen_cap=1.0,
+                         boundary_slip=False,
                          linear_solver="direct", phi_degree=2,
                          move_anisotropy=None, metric_role="M",
                          outer_tol=1.0e-4):
@@ -1294,9 +1472,35 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
       decoupled map regardless — it would need the coupled / inverse
       Winslow (the heavy MMPDE, out of this prototype's scope).
 
-    So (3) trades grading *magnitude* for clean anisotropic *cell
-    alignment* — exactly its intended role (see the warning above).
-    ``relax`` (default 0.2) under-relaxes the per-step displacement;
+    **Single-knob model (`resolution_ratio` R).** The gradient-only
+    metric ``M ⪰ base·I`` is *refine-only* (keeps only ``∇ρ``,
+    discards ρ's magnitude ⇒ flat cells pinned at ``h0``, cannot
+    release nodes, the steepest feature scavenges the budget). The
+    fix makes the isotropic density a genuinely **equidistributed**
+    field ``s = base·ρ/G`` (``G`` = geometric mean of ρ on the
+    near-uniform undeformed D mesh ⇒ ``⟨ln s⟩=ln base``, node budget
+    centred). Refine (``s>base``) and coarsen (``s<base``) are then
+    **complementary by the conservation law itself** — there is no
+    coarsening parameter. ``R`` only sets the safety eigen-clamp
+    ``[base/R², base·R²]`` (cells ∈ ``[h0/R, h0·R]``); M-harmonic
+    scale-invariance makes the normalisation constant irrelevant, so
+    the geometric-mean centring merely places the band symmetrically
+    around the bulk. ``R=1`` ⇒ exact refine-only no-op (every prior
+    result bit-preserved); ``R≈2`` is the validated production
+    point. The legacy two-knob ``aniso_cap``/``coarsen_cap`` clamp
+    is retained only as a bit-for-bit expert override when ``R≤1``.
+    ``G`` is recomputed from the *instantaneous* field every
+    adaptation event; in a violent transient that sloshes the whole
+    ``ρ/G`` distribution across the fixed clamp band → mass
+    clamp-saturation → a visible mesh "wobble".
+    ``geom_mean_smoothing`` (``a``, default 0.25) low-passes ``ln
+    G`` across events (``lnG←a·lnG_now+(1−a)·lnG_prev``; ``a=1`` ⇒
+    off/instantaneous, ``a≈0.25`` ⇒ strongly damped) so the band
+    stays centred — smoothing **only the global intensity scalar**
+    (the spatial ρ pattern still tracks the field every event, so
+    the user-facing API stays single-knob; one scalar is carried in
+    ``_GEMA_STATE`` across events). ``relax`` (default 0.2)
+    under-relaxes the per-step displacement;
     ``n_outer`` (default 12) composes the damped steps toward the
     fixed-D M-harmonic map. ``beta`` (default 200) sets how fast the
     metric saturates the ``aniso_cap`` eigen-clamp (the clamp, not
@@ -1453,19 +1657,126 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     g_eps = 1.0e-9
     gref = gmax if gmax > g_eps else 1.0
     base = 1.0 / h0 ** 2
-    lam_lo = 1.0 / h0 ** 2                      # coarsest
-    lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
+
+    # --- isotropic density: which redistribution model ------------
+    # Three regimes, in precedence order:
+    #
+    #  (1) ``resolution_ratio > 1`` → SINGLE-KNOB EQUIDISTRIBUTION
+    #      (the primary, documented API). The isotropic density is
+    #      ``s = base·ρ/G`` with ``G`` the geometric mean of ρ on
+    #      the (near-uniform, *undeformed*) D mesh, so
+    #      ``⟨ln s⟩ = ln base``: the node budget is centred and
+    #      refine ⇄ coarsen are **complementary by the conservation
+    #      law itself** — there is no coarsening parameter. The
+    #      eigen-clamp ``[base/R², base·R²]`` (cells ∈
+    #      ``[h0/R, h0·R]``) is a pure safety rail set by the one
+    #      knob ``R``. M-harmonic is scale-invariant, so the
+    #      normalisation *constant* is irrelevant to the realised
+    #      mesh — only ρ's spatial *ratio* and the clamp matter;
+    #      the geometric-mean centring just places the band
+    #      symmetrically so the clamp bites tails, not the bulk.
+    #
+    #  (2) ``coarsen_cap > 1`` (legacy expert override, not the
+    #      documented API) → the earlier ad-hoc
+    #      ``s = base·cc^(q-1)`` law. Preserved **bit-for-bit** so
+    #      every historical ``a16c*`` result still reproduces.
+    #
+    #  (3) otherwise → refine-only metric (``s ≡ base``),
+    #      **bit-identical** to the validated historical default.
+    #      ``resolution_ratio = 1`` (the default) lands here ⇒ an
+    #      exact no-op vs. all prior results.
+    if resolution_ratio > 1.0:
+        R = float(resolution_ratio)
+        rho_v = np.asarray(
+            uw.function.evaluate(metric, Dcoords)).reshape(-1)
+        s_log = np.log(np.clip(rho_v, 1.0e-12, None))
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            tot = uw.mpi.comm.allreduce(float(s_log.sum()),
+                                        op=_MPI.SUM)
+            cnt = uw.mpi.comm.allreduce(int(s_log.size),
+                                        op=_MPI.SUM)
+            ln_g = tot / max(cnt, 1)
+        else:
+            ln_g = float(s_log.mean())
+        # --- temporal damping of the normaliser G (EMA in log
+        # space) -------------------------------------------------
+        # G is recomputed from the *instantaneous* field every
+        # adaptation event; during a violent transient that lurches
+        # the whole ρ/G distribution sideways across the *fixed*
+        # eigen-clamp band → mass clamp-saturation → the mesh
+        # visibly "wobbles". Low-pass ln G across events (G is a
+        # geometric quantity ⇒ average in log space) so the band
+        # stays centred. This smooths **only the one global
+        # intensity scalar** — the spatial ρ(x) pattern still
+        # tracks the current field every event, so *where* it
+        # refines stays fully responsive. a=geom_mean_smoothing:
+        # a≥1 ⇒ no damping (instantaneous, the original behaviour);
+        # 0<a<1 ⇒ EMA, lnG_eff = a·lnG_now + (1−a)·lnG_prev (a≈0.25
+        # strong); the first event seeds the state (no history yet).
+        # Carried in _GEMA_STATE under the _ANISO_CACHE key so it
+        # persists across adaptation events but is per-run/per-mesh.
+        a = float(geom_mean_smoothing)
+        if 0.0 < a < 1.0:
+            prev = _GEMA_STATE.get(key)
+            if prev is not None:
+                ln_g = a * ln_g + (1.0 - a) * prev
+            _GEMA_STATE[key] = ln_g
+        # ρ̂ = ρ/G (geometric mean 1 ⇒ ⟨ln ρ̂⟩=0, budget-centred);
+        # iso = base·ρ̂ → refine where ρ̂>1, coarsen where ρ̂<1,
+        # the two complementary by construction (no coarsen knob).
+        iso = base * np.exp(s_log - ln_g)
+        lam_lo = base / R ** 2
+        lam_hi = base * R ** 2
+        # Anisotropic-bump magnitude. Default: ride the local
+        # density (M = iso·(I+β·bump) — the clean scale-invariant
+        # form). aniso_to_base=True keys it to constant `base`
+        # instead (M = iso·I + base·β·bump), matching the legacy
+        # cc=2 regime that produced a markedly solver-friendlier
+        # mesh: it stops a coarsened-near-front cell from being
+        # large AND strongly stretched (the clustered poor cells
+        # the equidist form makes during a violent transient).
+        aniso_keyed = (np.full(Dcoords.shape[0], base)
+                       if aniso_to_base else iso)
+    elif coarsen_cap > 1.0:
+        rho_v = np.asarray(
+            uw.function.evaluate(metric, Dcoords)).reshape(-1)
+        r_lo = float(np.percentile(rho_v, 10.0))
+        r_hi = float(np.percentile(rho_v, 90.0))
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            r_lo = uw.mpi.comm.allreduce(r_lo, op=_MPI.MIN)
+            r_hi = uw.mpi.comm.allreduce(r_hi, op=_MPI.MAX)
+        q = np.clip((rho_v - r_lo) / max(r_hi - r_lo, 1.0e-30),
+                    0.0, 1.0)
+        iso = base * float(coarsen_cap) ** (q - 1.0)   # q=1 → base
+        lam_lo = base / float(coarsen_cap)             # coarsest
+        lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
+        aniso_keyed = np.full(Dcoords.shape[0], base)
+    else:
+        iso = np.full(Dcoords.shape[0], base)
+        lam_lo = base                                  # coarsest
+        lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
+        aniso_keyed = np.full(Dcoords.shape[0], base)
+
     Dout = np.empty((Dcoords.shape[0], 2, 2))
     eye2 = np.eye(2)
     for i in range(Dcoords.shape[0]):
         g = gvec[i]
         gni = gn[i]
+        bi = iso[i]
+        ai = aniso_keyed[i]
         if gni > g_eps and gmax > g_eps:
             gh = g / gni
-            M = base * (eye2 + beta * (gni / gref) ** 2
-                        * np.outer(gh, gh))
+            # iso·I (equidistribution density) + anisotropic bump
+            # (regime 1: keyed to local iso ⇒ the whole metric is
+            # one scale-invariant density·shape field, clamp = rail;
+            # regimes 2/3: keyed to base ⇒ aniso_cap/beta retain
+            # their exact validated meaning).
+            M = bi * eye2 + ai * beta * (gni / gref) ** 2 \
+                * np.outer(gh, gh)
         else:
-            M = base * eye2
+            M = bi * eye2
         w, V = np.linalg.eigh(M)
         w = np.clip(w, lam_lo, lam_hi)
         if metric_role == "Minv":
@@ -1646,6 +1957,8 @@ def smooth_mesh_interior(
     boundary_slip: bool = False,
     method_kwargs: Optional[dict] = None,
     verbose: bool = False,
+    skip_threshold=_UNSET,
+    strategy: Optional[str] = None,
 ):
     r"""Smooth a mesh's interior vertices, optionally toward a
     spatially-varying target spacing.
@@ -1754,32 +2067,79 @@ def smooth_mesh_interior(
         Extra tuning forwarded to the chosen metric solver (ignored
         when ``metric is None``). Keeps the shared signature clean
         while exposing the per-method knobs. For
-        ``method="anisotropic"`` the validated knobs are:
+        ``method="anisotropic"`` there is **one primary knob**:
 
-        * ``aniso_cap`` (default 2.0) — max cell anisotropy /
-          spacing ratio. The **binding stability lever**: ≈2 is
-          robust, ≈4 needs a gentler ``relax`` + more ``n_outer``,
-          ``≳6`` folds the decoupled direct form.
-        * ``relax`` (default 0.2) — per-step under-relaxation of
-          the damped MMPDE iteration.
-        * ``n_outer`` (default 12) — composed damped steps
-          (early-exits on ``outer_tol``).
-        * ``linear_solver`` (``"direct"`` default, MUMPS, or
-          ``"gamg"`` — validated bit-parity here, the
-          parallel-scalable path).
-        * ``beta`` (default 200) — how fast the metric saturates
-          the ``aniso_cap`` clamp (the clamp, not ``beta``, is the
-          lever). ``move_anisotropy`` — optional radial/tangential
-          move reweight (quality knob).
+        * ``resolution_ratio`` (``R``, default **1.0 = exact
+          no-op**) — *the* tuneable. Cells may refine to ``h0/R``
+          and coarsen to ``h0·R``; the refine ⇄ coarsen split is
+          **not a parameter** — the isotropic density is
+          equidistribution-normalised (``s = base·ρ/G``, ``G`` the
+          geometric mean of ρ), so flat regions release exactly the
+          budget the fronts consume, *complementary by the
+          conservation law itself*. The eigen-clamp
+          ``[h0/R, h0·R]`` is just a safety rail. ``R=1`` ⇒
+          bit-identical to the refine-only historical default (an
+          exact no-op vs. every prior result). ``R≈2`` is the
+          validated production point (clean mesh through a full
+          convection lifecycle, ``minA/meanA``≈0.2, genuine
+          plume-reaching de-resolution, settled physics intact).
+          One number; complementary coarsening is automatic.
+        * ``geom_mean_smoothing`` (``a``, default 0.25) —
+          *internal* temporal damping of the equidistribution
+          normaliser ``G`` (not a grading knob; only acts when
+          ``R>1``). ``G`` is recomputed from the instantaneous
+          field every adaptation event; in a violent transient
+          that lurches the whole ``ρ/G`` distribution across the
+          fixed clamp band → clamp-saturation → the mesh visibly
+          "wobbles". An EMA in log space
+          (``lnG ← a·lnG_now+(1−a)·lnG_prev``) keeps the band
+          centred: ``a=1`` ⇒ no damping (instantaneous, the
+          original wobbly behaviour); ``a≈0.25`` ⇒ strong damping
+          of the startup over-reaction + steady-state contrast
+          pulse. It smooths **only the one global intensity
+          scalar** — the spatial ρ(x) pattern still tracks the
+          current field every event, so the API stays single-knob
+          (``R``); ``a`` carries one internal scalar across events.
+        * ``relax`` (0.2) / ``n_outer`` (12) — damped-MMPDE
+          under-relaxation + composed steps (early-exit
+          ``outer_tol``). ``linear_solver`` (``"direct"`` | MUMPS |
+          ``"gamg"``, bit-parity, parallel-scalable). ``beta``
+          (200) — anisotropic-bump saturation. ``move_anisotropy``
+          — optional radial/tangential move reweight.
+        * **Expert overrides (not the documented API; only honoured
+          when ``resolution_ratio≤1``):** ``aniso_cap`` (2.0) and
+          ``coarsen_cap`` (1.0) are the legacy two-knob clamp
+          (``h_min=h0/√aniso_cap``, ``h_max=h0·√coarsen_cap``,
+          ad-hoc ``s=base·cc^(q-1)``). Retained **bit-for-bit** so
+          historical scripts reproduce; superseded by
+          ``resolution_ratio``.
 
         Example::
 
             smooth_mesh_interior(
                 mesh, metric=rho, method="anisotropic",
-                method_kwargs=dict(aniso_cap=2.0, relax=0.2,
-                                   n_outer=12))
+                method_kwargs=dict(resolution_ratio=2.0,
+                                   relax=0.05, n_outer=25))
     verbose : bool, default False
         Print per-sweep (Jacobi) or periodic (spring/MA) progress.
+    skip_threshold : float, optional
+        If set, evaluate the *misalignment* between current mesh
+        cell density and the metric (via
+        :func:`mesh_metric_mismatch`) and **skip the adapt** when
+        misalignment is below this threshold. Misalignment is
+        ``√(1 − r²)`` where ``r`` is the Pearson correlation of
+        ``log(1/A_cell)`` with ``log(ρ_cell)`` — a magnitude-free
+        measure of whether cell density is aligned with the
+        metric. 0 ⇒ perfectly aligned; 1 ⇒ orthogonal /
+        anti-aligned. Ignored when ``metric is None``. Calibration
+        from one of the R=1.5 stagnant-lid tests: a uniform mesh
+        gives misalignment ≈ 1.00 (r ≈ 0); a freshly-adapted mesh
+        gives misalignment ≈ 0.85 (r ≈ 0.52). So ``0.9`` is a
+        sensible "skip if reasonably aligned" default for an
+        adaptive convection loop; ``0.5`` is strict (only skip
+        when very well aligned); ``0`` ⇒ always adapt
+        (equivalent to ``None``). Cost: one ``metric`` evaluate
+        at cell centroids + a few NumPy reductions.
 
     Notes
     -----
@@ -1839,8 +2199,64 @@ def smooth_mesh_interior(
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)
 
+    # Resolve strategy defaults — individual kwargs override.
+    # "off" → early-exit, mesh stays uniform.
+    if strategy is not None:
+        if strategy not in ADAPT_STRATEGIES:
+            raise ValueError(
+                f"unknown strategy {strategy!r}; choose from "
+                f"{list(ADAPT_STRATEGIES.keys())}")
+        if strategy == "off":
+            if verbose:
+                print("  smooth_mesh_interior: strategy='off' "
+                      "→ skipping", flush=True)
+            return
+        _s = ADAPT_STRATEGIES[strategy]
+        if skip_threshold is _UNSET:
+            skip_threshold = _s["skip_threshold"]
+        # method_kwargs: fill in resolution_ratio from strategy
+        # if caller didn't already set it.
+        if method_kwargs is None:
+            method_kwargs = {}
+        else:
+            method_kwargs = dict(method_kwargs)
+        method_kwargs.setdefault(
+            "resolution_ratio", _s["resolution_ratio"])
+    if skip_threshold is _UNSET:
+        skip_threshold = None
+
     if metric is not None:
         mk = dict(method_kwargs or {})
+        # Skip-if-good-enough: compare current cell sizes to what
+        # the metric would prescribe via equidistribution and bail
+        # out early when the mesh is already aligned. Cheap (one
+        # evaluate + a few NumPy reductions) — avoids a redundant
+        # mover call when the mesh hasn't drifted from its target.
+        # Mismatch is measured against the R-clamped achievable
+        # target (when the anisotropic mover's resolution_ratio is
+        # given), so a perfectly-adapted mesh measures ~0.
+        if skip_threshold is not None:
+            _R = mk.get("resolution_ratio", None)
+            mm = mesh_metric_mismatch(
+                mesh, metric, resolution_ratio=_R)
+            # `misalignment` = √(1 - r²) where r is Pearson of
+            # log(1/A_c) vs log(ρ_c). 0 ⇒ mesh density is
+            # perfectly aligned with the metric; 1 ⇒ uncorrelated.
+            # Skip when misalignment is below threshold.
+            if mm["misalignment"] < float(skip_threshold):
+                if verbose:
+                    print(f"  smooth_mesh_interior: skipping "
+                          f"(misalignment {mm['misalignment']:.3f} "
+                          f"< threshold {skip_threshold:.3f}; "
+                          f"alignment r={mm['alignment']:.3f})",
+                          flush=True)
+                return
+            if verbose:
+                print(f"  smooth_mesh_interior: adapting "
+                      f"(misalignment {mm['misalignment']:.3f} ≥ "
+                      f"threshold {skip_threshold:.3f}; "
+                      f"alignment r={mm['alignment']:.3f})",
+                      flush=True)
         if method == "spring":
             _winslow_spring(mesh, metric, pinned_labels, verbose,
                             boundary_slip=boundary_slip, **mk)
@@ -1962,9 +2378,14 @@ def metric_density_from_gradient(
     mesh,
     field,
     *,
-    amp: float = 8.0,
-    lo_percentile: float = 50.0,
-    hi_percentile: float = 97.0,
+    strategy: str = "med",
+    amp=_UNSET,
+    lo_percentile=_UNSET,
+    hi_percentile=_UNSET,
+    power=_UNSET,
+    mode: str = "percentile",
+    smoothing_length=None,
+    gradient_smoothing_length=None,
     degree: int = 1,
     name: Optional[str] = None,
 ):
@@ -1977,13 +2398,31 @@ def metric_density_from_gradient(
 
     .. math::
 
-        \rho = 1 + \mathrm{amp}\cdot t,\qquad
+        \rho = (1 + \mathrm{amp}\cdot t)^{\mathrm{power}},\qquad
         t = \mathrm{clip}\!\Big(
             \frac{|\nabla\mathrm{field}| - g_{lo}}
                  {g_{hi} - g_{lo}}, 0, 1\Big),
 
     with ``g_lo, g_hi`` the lo/hi percentiles of ``|∇field|`` (the
     same percentile-window idea as the adaptation metric).
+
+    **What the power knob does (strategic choice).** The mover
+    equidistributes ``ρ`` (cell area × ρ ≈ const). Combined with
+    ``A_c = h_c^d`` in ``d`` dimensions that gives
+    ``h_c ∝ ρ_c^{-1/d}``. For the linear ramp ``ρ ∝ |∇T|`` (i.e.
+    ``power=1``, the historical default) this means
+    ``h_c ∝ |∇T|^{-1/d}`` and the per-cell temperature change
+    ``ΔT_c ≈ |∇T|·h_c ∝ |∇T|^{1-1/d}`` — strong-gradient cells
+    still carry MORE temperature change than weak-gradient cells.
+    Choosing ``power = d`` (so ``ρ ∝ |∇T|^d``) gives
+    ``h_c ∝ 1/|∇T|`` and ``ΔT_c ≈ const`` — a **gradient-uniform
+    target**: every cell carries the same temperature change.
+    ``power = 1`` (default) targets "refinement of fronts /
+    boundaries" (mild grading concentrated where gradients are
+    strongest); ``power = d`` targets "uniform per-cell error in
+    a piecewise-linear T interpolant" (the natural goal for
+    advection-diffusion accuracy). Values in between blend the
+    two; ``power < 1`` softens grading further.
     ``|∇field|`` is L2-projected (a *first* derivative — UW3-clean)
     and the normalised ``t`` is stored in a **frozen Lagrangian
     scalar field**, so the returned metric rides material points —
@@ -2006,8 +2445,29 @@ def metric_density_from_gradient(
     field : scalar MeshVariable or sympy scalar expression
         The field whose gradient drives refinement (e.g. ``T``).
     amp : float, default 8.0
-        Bunching intensity: ``ρ_max = 1 + amp`` where ``|∇field|``
-        is strongest. Larger ⇒ stronger redistribution.
+        Bunching intensity: ``ρ_max = (1 + amp)^power`` where
+        ``|∇field|`` is strongest. Larger ⇒ stronger
+        redistribution.
+    power : float, default 1.0
+        Exponent applied to the metric. ``1`` (default) =
+        front-following (``ρ ∝ |∇T|``, mild grading).
+        ``d`` (mesh dimension) = gradient-uniform
+        (``ρ ∝ |∇T|^d``, uniform per-cell ΔT). Values in
+        between blend; ``<1`` softens. The strategic choice is
+        between "refine the fronts" and "uniform per-cell
+        error", not a free dial — see the docstring math.
+    mode : {"percentile", "raw"}, default "percentile"
+        How the gradient drives the metric. ``"percentile"``
+        (default): ρ = (1 + amp·t)^power with t the
+        percentile-clipped normalised |∇field| — concentrates
+        budget into the steepest fronts, ignores values below
+        ``lo_percentile``. ``"raw"``: ρ = |∇field|^power
+        directly (no offset, no clipping, no amp). The mover's
+        equidistribution geometric-mean normalisation handles
+        the absolute scale; ``amp`` and ``lo/hi_percentile``
+        are ignored. Use ``"raw"`` to target gradient-uniform
+        per-cell ΔT cleanly; ``"percentile"`` to refine only
+        the top X% of gradient values.
     lo_percentile, hi_percentile : float, default 50 / 97
         ``|∇field|`` normalisation window (cf. the 5th/95th of
         ``adaptivity.metric_from_gradient``). Raise ``lo`` to push
@@ -2020,13 +2480,51 @@ def metric_density_from_gradient(
         Cache disambiguator. Pass distinct names if you build
         several independent gradient metrics on the *same* mesh
         simultaneously (otherwise they share the cache slot).
+    smoothing_length : float or Pint Quantity, optional
+        Length-scale ``L`` for **field-side** screened-Poisson
+        smoothing applied to ``field`` BEFORE the gradient is
+        taken. Useful to suppress sub-grid noise in the source.
+        WARNING: at ``L ≳`` BL width this *erases* the
+        boundary-layer gradient — T's transition is spread over
+        ~L and the gradient peak ``T_active/h`` collapses to
+        ``T_active/L``. Prefer
+        ``gradient_smoothing_length`` when targeting features
+        with BL-like sub-h structure.
+    gradient_smoothing_length : float or Pint Quantity, optional
+        Length-scale ``L`` for **gradient-side** screened-Poisson
+        smoothing applied to the projected ``|∇field|`` field
+        (via the L2-projection's ``smoothing_length``). Peak
+        *location* of ``|∇T|`` is preserved (a BL still
+        concentrates near where T transitions); only the
+        spatial distribution / mesh-noise in the projection is
+        smoothed. This is the principled way to break the
+        metric/mesh feedback on adapted meshes without
+        destroying BL features. Set ``L ≈ h0`` (background
+        mean cell size) for mild de-noising;
+        ``L ≈ 2·h0`` for stronger.
 
     Returns
     -------
     sympy expression
-        ``1 + amp * t.sym[0]`` — Lagrangian, frozen at call time.
+        ``(1 + amp * t.sym[0])**power`` — Lagrangian, frozen at
+        call time.
     """
     import sympy
+
+    # Resolve strategy defaults — individual kwargs override.
+    if strategy not in ADAPT_STRATEGIES:
+        raise ValueError(
+            f"unknown strategy {strategy!r}; choose from "
+            f"{list(ADAPT_STRATEGIES.keys())}")
+    s = ADAPT_STRATEGIES[strategy]
+    if amp is _UNSET:
+        amp = s["amp"]
+    if lo_percentile is _UNSET:
+        lo_percentile = s["lo_percentile"]
+    if hi_percentile is _UNSET:
+        hi_percentile = s["hi_percentile"]
+    if power is _UNSET:
+        power = s["power"]
 
     cdim = mesh.cdim
     X = mesh.CoordinateSystem.X
@@ -2049,28 +2547,89 @@ def metric_density_from_gradient(
             f"mdg_rho_{id(mesh):x}_{tag}{degree}", mesh,
             vtype=uw.VarType.SCALAR, degree=int(degree),
             continuous=True)
-        _MDG_CACHE[key] = (g, gp, rho0)
+        # Optional pre-smoothing of the input field: a scalar
+        # screened-Poisson projection (u − L²∇²u = field) at
+        # smoothing_length L. Decouples the gradient computation
+        # from sub-L mesh structure, breaking the metric/mesh
+        # feedback loop.
+        f_smooth = uw.discretisation.MeshVariable(
+            f"mdg_fs_{id(mesh):x}_{tag}{degree}", mesh,
+            vtype=uw.VarType.SCALAR, degree=int(degree),
+            continuous=True)
+        fp = uw.systems.Projection(mesh, f_smooth)
+        _MDG_CACHE[key] = (g, gp, rho0, f_smooth, fp)
     else:
-        g, gp, rho0 = cache
+        g, gp, rho0, f_smooth, fp = cache
 
     f_sym = (field.sym[0] if hasattr(field, "sym")
              else sympy.sympify(field))
+    if smoothing_length is not None:
+        # Smooth the input field T at length L before computing
+        # ∇T. WARNING: at L ≳ BL width this *erases* the BL
+        # gradient — the screened-Poisson spreads T's transition
+        # layer over ~L and the gradient peak (T_active/h)
+        # collapses to T_active/L. For metric construction
+        # against a boundary-layer feature, prefer
+        # `gradient_smoothing_length` instead (smooths the
+        # projected gradient field rather than T).
+        fp.uw_function = f_sym
+        fp.smoothing_length = smoothing_length
+        fp.solve()
+        f_for_grad = f_smooth.sym[0]
+    else:
+        f_for_grad = f_sym
     gp.uw_function = sympy.Matrix(
-        [f_sym.diff(X[i]) for i in range(cdim)]).T
+        [f_for_grad.diff(X[i]) for i in range(cdim)]).T
+    # Apply screened-Poisson smoothing on the *gradient
+    # projection* — keeps peak location intact (where T
+    # transitions, ∇T peaks), just smooths the spatial
+    # distribution. This is the principled way to suppress
+    # mesh-induced noise in |∇T| without erasing BL features.
+    if gradient_smoothing_length is not None:
+        gp.smoothing_length = gradient_smoothing_length
+    else:
+        gp.smoothing = 0.0
     gp.solve()
     gmag = np.linalg.norm(np.asarray(uw.function.evaluate(
         g.sym, rho0.coords)).reshape(-1, cdim), axis=1)
-    g_lo = float(np.percentile(gmag, lo_percentile))
-    g_hi = float(np.percentile(gmag, hi_percentile))
+    # Parallel-correct percentile window. np.percentile on the
+    # rank-LOCAL gmag gives each rank its *own subdomain*
+    # distribution, so the same physical |∇field| maps to a
+    # different density on different ranks — a partition-dependent
+    # metric ("refine the top X%" silently becomes "each rank's own
+    # top X%"). Gather the global gmag so g_lo/g_hi are computed
+    # once from the whole-domain distribution and are identical on
+    # every rank. Serial (size==1) takes the local array unchanged
+    # ⇒ bit-for-bit identical to the previous behaviour. (Partition-
+    # boundary DOFs are shared across ranks, so the gathered array
+    # slightly over-weights them in the percentile value — a
+    # second-order effect vs. the rank-local bug this fixes; exact
+    # owned-only de-duplication is a follow-up if ever needed.)
+    if uw.mpi.size > 1:
+        gmag_global = uw.utilities.gather_data(
+            gmag, bcast=True, dtype="float64")
+    else:
+        gmag_global = gmag
+    g_lo = float(np.percentile(gmag_global, lo_percentile))
+    g_hi = float(np.percentile(gmag_global, hi_percentile))
     # No-op guard: a uniform field has |∇field| ≡ 0, but the L2
     # projection leaves ~1e-18 round-off. Percentile-normalising
     # that noise would fabricate a spurious [0,1] metric (the same
     # failure the mover's own g_eps floor fixes). Any real field
     # gradient is many orders above 1e-9 ⇒ a (near-)constant field
     # yields ρ ≡ 1 (no refinement) exactly.
+    if mode == "raw":
+        # Raw mode: ρ = |∇field|^power. Skip the percentile
+        # clip + (1+amp·t) wrap. Floor to a small positive so
+        # zero-gradient regions still get ρ > 0 (mover's geom-
+        # mean normaliser doesn't blow up).
+        floor = max(1.0e-12,
+                    float(np.max(gmag_global)) * 1.0e-6)
+        rho0.data[:, 0] = np.maximum(gmag, floor)
+        return rho0.sym[0] ** float(power)
     if g_hi <= 1.0e-9:
         rho0.data[:, 0] = 0.0
     else:
         rho0.data[:, 0] = np.clip(
             (gmag - g_lo) / max(g_hi - g_lo, 1.0e-30), 0.0, 1.0)
-    return 1.0 + float(amp) * rho0.sym[0]
+    return (1.0 + float(amp) * rho0.sym[0]) ** float(power)

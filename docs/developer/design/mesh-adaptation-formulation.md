@@ -235,6 +235,94 @@ a smooth peak ($\nabla\rho\to0$) and in the far field — the correct
 behaviour for resolving fronts/interfaces; resolving a feature *core*
 needs a curvature (Hessian) metric instead.
 
+#### Single-knob equidistribution (`resolution_ratio`)
+
+The anisotropic term is positive-semidefinite, so the bare metric is
+$M\succeq\tfrac1{h_0^2}I$: it can **only refine** (it keeps just
+$\nabla\rho$ and discards $\rho$'s magnitude, so it never asks for a
+cell coarser than $h_0$). On a **fixed node budget** that is fatally
+one-sided — flat regions cannot release nodes, the globally-steepest
+feature scavenges the budget and the interior plumes starve. *This is
+structural, not a tuning deficit:* no `aniso_cap`, $\beta$, or
+percentile setting frees the budget; they only re-aim one that is
+never released.
+
+The fix makes the isotropic part a genuinely **equidistributed**
+density. Evaluate $\rho$ on the (near-uniform, *undeformed*) metric
+mesh, form the geometric mean $G=\exp\langle\ln\rho\rangle$, and set
+
+$$
+\boxed{\;M \;=\; s(\mathbf x)\bigl(I
+   \;+\; \beta\,\hat{\mathbf g}\hat{\mathbf g}^{\mathsf T}
+   \bigl(|\nabla\rho|/\nabla\rho_{\mathrm{ref}}\bigr)^{2}\bigr),
+   \qquad
+   s(\mathbf x)=\tfrac1{h_0^{2}}\;\frac{\rho(\mathbf x)}{G}\;}
+$$
+
+eigen-clamped to $\lambda_i\in[\,1/h_{\max}^2,\,1/h_{\min}^2\,]$ with
+**$h_{\min}=h_0/R$, $h_{\max}=h_0R$** for the single knob
+$R=\texttt{resolution\_ratio}$. Because $\langle\ln s\rangle=\ln
+(1/h_0^2)$, the node budget is **centred**: steep regions ($\rho>G$)
+refine and flat regions ($\rho<G$) coarsen by *exactly complementary*
+amounts — **the conservation law of §1 supplies the de-resolution
+automatically; there is no coarsening parameter**. M-harmonic
+scale-invariance makes the normalisation constant irrelevant to the
+realised mesh, so $G$ only serves to place the clamp band
+symmetrically about the bulk; $R$ alone bounds the realised fine:coarse
+ratio at $R^2$. $R=1$ collapses the band → the metric reverts
+**bit-identically** to the refine-only historical default (an exact
+no-op vs. every prior result); $R\!\approx\!2$ is the validated
+production point.
+
+*Why a single normalised knob rather than two caps.* The earlier
+two-knob form ($s=h_0^{-2}\texttt{coarsen\_cap}^{\,q-1}$, separate
+$h_{\min}$/$h_{\max}$) exposed the refine⇄coarsen split as a free
+parameter, and a sweep showed that split is **not free** — it is a
+single quality budget with a sharp knee:
+
+| legacy `aniso·cc` | $\min A/\overline A$ | edge p95/p05 | mesh |
+|---|---|---|---|
+| 4  (refine-only)  | ~0.27 | ~2.0 | clean, **no de-resolution** |
+| 6  (cc 1.5)       | 0.20–0.25 | ~3.4 | clean, subtle grading |
+| 8  (cc 2)         | 0.17–0.23 | ~3.8 | clean, clearly graded |
+| 16 (cc 4)         | 0.04–0.14 | ~5.4 | sliver mess (over-coarse) |
+
+The good operating point was *asymmetric* (refine $2\times$, coarsen
+only $\approx1.4\times$): over-coarsening slivers the flats. The
+equidistribution normalisation makes that balance **automatic and
+field-adaptive** instead of a hand-tuned cap product — flat regions
+release exactly the budget the fronts consume, so the user sets only
+*how much resolution range* ($R$), never *where the split lies*. The
+legacy `aniso_cap`/`coarsen_cap` pair is retained solely as a
+bit-for-bit expert override for $R\le1$ so historical scripts
+reproduce; `resolution_ratio` is the documented API.
+
+**Temporal damping of the normaliser.** $G$ is recomputed from
+the *instantaneous* field at every adaptation event. The eigen-clamp
+band $[\,b/R^2,bR^2\,]$ is *fixed*, but $G$ floats; during a violent
+transient (e.g. the $\mathrm{Nu}\!\approx\!17$ convective overshoot)
+a $G$ excursion translates the whole $\rho/G$ distribution sideways
+across that fixed band, so a large fraction of nodes simultaneously
+saturate against a clamp limit and the mesh visibly *lurches* — and
+even in steady state the fine⇄coarse contrast pulses as $G$
+breathes. Because $G$ is geometric, low-pass it **in log space**
+across events,
+
+$$\ln G_{\mathrm{eff}}^{(n)}=a\,\ln G^{(n)}
+   +(1-a)\,\ln G_{\mathrm{eff}}^{(n-1)},$$
+
+with $a=\texttt{geom\_mean\_smoothing}$ ($a\!=\!1$ ⇒ no damping /
+instantaneous; $a\!\approx\!0.25$ ⇒ strongly damped; the first event
+seeds the state). This smooths **only the single global intensity
+scalar** — the spatial $\rho(\mathbf x)$ pattern still tracks the
+current field every event, so *where* the mesh refines stays fully
+responsive; only the global de-resolution *magnitude* is
+time-filtered. It is an internal constant (one carried scalar, not a
+grading knob): the user-facing API stays single-knob. Equivalent to
+equidistributing a *time-averaged* density — for a slowly evolving
+field arguably more desirable than chasing every fluctuation, and
+strictly better through the startup transient.
+
 ```{figure} media/adapt_metric_tensor_construction.png
 The eigen-clamped metric tensor for a radial $\rho(r)$ (left) and an
 angular $\rho(\theta)$ (right): desired-cell ellipses (short axis
@@ -323,14 +411,18 @@ precision; `amp`=16 vs 24 give bit-identical metrics). What does
 *not* cancel is the **percentile window**
 $(g_{\mathrm{lo}},g_{\mathrm{hi}})$: it reshapes $t$ (which gradient
 quantile is clipped flat vs in the linear ramp), hence $\nabla t$,
-hence $M$ — so it is the metric-construction tuning knob for the
-mover (choose *which* gradient strength triggers refinement). To
-make the bunching genuinely stronger use `aniso_cap` (sharper peak,
-stability-limited) and/or $\beta$ (wider refined band, safe), not
-`amp`. `amp` *is* a real bunching intensity for the **isotropic**
-spring / Monge–Ampère methods (where the absolute $\rho$ magnitude
-enters $A^0\propto1/\rho$ and $g\propto1/\rho$) — it is
-method-dependent.
+hence $M$ — so it chooses *which* gradient strength triggers
+refinement. For the mover the user-facing model is now a **single
+knob, `resolution_ratio` $R$** (§4.1): it sets the resolution range
+($h_0/R$ … $h_0R$) while the equidistribution normalisation supplies
+the complementary coarsening *automatically* — there is no separate
+budget/percentile/coarsen lever to balance. The percentile window
+still shapes *where* the gradient counts as a front (a property of
+`metric_density_from_gradient`, upstream of the mover), but the
+refine⇄coarsen split is no longer a parameter. `amp` is inert here
+but *is* a real bunching intensity for the **isotropic** spring /
+Monge–Ampère methods (where the absolute $\rho$ magnitude enters
+$A^0\propto1/\rho$ and $g\propto1/\rho$) — it is method-dependent.
 ```
 
 | | `mesh.adapt` (MMG) | `smooth_mesh_interior` (this) |
@@ -412,6 +504,22 @@ against the exact 1-D OT reference.
   energy ($v_{\mathrm{rms}}$ within ≈3 %) at ≈0.69× the reference
   wall-time; the adaptation overhead itself is a small fraction of one
   Stokes solve.
+* **Single-knob equidistribution (`resolution_ratio`), fully
+  validated.** Gating/clamp probe: $R\!=\!1$ has *no* sub-`base`
+  eigenvalue and ratio $=$ `aniso_cap` exactly (the refine-only
+  no-op, confirmed empirically as well as by construction);
+  $R\!=\!2$ respects the clamp $[\,b/4,4b\,]$ with **0 violations**,
+  eigenvalues span `base` both ways, $\approx$62 % of nodes
+  coarsened to fund the fronts (parameter-free complementary
+  de-resolution). A fresh→saturation Ra=10⁵ run at $R\!=\!2$
+  (`a16e`, 326 steps, 65+ adaptation events) holds
+  `minA/meanA`$\approx$0.20 with **zero folds** through the full
+  overshoot→settle cycle and settles at $\mathrm{Nu}\approx3.87$ —
+  *quantitatively matching the hand-tuned legacy two-knob point*
+  (`coarsen_cap=2`: `minA/meanA`$\approx$0.20, $\mathrm{Nu}\approx
+  3.89$) **with one parameter-free knob**. The geometric-mean
+  centring self-lands in the sliver-safe regime; the user sets only
+  the resolution range, never the refine/coarsen split.
 
 ```{figure} media/adapt_nonseparable_validation.png
 Non-separable Gaussian blob: target metric (top-right), the realised
