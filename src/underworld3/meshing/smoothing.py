@@ -2856,6 +2856,8 @@ def follow_metric(
     metric: str = "front-following",
     skip_threshold: float = 0.9,
     gradient_smoothing_length=None,
+    polish_iters: int = 1,
+    polish_alpha: float = 0.2,
     method_kwargs: Optional[dict] = None,
     name: Optional[str] = None,
     verbose: bool = False,
@@ -2994,9 +2996,18 @@ def follow_metric(
         Suppresses sub-cell metric-mesh feedback noise without
         destroying boundary-layer features. A useful default is
         ``≈ 2 * h_0`` (background cell size).
-    method_kwargs : dict, optional
-        Extra kwargs forwarded to the anisotropic mover (e.g.
-        ``relax``, ``n_outer``).
+    polish_iters : int, default 1
+        Number of Jacobi (graph-Laplacian) polish iterations
+        applied AFTER the anisotropic mover. Each iteration
+        averages every interior vertex toward the mean of its
+        edge neighbours, gently rounding out the remaining
+        slivers without (significantly) undoing the metric
+        distribution. ``polish_iters=1`` is the production
+        default; ``=0`` disables; ``≥3`` further improves cell
+        quality at the cost of ~5-10% refinement loss per step.
+    polish_alpha : float, default 0.2
+        Under-relaxation in ``(0, 1]`` for the polish Jacobi
+        sweep. Lower = gentler.
     name : str, optional
         Cache disambiguator. Pass distinct names if you build
         several independent metrics on the same mesh.
@@ -3098,5 +3109,22 @@ def follow_metric(
         verbose=verbose,
     )
     new_X = np.asarray(mesh.X.coords)
-    return not np.allclose(new_X, old_X)
+    moved = not np.allclose(new_X, old_X)
+    # Optional Jacobi polish: gentle graph-Laplacian smoothing
+    # of interior nodes toward neighbour-centroid average. This
+    # cleans up the few remaining cells held at the sliver-floor
+    # by the backtrack — the metric-aware mover places nodes
+    # where the metric wants them, and the polish then evens
+    # out the cell shapes without (significantly) redistributing
+    # the nodes. polish_iters=1, alpha=0.2 eliminates the
+    # ~1 sliver per mesh while costing ~5-10% refinement
+    # relaxation; larger polish trades more refinement for more
+    # uniform cells. polish_iters=0 disables.
+    if moved and polish_iters > 0:
+        smooth_mesh_interior(
+            mesh,
+            n_iters=int(polish_iters),
+            alpha=float(polish_alpha),
+        )
+    return moved
 
