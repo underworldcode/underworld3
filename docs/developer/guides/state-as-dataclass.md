@@ -191,12 +191,12 @@ def test_my_helper_roundtrip():
     h.step(0.2)
     state_pre = h.state
 
-    snap = model.snapshot()
+    snap = model.save_state()
 
     # Mutate.
     h.step(0.5)
 
-    model.restore(snap)
+    model.load_state(snap)
 
     # Verify primary state recovered.
     assert h.state == state_pre
