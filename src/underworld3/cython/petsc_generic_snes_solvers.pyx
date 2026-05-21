@@ -1866,7 +1866,11 @@ class SNES_Scalar(SolverBaseClass):
         # Don't unwrap here — let getext()'s two-phase unwrap handle it.
         # This preserves constant UWexpressions as symbols for the constants[] mechanism.
         f0  = sympy.Array(self.F0.sym).reshape(1).as_immutable()
-        F1  = sympy.Array(self.F1.sym).reshape(dim).as_immutable()
+        # F1 is the flux vector, which lives in the embedded coordinate
+        # space (cdim components). For volume meshes dim==cdim so this
+        # is unchanged; for manifold meshes (dim=2, cdim=3) the flux
+        # is genuinely 3-component.
+        F1  = sympy.Array(self.F1.sym).reshape(cdim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1

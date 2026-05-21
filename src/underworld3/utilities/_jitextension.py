@@ -830,8 +830,14 @@ def generate_c_source(
                 type(var.fn)._ccodestr = f"{prefix_str}[{u_i}]"
                 type(var.fn)._ccode = lambdafunc
                 u_i += 1
-                # now patch gradient guy into varfn guy
-                for ind in range(mesh.dim):
+                # Now patch the gradient components. The gradient of a
+                # field on the mesh lives in the embedded coordinate
+                # space (cdim-dim), so iterate to cdim — not dim. For
+                # volume meshes ``dim == cdim`` so this is unchanged;
+                # for manifold meshes (e.g. SphericalManifold dim=2,
+                # cdim=3) the third partial ``f_{,2}`` exists and
+                # needs to be wired to ``u_x[2]``.
+                for ind in range(mesh.cdim):
                     # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                     var.fn._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
                     var.fn._diff[ind]._ccode = lambdafunc
@@ -848,8 +854,9 @@ def generate_c_source(
                     type(comp)._ccodestr = f"{prefix_str}[{u_i}]"
                     type(comp)._ccode = lambdafunc
                     u_i += 1
-                    # and also patch gradient guy into varfn guy's comp guy   # Argh ... too much Mansourness
-                    for ind in range(mesh.dim):
+                    # Iterate to cdim (embedded coord dim) — see the
+                    # scalar branch above for the dim != cdim reason.
+                    for ind in range(mesh.cdim):
                         # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                         comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
                         comp._diff[ind]._ccode = lambdafunc
