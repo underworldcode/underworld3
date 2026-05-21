@@ -3187,6 +3187,23 @@ class Mesh(Stateful, uw_object):
         ):
             return
 
+        # On a cd-1 surface mesh (dim != cdim — e.g. extract_surface on
+        # a SphericalShell: dim=2, cdim=3), the "inside vs outside"
+        # control-point trick doesn't apply: the 2-D perpendicular
+        # rule produces a 2-vector that can't dot with the 3-D
+        # face-to-cell vector, and "outside the domain" for a closed
+        # manifold has no natural geometric meaning. Surface query
+        # points come from the manifold itself (no R^3 → surface
+        # projection in scope), so points_in_domain reduces to "is
+        # this point close enough to the surface to be inside a cell?"
+        # — which the closest-local-cell test already answers. Leave
+        # the kd-tree as None and let points_in_domain short-circuit.
+        if self.dim != self.cdim:
+            self.boundary_face_control_points_kdtree = None
+            self.boundary_face_control_points_sign = None
+            self._domain_radius_squared = float("inf")
+            return
+
         cStart, cEnd = self.dm.getHeightStratum(0)
         fStart, fEnd = self.dm.getHeightStratum(1)
         pStart, pEnd = self.dm.getDepthStratum(0)
@@ -3295,6 +3312,14 @@ class Mesh(Stateful, uw_object):
 
         if model_points.shape[0] == 0:
             return numpy.array([], dtype=bool)
+
+        # Cd-1 surface mesh: no boundary-face control points exist
+        # (see _mark_local_boundary_faces_inside_and_out). Per the
+        # surface-mesh contract, query points are assumed to lie on
+        # the manifold; the closest-local-cell test is the right
+        # filter, not an inside/outside split.
+        if self.boundary_face_control_points_kdtree is None:
+            return self._get_closest_local_cells_internal(model_points) != -1
 
         dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
             model_points, k=1, sqr_dists=True
@@ -3407,11 +3432,22 @@ class Mesh(Stateful, uw_object):
         else:
             return np.zeros((0,))
 
-        # We need to filter points that lie outside the mesh but
-        # still are allocated a nearby element by this distance-only check.
-
         cells = self._indexMap[closest_points]
         cStart, cEnd = self.dm.getHeightStratum(0)
+
+        # Cd-1 surface mesh: the in-cell test (face-normal half-space
+        # rule) needs the cell-plane projection of the query for a
+        # curved 3-D triangle, not the 2-D perpendicular rule the
+        # existing helpers use. For a convex manifold with on-surface
+        # queries (the surface-mesh contract) the centroid kd-tree
+        # already returns the owning cell to first order, so skip the
+        # rejection step. A proper manifold in-cell test is Session 2
+        # work for the surface-submesh investigation.
+        if self.dim != self.cdim:
+            return cells
+
+        # We need to filter points that lie outside the mesh but
+        # still are allocated a nearby element by this distance-only check.
 
         inside = self._test_if_points_in_cells_internal(coords, cells)
         cells[~inside] = -1
