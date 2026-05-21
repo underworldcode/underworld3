@@ -1870,19 +1870,26 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         # When `rest_size_cap_max` / `rest_size_cap_min` are set,
         # add a restoring force to each vertex that pulls it
         # toward its rest position (`old0`, captured before the
-        # mover started) whenever an incident cell's mean edge
-        # would overshoot the cap under the proposed move.
+        # mover started) whenever an incident cell's edge would
+        # overshoot the cap under the proposed move.
+        #
+        # We use **max-edge** for the coarsening cap (a cell
+        # grew in *any* direction beyond `h0·coarsening`) and
+        # **min-edge** for the refinement cap (a cell shrunk
+        # in *any* direction below `h0/refinement`). Both
+        # measures are sliver-aware — they catch anisotropic
+        # cells that mean-edge wouldn't flag.
         #
         # Motivation: the metric-mover is a local graph-Laplacian
         # — nodes cannot transport across high-gradient ridges,
         # so cells *adjacent* to a refinement zone absorb most
         # of the freed area while cells topologically isolated
         # from the refinement stay near rest size. Without a
-        # spring, the adjacent cells then over-coarsen by
-        # ~2× the cap on the stagnant-lid test. The spring
-        # restores those cells by literally pulling their nodes
-        # back along the original positions, weighted by how
-        # much the local cell would exceed the cap.
+        # spring, the adjacent cells over-coarsen by ~2× the cap
+        # and the BL cells over-refine to thin slivers (aspect
+        # ratios > 10). The spring restores both by literally
+        # pulling nodes back along the original positions,
+        # weighted by how much the local cell exceeds the cap.
         if (rest_size_cap_max is not None
                 or rest_size_cap_min is not None):
             proposed = old_coords + float(relax) * disp
@@ -1890,20 +1897,25 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
             e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
             e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
-            mean_h = (e0 + e1 + e2) / 3.0
-            # Per-cell fractional excess vs cap (max(h)/cap - 1
-            # for coarsening, min/h - 1 for refinement). Both ≥ 0.
+            # Sliver-aware per-cell extremes:
+            max_h = np.maximum(np.maximum(e0, e1), e2)
+            min_h = np.minimum(np.minimum(e0, e1), e2)
+            # Per-cell fractional excess vs cap. Both ≥ 0.
+            #   over  = max(any edge)/cap_max - 1       (coarsening
+            #     fault: at least one edge too long)
+            #   under = cap_min / min(any edge) - 1     (refinement
+            #     fault: at least one edge too short, i.e. sliver)
             if rest_size_cap_max is not None:
                 over = np.maximum(
-                    mean_h / float(rest_size_cap_max) - 1.0, 0.0)
+                    max_h / float(rest_size_cap_max) - 1.0, 0.0)
             else:
-                over = np.zeros_like(mean_h)
+                over = np.zeros_like(max_h)
             if rest_size_cap_min is not None:
                 under = np.maximum(
                     float(rest_size_cap_min)
-                    / np.maximum(mean_h, 1.0e-30) - 1.0, 0.0)
+                    / np.maximum(min_h, 1.0e-30) - 1.0, 0.0)
             else:
-                under = np.zeros_like(mean_h)
+                under = np.zeros_like(min_h)
             # Per-vertex restoring weight ← Σ over incident cells.
             # K controls overall spring stiffness; the per-iter
             # effective pull is `relax · K · excess` toward rest.
