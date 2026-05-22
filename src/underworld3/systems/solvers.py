@@ -2138,7 +2138,7 @@ class SNES_Vector_Projection(SNES_Vector):
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: (
             self.smoothing * self.Unknowns.E
-            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
+            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.cdim)
         ),
         "Vector projection pointwise smoothing term: F_1(u)",
     )

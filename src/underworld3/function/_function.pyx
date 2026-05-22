@@ -487,7 +487,7 @@ def global_evaluate_nd(   expr,
     n_input_points = coords_array.shape[0]
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
-    local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
+    local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.cdim)
     values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
 
     if local_coords.shape[0] > 0:

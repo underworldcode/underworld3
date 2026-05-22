@@ -2565,7 +2565,11 @@ class SNES_Vector(SolverBaseClass):
         self.is_setup = False
 
         mesh = self.mesh
-        dim = mesh.dim
+        # For SNES_Vector, the unknown is a vector field with as many
+        # components as the embedding space (cdim). On volume meshes
+        # cdim == dim. On manifold meshes (dim < cdim) the vector lives
+        # in the embedding space with an implicit tangency constraint.
+        dim = mesh.cdim
 
         # Surface normal components — use projected P1 normals by default.
         # These are smooth, consistently oriented, and converge in 3D.
@@ -2808,7 +2812,10 @@ class SNES_Vector(SolverBaseClass):
                 print(f"SNES_Vector ({self.name}): Pointwise functions need to be built", flush=True)
 
         N = self.mesh.N
-        dim = self.mesh.dim
+        # For SNES_Vector, the vector has cdim components in the
+        # embedding space — see the boundary-condition setup above.
+        # Volume meshes have cdim == dim so this is unchanged for them.
+        dim = self.mesh.cdim
         cdim = self.mesh.cdim
 
         sympy.core.cache.clear_cache()
