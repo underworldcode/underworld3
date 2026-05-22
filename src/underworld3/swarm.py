@@ -266,9 +266,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             self.shape = (1, 1)
             self.cpt_map = 0
         elif vtype == uw.VarType.VECTOR:
-            self.num_components = mesh.dim
-            self.shape = (1, mesh.dim)
-            self.cpt_map = tuple(range(0, mesh.dim))
+            # On manifold meshes (dim != cdim) coordinate-like vector
+            # fields carry cdim components in the embedding space. Honor
+            # the explicitly supplied size when it matches cdim; default
+            # to mesh.dim otherwise. On volume meshes the two coincide.
+            if isinstance(size, int) and size == mesh.cdim:
+                self.num_components = mesh.cdim
+                self.shape = (1, mesh.cdim)
+                self.cpt_map = tuple(range(0, mesh.cdim))
+            else:
+                self.num_components = mesh.dim
+                self.shape = (1, mesh.dim)
+                self.cpt_map = tuple(range(0, mesh.dim))
         elif vtype == uw.VarType.TENSOR:
             self.num_components = mesh.dim * mesh.dim
             self.shape = (mesh.dim, mesh.dim)
@@ -2521,7 +2530,13 @@ class Swarm(Stateful, uw_object):
         mesh.register_swarm(self)
 
         self.dm = PETSc.DMSwarm().create()
-        self.dm.setDimension(self.dim)
+        # Use cdim (embedding dim), not dim (topological). On manifold
+        # meshes (e.g. SphericalManifold: dim=2, cdim=3) coordinates are
+        # cdim-vectors and the DMSwarmPIC_coor field is registered at
+        # cdim blocksize. Setting the swarm's intrinsic dim here keeps
+        # PETSc's bookkeeping consistent with the coord-field shape.
+        # On volume meshes dim == cdim so this is a no-op.
+        self.dm.setDimension(self.cdim)
         self.dm.setType(SwarmType.DMSWARM_BASIC.value)
         self._data = None
 
@@ -2687,7 +2702,7 @@ class Swarm(Stateful, uw_object):
         centroids = self.mesh._get_domain_centroids()
         centroid_kdt = uw.kdtree.KDTree(centroids)
 
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.dim).copy()
+        coords = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
 
         if coords.shape[0] > 0:
@@ -2847,7 +2862,7 @@ class Swarm(Stateful, uw_object):
             self._mesh_version = self.mesh._mesh_version
 
         # Get current coordinate data from PETSc (these are in model coordinates)
-        model_coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
+        model_coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
 
         # Apply scaling to convert model coordinates to physical coordinates
@@ -2965,7 +2980,7 @@ class Swarm(Stateful, uw_object):
         self._coords[...] = value[...]
 
         # Update PETSc DM field directly with model coordinates for immediate consistency
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
         coords[...] = model_coords[...]
         self.dm.restoreField("DMSwarmPIC_coor")
 
@@ -3276,7 +3291,7 @@ class Swarm(Stateful, uw_object):
         else:
             self.dm.addNPoints(newp_coords.shape[0] + 1)
 
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
         ranks = self.dm.getField("DMSwarm_rank")
         coords[...] = newp_coords[...]
         ranks[...] = uw.mpi.rank
@@ -3300,7 +3315,7 @@ class Swarm(Stateful, uw_object):
 
             self.dm.addNPoints(swarm_new_size - swarm_orig_size)
 
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
 
             # Compute perturbation - extract magnitude if coordinates have units
             # numpy.array(..., dtype=float64) forces conversion to plain array
@@ -3373,7 +3388,7 @@ class Swarm(Stateful, uw_object):
         # This will only worry about particles that are not already claimed !
         #
 
-        swarm_coord_array = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))).copy()
+        swarm_coord_array = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
 
         in_or_not = self.mesh.points_in_domain(
@@ -3407,7 +3422,7 @@ class Swarm(Stateful, uw_object):
                 # Send unclaimed points to next processor in line
 
                 swarm_rank_array = self.dm.getField("DMSwarm_rank")
-                swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
+                swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
 
                 if not_my_points.shape[0] > 0:
                     dist, rank = mesh_domain_kdtree.query(
@@ -3425,7 +3440,7 @@ class Swarm(Stateful, uw_object):
                 self.dm.migrate(remove_sent_points=True)
                 uw.mpi.barrier()
 
-                swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
+                swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
                 in_or_not = self.mesh.points_in_domain(swarm_coord_array)
                 self.dm.restoreField("DMSwarmPIC_coor")
 
@@ -3535,13 +3550,12 @@ class Swarm(Stateful, uw_object):
             raise TypeError("'coordinateArray' must be provided as a numpy array")
         if not len(coordinatesArray.shape) == 2:
             raise ValueError("The 'coordinateArray' is expected to be two dimensional.")
-        if not coordinatesArray.shape[1] == self.mesh.dim:
-            #### petsc appears to ignore columns that are greater than the mesh dim, but still worth including
+        if not coordinatesArray.shape[1] == self.mesh.cdim:
             raise ValueError(
-                """The 'coordinateArray' must have shape n*dim, where 'n' is the
-                              number of particles to add, and 'dim' is the dimensionality of
-                              the supporting mesh ({}).""".format(
-                    self.mesh.dim
+                """The 'coordinateArray' must have shape (n, cdim), where 'n' is the
+                              number of particles to add, and 'cdim' is the embedding
+                              (coordinate) dimensionality of the supporting mesh ({}).""".format(
+                    self.mesh.cdim
                 )
             )
 
@@ -3564,7 +3578,7 @@ class Swarm(Stateful, uw_object):
         self.dm.addNPoints(npoints=npoints)
 
         if npoints > 0:
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
             ranks = self.dm.getField("DMSwarm_rank")
             coords[swarm_size::, :] = valid_coordinates[:, :]
             ranks[swarm_size::] = uw.mpi.rank
@@ -3632,13 +3646,12 @@ class Swarm(Stateful, uw_object):
             raise TypeError("'coordinateArray' must be provided as a numpy array")
         if not len(globalCoordinatesArray.shape) == 2:
             raise ValueError("The 'coordinateArray' is expected to be two dimensional.")
-        if not globalCoordinatesArray.shape[1] == self.mesh.dim:
-            #### petsc appears to ignore columns that are greater than the mesh dim, but still worth including
+        if not globalCoordinatesArray.shape[1] == self.mesh.cdim:
             raise ValueError(
-                """The 'coordinateArray' must have shape n*dim, where 'n' is the
-                                number of particles to add, and 'dim' is the dimensionality of
-                                the supporting mesh ({}).""".format(
-                    self.mesh.dim
+                """The 'coordinateArray' must have shape (n, cdim), where 'n' is the
+                                number of particles to add, and 'cdim' is the embedding
+                                (coordinate) dimensionality of the supporting mesh ({}).""".format(
+                    self.mesh.cdim
                 )
             )
 
@@ -3665,7 +3678,7 @@ class Swarm(Stateful, uw_object):
         # Add new points with provided coords
         # Record the current rank (migration needs to know where we start from !)
 
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
         ranks = self.dm.getField("DMSwarm_rank")
         coords[swarm_size::, :] = globalCoordinatesArray[:, :]
         ranks[swarm_size::] = uw.mpi.rank
@@ -4138,7 +4151,7 @@ class Swarm(Stateful, uw_object):
         regenerated on the next solve.
         """
         coord_field = self.dm.getField("DMSwarmPIC_coor").reshape(
-            (-1, self.dim)
+            (-1, self.cdim)
         )
         coords = np.asarray(coord_field).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
@@ -4688,7 +4701,7 @@ class Swarm(Stateful, uw_object):
             self._population_generation += 1
 
             ## cellid = self.dm.getField("DMSwarm_cellid")
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
             rmsh = self.dm.getField("DMSwarm_remeshed")
 
             # print(f"cellid -> {cellid.shape}")
