@@ -48,14 +48,18 @@ def main():
     # Scalar to advect, on the mesh.
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
-    # Velocity field. Stored as a MeshVariable so the solver can read
-    # rank-local values via the FE machinery. Solid-body rotation:
-    # v = (-y, x, 0).
-    V = uw.discretisation.MeshVariable("V", mesh, mesh.cdim, degree=2)
-    Vcoords = np.asarray(V.coords)
-    V.data[:, 0] = -Vcoords[:, 1]
-    V.data[:, 1] = +Vcoords[:, 0]
-    V.data[:, 2] = 0.0
+    # Velocity field as a sympy expression. Using a MeshVariable for V
+    # is fragile on a manifold because P2 edge-midpoint DOFs sit on
+    # the chord (interior of the sphere), not on the surface — the
+    # MeshVariable's per-DOF (-y, x, 0) assignment produces meaningless
+    # values there, polluting the FE-interpolated V used by the SL
+    # trace-back. A sympy expression evaluates exactly at any coord.
+    import os
+    x_sym, y_sym, z_sym = mesh.X
+    if os.environ.get("UW_NO_ADVECTION", "0") == "1":
+        V_sym = sympy.Matrix([[sympy.sympify(0)] * mesh.cdim])
+    else:
+        V_sym = sympy.Matrix([[-y_sym, x_sym, sympy.sympify(0)]])
 
     # Initial T: Gaussian centred at (1, 0, 0) (equator).
     coords = np.asarray(T.coords)
@@ -65,14 +69,14 @@ def main():
     dz = coords[:, 2]
     T.data[:, 0] = np.exp(-(dx**2 + dy**2 + dz**2) / (2 * sigma**2))
 
-    uw.pprint(f"T.coords.shape={T.coords.shape}, V.coords.shape={V.coords.shape}")
+    uw.pprint(f"T.coords.shape={T.coords.shape}, V_sym={V_sym}")
 
     # ------------------------------------------------------------
     # Solver setup.
     # ------------------------------------------------------------
     try:
         adv = uw.systems.AdvDiffusionSLCN(
-            mesh, u_Field=T, V_fn=V.sym, order=1,
+            mesh, u_Field=T, V_fn=V_sym, order=1,
         )
         adv.constitutive_model = uw.constitutive_models.DiffusionModel
         adv.constitutive_model.Parameters.diffusivity = 1.0e-4
@@ -95,10 +99,12 @@ def main():
     # ------------------------------------------------------------
     # Step a few times.
     # ------------------------------------------------------------
-    n_steps = 4
-    # ω = 1 → full rotation in t = 2π. Use a 1/12-rotation per step so
-    # we can see the displacement clearly without going all the way round.
-    dt = (2 * np.pi) / 12
+    n_steps = 8
+    # ω = 1 → full rotation in t = 2π. Use a much smaller per-step
+    # displacement so the SL trace-back chord is a small fraction of
+    # the cell size. cellSize=0.3 corresponds to ~17° per cell on the
+    # unit sphere; 0.05 rad/step (~3°) is well-resolved.
+    dt = 0.05
 
     for step in range(n_steps):
         uw.pprint(f"\n--- step {step + 1}/{n_steps}  dt={dt:.4f} ---")
