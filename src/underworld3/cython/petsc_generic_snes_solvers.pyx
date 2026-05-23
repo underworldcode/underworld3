@@ -3398,10 +3398,12 @@ class SNES_MultiComponent(SolverBaseClass):
             n_components = int(u_Field.shape[0]) * int(u_Field.shape[1])
         if n_components < 1:
             raise ValueError("n_components must be >= 1")
-        if mesh.cdim != mesh.dim:
-            raise ValueError(
-                "SNES_MultiComponent currently assumes mesh.cdim == mesh.dim."
-            )
+        # NB: SNES_MultiComponent works on manifold meshes (dim < cdim)
+        # because ``n_components`` is decoupled from mesh.dim by design —
+        # each component is an independent scalar problem with no
+        # cross-coupling. The spatial-derivative iteration inside
+        # _setup_pointwise_functions uses mesh.cdim (the gradient lives
+        # in the embedded space). Validated on SphericalManifold 2026-05-23.
 
         self._n_components = int(n_components)
 
@@ -3615,14 +3617,19 @@ class SNES_MultiComponent(SolverBaseClass):
                 print(f"SNES_MultiComponent ({self.name}): Pointwise functions need to be built", flush=True)
 
         N = self.mesh.N
-        dim = self.mesh.dim
+        # Spatial-derivative iteration uses cdim (the embedded gradient
+        # has cdim partial derivatives, one per coordinate of the
+        # embedding space). On volume meshes cdim == dim so the
+        # behaviour is unchanged. Distinct from mesh.dim, which is the
+        # topological dim used for FE element construction at line ~173.
+        dim = self.mesh.cdim
         Nc = self._n_components
 
         sympy.core.cache.clear_cache()
 
         # User-provided expressions.
         #   F0 shape: (1, Nc) row matrix  — per-component residual
-        #   F1 shape: (Nc, dim)           — per-component flux
+        #   F1 shape: (Nc, cdim)          — per-component flux
         F0_user = sympy.Matrix(self.F0.sym)
         F1_user = sympy.Matrix(self.F1.sym)
 
