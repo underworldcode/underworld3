@@ -475,6 +475,32 @@ def SphericalManifold(
         verbose=verbose,
     )
 
+    # Compose radial projection with the generic cell-plane
+    # projection. The radial step lands an arbitrary R^3 point on
+    # the geometric sphere; the cell-plane step refines into the
+    # closest local cell's chord plane so PETSc-FE's
+    # DMInterpolation doesn't extrapolate by the full chord/arc
+    # gap. With cell-plane on, SLCN advection retains ~42 % of
+    # the Gaussian amplitude per rotation (vs ~4 % without it —
+    # diagnosed 2026-05-23, ~96% catastrophic dissipation).
+    #
+    # CAVEAT: the cell-plane shift (O((cellSize/2)^2 / radius),
+    # ~0.0007 for cellSize=0.075) occasionally tunes a coord to
+    # lie almost exactly in the *extended* chord plane of a far
+    # cell on the opposite hemisphere. DMLocatePoints then picks
+    # the far cell, producing visible "static white streak" /
+    # antipode artefacts in SLCN advection. The proper fix is to
+    # bypass DMLocatePoints and evaluate the FE basis at the
+    # projected coord using the cell *we already picked* (the
+    # barycentric coords from distance_pointcloud_triangle), but
+    # that needs a manifold-aware evaluate path in
+    # uw.function.evaluate. Tracked as a follow-up.
+    def sphere_manifold_return_coords_to_bounds_with_cell_plane(coords):
+        coords = sphere_manifold_return_coords_to_bounds(coords)
+        return new_mesh._project_to_nearest_cell_plane(coords)
+
+    new_mesh.return_coords_to_bounds = sphere_manifold_return_coords_to_bounds_with_cell_plane
+
     # The closed sphere has 3 rigid-body rotation modes — same as
     # SphericalShell. These tangent-to-surface vector fields live in
     # the kernel of surface Stokes / shallow-water operators and need

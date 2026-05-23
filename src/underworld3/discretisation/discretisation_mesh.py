@@ -3334,6 +3334,145 @@ class Mesh(Stateful, uw_object):
         self._owned_cells_mask_cache = {"version": version, "mask": mask}
         return mask
 
+    def _project_to_nearest_cell_plane(self, coords):
+        """Project each coord onto the **nearest point inside** its
+        closest local cell's triangle.
+
+        Each cell is a flat (e.g. triangular) element whose vertices
+        sit on the geometric surface. The cell's chord plane is
+        slightly inside the surface — by O((cellSize/2)² / R) for a
+        sphere — so an input coord exactly on the surface is
+        geometrically *above* the cell's plane. PETSc-FE's
+        ``DMInterpolation.evaluate`` computes parametric (ξ, η) of
+        the off-plane point against the chord plane and produces
+        values slightly outside [0, 1] — extrapolation. With a
+        sharply-peaked field the extrapolation pumps energy on every
+        evaluation and the SL trace-back blows up within a couple
+        of steps.
+
+        Pure plane-projection isn't enough: it can land outside the
+        triangle's barycentric domain, and PETSc-FE would then locate
+        the point in a *different* cell than the kdtree picked.
+        Using the in-triangle nearest point (clamped to edges/
+        vertices when the plane projection falls outside) guarantees
+        the projected point is geometrically inside the cell PETSc-FE
+        will locate it in.
+
+        Math from ``utilities/geometry_tools.distance_pointcloud_triangle``
+        — vectorised by computing all per-coord nearest cells from
+        the kdtree, then evaluating the seven-region triangle
+        projection per coord. The loop is O(n_query) and tolerable
+        for SLCN trace-back (n_query = nDOF per step).
+
+        Parameters
+        ----------
+        coords : numpy.ndarray, shape (n, cdim)
+            Near-surface query points (expected to be within ~cell-
+            size of the manifold).
+
+        Returns
+        -------
+        projected : numpy.ndarray, shape (n, cdim)
+            Coords projected into the triangle of each one's closest
+            local cell.
+        """
+        coords = numpy.ascontiguousarray(coords, dtype=numpy.float64)
+        n = coords.shape[0]
+        if n == 0:
+            return coords
+
+        # No-op on volume meshes (cells are full-dimensional).
+        if self.dim == self.cdim:
+            return coords
+
+        self._build_kd_tree_index()
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
+        cStart, _ = nav_dm.getHeightStratum(0)
+        pStart, _ = nav_dm.getDepthStratum(0)
+        cell_num_points = self.element.entities[self.dim]
+
+        # Cache per-cell vertex coords once per mesh version.
+        if getattr(self, "_cell_vertex_cache_version", -1) != self._mesh_version:
+            num_local = self._nav_centroids.shape[0]
+            vtx_a = numpy.empty((num_local, self.cdim), dtype=numpy.float64)
+            vtx_b = numpy.empty((num_local, self.cdim), dtype=numpy.float64)
+            vtx_c = numpy.empty((num_local, self.cdim), dtype=numpy.float64)
+            for cid in range(num_local):
+                cone_pts = nav_dm.getTransitiveClosure(cStart + cid)[0][-cell_num_points:]
+                vtx = nav_coords[cone_pts - pStart]
+                vtx_a[cid] = vtx[0]
+                vtx_b[cid] = vtx[1]
+                vtx_c[cid] = vtx[2]
+            self._cell_vertex_cache = {
+                "version": self._mesh_version,
+                "a": vtx_a, "b": vtx_b, "c": vtx_c,
+            }
+            self._cell_vertex_cache_version = self._mesh_version
+
+        # k=1 nearest cell per coord.
+        _, closest_cells = self._centroid_index.query(coords, k=1, sqr_dists=False)
+        closest_cells = numpy.asarray(closest_cells).reshape(-1).astype(numpy.int64)
+
+        cache = self._cell_vertex_cache
+        a = cache["a"][closest_cells]
+        b = cache["b"][closest_cells]
+        c = cache["c"][closest_cells]
+
+        # Vectorised "nearest point in triangle" — math from
+        # distance_pointcloud_triangle, returning pt rather than d.
+        ab = b - a
+        ac = c - a
+        bc = c - b
+        ap = coords - a
+        bp = coords - b
+        cp = coords - c
+
+        d1 = numpy.einsum("ij,ij->i", ab, ap)
+        d2 = numpy.einsum("ij,ij->i", ac, ap)
+        d3 = numpy.einsum("ij,ij->i", ab, bp)
+        d4 = numpy.einsum("ij,ij->i", ac, bp)
+        d5 = numpy.einsum("ij,ij->i", ab, cp)
+        d6 = numpy.einsum("ij,ij->i", ac, cp)
+
+        va = d3 * d6 - d5 * d4
+        vb = d5 * d2 - d1 * d6
+        vc = d1 * d4 - d3 * d2
+
+        # Default: in-plane projection inside the triangle.
+        denom = 1.0 / (va + vb + vc)
+        v = vb * denom
+        w = vc * denom
+        pt = a + v[:, None] * ab + w[:, None] * ac
+
+        # Region overrides — same regions as distance_pointcloud_triangle.
+        # Region 1 (vertex a)
+        m = numpy.logical_and(d1 < 0, d2 < 0)
+        pt[m] = a[m]
+        # Region 2 (vertex b)
+        m = numpy.logical_and(d3 > 0, d4 <= d3)
+        pt[m] = b[m]
+        # Region 3 (vertex c)
+        m = numpy.logical_and(d6 >= 0, d5 <= d6)
+        pt[m] = c[m]
+        # Region 4 (edge ab)
+        m = numpy.logical_and(numpy.logical_and(vc <= 0, d1 >= 0), d3 <= 0)
+        if numpy.any(m):
+            t = d1[m] / (d1[m] - d3[m])
+            pt[m] = a[m] + t[:, None] * ab[m]
+        # Region 5 (edge ac)
+        m = numpy.logical_and(numpy.logical_and(vb <= 0, d2 >= 0), d6 <= 0)
+        if numpy.any(m):
+            t = d2[m] / (d2[m] - d6[m])
+            pt[m] = a[m] + t[:, None] * ac[m]
+        # Region 6 (edge bc)
+        m = numpy.logical_and(numpy.logical_and(va <= 0, (d4 - d3) >= 0), (d5 - d6) >= 0)
+        if numpy.any(m):
+            t = (d4[m] - d3[m]) / ((d4[m] - d3[m]) + (d5[m] - d6[m]))
+            pt[m] = b[m] + t[:, None] * bc[m]
+
+        return pt
+
     def _test_if_points_in_cells_internal(self, points, cells):
         """
         Determine if the given points lie in the suggested cells.

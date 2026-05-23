@@ -223,6 +223,92 @@ so all changes are no-op there.
 - **DMPlex point-location performance** — separate investigation.
 - **Issue #197** (`extract_region` broken on `development`) — outstanding.
 
+## Manifold SLCN advection — findings & accuracy-vs-order story (2026-05-23/24)
+
+A separate strand of work explored end-to-end SLCN advection-diffusion
+on a `SphericalManifold` (solid-body rotation of a Gaussian about the
+z-axis, one full 2π rotation, cellSize=0.075, monotone-clamped SLCN).
+Three layered fixes were needed:
+
+1. **Manifold-only `_nav_dm` clone** with `distributeOverlap(1)` for the
+   navigation kdtree (this PR — see above).
+2. **`SNES_MultiComponent_Projection`** for the SLCN flux history
+   instead of `SNES_Vector_Projection` (sidesteps SNES_Vector's
+   pre-manifold mesh.dim/cdim entanglement).
+3. **`_evalf=True`** on the SLCN solve to route trace-back through
+   RBF (Shepard) instead of FE/DMInterpolation — workaround for the
+   DMInterpolation cell-misroute bug on 2-manifolds described below.
+
+### The DMInterpolation cell-misroute bug
+
+For 2-manifold meshes (dim=2, cdim=3), PETSc's `DMInterpolation`
+sometimes locates a query point in the WRONG cell. Specifically:
+when the projected query is near a triangle edge in 3-D space, the
+location algorithm (pseudo-inverse Jacobian projection in
+`DMPlexLocatePoint_Simplex_2D_Internal`) can match the *extended*
+chord plane of a cell on the **opposite hemisphere** of the manifold.
+The FE basis at that wrong cell returns an arbitrary value (often
+blob-magnitude at the antipode of the blob).
+
+Diagnosed via direct probes (`probe_dof_863_slcn_internals.py`,
+`probe_projection_accuracy.py`, `probe_manual_p1_eval.py`):
+
+- Projection lands query exactly in picked cell's plane (signed
+  distance 1.7e-17, machine precision).
+- Manual barycentric evaluate using picked cell's DOFs gives the
+  analytic answer to FE accuracy.
+- `uw.function.evaluate` via DMInterpolation returns a value from
+  a different cell. 16% of trace-back queries failed catastrophically.
+
+The PETSc API already documents a cell-hinting mechanism via
+`DMLocatePoints`'s `cellSF` parameter — but `DMInterpolation`
+unconditionally passes `cellSF = NULL` to `DMLocatePoints`,
+discarding any hint. A small upstream patch could route hints
+through; planned as a separate PR (`~/.claude/plans/petsc-cell-hinting-dminterpolation.md`).
+
+### Accuracy regime — Pk MeshVariable + RBF trace-back
+
+A resolution-vs-order comparison at cellSize=0.075 with `_evalf=True`
++ `monotone_mode="clamp"`:
+
+| degree | qdegree | n_DOFs | amp retained | Rel L2 / rot |
+|---|---|---|---|---|
+| P1 | 1 | 690 | 81% | 102% |
+| P2 | 2 | ~2,070 | 89% | 29% |
+| P3 | 3 | 24,590 | 96% | 21% |
+| P5 | 5 | 68,302 | 97% | 4% |
+| P1 cs=0.0375 | 2 | 10,752 | 92% | 21% |
+| P1 cs=0.025 | 3 | 24,083 | 95% | 19% |
+
+**Key finding:** Accuracy is dominated by *total DOF count*, not by
+polynomial order. P1 at 24,083 DOFs (cs=0.025) gives L2 ≈ 21% — the
+same as P3 at 24,590 DOFs (cs=0.075). The "P_k benefit" we see is
+purely the extra DOF density, not high-order convergence.
+
+**Why:** RBF Shepard is a linear interpolant — it weighted-averages
+the *k* nearest DOFs by inverse distance and knows nothing about
+polynomial structure. With more DOFs per cell, Shepard has finer
+sample spacing, but it's still O(h) accurate, never O(h^k).
+
+**What qdegree fixes:** matched `qdegree = T_DEGREE` (PETSc convention)
+keeps the diffusion solve numerically stable at high order, but
+doesn't unlock any high-order convergence in advection. P4 with
+default qdegree=2 blew up (10³¹), P4 with qdegree=4 was stable but
+only marginally more accurate than P3.
+
+**What's needed to unlock real high-order:** the PETSc cell-hinting
+fix → FE trace-back works → O(h^k) convergence in advection. That's
+the strategic priority captured in the plan file above.
+
+### Status
+
+- SLCN advection-diffusion on `SphericalManifold` is operational
+  through the workaround stack (P3 + qdegree=3 + RBF + clamp gives
+  96% amplitude retention, 21% L2 / rotation on cellSize=0.075).
+- Animation at `_advection_frames/` (P3 + RBF, 73 frames, 1400×1200).
+- The accuracy regime is documented; the true high-order benefit
+  awaits the PETSc fix.
+
 ## Files in this directory
 
 - `INVESTIGATION.md` — this document.
