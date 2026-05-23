@@ -845,6 +845,10 @@ _HESSIAN_CLASS = None
 # on a topology change (a new key).
 _ANISO_CACHE: dict = {}
 
+# Cached state for the OT-improvement-step path (one weighted-
+# Poisson per call). Keyed like the other movers; same lifetime.
+_OT_CACHE: dict = {}
+
 # Per-(mesh,config) running state for the equidistribution
 # normaliser's temporal damping: the EMA of ln G carried across
 # adaptation events (same key as _ANISO_CACHE). Empty ⇒ first
@@ -1096,7 +1100,8 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                       step_frac=None, picard_relax=0.4,
                       outer_tol=1.0e-3, boundary_slip=False,
                       linear_solver="direct", phi_degree=2,
-                      move_anisotropy=None):
+                      move_anisotropy=None,
+                      target_side_rho=False):
     r"""Metric-driven mesh equidistribution — Benamou–Froese–Oberman
     convex-branch Monge–Ampère (PRESERVED; not the default path).
 
@@ -1216,34 +1221,100 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         # fully pinning them discards it. Nodes provably stay on
         # the surface (radial DOF removed; drift ~machine ε). One
         # node/ring anchors the rotation gauge.
-        if boundary_slip and is_bnd.any():
+        _slip_mode = boundary_slip
+        if isinstance(_slip_mode, str):
+            _slip_mode = _slip_mode.lower()
+            if _slip_mode not in ("ring", "box", "axes", "axis"):
+                raise ValueError(
+                    f"boundary_slip must be False/True/'ring'/'box', "
+                    f"got {boundary_slip!r}")
+            if _slip_mode in ("axes", "axis"):
+                _slip_mode = "box"
+        elif _slip_mode is True:
+            _slip_mode = "ring"
+        if _slip_mode and is_bnd.any():
             bc = np.nonzero(is_bnd)[0]
-            c0 = old_coords[bc].mean(axis=0)
-            rg = np.round(
-                np.linalg.norm(old_coords[bc] - c0, axis=1), 6)
-            is_anchor = np.zeros(n_verts, dtype=bool)
-            slip_center = np.zeros((n_verts, _cdim))
-            slip_rtarget = np.zeros(n_verts)
-            for rv in np.unique(rg):
-                grp = bc[rg == rv]
-                rc = old_coords[grp].mean(axis=0)
-                is_anchor[grp[np.argmax(
-                    (old_coords[grp] - rc)[:, 0])]] = True
-                slip_center[grp] = rc
-                slip_rtarget[grp] = np.linalg.norm(
-                    old_coords[grp] - rc, axis=1)
-            is_slip = is_bnd & ~is_anchor
-            is_pinned = is_anchor
-            _sidx = np.nonzero(is_slip)[0]
-            _sctr = slip_center[_sidx]
-            _srad = slip_rtarget[_sidx]
+            if _slip_mode == "ring":
+                c0 = old_coords[bc].mean(axis=0)
+                rg = np.round(
+                    np.linalg.norm(old_coords[bc] - c0, axis=1),
+                    6)
+                is_anchor = np.zeros(n_verts, dtype=bool)
+                slip_center = np.zeros((n_verts, _cdim))
+                slip_rtarget = np.zeros(n_verts)
+                for rv in np.unique(rg):
+                    grp = bc[rg == rv]
+                    rc = old_coords[grp].mean(axis=0)
+                    is_anchor[grp[np.argmax(
+                        (old_coords[grp] - rc)[:, 0])]] = True
+                    slip_center[grp] = rc
+                    slip_rtarget[grp] = np.linalg.norm(
+                        old_coords[grp] - rc, axis=1)
+                is_slip = is_bnd & ~is_anchor
+                is_pinned = is_anchor
+                _sidx = np.nonzero(is_slip)[0]
+                _sctr = slip_center[_sidx]
+                _srad = slip_rtarget[_sidx]
 
-            def _project(Y):
-                v = Y[_sidx] - _sctr
-                nrm = np.linalg.norm(v, axis=1)
-                nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                return Y
+                def _project(Y):
+                    v = Y[_sidx] - _sctr
+                    nrm = np.linalg.norm(v, axis=1)
+                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
+                    Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
+                    return Y
+            else:  # "box" — axis-aligned edge slip
+                # Pin corners (on 2 box edges); allow other
+                # boundary nodes to slide along their single
+                # edge. Detect edges from boundary coord extents.
+                bc_coords = old_coords[bc]
+                xmin = bc_coords[:, 0].min()
+                xmax = bc_coords[:, 0].max()
+                ymin = bc_coords[:, 1].min()
+                ymax = bc_coords[:, 1].max()
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    xmin = uw.mpi.comm.allreduce(
+                        float(xmin), op=_MPI.MIN)
+                    xmax = uw.mpi.comm.allreduce(
+                        float(xmax), op=_MPI.MAX)
+                    ymin = uw.mpi.comm.allreduce(
+                        float(ymin), op=_MPI.MIN)
+                    ymax = uw.mpi.comm.allreduce(
+                        float(ymax), op=_MPI.MAX)
+                tol = 1.0e-9 * max(xmax - xmin, ymax - ymin, 1.0)
+                on_xmin = np.abs(bc_coords[:, 0] - xmin) < tol
+                on_xmax = np.abs(bc_coords[:, 0] - xmax) < tol
+                on_ymin = np.abs(bc_coords[:, 1] - ymin) < tol
+                on_ymax = np.abs(bc_coords[:, 1] - ymax) < tol
+                on_x_edge = on_xmin | on_xmax
+                on_y_edge = on_ymin | on_ymax
+                is_corner_loc = on_x_edge & on_y_edge
+                is_anchor = np.zeros(n_verts, dtype=bool)
+                is_anchor[bc[is_corner_loc]] = True
+                is_slip = is_bnd & ~is_anchor
+                is_pinned = is_anchor
+                # For each slip node, record which axis is fixed
+                # and the target value on that axis.
+                fixed_axis = np.full(n_verts, -1, dtype=np.int8)
+                fixed_val = np.zeros(n_verts)
+                xfix = on_x_edge & ~is_corner_loc
+                yfix = on_y_edge & ~is_corner_loc
+                fixed_axis[bc[xfix]] = 0
+                fixed_val[bc[xfix]] = bc_coords[xfix, 0]
+                fixed_axis[bc[yfix]] = 1
+                fixed_val[bc[yfix]] = bc_coords[yfix, 1]
+                _sidx = np.nonzero(is_slip)[0]
+                _sax = fixed_axis[_sidx]
+                _sval = fixed_val[_sidx]
+                _ix0 = _sidx[_sax == 0]
+                _ix1 = _sidx[_sax == 1]
+                _v0 = _sval[_sax == 0]
+                _v1 = _sval[_sax == 1]
+
+                def _project(Y):
+                    Y[_ix0, 0] = _v0
+                    Y[_ix1, 1] = _v1
+                    return Y
         else:
             is_pinned = is_bnd
 
@@ -1267,7 +1338,20 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                 inv_sqrt_b_mean) / uw.mpi.size
         c = 1.0 / (inv_sqrt_b_mean ** 2)
 
-        g = c / (metric * vol_field.sym[0])
+        # Target-side ρ evaluation: substitute X[i] → X[i] +
+        # gradphi.sym[i] so ρ is queried at the moving target
+        # x + ∇φ(x), not the source x. Removes the phase error
+        # where refinement-by-size is transported away from the
+        # feature location by ∇φ. gradphi.sym values are updated
+        # each Picard iter (gproj.solve below) so the source self-
+        # consistently tracks the current map estimate.
+        if target_side_rho:
+            metric_target = metric.subs(
+                [(X[i], X[i] + gradphi.sym[i])
+                 for i in range(cdim)])
+        else:
+            metric_target = metric
+        g = c / (metric_target * vol_field.sym[0])
         if cdim == 2:
             Hxx = Hf[0]
             Hxy = (Hf[1] + Hf[2]) / 2
@@ -1286,12 +1370,20 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         # path is indifferent to the initial guess.
         _zig = (linear_solver != "gamg")
         prev_change = None
+        # If target-side ρ is on, gradphi needs to be tracking the
+        # current φ inside the Picard loop (it's used by ps.f via
+        # the X→X+gradphi substitution). Initialise to zero so the
+        # first ps.solve sees ρ at source (= identity map estimate).
+        if target_side_rho:
+            gradphi.array[...] = 0.0
         for it in range(n_picard):
             phi_prev = np.asarray(phi.array).copy()
             ps.solve(zero_init_guess=_zig)
             phi.array[...] = ((1.0 - omega) * phi_prev
                               + omega * np.asarray(phi.array))
             hsolver.solve()
+            if target_side_rho:
+                gproj.solve()   # update target-side ρ for next iter
             change = float(np.abs(
                 np.asarray(phi.array) - phi_prev).max())
             if uw.mpi.size > 1:
@@ -1302,7 +1394,8 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                 break
             prev_change = change
 
-        gproj.solve()
+        if not target_side_rho:
+            gproj.solve()
         disp = np.asarray(
             uw.function.evaluate(gradphi.sym, old_coords)
         ).reshape(old_coords.shape)
@@ -1381,6 +1474,299 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
             uw.pprint(
                 f"  equidistribute MA outer {outer+1}/{n_outer}: "
                 f"c={c:.4f}  scale={scale:.3f}  max|Δx|={d:.3e}")
+        if d < outer_tol:
+            break
+
+
+def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
+                             n_outer=1, relax=1.0,
+                             step_frac=0.3,
+                             outer_tol=1.0e-4,
+                             boundary_slip=False,
+                             linear_solver="direct", phi_degree=2):
+    r"""OT-improvement step: one (or a few) weighted-Poisson
+    equidistribution flow iterations.
+
+    Solves on the *current* mesh
+
+    .. math::
+
+        \nabla\!\cdot(\rho\,\nabla\phi)
+            \;=\;-\,\rho\,\log\!\bigl(V\rho/K\bigr),
+        \quad K=\exp(\langle\rho\log(V\rho)\rangle/\langle\rho\rangle),
+        \quad \nabla\phi\cdot\hat{n}=0,
+
+    and moves nodes by ``relax · ∇φ``. ``V_i`` is the dual patch
+    area at vertex ``i``; the source vanishes identically at
+    equidistribution ``V_i\,\rho_i\equiv K``.
+
+    Semantics: this is a *single OT improvement step* w.r.t. the
+    current mesh — the input mesh has no special status (it is
+    whatever you currently have). Calling it again from the
+    deformed mesh applies another improvement step. Compose
+    freely with spring / smoothing / anisotropic.
+
+    Differences from ``_winslow_elliptic`` (the convex-branch
+    BFO Picard):
+
+    * Linear: one weighted-Poisson per outer iter, no inner
+      Picard, no Hessian recovery, no convex-branch radical.
+    * The source uses the *current* mesh's patch volumes; the
+      formulation is identically zero at equidistribution, so
+      iterations are self-stabilising (no over-correction).
+    * ρ at the current node positions (no source-vs-target
+      asymmetry; the iteration is on the current mesh, ρ is at
+      its physical position).
+
+    Parameters mirror ``_winslow_elliptic`` where they apply.
+    ``n_outer`` composes outer improvement steps; the source
+    drives toward zero so the per-iter motion naturally
+    diminishes.
+    """
+    import sympy
+
+    pinned_labels = tuple(pinned_labels)
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    cStart, cEnd = dm.getHeightStratum(0)
+    cone_size = dm.getConeSize(cStart) if cEnd > cStart else 0
+    if linear_solver not in ("direct", "gamg"):
+        raise ValueError(
+            f"linear_solver must be 'direct' or 'gamg', "
+            f"got {linear_solver!r}")
+    phi_degree = int(phi_degree)
+    aux_degree = max(1, phi_degree - 1)
+    cdim = mesh.cdim
+    if cdim != 2:
+        raise NotImplementedError(
+            "_winslow_equidistribute: 2D meshes only for now.")
+
+    key = (id(mesh), pinned_labels,
+           pEnd - pStart, cEnd - cStart, cone_size,
+           linear_solver, phi_degree)
+
+    cache = _OT_CACHE.get(key)
+    if cache is None:
+        if linear_solver == "gamg":
+            def _wire(s, singular=False, elliptic=True):
+                _use_iterative_solver(s, singular, elliptic)
+        else:
+            def _wire(s, singular=False, elliptic=True):
+                _use_direct_solver(s, singular)
+        phi = uw.discretisation.MeshVariable(
+            f"ot_phi_{id(mesh)}", mesh,
+            vtype=uw.VarType.SCALAR, degree=phi_degree,
+            continuous=True)
+        ps = uw.systems.Poisson(mesh, phi)
+        ps.constitutive_model = uw.constitutive_models.DiffusionModel
+        # weighted diffusion: D(x) = ρ(x). Updated each outer iter
+        # via the symbolic metric expression (evaluated at the
+        # current mesh's quad pts).
+        ps.constitutive_model.Parameters.diffusivity = metric
+        ps.constant_nullspace = True
+        _wire(ps, singular=True, elliptic=True)
+        vol_field = uw.discretisation.MeshVariable(
+            f"ot_vol_{id(mesh)}", mesh,
+            vtype=uw.VarType.SCALAR, degree=1, continuous=True)
+        gradphi = uw.discretisation.MeshVariable(
+            f"ot_gphi_{id(mesh)}", mesh,
+            vtype=uw.VarType.VECTOR, degree=aux_degree,
+            continuous=True)
+        gproj = uw.systems.Vector_Projection(mesh, gradphi)
+        gproj.smoothing = 0.0
+        _wire(gproj, elliptic=False)
+        X = mesh.CoordinateSystem.X
+        gradphi_sym = sympy.Matrix(
+            [phi.sym[0].diff(X[i]) for i in range(cdim)]).T
+        gproj.uw_function = gradphi_sym
+        _OT_CACHE[key] = (phi, ps, gradphi, gproj, vol_field)
+    else:
+        phi, ps, gradphi, gproj, vol_field = cache
+
+    _zig = (linear_solver != "gamg")
+
+    for outer in range(n_outer):
+        dm = mesh.dm
+        is_bnd = _pinned_mask(dm, pinned_labels)
+        tris = _tri_cells(dm)
+        pStart, pEnd = dm.getDepthStratum(0)
+        n_verts = pEnd - pStart
+        old_coords = np.asarray(mesh.X.coords).copy()
+        _cdim = mesh.cdim
+
+        # --- boundary slip (axis-aligned box mode) -------------
+        _slip_mode = boundary_slip
+        if isinstance(_slip_mode, str):
+            _slip_mode = _slip_mode.lower()
+            if _slip_mode in ("axes", "axis"):
+                _slip_mode = "box"
+            if _slip_mode not in ("ring", "box", ""):
+                raise ValueError(
+                    f"boundary_slip must be False/True/'ring'/"
+                    f"'box', got {boundary_slip!r}")
+        elif _slip_mode is True:
+            _slip_mode = "ring"
+        if _slip_mode == "box" and is_bnd.any():
+            bc = np.nonzero(is_bnd)[0]
+            bc_coords = old_coords[bc]
+            xmin = float(bc_coords[:, 0].min())
+            xmax = float(bc_coords[:, 0].max())
+            ymin = float(bc_coords[:, 1].min())
+            ymax = float(bc_coords[:, 1].max())
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                xmin = uw.mpi.comm.allreduce(xmin, op=_MPI.MIN)
+                xmax = uw.mpi.comm.allreduce(xmax, op=_MPI.MAX)
+                ymin = uw.mpi.comm.allreduce(ymin, op=_MPI.MIN)
+                ymax = uw.mpi.comm.allreduce(ymax, op=_MPI.MAX)
+            tol = 1.0e-9 * max(xmax - xmin, ymax - ymin, 1.0)
+            on_xmin = np.abs(bc_coords[:, 0] - xmin) < tol
+            on_xmax = np.abs(bc_coords[:, 0] - xmax) < tol
+            on_ymin = np.abs(bc_coords[:, 1] - ymin) < tol
+            on_ymax = np.abs(bc_coords[:, 1] - ymax) < tol
+            on_x_edge = on_xmin | on_xmax
+            on_y_edge = on_ymin | on_ymax
+            is_corner_loc = on_x_edge & on_y_edge
+            is_anchor = np.zeros(n_verts, dtype=bool)
+            is_anchor[bc[is_corner_loc]] = True
+            is_slip = is_bnd & ~is_anchor
+            is_pinned = is_anchor
+            fixed_axis = np.full(n_verts, -1, dtype=np.int8)
+            fixed_val = np.zeros(n_verts)
+            xfix = on_x_edge & ~is_corner_loc
+            yfix = on_y_edge & ~is_corner_loc
+            fixed_axis[bc[xfix]] = 0
+            fixed_val[bc[xfix]] = bc_coords[xfix, 0]
+            fixed_axis[bc[yfix]] = 1
+            fixed_val[bc[yfix]] = bc_coords[yfix, 1]
+            _sidx = np.nonzero(is_slip)[0]
+            _sax = fixed_axis[_sidx]
+            _sval = fixed_val[_sidx]
+            _ix0 = _sidx[_sax == 0]
+            _ix1 = _sidx[_sax == 1]
+            _v0 = _sval[_sax == 0]
+            _v1 = _sval[_sax == 1]
+
+            def _project(Y):
+                Y[_ix0, 0] = _v0
+                Y[_ix1, 1] = _v1
+                return Y
+        else:
+            is_pinned = is_bnd
+
+            def _project(Y):
+                return Y
+
+        # --- compute V (patch volumes) on current mesh ---------
+        if tris is None:
+            patch = np.ones(n_verts, dtype=np.double)
+        else:
+            patch = _patch_volumes(tris, old_coords, n_verts)
+        # Normalise so the mean over the domain is the cell mean.
+        patch_mean = float(np.mean(patch))
+        if uw.mpi.size > 1:
+            patch_mean = uw.mpi.comm.allreduce(patch_mean) / uw.mpi.size
+        # Write current V values into the MeshVariable.
+        _va = vol_field.array
+        _va[...] = (patch / max(patch_mean, 1e-30)).reshape(_va.shape)
+
+        # --- compute K = exp(<ρ log(Vρ)> / <ρ>) ----------------
+        rho_at_y = np.asarray(uw.function.evaluate(
+            metric, old_coords)).reshape(-1)
+        Vrho = (patch / max(patch_mean, 1e-30)) * rho_at_y
+        # weighted geometric mean (zero-mean Neumann compat
+        # condition) — guard against Vrho≤0:
+        Vrho_pos = np.clip(Vrho, 1e-30, None)
+        wnum = float(np.sum(rho_at_y * np.log(Vrho_pos)))
+        wden = float(np.sum(rho_at_y))
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            wnum = uw.mpi.comm.allreduce(wnum, op=_MPI.SUM)
+            wden = uw.mpi.comm.allreduce(wden, op=_MPI.SUM)
+        ln_K = wnum / max(wden, 1e-30)
+        K_val = float(np.exp(ln_K))
+
+        # --- source: f = -ρ · log(V·ρ / K) ---------------------
+        # SNES_Poisson convention: F0 = -f, strong form ∇·(D∇u)
+        # = -ps.f. We want ∇·(ρ∇φ) = -ρ·log(V·ρ/K) ⇒ ps.f =
+        # ρ·log(V·ρ/K).
+        f_src = metric * sympy.log(
+            metric * vol_field.sym[0] / sympy.Float(K_val))
+        ps.f = sympy.Matrix([[f_src]])
+
+        # --- solve weighted Poisson ----------------------------
+        ps.solve(zero_init_guess=_zig)
+        gproj.solve()
+        disp = np.asarray(uw.function.evaluate(
+            gradphi.sym, old_coords)
+        ).reshape(old_coords.shape)
+
+        step = float(relax) * disp
+
+        # Per-vertex displacement cap: |step_i| ≤ step_frac · h_i,
+        # where h_i is the shortest edge incident on vertex i.
+        # This prevents the OT step from creating LOCAL cell folds
+        # near features (where the source is sharp) without killing
+        # the global motion (the way the global signed-area
+        # backtrack does).
+        if step_frac is not None and np.isfinite(step_frac):
+            h = _min_incident_edge(dm, old_coords)
+            mag = np.linalg.norm(step, axis=1)
+            cap = float(step_frac) * h
+            clip = np.isfinite(cap) & (mag > cap) & (mag > 0.0)
+            sc = np.ones_like(mag)
+            sc[clip] = cap[clip] / mag[clip]
+            step = step * sc[:, None]
+
+        # --- coherent global signed-area backtrack -------------
+        free = ~is_pinned
+        scale = 1.0
+        new_coords = old_coords.copy()
+        if tris is not None:
+            a0 = _signed_areas(old_coords, tris)
+            orient = np.sign(np.median(a0)) or 1.0
+            for _bt in range(10):
+                trial = old_coords.copy()
+                trial[free] += scale * step[free]
+                trial = _project(trial)
+                a1min = float(
+                    (_signed_areas(trial, tris) * orient).min())
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    a1min = uw.mpi.comm.allreduce(
+                        a1min, op=_MPI.MIN)
+                if a1min > 0.0:
+                    new_coords = trial
+                    break
+                scale *= 0.5
+            else:
+                scale = 0.0
+                new_coords = old_coords.copy()
+        else:
+            new_coords[free] += step[free]
+            new_coords = _project(new_coords)
+
+        mesh._deform_mesh(new_coords)
+
+        d = float(np.linalg.norm(
+            new_coords - old_coords, axis=1).max())
+        if uw.mpi.size > 1:
+            d = uw.mpi.comm.allreduce(d ** 2) ** 0.5
+
+        # Per-iter "imbalance" diagnostic — std of log(V·ρ/K).
+        imb = float(np.std(np.log(Vrho_pos) - ln_K))
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            imb_sq = uw.mpi.comm.allreduce(imb * imb, op=_MPI.SUM)
+            cnt = uw.mpi.comm.allreduce(int(Vrho_pos.size),
+                                         op=_MPI.SUM)
+            imb = (imb_sq / max(cnt, 1)) ** 0.5
+
+        if verbose:
+            uw.pprint(
+                f"  OT-improve outer {outer+1}/{n_outer}: "
+                f"K={K_val:.4f}  imb={imb:.3e}  "
+                f"scale={scale:.3f}  max|Δx|={d:.3e}")
         if d < outer_tol:
             break
 
@@ -2498,6 +2884,11 @@ def smooth_mesh_interior(
         elif method in ("ma", "monge-ampere", "monge_ampere"):
             _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                               boundary_slip=boundary_slip, **mk)
+        elif method in ("ot", "equidistribute", "improve"):
+            _winslow_equidistribute(mesh, metric, pinned_labels,
+                                     verbose,
+                                     boundary_slip=boundary_slip,
+                                     **mk)
         elif method in ("anisotropic", "aniso", "tensor"):
             _winslow_anisotropic(mesh, metric, pinned_labels,
                                  verbose,
@@ -2506,7 +2897,9 @@ def smooth_mesh_interior(
             raise ValueError(
                 f"smooth_mesh_interior: unknown method {method!r}; "
                 f"use 'spring' (default, fast volumetric), "
-                f"'ma' (Monge–Ampère, isotropic, ~60× costlier) or "
+                f"'ma' (Monge–Ampère, isotropic, ~60× costlier), "
+                f"'ot' / 'equidistribute' (linear OT-improvement "
+                f"step, composable) or "
                 f"'anisotropic' (tensor metric — reshapes cells / "
                 f"removes slivers; does not beat the node-count "
                 f"cap).")
