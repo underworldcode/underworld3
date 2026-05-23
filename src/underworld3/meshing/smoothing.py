@@ -69,6 +69,18 @@ import underworld3 as uw
 # Rebuilt automatically when the mesh topology changes.
 _ADJ_CACHE: dict = {}
 
+# Cache of the **original** (undeformed) state per mesh,
+# captured the first time follow_metric is called on that mesh:
+#   h0           — mean edge length
+#   rest_coords  — vertex positions (the spring's pull-back target)
+# Subsequent calls reuse these references instead of measuring the
+# (already-refined) current mesh, otherwise the spring's reference
+# state shrinks at every adapt and the refinement compounds,
+# crashing the CFL-bound dt by 2× per adapt step.
+# Keyed by id(mesh).
+_FOLLOW_METRIC_H0_CACHE: dict = {}
+_FOLLOW_METRIC_REST_CACHE: dict = {}
+
 
 # Named adaptation strategies (off / vlow / low / med / high /
 # extreme). Each maps to a coherent set of (amp, percentile
@@ -1385,7 +1397,10 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                          outer_tol=1.0e-4,
                          rest_size_cap_max=None,
                          rest_size_cap_min=None,
-                         rest_spring_K=1.0):
+                         rest_spring_K=1.0,
+                         h0_override=None,
+                         rest_coords_override=None,
+                         metric_refresh_per_iter=False):
     r"""Anisotropic metric-tensor mesh redistribution — approach (3).
 
     The settled scalar equidistribution paths (``_winslow_spring``,
@@ -1630,19 +1645,39 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     # *stable damped fixed-point iteration* of one linear operator
     # toward the M-harmonic map; no feedback.
     dm = mesh.dm
-    old0 = np.asarray(mesh.X.coords).copy()
+    # `old0` is the SPRING REST reference — vertices get pulled
+    # toward these positions when a cell exceeds the size caps.
+    # If the caller passes `rest_coords_override`, use that
+    # (typically the truly-undeformed mesh coords captured at
+    # the first adapt). Falling back to the entry-state of THIS
+    # call makes the spring "preserve" each successive refined
+    # state instead of pulling back to undeformed — the third
+    # leg of the compounding-refinement bug (2026-05-22).
+    if rest_coords_override is not None:
+        old0 = np.asarray(rest_coords_override).copy()
+    else:
+        old0 = np.asarray(mesh.X.coords).copy()
     gproj.solve()
     Dcoords = np.asarray(Df.coords)
     gvec = np.asarray(
         uw.function.evaluate(grho.sym, Dcoords)).reshape(-1, cdim)
-    ep = _edge_pairs(dm)
-    if ep.shape[0]:
-        h0 = float(np.linalg.norm(
-            old0[ep[:, 1]] - old0[ep[:, 0]], axis=1).mean())
+    # h0 = undeformed mean edge length. If the caller passes
+    # `h0_override` (e.g. a value cached at the FIRST adapt on
+    # this mesh), use that — re-measuring from a deformed mesh
+    # makes h0 shrink as the mesh refines, which then shifts
+    # the eigenvalue clamps tighter and tighter and compounds
+    # refinement across repeated adapt cycles.
+    if h0_override is not None:
+        h0 = float(h0_override)
     else:
-        h0 = 1.0
-    if uw.mpi.size > 1:
-        h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+        ep = _edge_pairs(dm)
+        if ep.shape[0]:
+            h0 = float(np.linalg.norm(
+                old0[ep[:, 1]] - old0[ep[:, 0]], axis=1).mean())
+        else:
+            h0 = 1.0
+        if uw.mpi.size > 1:
+            h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
     gn = np.linalg.norm(gvec, axis=1)
     gmax = float(gn.max()) if gn.size else 0.0
     if uw.mpi.size > 1:
@@ -1688,6 +1723,98 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     #      **bit-identical** to the validated historical default.
     #      ``resolution_ratio = 1`` (the default) lands here ⇒ an
     #      exact no-op vs. all prior results.
+    def _build_M_tensor():
+        """Compute the metric tensor field Df from the current
+        metric and mesh state. Mutates Dout-equivalent into Df.
+        Called once before the iteration loop, and (when
+        metric_refresh_per_iter=True) also at the start of each
+        outer iteration to re-query the metric against the
+        deformed mesh."""
+        nonlocal Dcoords, gvec, gn, gmax, gref
+        Dcoords = np.asarray(Df.coords)  # picks up deformed mesh
+        gproj.solve()
+        gvec = np.asarray(
+            uw.function.evaluate(grho.sym, Dcoords)
+        ).reshape(-1, cdim)
+        gn = np.linalg.norm(gvec, axis=1)
+        gmax = float(gn.max()) if gn.size else 0.0
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            gmax = uw.mpi.comm.allreduce(gmax, op=_MPI.MAX)
+        gref = gmax if gmax > g_eps else 1.0
+        # Density branches (same as legacy code path)
+        if resolution_ratio > 1.0:
+            R_ = float(resolution_ratio)
+            rho_v_ = np.asarray(
+                uw.function.evaluate(metric, Dcoords)
+            ).reshape(-1)
+            s_log_ = np.log(np.clip(rho_v_, 1.0e-12, None))
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                tot = uw.mpi.comm.allreduce(
+                    float(s_log_.sum()), op=_MPI.SUM)
+                cnt = uw.mpi.comm.allreduce(
+                    int(s_log_.size), op=_MPI.SUM)
+                ln_g_ = tot / max(cnt, 1)
+            else:
+                ln_g_ = float(s_log_.mean())
+            a_ = float(geom_mean_smoothing)
+            if 0.0 < a_ < 1.0:
+                prev = _GEMA_STATE.get(key)
+                if prev is not None:
+                    ln_g_ = a_ * ln_g_ + (1.0 - a_) * prev
+                _GEMA_STATE[key] = ln_g_
+            iso_ = base * np.exp(s_log_ - ln_g_)
+            lam_lo_ = base / R_ ** 2
+            lam_hi_ = base * R_ ** 2
+            aniso_keyed_ = (np.full(Dcoords.shape[0], base)
+                            if aniso_to_base else iso_)
+        elif coarsen_cap > 1.0:
+            rho_v_ = np.asarray(
+                uw.function.evaluate(metric, Dcoords)
+            ).reshape(-1)
+            r_lo_ = float(np.percentile(rho_v_, 10.0))
+            r_hi_ = float(np.percentile(rho_v_, 90.0))
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                r_lo_ = uw.mpi.comm.allreduce(r_lo_, op=_MPI.MIN)
+                r_hi_ = uw.mpi.comm.allreduce(r_hi_, op=_MPI.MAX)
+            q_ = np.clip(
+                (rho_v_ - r_lo_) / max(r_hi_ - r_lo_, 1e-30),
+                0.0, 1.0)
+            iso_ = base * float(coarsen_cap) ** (q_ - 1.0)
+            lam_lo_ = base / float(coarsen_cap)
+            lam_hi_ = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2
+            aniso_keyed_ = np.full(Dcoords.shape[0], base)
+        else:
+            iso_ = np.full(Dcoords.shape[0], base)
+            lam_lo_ = base
+            lam_hi_ = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2
+            aniso_keyed_ = np.full(Dcoords.shape[0], base)
+        # Assemble M tensor and write to Df
+        Dout_ = np.empty((Dcoords.shape[0], 2, 2))
+        eye2_ = np.eye(2)
+        for ii in range(Dcoords.shape[0]):
+            g_ = gvec[ii]
+            gni_ = gn[ii]
+            bi_ = iso_[ii]
+            ai_ = aniso_keyed_[ii]
+            if gni_ > g_eps and gmax > g_eps:
+                gh_ = g_ / gni_
+                M_ = bi_ * eye2_ + ai_ * beta * (gni_ / gref) ** 2 \
+                     * np.outer(gh_, gh_)
+            else:
+                M_ = bi_ * eye2_
+            w_, V_ = np.linalg.eigh(M_)
+            w_ = np.clip(w_, lam_lo_, lam_hi_)
+            if metric_role == "Minv":
+                w_ = 1.0 / w_
+            Dout_[ii] = (V_ * w_) @ V_.T
+        Df.array[:, 0, 0] = Dout_[:, 0, 0]
+        Df.array[:, 0, 1] = Dout_[:, 0, 1]
+        Df.array[:, 1, 0] = Dout_[:, 1, 0]
+        Df.array[:, 1, 1] = Dout_[:, 1, 1]
+
     if resolution_ratio > 1.0:
         R = float(resolution_ratio)
         rho_v = np.asarray(
@@ -1809,6 +1936,14 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         tris = _tri_cells(dm)
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
+
+        # If requested, re-query the metric at the deformed
+        # mesh state and rebuild M tensor. Default off
+        # preserves the legacy behaviour (M frozen at first
+        # iteration). Used to isolate whether Eulerian
+        # re-querying of the metric changes the outcome.
+        if metric_refresh_per_iter and outer > 0:
+            _build_M_tensor()
 
         # Boundary tangential slip — identical per-ring radius
         # projection to _winslow_elliptic (the radial DOF is
@@ -3081,18 +3216,33 @@ def follow_metric(
     # (below) to enforce the literal cell-size envelope.
     R = max(float(refinement), coar_val)
 
-    # Compute the background cell size once. The spring's caps
-    # are referred to this h0 (same as the mover's internal h0).
-    from underworld3.meshing.smoothing import _edge_pairs
-    ep = _edge_pairs(mesh.dm)
-    coords = np.asarray(mesh.X.coords)
-    if ep.shape[0]:
-        h0 = float(np.linalg.norm(
-            coords[ep[:, 1]] - coords[ep[:, 0]], axis=1).mean())
-    else:
-        h0 = 1.0
-    if uw.mpi.size > 1:
-        h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+    # The spring caps refer to h0 — the **undeformed** mean edge
+    # length of the mesh. Critical: this must be captured ONCE
+    # (the first time follow_metric sees this mesh) and reused
+    # thereafter. Re-measuring it from a deformed (already-
+    # refined) mesh causes h0 to shrink each call, the spring
+    # caps to shrink with it, and refinement to compound at
+    # every adapt — the dt-crash bug surfaced 2026-05-22.
+    _key = id(mesh)
+    h0 = _FOLLOW_METRIC_H0_CACHE.get(_key)
+    rest_coords = _FOLLOW_METRIC_REST_CACHE.get(_key)
+    if h0 is None:
+        ep = _edge_pairs(mesh.dm)
+        coords = np.asarray(mesh.X.coords)
+        if ep.shape[0]:
+            h0 = float(np.linalg.norm(
+                coords[ep[:, 1]] - coords[ep[:, 0]],
+                axis=1).mean())
+        else:
+            h0 = 1.0
+        if uw.mpi.size > 1:
+            h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+        _FOLLOW_METRIC_H0_CACHE[_key] = h0
+        rest_coords = coords.copy()
+        _FOLLOW_METRIC_REST_CACHE[_key] = rest_coords
+        if verbose:
+            uw.pprint(f"  follow_metric: captured h0={h0:.4e}, "
+                      f"rest_coords (first call on this mesh)")
 
     mover_kwargs = dict(
         relax=0.2,
@@ -3104,6 +3254,18 @@ def follow_metric(
         rest_size_cap_max=h0 * coar_val,
         rest_size_cap_min=h0 / float(refinement),
         rest_spring_K=1.0,
+        # Override the mover's internal h0 measurement (which
+        # would otherwise re-measure on the already-deformed
+        # mesh and shrink each adapt — the second leg of the
+        # dt-crash bug surfaced 2026-05-22).
+        h0_override=h0,
+        # Override the spring's rest-coords (and the area-floor
+        # baseline) so they refer to the **truly-undeformed**
+        # mesh. Otherwise each adapt's "rest" is the previous
+        # adapt's output, the spring "preserves" each successive
+        # refinement, and refinement compounds — third leg of
+        # the dt-crash bug.
+        rest_coords_override=rest_coords,
     )
     if method_kwargs:
         mover_kwargs.update(method_kwargs)
