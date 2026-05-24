@@ -90,6 +90,51 @@ def test_smoothing_setter_keeps_alpha_view(mesh):
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
+def test_smoothing_length_pint_quantity_roundtrip(mesh):
+    """Pint Quantity input round-trips back as a Pint Quantity in metres.
+
+    Setting `smoothing_length = 0.05 * meter` under an active scaling
+    context with a 1000 m reference length stores 5e-5 (non-dim) and
+    α = (5e-5)² = 2.5e-9. Reading back returns a Pint Quantity that
+    re-dimensionalises to 0.05 m.
+    """
+    model = uw.Model()
+    model.set_reference_quantities(
+        length=uw.quantity(1000, "m"),
+        nondimensional_scaling=True,
+    )
+    uw.use_nondimensional_scaling(True)
+    try:
+        V = uw.discretisation.MeshVariable(
+            "V_pint", mesh, vtype=uw.VarType.SCALAR, degree=2, continuous=True)
+        proj = sys.Projection(mesh, V)
+        proj.smoothing_length = uw.quantity(0.05, "m")
+
+        # Non-dim store: 0.05 m / 1000 m = 5e-5; α = 2.5e-9.
+        assert float(proj.smoothing) == pytest.approx(2.5e-9)
+
+        # Pint-quantity round-trip.
+        L_out = proj.smoothing_length
+        assert hasattr(L_out, "magnitude"), \
+            f"Pint input should round-trip as a Pint Quantity, got {type(L_out)}"
+        assert float(L_out.to("m").magnitude) == pytest.approx(0.05)
+    finally:
+        uw.use_nondimensional_scaling(False)
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
+def test_smoothing_length_negative_raises(mesh):
+    """Negative `smoothing_length` is ill-posed and must raise ValueError."""
+    V = uw.discretisation.MeshVariable(
+        "V_neg", mesh, vtype=uw.VarType.SCALAR, degree=2, continuous=True)
+    proj = sys.Projection(mesh, V)
+    with pytest.raises(ValueError, match="smoothing_length must be"):
+        proj.smoothing_length = -0.1
+
+
+@pytest.mark.tier_a
+@pytest.mark.level_1
 def test_smoothing_length_smoothes_a_step(mesh):
     """End-to-end: smoothing a step function at scale L attenuates the
     short-wavelength content. We check that the projected field's
