@@ -4197,19 +4197,43 @@ def checkpoint_xdmf(
     numCorners = cells.shape[1]
     cellDim = topo["cells"].attrs["cell_dim"]
 
+    import warnings
+    import numpy as np
+
+    if topoPath == "topology":
+        warnings.warn(
+            "Using raw '/topology/cells' for XDMF. This may not be Paraview-compatible. "
+            "Expected '/viz/topology/cells'."
+        )
+
+    cells_data = cells[...]
+    c_min, c_max = cells_data.min(), cells_data.max()
+    if c_min < 0 or c_max >= numVertices:
+        warnings.warn(
+            f"XDMF connectivity is invalid! cells max {c_max} >= numVertices {numVertices} "
+            f"or min {c_min} < 0. ParaView will likely crash. "
+            f"Ensure cell-to-vertex connectivity is written."
+        )
+
     h5.close()
 
     # We only use a subset of the possible cell types
     if spaceDim == 2:
         if numCorners == 3:
             topology_type = "Triangle"
+        elif numCorners == 4:
+            topology_type = "Quadrilateral"
         else:
+            warnings.warn(f"Unexpected numCorners={numCorners} for 2D spaceDim. Expected 3 or 4.")
             topology_type = "Quadrilateral"
         geomType = "XY"
     else:
         if numCorners == 4:
             topology_type = "Tetrahedron"
+        elif numCorners == 8:
+            topology_type = "Hexahedron"
         else:
+            warnings.warn(f"Unexpected numCorners={numCorners} for 3D spaceDim. Expected 4 or 8.")
             topology_type = "Hexahedron"
         geomType = "XYZ"
 
@@ -4300,6 +4324,15 @@ def checkpoint_xdmf(
         else:
             center = "Node"
         numItems, numComponents, dataset_path = get_field_info(var_filename, var, center)
+
+        if center == "Node" and numItems != numVertices:
+            warnings.warn(
+                f"Attribute '{var.clean_name}' Center is 'Node' but numItems ({numItems}) != numVertices ({numVertices})."
+            )
+        elif center == "Cell" and numItems != numCells:
+            warnings.warn(
+                f"Attribute '{var.clean_name}' Center is 'Cell' but numItems ({numItems}) != numCells ({numCells})."
+            )
 
         # Use variable type when available, but reflect actual stored component count.
         if hasattr(var, "vtype") and var.vtype in (
