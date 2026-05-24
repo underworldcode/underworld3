@@ -135,12 +135,23 @@ cdef class CachedDMInterpolationInfo:
                 DMInterpolationDestroy(&self._ipInfo)
                 raise RuntimeError(f"DMInterpolationAddPoints failed with error {ierr}")
 
-        # Set up — calls DMLocatePoints which is COLLECTIVE on the mesh DM.
+        # Set up — calls DMLocatePoints (or, on simplex / manifold meshes,
+        # the DMLocatePoints-bypass path) which is COLLECTIVE on the mesh DM.
         # All ranks must call this, even with zero local points.
         # ignoreOutsideDomain=1: PETSc silently skips points it cannot locate
         # rather than crashing. This is essential — points_in_domain() uses a
         # kd-tree heuristic that can misclassify distant points as interior.
-        if n_points > 0:
+        #
+        # Hint policy: pass the UW3 kdtree-nearest-cell hint to PETSc only on
+        # meshes where it can be trusted as authoritative — i.e. simplex
+        # cells (planar faces, affine map, exact face-containment test) and
+        # manifold meshes (dim != cdim, where PETSc's own in-cell test is
+        # unreliable near 2-manifold simplex edges). On non-simplex meshes
+        # (quads, hexes), deformed cells can have non-planar faces and the
+        # kdtree-nearest cell can be wrong; pass NULL so PETSc's
+        # DMLocatePoints runs its own (more rigorous) cell-location search.
+        cdef bint use_hint = bool(mesh.dm.isSimplex()) or (mesh.dim != mesh.cdim)
+        if n_points > 0 and use_hint:
             cells_view = np.ascontiguousarray(self.cells)
             ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, <size_t*> &cells_view[0])
         else:

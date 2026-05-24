@@ -1151,8 +1151,13 @@ def petsc_interpolate(   expr,
             # CACHE MISS - Create structure and cache it
             cached_info = CachedDMInterpolationInfo()
 
-            # Get cell hints
-            # coords is already np.ndarray type (function signature ensures this)
+            # Cell hints from a kdtree-nearest-cell lookup. The downstream
+            # `create_structure` decides — based on the mesh's cell shape —
+            # whether to pass these to PETSc as authoritative (bypass path,
+            # simplex / manifold meshes whose face containment is exact for
+            # affine transforms) or as a guess for `DMLocatePoints` to
+            # verify (non-simplex meshes whose deformed faces can be
+            # non-planar and require PETSc's pseudo-inverse projection).
             cells = mesh.get_closest_cells(coords)
 
             # Create and set up DMInterpolation structure (EXPENSIVE)
