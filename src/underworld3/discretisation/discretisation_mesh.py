@@ -4117,7 +4117,7 @@ def _local_viz_cell_connectivity(mesh):
     """Return local cell-to-vertex connectivity in global vertex ids."""
 
     dm = mesh.dm
-    pStart, _ = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getDepthStratum(0)
     cStart, cEnd = dm.getHeightStratum(0)
     vertex_numbering = dm.getVertexNumbering().getIndices()
     vertex_gids = _petsc_numbering_to_global_ids(vertex_numbering)
