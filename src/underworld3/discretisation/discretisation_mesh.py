@@ -1806,6 +1806,9 @@ class Mesh(Stateful, uw_object):
             mesh_file = output_base_name + f".mesh.{index:05}.h5"
             self.write(mesh_file)
 
+        if create_xdmf:
+            _write_mesh_viz_groups(self, mesh_file)
+
         if meshVars is not None:
             for var in meshVars:
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
@@ -3148,6 +3151,122 @@ class Mesh(Stateful, uw_object):
 ## Simplified to allow us to decide how we want to checkpoint
 
 
+def _petsc_numbering_to_global_ids(numbering):
+    """Convert PETSc numbering entries to non-negative global ids."""
+
+    gids = numpy.asarray(numbering, dtype=numpy.int64).copy()
+    negative = gids < 0
+    gids[negative] = -gids[negative] - 1
+    return gids
+
+
+def _local_viz_cell_connectivity(mesh):
+    """Return local cell-to-vertex connectivity in global vertex ids."""
+
+    dm = mesh.dm
+    pStart, _ = dm.getDepthStratum(0)
+    cStart, cEnd = dm.getHeightStratum(0)
+    vertex_numbering = dm.getVertexNumbering().getIndices()
+    vertex_gids = _petsc_numbering_to_global_ids(vertex_numbering)
+    cell_num_points = mesh.element.entities[mesh.dim]
+
+    cell_points_list = []
+    for cell_id in range(cStart, cEnd):
+        points = numpy.asarray(
+            dm.getTransitiveClosure(cell_id)[0][-cell_num_points:],
+            dtype=numpy.int64,
+        )
+        cell_points_list.append(vertex_gids[points - pStart])
+
+    if not cell_points_list:
+        return numpy.empty((0, cell_num_points), dtype=numpy.int64)
+
+    if mesh.dim == 3:
+        if dm.isSimplex():
+            reorder = [0, 2, 1, 3]
+        else:
+            reorder = [0, 3, 2, 1, 4, 5, 6, 7]
+        cell_points_list = [pts[reorder] for pts in cell_points_list]
+
+    return numpy.asarray(cell_points_list, dtype=numpy.int64)
+
+
+def _write_mesh_viz_groups(mesh, mesh_h5_path):
+    """Write ParaView-safe ``/viz`` geometry/topology groups into a mesh HDF5."""
+
+    import underworld3 as uw
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    vertex_numbering = dm.getVertexNumbering().getIndices()
+    vertex_gids = _petsc_numbering_to_global_ids(vertex_numbering)
+
+    coords_local = numpy.asarray(dm.getCoordinatesLocal().array, dtype=numpy.float64).reshape(-1, mesh.dim)
+    n_local_vertices = pEnd - pStart
+    if coords_local.shape[0] != n_local_vertices:
+        coords_local = numpy.asarray(mesh.X.coords, dtype=numpy.float64)
+        if coords_local.shape[0] != n_local_vertices:
+            raise RuntimeError(
+                f"Could not match local coordinate rows ({coords_local.shape[0]}) "
+                f"to DMPlex vertex count ({n_local_vertices}) for {mesh_h5_path}."
+            )
+
+    local_vertices = numpy.column_stack((vertex_gids, coords_local))
+    local_cells = _local_viz_cell_connectivity(mesh)
+
+    gathered_vertices = uw.mpi.comm.gather(local_vertices, root=0)
+    gathered_cells = uw.mpi.comm.gather(local_cells, root=0)
+    uw.mpi.barrier()
+
+    if uw.mpi.rank == 0:
+        import h5py
+
+        vertex_blocks = [block for block in gathered_vertices if block is not None and block.size > 0]
+        cell_blocks = [block for block in gathered_cells if block is not None and block.size > 0]
+
+        if vertex_blocks:
+            all_vertices = numpy.vstack(vertex_blocks)
+        else:
+            all_vertices = numpy.empty((0, mesh.dim + 1), dtype=numpy.float64)
+
+        if cell_blocks:
+            all_cells = numpy.vstack(cell_blocks)
+        else:
+            all_cells = numpy.empty((0, mesh.element.entities[mesh.dim]), dtype=numpy.int64)
+
+        vertex_lookup = {}
+        for row in all_vertices:
+            gid = int(row[0])
+            if gid not in vertex_lookup:
+                vertex_lookup[gid] = numpy.asarray(row[1:], dtype=numpy.float64)
+
+        ordered_gids = numpy.array(sorted(vertex_lookup.keys()), dtype=numpy.int64)
+        if ordered_gids.size:
+            ordered_vertices = numpy.vstack([vertex_lookup[int(gid)] for gid in ordered_gids])
+        else:
+            ordered_vertices = numpy.empty((0, mesh.dim), dtype=numpy.float64)
+
+        dense_lookup = {int(gid): idx for idx, gid in enumerate(ordered_gids.tolist())}
+        if all_cells.size:
+            dense_cells = numpy.asarray(
+                [[dense_lookup[int(gid)] for gid in row] for row in all_cells],
+                dtype=numpy.int64,
+            )
+        else:
+            dense_cells = numpy.empty_like(all_cells)
+
+        with h5py.File(mesh_h5_path, "a") as h5:
+            if "viz" in h5:
+                del h5["viz"]
+            viz = h5.create_group("viz")
+            geom = viz.create_group("geometry")
+            topo = viz.create_group("topology")
+            geom.create_dataset("vertices", data=ordered_vertices)
+            topo_cells = topo.create_dataset("cells", data=dense_cells)
+            topo_cells.attrs["cell_dim"] = mesh.dim
+
+    uw.mpi.barrier()
+
+
 def _write_compat_groups(mesh, var, var_h5_path):
     """Write ``/vertex_fields/`` or ``/cell_fields/`` compatibility groups.
 
@@ -3208,6 +3327,7 @@ def checkpoint_xdmf(
 ):
     import h5py
     import os
+    import warnings
 
     """Create xdmf file for checkpoints"""
 
@@ -3244,9 +3364,6 @@ def checkpoint_xdmf(
     numCorners = cells.shape[1]
     cellDim = topo["cells"].attrs["cell_dim"]
 
-    import warnings
-    import numpy as np
-
     if topoPath == "topology":
         warnings.warn(
             "Using raw '/topology/cells' for XDMF. This may not be Paraview-compatible. "
@@ -3257,8 +3374,8 @@ def checkpoint_xdmf(
     c_min, c_max = cells_data.min(), cells_data.max()
     if c_min < 0 or c_max >= numVertices:
         warnings.warn(
-            f"XDMF connectivity is invalid! cells max {c_max} >= numVertices {numVertices} "
-            f"or min {c_min} < 0. ParaView will likely crash. "
+            f"XDMF connectivity is invalid! cells max {c_max} >= "
+            f"numVertices {numVertices} or min {c_min} < 0. ParaView will likely crash. "
             f"Ensure cell-to-vertex connectivity is written."
         )
 
@@ -3374,11 +3491,13 @@ def checkpoint_xdmf(
 
         if center == "Node" and numItems != numVertices:
             warnings.warn(
-                f"Attribute '{var.clean_name}' Center is 'Node' but numItems ({numItems}) != numVertices ({numVertices})."
+                f"Attribute '{var.clean_name}' Center is 'Node' but numItems "
+                f"({numItems}) != numVertices ({numVertices})."
             )
         elif center == "Cell" and numItems != numCells:
             warnings.warn(
-                f"Attribute '{var.clean_name}' Center is 'Cell' but numItems ({numItems}) != numCells ({numCells})."
+                f"Attribute '{var.clean_name}' Center is 'Cell' but numItems "
+                f"({numItems}) != numCells ({numCells})."
             )
 
         # Use variable type when available, but reflect actual stored component count.
