@@ -4125,10 +4125,14 @@ def _local_viz_cell_connectivity(mesh):
 
     cell_points_list = []
     for cell_id in range(cStart, cEnd):
+        closure = dm.getTransitiveClosure(cell_id)[0]
+        # Filter closure to strictly retain true vertices
         points = numpy.asarray(
-            dm.getTransitiveClosure(cell_id)[0][-cell_num_points:],
+            [p for p in closure if pStart <= p < pEnd],
             dtype=numpy.int64,
         )
+        if len(points) != cell_num_points:
+            raise RuntimeError(f"Expected {cell_num_points} vertices for cell {cell_id}, got {len(points)}.")
         cell_points_list.append(vertex_gids[points - pStart])
 
     if not cell_points_list:
@@ -4163,48 +4167,38 @@ def _write_mesh_viz_groups(mesh, mesh_h5_path):
                 f"to DMPlex vertex count ({n_local_vertices}) for {mesh_h5_path}."
             )
 
-    local_vertices = numpy.column_stack((vertex_gids, coords_local))
     local_cells = _local_viz_cell_connectivity(mesh)
 
-    gathered_vertices = uw.mpi.comm.gather(local_vertices, root=0)
+    # Gather GIDs and coordinates separately to prevent float64 upcasting of integer GIDs
+    gathered_gids = uw.mpi.comm.gather(vertex_gids, root=0)
+    gathered_coords = uw.mpi.comm.gather(coords_local, root=0)
     gathered_cells = uw.mpi.comm.gather(local_cells, root=0)
     uw.mpi.barrier()
 
     if uw.mpi.rank == 0:
         import h5py
 
-        vertex_blocks = [block for block in gathered_vertices if block is not None and block.size > 0]
+        gid_blocks = [block for block in gathered_gids if block is not None and block.size > 0]
+        coord_blocks = [block for block in gathered_coords if block is not None and block.size > 0]
         cell_blocks = [block for block in gathered_cells if block is not None and block.size > 0]
 
-        if vertex_blocks:
-            all_vertices = numpy.vstack(vertex_blocks)
+        if gid_blocks:
+            all_gids = numpy.concatenate(gid_blocks)
+            all_coords = numpy.vstack(coord_blocks)
+            
+            # Vectorized deduplication (numpy.unique returns sorted unique elements)
+            ordered_gids, unique_indices = numpy.unique(all_gids, return_index=True)
+            ordered_vertices = all_coords[unique_indices]
         else:
-            all_vertices = numpy.empty((0, mesh.dim + 1), dtype=numpy.float64)
+            ordered_gids = numpy.empty((0,), dtype=numpy.int64)
+            ordered_vertices = numpy.empty((0, mesh.dim), dtype=numpy.float64)
 
         if cell_blocks:
             all_cells = numpy.vstack(cell_blocks)
+            # Vectorized remapping using searchsorted (O(N log M) instead of Python dict lookup)
+            dense_cells = numpy.searchsorted(ordered_gids, all_cells)
         else:
             all_cells = numpy.empty((0, mesh.element.entities[mesh.dim]), dtype=numpy.int64)
-
-        vertex_lookup = {}
-        for row in all_vertices:
-            gid = int(row[0])
-            if gid not in vertex_lookup:
-                vertex_lookup[gid] = numpy.asarray(row[1:], dtype=numpy.float64)
-
-        ordered_gids = numpy.array(sorted(vertex_lookup.keys()), dtype=numpy.int64)
-        if ordered_gids.size:
-            ordered_vertices = numpy.vstack([vertex_lookup[int(gid)] for gid in ordered_gids])
-        else:
-            ordered_vertices = numpy.empty((0, mesh.dim), dtype=numpy.float64)
-
-        dense_lookup = {int(gid): idx for idx, gid in enumerate(ordered_gids.tolist())}
-        if all_cells.size:
-            dense_cells = numpy.asarray(
-                [[dense_lookup[int(gid)] for gid in row] for row in all_cells],
-                dtype=numpy.int64,
-            )
-        else:
             dense_cells = numpy.empty_like(all_cells)
 
         with h5py.File(mesh_h5_path, "a") as h5:
@@ -4320,17 +4314,19 @@ def checkpoint_xdmf(
     if topoPath == "topology":
         warnings.warn(
             "Using raw '/topology/cells' for XDMF. This may not be Paraview-compatible. "
-            "Expected '/viz/topology/cells'."
+            "Expected '/viz/topology/cells'.",
+            stacklevel=2,
         )
 
-    cells_data = cells[...]
-    c_min, c_max = cells_data.min(), cells_data.max()
-    if c_min < 0 or c_max >= numVertices:
-        warnings.warn(
-            f"XDMF connectivity is invalid! cells max {c_max} >= "
-            f"numVertices {numVertices} or min {c_min} < 0. ParaView will likely crash. "
-            f"Ensure cell-to-vertex connectivity is written."
-        )
+        cells_data = cells[...]
+        c_min, c_max = cells_data.min(), cells_data.max()
+        if c_min < 0 or c_max >= numVertices:
+            warnings.warn(
+                f"XDMF connectivity is invalid! cells max {c_max} >= "
+                f"numVertices {numVertices} or min {c_min} < 0. ParaView will likely crash. "
+                f"Ensure cell-to-vertex connectivity is written.",
+                stacklevel=2,
+            )
 
     h5.close()
 
@@ -4341,7 +4337,7 @@ def checkpoint_xdmf(
         elif numCorners == 4:
             topology_type = "Quadrilateral"
         else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 2D spaceDim. Expected 3 or 4.")
+            warnings.warn(f"Unexpected numCorners={numCorners} for 2D spaceDim. Expected 3 or 4.", stacklevel=2)
             topology_type = "Quadrilateral"
         geomType = "XY"
     else:
@@ -4350,7 +4346,7 @@ def checkpoint_xdmf(
         elif numCorners == 8:
             topology_type = "Hexahedron"
         else:
-            warnings.warn(f"Unexpected numCorners={numCorners} for 3D spaceDim. Expected 4 or 8.")
+            warnings.warn(f"Unexpected numCorners={numCorners} for 3D spaceDim. Expected 4 or 8.", stacklevel=2)
             topology_type = "Hexahedron"
         geomType = "XYZ"
 
@@ -4445,12 +4441,14 @@ def checkpoint_xdmf(
         if center == "Node" and numItems != numVertices:
             warnings.warn(
                 f"Attribute '{var.clean_name}' Center is 'Node' but numItems "
-                f"({numItems}) != numVertices ({numVertices})."
+                f"({numItems}) != numVertices ({numVertices}).",
+                stacklevel=2,
             )
         elif center == "Cell" and numItems != numCells:
             warnings.warn(
                 f"Attribute '{var.clean_name}' Center is 'Cell' but numItems "
-                f"({numItems}) != numCells ({numCells})."
+                f"({numItems}) != numCells ({numCells}).",
+                stacklevel=2,
             )
 
         # Use variable type when available, but reflect actual stored component count.

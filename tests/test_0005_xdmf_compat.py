@@ -336,3 +336,31 @@ def test_xdmf_viz_topology_written_correctly(tmp_path):
     )
 
     del mesh
+
+
+def test_xdmf_viz_topology_3d_written_correctly(tmp_path):
+    """Verify that write_timestep correctly writes /viz/topology/cells for 3D meshes."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2, 2))
+    
+    # Write just the mesh
+    mesh.write_timestep("test_topo_3d", index=0, outputPath=str(tmp_path))
+
+    mesh_h5 = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.h5")
+    assert _check_h5_group_exists(mesh_h5, "viz/topology/cells"), (
+        "3D Mesh HDF5 must contain the /viz/topology/cells dataset"
+    )
+
+    # Validate connectivity
+    cells = _read_h5_dataset(mesh_h5, "viz/topology/cells")
+    vertices = _read_h5_dataset(mesh_h5, "viz/geometry/vertices")
+    
+    num_vertices = vertices.shape[0]
+    assert cells.max() < num_vertices, "Invalid 3D topology bounds"
+    
+    xdmf_file = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.xdmf")
+    assert os.path.exists(xdmf_file)
+    with open(xdmf_file, "r") as f:
+        assert "/viz/topology/cells" in f.read()
+
+    del mesh
