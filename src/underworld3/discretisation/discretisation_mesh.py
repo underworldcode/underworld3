@@ -3740,9 +3740,11 @@ class Mesh(Stateful, uw_object):
     @uw.collective_operation
     def get_mean_radius(self) -> float:
         """
-        Global mean distance from any cell centroid to a face — the
-        characteristic background cell length scale. Parallel-safe via
-        MPI allreduce of the local sum and count.
+        Global mean of the characteristic cell length scale
+        (``volume^(1/dim)``, i.e. the equivalent radius derived from each
+        cell's volume — the same quantity averaged by ``get_min_radius``
+        and ``get_max_radius`` to obtain global min/max). Parallel-safe
+        via MPI allreduce of the local sum and count.
 
         Together with :meth:`get_min_radius` / :meth:`get_max_radius`
         this is the canonical "mesh length" API. Use this anywhere you
@@ -3754,13 +3756,14 @@ class Mesh(Stateful, uw_object):
         """
 
         import numpy as np
+        from mpi4py import MPI
 
         radii = np.asarray(self._radii)
         local_sum = float(radii.sum())
         local_n = int(radii.size)
         if uw.mpi.size > 1:
-            local_sum = uw.mpi.comm.allreduce(local_sum)
-            local_n = uw.mpi.comm.allreduce(local_n)
+            local_sum = uw.mpi.comm.allreduce(local_sum, op=MPI.SUM)
+            local_n = uw.mpi.comm.allreduce(local_n, op=MPI.SUM)
         return local_sum / max(local_n, 1)
 
     # This should be deprecated in favour of using integrals
