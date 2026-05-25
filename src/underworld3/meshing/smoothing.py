@@ -1159,6 +1159,13 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
 
     cdim = mesh.cdim
 
+    # Unified Gamma_N boundary slip (shared with the OT mover): radial-gated,
+    # Cartesian pins, projected normals pre-created before the solver DM is
+    # built. See _ot_adapt._resolve_slip / _build_slip_projector.
+    from underworld3.meshing._ot_adapt import (
+        _resolve_slip, _build_slip_projector)
+    _slip_on = _resolve_slip(mesh, boundary_slip)
+
     cache = _WINSLOW_CACHE.get(key)
     if cache is None:
         if linear_solver == "gamg":
@@ -1213,113 +1220,12 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # Boundary tangential slip (same per-ring radius projection
-        # as the spring). MA's natural Neumann BC (∇φ·n̂=0) already
-        # makes ∇φ tangential at the boundary, so letting boundary
-        # nodes move by ∇φ then snapping back to their ring radius
-        # is the redistribution the formulation naturally wants —
-        # fully pinning them discards it. Nodes provably stay on
-        # the surface (radial DOF removed; drift ~machine ε). One
-        # node/ring anchors the rotation gauge.
-        _slip_mode = boundary_slip
-        if isinstance(_slip_mode, str):
-            _slip_mode = _slip_mode.lower()
-            if _slip_mode not in ("ring", "box", "axes", "axis"):
-                raise ValueError(
-                    f"boundary_slip must be False/True/'ring'/'box', "
-                    f"got {boundary_slip!r}")
-            if _slip_mode in ("axes", "axis"):
-                _slip_mode = "box"
-        elif _slip_mode is True:
-            _slip_mode = "ring"
-        if _slip_mode and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            if _slip_mode == "ring":
-                c0 = old_coords[bc].mean(axis=0)
-                rg = np.round(
-                    np.linalg.norm(old_coords[bc] - c0, axis=1),
-                    6)
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                slip_center = np.zeros((n_verts, _cdim))
-                slip_rtarget = np.zeros(n_verts)
-                for rv in np.unique(rg):
-                    grp = bc[rg == rv]
-                    rc = old_coords[grp].mean(axis=0)
-                    is_anchor[grp[np.argmax(
-                        (old_coords[grp] - rc)[:, 0])]] = True
-                    slip_center[grp] = rc
-                    slip_rtarget[grp] = np.linalg.norm(
-                        old_coords[grp] - rc, axis=1)
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                _sidx = np.nonzero(is_slip)[0]
-                _sctr = slip_center[_sidx]
-                _srad = slip_rtarget[_sidx]
-
-                def _project(Y):
-                    v = Y[_sidx] - _sctr
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                    return Y
-            else:  # "box" — axis-aligned edge slip
-                # Pin corners (on 2 box edges); allow other
-                # boundary nodes to slide along their single
-                # edge. Detect edges from boundary coord extents.
-                bc_coords = old_coords[bc]
-                xmin = bc_coords[:, 0].min()
-                xmax = bc_coords[:, 0].max()
-                ymin = bc_coords[:, 1].min()
-                ymax = bc_coords[:, 1].max()
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    xmin = uw.mpi.comm.allreduce(
-                        float(xmin), op=_MPI.MIN)
-                    xmax = uw.mpi.comm.allreduce(
-                        float(xmax), op=_MPI.MAX)
-                    ymin = uw.mpi.comm.allreduce(
-                        float(ymin), op=_MPI.MIN)
-                    ymax = uw.mpi.comm.allreduce(
-                        float(ymax), op=_MPI.MAX)
-                tol = 1.0e-9 * max(xmax - xmin, ymax - ymin, 1.0)
-                on_xmin = np.abs(bc_coords[:, 0] - xmin) < tol
-                on_xmax = np.abs(bc_coords[:, 0] - xmax) < tol
-                on_ymin = np.abs(bc_coords[:, 1] - ymin) < tol
-                on_ymax = np.abs(bc_coords[:, 1] - ymax) < tol
-                on_x_edge = on_xmin | on_xmax
-                on_y_edge = on_ymin | on_ymax
-                is_corner_loc = on_x_edge & on_y_edge
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                is_anchor[bc[is_corner_loc]] = True
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                # For each slip node, record which axis is fixed
-                # and the target value on that axis.
-                fixed_axis = np.full(n_verts, -1, dtype=np.int8)
-                fixed_val = np.zeros(n_verts)
-                xfix = on_x_edge & ~is_corner_loc
-                yfix = on_y_edge & ~is_corner_loc
-                fixed_axis[bc[xfix]] = 0
-                fixed_val[bc[xfix]] = bc_coords[xfix, 0]
-                fixed_axis[bc[yfix]] = 1
-                fixed_val[bc[yfix]] = bc_coords[yfix, 1]
-                _sidx = np.nonzero(is_slip)[0]
-                _sax = fixed_axis[_sidx]
-                _sval = fixed_val[_sidx]
-                _ix0 = _sidx[_sax == 0]
-                _ix1 = _sidx[_sax == 1]
-                _v0 = _sval[_sax == 0]
-                _v1 = _sval[_sax == 1]
-
-                def _project(Y):
-                    Y[_ix0, 0] = _v0
-                    Y[_ix1, 1] = _v1
-                    return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Unified Gamma_N boundary slip (shared helper; see _ot_adapt).
+        # MA's natural Neumann BC already makes ∇φ tangential at the
+        # boundary, so this slides boundary nodes and snaps them back onto
+        # the surface (radial coordinate systems); Cartesian boundaries pin.
+        is_pinned, _project = _build_slip_projector(
+            mesh, old_coords, is_bnd, n_verts, _slip_on)
 
         if tris is not None and n_outer > 1:
             patch = _patch_volumes(tris, old_coords, n_verts)
@@ -1541,28 +1447,12 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
         raise NotImplementedError(
             "_winslow_equidistribute: 2D meshes only for now.")
 
-    # Boundary slip uses the projected boundary-normal field
-    # (mesh.Gamma_P1). This is reliable only for *radial* coordinate
-    # systems (cylindrical / spherical / geographic), where mesh.Gamma is
-    # the coordinate-derived radial field and evaluates cleanly at vertices.
-    # For Cartesian boundaries the vertex-evaluated facet normal is
-    # degenerate (0/0), so we pin the boundary instead of slipping with a
-    # garbage normal. 'ring'/'box'/'axes' are legacy aliases for slip-on.
-    from underworld3.meshing._ot_adapt import _is_radial_coords as _isr
-    if isinstance(boundary_slip, str):
-        _slip_req = boundary_slip.strip().lower() in (
-            "ring", "box", "axes", "axis", "true", "on", "1")
-    else:
-        _slip_req = bool(boundary_slip)
-    _slip_on = _slip_req and _isr(mesh)
-    if _slip_on:
-        # Create / refresh the projected normals ONCE here, before the OT
-        # Poisson solver's DM is built — creating the _n_proj MeshVariable
-        # mid-mover would stale that DM handle (project_uw3_smoother_footguns).
-        try:
-            mesh._update_projected_normals()
-        except Exception:
-            _slip_on = False
+    # Unified Gamma_N boundary slip (shared with the MA mover): radial-gated,
+    # Cartesian pins, projected normals pre-created here before the solver DM
+    # is built. See _ot_adapt._resolve_slip / _build_slip_projector.
+    from underworld3.meshing._ot_adapt import (
+        _resolve_slip, _build_slip_projector)
+    _slip_on = _resolve_slip(mesh, boundary_slip)
 
     key = (id(mesh), pinned_labels,
            pEnd - pStart, cEnd - cStart, cone_size,
@@ -1617,54 +1507,9 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # --- boundary slip via projected normals (mesh.Gamma_P1) ------
-        # Unified, geometry-agnostic slip (replaces the old box/ring
-        # special cases). Boundary nodes slide tangentially — we zero the
-        # projected-normal component of their displacement — and, for
-        # curved (radial) coordinate systems, snap back to their reference
-        # |r| so they stay on the surface. The normal comes from
-        # mesh.Gamma_P1 (the symbolic mesh.Gamma projected to a P1 field),
-        # which is valid for every geometry and is the same source used for
-        # free surfaces. Nodes with a degenerate projected normal (box
-        # corners where opposing face normals cancel, or an occasional
-        # unlocatable vertex) are pinned rather than slipped. `boundary_slip`
-        # is a bool; legacy 'ring'/'box'/'axes' strings are accepted as
-        # aliases for slip-on.
-        from underworld3.meshing._ot_adapt import (
-            _slip_normals, _boundary_centre, _is_radial_coords)
-
-        if _slip_on and is_bnd.any():
-            bidx = np.nonzero(is_bnd)[0]
-            bcoords = old_coords[bidx]
-            n_hat, valid = _slip_normals(mesh, bcoords)
-            slip_b = bidx[valid]
-            is_pinned = np.zeros(n_verts, dtype=bool)
-            is_pinned[bidx[~valid]] = True   # degenerate-normal nodes pinned
-            _n_slip = n_hat[valid]
-            _old_slip = old_coords[slip_b]
-            _radial = _is_radial_coords(mesh)
-            if _radial:
-                _centre = _boundary_centre(mesh, bcoords)
-                _r_target = np.linalg.norm(_old_slip - _centre, axis=1)
-
-            def _project(Y):
-                # tangential slide: remove the normal component of the
-                # boundary-node displacement
-                disp = Y[slip_b] - _old_slip
-                dn = (disp * _n_slip).sum(axis=1, keepdims=True)
-                Y[slip_b] = _old_slip + (disp - dn * _n_slip)
-                # snap curved boundaries back onto the surface (fixed |r|)
-                if _radial:
-                    v = Y[slip_b] - _centre
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[slip_b] = _centre + v * (_r_target / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Unified Gamma_N boundary slip (shared helper; see _ot_adapt).
+        is_pinned, _project = _build_slip_projector(
+            mesh, old_coords, is_bnd, n_verts, _slip_on)
 
         # --- compute V (patch volumes) on current mesh ---------
         if tris is None:
@@ -3358,10 +3203,27 @@ def metric_density_from_gradient(
             rho_raw = np.maximum(gmag, 1.0e-30) ** 2
             rho0.data[:, 0] = np.clip(
                 rho_raw, np.exp(log_rho_min), np.exp(log_rho_max))
+        elif metric_choice == "arc-length":
+            # Smooth arc-length monitor ρ = √(1 + (A·ĝ)²), ĝ =
+            # |∇field|/g_hi, A = √(ref⁴−1) so ρ = ref² at the
+            # hi-percentile gradient. Unlike front-following's percentile
+            # window (a flat region plus a kink at the break), this grades
+            # continuously from ρ=1 in flat regions — no clip kink in the
+            # bulk — which the OT / Monge–Ampère movers turn into a cleaner,
+            # sliver-free mesh. Capped at the [coarsen, refine] envelope; the
+            # cap (only the top few % of gradients) holds the peak contrast
+            # at ρ = ref², i.e. the MA capture-stable limit. Parameter-light:
+            # no amp / percentile window / power.
+            A = np.sqrt(max(ref_val ** 4 - 1.0, 0.0))
+            ghat = gmag / max(g_hi, 1.0e-30)
+            rho_al = np.sqrt(1.0 + (A * ghat) ** 2)
+            rho0.data[:, 0] = np.clip(
+                rho_al, np.exp(log_rho_min), np.exp(log_rho_max))
         else:
             raise ValueError(
-                f"metric_choice must be 'front-following' or "
-                f"'gradient-uniform', got {metric_choice!r}")
+                f"metric_choice must be 'front-following', "
+                f"'gradient-uniform', or 'arc-length', got "
+                f"{metric_choice!r}")
         return rho0.sym[0]
 
     if mode == "raw":
@@ -3391,6 +3253,8 @@ def follow_metric(
     refinement: float,
     coarsening="auto",
     metric: str = "front-following",
+    mover: str = "anisotropic",
+    boundary_slip=True,
     skip_threshold: float = 0.9,
     gradient_smoothing_length=None,
     polish_max_iters: int = 5,
@@ -3517,12 +3381,29 @@ def follow_metric(
         :math:`\text{refinement}^{1/d}`. Larger values free more
         budget for smoother grading at the cost of a wider
         cell-size spread.
-    metric : {"front-following", "gradient-uniform"}, default "front-following"
-        Strategic equidistribution rule. ``"front-following"``
-        concentrates cells where the gradient is steepest (mild
-        grading). ``"gradient-uniform"`` aims for the same
-        per-cell field change everywhere (best for advection-
-        diffusion accuracy).
+    metric : {"front-following", "gradient-uniform", "arc-length"}, default "front-following"
+        Strategic equidistribution rule (*where* the points go).
+        ``"front-following"`` concentrates cells where the gradient is
+        steepest (mild grading). ``"gradient-uniform"`` aims for the same
+        per-cell field change everywhere (best for advection-diffusion
+        accuracy). ``"arc-length"`` is a smooth ``√(1+(A·ĝ)²)`` monitor —
+        no percentile-window kink, parameter-light — which the movers turn
+        into a cleaner, sliver-free mesh; it pairs especially well with
+        ``mover="ma"`` (better metric capture than the clipped choices).
+    mover : {"anisotropic", "ma"}, default "anisotropic"
+        Node mover. ``"anisotropic"`` is the eigen-clamped tensor-metric
+        Winslow mover (the validated default; honours the refinement
+        envelope). ``"ma"`` is the elliptic Benamou–Froese–Oberman
+        Monge–Ampère solver — one Caffarelli-clean convex-potential map
+        (untangled by construction, no Jacobi polish). MA tracks the metric
+        faithfully up to a contrast ``peak ρ = refinement^d`` (so
+        ``refinement ≲ 3`` is the capture-stable regime; higher is the
+        opt-in riskier path where the map stops tracking the metric).
+    boundary_slip : bool, default True
+        Used by ``mover="ma"``: let boundary nodes slide tangentially along
+        the boundary (via the projected ``mesh.Gamma_P1`` normal, radial
+        coordinate systems only; Cartesian boundaries pin). The anisotropic
+        mover uses its own (pinned) default and ignores this.
     skip_threshold : float, default 0.9
         Alignment threshold for the adapt-on-demand skip. If the
         existing mesh's :func:`mesh_metric_mismatch` alignment is
@@ -3673,6 +3554,26 @@ def follow_metric(
         mover_kwargs.update(method_kwargs)
 
     old_X = np.asarray(mesh.X.coords).copy()
+    if mover in ("ma", "monge-ampere", "monge_ampere"):
+        # Elliptic Monge–Ampère: one Caffarelli-clean convex-potential map.
+        # No eigen-clamp / rest-spring (those are anisotropic-mover knobs) and
+        # no Jacobi polish — the single MA map is untangled by construction.
+        # The metric contrast (peak ρ = refinement^d) sets the refinement, so
+        # refinement ≲ 3 stays in MA's capture-stable regime; higher is the
+        # opt-in risky path (the map stops tracking the metric). Boundary slip
+        # is on by default (radial-gated; Cartesian boundaries pin).
+        ma_kwargs = dict(n_outer=1, n_picard=25)
+        if method_kwargs:
+            ma_kwargs.update(method_kwargs)
+        smooth_mesh_interior(
+            mesh, metric=rho, method="ma", boundary_slip=boundary_slip,
+            method_kwargs=ma_kwargs,
+            skip_threshold=skip_threshold, verbose=verbose)
+        return not np.allclose(np.asarray(mesh.X.coords), old_X)
+    if mover not in ("anisotropic", "aniso", "tensor"):
+        raise ValueError(
+            f"follow_metric mover must be 'anisotropic' or 'ma', "
+            f"got {mover!r}")
     smooth_mesh_interior(
         mesh,
         metric=rho,

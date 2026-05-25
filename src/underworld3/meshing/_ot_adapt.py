@@ -127,6 +127,79 @@ def _slip_normals(mesh, boundary_coords: np.ndarray):
     return out, valid
 
 
+def _resolve_slip(mesh, boundary_slip):
+    """Resolve ``boundary_slip`` (bool, or legacy ``'ring'/'box'/'axes'``
+    string) to a radial-gated slip-on flag, and pre-create the projected
+    boundary-normal field (footgun-safe) so the mover can read it.
+
+    Projected-normal slip is reliable only for *radial* coordinate systems
+    (cylindrical / spherical / geographic), where ``mesh.Gamma`` is the
+    coordinate-derived radial field and evaluates cleanly at vertices; for
+    Cartesian boundaries the vertex normal is degenerate, so we pin instead.
+    Call this ONCE before the mover builds its solver DM — creating the
+    ``_n_proj`` MeshVariable mid-mover would stale that DM handle
+    (project_uw3_smoother_footguns). Returns the bool slip-on flag.
+    """
+    if isinstance(boundary_slip, str):
+        req = boundary_slip.strip().lower() in (
+            "ring", "box", "axes", "axis", "true", "on", "1")
+    else:
+        req = bool(boundary_slip)
+    slip_on = req and _is_radial_coords(mesh)
+    if slip_on:
+        try:
+            mesh._update_projected_normals()
+        except Exception:
+            slip_on = False
+    return slip_on
+
+
+def _build_slip_projector(mesh, old_coords, is_bnd, n_verts, slip_on):
+    """Build ``(is_pinned, project_fn)`` for the unified Gamma_N boundary
+    slip, shared by the OT and Monge–Ampère movers.
+
+    Boundary nodes slide tangentially — ``project_fn`` zeros the
+    projected-normal component of their displacement — and, for radial
+    coordinate systems, snaps them back to their reference ``|r|`` so they
+    stay exactly on the surface. Nodes with a degenerate projected normal
+    (box corners where opposing face normals cancel, or an occasional
+    unlocatable vertex) are pinned. When ``slip_on`` is False (or there is no
+    boundary) the boundary is fully pinned.
+    """
+    if not (slip_on and is_bnd.any()):
+        def _project(Y):
+            return Y
+        return is_bnd.copy(), _project
+
+    bidx = np.nonzero(is_bnd)[0]
+    bcoords = old_coords[bidx]
+    n_hat, valid = _slip_normals(mesh, bcoords)
+    slip_b = bidx[valid]
+    is_pinned = np.zeros(n_verts, dtype=bool)
+    is_pinned[bidx[~valid]] = True            # degenerate-normal nodes pinned
+    n_slip = n_hat[valid]
+    old_slip = old_coords[slip_b]
+    radial = _is_radial_coords(mesh)
+    if radial:
+        centre = _boundary_centre(mesh, bcoords)
+        r_target = np.linalg.norm(old_slip - centre, axis=1)
+
+    def _project(Y):
+        # tangential slide: remove the normal component of the displacement
+        disp = Y[slip_b] - old_slip
+        dn = (disp * n_slip).sum(axis=1, keepdims=True)
+        Y[slip_b] = old_slip + (disp - dn * n_slip)
+        # snap curved boundaries back onto the surface (fixed |r|)
+        if radial:
+            v = Y[slip_b] - centre
+            nrm = np.linalg.norm(v, axis=1)
+            nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
+            Y[slip_b] = centre + v * (r_target / nrm)[:, None]
+        return Y
+
+    return is_pinned, _project
+
+
 def _ot_adapt_step(
     mesh,
     field,
