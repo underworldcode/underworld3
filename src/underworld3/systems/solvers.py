@@ -2518,6 +2518,20 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         applied to the internally-constructed ``DFDt`` only — the
         user's ``DuDt`` already encodes whatever ``monotone_mode``
         it was constructed with.
+    theta : float, default=0.5
+        Adams-Moulton theta for the diffusive flux at order 1.
+        Forwarded to the internally-constructed
+        ``SemiLagrangian_DDt`` instances (same forwarding rule as
+        ``monotone_mode``).
+
+        - ``0.5`` (default): Crank-Nicolson, A-stable but not
+          L-stable. Second-order accurate. Rings on stiff modes
+          with sharp gradients (negative amplification factor).
+        - ``1.0``: Backward Euler, L-stable, monotone for the
+          diffusive flux. First-order accurate. Recommended when
+          SLCN+CN ringing dominates the discretisation error.
+        - ``0.0``: Forward Euler — unstable for stiff diffusion;
+          included for completeness.
 
     Notes
     -----
@@ -2559,6 +2573,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         monotone_mode: Optional[str] = None,
+        theta: float = 0.5,
     ):
         ## Parent class will set up default values etc
         super().__init__(
@@ -2605,6 +2620,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 order=1,
                 smoothing=0.0,
                 monotone_mode=monotone_mode,
+                theta=theta,
             )
 
         else:
@@ -2637,6 +2653,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             order=order,
             smoothing=0.0,
             monotone_mode=monotone_mode,
+            theta=theta,
         )
 
         return
