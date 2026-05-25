@@ -628,7 +628,8 @@ def _normalize_monotone(monotone):
     )
 
 
-def _apply_monotone_limit(expr, coords, value, mode, evalf=False):
+def _apply_monotone_limit(
+    expr, coords, value, mode, coord_sys=None, other_arguments=None):
     """Bound an interpolated result to the local data range of its source
     field (monotone / bounded interpolation).
 
@@ -638,19 +639,35 @@ def _apply_monotone_limit(expr, coords, value, mode, evalf=False):
     - ``mode == "clamp"`` clips the result into ``[nbr_min, nbr_max]``
       (cheap, always bounded).
     - ``mode == "pick"`` keeps the in-bounds result and re-evaluates only
-      the out-of-bounds subset via RBF (``evalf=True``), which is
-      intrinsically bounded (more accurate, more expensive).
+      the out-of-bounds subset via the bounded RBF path (``evalf=True``,
+      which is intrinsically neighbour-bounded). ``evalf=True`` is a
+      deliberate override -- the FE result is exactly what overshot, so we
+      do *not* honour the caller's ``mode``/``rbf``/``force_l2`` here.
+      ``coord_sys`` / ``other_arguments`` are propagated so the re-eval
+      stays in the same frame.
 
     MVP scope: a single source MeshVariable. ``expr`` must resolve
     directly to one mesh variable (or one of its components, e.g.
     ``T.sym``); composite / multi-field expressions raise ``ValueError``
     because the neighbour bound across fields is ill-defined.
 
-    The algorithm is lifted verbatim from the SL trace-back limiter so
-    that routing the DDt through here is bit-identical.
+    The clamp algorithm is lifted verbatim from the SL trace-back limiter
+    so that routing the DDt through here is bit-identical.
     """
     from ..utilities.unit_aware_array import UnitAwareArray
     from .expressions import extract_meshes
+
+    # "pick" re-evaluates the out-of-bounds subset via a collective
+    # global_evaluate, gated on a rank-local mask -> would deadlock in
+    # parallel (see TODO(parallel) below). Fail fast with a clear message
+    # instead of hanging. "clamp" is rank-local-only and parallel-safe.
+    if mode == "pick" and uw.mpi.size > 1:
+        raise NotImplementedError(
+            "monotone='pick' is serial-only: its out-of-bounds "
+            "re-evaluation is gated on a rank-local mask around a "
+            "collective evaluate and would deadlock under MPI. Use "
+            "monotone='clamp' (parallel-safe) instead."
+        )
 
     # --- Resolve the single source MeshVariable --------------------------
     meshes = extract_meshes(expr)
@@ -732,12 +749,16 @@ def _apply_monotone_limit(expr, coords, value, mode, evalf=False):
         # TODO(parallel): this re-evaluation is gated on a rank-local
         # `oob_mask.any()`, so in parallel one rank may enter the
         # (collective) global_evaluate while another skips it -> deadlock.
-        # Lifted verbatim from the validated (serial) SL limiter; pick is
-        # serial-only until the rank-local bound is hardened (see the
-        # TODO(parallel) above and project_parallel_point_eval_decision).
+        # Guarded against above (pick is serial-only) until the rank-local
+        # bound is hardened (see project_parallel_point_eval_decision).
         if oob_mask.any():
+            # `coords` is an ndarray / UnitAwareArray here (the evaluator
+            # rejects non-array coords upstream, before monotone runs), so
+            # boolean masking preserves both the data and any units.
             oob_coords = coords[oob_mask]
-            value_rbf_oob = global_evaluate(expr, oob_coords, evalf=True)
+            value_rbf_oob = global_evaluate(
+                expr, oob_coords, coord_sys=coord_sys,
+                other_arguments=other_arguments, evalf=True)
             vrbf_flat = np.asarray(value_rbf_oob).reshape(
                 (-1,) + veep_flat.shape[1:])
             # Only overwrite entries individually out of bounds
@@ -793,6 +814,9 @@ def evaluate(
         single-MeshVariable expressions are supported; composites raise
         ``ValueError``. See :func:`_apply_monotone_limit`.
     """
+    # Validate up front so an unknown option fails fast (no wasted eval).
+    monotone_mode = _normalize_monotone(monotone)
+
     result = _evaluate_impl(
         expr,
         coords,
@@ -809,18 +833,19 @@ def evaluate(
         force_l2=force_l2,
     )
 
-    monotone_mode = _normalize_monotone(monotone)
     if monotone_mode is None:
         return result
 
     if check_extrapolated:
         value, extrapolated = result
         limited = _apply_monotone_limit(
-            expr, coords, value, monotone_mode, evalf=evalf)
+            expr, coords, value, monotone_mode,
+            coord_sys=coord_sys, other_arguments=other_arguments)
         return limited, extrapolated
 
     return _apply_monotone_limit(
-        expr, coords, result, monotone_mode, evalf=evalf)
+        expr, coords, result, monotone_mode,
+        coord_sys=coord_sys, other_arguments=other_arguments)
 
 
 @uw.timing.routine_timer_decorator
@@ -855,6 +880,15 @@ def global_evaluate(
         :func:`evaluate` for semantics. Not supported together with
         ``check_extrapolated`` (raises ``NotImplementedError``).
     """
+    # Validate up front so an unknown option or the unsupported
+    # monotone + check_extrapolated combination fails fast (no wasted eval).
+    monotone_mode = _normalize_monotone(monotone)
+    if monotone_mode is not None and check_extrapolated:
+        raise NotImplementedError(
+            "monotone interpolation is not supported together with "
+            "check_extrapolated in global_evaluate."
+        )
+
     result = _global_evaluate_impl(
         expr,
         coords=coords,
@@ -871,15 +905,9 @@ def global_evaluate(
         force_l2=force_l2,
     )
 
-    monotone_mode = _normalize_monotone(monotone)
     if monotone_mode is None:
         return result
 
-    if check_extrapolated:
-        raise NotImplementedError(
-            "monotone interpolation is not supported together with "
-            "check_extrapolated in global_evaluate."
-        )
-
     return _apply_monotone_limit(
-        expr, coords, result, monotone_mode, evalf=evalf)
+        expr, coords, result, monotone_mode,
+        coord_sys=coord_sys, other_arguments=other_arguments)
