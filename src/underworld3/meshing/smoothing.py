@@ -1541,6 +1541,29 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
         raise NotImplementedError(
             "_winslow_equidistribute: 2D meshes only for now.")
 
+    # Boundary slip uses the projected boundary-normal field
+    # (mesh.Gamma_P1). This is reliable only for *radial* coordinate
+    # systems (cylindrical / spherical / geographic), where mesh.Gamma is
+    # the coordinate-derived radial field and evaluates cleanly at vertices.
+    # For Cartesian boundaries the vertex-evaluated facet normal is
+    # degenerate (0/0), so we pin the boundary instead of slipping with a
+    # garbage normal. 'ring'/'box'/'axes' are legacy aliases for slip-on.
+    from underworld3.meshing._ot_adapt import _is_radial_coords as _isr
+    if isinstance(boundary_slip, str):
+        _slip_req = boundary_slip.strip().lower() in (
+            "ring", "box", "axes", "axis", "true", "on", "1")
+    else:
+        _slip_req = bool(boundary_slip)
+    _slip_on = _slip_req and _isr(mesh)
+    if _slip_on:
+        # Create / refresh the projected normals ONCE here, before the OT
+        # Poisson solver's DM is built — creating the _n_proj MeshVariable
+        # mid-mover would stale that DM handle (project_uw3_smoother_footguns).
+        try:
+            mesh._update_projected_normals()
+        except Exception:
+            _slip_on = False
+
     key = (id(mesh), pinned_labels,
            pEnd - pStart, cEnd - cStart, cone_size,
            linear_solver, phi_degree)
@@ -1594,62 +1617,48 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # --- boundary slip (axis-aligned box mode) -------------
-        _slip_mode = boundary_slip
-        if isinstance(_slip_mode, str):
-            _slip_mode = _slip_mode.lower()
-            if _slip_mode in ("axes", "axis"):
-                _slip_mode = "box"
-            if _slip_mode not in ("ring", "box", ""):
-                raise ValueError(
-                    f"boundary_slip must be False/True/'ring'/"
-                    f"'box', got {boundary_slip!r}")
-        elif _slip_mode is True:
-            _slip_mode = "ring"
-        if _slip_mode == "box" and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            bc_coords = old_coords[bc]
-            xmin = float(bc_coords[:, 0].min())
-            xmax = float(bc_coords[:, 0].max())
-            ymin = float(bc_coords[:, 1].min())
-            ymax = float(bc_coords[:, 1].max())
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                xmin = uw.mpi.comm.allreduce(xmin, op=_MPI.MIN)
-                xmax = uw.mpi.comm.allreduce(xmax, op=_MPI.MAX)
-                ymin = uw.mpi.comm.allreduce(ymin, op=_MPI.MIN)
-                ymax = uw.mpi.comm.allreduce(ymax, op=_MPI.MAX)
-            tol = 1.0e-9 * max(xmax - xmin, ymax - ymin, 1.0)
-            on_xmin = np.abs(bc_coords[:, 0] - xmin) < tol
-            on_xmax = np.abs(bc_coords[:, 0] - xmax) < tol
-            on_ymin = np.abs(bc_coords[:, 1] - ymin) < tol
-            on_ymax = np.abs(bc_coords[:, 1] - ymax) < tol
-            on_x_edge = on_xmin | on_xmax
-            on_y_edge = on_ymin | on_ymax
-            is_corner_loc = on_x_edge & on_y_edge
-            is_anchor = np.zeros(n_verts, dtype=bool)
-            is_anchor[bc[is_corner_loc]] = True
-            is_slip = is_bnd & ~is_anchor
-            is_pinned = is_anchor
-            fixed_axis = np.full(n_verts, -1, dtype=np.int8)
-            fixed_val = np.zeros(n_verts)
-            xfix = on_x_edge & ~is_corner_loc
-            yfix = on_y_edge & ~is_corner_loc
-            fixed_axis[bc[xfix]] = 0
-            fixed_val[bc[xfix]] = bc_coords[xfix, 0]
-            fixed_axis[bc[yfix]] = 1
-            fixed_val[bc[yfix]] = bc_coords[yfix, 1]
-            _sidx = np.nonzero(is_slip)[0]
-            _sax = fixed_axis[_sidx]
-            _sval = fixed_val[_sidx]
-            _ix0 = _sidx[_sax == 0]
-            _ix1 = _sidx[_sax == 1]
-            _v0 = _sval[_sax == 0]
-            _v1 = _sval[_sax == 1]
+        # --- boundary slip via projected normals (mesh.Gamma_P1) ------
+        # Unified, geometry-agnostic slip (replaces the old box/ring
+        # special cases). Boundary nodes slide tangentially — we zero the
+        # projected-normal component of their displacement — and, for
+        # curved (radial) coordinate systems, snap back to their reference
+        # |r| so they stay on the surface. The normal comes from
+        # mesh.Gamma_P1 (the symbolic mesh.Gamma projected to a P1 field),
+        # which is valid for every geometry and is the same source used for
+        # free surfaces. Nodes with a degenerate projected normal (box
+        # corners where opposing face normals cancel, or an occasional
+        # unlocatable vertex) are pinned rather than slipped. `boundary_slip`
+        # is a bool; legacy 'ring'/'box'/'axes' strings are accepted as
+        # aliases for slip-on.
+        from underworld3.meshing._ot_adapt import (
+            _slip_normals, _boundary_centre, _is_radial_coords)
+
+        if _slip_on and is_bnd.any():
+            bidx = np.nonzero(is_bnd)[0]
+            bcoords = old_coords[bidx]
+            n_hat, valid = _slip_normals(mesh, bcoords)
+            slip_b = bidx[valid]
+            is_pinned = np.zeros(n_verts, dtype=bool)
+            is_pinned[bidx[~valid]] = True   # degenerate-normal nodes pinned
+            _n_slip = n_hat[valid]
+            _old_slip = old_coords[slip_b]
+            _radial = _is_radial_coords(mesh)
+            if _radial:
+                _centre = _boundary_centre(mesh, bcoords)
+                _r_target = np.linalg.norm(_old_slip - _centre, axis=1)
 
             def _project(Y):
-                Y[_ix0, 0] = _v0
-                Y[_ix1, 1] = _v1
+                # tangential slide: remove the normal component of the
+                # boundary-node displacement
+                disp = Y[slip_b] - _old_slip
+                dn = (disp * _n_slip).sum(axis=1, keepdims=True)
+                Y[slip_b] = _old_slip + (disp - dn * _n_slip)
+                # snap curved boundaries back onto the surface (fixed |r|)
+                if _radial:
+                    v = Y[slip_b] - _centre
+                    nrm = np.linalg.norm(v, axis=1)
+                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
+                    Y[slip_b] = _centre + v * (_r_target / nrm)[:, None]
                 return Y
         else:
             is_pinned = is_bnd
