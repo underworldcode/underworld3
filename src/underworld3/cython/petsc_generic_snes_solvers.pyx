@@ -704,6 +704,8 @@ class SolverBaseClass(uw_object):
                 self._stokes_nullspace = None
             if hasattr(self, "_stokes_nullspace_basis"):
                 self._stokes_nullspace_basis = ()
+            if hasattr(self, "_constant_nullspace_obj"):
+                self._constant_nullspace_obj = None
 
         # This is a workaround for some problem in the PETSc machinery
         # where we need a surface integral term somewhere on every process
@@ -1660,6 +1662,9 @@ class SNES_Scalar(SolverBaseClass):
         # problems (e.g. an equidistribution / mesh-motion
         # potential). Off by default; see ``constant_nullspace``.
         self._constant_nullspace = False
+        # Cached constant PETSc.NullSpace — built lazily in
+        # _attach_constant_nullspace and invalidated on DM/SNES rebuild.
+        self._constant_nullspace_obj = None
 
     @property
     def constant_nullspace(self):
@@ -1688,14 +1693,35 @@ class SNES_Scalar(SolverBaseClass):
         if not self._constant_nullspace:
             return
 
+        # A constant nullspace is only valid for a pure-Neumann operator.
+        # If essential (Dirichlet) BCs pin the field, the constant mode is
+        # NOT in the operator's nullspace and projecting it out would
+        # corrupt the solution — guard exactly as the Stokes pressure
+        # nullspace guards against pressure Dirichlet BCs.
+        if len(self.essential_bcs) > 0:
+            boundaries = ", ".join(sorted(
+                {str(getattr(bc, "boundary", "?")) for bc in self.essential_bcs}))
+            raise ValueError(
+                "constant_nullspace=True is only valid for pure-Neumann "
+                "scalar problems, but essential (Dirichlet) boundary "
+                f"conditions are present on: {boundaries}. Remove them or "
+                "set constant_nullspace=False."
+            )
+
         self.snes.setUp()
 
         jacobian = self.snes.getJacobian()
         operator_matrix = jacobian[0]
         preconditioner_matrix = jacobian[1] if len(jacobian) > 1 else None
 
-        nullspace = PETSc.NullSpace().create(
-            constant=True, comm=self.dm.comm)
+        # Cache the constant nullspace on the instance and reuse it across
+        # solves (it depends only on the comm); invalidated to None when the
+        # DM/SNES is rebuilt (see _build).
+        nullspace = self._constant_nullspace_obj
+        if nullspace is None:
+            nullspace = PETSc.NullSpace().create(
+                constant=True, comm=self.dm.comm)
+            self._constant_nullspace_obj = nullspace
 
         operator_matrix.setNullSpace(nullspace)
         operator_matrix.setTransposeNullSpace(nullspace)
