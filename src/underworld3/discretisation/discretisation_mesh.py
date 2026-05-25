@@ -904,6 +904,156 @@ class Mesh(Stateful, uw_object):
         """
         return self._length_units
 
+    def quality(self, per_cell=False):
+        r"""Cell-quality diagnostics relevant to FE / solver conditioning.
+
+        Bulk volume ratios (min/mean) hide the handful of
+        near-degenerate cells that nonetheless dominate
+        stiffness-matrix conditioning — a Stokes / saddle-point
+        solve line-search-fails on the *worst* element, not the
+        mean. This reports the tail metrics that actually predict
+        that. For a 2-D simplex (triangle) mesh, per cell:
+
+        * shape quality ``q = 4√3·A / Σℓ²``  (1 = equilateral,
+          → 0 = sliver; folds skew + stretch into one number)
+        * largest interior angle (→ 180° is the conditioning killer)
+        * aspect ratio ``ℓ_max² / (2A)``  (longest edge / shortest
+          altitude)
+        * neighbour size-jump (adjacent-cell area ratio — the mesh
+          gradation the solver actually sees)
+
+        The conditioning-relevant numbers are the *worst* cell
+        (``q_min``, ``angle_max_deg``, ``aspect_max``) and the
+        poor-cell counts, not the means. Non-2-D-simplex meshes get
+        the dimension-agnostic cell-volume-spread subset only.
+
+        Parameters
+        ----------
+        per_cell : bool, default False
+            Also return per-cell arrays (``q``, ``angle_deg``,
+            ``aspect``, ``volume``) under ``"per_cell"`` — for
+            plotting or locating the bad cells.
+
+        Returns
+        -------
+        dict
+            Aggregate + tail stats. Headline scalars (min/max/counts)
+            are MPI-reduced so they are correct in parallel;
+            percentiles and the neighbour size-jump are rank-local
+            estimates (exact in serial — the convention for the
+            mesh-redistribution tooling).
+
+        Examples
+        --------
+        >>> q = mesh.quality()
+        >>> q["q_min"], q["n_q_lt_0p3"], q["aspect_max"]
+        >>> mesh.quality(per_cell=True)["per_cell"]["q"]  # to plot
+        """
+        import numpy as np
+
+        dm = self.dm
+        cdim = self.cdim
+        cStart, cEnd = dm.getHeightStratum(0)
+        pStart, pEnd = dm.getDepthStratum(0)
+        X = np.asarray(
+            dm.getCoordinatesLocal().array).reshape(-1, cdim)
+
+        def _reduce(val, op):
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                return uw.mpi.comm.allreduce(
+                    val, op=getattr(_MPI, op))
+            return val
+
+        tris = []
+        is_simplex2d = cdim == 2
+        if is_simplex2d:
+            for cc in range(cStart, cEnd):
+                cl = dm.getTransitiveClosure(cc)[0]
+                vs = [p - pStart for p in cl
+                      if pStart <= p < pEnd]
+                if len(vs) != 3:
+                    is_simplex2d = False
+                    break
+                tris.append(vs)
+
+        if not is_simplex2d or not tris:
+            try:
+                vol = np.abs(np.array(
+                    [dm.computeCellGeometryFVM(cc)[0]
+                     for cc in range(cStart, cEnd)]))
+            except Exception:
+                vol = np.array([1.0])
+            if not vol.size:
+                vol = np.array([1.0])
+            n = _reduce(int(vol.size), "SUM")
+            vmin = _reduce(float(vol.min()), "MIN")
+            vsum = _reduce(float(vol.sum()), "SUM")
+            res = dict(
+                n_cells=n, element="non-2D-simplex",
+                vol_min_over_mean=vmin / (vsum / max(n, 1)),
+                shape_metrics=None,
+                note="shape quality / angle / aspect need a 2-D "
+                     "triangle mesh; only volume spread reported")
+            if per_cell:
+                res["per_cell"] = dict(volume=vol)
+            return res
+
+        tri = np.asarray(tris, dtype=np.int64)
+        v0, v1, v2 = X[tri[:, 0]], X[tri[:, 1]], X[tri[:, 2]]
+        a = np.linalg.norm(v1 - v2, axis=1)
+        b = np.linalg.norm(v2 - v0, axis=1)
+        cl_ = np.linalg.norm(v0 - v1, axis=1)
+        A = np.maximum(
+            0.5 * np.abs(np.cross(v1 - v0, v2 - v0)), 1.0e-300)
+        q = 4.0 * np.sqrt(3.0) * A / (a * a + b * b + cl_ * cl_)
+
+        def _ang(o, p, r):
+            return np.degrees(np.arccos(np.clip(
+                (p * p + r * r - o * o) / (2.0 * p * r),
+                -1.0, 1.0)))
+        ang = np.maximum.reduce(
+            [_ang(a, b, cl_), _ang(b, cl_, a), _ang(cl_, a, b)])
+        Lmax = np.maximum.reduce([a, b, cl_])
+        aspect = Lmax * Lmax / (2.0 * A)
+        rel = A / A.mean()
+
+        et = {}
+        for ti, (i, j, k) in enumerate(tri):
+            for u, w in ((i, j), (j, k), (k, i)):
+                et.setdefault((min(u, w), max(u, w)),
+                              []).append(ti)
+        jr = np.array([max(A[t]) / min(A[t])
+                       for t in et.values() if len(t) == 2]
+                      or [1.0])
+
+        n = _reduce(int(tri.shape[0]), "SUM")
+        qsum = _reduce(float(q.sum()), "SUM")
+        Asum = _reduce(float(A.sum()), "SUM")
+        res = dict(
+            n_cells=n, element="2D-simplex",
+            q_min=_reduce(float(q.min()), "MIN"),
+            q_mean=qsum / max(n, 1),
+            q_p01=float(np.percentile(q, 1)),
+            q_p05=float(np.percentile(q, 5)),
+            n_q_lt_0p3=_reduce(int((q < 0.3).sum()), "SUM"),
+            n_q_lt_0p2=_reduce(int((q < 0.2).sum()), "SUM"),
+            angle_max_deg=_reduce(float(ang.max()), "MAX"),
+            n_angle_gt_150=_reduce(int((ang > 150).sum()), "SUM"),
+            n_angle_gt_165=_reduce(int((ang > 165).sum()), "SUM"),
+            aspect_max=_reduce(float(aspect.max()), "MAX"),
+            aspect_p99=float(np.percentile(aspect, 99)),
+            sizejump_max=float(jr.max()),
+            sizejump_p99=float(np.percentile(jr, 99)),
+            n_big_thin=_reduce(
+                int(((rel > 2.0) & (aspect > 4.0)).sum()), "SUM"),
+            vol_min_over_mean=(_reduce(float(A.min()), "MIN")
+                               / (Asum / max(n, 1))))
+        if per_cell:
+            res["per_cell"] = dict(
+                q=q, angle_deg=ang, aspect=aspect, volume=A)
+        return res
+
     def view(self, level=0):
         """
         Displays mesh information at different levels.
@@ -964,6 +1114,32 @@ class Mesh(Stateful, uw_object):
             num_cells = nend - nstart
 
             uw.pprint(f"Number of cells: {num_cells}\n")
+
+            # Cell-quality summary (the conditioning-relevant tail;
+            # full metrics + per-cell arrays via mesh.quality()).
+            try:
+                Q = self.quality()
+                if Q.get("element") == "2D-simplex":
+                    uw.pprint(
+                        f"Cell quality: q_min={Q['q_min']:.3f} "
+                        f"mean={Q['q_mean']:.2f} | poor(q<0.3): "
+                        f"{Q['n_q_lt_0p3']} | worst aspect "
+                        f"{Q['aspect_max']:.1f} | max size-jump "
+                        f"{Q['sizejump_max']:.1f}\n")
+                    if Q["n_q_lt_0p2"] > 0:
+                        uw.pprint(
+                            f"  ! {Q['n_q_lt_0p2']} cell(s) "
+                            f"q<0.2 (near-degenerate — solver "
+                            f"conditioning hazard)\n")
+                else:
+                    uw.pprint(
+                        f"Cell quality: vol_min/mean="
+                        f"{Q['vol_min_over_mean']:.3f} "
+                        f"(2-D triangle mesh needed for shape "
+                        f"metrics)\n")
+                uw.pprint("  (full metrics: mesh.quality())\n")
+            except Exception:
+                pass
 
             if len(self.vars) > 0:
                 uw.pprint(f"| Variable Name       | component | degree |     type        |")
@@ -1735,9 +1911,16 @@ class Mesh(Stateful, uw_object):
         Gamma = self.Gamma
 
         if not hasattr(self, '_projected_normals') or self._projected_normals is None:
-            self._projected_normals = uw.discretisation.MeshVariable(
-                "_n_proj", self, self.cdim, degree=1,
-            )
+            # nuke_coords_and_rebuild() clears this attribute on every deform,
+            # but the underlying MeshVariable persists on the mesh. Recover it
+            # quietly rather than re-creating (which logs a name collision).
+            existing = self.vars.get("_n_proj")
+            if existing is not None:
+                self._projected_normals = existing
+            else:
+                self._projected_normals = uw.discretisation.MeshVariable(
+                    "_n_proj", self, self.cdim, degree=1,
+                )
 
         n = self._projected_normals
         for i in range(self.cdim):
@@ -3855,6 +4038,161 @@ class Mesh(Stateful, uw_object):
         with self._mesh_update_lock:
             self._mesh_version += 1
             print(f"Mesh version manually incremented to {self._mesh_version}")
+
+    @timing.routine_timer_decorator
+    def OT_adapt(
+        self,
+        field,
+        *,
+        refinement=3.0,
+        coarsening="auto",
+        grad_smoothing_length="auto",
+        metric_choice="front-following",
+        fields_to_remap=None,
+        fields_to_zero=None,
+        skip_threshold=None,
+        reference_coords=None,
+        verbose=False,
+    ):
+        r"""Adapt the mesh in place so cell sizes track ``|∇field|``, using
+        the validated optimal-transport reset pattern.
+
+        Each call resets the mesh to a cached reference (the initial uniform
+        coordinates), FE-remaps ``field`` onto that clean canvas, builds a
+        gradient-density metric, runs the OT mover, and FE-remaps the
+        requested fields onto the adapted positions. Resetting every event
+        (rather than composing adaptations across time steps) is what keeps
+        the mover sliver-free over long runs. The "reset" is internal — from
+        the caller's point of view this just tracks the moving feature.
+
+        Topology is preserved (vertex count, DOF maps, rank partition
+        unchanged); only coordinates move. Registered solvers are marked for
+        rebuild via ``_deform_mesh``.
+
+        Reference coordinates
+        ---------------------
+        The reset target is snapshotted lazily on the **first** call as
+        ``self._ot_adapt_reference_coords`` (a copy of the current
+        ``mesh.X.coords``) and reused thereafter.
+
+        .. warning::
+           If the mesh is deformed by something other than ``OT_adapt``
+           between calls (e.g. a manual ``mesh._deform_mesh(...)`` or a
+           resume that loads a *deformed* snapshot), the cached reference no
+           longer matches the intended pristine state. Use
+           :meth:`OT_adapt_reset_reference` to re-baseline, or pass an
+           explicit ``reference_coords`` for a one-off override.
+
+        Parameters
+        ----------
+        field : MeshVariable
+            Scalar field whose gradient drives refinement (typically ``T``).
+            Always FE-remapped onto the adapted mesh.
+        refinement : float, default 3.0
+            Cell-size envelope ``h0/refinement`` for the densest cells.
+            Validated range 1.5–5; 3 is the Nu sweet spot.
+        coarsening : float or "auto", default "auto"
+            ``"auto"`` = budget-conserving ``refinement**(1/d)``.
+        grad_smoothing_length : "auto", None, float, or Pint Quantity, default "auto"
+            Screened-Poisson de-noising length for ``|∇field|`` before the
+            metric is built — the most effective sliver lever; without it,
+            production refinement chases sub-cell gradient noise.
+            ``"auto"`` (default) ≈ the mesh's uniform cell size (mean edge
+            length) — the validated setting. ``None`` turns it off. A number
+            or Pint length sets ``L`` explicitly; **user-supplied lengths are
+            unit-aware** (non-dimensionalised via the projection), so pass a
+            Pint quantity (or a non-dimensional number) — ``≈ h0`` is mild,
+            ``≈ 2·h0`` stronger.
+        metric_choice : {"front-following", "gradient-uniform"}, default "front-following"
+        fields_to_remap : list of MeshVariable, optional
+            Extra fields to FE-remap onto the adapted positions (``field`` is
+            always remapped). ``None`` ⇒ just ``field``.
+        fields_to_zero : list of MeshVariable, optional
+            Fields to zero after the adapt (e.g. ``[V, P]`` for a cold
+            restart of the flow solve).
+        skip_threshold : float, optional
+            If the mesh is already aligned with the metric (misalignment
+            below this; see :func:`~underworld3.meshing.mesh_metric_mismatch`),
+            skip the adapt and return ``False``. ``None`` ⇒ always adapt.
+        reference_coords : array, optional
+            One-off override of the reset target (does not update the cache).
+        verbose : bool, default False
+
+        Returns
+        -------
+        bool
+            ``True`` if the mesh was adapted, ``False`` if the
+            ``skip_threshold`` check short-circuited it.
+
+        Notes
+        -----
+        Boundary nodes slide tangentially and stay on the boundary for
+        radial coordinate systems (Annulus / shell), using the projected
+        boundary normal ``mesh.Gamma_P1``. Cartesian boundaries are pinned
+        (the vertex-evaluated normal is degenerate there).
+
+        Constrained-manifold meshes (``mesh.dim != mesh.cdim``, e.g. a 2D
+        spherical surface in 3D) are **not supported**: the OT mover would
+        have to constrain *every* node to the surface, not just boundary
+        nodes. See ``docs/developer/design/ot-adapt-api-proposal.md``.
+
+        Examples
+        --------
+        >>> mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+        ...                           cellSize=1/16, qdegree=3)
+        >>> T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
+        >>> # ... initialise T ...
+        >>> mesh.OT_adapt(T, refinement=3.0, fields_to_remap=[T])
+
+        See Also
+        --------
+        OT_adapt_reset_reference : Re-baseline the reset reference coords.
+        underworld3.meshing.follow_metric : The single-shot anisotropic mover.
+        adapt : Topology-changing MMG remeshing (different mechanism).
+        """
+        if self.dim != self.cdim:
+            raise NotImplementedError(
+                "OT_adapt is not supported on constrained-manifold meshes "
+                f"(mesh.dim={self.dim} != mesh.cdim={self.cdim}). The OT "
+                "mover would need to constrain every node to the surface, "
+                "not just boundary nodes — see "
+                "docs/developer/design/ot-adapt-api-proposal.md."
+            )
+        if (not hasattr(self, "_ot_adapt_reference_coords")
+                or self._ot_adapt_reference_coords is None):
+            # Lazy snapshot of the reset target on first call.
+            self._ot_adapt_reference_coords = numpy.asarray(
+                self.X.coords).copy()
+
+        from underworld3.meshing._ot_adapt import _ot_adapt_step
+
+        return _ot_adapt_step(
+            self, field,
+            refinement=refinement,
+            coarsening=coarsening,
+            grad_smoothing_length=grad_smoothing_length,
+            metric_choice=metric_choice,
+            fields_to_remap=fields_to_remap,
+            fields_to_zero=fields_to_zero,
+            skip_threshold=skip_threshold,
+            reference_coords=reference_coords,
+            verbose=verbose,
+        )
+
+    def OT_adapt_reset_reference(self, coords=None):
+        r"""Re-baseline the reference coordinates used by :meth:`OT_adapt`.
+
+        ``coords=None`` re-snapshots the current ``mesh.X.coords`` as the new
+        reset target; passing explicit ``coords`` (e.g. the initial uniform
+        mesh loaded from a checkpoint) sets those instead. Use on resume,
+        when the loaded mesh is in a deformed state and the cache would
+        otherwise lazily initialise from it.
+        """
+        if coords is None:
+            self._ot_adapt_reference_coords = numpy.asarray(
+                self.X.coords).copy()
+        else:
+            self._ot_adapt_reference_coords = numpy.asarray(coords).copy()
 
     @timing.routine_timer_decorator
     def adapt(self, metric_field, verbose=False):

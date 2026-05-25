@@ -60,6 +60,28 @@ for each edge vector $\mathbf{e}$. Edges that are too long get subdivided; regio
 **Key insight**: Higher metric values produce finer mesh. If you want 10× refinement, the metric values should be ~100× larger (since $M \propto 1/h^2$).
 ```
 
+### Two families of mesh adaptation
+
+UW3 offers **two complementary** ways to put resolution where it is
+needed:
+
+| | `mesh.adapt(...)` (this page) | `smooth_mesh_interior(method="anisotropic")` |
+|---|---|---|
+| Mechanism | **Re-mesh** (MMG): insert/remove/retriangulate | **Redistribute** the existing nodes (move only) |
+| Node budget | *Changes* — targets an **absolute** edge length `h` | **Fixed** — relative redistribution to a target *density* |
+| Topology | New mesh, **variables reset** (must transfer) | **Unchanged** — variables, DOFs, partition preserved |
+| Grading reach | Strong (can add nodes → ~10×) | Capped by the node count (~1.5–2×) |
+| Cell shape | Isotropic (`M = h⁻²I`) | **Anisotropic** — cells aligned to the feature |
+| Cost | Re-mesh + full variable transfer | A few cheap SPD elliptic solves (no re-mesh) |
+| Parallel | MMG re-partition | O(N), GAMG-parallelisable, no transfer |
+
+Use `mesh.adapt` when you need a genuinely finer mesh (more
+elements) and can afford to rebuild the problem. Use the
+**node-snuggling** redistribution when you want to *reshape* the
+existing mesh toward a feature every timestep cheaply, keeping the
+topology (and all fields) intact — see the **Node redistribution**
+section below.
+
 ---
 
 ## Metric Creation Functions
@@ -350,6 +372,69 @@ For the mathematically inclined, see the [Developer Design Document](../develope
 - Boundary label stacking algorithm
 - Gradient computation (Clement interpolant)
 - Convergence properties
+
+---
+
+## Node redistribution — the snuggling mover
+
+When you want to concentrate resolution on an evolving feature
+**every timestep** without re-meshing — keeping the topology and
+all field data intact — use the anisotropic metric mover instead
+of `mesh.adapt`:
+
+```python
+import underworld3 as uw
+from underworld3.meshing import (
+    smooth_mesh_interior, metric_density_from_gradient)
+
+# ... mesh + a temperature field T after some solve ...
+
+# Relative target DENSITY from |∇T| (the fixed-node-budget
+# analogue of metric_from_gradient: same percentile-window idea,
+# but ρ is a *density*, not an absolute h — there is no node
+# budget to spend on an absolute size).
+rho = metric_density_from_gradient(mesh, T, amp=8.0)
+
+# Move the nodes to that metric (topology / DOFs / variables
+# all preserved — no transfer needed).
+smooth_mesh_interior(
+    mesh, metric=rho, method="anisotropic",
+    method_kwargs=dict(aniso_cap=2.0, relax=0.2, n_outer=12))
+```
+
+`metric_density_from_gradient` builds
+$\rho = 1 + \mathrm{amp}\cdot t$, $t = \mathrm{clip}\big((|\nabla
+T| - g_{lo})/(g_{hi}-g_{lo}),0,1\big)$ with $g_{lo},g_{hi}$ the
+lo/hi percentiles of $|\nabla T|$ — deliberately the same shape as
+{py:func}`underworld3.adaptivity.metric_from_gradient`, so the
+*intent* you express is identical whichever family you choose.
+The mover then builds a gradient-derived **anisotropic tensor**
+metric internally and solves an M-weighted Laplace (Winslow)
+coordinate map.
+
+```{important}
+This is a **gradient** metric: it resolves where the field
+*changes* (boundary layers, fronts, plume edges), and is
+isotropic-coarse at a smooth *peak* ($\nabla\rho=0$) — it
+deliberately de-refines a feature's core. For core resolution a
+curvature (Hessian) metric is the (future) tool. It also does
+**not** beat the fixed node-count cap — for a *separable* feature
+the explicit 1-D OT is exact and cheaper; the mover earns its keep
+on general non-separable features and on cell-alignment / quality
+(it never produces slivers).
+```
+
+Key knobs (via `method_kwargs`): `aniso_cap` (max cell anisotropy
+— the binding stability lever; ≈2 robust, ≳6 folds), `relax`
+(damping), `n_outer` (composed damped steps), `linear_solver`
+(`"direct"` MUMPS, or `"gamg"` for the parallel-scalable path —
+validated bit-parity). The full mathematical derivation (OT /
+Monge–Ampère, the metric-tensor / Winslow mover, dynamic field
+handling, Nusselt) is in
+{doc}`/developer/design/mesh-adaptation-formulation`; operational
+detail in {doc}`/developer/subsystems/mesh-metric-redistribution`;
+the dated R&D log in
+`docs/developer/design/ma-newton-cofactor-exploration.md`.
 
 ---
 
