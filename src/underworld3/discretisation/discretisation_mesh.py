@@ -3416,7 +3416,7 @@ class Mesh(Stateful, uw_object):
 
         return
 
-    def _test_if_points_in_cells_internal(self, points, cells):
+    def _test_if_points_in_cells_internal(self, points, cells, on_boundary=True):
         """
         Determine if the given points lie in the suggested cells.
         Uses a mesh skeletonization array to determine whether the point is
@@ -3426,10 +3426,30 @@ class Mesh(Stateful, uw_object):
 
         Parameters
         ----------
-        points : array-like
-            Coordinate array in any physical unit system (will be auto-converted)
-        cells : array-like
-            Cell indices to test
+        points : numpy.ndarray
+            Coordinate array, assumed already in model units (this internal
+            helper does not perform unit conversion — use the public
+            `test_if_points_in_cells` for unit-aware input).
+        cells : numpy.ndarray
+            1-D cell indices to test, one per point.
+        on_boundary : bool, default True
+            If True (the default), a point exactly on a cell face counts as
+            inside that cell — the natural semantics for FE evaluation,
+            where the basis at a shared face/vertex is consistent across
+            the adjacent cells. A query point lying on a face shared by N
+            cells passes the test for any of those N cells.
+
+            If False, a point exactly on a face is reported as NOT inside —
+            strict-inside semantics. Use this when uniqueness matters (a
+            strict-ownership scheme where a shared-face point being claimed
+            by all adjacent cells would be a bug).
+
+            The implementation compares the squared distance from the query
+            to a mirrored inner/outer control-point pair placed ±1e-3 along
+            the face normal; a point exactly on the face has zero distance
+            difference. With on_boundary=True the test accepts diff >= -1e-12
+            (well below the 1e-3 control-point offset, well above 64-bit
+            float roundoff); with on_boundary=False the test requires diff > 0.
         """
         # Internal version - points assumed to already be in model units
         self._mark_faces_inside_and_out()
@@ -3440,18 +3460,25 @@ class Mesh(Stateful, uw_object):
         cStart, cEnd = self.dm.getHeightStratum(0)
         num_cell_faces = self.dm.getConeSize(cStart)
 
-        inside = numpy.ones_like(cells, dtype=bool)
         insiders = numpy.ndarray(shape=(cells.shape[0], num_cell_faces), dtype=bool)
 
-        for f in range(num_cell_faces):
-            control_points_o = self.faces_outer_control_points[f, cells]
-            control_points_i = self.faces_inner_control_points[f, cells]
-            inside = (
-                ((control_points_o - points) ** 2).sum(axis=1)
-                - ((control_points_i - points) ** 2).sum(axis=1)
-            ) > 0
-
-            insiders[:, f] = inside[:]
+        if on_boundary:
+            _face_tol = -1e-12
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                insiders[:, f] = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                ) >= _face_tol
+        else:
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                insiders[:, f] = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                ) > 0
 
         return numpy.all(insiders, axis=1)
 
@@ -3652,7 +3679,7 @@ class Mesh(Stateful, uw_object):
             # CRITICAL: Must return 1D array, not 2D, for Cython buffer compatibility
             return numpy.array([], dtype=numpy.int64)
 
-    def _get_closest_local_cells_internal(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def _get_closest_local_cells_internal(self, coords: numpy.ndarray, on_boundary: bool = True) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
@@ -3666,6 +3693,12 @@ class Mesh(Stateful, uw_object):
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
             shape (n_coords,dim) in any physical unit system (will be auto-converted).
+        on_boundary : bool, default True
+            Forwarded to `_test_if_points_in_cells_internal`. If True (the
+            default), queries exactly on a cell face count as inside that
+            cell — the natural semantics for FE-evaluation hints (every mesh
+            vertex sits on the faces of every cell containing it). If False,
+            strict-inside semantics; boundary queries come back as -1.
 
         Returns:
         --------
@@ -3697,7 +3730,7 @@ class Mesh(Stateful, uw_object):
         cells = self._indexMap[closest_points]
         cStart, cEnd = self.dm.getHeightStratum(0)
 
-        inside = self._test_if_points_in_cells_internal(coords, cells)
+        inside = self._test_if_points_in_cells_internal(coords, cells, on_boundary=on_boundary)
         cells[~inside] = -1
         lost_points = np.where(inside == False)[0]
 
@@ -3716,7 +3749,7 @@ class Mesh(Stateful, uw_object):
         for i in range(0, num_testable_neighbours):
 
             inside = self._test_if_points_in_cells_internal(
-                coords[lost_points], closest_centroids[:, i]
+                coords[lost_points], closest_centroids[:, i], on_boundary=on_boundary
             )
             cells[lost_points[inside]] = closest_centroids[inside, i]
 
@@ -3725,7 +3758,7 @@ class Mesh(Stateful, uw_object):
 
         return cells
 
-    def test_if_points_in_cells(self, points, cells):
+    def test_if_points_in_cells(self, points, cells, on_boundary=True):
         """
         Determine if the given points lie in the suggested cells.
         Uses a mesh skeletonization array to determine whether the point is
@@ -3739,6 +3772,12 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted)
         cells : array-like
             Cell indices to test
+        on_boundary : bool, default True
+            If True (the default), points exactly on a cell face count as
+            inside the cell (natural for FE evaluation, where the basis at
+            a shared face/vertex is consistent across adjacent cells). If
+            False, points on the closure of a cell are reported as NOT in
+            it (strict-inside semantics — useful when uniqueness matters).
 
         Returns
         -------
@@ -3757,10 +3796,17 @@ class Mesh(Stateful, uw_object):
         else:
             model_points = model_quantity
 
-        # Call internal implementation
-        return self._test_if_points_in_cells_internal(model_points, cells)
+        # Coerce cells to a 1-D numpy array — accept list/tuple input as the
+        # docstring promises ("array-like") even though the internal helper
+        # calls cells.reshape(-1) directly.
+        cells = numpy.asarray(cells).reshape(-1)
 
-    def get_closest_local_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+        # Call internal implementation
+        return self._test_if_points_in_cells_internal(
+            model_points, cells, on_boundary=on_boundary
+        )
+
+    def get_closest_local_cells(self, coords: numpy.ndarray, on_boundary: bool = True) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
@@ -3774,6 +3820,11 @@ class Mesh(Stateful, uw_object):
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
             shape (n_coords,dim) in any physical unit system (will be auto-converted).
+        on_boundary : bool, default True
+            If True (the default), queries exactly on a cell face are
+            treated as inside that cell (natural for FE-evaluation hints —
+            mesh vertices sit on cell faces by definition). If False,
+            strict-inside semantics; boundary queries return -1.
 
         Returns:
         --------
@@ -3795,7 +3846,7 @@ class Mesh(Stateful, uw_object):
             model_coords = model_quantity
 
         # Call internal implementation
-        return self._get_closest_local_cells_internal(model_coords)
+        return self._get_closest_local_cells_internal(model_coords, on_boundary=on_boundary)
 
     def _get_mesh_sizes(self, verbose=False):
         """
