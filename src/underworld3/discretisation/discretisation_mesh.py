@@ -3509,7 +3509,9 @@ class Mesh(Stateful, uw_object):
         coords:
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
-            shape (n_coords,dim) in any physical unit system (will be auto-converted).
+            shape (n_coords,dim), assumed already in model units (this
+            internal helper does not perform unit conversion — use the
+            public `get_closest_local_cells` for unit-aware input).
         on_boundary : bool, default True
             Forwarded to `_test_if_points_in_cells_internal`. If True (the
             default), queries exactly on a cell face count as inside that
