@@ -123,8 +123,17 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   */
   PetscInt *recovery_cells = NULL;
   PetscCall(PetscMalloc1(N, &recovery_cells));
+  /*
+    Handle the (size_t)-1 sentinel BEFORE casting to PetscInt. On builds where
+    sizeof(size_t) > sizeof(PetscInt) (32-bit-indices PETSc) the cast of
+    SIZE_MAX to a signed PetscInt is implementation-defined; rejecting the
+    sentinel via unsigned comparison first guarantees the cast only ever
+    runs on a valid non-negative cell id.
+  */
   for (PetscInt k = 0; k < N; ++k)
-    recovery_cells[k] = owning_cell ? (PetscInt)owning_cell[k] : -1;
+    recovery_cells[k] = (owning_cell && owning_cell[k] != (size_t)-1)
+                          ? (PetscInt)owning_cell[k]
+                          : -1;
   for (p = 0; p < numFound; ++p) {
     if (foundCells[p].index >= 0) {
       PetscInt orig_p = foundPoints ? foundPoints[p] : p;
