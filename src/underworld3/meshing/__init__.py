@@ -50,6 +50,14 @@ from .faults import (
     FaultCollection,
 )
 
+from .smoothing import (
+    smooth_mesh_interior,
+    metric_density_from_gradient,
+    mesh_metric_mismatch,
+    follow_metric,
+    ADAPT_STRATEGIES,
+)
+
 # Make all functions available at module level for backward compatibility
 __all__ = [
     # Cartesian meshes
@@ -82,4 +90,10 @@ __all__ = [
     # Backward compatibility aliases
     "FaultSurface",
     "FaultCollection",
+    # Mesh smoothing
+    "smooth_mesh_interior",
+    "metric_density_from_gradient",
+    "mesh_metric_mismatch",
+    "follow_metric",
+    "ADAPT_STRATEGIES",
 ]

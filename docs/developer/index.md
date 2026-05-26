@@ -113,6 +113,7 @@ guides/CODE-REVIEW-PROCESS
 guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
+guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
 ```
@@ -126,6 +127,7 @@ design/UNITS_SIMPLIFIED_DESIGN_2025-11
 design/WHY_UNITS_NOT_DIMENSIONALITY
 design/SYMBOL_DISAMBIGUATION_2025-12
 design/ADAPTIVE_MESHING_DESIGN
+design/mesh-adaptation-formulation
 design/ARCHITECTURE_ANALYSIS
 design/MATHEMATICAL_MIXIN_DESIGN
 design/COORDINATE_MIGRATION_GUIDE

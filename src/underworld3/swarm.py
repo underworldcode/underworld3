@@ -2498,6 +2498,15 @@ class Swarm(Stateful, uw_object):
         # Mesh version tracking for coordinate change detection
         self._mesh_version = mesh._mesh_version
 
+        # Informational counter incremented at every particle-population
+        # mutation site (populate, migrate, add_particles_*, advection
+        # remesh). NOT a snapshot-restore invalidation gate — restore
+        # rebuilds the local population from the snapshot regardless of
+        # what happened in between. Useful for logging, debugging, and
+        # any cache that wants to know "did the population change?"
+        # See docs/developer/design/in_memory_checkpoint_design.md.
+        self._population_generation = 0
+
         # Register this swarm with the mesh for coordinate change notifications
         mesh.register_swarm(self)
 
@@ -3307,6 +3316,9 @@ class Swarm(Stateful, uw_object):
                     offset = swarm_orig_size * i
                     self._remeshed.data[offset::, 0] = i
 
+        # Informational: particle population just changed.
+        self._population_generation += 1
+
         return
 
     @timing.routine_timer_decorator
@@ -3335,6 +3347,11 @@ class Swarm(Stateful, uw_object):
 
         if self._migration_disabled:
             return
+
+        # Informational: migration may move or drop particles. Bump
+        # unconditionally; restore is not gated on this counter so a
+        # conservative no-op bump is harmless.
+        self._population_generation += 1
 
         from time import time
 
@@ -3559,6 +3576,10 @@ class Swarm(Stateful, uw_object):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
 
+        # Informational: addNPoints + direct dm.migrate path doesn't go
+        # through Swarm.migrate, so bump explicitly.
+        self._population_generation += 1
+
         return npoints
 
     @timing.routine_timer_decorator
@@ -3626,6 +3647,10 @@ class Swarm(Stateful, uw_object):
 
         self.dm.finalizeFieldRegister()
         self.dm.addNPoints(npoints=npoints)
+
+        # Informational: population changed even if migrate=False is
+        # passed (in which case Swarm.migrate's bump wouldn't fire).
+        self._population_generation += 1
 
         # Add new points with provided coords
         # Record the current rank (migration needs to know where we start from !)
@@ -4079,6 +4104,163 @@ class Swarm(Stateful, uw_object):
         """
         return self._vars
 
+    # ----- Unitary snapshot / restore -----
+    #
+    # See ``src/underworld3/checkpoint/snapshot.py`` and
+    # ``docs/developer/design/in_memory_checkpoint_design.md``. Capture
+    # records the per-rank particle layout and user-variable arrays.
+    # Restore rebuilds the local population from the snapshot rather
+    # than refusing on counter mismatch — restore is precisely for the
+    # case where particles have moved / migrated / been repopulated.
+
+    def _snapshot_stable_name(self) -> str:
+        """Per-process stable name. ``instance_number`` comes from uw_object."""
+        return f"swarm_{self.instance_number}"
+
+    def snapshot_payload(self) -> dict:
+        """Return a self-contained dict describing this swarm's state.
+
+        Captured: per-rank particle coordinates (from
+        ``DMSwarmPIC_coor``) and every user swarm-variable's data
+        array. PETSc-internal variables (``DMSwarmPIC_coor``,
+        ``DMSwarm_X0``, ``DMSwarm_remeshed``) are excluded — their
+        contents either come from the captured coords or are
+        regenerated on the next solve.
+        """
+        coord_field = self.dm.getField("DMSwarmPIC_coor").reshape(
+            (-1, self.dim)
+        )
+        coords = np.asarray(coord_field).copy()
+        self.dm.restoreField("DMSwarmPIC_coor")
+
+        var_arrays: dict = {}
+        for var in list(self._vars.values()):
+            if var.name.startswith("DMSwarm"):
+                continue
+            var_arrays[var.clean_name] = np.asarray(var.data).copy()
+
+        return {
+            "name": self._snapshot_stable_name(),
+            "mesh_name": self.mesh.name,
+            "population_generation": int(self._population_generation),
+            "coords": coords,
+            "vars": var_arrays,
+        }
+
+    def apply_snapshot_payload(self, payload: dict) -> None:
+        """Rebuild this swarm's local particle population from a payload.
+
+        Algorithm:
+
+        1. Drop every current local particle (``dm.removePoint`` from
+           the end is O(1) per call, O(N) total).
+        2. Add the captured-rank's particles back via the raw PETSc
+           primitives — ``addNPoints`` then writing the coord field
+           directly. We deliberately bypass
+           :meth:`add_particles_with_coordinates` because that method
+           filters via ``points_in_domain`` (slow) and triggers
+           ``dm.migrate`` (unnecessary — saved coords were already
+           local at capture time, and the mesh hasn't changed).
+        3. Write captured per-variable data back. The local particle
+           count matches the captured count because we just put the
+           same particles back in the same order.
+
+        This bumps ``_population_generation`` once (from the addNPoints
+        step in restore), which is correct: the population *did* just
+        change. Downstream consumers that care can compare against the
+        captured value in ``payload['captured_population_generation']``.
+        """
+        from underworld3.checkpoint.snapshot import SnapshotInvalidatedError
+
+        saved_coords = np.asarray(payload["coords"])
+
+        # Step 1: clear local population. removePoint() removes the last
+        # particle, so this is O(N) total.
+        while self.dm.getLocalSize() > 0:
+            self.dm.removePoint()
+
+        # Step 2: re-add. add raw points, write coords + ranks directly.
+        n_saved = int(saved_coords.shape[0])
+        if n_saved > 0:
+            self.dm.finalizeFieldRegister()
+            self.dm.addNPoints(npoints=n_saved)
+
+            coord_field = self.dm.getField("DMSwarmPIC_coor").reshape(
+                (-1, self.dim)
+            )
+            if coord_field.shape != saved_coords.shape:
+                self.dm.restoreField("DMSwarmPIC_coor")
+                raise SnapshotInvalidatedError(
+                    f"swarm {self._snapshot_stable_name()!r}: after "
+                    f"addNPoints({n_saved}) the coord field has shape "
+                    f"{coord_field.shape}, expected {saved_coords.shape}"
+                )
+            coord_field[...] = saved_coords
+            self.dm.restoreField("DMSwarmPIC_coor")
+
+            rank_field = self.dm.getField("DMSwarm_rank")
+            rank_field[...] = uw.mpi.rank
+            self.dm.restoreField("DMSwarm_rank")
+
+        # Invalidate canonical-data caches — the underlying arrays
+        # have been reallocated by the addNPoints path.
+        if hasattr(self._particle_coordinates, "_canonical_data"):
+            self._particle_coordinates._canonical_data = None
+        for var in self._vars.values():
+            if hasattr(var, "_canonical_data"):
+                var._canonical_data = None
+
+        # The raw PETSc primitives used above (removePoint loop +
+        # addNPoints + direct field writes) deliberately bypass
+        # Swarm.migrate / add_particles_with_coordinates, so they do
+        # not touch _population_generation. Bump it explicitly here
+        # for consistency with the other mutation sites — a restore
+        # IS a population change, downstream consumers should see it.
+        # (Comment rewritten per Copilot review on #195.)
+        self._population_generation += 1
+
+        # Step 3: write captured per-variable data. Per Copilot
+        # review on #195, also raise on the inverse direction —
+        # any user swarm variable on the LIVE swarm that wasn't in
+        # the snapshot would retain stale/uninitialised contents
+        # after the clear+addNPoints reallocation, which is exactly
+        # the silent-incoherence failure we want loud rather than
+        # quiet. The contract is symmetric with the mesh-variable
+        # restore: same variable set on both sides.
+        current_user_vars = {
+            var.clean_name: var
+            for var in self._vars.values()
+            if not var.name.startswith("DMSwarm")
+        }
+        captured_names = set(payload["vars"].keys())
+        live_names = set(current_user_vars.keys())
+        extras = live_names - captured_names
+        if extras:
+            raise SnapshotInvalidatedError(
+                f"swarm {self._snapshot_stable_name()!r}: variables "
+                f"{sorted(extras)!r} exist on the live swarm but were "
+                f"not in the snapshot. Restore would leave them with "
+                f"incoherent data after the population rebuild — add "
+                f"them before the snapshot was taken, or remove them "
+                f"before restoring."
+            )
+
+        for var_clean_name, saved in payload["vars"].items():
+            var = current_user_vars.get(var_clean_name)
+            if var is None:
+                raise SnapshotInvalidatedError(
+                    f"swarm {self._snapshot_stable_name()!r}: variable "
+                    f"{var_clean_name!r} from snapshot is not present"
+                )
+            current = np.asarray(var.data)
+            if current.shape != saved.shape:
+                raise SnapshotInvalidatedError(
+                    f"swarm {self._snapshot_stable_name()!r}: variable "
+                    f"{var_clean_name!r} data shape mismatch — current "
+                    f"{current.shape} vs snapshot {saved.shape}"
+                )
+            current[...] = saved
+
     def _legacy_access(self, *writeable_vars: SwarmVariable):
         """
         This context manager makes the underlying swarm variables data available to
@@ -4491,6 +4673,9 @@ class Swarm(Stateful, uw_object):
             num_remeshed_points = self.mesh.particle_X_orig.shape[0]
 
             self.dm.addNPoints(num_remeshed_points)
+
+            # Informational: remesh just re-injected particles.
+            self._population_generation += 1
 
             ## cellid = self.dm.getField("DMSwarm_cellid")
             coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.dim))
