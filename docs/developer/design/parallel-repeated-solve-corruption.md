@@ -1,6 +1,7 @@
 # Parallel repeated-FE-solve heap corruption (np ≥ 5)
 
-**Status:** ROOT CAUSE FOUND (2026-05-27) — it is the **`_use_direct_solver`
+**Status:** FIXED — PR #213 (→ `development`), 2026-05-27. Root cause is the
+**`_use_direct_solver`
 (lagged MUMPS LU)** path the movers wire in, *not* the Poisson solve, the DM, or
 singularity. The UW3 **default GMRES+GAMG solver is clean at np=5** (10/10, even
 for the singular `constant_nullspace` case). Fix is mover-local + low-risk.
