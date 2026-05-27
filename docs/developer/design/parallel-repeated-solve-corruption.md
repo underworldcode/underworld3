@@ -161,6 +161,23 @@ non-singular → drops it from 100% to the ~25% **general** baseline. Still not
 production-usable, because the general 25% remains. The mass term is the right
 *formulation* for a mesh-motion potential, but it does not fix the corruption.
 
+### Third change: collective remesh decision (found by the np=4 convection run)
+Running the full adaptive convection harness in parallel exposed a **second,
+independent** parallel bug: `mesh_metric_mismatch` computed the
+mesh↔metric *misalignment* via `np.corrcoef` on **rank-local** cells, so each
+rank got a different value (e.g. 0.34/0.91/0.77/0.45) straddling the
+`skip_threshold=0.9`. `smooth_mesh_interior` then made the skip/adapt choice
+**per rank** → ranks disagreed → the collective mover **deadlocked** (some ranks
+entered it, others skipped). Fix:
+- `mesh_metric_mismatch`: compute the Pearson `alignment` from **globally
+  reduced** moment sums (`Σx,Σy,Σxx,Σyy,Σxy,n` allreduced) so every rank agrees.
+  Serial is bit-identical to `np.corrcoef` (the 1/n normalisation cancels).
+- `smooth_mesh_interior`: **OR-reduce** the final decision — *if any rank needs
+  to remesh, all ranks remesh* (and all skip together otherwise). The mover is
+  collective, so the decision must be unanimous.
+Verified live (np=4, 8 steps): step 2 → unanimous `adapting`, steps 4/6/8 →
+unanimous `skipping`, clean exit; the adapted mesh renders valid (no tangling).
+
 ## Reproduction & tooling (all under `~/+Simulations/StagnantLid/`)
 
 - **Repros** (`parallel_corruption_repros/`): `test_ns_loop.py`

@@ -445,8 +445,27 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     # appropriate skip-or-adapt criterion in a dynamic loop.
     log_density = -np.log(A_actual)
     log_rho = np.log(rho)
-    if log_density.std() > 1.0e-12 and log_rho.std() > 1.0e-12:
-        alignment = float(np.corrcoef(log_density, log_rho)[0, 1])
+    # Pearson r of log(1/A_c) vs log(rho_c), from GLOBAL moment sums. Cells are
+    # partitioned across ranks, so a rank-local np.corrcoef yields a DIFFERENT
+    # alignment on each rank — the skip/adapt decision in smooth_mesh_interior
+    # then diverges across ranks and the (collective) mover deadlocks. Reducing
+    # the moments makes every rank agree. Serial: identical to np.corrcoef (the
+    # 1/n normalisation cancels in the ratio).
+    if _uw.mpi.size > 1:
+        _ar = lambda v: _uw.mpi.comm.allreduce(float(v))
+    else:
+        _ar = float
+    n_c = _ar(log_density.size)
+    sx = _ar(log_density.sum()); sy = _ar(log_rho.sum())
+    sxx = _ar((log_density * log_density).sum())
+    syy = _ar((log_rho * log_rho).sum())
+    sxy = _ar((log_density * log_rho).sum())
+    var_x = sxx / n_c - (sx / n_c) ** 2
+    var_y = syy / n_c - (sy / n_c) ** 2
+    if var_x > 1.0e-24 and var_y > 1.0e-24:
+        alignment = float((sxy / n_c - (sx / n_c) * (sy / n_c))
+                          / np.sqrt(var_x * var_y))
+        alignment = max(-1.0, min(1.0, alignment))
     else:
         alignment = 0.0
     # Misalignment: 0 = perfectly aligned, 1 = orthogonal.
@@ -2957,18 +2976,30 @@ def smooth_mesh_interior(
             # log(1/A_c) vs log(ρ_c). 0 ⇒ mesh density is
             # perfectly aligned with the metric; 1 ⇒ uncorrelated.
             # Skip when misalignment is below threshold.
-            if mm["misalignment"] < float(skip_threshold):
-                if verbose:
+            #
+            # COLLECTIVE remesh decision: the mover is a collective operation,
+            # so the skip/adapt choice MUST be unanimous or the ranks deadlock.
+            # `misalignment` is reduced globally (mesh_metric_mismatch) so it is
+            # already identical on every rank; the OR-reduction below is the
+            # belt-and-suspenders guarantee that **if any rank needs to remesh,
+            # all ranks remesh** (and all skip together otherwise).
+            _need_adapt = mm["misalignment"] >= float(skip_threshold)
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                _need_adapt = bool(uw.mpi.comm.allreduce(
+                    int(_need_adapt), op=_MPI.MAX))
+            if not _need_adapt:
+                if verbose and uw.mpi.rank == 0:
                     print(f"  smooth_mesh_interior: skipping "
                           f"(misalignment {mm['misalignment']:.3f} "
-                          f"< threshold {skip_threshold:.3f}; "
+                          f"< threshold {float(skip_threshold):.3f}; "
                           f"alignment r={mm['alignment']:.3f})",
                           flush=True)
                 return
-            if verbose:
+            if verbose and uw.mpi.rank == 0:
                 print(f"  smooth_mesh_interior: adapting "
                       f"(misalignment {mm['misalignment']:.3f} ≥ "
-                      f"threshold {skip_threshold:.3f}; "
+                      f"threshold {float(skip_threshold):.3f}; "
                       f"alignment r={mm['alignment']:.3f})",
                       flush=True)
         if method == "spring":
