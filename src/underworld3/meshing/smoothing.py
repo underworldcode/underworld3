@@ -856,9 +856,20 @@ _OT_CACHE: dict = {}
 _GEMA_STATE: dict = {}
 
 
-def _use_direct_solver(solver, singular=False):
+def _use_direct_solver(solver, singular=False, elliptic=True):
     r"""Force a cached MA sub-solver onto a sparse **direct** factorisation
     (MUMPS LU) instead of the UW3 default GMRES + GAMG.
+
+    **Parallel safety (parallel-singular-corruption, 2026-05-27):** MUMPS
+    (the only parallel LU in this build) corrupts the heap when the same
+    factorisation path is exercised over *repeated* solves at np >= 3 — a
+    probabilistic SEGV/SIGBUS or MPI deadlock (the UW3 default GMRES+GAMG, which
+    never calls MUMPS, is clean). Since the movers re-solve in a Picard/outer
+    loop, MUMPS is unusable in parallel here. Under MPI this function therefore
+    falls back to the MUMPS-free iterative path (:func:`_use_iterative_solver`);
+    the direct MUMPS path below is kept for the validated **serial** efficiency
+    lever. ``elliptic`` is forwarded to the iterative fallback (φ-Poisson →
+    GAMG; mass systems → CG+Jacobi).
 
     Why this is the dominant MA-efficiency lever (profiled 2026-05-17,
     res-16 Annulus, AMP=8, warm re-call): the Picard loop fixes the
@@ -879,6 +890,12 @@ def _use_direct_solver(solver, singular=False):
     the iterative path produced — but it also eliminates the
     GAMG-on-pure-Neumann ``DIVERGED_LINEAR_SOLVE`` re-solve pathology.
     """
+    # Parallel: MUMPS-repeated corrupts the heap (see docstring) — use the
+    # MUMPS-free iterative path instead. Serial keeps the fast direct solve.
+    if uw.mpi.size > 1:
+        _use_iterative_solver(solver, singular=singular, elliptic=elliptic)
+        return
+
     o = solver.petsc_options
     # These three sub-problems are *linear* (φ Poisson with the Hessian
     # source frozen; the SPD Hessian-recovery mass system; the ∇φ
@@ -1007,8 +1024,22 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
         o["mg_levels_ksp_type"] = "richardson"
         o["mg_levels_pc_type"] = "sor"
         o["mg_levels_ksp_max_it"] = 4
-        o["mg_coarse_pc_type"] = "lu"
-        o["mg_coarse_pc_factor_mat_solver_type"] = "mumps"
+        # GAMG coarse solve. MUMPS (parallel LU) corrupts the heap over repeated
+        # parallel solves (parallel-singular-corruption) — so in parallel use a
+        # MUMPS-free coarse: `redundant` replicates the (tiny) coarse grid to
+        # every rank and solves it with a dense SVD, which is robust on the
+        # singular pure-Neumann coarse and never calls MUMPS (verified clean +
+        # convergent at np=5). Serial keeps the fast MUMPS coarse.
+        for k in ("mg_coarse_pc_factor_mat_solver_type",
+                  "mg_coarse_redundant_pc_type"):
+            try: o.delValue(k)
+            except Exception: pass
+        if uw.mpi.size > 1:
+            o["mg_coarse_pc_type"] = "redundant"
+            o["mg_coarse_redundant_pc_type"] = "svd"
+        else:
+            o["mg_coarse_pc_type"] = "lu"
+            o["mg_coarse_pc_factor_mat_solver_type"] = "mumps"
     else:
         o["ksp_type"] = "cg"              # consistent mass = SPD
         o["pc_type"] = "jacobi"           # mass matrix → trivial
@@ -1016,26 +1047,79 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
                   "pc_gamg_agg_nsmooths", "pc_gamg_threshold",
                   "mg_levels_ksp_type", "mg_levels_pc_type",
                   "mg_levels_ksp_max_it", "mg_coarse_pc_type",
-                  "mg_coarse_pc_factor_mat_solver_type"):
+                  "mg_coarse_pc_factor_mat_solver_type",
+                  "mg_coarse_redundant_pc_type"):
             try:
                 o.delValue(k)
             except Exception:
                 pass
 
 
-def _patch_volumes(tris, coords, n_verts):
+def _patch_volumes(tris, coords, n_verts, vol_field=None):
     """Per-vertex dual-patch area: a node's share (1/3) of every
     incident triangle's |area|. ρ_cur ∝ 1/patch for the (opt-in,
     n_outer>1) outer MA composition; at equidistribution
-    ``patch · ρ_tgt`` is uniform. Serial-exact (parallel under-counts
-    at rank-partition boundaries — acceptable for serial validation).
+    ``patch · ρ_tgt`` is uniform.
+
+    This quantity is exactly the **lumped P1 mass diagonal** ``M_ii = ∫ N_i dV``.
+    The hand-rolled local sum below is serial-exact, but **under-counts shared
+    vertices on rank-partition boundaries in parallel** — each rank only adds its
+    own incident triangles and never sums the neighbouring rank's. So in parallel
+    we assemble it through the FE mass matrix instead (``_lumped_vertex_volumes``),
+    where PETSc does the cross-rank ``localToGlobal(ADD)`` for us. Requires the
+    P1 ``vol_field``; falls back to the local sum when it is not supplied.
     """
+    if vol_field is not None and uw.mpi.size > 1:
+        return _lumped_vertex_volumes(vol_field)
     area = np.abs(_signed_areas(coords, tris)) / 3.0
     patch = np.zeros(n_verts, dtype=np.double)
     for k in range(3):
         np.add.at(patch, tris[:, k], area)
     patch[patch <= 0.0] = patch[patch > 0.0].mean()
     return patch
+
+
+def _lumped_vertex_volumes(vol_field):
+    r"""Parallel-correct per-vertex dual-patch volume = the lumped P1 mass
+    diagonal ``M_ii = ∫ N_i dV`` of ``vol_field``'s (P1, continuous, scalar)
+    space, assembled via the FE mass matrix so the cross-rank sum over shared
+    partition-boundary vertices is done by PETSc — unlike the hand-rolled local
+    sum in :func:`_patch_volumes`, which under-counts those vertices in parallel.
+
+    Identity: by partition of unity (``Σ_j N_j ≡ 1``) the consistent mass matrix
+    has row sums ``Σ_j M_ij = ∫ N_i Σ_j N_j = ∫ N_i dV``, i.e. the lumped diagonal
+    is ``M·1``.
+
+    TODO(petsc4py): PETSc has a purpose-built
+    ``DMCreateMassMatrixLumped(dm, &llm, &lm)`` that returns this lumped diagonal
+    directly (with the cross-rank ADD built in), but petsc4py (3.25) does not bind
+    it yet — only the *consistent* ``DM.createMassMatrix`` is exposed, hence the
+    ``M·1`` below. Replace this body with ``subdm.createMassMatrixLumped()`` once
+    petsc4py exposes that DM method.
+
+    Returns a per-vertex numpy array in ``vol_field``'s local DOF ordering (the
+    same depth-0 vertex ordering the movers use for ``vol_field.array``).
+    """
+    mesh = vol_field.mesh
+    indexset, subdm = mesh.dm.createSubDM(vol_field.field_id)
+    M = subdm.createMassMatrix(subdm)      # consistent P1 mass (FE-assembled, parallel-correct)
+    ones = M.createVecRight()
+    ones.set(1.0)
+    lumped = M.createVecLeft()
+    M.mult(ones, lumped)                   # M·1 = row sums = lumped diagonal
+    lvec = subdm.getLocalVec()
+    subdm.globalToLocal(lumped, lvec, addv=False)
+    out = np.asarray(lvec.array).copy()
+    subdm.restoreLocalVec(lvec)
+    for obj in (M, ones, lumped, indexset, subdm):
+        try:
+            obj.destroy()
+        except Exception:
+            pass
+    pos = out > 0.0
+    if not pos.all():
+        out[~pos] = out[pos].mean()
+    return out
 
 
 def _hessian_recovery_class():
@@ -1166,7 +1250,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
         phi = uw.discretisation.MeshVariable(
             f"winslow_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1322,7 +1406,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                 return Y
 
         if tris is not None and n_outer > 1:
-            patch = _patch_volumes(tris, old_coords, n_verts)
+            patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
             patch /= float(np.mean(patch))
         else:
             patch = np.ones(n_verts, dtype=np.double)
@@ -1575,7 +1659,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
         phi = uw.discretisation.MeshVariable(
             f"ot_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1670,7 +1754,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
         if tris is None:
             patch = np.ones(n_verts, dtype=np.double)
         else:
-            patch = _patch_volumes(tris, old_coords, n_verts)
+            patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
         # Normalise so the mean over the domain is the cell mean.
         patch_mean = float(np.mean(patch))
         if uw.mpi.size > 1:
@@ -1955,7 +2039,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
 
         X = mesh.CoordinateSystem.X
         # Projected ∇ρ — first derivative only (UW3-clean), the
