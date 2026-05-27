@@ -219,8 +219,12 @@ def _ot_adapt_step(
     ref_field_coords = np.asarray(field.coords).copy()
     mesh._deform_mesh(old_X)
     field.data[...] = old_data[field]
+    # global_evaluate (parallel-correct): the reference-mesh DOF coords can fall
+    # in another rank's subdomain, so the remap must resolve off-rank points. A
+    # local evaluate returns stale/garbage there -> growing field artefacts at
+    # the rank-partition seams.
     field_at_ref = np.asarray(
-        uw.function.evaluate(field.sym[0], ref_field_coords)).reshape(-1)
+        uw.function.global_evaluate(field.sym[0], ref_field_coords)).reshape(-1)
 
     # --- step 2: load the reference (clean) mesh with the remapped field -
     mesh._deform_mesh(ref_X)
@@ -250,7 +254,9 @@ def _ot_adapt_step(
         f.data[...] = old_data[f]
     remapped = {}
     for f in remap:
-        val = np.asarray(uw.function.evaluate(f.sym, new_coords[f]))
+        # global_evaluate (parallel-correct): adapted DOF coords may be off-rank
+        # (see step 1) — a local evaluate would leave partition-seam artefacts.
+        val = np.asarray(uw.function.global_evaluate(f.sym, new_coords[f]))
         remapped[f] = val.reshape(np.asarray(f.data).shape)
     mesh._deform_mesh(new_X)
     for f in remap:

@@ -178,6 +178,24 @@ entered it, others skipped). Fix:
 Verified live (np=4, 8 steps): step 2 → unanimous `adapting`, steps 4/6/8 →
 unanimous `skipping`, clean exit; the adapted mesh renders valid (no tangling).
 
+### Fourth change: field remap must use `global_evaluate` (parallel)
+After the mover moves nodes, the driving field is FE-remapped by evaluating the
+*old* field at the *new* DOF coordinates. This used the **local**
+`uw.function.evaluate` — but a DOF that moved near a rank-partition boundary
+lands in a **neighbour rank's** subdomain, where a local evaluate returns
+stale/garbage (it doesn't raise, so the bad value persists and convection
+amplifies it → a *growing T anomaly localised to the partition seams*). Fixed by
+using `uw.function.global_evaluate` (serial-identical drop-in, maxdiff 0.0; it
+gathers/resolves off-rank points across ranks):
+- core `meshing/_ot_adapt.py`: the reference-mesh remap and the adapted-position
+  remap (affects every `mesh.OT_adapt(..., fields_to_remap=...)` user);
+- the demonstrator harness's hand-rolled `T` remap.
+Quantitative check (T on r=0.55 ring, np=4, step 8): the fixed run is smoother at
+the seams (peak adjacent jump 0.0113 → 0.0091) and recovers the correct hotter
+boundary-layer T (0.896 → 0.913). NOTE: the co-located boundary **slivers** are a
+*separate* (lower-priority) issue — the anisotropic mover's slip handling at the
+partition seams — not the remap.
+
 ## Reproduction & tooling (all under `~/+Simulations/StagnantLid/`)
 
 - **Repros** (`parallel_corruption_repros/`): `test_ns_loop.py`

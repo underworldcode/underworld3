@@ -344,7 +344,10 @@ def _adapt_step():
     new_Tx = np.asarray(T.coords).copy()
     mesh._deform_mesh(old_X)
     T.data[...] = old_T
-    rT = np.asarray(uw.function.evaluate(
+    # global_evaluate: new (adapted) DOF coords may land in another rank's
+    # subdomain, so the remap must resolve off-rank points (local evaluate
+    # leaves stale T at the partition seams -> growing artefacts in parallel).
+    rT = np.asarray(uw.function.global_evaluate(
         T.sym[0], new_Tx)).reshape(-1)
     mesh._deform_mesh(new_X)
     T.data[:, 0] = rT
