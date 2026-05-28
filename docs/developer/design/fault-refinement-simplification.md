@@ -19,7 +19,7 @@ rho_F = uw.meshing.fault_comb_metric(mesh, faults, cell_size=dx, n_across=N)
 uw.meshing.smooth_mesh_interior(
     mesh, method="ma",
     metric=[(rho_T, 1.0), (rho_F, w_F)],        # composable list (max-on-excess)
-    boundary_slip=True,                          # generic topology slip
+    boundary_slip=True,                          # generic topology slip — required
     method_kwargs=dict(n_outer=1, n_picard=25))  # single-shot
 ```
 
@@ -27,6 +27,17 @@ One mover (single-shot Monge–Ampère), one metric form (scalar density), one
 composition operator (weighted max on the excess), one slip (topology-based
 vertex normals). Works in **2D and 3D**, on Cartesian boxes, annulus,
 sphere, polyhedra, curved surfaces.
+
+```{note}
+``boundary_slip=True`` is part of the recommended recipe, not optional. For
+any feature that **touches the boundary** (a thermal BL that runs full
+width, a fault that reaches the wall, …), pinning the boundary effectively
+wastes the budget at the edges: the refined band visibly fades as it
+approaches the wall. With the generic topology slip enabled, boundary face
+nodes slide along the face to cluster where the metric demands them, and
+the refinement runs uniformly to the wall (corners stay pinned, box
+shape exactly preserved). See ``fault_compose_demo2.py``.
+```
 
 ## Why each piece
 
