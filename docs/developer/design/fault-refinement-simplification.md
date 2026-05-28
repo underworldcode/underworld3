@@ -44,27 +44,28 @@ shape exactly preserved). See ``fault_compose_demo2.py``.
 ### Single-shot MA and what `n_outer` actually does
 
 `smooth_mesh_interior(method="ma", n_outer=1)` is the Caffarelli-clean
-Monge–Ampère map: one solve, untangled by construction, no compounding,
-nothing to tune. The metric is evaluated once on the undeformed mesh —
-Lagrangian (field-backed) and analytic metrics are equivalent and the
-convection question doesn't arise. **This is the recommended default.**
+Monge–Ampère map: one solve, untangled by construction, **composable**
+(see below — repeated calls compose correctly toward the equidistribution
+fixed point). For most metrics this is also the right default: one
+solve gives a clean band, and `n_outer=1` is what `fault_metric(...)`
+wraps.
 
-`n_outer>1` is **not** "compose maps until convergent" — it's a
-patch-volume-aware composition. Each outer iter computes a per-vertex
-patch volume from the *current deformed mesh*, divides into the metric,
-and re-evaluates: *"the mesh is already partly adapted; don't over-pull
-where the budget has already gone."* It's the principled Caffarelli
-composition and it's **more conservative** than naively re-running the
-mover. Concretely, on a comb metric: `n_outer=1` realises a far/band
-ratio of ~1.94×; `n_outer=2` reaches ~2.6× and plateaus there
-(patch-aware composition saturates quickly).
+`n_outer>1` performs `n_outer` outer Picard iterations *within a single
+`smooth_mesh_interior` call*, each recomputing the source density on
+the current deformed mesh. With the lumped-V projection fix (see the
+"Composable iteration" section below), `n_outer>1` is now equivalent
+to calling the mover `n_outer` times in sequence — both paths converge
+to the same equilibrium. The "patch-aware composition" language in
+the original design note was describing the *intent*; the original
+implementation didn't reliably deliver it because of the bug fixed in
+this update.
 
-If you want **sharper bands at any cost** (over-refining beyond the
-Caffarelli optimum), the way to do it is **call `smooth_mesh_interior`
-manually multiple times** — each call sees the deformed mesh as if it
-were uniform (`patch=ones` internally) and pulls more. That reaches
-~3.7× far/band ratio in 2–3 passes for the comb. It's not strictly
-"the optimum" but it's stable, robust, and uses no special features.
+**The honest update**: iterated calls now compose correctly, so the
+choice between "call `smooth_mesh_interior` once with `n_outer=k`"
+and "call it `k` times with `n_outer=1`" is a stylistic one — same
+trajectory, same equilibrium. Use whichever fits the surrounding
+code structure. The pre-placement recipe below uses repeated calls
+because it varies the *metric width* between calls.
 
 For composed metrics including a Lagrangian field (gradient(T), a
 `Surface.distance`-field comb): keep `n_outer=1` and don't iterate
@@ -162,6 +163,227 @@ deprecation once external users have migrated:
 The `fault_metric` facade keeps `method="anisotropic"` and `method="adapt"`
 (MMG) for the moment as documented alternatives — the recommended default
 is `method="ma"`.
+
+## Composable iteration: lumped V_T projection
+
+```{note}
+Update 2026-05-28 (late session). Replaces the earlier
+`_patch_volumes` source density in `_winslow_elliptic`. Makes
+repeated calls to `smooth_mesh_interior(method="ma", ...)`
+properly **composable**, which in turn unlocks the
+*pre-placement* recipe in the next section.
+```
+
+### The bug that wasn't documented
+
+`_winslow_elliptic` solves the convex-branch Picard for the
+Caffarelli-Brenier displacement potential. The right-hand side
+contains a **source density `V(x)`** representing the current mesh —
+in continuous form `V` would be `det(I + ∇²φ_current)`, i.e. the
+local Jacobian of the deformed mapping at every point. Per-vertex
+discretisation of `V` is what tells the solver "this region is
+already partially adapted, don't pull it further."
+
+The previous code did one of two things:
+
+```python
+if tris is not None and n_outer > 1:
+    patch = _patch_volumes(...)      # Σ_{T ∋ i} |T| / 3  per vertex
+    patch /= float(np.mean(patch))
+else:
+    patch = np.ones(n_verts)          # assume mesh is uniform
+```
+
+Both were wrong, in different ways:
+
+1. **`patch = ones` at `n_outer=1`** (the default) — assumed the input
+   mesh is uniform regardless of how it actually looked. Calling
+   `smooth_mesh_interior` a second time from a previously-adapted
+   mesh produced the same displacement that the first call would
+   have produced from cold, applied on top of the existing
+   deformation. Composition broke: every call started from scratch
+   conceptually, so iterated calls compounded biases instead of
+   correcting them. This is why the design note above had to
+   recommend `n_outer=1` "single-shot, don't compose."
+
+2. **`_patch_volumes` at `n_outer>1`** — returned `Σ_{T ∋ i} |T| / 3`,
+   which is the **lumped mass diagonal** `M^lumped_ii = ∫ ψ_i dx`,
+   an *integral* with units of area. The code then used it as a
+   *density*. On an unstructured Delaunay mesh of equal-area cells
+   `M^lumped_ii = d_i · |T_0| / 3` (proportional to vertex valence
+   `d_i = 5..7`), so the equation saw a ~30 % spurious source
+   non-uniformity from FE bookkeeping, not from any actual mesh
+   deformation. The conservative behaviour of `n_outer>1` under
+   the old code was the mover *trying to flatten that valence
+   noise* and giving up.
+
+### The fix
+
+`V(x)` is fundamentally a **cell** quantity: `V_T = |T|` in 2D,
+`|Tet|` in 3D. The Caffarelli equidistribution invariant is
+*cell-wise*: at equilibrium `ρ_T · |T| = const` over all cells.
+The FE-natural projection of this cell field into the P1
+`vol_field` storage that the solver expects is a **lumped L2
+projection**:
+
+$$V_i = \frac{\sum_{T \ni i} V_T\,|T| / k}
+            {\sum_{T \ni i} |T| / k}
+       = \frac{\sum_T |T|^2}{\sum_T |T|}$$
+
+(`k = 3` in 2D, `k = 4` in 3D — the per-vertex weight per incident
+cell). This is the *area-weighted average of incident cell
+volumes*, strictly local, no neighbour mixing, valence-independent
+on uniform meshes (`Σ|T|² / Σ|T| = |T_0|` exactly when all `|T|`
+are equal regardless of valence).
+
+It is implemented inline in `_winslow_elliptic` with two
+`np.add.at` accumulators (numerator and denominator) and one
+division.
+
+```{note}
+An intermediate attempt used the consistent-mass `uw.systems.Projection`
+to project `V_T → vol_field`. That introduces an intrinsic L2
+smoothing kernel of ~one element width. Cell-density signals
+narrower than the kernel get smoothed into a halo around refined
+bands, and the next solve reads the halo as "over-refined" and
+*undoes* the refinement — iteration becomes regressive. The
+lumped form has zero kernel scale and behaves correctly.
+```
+
+### What this changes for users
+
+The mover is now **composable**: each call to
+`smooth_mesh_interior(method="ma", ...)` produces a displacement
+*from the actual current mesh state* toward the target metric.
+Repeated calls iterate the same fixed point, with `|Δo|` decreasing
+monotonically. Single-shot remains the recommended **default**;
+iterated calls are now safe to use when more refinement is wanted
+than a single solve delivers, and — more importantly — when the
+*metric itself changes between calls*. That second case is the
+pre-placement recipe below.
+
+```{note}
+**TODO (parallel)**: the lumped projection accumulators are
+rank-local (`np.add.at`). At MPI partition boundaries, vertices
+owned by one rank under-count contributions from cells owned by
+neighbouring ranks. Same parallel deficit as the old
+`_patch_volumes` had. The fix is to assemble the two numerators
+into PETSc Vecs with `ADD_VALUES` so the assembly ghost reduction
+sums them correctly. Required before parallel use of the MA mover
+on adapted meshes.
+```
+
+## Pre-placement and redistribution recipe
+
+```{note}
+Recommended when single-shot MA leaves the band off-line — the
+classic case is two or more faults closer to each other than the
+band width can comfortably resolve from cold.
+```
+
+### Why single-shot is centroid-biased for close faults
+
+For two faults at half-separation `a` and a metric built as a
+**sum** of per-fault Gaussians,
+
+$$\rho(x) = 1 + A\,\sum_i \exp(-d_i(x)^2 / w^2)$$
+
+the two Gaussians overlap when `w > a√2`. Past that crossover the
+sum has a **single maximum at the midpoint** between the faults
+rather than two maxima on the faults. The mover faithfully
+equidistributes to whatever the metric's actual maximum is, and
+ends up clustering nodes at the centroid — not because of any
+mover deficiency, but because the metric construction *told it
+to*. With `a = 0.030`, `w_crit = 0.030√2 ≈ 0.042`; anything at
+or above the crossover puts the metric peak in the gap.
+
+Starting cold from a uniform mesh and applying any single-call
+narrow-`w` solve produces a converged equilibrium where `ρ · V`
+is balanced even though many refined cells sit in the gap and not
+on the lines — a *degenerate* equidistribution. With the mover
+now composable (above), iteration on a fixed metric stays at this
+equilibrium; the local minimum of the equidistribution functional
+is genuine.
+
+### The recipe — MAX, wide pre-place, narrow redistribute
+
+Use a **max** combination of per-fault Gaussians, not a sum:
+
+$$\rho(x) = 1 + A\,\max_i \exp(-d_i(x)^2 / w^2)
+         = 1 + A\,\exp(-d_{\min}(x)^2 / w^2)$$
+
+Pick the closer fault at every point. The metric is constant
+amplitude `A` on any fault, falls off independently to either
+side, and **no centroid pile**, however wide `w` is.
+
+Then a two-stage iterated call:
+
+```python
+# Stage 1 — wide pre-place (a few iters)
+for _ in range(n_wide):
+    rho = max_of_gaussians(mesh, faults, w=w_wide)
+    smooth_mesh_interior(mesh, method="ma", metric=rho,
+                         boundary_slip=True,
+                         method_kwargs=dict(n_outer=1, n_picard=25))
+
+# Stage 2 — narrow redistribute (more iters)
+for _ in range(n_narrow):
+    rho = max_of_gaussians(mesh, faults, w=w_narrow)
+    smooth_mesh_interior(mesh, method="ma", metric=rho,
+                         boundary_slip=True,
+                         method_kwargs=dict(n_outer=1, n_picard=25))
+```
+
+The wide stage pre-clusters cells *around the entire fault
+system* without piling them in any specific spot (the MAX
+amplitude is flat over the broad neighbourhood). The narrow stage
+inherits a mesh that *already has refined cells in the right
+neighbourhood* of every fault, and the equidistribution at the
+narrow width simply pulls those cells onto the lines.
+
+### The width-vs-separation knob
+
+`w_wide` is the single design knob and it scales with the **fault
+separation**, not with the mesh resolution:
+
+| `w_wide / a` (a = half-separation) | Behaviour |
+|---|---|
+| ≈ 1 (just the gap) | Mild improvement over cold-narrow; still some centroid bias |
+| **≈ 4 (≈ 2× full separation)** | **Sweet spot — bands land on lines to ≤ 1/10 cell** |
+| ≫ 4 (very wide) | Refinement too diffuse; pre-placement doesn't localize |
+
+Two-fault test case (gap `2a = 0.060`, target band `w_narrow = 0.015`,
+60×60 base mesh):
+
+| Schedule | `f0` offset | `f1` offset |
+|---|---|---|
+| Cold → `w=0.015` × 10 | −0.0109 | +0.0103 |
+| `w=0.060` × 2 → `w=0.015` × 8 (MAX) | −0.0040 | +0.0021 |
+| **`w=0.120` × 4 → `w=0.015` × 8 (MAX)** | **−0.0005** | **−0.0014** |
+| `w=0.200` × 4 → `w=0.015` × 8 (MAX) | −0.0069 | +0.0035 |
+
+`w_wide = 0.120` (`= 2 × 0.060`, i.e. `2 × full separation`) wins:
+both bands within `≤ 8 %` of one mesh cell of the actual lines.
+The recipe genuinely *places* nodes on the close-paired fault
+lines that cold-narrow iteration could not reach.
+
+### When this matters
+
+* Stationary fault-pair problems — geometry once, iterate to
+  equilibrium, use the resulting mesh as the substrate for the
+  rest of the simulation.
+* Moving-fault problems — the long-term aim. When the fault
+  positions evolve, redoing the schedule each adaptation step is
+  expensive. *Open question (next session)*: can the converged
+  equilibrium for time `t` serve as the wide-pre-placed state for
+  time `t + Δt`? The mover being composable suggests yes — the
+  narrow-stage iteration should be sufficient to track small
+  motion.
+
+* Faults farther apart than `w_wide` becomes irrelevant: single-shot
+  with `n_across = 1` (a single Gaussian per fault) is already
+  centred on the line. The pre-placement recipe is specifically
+  for the close-paired regime where overlap matters.
 
 ## Honest limits
 

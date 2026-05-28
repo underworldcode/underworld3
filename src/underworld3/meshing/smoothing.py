@@ -1255,9 +1255,55 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         is_pinned, _project = _build_slip_projector(
             mesh, old_coords, is_bnd, n_verts, _slip_on)
 
-        if tris is not None and n_outer > 1:
-            patch = _patch_volumes(tris, old_coords, n_verts)
-            patch /= float(np.mean(patch))
+        # Source-side density V at vertex i: LUMPED L2 projection of
+        # cell-wise V_T = |T| (or |Tet|) — area-weighted average of
+        # incident cell volumes,
+        #     v_i = (Σ_{T ∋ i} |T|²/k) / (Σ_{T ∋ i} |T|/k)
+        # where k is the cell corner count (3 in 2D, 4 in 3D).
+        # Strictly local, NO neighbour smoothing. Replaces both the
+        # original ``_patch_volumes`` (which was the lumped-mass
+        # diagonal — an integral, not a density — vertex-valence
+        # contaminated, and dimensionally inconsistent) and an earlier
+        # consistent-L2 attempt (via ``uw.systems.Projection``) that
+        # ran iteration-unstable: the consistent L2 kernel has an
+        # intrinsic length ≈ one element and smooths cell-density
+        # signals narrower than that into a halo around refined
+        # bands; the next solve reads the halo as "over-refined" and
+        # *undoes* the refinement. The lumped form has zero kernel
+        # scale and is valence-independent on uniform meshes
+        # (Σ|T|² / Σ|T| = |T_0| for equal-area cells regardless of
+        # valence).
+        #
+        # TODO(parallel): the np.add.at accumulation is rank-local,
+        # so at MPI partition boundaries each rank's `num`/`den`
+        # under-counts the off-rank incident cells. The right fix
+        # is to assemble num/den into PETSc Vecs with ADD_VALUES so
+        # the assembly reduction handles ghost summation. Serial
+        # equivalent to the present code; deferred to a follow-up.
+        if tris is not None:
+            cell_vols = np.abs(_signed_areas(old_coords, tris))
+            elements = tris
+        elif tets is not None:
+            cell_vols = np.abs(_signed_volumes(old_coords, tets))
+            elements = tets
+        else:
+            cell_vols = None
+            elements = None
+        if cell_vols is not None:
+            ncorner = elements.shape[1]
+            num = np.zeros(n_verts, dtype=np.double)
+            den = np.zeros(n_verts, dtype=np.double)
+            wnum = (cell_vols * cell_vols) / float(ncorner)
+            wden = cell_vols / float(ncorner)
+            for k in range(ncorner):
+                np.add.at(num, elements[:, k], wnum)
+                np.add.at(den, elements[:, k], wden)
+            patch = num / np.maximum(den, 1e-30)
+            patch_mean = float(np.mean(patch))
+            if uw.mpi.size > 1:
+                patch_mean = uw.mpi.comm.allreduce(
+                    patch_mean) / uw.mpi.size
+            patch /= max(patch_mean, 1e-30)
         else:
             patch = np.ones(n_verts, dtype=np.double)
         _va = vol_field.array
