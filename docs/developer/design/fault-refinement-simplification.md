@@ -41,17 +41,34 @@ shape exactly preserved). See ``fault_compose_demo2.py``.
 
 ## Why each piece
 
-### Single-shot MA
+### Single-shot MA (and when to use `n_outer>1`)
 
 `smooth_mesh_interior(method="ma", n_outer=1)` is the Caffarelli-clean
 Monge–Ampère map: one solve, untangled by construction, no
-outer-iteration compounding, nothing to tune. **No metric-rebuild
-requirement** at `n_outer=1` — the target metric is evaluated once, on the
-undeformed mesh, so a precomputed distance *field* is bit-equivalent to an
-analytic one and the Eulerian/convection question never arises. (At
-`n_outer>1` the mover re-queries the metric on the deformed mesh, so a
-frozen field would convect — use an analytic metric there, or stick with
-single-shot.)
+outer-iteration compounding, nothing to tune. The metric is evaluated
+once on the undeformed mesh, so Lagrangian (field-backed) and analytic
+metrics are equivalent and the convection question doesn't arise.
+
+`n_outer>1` composes maps for sharper, more aggressive refinement, but
+only when **every metric in the list is Eulerian** (purely sympy in
+`mesh.CoordinateSystem.X`). The mover re-queries each metric on the
+deformed mesh between outer iters; a field-backed metric (the
+gradient-of-a-MeshVariable metric for thermal BLs, or a
+`Surface.distance`-field comb) has Lagrangian values that ride with the
+mesh — the feature itself convects, the mover chases a moving target,
+and the realised bands smear instead of tightening. Practical rule:
+
+| metric | safe at `n_outer>1` |
+|---|---|
+| analytic comb (`fault_comb_metric` from segments) | ✅ Eulerian |
+| anisotropic supplied-`D` tensor | ✅ Eulerian |
+| comb on a `Surface.distance` field | ❌ field convects |
+| `metric_density_from_gradient` on a MeshVariable T | ❌ T convects |
+
+So for **fault-only** workflows the recommended setting is `n_outer=2,
+target_side_rho=True` (sharper, more on-line, validated). For **composed
+workflows including a gradient-T metric**, keep `n_outer=1`
+(`target_side_rho=True` is still safe and gives ~10–15% bulk coarsening).
 
 ### Scalar comb metric
 
