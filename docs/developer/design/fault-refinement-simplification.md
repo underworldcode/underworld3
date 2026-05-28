@@ -367,6 +367,69 @@ both bands within `≤ 8 %` of one mesh cell of the actual lines.
 The recipe genuinely *places* nodes on the close-paired fault
 lines that cold-narrow iteration could not reach.
 
+### Convergence diagnostic and why `n_picard=25` is the right default
+
+The equation-natural residual is the **coefficient of variation of
+$\rho \cdot V$ over cells**:
+
+$$\mathrm{cv}(\rho V) = \frac{\mathrm{std}(\rho_T \cdot |T|)}
+                          {\mathrm{mean}(\rho_T \cdot |T|)}$$
+
+At equilibrium $\rho \cdot V = K$ constant, so $\mathrm{cv}(\rho V) = 0$.
+On a discrete mesh against a continuous metric, the minimum achievable
+$\mathrm{cv}$ is non-zero — but the *relative* value across iterations
+and schedules cleanly distinguishes which equilibrium the mover settled
+into. For the two-fault recipe at gap=0.060, the centroid-local-minimum
+sits at $\mathrm{cv} \approx 1.07$, the bands-on-lines equilibrium at
+$\mathrm{cv} \approx 0.79$.
+
+```{important}
+Crucial finding: **the inner Picard iteration count is not a "more is
+better" knob**. At `n_picard=50` and `n_picard=200` the trajectory
+becomes *bit-identical* (inner Picard is fully converged at 50) — but
+the recipe **gets stuck in the centroid local minimum and never
+escapes**. At `n_picard=25` the inner Picard is mildly under-converged,
+and that residual non-equilibrium acts as **numerical annealing**: it
+occasionally kicks the system out of shallow local minima into deeper
+ones. The bands-on-lines result we report for the two-fault gap=0.060
+case is *only* reachable with `n_picard=25`; tightening to 50+ locks
+the centroid-bias floor.
+
+This is counter to the usual "tighter inner solve is better" intuition
+and is the reason `n_picard=25` was chosen as the default in
+`smooth_mesh_interior(method="ma", ...)`. **Don't increase it for
+"convergence."**
+```
+
+The geometric `|Δo|` we used in the diagnostic plots is a poor stopping
+signal because it reads ≈ 0 immediately when the mover hits the
+*centroid* local minimum (locally converged, just to the wrong place).
+`cv(ρV)` reads ≈ 1.07 there and only drops to ≈ 0.79 when the recipe
+escapes — so it's a much better measure of actual equidistribution
+quality.
+
+A practical stopping rule:
+
+```python
+prev_cv = float("inf")
+plateau = 0
+for outer_iter in range(MAX_OUTER):
+    smooth_mesh_interior(mesh, method="ma", metric=rho_target,
+                         method_kwargs=dict(n_outer=1, n_picard=25))
+    cv = cell_cv_of_rho_V(mesh, rho_target)
+    if abs(prev_cv - cv) < 0.001 * cv:
+        plateau += 1
+        if plateau >= 3 and outer_iter > MIN_OUTER:
+            break
+    else:
+        plateau = 0
+    prev_cv = cv
+```
+
+`MIN_OUTER` should be at least the wide-stage iteration count plus a
+few — the system has to be given a chance to escape the wide-stage
+local minimum.
+
 ### When this matters
 
 * Stationary fault-pair problems — geometry once, iterate to
