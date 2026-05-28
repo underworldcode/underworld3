@@ -200,6 +200,69 @@ def _build_slip_projector(mesh, old_coords, is_bnd, n_verts, slip_on):
     return is_pinned, _project
 
 
+def _build_box_slip_projector(mesh, ref_coords, is_bnd, n_verts, cdim,
+                              tol=None):
+    """Axis-aligned **box-face** boundary slip (the Cartesian counterpart to
+    the radial ring/normal slip).
+
+    The projected boundary normal (``Gamma_P1``) is degenerate at the
+    vertices of a Cartesian box (opposing face normals cancel; raw
+    ``Gamma_N`` is even NaN there), so the projected-normal slip of
+    :func:`_build_slip_projector` cannot be used. Instead detect the
+    axis-aligned bounding-box faces geometrically from ``ref_coords`` (the
+    *undeformed* reference coordinates): a boundary node on exactly one face
+    slides **along** that face (its perpendicular coordinate is snapped back
+    to the face plane each step), while a node on two or more faces (a box
+    edge / corner) is pinned. This lets a fault that reaches the domain
+    boundary refine across it on both ends, instead of being blocked by a
+    fully-pinned boundary.
+
+    Unlike the projected-normal path this creates **no** MeshVariable, so it
+    is free of the mid-mover DM-stale footgun. If the domain is not an
+    axis-aligned box (some boundary node lies off every extent plane) the
+    boundary is fully pinned (safe fallback).
+
+    Returns ``(is_pinned, project_fn)``.
+    """
+    bidx = np.nonzero(is_bnd)[0]
+    if bidx.size == 0:
+        return is_bnd.copy(), (lambda Y: Y)
+    bcoords = np.asarray(ref_coords)[bidx]
+    lo = bcoords.min(axis=0)
+    hi = bcoords.max(axis=0)
+    if tol is None:
+        ext = float(np.max(hi - lo)) if (hi - lo).size else 0.0
+        tol = 1.0e-6 * ext if ext > 0.0 else 1.0e-9
+    # on[i, j, side] : boundary node i sits on the lo/hi extent plane of dim j
+    on = np.zeros((bidx.size, cdim, 2), dtype=bool)
+    for j in range(cdim):
+        on[:, j, 0] = np.abs(bcoords[:, j] - lo[j]) < tol
+        on[:, j, 1] = np.abs(bcoords[:, j] - hi[j]) < tol
+    nfaces = on.reshape(bidx.size, -1).sum(axis=1)
+    if not bool((nfaces >= 1).all()):
+        # not an axis-aligned box — pin everything (safe)
+        return is_bnd.copy(), (lambda Y: Y)
+
+    is_pinned = np.zeros(n_verts, dtype=bool)
+    pin_local = nfaces >= 2                     # edges / corners
+    is_pinned[bidx[pin_local]] = True
+    slip_local = ~pin_local
+    slip_b = bidx[slip_local]
+    on_slip = on[slip_local]                    # (n_slip, cdim, 2)
+    # the single fixed dimension and its plane value for each slip node
+    fixed_dim = np.argmax(on_slip.any(axis=2), axis=1)      # (n_slip,)
+    plane_val = np.where(on_slip[np.arange(slip_b.size), fixed_dim, 0],
+                         lo[fixed_dim], hi[fixed_dim])
+
+    def _project(Y):
+        # snap each face node's perpendicular coordinate back to its plane;
+        # the tangential coordinate(s) move freely.
+        Y[slip_b, fixed_dim] = plane_val
+        return Y
+
+    return is_pinned, _project
+
+
 def _ot_adapt_step(
     mesh,
     field,
@@ -208,6 +271,7 @@ def _ot_adapt_step(
     coarsening="auto",
     grad_smoothing_length="auto",
     metric_choice="front-following",
+    mover="ot",
     fields_to_remap=None,
     fields_to_zero=None,
     skip_threshold=None,
@@ -305,11 +369,21 @@ def _ot_adapt_step(
         metric_choice=metric_choice,
         gradient_smoothing_length=grad_smoothing_length,
         degree=1, name="ot_adapt")
-    uw.meshing.smooth_mesh_interior(
-        mesh, metric=rho, method="ot", boundary_slip=True,
-        method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
-                           step_frac=_OT_STEP_FRAC),
-        verbose=verbose)
+    if mover in ("ma", "monge-ampere", "monge_ampere"):
+        # Elliptic Monge–Ampère: one Caffarelli-clean convex-potential map
+        # from the reset canvas (untangled by construction; no polish).
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=rho, method="ma", boundary_slip=True,
+            method_kwargs=dict(n_outer=1, n_picard=25), verbose=verbose)
+    elif mover in ("ot", "equidistribute"):
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=rho, method="ot", boundary_slip=True,
+            method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
+                               step_frac=_OT_STEP_FRAC),
+            verbose=verbose)
+    else:
+        raise ValueError(
+            f"OT_adapt mover must be 'ot' or 'ma', got {mover!r}")
     new_X = np.asarray(mesh.X.coords).copy()
 
     # --- step 4: FE-remap all fields from old_X onto the adapted mesh ----

@@ -43,6 +43,10 @@ from .surfaces import (
     Surface,
     SurfaceVariable,
     SurfaceCollection,
+    fault_metric_tensor,
+    fault_comb_metric,
+    fault_metric,
+    compose_metrics,
 )
 
 from .faults import (
@@ -87,6 +91,10 @@ __all__ = [
     "Surface",
     "SurfaceVariable",
     "SurfaceCollection",
+    "fault_metric_tensor",
+    "fault_comb_metric",
+    "fault_metric",
+    "compose_metrics",
     # Backward compatibility aliases
     "FaultSurface",
     "FaultCollection",
