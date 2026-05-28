@@ -3533,7 +3533,8 @@ class Mesh(Stateful, uw_object):
 
         return
 
-    def _test_if_points_in_cells_internal(self, points, cells, tol=0.0):
+    def _test_if_points_in_cells_internal(self, points, cells,
+                                          on_boundary=False, tol=0.0):
         """
         Determine if the given points lie in the suggested cells.
         Uses a mesh skeletonization array to determine whether the point is
@@ -3547,17 +3548,31 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted)
         cells : array-like
             Cell indices to test
-        tol : float
-            Face tolerance. The per-face test is ``|O-p|^2 - |I-p|^2 > 0`` (p on
-            the inner side of the bisector between the outer/inner control
-            points O/I, i.e. inside w.r.t. that face). With ``tol == 0`` this is
-            the exact (strict) test, which rejects points sitting exactly on a
-            face/edge (the value is 0, not > 0). With ``tol > 0`` the test is
-            relaxed to ``> -tol * |O-I|^2`` — accepting points within ~``tol`` of
-            the face (relative to the control-point separation). This admits
-            genuinely-on-face points while still rejecting points that lie
-            inside a *different* cell (whose value is strongly negative), so it
-            does not falsely claim points that another rank owns.
+        on_boundary : bool, default False
+            If True, points exactly on a cell face count as inside that
+            cell (the natural FE-evaluation semantics — the basis at a
+            shared face/vertex is consistent across adjacent cells). The
+            test admits diff ``>= -1e-12`` (well below the 1e-3
+            control-point offset, well above 64-bit float roundoff).
+            If False (this branch's default — kept strict for backward
+            compatibility with the parallel locator's tol-driven test),
+            a point exactly on a face is reported as NOT inside. PR #207
+            (bugfix/in-cell-test-loose-semantics) flips this default to
+            True; both PRs use the unified signature so they merge
+            cleanly.
+        tol : float, default 0.0
+            Face-RELATIVE tolerance. The per-face test is
+            ``|O-p|^2 - |I-p|^2 > 0`` (p on the inner side of the
+            bisector between the outer/inner control points O/I, i.e.
+            inside w.r.t. that face). With ``tol > 0`` the test is
+            relaxed to ``> -tol * |O-I|^2`` — accepting points within
+            ~``tol`` of the face (relative to the control-point
+            separation). Takes precedence over ``on_boundary`` when
+            > 0. The parallel evaluation locator
+            (``Mesh._robust_owning_cells``) calls with ``tol=1e-2`` to
+            admit on-face / partition-seam node queries at a
+            mesh-spacing-relative tolerance (wider than
+            ``on_boundary=True``'s absolute -1e-12 floor).
         """
         # Internal version - points assumed to already be in model units
         self._mark_faces_inside_and_out()
@@ -3568,21 +3583,37 @@ class Mesh(Stateful, uw_object):
         cStart, cEnd = self.dm.getHeightStratum(0)
         num_cell_faces = self.dm.getConeSize(cStart)
 
-        inside = numpy.ones_like(cells, dtype=bool)
         insiders = numpy.ndarray(shape=(cells.shape[0], num_cell_faces), dtype=bool)
 
-        for f in range(num_cell_faces):
-            control_points_o = self.faces_outer_control_points[f, cells]
-            control_points_i = self.faces_inner_control_points[f, cells]
-            value = (
-                ((control_points_o - points) ** 2).sum(axis=1)
-                - ((control_points_i - points) ** 2).sum(axis=1)
-            )
-            if tol > 0.0:
+        if tol > 0.0:
+            # Face-relative tolerance branch (parallel evaluation
+            # locator). Takes precedence over on_boundary.
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                value = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                )
                 sep2 = ((control_points_o - control_points_i) ** 2).sum(axis=1)
                 insiders[:, f] = value > -tol * sep2
-            else:
-                insiders[:, f] = value > 0
+        elif on_boundary:
+            _face_tol = -1e-12
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                insiders[:, f] = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                ) >= _face_tol
+        else:
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                insiders[:, f] = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                ) > 0
 
         return numpy.all(insiders, axis=1)
 
@@ -3802,7 +3833,12 @@ class Mesh(Stateful, uw_object):
             # CRITICAL: Must return 1D array, not 2D, for Cython buffer compatibility
             return numpy.array([], dtype=numpy.int64)
 
-    def _get_closest_local_cells_internal(self, coords: numpy.ndarray, tol: float = 0.0) -> numpy.ndarray:
+    def _get_closest_local_cells_internal(
+        self,
+        coords: numpy.ndarray,
+        on_boundary: bool = False,
+        tol: float = 0.0,
+    ) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
@@ -3810,12 +3846,14 @@ class Mesh(Stateful, uw_object):
         is not guaranteed. Also compares the distance from the cell to the
         point - if this is larger than the "cell size" then returns -1
 
-        ``tol`` is forwarded to the in-cell containment test. With ``tol == 0``
-        the test is strict (a point exactly on a face/edge returns -1). A small
-        ``tol > 0`` admits genuinely-on-face points (e.g. mesh-node query
-        coordinates that sit on a cell boundary) while still rejecting points
-        that lie inside a different cell — so a rank does not claim a point that
-        another rank owns.
+        ``on_boundary`` and ``tol`` are forwarded to the in-cell
+        containment test (see ``_test_if_points_in_cells_internal``).
+        Default ``(on_boundary=False, tol=0.0)`` keeps the strict test
+        (a point exactly on a face/edge returns -1) — bit-identical to
+        the pre-PR-#207 behaviour. ``on_boundary=True`` admits on-face
+        points at an absolute -1e-12 floor (matches PR #207). ``tol > 0``
+        admits on-face points at a face-relative tolerance, taking
+        precedence over ``on_boundary``.
 
         Parameters:
         -----------
@@ -3854,7 +3892,8 @@ class Mesh(Stateful, uw_object):
         cells = self._indexMap[closest_points]
         cStart, cEnd = self.dm.getHeightStratum(0)
 
-        inside = self._test_if_points_in_cells_internal(coords, cells, tol=tol)
+        inside = self._test_if_points_in_cells_internal(
+            coords, cells, on_boundary=on_boundary, tol=tol)
         cells[~inside] = -1
         lost_points = np.where(inside == False)[0]
 
@@ -3873,7 +3912,8 @@ class Mesh(Stateful, uw_object):
         for i in range(0, num_testable_neighbours):
 
             inside = self._test_if_points_in_cells_internal(
-                coords[lost_points], closest_centroids[:, i], tol=tol
+                coords[lost_points], closest_centroids[:, i],
+                on_boundary=on_boundary, tol=tol,
             )
             cells[lost_points[inside]] = closest_centroids[inside, i]
 
@@ -3882,7 +3922,8 @@ class Mesh(Stateful, uw_object):
 
         return cells
 
-    def test_if_points_in_cells(self, points, cells):
+    def test_if_points_in_cells(self, points, cells,
+                                on_boundary=False, tol=0.0):
         """
         Determine if the given points lie in the suggested cells.
         Uses a mesh skeletonization array to determine whether the point is
@@ -3896,6 +3937,14 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted)
         cells : array-like
             Cell indices to test
+        on_boundary : bool, default False
+            See ``_test_if_points_in_cells_internal``. Default False
+            keeps this branch's strict-inside behaviour; PR #207
+            flips its public default to True for FE-evaluation
+            semantics.
+        tol : float, default 0.0
+            Face-relative tolerance; takes precedence over
+            ``on_boundary`` when > 0.
 
         Returns
         -------
@@ -3915,9 +3964,16 @@ class Mesh(Stateful, uw_object):
             model_points = model_quantity
 
         # Call internal implementation
-        return self._test_if_points_in_cells_internal(model_points, cells)
+        return self._test_if_points_in_cells_internal(
+            model_points, cells, on_boundary=on_boundary, tol=tol,
+        )
 
-    def get_closest_local_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def get_closest_local_cells(
+        self,
+        coords: numpy.ndarray,
+        on_boundary: bool = False,
+        tol: float = 0.0,
+    ) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
@@ -3952,7 +4008,9 @@ class Mesh(Stateful, uw_object):
             model_coords = model_quantity
 
         # Call internal implementation
-        return self._get_closest_local_cells_internal(model_coords)
+        return self._get_closest_local_cells_internal(
+            model_coords, on_boundary=on_boundary, tol=tol,
+        )
 
     # Face tolerance for the parallel evaluation locator (relative to the
     # control-point separation). Tight: it admits points genuinely on a
