@@ -23,14 +23,18 @@ Composition *within* an adapt is fine. See
 ``docs/developer/design/ot-adapt-api-proposal.md`` and the
 ``project_ot_reset_validated`` memory note.
 
-Boundary slip uses the mesh's **projected boundary normals**
-(``mesh.Gamma_P1`` / ``mesh._update_projected_normals``) — the symbolic
-``mesh.Gamma`` projected to a P1 vector field and normalised. This is the
-general, free-surface-ready normal source: it is re-projected on demand here
-because the projected field goes stale every time the mesh deforms. No
-per-mesh-class normal code is used. Nodes whose projected normal is
-degenerate (box corners, or an occasional unlocatable vertex) are pinned
-rather than slipped.
+Boundary slip uses **topology-based outward vertex normals**
+(:func:`_boundary_vertex_normals`) — the geometric face normals of the
+boundary facets incident to each vertex, area-weighted averaged. This is
+truly generic: works on any 2D/3D simplicial mesh (Cartesian box, annulus,
+sphere, polyhedron, curved surface) because it depends only on the cell
+coordinates and connectivity, not on a symbolic normal field. (The old
+``mesh.Gamma_P1`` path evaluated PETSc's quadrature-point ``petsc_n``
+symbol at *vertices* — undefined off boundary quadrature, which is why it
+gave garbage normals on Cartesian boxes.) Face vertices slide tangentially;
+corners / edges (where incident facet normals disagree by more than
+~15°) are pinned. For radial coordinate systems a snap-back to fixed
+``|r|`` is layered on top so curved boundaries stay on the surface.
 """
 
 import numpy as np
@@ -97,34 +101,143 @@ def _boundary_centre(mesh, boundary_coords: np.ndarray) -> np.ndarray:
     return s / max(n, 1)
 
 
-def _slip_normals(mesh, boundary_coords: np.ndarray):
-    """Unit outward normals at ``boundary_coords`` from the projected
-    boundary-normal field.
+def _boundary_facets(mesh, cdim):
+    """Boundary facets + opposite cell-vertex, found from the cell topology.
 
-    Re-projects ``mesh._projected_normals`` (``mesh.Gamma_P1``) first so the
-    normals reflect the mesh's *current* coordinates — the projected field is
-    stale after any deform. Returns ``(normals, valid)`` where ``normals`` is
-    ``(k, cdim)`` and ``valid`` is a boolean mask; ``valid`` is ``False`` for
-    nodes with a degenerate (zero / non-finite) normal (e.g. box corners
-    where opposing face normals cancel, or an occasional unlocatable vertex).
-    Such nodes should be pinned, not slipped.
+    For each cell, every facet (edge in 2D, triangle in 3D) is a candidate
+    boundary facet; one that occurs in **exactly one** cell is on the
+    boundary. Returns ``(facets, opp)`` where ``facets`` is ``(n_bnd, k)``
+    (``k=2`` for 2D edges, ``k=3`` for 3D triangles) and ``opp`` is the
+    cell vertex opposite each facet — used to orient the facet normal
+    outward. Returns ``(None, None)`` for non-simplicial meshes.
+    """
+    from underworld3.meshing.smoothing import _tri_cells, _tet_cells
+    if cdim == 2:
+        cells = _tri_cells(mesh.dm)
+        if cells is None:
+            return None, None
+        rows = []
+        for k in range(3):
+            v0 = cells[:, k]; v1 = cells[:, (k + 1) % 3]
+            vopp = cells[:, (k + 2) % 3]
+            vmin = np.minimum(v0, v1); vmax = np.maximum(v0, v1)
+            rows.append(np.column_stack([vmin, vmax, vopp]))
+        e = np.vstack(rows)
+        idx = np.lexsort((e[:, 1], e[:, 0]))
+        e = e[idx]
+        same_prev = np.zeros(len(e), dtype=bool)
+        same_prev[1:] = ((e[1:, 0] == e[:-1, 0])
+                         & (e[1:, 1] == e[:-1, 1]))
+        same_next = np.zeros(len(e), dtype=bool)
+        same_next[:-1] = same_prev[1:]
+        bnd_mask = (~same_prev) & (~same_next)
+        bnd = e[bnd_mask]
+        return bnd[:, :2], bnd[:, 2]
+    if cdim == 3:
+        cells = _tet_cells(mesh.dm)
+        if cells is None:
+            return None, None
+        rows = []
+        for k in range(4):
+            others = [(k + 1) % 4, (k + 2) % 4, (k + 3) % 4]
+            tri = np.sort(np.column_stack(
+                [cells[:, others[0]], cells[:, others[1]],
+                 cells[:, others[2]]]), axis=1)
+            rows.append(np.column_stack([tri, cells[:, k]]))
+        f = np.vstack(rows)
+        idx = np.lexsort((f[:, 2], f[:, 1], f[:, 0]))
+        f = f[idx]
+        same_prev = np.zeros(len(f), dtype=bool)
+        same_prev[1:] = ((f[1:, 0] == f[:-1, 0])
+                         & (f[1:, 1] == f[:-1, 1])
+                         & (f[1:, 2] == f[:-1, 2]))
+        same_next = np.zeros(len(f), dtype=bool)
+        same_next[:-1] = same_prev[1:]
+        bnd_mask = (~same_prev) & (~same_next)
+        bnd = f[bnd_mask]
+        return bnd[:, :3], bnd[:, 3]
+    return None, None
+
+
+def _boundary_vertex_normals(mesh, parallel_tol_deg=15.0):
+    """Topology-based outward unit normal at each boundary vertex.
+
+    The generic alternative to ``mesh.Gamma_P1`` — works on any 2D/3D
+    simplicial mesh (Cartesian box, annulus, sphere, polyhedron, curved
+    surface), because the boundary facet normals are computed
+    **geometrically** from the cell coordinates (not from the symbolic
+    PETSc face-normal ``petsc_n``, which is only defined at boundary
+    integration points and gives garbage when evaluated at vertices —
+    why ``Gamma_P1`` is unreliable on a Cartesian box).
+
+    For each boundary vertex, the per-facet outward normals are
+    **area-weighted averaged**, then we classify by how strongly the
+    incident normals agree:
+
+    * **face slip** (``is_face_slip=True``): all incident-facet normals lie
+      within ``parallel_tol_deg`` of the average → the vertex sits on one
+      smooth face (or a single tangent plane). Tangential slide is well-
+      defined; the projector removes the displacement's component along
+      ``normal``.
+    * **pin** (``is_face_slip=False``): the incident normals disagree
+      (corner, edge between two faces in 3D, …). The simple-and-safe
+      treatment is to pin these.
+
+    Returns ``(normals, is_face_slip)`` of shape ``(n_verts, cdim)`` and
+    ``(n_verts,)``; non-boundary vertices have zero normal and False.
     """
     cdim = mesh.cdim
-    n = np.zeros((boundary_coords.shape[0], cdim))
-    try:
-        mesh._update_projected_normals()
-        n = np.asarray(
-            uw.function.evaluate(mesh.Gamma_P1, boundary_coords)
-        ).reshape(-1, cdim)
-    except Exception:
-        # Projection unavailable / degenerate on this mesh — fall back to
-        # all-pinned boundaries (valid stays all-False below).
-        n = np.zeros((boundary_coords.shape[0], cdim))
-    mag = np.linalg.norm(n, axis=1)
-    valid = np.isfinite(mag) & (mag > 0.5)
-    out = np.zeros_like(n)
-    out[valid] = n[valid] / mag[valid, None]
-    return out, valid
+    facets, opp = _boundary_facets(mesh, cdim)
+    coords = np.asarray(mesh.X.coords)
+    n_verts = coords.shape[0]
+    if facets is None or len(facets) == 0:
+        return (np.zeros((n_verts, cdim)),
+                np.zeros(n_verts, dtype=bool))
+
+    if cdim == 2:
+        p0 = coords[facets[:, 0]]; p1 = coords[facets[:, 1]]
+        t = p1 - p0; tlen = np.linalg.norm(t, axis=1)
+        t = t / np.where(tlen > 1.0e-30, tlen, 1.0)[:, None]
+        ncand = np.stack([-t[:, 1], t[:, 0]], axis=1)
+        mid = 0.5 * (p0 + p1)
+        out = mid - coords[opp]
+        sgn = np.sign(np.einsum("ij,ij->i", out, ncand))
+        sgn = np.where(sgn == 0, 1.0, sgn)
+        fnorm = ncand * sgn[:, None]
+        farea = tlen                                       # edge length
+    else:
+        p0 = coords[facets[:, 0]]; p1 = coords[facets[:, 1]]
+        p2 = coords[facets[:, 2]]
+        cross = np.cross(p1 - p0, p2 - p0)
+        clen = np.linalg.norm(cross, axis=1)
+        ncand = cross / np.where(clen > 1.0e-30, clen, 1.0)[:, None]
+        centr = (p0 + p1 + p2) / 3.0
+        out = centr - coords[opp]
+        sgn = np.sign(np.einsum("ij,ij->i", out, ncand))
+        sgn = np.where(sgn == 0, 1.0, sgn)
+        fnorm = ncand * sgn[:, None]
+        farea = 0.5 * clen                                 # triangle area
+
+    sum_n = np.zeros((n_verts, cdim))
+    for col in range(facets.shape[1]):
+        np.add.at(sum_n, facets[:, col], fnorm * farea[:, None])
+    nmag = np.linalg.norm(sum_n, axis=1)
+    on = nmag > 1.0e-30
+    avg = np.zeros_like(sum_n)
+    avg[on] = sum_n[on] / nmag[on, None]
+
+    # classify: a boundary vertex is "face-slip" iff every incident facet
+    # normal is within `parallel_tol_deg` of the average — i.e. it sits on
+    # one smooth face.
+    cos_tol = float(np.cos(np.radians(parallel_tol_deg)))
+    bad_count = np.zeros(n_verts, dtype=int)
+    for col in range(facets.shape[1]):
+        vi = facets[:, col]
+        cos_a = np.einsum("ij,ij->i", fnorm, avg[vi])
+        bad = cos_a < cos_tol
+        np.add.at(bad_count, vi[bad], 1)
+    is_face_slip = on & (bad_count == 0)
+    return avg, is_face_slip
 
 
 def _resolve_slip(mesh, boundary_slip):
@@ -145,13 +258,9 @@ def _resolve_slip(mesh, boundary_slip):
             "ring", "box", "axes", "axis", "true", "on", "1")
     else:
         req = bool(boundary_slip)
-    slip_on = req and _is_radial_coords(mesh)
-    if slip_on:
-        try:
-            mesh._update_projected_normals()
-        except Exception:
-            slip_on = False
-    return slip_on
+    # Generic topology-based slip works on any 2D/3D simplicial mesh —
+    # Cartesian boxes, annulus, sphere, polyhedra. No radial gate.
+    return req
 
 
 def _build_slip_projector(mesh, old_coords, is_bnd, n_verts, slip_on):
@@ -171,17 +280,25 @@ def _build_slip_projector(mesh, old_coords, is_bnd, n_verts, slip_on):
             return Y
         return is_bnd.copy(), _project
 
-    bidx = np.nonzero(is_bnd)[0]
-    bcoords = old_coords[bidx]
-    n_hat, valid = _slip_normals(mesh, bcoords)
-    slip_b = bidx[valid]
-    is_pinned = np.zeros(n_verts, dtype=bool)
-    is_pinned[bidx[~valid]] = True            # degenerate-normal nodes pinned
-    n_slip = n_hat[valid]
+    # Topology-based outward vertex normals — generic across geometries
+    # (Cartesian boxes, annulus, sphere, polyhedra, curved surfaces).
+    # Face-slip vertices get a tangential slide; corners/edges (where
+    # incident facet normals disagree) are pinned.
+    avg_n, is_face_slip = _boundary_vertex_normals(mesh)
+    slip_mask = is_bnd & is_face_slip
+    is_pinned = is_bnd & ~slip_mask              # everything on the boundary
+                                                  # that isn't face-slip
+    slip_b = np.nonzero(slip_mask)[0]
+    if slip_b.size == 0:
+        def _project(Y):
+            return Y
+        return is_pinned, _project
+    n_slip = avg_n[slip_b]
     old_slip = old_coords[slip_b]
     radial = _is_radial_coords(mesh)
     if radial:
-        centre = _boundary_centre(mesh, bcoords)
+        bidx = np.nonzero(is_bnd)[0]
+        centre = _boundary_centre(mesh, old_coords[bidx])
         r_target = np.linalg.norm(old_slip - centre, axis=1)
 
     def _project(Y):
@@ -195,69 +312,6 @@ def _build_slip_projector(mesh, old_coords, is_bnd, n_verts, slip_on):
             nrm = np.linalg.norm(v, axis=1)
             nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
             Y[slip_b] = centre + v * (r_target / nrm)[:, None]
-        return Y
-
-    return is_pinned, _project
-
-
-def _build_box_slip_projector(mesh, ref_coords, is_bnd, n_verts, cdim,
-                              tol=None):
-    """Axis-aligned **box-face** boundary slip (the Cartesian counterpart to
-    the radial ring/normal slip).
-
-    The projected boundary normal (``Gamma_P1``) is degenerate at the
-    vertices of a Cartesian box (opposing face normals cancel; raw
-    ``Gamma_N`` is even NaN there), so the projected-normal slip of
-    :func:`_build_slip_projector` cannot be used. Instead detect the
-    axis-aligned bounding-box faces geometrically from ``ref_coords`` (the
-    *undeformed* reference coordinates): a boundary node on exactly one face
-    slides **along** that face (its perpendicular coordinate is snapped back
-    to the face plane each step), while a node on two or more faces (a box
-    edge / corner) is pinned. This lets a fault that reaches the domain
-    boundary refine across it on both ends, instead of being blocked by a
-    fully-pinned boundary.
-
-    Unlike the projected-normal path this creates **no** MeshVariable, so it
-    is free of the mid-mover DM-stale footgun. If the domain is not an
-    axis-aligned box (some boundary node lies off every extent plane) the
-    boundary is fully pinned (safe fallback).
-
-    Returns ``(is_pinned, project_fn)``.
-    """
-    bidx = np.nonzero(is_bnd)[0]
-    if bidx.size == 0:
-        return is_bnd.copy(), (lambda Y: Y)
-    bcoords = np.asarray(ref_coords)[bidx]
-    lo = bcoords.min(axis=0)
-    hi = bcoords.max(axis=0)
-    if tol is None:
-        ext = float(np.max(hi - lo)) if (hi - lo).size else 0.0
-        tol = 1.0e-6 * ext if ext > 0.0 else 1.0e-9
-    # on[i, j, side] : boundary node i sits on the lo/hi extent plane of dim j
-    on = np.zeros((bidx.size, cdim, 2), dtype=bool)
-    for j in range(cdim):
-        on[:, j, 0] = np.abs(bcoords[:, j] - lo[j]) < tol
-        on[:, j, 1] = np.abs(bcoords[:, j] - hi[j]) < tol
-    nfaces = on.reshape(bidx.size, -1).sum(axis=1)
-    if not bool((nfaces >= 1).all()):
-        # not an axis-aligned box — pin everything (safe)
-        return is_bnd.copy(), (lambda Y: Y)
-
-    is_pinned = np.zeros(n_verts, dtype=bool)
-    pin_local = nfaces >= 2                     # edges / corners
-    is_pinned[bidx[pin_local]] = True
-    slip_local = ~pin_local
-    slip_b = bidx[slip_local]
-    on_slip = on[slip_local]                    # (n_slip, cdim, 2)
-    # the single fixed dimension and its plane value for each slip node
-    fixed_dim = np.argmax(on_slip.any(axis=2), axis=1)      # (n_slip,)
-    plane_val = np.where(on_slip[np.arange(slip_b.size), fixed_dim, 0],
-                         lo[fixed_dim], hi[fixed_dim])
-
-    def _project(Y):
-        # snap each face node's perpendicular coordinate back to its plane;
-        # the tangential coordinate(s) move freely.
-        Y[slip_b, fixed_dim] = plane_val
         return Y
 
     return is_pinned, _project

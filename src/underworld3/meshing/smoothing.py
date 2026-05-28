@@ -2354,54 +2354,18 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         elif metric_refresh_per_iter and outer > 0:
             _build_M_tensor()
 
-        # Boundary tangential slip. For RADIAL coordinate systems
-        # (annulus / sphere) use the per-ring radius projection (the
-        # radial DOF is removed, so slip nodes provably stay on their
-        # ring; one node/ring anchors the rotation gauge). For a
-        # CARTESIAN axis-aligned box the projected normal is degenerate
-        # at the vertices, so use the geometric box-face projector
-        # instead (slide along x=const / y=const faces, pin corners) —
-        # this lets a fault that reaches the boundary refine across it
-        # on both ends rather than being blocked by a pinned boundary.
+        # Boundary tangential slip — one generic, topology-based projector
+        # for all geometries (Cartesian box, annulus, sphere, polyhedra,
+        # curved surfaces). Face nodes slide tangentially; corners / edges
+        # (where incident boundary-facet normals disagree) are pinned. For
+        # radial coordinate systems a snap-back to fixed ``|r|`` is layered
+        # on top so curved boundaries stay on the surface. See
+        # ``_ot_adapt._build_slip_projector`` / ``_boundary_vertex_normals``.
         from underworld3.meshing._ot_adapt import (
-            _is_radial_coords as _is_radial,
-            _build_box_slip_projector as _box_slip)
-        if boundary_slip and is_bnd.any() and not _is_radial(mesh):
-            is_pinned, _project = _box_slip(
-                mesh, old0, is_bnd, n_verts, _cdim)
-        elif boundary_slip and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            c0 = old_coords[bc].mean(axis=0)
-            rg = np.round(
-                np.linalg.norm(old_coords[bc] - c0, axis=1), 6)
-            is_anchor = np.zeros(n_verts, dtype=bool)
-            slip_center = np.zeros((n_verts, _cdim))
-            slip_rtarget = np.zeros(n_verts)
-            for rv in np.unique(rg):
-                grp = bc[rg == rv]
-                rc = old_coords[grp].mean(axis=0)
-                is_anchor[grp[np.argmax(
-                    (old_coords[grp] - rc)[:, 0])]] = True
-                slip_center[grp] = rc
-                slip_rtarget[grp] = np.linalg.norm(
-                    old_coords[grp] - rc, axis=1)
-            is_slip = is_bnd & ~is_anchor
-            is_pinned = is_anchor
-            _sidx = np.nonzero(is_slip)[0]
-            _sctr = slip_center[_sidx]
-            _srad = slip_rtarget[_sidx]
-
-            def _project(Y):
-                v = Y[_sidx] - _sctr
-                nrm = np.linalg.norm(v, axis=1)
-                nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+            _resolve_slip, _build_slip_projector)
+        _slip_on = _resolve_slip(mesh, boundary_slip)
+        is_pinned, _project = _build_slip_projector(
+            mesh, old_coords, is_bnd, n_verts, _slip_on)
 
         # D is fixed & Lagrangian (built once, above) — no
         # re-projection feedback. The outer loop is a damped
