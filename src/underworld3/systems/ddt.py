@@ -1549,6 +1549,10 @@ class SemiLagrangian(uw_object):
                 varsymbol=rf"{{ {varsymbol}_{{F}}^{{ * }} }}",
                 units=None,
             )
+            # Phase-2: operator-managed history; see psi_star block below
+            from underworld3.discretisation.remesh import RemeshPolicy
+            self.forcing_star.remesh_policy = RemeshPolicy.CARRY
+            self.forcing_star._remesh_managed_by = self
 
         # BDF/AM/exp coefficient UWexpressions — routed through PetscDS constants[]
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
@@ -1572,6 +1576,20 @@ class SemiLagrangian(uw_object):
             varsymbol=rf"{{ {varsymbol}^\nabla }}",
             units=psi_units,  # Inherit units from psi_fn
         )
+
+        # Phase-2 remesh redesign: mark every DDt-owned mesh variable as
+        # CARRY + operator-managed so the generic per-variable REMAP pass
+        # in remesh_with_field_transfer SKIPS them — the on_remesh hook
+        # below handles the whole stack coherently (CARRY for ALE, or
+        # explicit REMAP for an opt-out adapt like OT's reset). This
+        # avoids interpolation diffusion of the history each adapt —
+        # critical for preserving the time-scheme order at order >= 2.
+        from underworld3.discretisation.remesh import RemeshPolicy
+        for _v in self.psi_star:
+            _v.remesh_policy = RemeshPolicy.CARRY
+            _v._remesh_managed_by = self
+        self._workVar.remesh_policy = RemeshPolicy.CARRY
+        self._workVar._remesh_managed_by = self
 
         # We just need one swarm since this is inherently a sequential operation
         nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
@@ -1614,6 +1632,10 @@ class SemiLagrangian(uw_object):
                 continuous=continuous,
                 varsymbol=r"{\psi^{*}_{\mathrm{flat}}}",
             )
+            # Phase-2: operator-managed history flattening view
+            from underworld3.discretisation.remesh import RemeshPolicy
+            self._psi_star_flat_var.remesh_policy = RemeshPolicy.CARRY
+            self._psi_star_flat_var._remesh_managed_by = self
             self._psi_star_projection_solver = uw.systems.solvers.SNES_MultiComponent_Projection(
                 self.mesh,
                 u_Field=self._psi_star_flat_var,
@@ -1654,7 +1676,89 @@ class SemiLagrangian(uw_object):
             # loss failure mode the design note warns against.
             pass
 
+        # Phase-2 remesh redesign: register the adapt-time hook.
+        # ``on_remesh`` accumulates Δx into ``_pending_v_mesh_disp``
+        # (initialised here); the next ``update_pre_solve`` consumes
+        # it as a one-step ``v_mesh`` pulse in the SL trace-back so
+        # the CARRY'd history reads at the right upstream node. See
+        # docs/developer/design/REMESH_FIELD_TRANSFER_DESIGN.md.
+        self._pending_v_mesh_disp = None
+        # Per-DDt temporary holding v_mesh = Δx / dt for the trace-back
+        # (created lazily on first ALE consumption — see
+        # _activate_ale_for_traceback below).
+        self._v_mesh_var = None
+        try:
+            self.mesh.register_remesh_hook(self)
+        except Exception:
+            pass
+
         return
+
+    def on_remesh(self, ctx):
+        """Adapt-time hook: ALE for the SL history stack.
+
+        Two branches:
+
+        * **Standard ALE (smooth adapt).** The SL-owned vars
+          (``psi_star[i]``, ``forcing_star``, ``_workVar``, the
+          flattening view ``_psi_star_flat_var``) are CARRY +
+          operator-managed — the generic per-variable pass already
+          skipped them, and we leave their ``.data`` untouched here.
+          Accumulate ``ctx.total_disp`` onto
+          ``self._pending_v_mesh_disp`` so the next
+          :meth:`update_pre_solve` runs the SL trace-back along
+          ``(V_fn − v_mesh)`` with ``v_mesh = Δx / dt`` — that
+          subtraction is exactly what compensates for the arbitrary
+          mesh motion when reading the CARRY'd history. One-step
+          pulse: the next solve consumes Δx and clears it.
+
+        * **Opt-out (e.g. OT_adapt reset).** When the adapt is a
+          discrete jump rather than a smooth displacement
+          (``ctx.scratch.get("ale_opt_out")``), the linear
+          ``Δx/dt → v_mesh`` interpretation breaks down. Fall back to
+          Phase-1 REMAP for this DDt's managed vars: call
+          :func:`~underworld3.discretisation.remesh.remap_var_set` with
+          the pre-move snapshot in ``ctx.managed_snapshot``. The
+          pending ``v_mesh`` is cleared because REMAP already brought
+          the history onto the new positions.
+
+        Accumulation across multiple adapts before one solve is
+        linear: ``v_mesh_disp += ctx.total_disp``. The trace-back uses
+        the SUM divided by the next ``dt``, which is the correct
+        node-frame velocity for that step.
+        """
+        from underworld3.discretisation.remesh import remap_var_set
+
+        # Which DDt-owned vars do I own? Collect from the mesh.vars
+        # registry by managed-by identity (matches the stamping in
+        # __init__).
+        owned = [v for v in self.mesh.vars.values()
+                 if getattr(v, "_remesh_managed_by", None) is self]
+
+        if ctx.scratch.get("ale_opt_out"):
+            # REMAP fallback. ctx.managed_snapshot holds my vars'
+            # pre-move .data (the helper snapshots all managed vars).
+            # remap_var_set deforms back, restores, evaluates at new
+            # DOF coords, deforms forward, writes — exactly Phase-1
+            # behaviour for this DDt's stack.
+            snap = {v: ctx.managed_snapshot[v]
+                    for v in owned if v in ctx.managed_snapshot}
+            remap_var_set(self.mesh, owned,
+                          ctx.old_X, ctx.new_X, snap)
+            # The ALE pulse is meaningless on a reset; clear any
+            # pending displacement so the next solve does a plain
+            # trace-back.
+            self._pending_v_mesh_disp = None
+            return
+
+        # Standard ALE: leave CARRY'd .data alone, accumulate Δx for
+        # the next trace-back to consume.
+        disp = ctx.total_disp
+        if getattr(self, "_pending_v_mesh_disp", None) is None:
+            self._pending_v_mesh_disp = np.array(disp, copy=True)
+        else:
+            self._pending_v_mesh_disp = (
+                self._pending_v_mesh_disp + disp)
 
     @property
     def state(self) -> "DDtSemiLagrangianState":
@@ -1924,6 +2028,107 @@ class SemiLagrangian(uw_object):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
 
+    def _activate_ale_for_traceback(self, dt_for_calc):
+        """Populate ``self._v_mesh_var`` for the upcoming ALE trace-back.
+
+        Called from :meth:`update_pre_solve` when
+        ``self._pending_v_mesh_disp`` is set. Creates ``_v_mesh_var``
+        on first use (vector MeshVariable, degree 1, continuous —
+        smooth enough for the trace-back's mid-point and is the
+        cheapest discretisation that still resolves a per-node mesh
+        velocity), and writes ``data = Δx / dt`` so the SL trace-back
+        can evaluate ``V_fn − v_mesh`` at any point on the mesh by
+        sympy subtraction or post-evaluation numpy subtraction.
+
+        The variable is REINIT-policy: its values are valid for the
+        next trace-back only, and the next adapt repopulates them
+        fresh. The generic remesh pass skips it.
+
+        Returns ``True`` if ALE is active (caller should subtract
+        v_mesh at each V_fn evaluation), ``False`` otherwise.
+        """
+        from underworld3.discretisation.remesh import RemeshPolicy
+        disp = self._pending_v_mesh_disp
+        if disp is None:
+            return False
+        # Lazily create the v_mesh field. dim matches the mesh's
+        # coordinate dimension (so it broadcasts cleanly against the
+        # mesh-vector V_fn values).
+        if self._v_mesh_var is None:
+            vname = f"_v_mesh_sl_{self.instance_number}"
+            self._v_mesh_var = uw.discretisation.MeshVariable(
+                vname, self.mesh, self.mesh.cdim, degree=1,
+                continuous=True,
+                varsymbol=rf"{{v^{{\mathrm{{mesh}}}}_{{[{self.instance_number}]}} }}",
+                remesh_policy=RemeshPolicy.REINIT,
+            )
+        # disp has shape (n_nodes, cdim) and lives in mesh-coord
+        # space; dt_for_calc is in the matching time scaling, so the
+        # ratio is the correct mesh velocity in the same unit system
+        # V_fn evaluations land in. If dt_for_calc is a Pint quantity,
+        # extract its magnitude — v_mesh_var.data is plain numpy.
+        try:
+            _dt_val = float(getattr(dt_for_calc, "magnitude", dt_for_calc))
+        except (TypeError, ValueError):
+            _dt_val = float(dt_for_calc)
+        if _dt_val == 0.0:
+            # No time has elapsed → no mesh velocity. Defensive.
+            self._v_mesh_var.data[...] = 0.0
+        else:
+            # _v_mesh_var lives on the *new* mesh; disp was captured
+            # against the same node ordering at adapt time. Direct
+            # nodal write is correct (no interpolation needed).
+            self._v_mesh_var.data[...] = np.asarray(disp) / _dt_val
+        return True
+
+    def _consume_ale_pulse(self):
+        """Clear the one-step v_mesh pulse after the trace-back has used it.
+
+        Called at the end of :meth:`update_pre_solve` so subsequent
+        non-adapt steps see ``self._pending_v_mesh_disp is None`` and
+        run a plain trace-back. The MeshVariable storage is left in
+        place but its values become stale (REINIT policy on the var
+        guarantees the generic remesh pass leaves it alone; the next
+        :meth:`_activate_ale_for_traceback` rewrites .data fresh).
+        """
+        self._pending_v_mesh_disp = None
+
+    def _record_psi_star_from_field_data(self):
+        """Parallel-safe 'record current field into psi_star[0]'.
+
+        The default record step evaluates ``psi_fn`` at its own node
+        coordinates, which under MPI mis-locates on-vertex points at a
+        process seam (first-pass ``get_closest_cells`` + FE extrapolation),
+        seeding a spurious history value. When ``psi_fn`` is a single
+        mesh-variable component living on this mesh with the same nodal
+        layout as ``psi_star[0]``, "evaluate at own nodes" is exactly that
+        variable's nodal data, so we copy it directly — no point location.
+
+        Returns an array shaped like ``psi_star[0].array`` for that case, or
+        ``None`` (caller falls back to ``evaluate``) for non-scalar or
+        expression ``psi_fn`` (e.g. a flux with derivatives).
+        """
+        try:
+            import numpy as _np
+            comps = list(self.psi_fn)            # sympy Matrix, row-major
+            if len(comps) != 1:                  # scoped to scalar fields
+                return None
+            hit = uw.discretisation.meshVariable_lookup_by_symbol(
+                self.mesh, comps[0])
+            if hit is None:
+                return None
+            var, comp = hit
+            vflat = _np.asarray(var.array)
+            vflat = vflat.reshape(vflat.shape[0], -1)
+            out = _np.array(_np.asarray(self.psi_star[0].array))
+            oflat = out.reshape(out.shape[0], -1)
+            if vflat.shape[0] != oflat.shape[0] or oflat.shape[1] != 1:
+                return None
+            oflat[:, 0] = vflat[:, comp]
+            return out
+        except Exception:
+            return None
+
     def update(
         self,
         dt: float,
@@ -2086,12 +2291,31 @@ class SemiLagrangian(uw_object):
             try:
                 # Use shifted ND coords to avoid quad mesh boundary issues
                 # node_coords_nd is slightly shifted toward cell centroids
-                # evaluate() treats plain numpy as ND [0-1] coordinates
-                eval_result = uw.function.evaluate(
-                    self.psi_fn,
-                    node_coords_nd,
-                    evalf=evalf,
-                )
+                # evaluate() treats plain numpy as ND [0-1] coordinates.
+                #
+                # PARALLEL band-aid (parallel-singular-corruption, 2026-05):
+                # this "record current field into psi_star" step samples psi_fn
+                # at its OWN node coords. On-vertex sampling + first-pass
+                # get_closest_cells mis-locates at a process seam under MPI,
+                # recording a spurious history value that the implicit solve
+                # then propagates (the seam spike in adaptive advection-
+                # diffusion). When psi_fn is a single mesh-variable component on
+                # this mesh (the SLCN adv-diff case), "evaluate at own nodes" ==
+                # the field's nodal data, so under MPI copy it directly (exact,
+                # no point location). Serial keeps the validated shifted-
+                # evaluate path bit-identically; non-scalar / expression psi_fn
+                # falls back to evaluate(). Proper fix (remap-on-adapt / ALE)
+                # tracked separately.
+                _direct = (self._record_psi_star_from_field_data()
+                           if uw.mpi.size > 1 else None)
+                if _direct is not None:
+                    eval_result = _direct
+                else:
+                    eval_result = uw.function.evaluate(
+                        self.psi_fn,
+                        node_coords_nd,
+                        evalf=evalf,
+                    )
                 # Wrap result with units if psi_star has units but eval didn't return UnitAwareArray
                 psi_star_units = self.psi_star[0].units
                 if psi_star_units is not None and not isinstance(eval_result, UnitAwareArray):
@@ -2164,8 +2388,30 @@ class SemiLagrangian(uw_object):
                 # Already dimensionless
                 dt_for_calc = dt
 
+        # Phase-2 ALE: if an adapt stashed Δx, build v_mesh = Δx / dt as
+        # a per-DDt MeshVariable now so the trace-back below can use
+        # (V_fn − v_mesh) at any sample point. One-step pulse — cleared
+        # at the end of this method.
+        _ale_active = self._activate_ale_for_traceback(dt_for_calc)
+
         for i in range(self.order - 1, -1, -1):
-            # 2nd order update along characteristics
+            # Per-history-index ALE gating. The v_mesh correction
+            # transforms a CARRY'd field's sampling from new-mesh to
+            # old-mesh frame: psi_star_NEW(p) ≈ psi_star_OLD(p − Δx),
+            # so to sample the OLD field at p_world we read the NEW
+            # field at p_world + Δx, which is exactly what
+            # X − (V − v_mesh)·dt achieves. This is only correct when
+            # psi_star[i] still holds CARRY'd OLD data. When
+            # ``store_result=True`` the i=0 slot is OVERWRITTEN by the
+            # band-aid re-record above (psi_star[0] := current
+            # psi_fn at new-mesh nodes), so for that slot the v_mesh
+            # correction would double-shift — sample current T at
+            # X + Δx instead of at X − V·dt. Gate it off for i=0 in
+            # that case. (See REMESH_FIELD_TRANSFER_DESIGN.md §2a:
+            # the order-1 re-record is the reason ALE buys nothing at
+            # order=1 with theta=1 — the band-aid already did the
+            # right thing.)
+            _ale_this_iter = _ale_active and not (store_result and i == 0)
 
             # Use shifted ND coords to avoid quad mesh boundary issues
             # node_coords_nd is slightly shifted toward cell centroids (lines 703-709)
@@ -2174,6 +2420,15 @@ class SemiLagrangian(uw_object):
                 self.V_fn,
                 node_coords_nd,
             )
+            # Phase-2 ALE: subtract the mesh velocity at the same
+            # sample points. Done after V_fn evaluation (rather than
+            # by symbolic V_fn − v_mesh.sym) so the existing unit
+            # bookkeeping below treats v_result as a plain V-shaped
+            # array; the subtraction inherits the same unit treatment.
+            if _ale_this_iter:
+                _vm = uw.function.evaluate(
+                    self._v_mesh_var.sym, node_coords_nd)
+                v_result = v_result - _vm
 
             # CRITICAL: Preserve UnitAwareArray through slicing
             # Slicing can sometimes return plain numpy views - need to preserve wrapper
@@ -2258,6 +2513,15 @@ class SemiLagrangian(uw_object):
                 mid_pt_coords,
                 evalf=evalf,
             )
+            # Phase-2 ALE: subtract mesh velocity at midpoint coords
+            # (mid_pt_coords are off-node interior points of the new
+            # mesh — global_evaluate of v_mesh.sym handles partition
+            # routing identically to V_fn). Per-i gating per the
+            # explanation above the v_result subtraction.
+            if _ale_this_iter:
+                _vm_mid = uw.function.global_evaluate(
+                    self._v_mesh_var.sym, mid_pt_coords, evalf=evalf)
+                v_mid_result = v_mid_result - _vm_mid
 
             # CRITICAL: Preserve UnitAwareArray through slicing
             if isinstance(v_mid_result, UnitAwareArray):
@@ -2386,6 +2650,14 @@ class SemiLagrangian(uw_object):
                 self.psi_star[i].array[...] = (
                     self.psi_star[i].array[...] - Imean0
                 ) * IL20 / IL2 + Imean0
+
+        # Phase-2 ALE: consume the one-step v_mesh pulse. Subsequent
+        # non-adapt steps will see no pending displacement and run a
+        # plain trace-back. If multiple adapts happen before the next
+        # solve, on_remesh accumulates them additively and one
+        # consumption clears the lot.
+        if _ale_active:
+            self._consume_ale_pulse()
 
         return
 
@@ -2683,6 +2955,30 @@ class Lagrangian(uw_object):
             # loss failure mode the design note warns against.
             pass
 
+        # Phase-1 remesh redesign: register the adapt-time hook on the
+        # mesh. Lagrangian's psi_star history lives on a swarm, not on
+        # the mesh — its transfer is the swarm's own particle migration
+        # under the deformed cells, which is already correct.  Phase 1
+        # hook is therefore a no-op (no mesh-side state to transfer);
+        # Phase 2 may attach ALE-style annotation here in parallel with
+        # SemiLagrangian.
+        try:
+            self.mesh.register_remesh_hook(self)
+        except Exception:
+            pass
+
+        return
+
+    def on_remesh(self, ctx):
+        """Adapt-time hook (Phase 1 no-op).
+
+        Lagrangian history is carried by the underlying swarm (each
+        particle holds its own ``psi_star`` values), so there is no
+        mesh-side state to transfer on an adapt — the swarm's particle
+        positions stay put and the new cells re-claim them. Method is
+        defined so the registration shim has a target.
+        """
+        del ctx  # Phase 1: explicitly unused
         return
 
     @property

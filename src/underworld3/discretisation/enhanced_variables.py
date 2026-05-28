@@ -365,6 +365,36 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         return self._base_var.continuous
 
     @property
+    def remesh_policy(self):
+        """Per-variable transfer policy on a mesh adapt.
+
+        Delegates to the base variable so ``mesh.vars[...]`` (which
+        holds the base instances) and the user-facing wrapper agree on
+        the same policy.
+        """
+        return self._base_var.remesh_policy
+
+    @remesh_policy.setter
+    def remesh_policy(self, value):
+        self._base_var.remesh_policy = value
+
+    @property
+    def _remesh_managed_by(self):
+        """Operator that owns this variable's transfer on a remesh.
+
+        ``None`` means the generic per-variable pass in
+        :func:`~underworld3.discretisation.remesh.remesh_with_field_transfer`
+        handles it (the common case). Set to an operator (e.g. a
+        ``SemiLagrangian`` DDt) when that operator's ``on_remesh`` hook
+        will transfer this var coherently with its history.
+        """
+        return self._base_var._remesh_managed_by
+
+    @_remesh_managed_by.setter
+    def _remesh_managed_by(self, value):
+        self._base_var._remesh_managed_by = value
+
+    @property
     def symbol(self):
         """Variable symbol for LaTeX representation."""
         return self._base_var.symbol

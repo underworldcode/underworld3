@@ -178,15 +178,6 @@ def _ot_adapt_step(
     else:
         ref_X = np.asarray(mesh._ot_adapt_reference_coords)
 
-    old_X = np.asarray(mesh.X.coords).copy()
-
-    # Fields to FE-remap: `field` is always remapped; append extras (deduped).
-    remap = [field]
-    for f in (fields_to_remap or []):
-        if f is not field and f not in remap:
-            remap.append(f)
-    old_data = {f: np.asarray(f.data).copy() for f in remap}
-
     # For radial coordinate systems (where boundary slip is used), create the
     # projected-normal field up front — before the metric builder / OT mover
     # set up any solver DM. Creating that MeshVariable mid-mover would stale
@@ -214,54 +205,60 @@ def _ot_adapt_step(
                     f"{mm['misalignment']:.3f} < {float(skip_threshold):.3f}")
             return False
 
-    # --- step 1: capture `field` at the reference-mesh DOF positions -----
-    mesh._deform_mesh(ref_X)
-    ref_field_coords = np.asarray(field.coords).copy()
-    mesh._deform_mesh(old_X)
-    field.data[...] = old_data[field]
-    # global_evaluate (parallel-correct): the reference-mesh DOF coords can fall
-    # in another rank's subdomain, so the remap must resolve off-rank points. A
-    # local evaluate returns stale/garbage there -> growing field artefacts at
-    # the rank-partition seams.
-    field_at_ref = np.asarray(
-        uw.function.global_evaluate(field.sym[0], ref_field_coords)).reshape(-1)
+    # Phase-1 remesh redesign: the snapshot/move/transfer dance is now
+    # owned by the adapt op via remesh_with_field_transfer. The closure
+    # below performs the reset-to-reference + metric-canvas write +
+    # OT-mover steps. The helper snapshots `field` (and every other
+    # REMAP variable on the mesh — including hidden solver history) at
+    # entry, runs the closure (which may clobber `field` for the metric
+    # canvas — that write is INTENDED to be discarded by the helper's
+    # post-move transfer), then performs ONE deform-back /
+    # global_evaluate / deform-forward pair to bring every REMAP var
+    # onto the adapted positions. Fields the user previously listed in
+    # ``fields_to_remap`` are now transferred automatically; the kwarg
+    # is preserved for API compatibility (vars must be REMAP-policy,
+    # which is the default — so listing them is a no-op).
+    from underworld3.discretisation.remesh import (
+        remesh_with_field_transfer)
 
-    # --- step 2: load the reference (clean) mesh with the remapped field -
-    mesh._deform_mesh(ref_X)
-    field.data[:, 0] = field_at_ref
+    def _do_move():
+        # Phase-2 ALE opt-out: the OT reset-to-reference step is a
+        # discrete jump in node positions, not a smooth displacement,
+        # so the linear ``v_mesh = Δx / dt`` interpretation that
+        # SemiLagrangian.on_remesh uses for ALE is meaningless here.
+        # Publish a flag so DDt hooks fall back to Phase-1 REMAP for
+        # this adapt; the mesh's _remesh_pending_scratch dict is the
+        # pre-fire channel into ctx.scratch.
+        if hasattr(mesh, "_remesh_pending_scratch"):
+            scratch = getattr(mesh, "_remesh_pending_scratch", None)
+            if scratch is not None:
+                scratch["ale_opt_out"] = True
 
-    # --- step 3: build the gradient metric + run the OT mover ------------
-    rho = uw.meshing.metric_density_from_gradient(
-        mesh, field, refinement=ref_R, coarsening=coar,
-        metric_choice=metric_choice,
-        gradient_smoothing_length=grad_smoothing_length,
-        degree=1, name="ot_adapt")
-    uw.meshing.smooth_mesh_interior(
-        mesh, metric=rho, method="ot", boundary_slip=True,
-        method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
-                           step_frac=_OT_STEP_FRAC),
-        verbose=verbose)
-    new_X = np.asarray(mesh.X.coords).copy()
+        old_X_local = np.asarray(mesh.X.coords).copy()
+        # --- step 1: capture `field` at the reference-mesh DOF positions
+        mesh._deform_mesh(ref_X)
+        ref_field_coords = np.asarray(field.coords).copy()
+        mesh._deform_mesh(old_X_local)
+        field_at_ref = np.asarray(
+            uw.function.global_evaluate(
+                field.sym[0], ref_field_coords)).reshape(-1)
+        # --- step 2: load the reference (clean) mesh with the remapped field
+        mesh._deform_mesh(ref_X)
+        field.data[:, 0] = field_at_ref
+        # --- step 3: build the gradient metric + run the OT mover
+        rho = uw.meshing.metric_density_from_gradient(
+            mesh, field, refinement=ref_R, coarsening=coar,
+            metric_choice=metric_choice,
+            gradient_smoothing_length=grad_smoothing_length,
+            degree=1, name="ot_adapt")
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=rho, method="ot", boundary_slip=True,
+            method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
+                               step_frac=_OT_STEP_FRAC),
+            verbose=verbose)
 
-    # --- step 4: FE-remap all fields from old_X onto the adapted mesh ----
-    # The metric-canvas write to `field` (step 2) is discarded here by
-    # design: every remapped field is re-derived from its *original*
-    # (old_X) data, so the final field is the true physical field carried
-    # onto the new positions.
-    new_coords = {f: np.asarray(f.coords).copy() for f in remap}
-    mesh._deform_mesh(old_X)
-    for f in remap:
-        f.data[...] = old_data[f]
-    remapped = {}
-    for f in remap:
-        # global_evaluate (parallel-correct): adapted DOF coords may be off-rank
-        # (see step 1) — a local evaluate would leave partition-seam artefacts.
-        val = np.asarray(uw.function.global_evaluate(f.sym, new_coords[f]))
-        remapped[f] = val.reshape(np.asarray(f.data).shape)
-    mesh._deform_mesh(new_X)
-    for f in remap:
-        f.data[...] = remapped[f]
-    for f in (fields_to_zero or []):
-        f.data[...] = 0.0
-
-    return True
+    return remesh_with_field_transfer(
+        mesh, _do_move,
+        extra_zero=fields_to_zero,
+        verbose=verbose,
+    )

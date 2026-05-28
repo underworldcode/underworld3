@@ -281,13 +281,14 @@ def snapshot(step):
 
 
 def _adapt_step():
-    """Build metric + invoke mover with skip_threshold; FE-remap
-    T (V,P zeroed) if the mover actually moved nodes.
+    """Build metric + invoke mover with skip_threshold; the mover owns
+    field transfer (Phase-1 remesh redesign — see
+    docs/developer/design/REMESH_FIELD_TRANSFER_DESIGN.md). The harness
+    only zeros V, P for a cold-restart of the flow solve.
     Returns (moved, misalignment) tuple — misalignment is the
     current-mesh alignment score against the target metric BEFORE
     the adapt fires."""
     old_X = np.asarray(mesh.X.coords).copy()
-    old_T = np.asarray(T.data).copy()
     h0 = float(mesh._radii.mean())
     grad_L = (args.grad_smooth_h0 * h0
               if args.grad_smooth_h0 > 0 else None)
@@ -332,25 +333,37 @@ def _adapt_step():
         rho = uw.meshing.metric_density_from_gradient(
             mesh, T, strategy=args.strategy, name="loop",
             gradient_smoothing_length=grad_L)
-        uw.meshing.smooth_mesh_interior(
-            mesh, metric=rho, method="anisotropic",
-            strategy=args.strategy,
-            method_kwargs=dict(relax=0.2, n_outer=12),
-            verbose=True)
+        # MOVER=ma swaps the 12-step damped anisotropic mover for the
+        # single-shot elliptic Monge–Ampère solve (one outer map,
+        # internally n_picard Picard iters + Hessian recovery). Lets us
+        # A/B whether the parallel seam divergence is the anisotropic
+        # mover's *accumulated* 12 GMRES+GAMG steps or is intrinsic to a
+        # single φ-solve. Everything else (metric, strategy, skip) held.
+        if os.environ.get("MOVER", "anisotropic") == "ma":
+            # No strategy= here: it injects resolution_ratio, which the
+            # anisotropic mover accepts but the elliptic MA mover rejects.
+            # skip_threshold=sk reproduces the same adapt cadence.
+            uw.meshing.smooth_mesh_interior(
+                mesh, metric=rho, method="ma",
+                skip_threshold=sk,
+                method_kwargs=dict(n_outer=1),
+                verbose=True)
+        else:
+            uw.meshing.smooth_mesh_interior(
+                mesh, metric=rho, method="anisotropic",
+                strategy=args.strategy,
+                skip_threshold=sk,
+                method_kwargs=dict(relax=0.2, n_outer=12),
+                verbose=True)
         new_X = np.asarray(mesh.X.coords).copy()
         if np.allclose(new_X, old_X):
             return False, misalign
-    # FE-remap T; explicitly zero V,P post-adapt
-    new_Tx = np.asarray(T.coords).copy()
-    mesh._deform_mesh(old_X)
-    T.data[...] = old_T
-    # global_evaluate: new (adapted) DOF coords may land in another rank's
-    # subdomain, so the remap must resolve off-rank points (local evaluate
-    # leaves stale T at the partition seams -> growing artefacts in parallel).
-    rT = np.asarray(uw.function.global_evaluate(
-        T.sym[0], new_Tx)).reshape(-1)
-    mesh._deform_mesh(new_X)
-    T.data[:, 0] = rT
+    # Phase-1 remesh redesign: the mover (smooth_mesh_interior /
+    # follow_metric / OT_adapt) owns the snapshot/move/transfer dance
+    # internally, so T (and every other REMAP-policy variable on the
+    # mesh, including hidden SLCN psi_star history) is already on the
+    # adapted node positions when we get here. The harness only zeros
+    # V, P for a cold-restart of the flow solve.
     V.data[...] = 0.0
     P.data[...] = 0.0
     return True, misalign

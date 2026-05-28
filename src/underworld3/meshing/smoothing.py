@@ -2928,6 +2928,71 @@ def smooth_mesh_interior(
         f = 1 + 8 * sympy.exp(-((r0.sym[0] - 1.0) / 0.12) ** 2)
         smooth_mesh_interior(mesh, metric=f)
     """
+    # Phase-1 remesh redesign: the adapt op now owns field transfer.
+    # Wrap the mover body so every REMAP-policy variable on the mesh is
+    # snapshotted, the mover runs, and a single deform-back /
+    # global_evaluate / deform-forward pair carries every variable onto
+    # the adapted node positions. Re-entrancy guard
+    # ``mesh._in_remesh_transfer`` lets composite adapts (OT_adapt) wrap
+    # the whole reset+build+smooth dance once at the outer level and
+    # have this inner call skip its own wrap.
+    if not getattr(mesh, "_in_remesh_transfer", False):
+        from underworld3.discretisation.remesh import (
+            remesh_with_field_transfer)
+        def _do_move():
+            _smooth_mesh_interior_bare(
+                mesh,
+                pinned_labels=pinned_labels,
+                n_iters=n_iters,
+                alpha=alpha,
+                metric=metric,
+                method=method,
+                boundary_slip=boundary_slip,
+                method_kwargs=method_kwargs,
+                verbose=verbose,
+                skip_threshold=skip_threshold,
+                strategy=strategy,
+            )
+        remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
+        return
+    # Re-entrant call from inside a composite adapt op: fall through to
+    # the bare mover.
+    _smooth_mesh_interior_bare(
+        mesh,
+        pinned_labels=pinned_labels,
+        n_iters=n_iters,
+        alpha=alpha,
+        metric=metric,
+        method=method,
+        boundary_slip=boundary_slip,
+        method_kwargs=method_kwargs,
+        verbose=verbose,
+        skip_threshold=skip_threshold,
+        strategy=strategy,
+    )
+
+
+def _smooth_mesh_interior_bare(
+    mesh,
+    pinned_labels: Optional[Sequence[str]] = None,
+    n_iters: int = 5,
+    alpha: float = 0.5,
+    metric=None,
+    method: str = "spring",
+    boundary_slip: bool = False,
+    method_kwargs: Optional[dict] = None,
+    verbose: bool = False,
+    skip_threshold=_UNSET,
+    strategy: Optional[str] = None,
+):
+    """Internal mover dispatch — no transfer, no helper wrap.
+
+    Identical to the body of :func:`smooth_mesh_interior` minus the
+    Phase-1 transfer wrap. Composite adapt ops (``_ot_adapt_step``,
+    ``follow_metric``) own the wrap at their level and call this bare
+    form to avoid nesting the snapshot/restore dance. End-users should
+    keep using :func:`smooth_mesh_interior`.
+    """
     if pinned_labels is None:
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)
@@ -3787,57 +3852,73 @@ def follow_metric(
     if method_kwargs:
         mover_kwargs.update(method_kwargs)
 
-    old_X = np.asarray(mesh.X.coords).copy()
-    smooth_mesh_interior(
-        mesh,
-        metric=rho,
-        method="anisotropic",
-        method_kwargs={**mover_kwargs, "resolution_ratio": R},
-        skip_threshold=skip_threshold,
-        verbose=verbose,
-    )
-    new_X = np.asarray(mesh.X.coords)
-    moved = not np.allclose(new_X, old_X)
-    # ADAPTIVE Jacobi polish: gentle graph-Laplacian smoothing
-    # of interior nodes toward neighbour-centroid average,
-    # repeated until the worst cell-shape quality
-    #
-    #     q = 4√3 · A / (e₀² + e₁² + e₂²)
-    #
-    # exceeds ``polish_quality_target`` (default 0.3 — the
-    # threshold below which cells look like visible slivers; an
-    # equilateral has q=1, a degenerate sliver q→0). Capped at
-    # ``polish_max_iters`` so pathological cases can't run away.
-    #
-    # The polish doesn't significantly undo the metric
-    # distribution (each step is averaging toward neighbours,
-    # not enforcing any spatial target), so the BL refinement
-    # stays intact while sliver cells get rounded out.
-    # `polish_max_iters=0` disables entirely.
-    if moved and polish_max_iters > 0:
-        tris_polish = _tri_cells(mesh.dm)
-        for _polish_iter in range(int(polish_max_iters)):
-            # Check current shape quality
-            p = np.asarray(mesh.X.coords)[tris_polish]
-            e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
-            e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
-            e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
-            A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
-                                       tris_polish))
-            q = (4.0 * np.sqrt(3.0) * A
-                 / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
-            q_min = float(q.min())
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                q_min = uw.mpi.comm.allreduce(
-                    q_min, op=_MPI.MIN)
-            if verbose:
-                uw.pprint(
-                    f"  follow_metric polish iter {_polish_iter}: "
-                    f"q_min={q_min:.3f} (target {polish_quality_target:.2f})")
-            if q_min >= float(polish_quality_target):
-                break
-            smooth_mesh_interior(
-                mesh, n_iters=1, alpha=float(polish_alpha))
-    return moved
+    # Phase-1 remesh redesign: wrap the whole anisotropic-move + polish
+    # pipeline in a single field-transfer pass at this composite level.
+    # The inner smooth_mesh_interior calls see ``mesh._in_remesh_transfer``
+    # set by the helper and skip their own wrap, so REMAP variables
+    # (including hidden solver history) are transferred exactly once,
+    # after the polish.
+    from underworld3.discretisation.remesh import (
+        remesh_with_field_transfer)
+    _state = {"moved": False}
+
+    def _do_move():
+        _old_X = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(
+            mesh,
+            metric=rho,
+            method="anisotropic",
+            method_kwargs={**mover_kwargs, "resolution_ratio": R},
+            skip_threshold=skip_threshold,
+            verbose=verbose,
+        )
+        _new_X = np.asarray(mesh.X.coords)
+        _state["moved"] = not np.allclose(_new_X, _old_X)
+        _polish(_state["moved"])
+
+    def _polish(moved):
+        # ADAPTIVE Jacobi polish: gentle graph-Laplacian smoothing
+        # of interior nodes toward neighbour-centroid average,
+        # repeated until the worst cell-shape quality
+        #
+        #     q = 4√3 · A / (e₀² + e₁² + e₂²)
+        #
+        # exceeds ``polish_quality_target`` (default 0.3 — the
+        # threshold below which cells look like visible slivers; an
+        # equilateral has q=1, a degenerate sliver q→0). Capped at
+        # ``polish_max_iters`` so pathological cases can't run away.
+        #
+        # The polish doesn't significantly undo the metric
+        # distribution (each step is averaging toward neighbours,
+        # not enforcing any spatial target), so the BL refinement
+        # stays intact while sliver cells get rounded out.
+        # `polish_max_iters=0` disables entirely.
+        if moved and polish_max_iters > 0:
+            tris_polish = _tri_cells(mesh.dm)
+            for _polish_iter in range(int(polish_max_iters)):
+                # Check current shape quality
+                p = np.asarray(mesh.X.coords)[tris_polish]
+                e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
+                e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
+                e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
+                A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
+                                           tris_polish))
+                q = (4.0 * np.sqrt(3.0) * A
+                     / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
+                q_min = float(q.min())
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    q_min = uw.mpi.comm.allreduce(
+                        q_min, op=_MPI.MIN)
+                if verbose:
+                    uw.pprint(
+                        f"  follow_metric polish iter {_polish_iter}: "
+                        f"q_min={q_min:.3f} (target {polish_quality_target:.2f})")
+                if q_min >= float(polish_quality_target):
+                    break
+                smooth_mesh_interior(
+                    mesh, n_iters=1, alpha=float(polish_alpha))
+
+    remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
+    return _state["moved"]
 

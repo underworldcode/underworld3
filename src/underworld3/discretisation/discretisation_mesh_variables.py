@@ -111,6 +111,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         _register: bool = True,
         units: Optional[str] = None,
         units_backend: Optional[str] = None,
+        remesh_policy=None,
     ):
         """
         Create or return existing MeshVariable instance.
@@ -148,6 +149,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             "_register": _register,
             "units": units,
             "units_backend": units_backend,
+            "remesh_policy": remesh_policy,
         }
 
         return obj
@@ -165,6 +167,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         _register=True,
         units=None,
         units_backend=None,
+        remesh_policy=None,
     ):
         """
         Initialize MeshVariable (only called for NEW objects).
@@ -189,6 +192,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             _register = params["_register"]
             units = params["units"]
             units_backend = params["units_backend"]
+            remesh_policy = params.get("remesh_policy", remesh_policy)
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
             pass
@@ -256,6 +260,25 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.shape = num_components
         self.degree = degree
         self.continuous = continuous
+
+        # Remesh transfer policy (see discretisation/remesh.py). Default
+        # REMAP: on a mesh adapt, the value is the old field evaluated at
+        # the new node positions — safe for any Eulerian quantity, and
+        # safe-by-default for forgotten variables. Operators / the
+        # framework can stamp REINIT (recomputed from a source) or CARRY
+        # (Lagrangian / operator-managed) on hidden vars they create.
+        from underworld3.discretisation.remesh import RemeshPolicy
+        if remesh_policy is None:
+            self._remesh_policy = RemeshPolicy.REMAP
+        elif isinstance(remesh_policy, RemeshPolicy):
+            self._remesh_policy = remesh_policy
+        else:
+            self._remesh_policy = RemeshPolicy(remesh_policy)
+        # Set to a weakref of an operator (e.g. a SemiLagrangian DDt)
+        # that owns this variable's transfer; the generic per-var pass
+        # in remesh_with_field_transfer skips it and the operator's
+        # on_remesh hook handles it instead. None = generic pass owns it.
+        self._remesh_managed_by = None
 
         # Store unit metadata for variable and initialize backend
         # Convert string units to pint.Unit using the global uw.units registry
@@ -463,6 +486,27 @@ class _BaseMeshVariable(Stateful, uw_object):
             return quantity.dimensionality
         except Exception:
             return None
+
+    @property
+    def remesh_policy(self):
+        """Per-variable transfer policy on a mesh adapt.
+
+        See :class:`underworld3.discretisation.remesh.RemeshPolicy`.
+        Default is :attr:`~underworld3.discretisation.remesh.RemeshPolicy.REMAP`
+        (the safe Eulerian default — evaluate the old field at the new
+        node positions). Set to ``REINIT`` for stateless work-vars
+        (gradient/Hessian projection targets, RBF proxies) and ``CARRY``
+        only for genuinely Lagrangian fields.
+        """
+        return self._remesh_policy
+
+    @remesh_policy.setter
+    def remesh_policy(self, value):
+        from underworld3.discretisation.remesh import RemeshPolicy
+        if isinstance(value, RemeshPolicy):
+            self._remesh_policy = value
+        else:
+            self._remesh_policy = RemeshPolicy(value)
 
     def _create_variable_array(self, initial_data=None):
         """
