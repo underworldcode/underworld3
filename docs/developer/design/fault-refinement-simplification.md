@@ -41,34 +41,46 @@ shape exactly preserved). See ``fault_compose_demo2.py``.
 
 ## Why each piece
 
-### Single-shot MA (and when to use `n_outer>1`)
+### Single-shot MA and what `n_outer` actually does
 
 `smooth_mesh_interior(method="ma", n_outer=1)` is the Caffarelli-clean
-Monge–Ampère map: one solve, untangled by construction, no
-outer-iteration compounding, nothing to tune. The metric is evaluated
-once on the undeformed mesh, so Lagrangian (field-backed) and analytic
-metrics are equivalent and the convection question doesn't arise.
+Monge–Ampère map: one solve, untangled by construction, no compounding,
+nothing to tune. The metric is evaluated once on the undeformed mesh —
+Lagrangian (field-backed) and analytic metrics are equivalent and the
+convection question doesn't arise. **This is the recommended default.**
 
-`n_outer>1` composes maps for sharper, more aggressive refinement, but
-only when **every metric in the list is Eulerian** (purely sympy in
-`mesh.CoordinateSystem.X`). The mover re-queries each metric on the
-deformed mesh between outer iters; a field-backed metric (the
-gradient-of-a-MeshVariable metric for thermal BLs, or a
-`Surface.distance`-field comb) has Lagrangian values that ride with the
-mesh — the feature itself convects, the mover chases a moving target,
-and the realised bands smear instead of tightening. Practical rule:
+`n_outer>1` is **not** "compose maps until convergent" — it's a
+patch-volume-aware composition. Each outer iter computes a per-vertex
+patch volume from the *current deformed mesh*, divides into the metric,
+and re-evaluates: *"the mesh is already partly adapted; don't over-pull
+where the budget has already gone."* It's the principled Caffarelli
+composition and it's **more conservative** than naively re-running the
+mover. Concretely, on a comb metric: `n_outer=1` realises a far/band
+ratio of ~1.94×; `n_outer=2` reaches ~2.6× and plateaus there
+(patch-aware composition saturates quickly).
 
-| metric | safe at `n_outer>1` |
-|---|---|
-| analytic comb (`fault_comb_metric` from segments) | ✅ Eulerian |
-| anisotropic supplied-`D` tensor | ✅ Eulerian |
-| comb on a `Surface.distance` field | ❌ field convects |
-| `metric_density_from_gradient` on a MeshVariable T | ❌ T convects |
+If you want **sharper bands at any cost** (over-refining beyond the
+Caffarelli optimum), the way to do it is **call `smooth_mesh_interior`
+manually multiple times** — each call sees the deformed mesh as if it
+were uniform (`patch=ones` internally) and pulls more. That reaches
+~3.7× far/band ratio in 2–3 passes for the comb. It's not strictly
+"the optimum" but it's stable, robust, and uses no special features.
 
-So for **fault-only** workflows the recommended setting is `n_outer=2,
-target_side_rho=True` (sharper, more on-line, validated). For **composed
-workflows including a gradient-T metric**, keep `n_outer=1`
-(`target_side_rho=True` is still safe and gives ~10–15% bulk coarsening).
+For composed metrics including a Lagrangian field (gradient(T), a
+`Surface.distance`-field comb): keep `n_outer=1` and don't iterate
+manually either — the feature would convect each pass and the bands
+would smear. The honest path to more refinement there is finer base
+mesh or `mesh.adapt`.
+
+**Don't use `target_side_rho=True`.** It exists in `_winslow_elliptic`
+as an experimental option (query ρ at the target position
+`x + ∇φ(x)` rather than the source). The Picard fixed-point coupling
+is much tighter than the default and the default `n_picard=25` is
+typically under-converged (it needs ~100+ iters for moderate-to-strong
+demand) — silently producing inconsistent results. Even when fully
+converged, it doesn't deliver sharper realised refinement than iterated
+source-side. Treat it as an internal experiment, not a user-facing
+lever.
 
 ### Scalar comb metric
 
