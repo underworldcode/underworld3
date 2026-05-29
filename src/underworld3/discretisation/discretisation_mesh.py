@@ -723,6 +723,14 @@ class Mesh(Stateful, uw_object):
 
         self._equation_systems_register = []
 
+        # Operator on_remesh(ctx) hooks (SemiLagrangian / Lagrangian DDt,
+        # solver-coupled history transfers). Stored as weakrefs so a
+        # forgotten operator does not keep the mesh holding it alive.
+        # The adapt op (smooth_mesh_interior / OT_adapt / follow_metric)
+        # fires these after the generic per-variable REMAP pass; see
+        # discretisation/remesh.py.
+        self._remesh_hooks = []
+
         self._evaluation_hash = None
         self._evaluation_interpolated_results = None
         self._dm_initialized = False
@@ -1757,7 +1765,31 @@ class Mesh(Stateful, uw_object):
     def nuke_coords_and_rebuild(
         self,
         verbose=False,
+        active_vars=None,
     ):
+        """Rebuild DM/DS, the kd-tree, mesh sizes, and per-variable DOF
+        coordinate caches after a coordinate change.
+
+        ``active_vars`` (optional set/list of MeshVariables): restrict
+        the per-variable DOF coordinate-cache recomputation to this set.
+        When ``None`` (default) every registered variable is
+        recomputed eagerly, matching the BUGFIX(#130) collective-safe
+        behaviour. Movers that thread their own work-vars through
+        ``_deform_mesh(..., active_vars=...)`` skip recomputing the
+        non-mover variables n_outer× during the inner sweep; the
+        wrapper does one final ``_deform_mesh`` (or a direct
+        ``nuke_coords_and_rebuild()``) with ``active_vars=None`` at
+        sweep exit to bring the full cache back into sync.
+
+        Naming note: "nuke and rebuild" historically referred to the
+        DS+DM tear-down/recreate; what was called "refill" of the
+        per-variable cache (line 1890 in the old code) is in fact
+        *recomputation* of each variable's DOF coordinates from the new
+        mesh coordinates — the storage is per-variable, the values are
+        derived. The ``active_vars`` whitelist controls which of those
+        recomputations runs now versus deferring to the next full
+        rebuild.
+        """
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
         #
         #
@@ -1881,13 +1913,34 @@ class Mesh(Stateful, uw_object):
         self.faces_outer_control_points = None
         self.faces_inner_control_points = None
 
-        # BUGFIX(#130): refill the coord cache for every already-registered
-        # variable. Variables created before this rebuild would otherwise
-        # have their cache entry (from __init__) wiped above and refill
-        # lazily from rank-local code paths (rbf_interpolate), which
-        # deadlocks when the collectives inside _get_coords_for_basis are
-        # reached by only a subset of ranks.
-        for _var in list(self.vars.values()):
+        # BUGFIX(#130): recompute the DOF coordinate cache for every
+        # already-registered variable. Variables created before this
+        # rebuild would otherwise have their cache entry (from __init__)
+        # wiped above and recompute lazily from rank-local code paths
+        # (rbf_interpolate), which deadlocks when the collectives
+        # inside _get_coords_for_basis are reached by only a subset of
+        # ranks.
+        #
+        # ``active_vars`` (Phase-1 remesh redesign): when set, restrict
+        # the recompute to the listed variables. Movers in
+        # smoothing.py thread their work-vars during the inner sweep so
+        # the n_outer× recompute of user fields (T, V, P, every
+        # psi_star, ...) is paid only once at sweep exit. The collective
+        # safety property (#130) is preserved because the mover is
+        # itself collective — every rank passes the same active set —
+        # and the sweep wrapper does one full recompute at exit.
+        if active_vars is None:
+            _recompute = list(self.vars.values())
+        else:
+            # Map identity-equal lookup; tolerate either base or wrapper
+            # variables in the whitelist (mesh.vars stores base vars but
+            # callers commonly pass the user-visible wrapper).
+            _ids = set()
+            for v in active_vars:
+                _ids.add(id(v))
+                _ids.add(id(getattr(v, "_base_var", None)))
+            _recompute = [v for v in self.vars.values() if id(v) in _ids]
+        for _var in _recompute:
             self._get_coords_for_var(_var)
 
         if verbose and uw.mpi.rank == 0:
@@ -1918,8 +1971,17 @@ class Mesh(Stateful, uw_object):
             if existing is not None:
                 self._projected_normals = existing
             else:
+                # REINIT policy: _n_proj is a recomputed-on-access work
+                # variable. The values depend on the *current* mesh
+                # geometry (Gamma normals projected onto P1 nodes), so
+                # the Phase-1 remesh helper should NOT REMAP — the value
+                # at old node positions is wrong on the new mesh.
+                # Recomputed below from Gamma; reset on every deform
+                # via the _projected_normals=None clearing in
+                # nuke_coords_and_rebuild.
                 self._projected_normals = uw.discretisation.MeshVariable(
                     "_n_proj", self, self.cdim, degree=1,
+                    remesh_policy="reinit",
                 )
 
         n = self._projected_normals
@@ -1998,12 +2060,67 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
 
-    def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False):
+    def register_remesh_hook(self, op):
+        """Register an operator's ``on_remesh(ctx)`` callback.
+
+        Called by the adapt op (``smooth_mesh_interior``, ``OT_adapt``,
+        ``follow_metric``) after the generic per-variable REMAP pass.
+        ``op`` must expose an ``on_remesh(ctx)`` method; ``ctx`` is a
+        :class:`~underworld3.discretisation.remesh.RemeshContext` with
+        the old/new coords, total displacement, ``dt``, and a scratch
+        dict for stashing things like ``v_mesh`` for the next solve.
+
+        Stored as a weak reference so operators that go out of scope are
+        cleaned up automatically. Idempotent: registering the same
+        operator twice is a no-op.
+        """
+        import weakref as _wr
+        # Drop any dead refs while we are here.
+        self._remesh_hooks = [r for r in self._remesh_hooks
+                              if (r() if isinstance(r, _wr.ReferenceType)
+                                  else r) is not None]
+        # De-dupe by identity.
+        for r in self._remesh_hooks:
+            cur = r() if isinstance(r, _wr.ReferenceType) else r
+            if cur is op:
+                return
+        try:
+            self._remesh_hooks.append(_wr.ref(op))
+        except TypeError:
+            # Some objects can't be weak-referenced (e.g. certain C
+            # extension types). Store strongly as a fallback — the
+            # caller takes responsibility for unregistering.
+            self._remesh_hooks.append(op)
+
+    def unregister_remesh_hook(self, op):
+        """Drop an operator's ``on_remesh`` registration. Idempotent."""
+        import weakref as _wr
+        kept = []
+        for r in self._remesh_hooks:
+            cur = r() if isinstance(r, _wr.ReferenceType) else r
+            if cur is None or cur is op:
+                continue
+            kept.append(r)
+        self._remesh_hooks = kept
+
+    def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
+                     active_vars=None):
         """
         This method will update the mesh coordinates and reset any cached coordinates in
         the mesh and in equation systems that are registered on the mesh.
 
         The coord array that is passed in should match the shape of self.data
+
+        ``active_vars`` (optional): restrict the per-variable DOF
+        coordinate-cache recomputation in
+        :meth:`nuke_coords_and_rebuild` to this set of variables. The
+        default ``None`` preserves today's behaviour — every registered
+        variable's coord cache is recomputed eagerly, which is the
+        BUGFIX(#130) collective-safe path. Movers that opt in pass their
+        own work-vars during the inner sweep (skipping non-mover-var
+        recompute n_outer×); the wrapper does a full recompute once at
+        sweep exit by calling ``_deform_mesh`` again with
+        ``active_vars=None``.
         """
 
         with self._mesh_update_lock:
@@ -2012,7 +2129,7 @@ class Mesh(Stateful, uw_object):
             coords[...] = new_coords[...]
 
             self.dm.setCoordinatesLocal(coord_vec)
-            self.nuke_coords_and_rebuild()
+            self.nuke_coords_and_rebuild(active_vars=active_vars)
 
             # Rebuild the _coords array view.  nuke_coords_and_rebuild may
             # replace the coordinate vector internally (createCoordinateSpace),
@@ -3463,12 +3580,12 @@ class Mesh(Stateful, uw_object):
             *different* cell (whose diff is strongly negative). The
             parallel evaluation locator
             (``Mesh._robust_owning_cells``) uses ``tol=1e-2`` to admit
-            on-face / partition-seam node queries that PR #207's
-            ``on_boundary=True`` path (absolute 1e-12) is too tight to
-            accept — for query coordinates that are slightly off the
-            face (e.g. RBF-shifted node points), the geometric scale of
-            the test needs to match the *mesh* spacing, not float
-            roundoff. See memory project_pr207_loose_boundary_clash.
+            on-face / partition-seam node queries that ``on_boundary=True``'s
+            absolute 1e-12 floor is too tight to accept — for query
+            coordinates slightly off the face (e.g. RBF-shifted node
+            points), the geometric scale of the test needs to match the
+            *mesh* spacing, not float roundoff. See memory
+            project_pr207_loose_boundary_clash.
         """
         # Internal version - points assumed to already be in model units
         self._mark_faces_inside_and_out()
@@ -3653,18 +3770,37 @@ class Mesh(Stateful, uw_object):
         far_from_domain = dist2 > self._domain_radius_squared
         in_or_not[far_from_domain] = False
 
-        # Points close to the boundary need the expensive cell-location check
+        # Points close to the boundary need the expensive cell-location check.
+        #
+        # The plain cell-wall test (_get_closest_local_cells_internal) returns
+        # -1 for points sitting exactly on a cell face/edge OR on the domain
+        # boundary — even though an on-boundary point is in the (closed) domain.
+        # That rejection is what strands on-face / partition-seam / domain-
+        # boundary NODE points in swarm migration (they are never "claimed", so
+        # the domain-centroid routing leaves them on a non-containing rank) and
+        # what routes them to rank-local RBF in evaluation. On parallel simplex
+        # / manifold meshes (mesh._eval_use_robust_location()) defer instead to
+        # the bulletproof barycentric locator, which returns a valid adjacent
+        # cell (>= 0) for any point genuinely in/on the mesh and -1 only for
+        # true exterior. Serial / non-simplex keep the cell-wall test
+        # (bit-identical to the validated baseline).
         near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
         near_boundary_points = model_points[near_boundary]
 
-        in_or_not[near_boundary] = (
-            self._get_closest_local_cells_internal(near_boundary_points) != -1
-        )
+        if self._eval_use_robust_location():
+            in_or_not[near_boundary] = self._robust_owning_cells(near_boundary_points) >= 0
+        else:
+            in_or_not[near_boundary] = (
+                self._get_closest_local_cells_internal(near_boundary_points) != -1
+            )
 
         if strict_validation:
             chosen_ones = numpy.where(in_or_not == True)[0]
             chosen_points = model_points[chosen_ones]
-            in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
+            if self._eval_use_robust_location():
+                in_or_not[chosen_ones] = self._robust_owning_cells(chosen_points) >= 0
+            else:
+                in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
 
         return in_or_not
 
@@ -3725,6 +3861,16 @@ class Mesh(Stateful, uw_object):
         be exactly the owning cell, but if the mesh is deformed, this
         is not guaranteed. Also compares the distance from the cell to the
         point - if this is larger than the "cell size" then returns -1
+
+        ``on_boundary`` and ``tol`` are forwarded to the in-cell
+        containment test (see ``_test_if_points_in_cells_internal``).
+        Default ``(on_boundary=True, tol=0.0)`` admits on-face queries
+        at PR #207's absolute -1e-12 floor — the FE-evaluation-natural
+        semantics. Pass ``on_boundary=False`` for strict-inside (a
+        point exactly on a face returns -1). ``tol > 0`` admits on-face
+        points at an absolute -1e-12 floor (matches PR #207). ``tol > 0``
+        admits on-face points at a face-relative tolerance, taking
+        precedence over ``on_boundary``.
 
         Parameters:
         -----------
@@ -3919,6 +4065,70 @@ class Mesh(Stateful, uw_object):
         # Call internal implementation
         return self._get_closest_local_cells_internal(
             model_coords, on_boundary=on_boundary, tol=tol,
+        )
+
+    # Face tolerance for the parallel evaluation locator (relative to the
+    # control-point separation). Tight: it admits points genuinely on a
+    # cell face/edge (containment value ~0) but rejects points sitting inside
+    # a *different* cell (value strongly negative), so a rank never claims a
+    # point another rank owns. A point in the (closed) domain is then found by
+    # exactly one rank (verified: 360/360, owners==1), and the migration routes
+    # it to that owner.
+    _EVAL_FACE_TOL = 1.0e-2
+
+    def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+        """Per-point owning cell for parallel evaluation (coords in model units).
+
+        This is the strict barycentric/cell-wall locator
+        (:meth:`_get_closest_local_cells_internal`) with a *tight* face
+        tolerance (``_EVAL_FACE_TOL``): it returns the containing cell for
+        interior points and a valid sharing cell for genuinely-on-face points,
+        and ``-1`` for points that lie inside a *different* cell or outside the
+        local mesh. Crucially it does **not** fall back to a bounding-sphere
+        "nearest cell" — that earlier fallback let a rank claim a point that
+        another rank actually owns, so the eval-swarm migration stranded it on
+        the wrong rank and ξ-clamp-evaluated it in an adjacent cell (the
+        partition-seam hotspots). With the strict+tol locator the point is
+        found only by its true owner, the migration delivers it there, and it
+        evaluates exactly.
+
+        Never calls PETSc ``DMLocatePoints`` (slow, raises out-of-domain), and
+        is purely kd-tree / Euclidean — manifold-safe, no manifold branch.
+        """
+        coords = numpy.asarray(coords)
+        if coords.shape[0] == 0:
+            return numpy.array([], dtype=numpy.int64)
+        return numpy.asarray(
+            self._get_closest_local_cells_internal(coords, tol=self._EVAL_FACE_TOL),
+            dtype=numpy.int64,
+        )
+
+    def _eval_use_robust_location(self) -> bool:
+        """Single switch for the parallel evaluation cell-location strategy.
+
+        Returns True when ``uw.function`` evaluation should locate cells with
+        the bulletproof barycentric hint (:meth:`_robust_owning_cells`) and the
+        ``DMLocatePoints`` bypass (``petsc_tools.c``), rather than PETSc's
+        ``DMLocatePoints``. This is the *one place* the policy lives; the
+        evaluate_nd classifier, the petsc_interpolate hint, and the
+        DMInterpolation wrapper all defer to it so the three stay consistent.
+
+        Two conditions, both required:
+
+        * **parallel only** (``uw.mpi.size > 1``) — in serial the on-face/edge
+          node points go to RBF-at-node (exact) and PETSc/the cell-wall test
+          are reliable with a single domain, so serial keeps the validated path
+          bit-for-bit. The parallel-only failure is the rank-local RBF / wrong-
+          region value at partition-seam node points.
+        * **hint is authoritative** — simplex cells (``dm.isSimplex()``: planar
+          faces, affine reference map, exact face containment) or manifold
+          meshes (``dim != cdim``: PETSc's in-cell test is unreliable near
+          2-manifold simplex edges in 3-D). On non-simplex volume meshes
+          (quads/hexes) deformed faces can be non-planar and the kdtree-nearest
+          cell can be wrong, so those keep PETSc's DMLocatePoints search.
+        """
+        return (uw.mpi.size > 1) and (
+            bool(self.dm.isSimplex()) or (self.dim != self.cdim)
         )
 
     def _get_mesh_sizes(self, verbose=False):

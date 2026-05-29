@@ -445,8 +445,27 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     # appropriate skip-or-adapt criterion in a dynamic loop.
     log_density = -np.log(A_actual)
     log_rho = np.log(rho)
-    if log_density.std() > 1.0e-12 and log_rho.std() > 1.0e-12:
-        alignment = float(np.corrcoef(log_density, log_rho)[0, 1])
+    # Pearson r of log(1/A_c) vs log(rho_c), from GLOBAL moment sums. Cells are
+    # partitioned across ranks, so a rank-local np.corrcoef yields a DIFFERENT
+    # alignment on each rank — the skip/adapt decision in smooth_mesh_interior
+    # then diverges across ranks and the (collective) mover deadlocks. Reducing
+    # the moments makes every rank agree. Serial: identical to np.corrcoef (the
+    # 1/n normalisation cancels in the ratio).
+    if _uw.mpi.size > 1:
+        _ar = lambda v: _uw.mpi.comm.allreduce(float(v))
+    else:
+        _ar = float
+    n_c = _ar(log_density.size)
+    sx = _ar(log_density.sum()); sy = _ar(log_rho.sum())
+    sxx = _ar((log_density * log_density).sum())
+    syy = _ar((log_rho * log_rho).sum())
+    sxy = _ar((log_density * log_rho).sum())
+    var_x = sxx / n_c - (sx / n_c) ** 2
+    var_y = syy / n_c - (sy / n_c) ** 2
+    if var_x > 1.0e-24 and var_y > 1.0e-24:
+        alignment = float((sxy / n_c - (sx / n_c) * (sy / n_c))
+                          / np.sqrt(var_x * var_y))
+        alignment = max(-1.0, min(1.0, alignment))
     else:
         alignment = 0.0
     # Misalignment: 0 = perfectly aligned, 1 = orthogonal.
@@ -856,9 +875,20 @@ _OT_CACHE: dict = {}
 _GEMA_STATE: dict = {}
 
 
-def _use_direct_solver(solver, singular=False):
+def _use_direct_solver(solver, singular=False, elliptic=True):
     r"""Force a cached MA sub-solver onto a sparse **direct** factorisation
     (MUMPS LU) instead of the UW3 default GMRES + GAMG.
+
+    **Parallel safety (parallel-singular-corruption, 2026-05-27):** MUMPS
+    (the only parallel LU in this build) corrupts the heap when the same
+    factorisation path is exercised over *repeated* solves at np >= 3 — a
+    probabilistic SEGV/SIGBUS or MPI deadlock (the UW3 default GMRES+GAMG, which
+    never calls MUMPS, is clean). Since the movers re-solve in a Picard/outer
+    loop, MUMPS is unusable in parallel here. Under MPI this function therefore
+    falls back to the MUMPS-free iterative path (:func:`_use_iterative_solver`);
+    the direct MUMPS path below is kept for the validated **serial** efficiency
+    lever. ``elliptic`` is forwarded to the iterative fallback (φ-Poisson →
+    GAMG; mass systems → CG+Jacobi).
 
     Why this is the dominant MA-efficiency lever (profiled 2026-05-17,
     res-16 Annulus, AMP=8, warm re-call): the Picard loop fixes the
@@ -879,6 +909,12 @@ def _use_direct_solver(solver, singular=False):
     the iterative path produced — but it also eliminates the
     GAMG-on-pure-Neumann ``DIVERGED_LINEAR_SOLVE`` re-solve pathology.
     """
+    # Parallel: MUMPS-repeated corrupts the heap (see docstring) — use the
+    # MUMPS-free iterative path instead. Serial keeps the fast direct solve.
+    if uw.mpi.size > 1:
+        _use_iterative_solver(solver, singular=singular, elliptic=elliptic)
+        return
+
     o = solver.petsc_options
     # These three sub-problems are *linear* (φ Poisson with the Hessian
     # source frozen; the SPD Hessian-recovery mass system; the ∇φ
@@ -1007,8 +1043,22 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
         o["mg_levels_ksp_type"] = "richardson"
         o["mg_levels_pc_type"] = "sor"
         o["mg_levels_ksp_max_it"] = 4
-        o["mg_coarse_pc_type"] = "lu"
-        o["mg_coarse_pc_factor_mat_solver_type"] = "mumps"
+        # GAMG coarse solve. MUMPS (parallel LU) corrupts the heap over repeated
+        # parallel solves (parallel-singular-corruption) — so in parallel use a
+        # MUMPS-free coarse: `redundant` replicates the (tiny) coarse grid to
+        # every rank and solves it with a dense SVD, which is robust on the
+        # singular pure-Neumann coarse and never calls MUMPS (verified clean +
+        # convergent at np=5). Serial keeps the fast MUMPS coarse.
+        for k in ("mg_coarse_pc_factor_mat_solver_type",
+                  "mg_coarse_redundant_pc_type"):
+            try: o.delValue(k)
+            except Exception: pass
+        if uw.mpi.size > 1:
+            o["mg_coarse_pc_type"] = "redundant"
+            o["mg_coarse_redundant_pc_type"] = "svd"
+        else:
+            o["mg_coarse_pc_type"] = "lu"
+            o["mg_coarse_pc_factor_mat_solver_type"] = "mumps"
     else:
         o["ksp_type"] = "cg"              # consistent mass = SPD
         o["pc_type"] = "jacobi"           # mass matrix → trivial
@@ -1016,26 +1066,79 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
                   "pc_gamg_agg_nsmooths", "pc_gamg_threshold",
                   "mg_levels_ksp_type", "mg_levels_pc_type",
                   "mg_levels_ksp_max_it", "mg_coarse_pc_type",
-                  "mg_coarse_pc_factor_mat_solver_type"):
+                  "mg_coarse_pc_factor_mat_solver_type",
+                  "mg_coarse_redundant_pc_type"):
             try:
                 o.delValue(k)
             except Exception:
                 pass
 
 
-def _patch_volumes(tris, coords, n_verts):
+def _patch_volumes(tris, coords, n_verts, vol_field=None):
     """Per-vertex dual-patch area: a node's share (1/3) of every
     incident triangle's |area|. ρ_cur ∝ 1/patch for the (opt-in,
     n_outer>1) outer MA composition; at equidistribution
-    ``patch · ρ_tgt`` is uniform. Serial-exact (parallel under-counts
-    at rank-partition boundaries — acceptable for serial validation).
+    ``patch · ρ_tgt`` is uniform.
+
+    This quantity is exactly the **lumped P1 mass diagonal** ``M_ii = ∫ N_i dV``.
+    The hand-rolled local sum below is serial-exact, but **under-counts shared
+    vertices on rank-partition boundaries in parallel** — each rank only adds its
+    own incident triangles and never sums the neighbouring rank's. So in parallel
+    we assemble it through the FE mass matrix instead (``_lumped_vertex_volumes``),
+    where PETSc does the cross-rank ``localToGlobal(ADD)`` for us. Requires the
+    P1 ``vol_field``; falls back to the local sum when it is not supplied.
     """
+    if vol_field is not None and uw.mpi.size > 1:
+        return _lumped_vertex_volumes(vol_field)
     area = np.abs(_signed_areas(coords, tris)) / 3.0
     patch = np.zeros(n_verts, dtype=np.double)
     for k in range(3):
         np.add.at(patch, tris[:, k], area)
     patch[patch <= 0.0] = patch[patch > 0.0].mean()
     return patch
+
+
+def _lumped_vertex_volumes(vol_field):
+    r"""Parallel-correct per-vertex dual-patch volume = the lumped P1 mass
+    diagonal ``M_ii = ∫ N_i dV`` of ``vol_field``'s (P1, continuous, scalar)
+    space, assembled via the FE mass matrix so the cross-rank sum over shared
+    partition-boundary vertices is done by PETSc — unlike the hand-rolled local
+    sum in :func:`_patch_volumes`, which under-counts those vertices in parallel.
+
+    Identity: by partition of unity (``Σ_j N_j ≡ 1``) the consistent mass matrix
+    has row sums ``Σ_j M_ij = ∫ N_i Σ_j N_j = ∫ N_i dV``, i.e. the lumped diagonal
+    is ``M·1``.
+
+    TODO(petsc4py): PETSc has a purpose-built
+    ``DMCreateMassMatrixLumped(dm, &llm, &lm)`` that returns this lumped diagonal
+    directly (with the cross-rank ADD built in), but petsc4py (3.25) does not bind
+    it yet — only the *consistent* ``DM.createMassMatrix`` is exposed, hence the
+    ``M·1`` below. Replace this body with ``subdm.createMassMatrixLumped()`` once
+    petsc4py exposes that DM method.
+
+    Returns a per-vertex numpy array in ``vol_field``'s local DOF ordering (the
+    same depth-0 vertex ordering the movers use for ``vol_field.array``).
+    """
+    mesh = vol_field.mesh
+    indexset, subdm = mesh.dm.createSubDM(vol_field.field_id)
+    M = subdm.createMassMatrix(subdm)      # consistent P1 mass (FE-assembled, parallel-correct)
+    ones = M.createVecRight()
+    ones.set(1.0)
+    lumped = M.createVecLeft()
+    M.mult(ones, lumped)                   # M·1 = row sums = lumped diagonal
+    lvec = subdm.getLocalVec()
+    subdm.globalToLocal(lumped, lvec, addv=False)
+    out = np.asarray(lvec.array).copy()
+    subdm.restoreLocalVec(lvec)
+    for obj in (M, ones, lumped, indexset, subdm):
+        try:
+            obj.destroy()
+        except Exception:
+            pass
+    pos = out > 0.0
+    if not pos.all():
+        out[~pos] = out[pos].mean()
+    return out
 
 
 def _hessian_recovery_class():
@@ -1166,7 +1269,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
         phi = uw.discretisation.MeshVariable(
             f"winslow_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1322,7 +1425,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                 return Y
 
         if tris is not None and n_outer > 1:
-            patch = _patch_volumes(tris, old_coords, n_verts)
+            patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
             patch /= float(np.mean(patch))
         else:
             patch = np.ones(n_verts, dtype=np.double)
@@ -1368,7 +1471,13 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         # Picard φ (it changes slowly under ω-relaxation) → a handful
         # of CG iters on the once-built hierarchy. The exact direct
         # path is indifferent to the initial guess.
-        _zig = (linear_solver != "gamg")
+        # Under MPI, ``linear_solver="direct"`` silently falls back to
+        # the iterative path inside ``_use_direct_solver`` (the
+        # MUMPS-heap-corruption guard at smoothing.py:914); honour the
+        # warm-start in that case too — otherwise the parallel mover
+        # pays extra Krylov iterations per Picard step for nothing.
+        _zig = not (linear_solver == "gamg"
+                    or (linear_solver == "direct" and uw.mpi.size > 1))
         prev_change = None
         # If target-side ρ is on, gradphi needs to be tracking the
         # current φ inside the Picard loop (it's used by ps.f via
@@ -1575,7 +1684,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
         phi = uw.discretisation.MeshVariable(
             f"ot_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1606,7 +1715,11 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
     else:
         phi, ps, gradphi, gproj, vol_field = cache
 
-    _zig = (linear_solver != "gamg")
+    # See _winslow_elliptic for the rationale on this combined check —
+    # ``linear_solver="direct"`` silently routes to the iterative path
+    # under MPI, so honour the warm-start there too.
+    _zig = not (linear_solver == "gamg"
+                or (linear_solver == "direct" and uw.mpi.size > 1))
 
     for outer in range(n_outer):
         dm = mesh.dm
@@ -1670,7 +1783,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
         if tris is None:
             patch = np.ones(n_verts, dtype=np.double)
         else:
-            patch = _patch_volumes(tris, old_coords, n_verts)
+            patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
         # Normalise so the mean over the domain is the cell mean.
         patch_mean = float(np.mean(patch))
         if uw.mpi.size > 1:
@@ -1955,7 +2068,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
 
         X = mesh.CoordinateSystem.X
         # Projected ∇ρ — first derivative only (UW3-clean), the
@@ -2027,7 +2140,11 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     else:
         grho, gproj, Df, usolvers, ufields = cache
 
-    _zig = (linear_solver != "gamg")
+    # See _winslow_elliptic for rationale — ``linear_solver="direct"``
+    # silently falls back to the iterative path under MPI, so honour
+    # the warm-start there too.
+    _zig = not (linear_solver == "gamg"
+                or (linear_solver == "direct" and uw.mpi.size > 1))
 
     # ---- build the eigen-clamped metric tensor field D ONCE ------
     # on the *undeformed* mesh (the design metric), then hold it
@@ -2825,6 +2942,71 @@ def smooth_mesh_interior(
         f = 1 + 8 * sympy.exp(-((r0.sym[0] - 1.0) / 0.12) ** 2)
         smooth_mesh_interior(mesh, metric=f)
     """
+    # Phase-1 remesh redesign: the adapt op now owns field transfer.
+    # Wrap the mover body so every REMAP-policy variable on the mesh is
+    # snapshotted, the mover runs, and a single deform-back /
+    # global_evaluate / deform-forward pair carries every variable onto
+    # the adapted node positions. Re-entrancy guard
+    # ``mesh._in_remesh_transfer`` lets composite adapts (OT_adapt) wrap
+    # the whole reset+build+smooth dance once at the outer level and
+    # have this inner call skip its own wrap.
+    if not getattr(mesh, "_in_remesh_transfer", False):
+        from underworld3.discretisation.remesh import (
+            remesh_with_field_transfer)
+        def _do_move():
+            _smooth_mesh_interior_bare(
+                mesh,
+                pinned_labels=pinned_labels,
+                n_iters=n_iters,
+                alpha=alpha,
+                metric=metric,
+                method=method,
+                boundary_slip=boundary_slip,
+                method_kwargs=method_kwargs,
+                verbose=verbose,
+                skip_threshold=skip_threshold,
+                strategy=strategy,
+            )
+        remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
+        return
+    # Re-entrant call from inside a composite adapt op: fall through to
+    # the bare mover.
+    _smooth_mesh_interior_bare(
+        mesh,
+        pinned_labels=pinned_labels,
+        n_iters=n_iters,
+        alpha=alpha,
+        metric=metric,
+        method=method,
+        boundary_slip=boundary_slip,
+        method_kwargs=method_kwargs,
+        verbose=verbose,
+        skip_threshold=skip_threshold,
+        strategy=strategy,
+    )
+
+
+def _smooth_mesh_interior_bare(
+    mesh,
+    pinned_labels: Optional[Sequence[str]] = None,
+    n_iters: int = 5,
+    alpha: float = 0.5,
+    metric=None,
+    method: str = "spring",
+    boundary_slip: bool = False,
+    method_kwargs: Optional[dict] = None,
+    verbose: bool = False,
+    skip_threshold=_UNSET,
+    strategy: Optional[str] = None,
+):
+    """Internal mover dispatch — no transfer, no helper wrap.
+
+    Identical to the body of :func:`smooth_mesh_interior` minus the
+    Phase-1 transfer wrap. Composite adapt ops (``_ot_adapt_step``,
+    ``follow_metric``) own the wrap at their level and call this bare
+    form to avoid nesting the snapshot/restore dance. End-users should
+    keep using :func:`smooth_mesh_interior`.
+    """
     if pinned_labels is None:
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)
@@ -2873,18 +3055,30 @@ def smooth_mesh_interior(
             # log(1/A_c) vs log(ρ_c). 0 ⇒ mesh density is
             # perfectly aligned with the metric; 1 ⇒ uncorrelated.
             # Skip when misalignment is below threshold.
-            if mm["misalignment"] < float(skip_threshold):
-                if verbose:
+            #
+            # COLLECTIVE remesh decision: the mover is a collective operation,
+            # so the skip/adapt choice MUST be unanimous or the ranks deadlock.
+            # `misalignment` is reduced globally (mesh_metric_mismatch) so it is
+            # already identical on every rank; the OR-reduction below is the
+            # belt-and-suspenders guarantee that **if any rank needs to remesh,
+            # all ranks remesh** (and all skip together otherwise).
+            _need_adapt = mm["misalignment"] >= float(skip_threshold)
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                _need_adapt = bool(uw.mpi.comm.allreduce(
+                    int(_need_adapt), op=_MPI.MAX))
+            if not _need_adapt:
+                if verbose and uw.mpi.rank == 0:
                     print(f"  smooth_mesh_interior: skipping "
                           f"(misalignment {mm['misalignment']:.3f} "
-                          f"< threshold {skip_threshold:.3f}; "
+                          f"< threshold {float(skip_threshold):.3f}; "
                           f"alignment r={mm['alignment']:.3f})",
                           flush=True)
                 return
-            if verbose:
+            if verbose and uw.mpi.rank == 0:
                 print(f"  smooth_mesh_interior: adapting "
                       f"(misalignment {mm['misalignment']:.3f} ≥ "
-                      f"threshold {skip_threshold:.3f}; "
+                      f"threshold {float(skip_threshold):.3f}; "
                       f"alignment r={mm['alignment']:.3f})",
                       flush=True)
         if method == "spring":
@@ -3672,57 +3866,73 @@ def follow_metric(
     if method_kwargs:
         mover_kwargs.update(method_kwargs)
 
-    old_X = np.asarray(mesh.X.coords).copy()
-    smooth_mesh_interior(
-        mesh,
-        metric=rho,
-        method="anisotropic",
-        method_kwargs={**mover_kwargs, "resolution_ratio": R},
-        skip_threshold=skip_threshold,
-        verbose=verbose,
-    )
-    new_X = np.asarray(mesh.X.coords)
-    moved = not np.allclose(new_X, old_X)
-    # ADAPTIVE Jacobi polish: gentle graph-Laplacian smoothing
-    # of interior nodes toward neighbour-centroid average,
-    # repeated until the worst cell-shape quality
-    #
-    #     q = 4√3 · A / (e₀² + e₁² + e₂²)
-    #
-    # exceeds ``polish_quality_target`` (default 0.3 — the
-    # threshold below which cells look like visible slivers; an
-    # equilateral has q=1, a degenerate sliver q→0). Capped at
-    # ``polish_max_iters`` so pathological cases can't run away.
-    #
-    # The polish doesn't significantly undo the metric
-    # distribution (each step is averaging toward neighbours,
-    # not enforcing any spatial target), so the BL refinement
-    # stays intact while sliver cells get rounded out.
-    # `polish_max_iters=0` disables entirely.
-    if moved and polish_max_iters > 0:
-        tris_polish = _tri_cells(mesh.dm)
-        for _polish_iter in range(int(polish_max_iters)):
-            # Check current shape quality
-            p = np.asarray(mesh.X.coords)[tris_polish]
-            e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
-            e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
-            e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
-            A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
-                                       tris_polish))
-            q = (4.0 * np.sqrt(3.0) * A
-                 / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
-            q_min = float(q.min())
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                q_min = uw.mpi.comm.allreduce(
-                    q_min, op=_MPI.MIN)
-            if verbose:
-                uw.pprint(
-                    f"  follow_metric polish iter {_polish_iter}: "
-                    f"q_min={q_min:.3f} (target {polish_quality_target:.2f})")
-            if q_min >= float(polish_quality_target):
-                break
-            smooth_mesh_interior(
-                mesh, n_iters=1, alpha=float(polish_alpha))
-    return moved
+    # Phase-1 remesh redesign: wrap the whole anisotropic-move + polish
+    # pipeline in a single field-transfer pass at this composite level.
+    # The inner smooth_mesh_interior calls see ``mesh._in_remesh_transfer``
+    # set by the helper and skip their own wrap, so REMAP variables
+    # (including hidden solver history) are transferred exactly once,
+    # after the polish.
+    from underworld3.discretisation.remesh import (
+        remesh_with_field_transfer)
+    _state = {"moved": False}
+
+    def _do_move():
+        _old_X = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(
+            mesh,
+            metric=rho,
+            method="anisotropic",
+            method_kwargs={**mover_kwargs, "resolution_ratio": R},
+            skip_threshold=skip_threshold,
+            verbose=verbose,
+        )
+        _new_X = np.asarray(mesh.X.coords)
+        _state["moved"] = not np.allclose(_new_X, _old_X)
+        _polish(_state["moved"])
+
+    def _polish(moved):
+        # ADAPTIVE Jacobi polish: gentle graph-Laplacian smoothing
+        # of interior nodes toward neighbour-centroid average,
+        # repeated until the worst cell-shape quality
+        #
+        #     q = 4√3 · A / (e₀² + e₁² + e₂²)
+        #
+        # exceeds ``polish_quality_target`` (default 0.3 — the
+        # threshold below which cells look like visible slivers; an
+        # equilateral has q=1, a degenerate sliver q→0). Capped at
+        # ``polish_max_iters`` so pathological cases can't run away.
+        #
+        # The polish doesn't significantly undo the metric
+        # distribution (each step is averaging toward neighbours,
+        # not enforcing any spatial target), so the BL refinement
+        # stays intact while sliver cells get rounded out.
+        # `polish_max_iters=0` disables entirely.
+        if moved and polish_max_iters > 0:
+            tris_polish = _tri_cells(mesh.dm)
+            for _polish_iter in range(int(polish_max_iters)):
+                # Check current shape quality
+                p = np.asarray(mesh.X.coords)[tris_polish]
+                e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
+                e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
+                e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
+                A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
+                                           tris_polish))
+                q = (4.0 * np.sqrt(3.0) * A
+                     / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
+                q_min = float(q.min())
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    q_min = uw.mpi.comm.allreduce(
+                        q_min, op=_MPI.MIN)
+                if verbose:
+                    uw.pprint(
+                        f"  follow_metric polish iter {_polish_iter}: "
+                        f"q_min={q_min:.3f} (target {polish_quality_target:.2f})")
+                if q_min >= float(polish_quality_target):
+                    break
+                smooth_mesh_interior(
+                    mesh, n_iters=1, alpha=float(polish_alpha))
+
+    remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
+    return _state["moved"]
 

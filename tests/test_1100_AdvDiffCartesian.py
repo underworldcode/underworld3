@@ -105,9 +105,14 @@ U_a_x = (
                     "boundary queries now route through FE evaluation — the more accurate path, "
                     "but the test was tuned to the legacy RBF-smoothed result. Needs reworking "
                     "to use a smoother IC (e.g. error-function starting at t > 0 with a "
-                    "meaningful transport distance) before it can pass under the new semantics."
+                    "meaningful transport distance) before it can pass under the new semantics. "
+                    "strict=False because the parallel-locator path on this branch "
+                    "(bugfix/parallel-singular-corruption) routes serial queries slightly "
+                    "differently from PR #207 alone, sometimes nudging the result back inside "
+                    "the atol=0.05 tolerance. Either outcome (xfail or xpassed) is acceptable "
+                    "until the test is reworked."
                 ),
-                strict=True,
+                strict=False,
             ),
         ),
         "mesh1",
