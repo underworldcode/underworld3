@@ -288,3 +288,79 @@ def test_tensor_variable_repacking(tmp_path):
     _check_xdmf_refs(xdmf_file, str(tmp_path))
 
     del mesh
+
+
+# ---------------------------------------------------------------------------
+# Test: Valid /viz/topology connectivity generation
+# ---------------------------------------------------------------------------
+
+
+def test_xdmf_viz_topology_written_correctly(tmp_path):
+    """Verify that write_timestep correctly writes /viz/topology/cells and XDMF points to it."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(3, 3))
+    
+    # Write just the mesh (no vars needed to test mesh topology)
+    mesh.write_timestep("test_topo", index=0, outputPath=str(tmp_path))
+
+    mesh_h5 = os.path.join(str(tmp_path), "test_topo.mesh.00000.h5")
+    assert _check_h5_group_exists(mesh_h5, "viz/topology/cells"), (
+        "Mesh HDF5 must contain the /viz/topology/cells dataset"
+    )
+    assert _check_h5_group_exists(mesh_h5, "viz/geometry/vertices"), (
+        "Mesh HDF5 must contain the /viz/geometry/vertices dataset"
+    )
+
+    # Validate cell-to-vertex connectivity bounds
+    cells = _read_h5_dataset(mesh_h5, "viz/topology/cells")
+    vertices = _read_h5_dataset(mesh_h5, "viz/geometry/vertices")
+    
+    num_vertices = vertices.shape[0]
+    assert cells.max() < num_vertices, (
+        f"Invalid topology: cells max ({cells.max()}) must be < numVertices ({num_vertices})"
+    )
+    assert cells.min() >= 0, "Invalid topology: cells indices cannot be negative"
+
+    # Validate XDMF actually points to the viz group, not the raw DMPlex group
+    xdmf_file = os.path.join(str(tmp_path), "test_topo.mesh.00000.xdmf")
+    assert os.path.exists(xdmf_file), "XDMF file should exist"
+    
+    with open(xdmf_file, "r") as f:
+        xdmf_content = f.read()
+    
+    assert "/viz/topology/cells" in xdmf_content, (
+        "XDMF file should explicitly point to /viz/topology/cells"
+    )
+    assert "/viz/geometry/vertices" in xdmf_content, (
+        "XDMF file should explicitly point to /viz/geometry/vertices"
+    )
+
+    del mesh
+
+
+def test_xdmf_viz_topology_3d_written_correctly(tmp_path):
+    """Verify that write_timestep correctly writes /viz/topology/cells for 3D meshes."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2, 2))
+    
+    # Write just the mesh
+    mesh.write_timestep("test_topo_3d", index=0, outputPath=str(tmp_path))
+
+    mesh_h5 = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.h5")
+    assert _check_h5_group_exists(mesh_h5, "viz/topology/cells"), (
+        "3D Mesh HDF5 must contain the /viz/topology/cells dataset"
+    )
+
+    # Validate connectivity
+    cells = _read_h5_dataset(mesh_h5, "viz/topology/cells")
+    vertices = _read_h5_dataset(mesh_h5, "viz/geometry/vertices")
+    
+    num_vertices = vertices.shape[0]
+    assert cells.max() < num_vertices, "Invalid 3D topology bounds"
+    
+    xdmf_file = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.xdmf")
+    assert os.path.exists(xdmf_file)
+    with open(xdmf_file, "r") as f:
+        assert "/viz/topology/cells" in f.read()
+
+    del mesh
