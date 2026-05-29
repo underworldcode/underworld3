@@ -1031,6 +1031,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         return
 
+    # TODO(BUG): Stale proxy DM after swarm data write
+    # _update() marks proxy as stale, but _update_proxy_if_stale() (lazy
+    # re-interpolation) only fires when material.sym is accessed. Code that
+    # reads the proxy MeshVariable DM directly (e.g. a Projection solver
+    # evaluating its uw_function at quadrature points) gets stale data.
+    # See GitHub issue #215 (Bug 3).
     def _update_proxy_if_stale(self):
         """
         Actually update the proxy mesh variable if it's marked as stale.
@@ -3572,6 +3578,7 @@ class Swarm(Stateful, uw_object):
 
         # Invalidate cached data — particle count changed after addNPoints + migrate
         self._particle_coordinates._canonical_data = None
+        self._kdtree = None  # issue #215, Bug 1: stale kd-tree after add_particles_with_coordinates
         for var in self._vars.values():
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
