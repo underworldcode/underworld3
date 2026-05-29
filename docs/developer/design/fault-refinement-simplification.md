@@ -448,6 +448,155 @@ local minimum.
   centred on the line. The pre-placement recipe is specifically
   for the close-paired regime where overlap matters.
 
+## Update 2026-05-29: smooth-aid, plain Picard, fat band for moving faults
+
+```{note}
+This section supersedes the earlier "n_picard=25 is a feature" and
+"Anderson acceleration" framings further up. Those findings were
+*directionally* correct (under-converged Picard helps escape local
+minima, Anderson does accelerate per-iteration descent) but the
+recipe that actually works robustly across geometries — and so
+qualifies as a *user-facing default* — turns out to be different.
+```
+
+### The mover misses one fault without a smooth aid
+
+The sharpest finding of this update. Cold-start with a single sharp
+narrow Gaussian per fault (the previous design), and no wide
+pre-pass, the mover **catastrophically misses one of two close
+faults** — only the first one gets a refinement band, the second
+is uniformly meshed. Adding a low-amplitude wide Gaussian on top of
+the sharp narrow one provides a non-trivial $\nabla \rho$ everywhere
+in the fault neighbourhood. With the smooth aid, both faults get
+their bands; without it, the mover's equidistribution invariant is
+satisfied by a one-band solution.
+
+The recommended target metric is therefore **always** a sum of two
+Gaussians: a sharp peak for localisation, a smooth halo for "find
+the fault" direction:
+
+$$\rho(x) = 1
+  + A_{\text{sharp}} \cdot \max_i \exp(-d_i(x)^2 / w_{\text{target}}^2)
+  + A_{\text{smooth}} \cdot \max_i \exp(-d_i(x)^2 / w_{\text{smooth}}^2)$$
+
+With $A_{\text{sharp}} \approx 6$, $A_{\text{smooth}} \approx 2$,
+$w_{\text{smooth}} \approx 5 \cdot w_{\text{target}}$ as
+reasonable defaults.
+
+### Plain Picard is geometrically equivariant; Anderson isn't
+
+Anderson acceleration on the outer fixed-point map gives a 3× per-step
+speedup *on a fixed geometry* but is **not equivariant under
+translation of the fault** — the basin Anderson converges into depends
+on the post-phase-1 cell distribution, which depends on fault position.
+A uniform translation of all faults that should give a uniformly
+translated solution does not, with Anderson: shifted geometry can
+land at $\mathrm{cv} \approx 1.08$ where the original geometry lands
+at $\mathrm{cv} \approx 0.39$. The deeper basin exists for the shifted
+geometry too, Anderson just can't find it.
+
+**Plain Picard does not have this problem.** On both initial and
+shifted geometries it reaches the same basin ($\mathrm{cv} \approx
+0.57$), takes 10–15 outer iterations to plateau, and is the
+*reliable* default. Anderson is opt-in for speed when the user can
+afford to verify it reached a good basin.
+
+The displacement residual $\|X_{k+1} - X_k\|/(\sqrt N \cdot h)$ is
+the natural fixed-point convergence signal — clean monotone descent
+under plain Picard, machine zero at the fixed point — and is the
+right stopping criterion. `cv(ρV)` is a *quality* measure (lower =
+deeper basin) and is useful to compare which basin you landed in but
+*not* a convergence test.
+
+### The right recipe (current state)
+
+```python
+def fault_metric_iterate(mesh, faults, w_target, *,
+                         w_smooth=None,
+                         amp_sharp=6.0, amp_smooth=2.0,
+                         w_wide=None,
+                         n_pre=4, n_combined=16,
+                         tol_disp=1e-4):
+    """Recommended recipe for two-fault (and multi-fault) refinement.
+
+    Phase 1 — marshalling (wide sharp pre-pass): a wide MAX-of-Gaussians
+        metric at sharp amplitude pulls cells into concentrated clusters
+        around each fault. Not a smooth metric; the concentration is
+        the *point*.
+
+    Phase 2 — localisation (sharp + smooth combined target): the sharp
+        narrow peak localises onto each line; the smooth halo provides
+        non-trivial gradient direction everywhere in the fault
+        neighbourhood (without it, cold-start can miss a fault entirely).
+        Plain Picard, no Anderson — geometric equivariance > speed.
+
+    Termination: |ΔX|/(√N · h) < tol_disp, OR n_combined iters exhausted.
+    """
+    if w_smooth is None:
+        w_smooth = 5.0 * w_target
+    if w_wide is None:
+        # Heuristic: 2 × estimated fault separation
+        w_wide = 0.120        # for the canonical test geometry
+
+    # Phase 1 — wide sharp pre-pass
+    rho_pre = max_of_gaussians(mesh, faults, w_wide, amp=amp_sharp)
+    for _ in range(n_pre):
+        smooth_mesh_interior(mesh, method="ma", metric=rho_pre,
+                             method_kwargs=dict(n_outer=1, n_picard=10))
+
+    # Phase 2 — sharp + smooth combined, plain Picard
+    rho_target = (
+        max_of_gaussians(mesh, faults, w_target, amp=amp_sharp)
+      + max_of_gaussians(mesh, faults, w_smooth, amp=amp_smooth))
+    X_prev = mesh.X.coords.flatten()
+    for k in range(n_combined):
+        smooth_mesh_interior(mesh, method="ma", metric=rho_target,
+                             method_kwargs=dict(n_outer=1, n_picard=10))
+        X = mesh.X.coords.flatten()
+        h = median_min_edge(mesh)
+        disp = np.linalg.norm(X - X_prev) / (np.sqrt(len(X) // 2) * h)
+        if k > 4 and disp < tol_disp:
+            break
+        X_prev = X
+```
+
+### Moving faults: fat band + deferred re-meshing
+
+For a fault that moves through several mesh-cell widths per simulation
+step, the realistic strategy is **not** to re-mesh every step but to
+build a refinement band wide enough to contain the fault over multiple
+timesteps, then re-mesh only when the fault is about to exit. Picking
+
+$$w_{\text{target}} \approx v_{\text{fault}} \cdot \Delta t_{\text{remesh}}$$
+
+(where $v_{\text{fault}}$ is estimated fault drift speed per timestep
+and $\Delta t_{\text{remesh}}$ is the desired re-mesh interval in
+timesteps) gives a fat refined band that the fault stays within for
+$\Delta t_{\text{remesh}}$ steps. Trade-off: a 1.8 × $h$ wide band
+(instead of sub-element) buys ~3 timesteps of fault motion at the
+cost of a slightly more diffuse band on the t=0 fault (offset
+~1/2 cell instead of ~1/10 cell). Total cost goes from ~20 mover
+calls per timestep to ~7 amortised — a ~3× speedup.
+
+Warm-starting from the previous timestep's converged mesh does **not**
+work as a substitute. The cells inherit the old fault positions and
+plain Picard from that state finds a *different, suboptimal* local
+fixed point rather than tracking the moving fault. Cold restart per
+re-meshing event with plain Picard is the reliable approach.
+
+### Future: SNES wrap with approximate Jacobian
+
+The remaining major efficiency lever — left as a follow-up session —
+is wrapping the fixed-point map $F(X) = X - \mathrm{mover}(X)$ in
+PETSc's `SNES` framework, with either matrix-free JFNK
+($J \delta X$ via finite-difference) or an approximate analytic
+Jacobian using the per-vertex $\partial V / \partial X$ from the
+lumped-L2 projection. Expected gains: quadratic convergence rate
+near the fixed point, line search for global robustness, and
+standard SNES tooling for convergence tests. The mesh deformation
+inside the outer loop is what makes the present Picard slow — folding
+it into a Newton step is the natural next move.
+
 ## Honest limits
 
 * **Budget cap**: `r-adapt` (any mover, including MA) redistributes a *fixed*
