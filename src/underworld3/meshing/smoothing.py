@@ -1471,7 +1471,13 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         # Picard φ (it changes slowly under ω-relaxation) → a handful
         # of CG iters on the once-built hierarchy. The exact direct
         # path is indifferent to the initial guess.
-        _zig = (linear_solver != "gamg")
+        # Under MPI, ``linear_solver="direct"`` silently falls back to
+        # the iterative path inside ``_use_direct_solver`` (the
+        # MUMPS-heap-corruption guard at smoothing.py:914); honour the
+        # warm-start in that case too — otherwise the parallel mover
+        # pays extra Krylov iterations per Picard step for nothing.
+        _zig = not (linear_solver == "gamg"
+                    or (linear_solver == "direct" and uw.mpi.size > 1))
         prev_change = None
         # If target-side ρ is on, gradphi needs to be tracking the
         # current φ inside the Picard loop (it's used by ps.f via
@@ -1709,7 +1715,11 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
     else:
         phi, ps, gradphi, gproj, vol_field = cache
 
-    _zig = (linear_solver != "gamg")
+    # See _winslow_elliptic for the rationale on this combined check —
+    # ``linear_solver="direct"`` silently routes to the iterative path
+    # under MPI, so honour the warm-start there too.
+    _zig = not (linear_solver == "gamg"
+                or (linear_solver == "direct" and uw.mpi.size > 1))
 
     for outer in range(n_outer):
         dm = mesh.dm
@@ -2130,7 +2140,11 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     else:
         grho, gproj, Df, usolvers, ufields = cache
 
-    _zig = (linear_solver != "gamg")
+    # See _winslow_elliptic for rationale — ``linear_solver="direct"``
+    # silently falls back to the iterative path under MPI, so honour
+    # the warm-start there too.
+    _zig = not (linear_solver == "gamg"
+                or (linear_solver == "direct" and uw.mpi.size > 1))
 
     # ---- build the eigen-clamped metric tensor field D ONCE ------
     # on the *undeformed* mesh (the design metric), then hold it
