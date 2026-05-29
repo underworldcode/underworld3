@@ -689,11 +689,7 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
 
     # Invalidate canonical-data caches so subsequent var.data reads
     # re-resolve to the rebuilt PETSc fields.
-    if hasattr(swarm._particle_coordinates, "_canonical_data"):
-        swarm._particle_coordinates._canonical_data = None
-    for var in swarm._vars.values():
-        if hasattr(var, "_canonical_data"):
-            var._canonical_data = None
+    swarm._invalidate_canonical_data()
 
     # Restore counted as a population change (matches in-memory path).
     swarm._population_generation += 1
