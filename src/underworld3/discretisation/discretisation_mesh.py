@@ -2731,19 +2731,27 @@ class Mesh(Stateful, uw_object):
         swarmVars: Optional[list] = [],
         meshUpdates: bool = False,
         create_xdmf: bool = True,
+        petsc_reload: bool = False,
     ):
         """
-        Write mesh and selected variables for visualisation output.
+        Write mesh and selected variables for timestep output.
 
         This writes:
         - one mesh HDF5 file (shared/static or per-step, depending on ``meshUpdates``)
         - one HDF5 file per mesh variable
         - optional proxy files for swarm variables
         - optional XDMF file linking all output files
+        - optional PETSc DMPlex section/vector metadata for exact reload
 
         When ``create_xdmf=True`` (the default), variable files also include
         ParaView-compatible groups (``/vertex_fields`` or ``/cell_fields``),
         and an XDMF file is generated on rank 0.
+
+        When ``petsc_reload=True``, variable files also include PETSc DMPlex
+        section/vector metadata. Those files can then be loaded by
+        ``MeshVariable.read_checkpoint()`` for exact same-mesh reload, while
+        still being readable by ``MeshVariable.read_timestep()`` for
+        coordinate/KDTree remapping if ``create_xdmf`` output was also written.
 
         """
         options = PETSc.Options()
@@ -2781,17 +2789,25 @@ class Mesh(Stateful, uw_object):
             mesh_file = output_base_name + f".mesh.{index:05}.h5"
             self.write(mesh_file)
 
+        variables = []
         if meshVars is not None:
             for var in meshVars:
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
                 var.write(save_location)
                 if create_xdmf:
                     _write_compat_groups(self, var, save_location)
+                variables.append((var, save_location))
 
         if swarmVars is not None:
             for svar in swarmVars:
                 save_location = output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
                 svar.write_proxy(save_location)
+                if petsc_reload:
+                    variables.append((svar._meshVar, save_location))
+
+        if petsc_reload:
+            for var, save_location in variables:
+                self._write_petsc_reload_file(save_location, [var], mode="a")
 
         if create_xdmf and uw.mpi.rank == 0:
             checkpoint_xdmf(
@@ -2863,6 +2879,48 @@ class Mesh(Stateful, uw_object):
             create_xdmf=True,
         )
 
+    def _write_petsc_reload_variable(self, viewer, var):
+        """Write one variable's PETSc DMPlex reload metadata to ``viewer``."""
+
+        if var._lvec is None:
+            var._set_vec(available=True)
+
+        iset, subdm = self.dm.createSubDM(var.field_id)
+        subdm.setName(var.clean_name)
+        old_lvec_name = var._lvec.getName()
+
+        try:
+            var._lvec.setName(var.clean_name)
+            self.dm.sectionView(viewer, subdm)
+            self.dm.localVectorView(viewer, subdm, var._lvec)
+        finally:
+            var._lvec.setName(old_lvec_name)
+            iset.destroy()
+            subdm.destroy()
+
+    def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
+        """Write PETSc DMPlex section/vector reload metadata."""
+
+        old_dm_name = self.dm.getName()
+        self.dm.setName("uw_mesh")
+
+        viewer = PETSc.ViewerHDF5().create(
+            checkpoint_file, mode, comm=PETSc.COMM_WORLD
+        )
+        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        try:
+            self.dm.sectionView(viewer, self.dm)
+
+            for var in variables:
+                self._write_petsc_reload_variable(viewer, var)
+
+            uw.mpi.barrier()
+        finally:
+            viewer.popFormat()
+            viewer.destroy()
+            if old_dm_name is not None:
+                self.dm.setName(old_dm_name)
+
     @timing.routine_timer_decorator
     def write_checkpoint(
         self,
@@ -2874,12 +2932,15 @@ class Mesh(Stateful, uw_object):
         index: Optional[int] = 0,
         unique_id: Optional[bool] = False,
         separate_variable_files: bool = True,
+        create_xdmf: bool = False,
     ):
         """Write PETSc DMPlex checkpoint files for restart/postprocessing.
 
         Checkpoint output stores PETSc DMPlex section/vector metadata required
-        for exact parallel reload. Unlike ``write_timestep()``, this is restart
-        output and does not write XDMF or vertex-field visualisation datasets.
+        for exact parallel reload. By default this is restart output and does
+        not write XDMF or vertex-field visualisation datasets. Use
+        ``create_xdmf=True`` to write unified timestep-style output that also
+        contains PETSc reload metadata.
 
         Parameters
         ----------
@@ -2901,48 +2962,48 @@ class Mesh(Stateful, uw_object):
             If ``True`` (default), write one file per variable:
             ``<base>.<variable>.<index>.h5``. If ``False``, write all variables
             into one file: ``<base>.checkpoint.<index>.h5``.
+        create_xdmf
+            If ``True``, route through ``write_timestep()`` and write XDMF,
+            vertex/cell compatibility groups, coordinate/KDTree remap data,
+            and PETSc reload metadata. The output uses the timestep filename
+            convention ``<base>.mesh.<variable>.<index>.h5``. This mode does
+            not support ``unique_id=True`` or ``separate_variable_files=False``.
         """
 
         if outputPath:
             filename = os.path.join(outputPath, filename)
+
+        if create_xdmf:
+            if unique_id:
+                raise RuntimeError(
+                    "write_checkpoint(create_xdmf=True) uses write_timestep() "
+                    "layout and does not support unique_id=True."
+                )
+            if not separate_variable_files:
+                raise RuntimeError(
+                    "write_checkpoint(create_xdmf=True) uses per-variable "
+                    "timestep files and does not support "
+                    "separate_variable_files=False."
+                )
+            output_dir = os.path.dirname(filename)
+            output_name = os.path.basename(filename)
+            self.write_timestep(
+                output_name,
+                index=index,
+                outputPath=output_dir,
+                meshVars=meshVars,
+                swarmVars=swarmVars,
+                meshUpdates=meshUpdates,
+                create_xdmf=True,
+                petsc_reload=True,
+            )
+            return
 
         def _checkpoint_filename(var_name=None):
             variable_part = f".{var_name}" if var_name is not None else ".checkpoint"
             if unique_id:
                 return filename + f"{uw.mpi.unique}{variable_part}.{index:05}.h5"
             return filename + f"{variable_part}.{index:05}.h5"
-
-        def _write_variable(viewer, var):
-            if var._lvec is None:
-                var._set_vec(available=True)
-
-            iset, subdm = self.dm.createSubDM(var.field_id)
-            subdm.setName(var.clean_name)
-            old_lvec_name = var._lvec.getName()
-
-            try:
-                var._lvec.setName(var.clean_name)
-                self.dm.sectionView(viewer, subdm)
-                self.dm.localVectorView(viewer, subdm, var._lvec)
-            finally:
-                var._lvec.setName(old_lvec_name)
-                iset.destroy()
-                subdm.destroy()
-
-        def _write_checkpoint_file(checkpoint_file, variables):
-            viewer = PETSc.ViewerHDF5().create(checkpoint_file, "w", comm=PETSc.COMM_WORLD)
-            viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
-            try:
-                # Store the parallel-mesh section information for restoring the checkpoint.
-                self.dm.sectionView(viewer, self.dm)
-
-                for var in variables:
-                    _write_variable(viewer, var)
-
-                uw.mpi.barrier()  # should not be required
-            finally:
-                viewer.popFormat()
-                viewer.destroy()
 
         old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")
@@ -2970,9 +3031,13 @@ class Mesh(Stateful, uw_object):
 
                 if separate_variable_files:
                     for var in variables:
-                        _write_checkpoint_file(_checkpoint_filename(var.clean_name), [var])
+                        self._write_petsc_reload_file(
+                            _checkpoint_filename(var.clean_name), [var], mode="w"
+                        )
                 else:
-                    _write_checkpoint_file(_checkpoint_filename(), variables)
+                    self._write_petsc_reload_file(
+                        _checkpoint_filename(), variables, mode="w"
+                    )
         finally:
             if old_dm_name is not None:
                 self.dm.setName(old_dm_name)

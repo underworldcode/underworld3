@@ -1,7 +1,10 @@
 # Checkpoint Output And Reload Methods
 
-UW3 currently has two output/reload workflows for mesh and mesh-variable data.
-They serve different purposes and should not be treated as interchangeable.
+UW3 has two reload workflows for mesh and mesh-variable data. Timestep output
+can now include both payloads in the same files when requested:
+
+- XDMF/remap payloads for ParaView and `read_timestep()`.
+- PETSc DMPlex section/vector payloads for `read_checkpoint()`.
 
 ## Method A: `write_timestep()` / `read_timestep()`
 
@@ -15,6 +18,8 @@ mesh.write_timestep(
     index=0,
     outputPath=str(output_dir),
     meshVars=[velocity, pressure],
+    create_xdmf=True,
+    petsc_reload=False,
 )
 
 velocity.read_timestep("output", "Velocity", 0, outputPath=str(output_dir))
@@ -36,16 +41,41 @@ uses coordinate-based remapping. In practice this means the target variable is
 filled by comparing target coordinates to source coordinates, using a KDTree or
 similar nearest-neighbour/remap process.
 
+Set `petsc_reload=True` to add PETSc DMPlex section/vector metadata to the same
+per-variable timestep files:
+
+```python
+mesh.write_timestep(
+    "output",
+    index=0,
+    outputPath=str(output_dir),
+    meshVars=[velocity, pressure],
+    create_xdmf=True,
+    petsc_reload=True,
+)
+
+velocity.read_checkpoint(
+    output_dir / "output.mesh.Velocity.00000.h5",
+    data_name="Velocity",
+)
+```
+
+With both `create_xdmf=True` and `petsc_reload=True`, the same variable file can
+be used by `read_timestep()` for coordinate/KDTree remapping and by
+`read_checkpoint()` for exact PETSc-native reload.
+
 ### Advantages
 
 - Produces XDMF/HDF5 files suitable for visualisation workflows.
 - Can remap data onto a different mesh or a different node layout.
 - Useful for postprocessing where exact finite-element section identity is not
   required.
+- Can also be made PETSc-reloadable with `petsc_reload=True`.
 
 ### Disadvantages
 
-- Reload is not an exact PETSc FE-vector restart path.
+- Reload is not an exact PETSc FE-vector restart path unless
+  `petsc_reload=True` is used and the field is loaded with `read_checkpoint()`.
 - The KDTree/remap step can be memory-heavy for large meshes.
 - At high MPI counts, remap memory can dominate postprocessing memory use.
 - Discontinuous fields and high-order fields rely on coordinate remap behavior
@@ -63,6 +93,7 @@ mesh.write_checkpoint(
     index=0,
     outputPath=str(output_dir),
     meshVars=[velocity, pressure],
+    create_xdmf=False,
 )
 ```
 
@@ -109,6 +140,26 @@ the section/vector metadata required to reconstruct finite-element vectors.
 Reloading uses PETSc DMPlex topology, section, vector, and `PetscSF` metadata.
 It does not use KDTree coordinate remapping.
 
+Set `create_xdmf=True` to route through the unified timestep writer. This writes
+XDMF/remap payloads and PETSc reload payloads together, using the timestep file
+layout:
+
+```python
+mesh.write_checkpoint(
+    "checkout",
+    index=0,
+    outputPath=str(output_dir),
+    meshVars=[velocity, pressure],
+    create_xdmf=True,
+)
+```
+
+The variable files are then named
+`checkout.mesh.<variable>.<index>.h5` rather than
+`checkout.<variable>.<index>.h5`. Because this mode uses the timestep file
+layout, it does not support `unique_id=True` or
+`separate_variable_files=False`.
+
 ### Advantages
 
 - Exact FE-vector reload path for restart and postprocessing.
@@ -121,8 +172,9 @@ It does not use KDTree coordinate remapping.
 
 ### Disadvantages
 
-- Does not write XDMF.
-- Does not write `/vertex_fields/...` visualisation datasets.
+- Does not write XDMF unless `create_xdmf=True`.
+- Does not write `/vertex_fields/...` visualisation datasets unless
+  `create_xdmf=True`.
 - Assumes the checkpoint mesh and variable checkpoint files are used together.
 - Different-rank reload should be validated for each workflow before relying on
   it in production.
@@ -133,18 +185,32 @@ It does not use KDTree coordinate remapping.
 | --- | --- |
 | ParaView/XDMF visualisation | `write_timestep()` |
 | Flexible remap onto another mesh | `write_timestep()` |
-| Exact restart/postprocessing | `write_checkpoint()` |
+| Exact restart/postprocessing | `write_timestep(..., petsc_reload=True)` or `write_checkpoint()` |
 | Large spherical benchmark metric evaluation | `write_checkpoint()` |
 | Avoid KDTree memory growth at high MPI counts | `write_checkpoint()` |
 
-It is valid for production scripts to write both:
+For unified output, write both payload families in one call:
+
+```python
+mesh.write_timestep(
+    "output",
+    index=0,
+    outputPath=str(output_dir),
+    meshVars=[v, p],
+    create_xdmf=True,
+    petsc_reload=True,
+)
+```
+
+It is also valid for production scripts to keep separate visualisation and
+restart outputs:
 
 ```python
 mesh.write_timestep("output", index=0, outputPath=str(output_dir), meshVars=[v, p])
 mesh.write_checkpoint("checkout", index=0, outputPath=str(output_dir), meshVars=[v, p])
 ```
 
-The first output is for visualisation. The second output is for restart or
+The first output is for visualisation/remap. The second output is for restart or
 metrics-from-checkpoint postprocessing.
 
 ## Spherical Benchmark Evidence
@@ -200,8 +266,11 @@ reuse the old `read_timestep()` remap path.
 For production benchmark workflows:
 
 - run the solve stage first
-- write `write_timestep()` output if visualisation files are needed
-- write `write_checkpoint()` output for restart/postprocessing
+- use `write_timestep(..., create_xdmf=True, petsc_reload=True)` if one unified
+  file family should support visualisation, remap, and PETSc-native reload
+- alternatively, write `write_timestep()` output for visualisation and
+  `write_checkpoint()` output for restart/postprocessing as separate file
+  families
 - exit before metric evaluation
 - run a second metrics-from-checkpoint job
 - reload mesh from `<base>.mesh.<index>.h5`

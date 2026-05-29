@@ -2,6 +2,7 @@ import pytest
 
 # All tests in this module are quick core tests
 pytestmark = pytest.mark.level_1
+import h5py
 import numpy as np
 from pathlib import Path
 
@@ -138,6 +139,83 @@ def test_meshvariable_checkpoint_roundtrip(tmp_path):
     d_reloaded.read_checkpoint(f"{separate_base}.d.00000.h5", data_name="d")
 
     assert_reloaded_fields(x_reloaded, u_reloaded, d_reloaded)
+
+
+def test_timestep_with_petsc_reload_roundtrip(tmp_path):
+    import underworld3 as uw
+    from underworld3.meshing import UnstructuredSimplexBox
+
+    tmp_path = _shared_tmp_path(tmp_path, uw)
+
+    mesh = UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=1.0 / 8.0,
+    )
+
+    x = uw.discretisation.MeshVariable("x", mesh, 1, degree=1)
+    x.data[:, 0] = x.coords[:, 0] + 2.0 * x.coords[:, 1]
+
+    mesh.write_timestep(
+        "unified",
+        index=0,
+        outputPath=str(tmp_path),
+        meshVars=[x],
+        create_xdmf=True,
+        petsc_reload=True,
+    )
+
+    var_file = tmp_path / "unified.mesh.x.00000.h5"
+    if uw.mpi.rank == 0:
+        with h5py.File(var_file, "r") as h5f:
+            assert "fields/x" in h5f
+            assert "fields/coordinates" in h5f
+            assert "vertex_fields/x_x" in h5f
+            assert "topologies/uw_mesh/dms/x/section" in h5f
+            assert "topologies/uw_mesh/dms/x/vecs/x" in h5f
+    uw.mpi.barrier()
+
+    mesh_reloaded = uw.discretisation.Mesh(f"{tmp_path}/unified.mesh.00000.h5")
+    x_checkpoint = uw.discretisation.MeshVariable("x", mesh_reloaded, 1, degree=1)
+    x_checkpoint.read_checkpoint(str(var_file), data_name="x")
+    np.testing.assert_allclose(
+        x_checkpoint.data[:, 0],
+        x_checkpoint.coords[:, 0] + 2.0 * x_checkpoint.coords[:, 1],
+        atol=1.0e-12,
+    )
+
+    x_timestep = uw.discretisation.MeshVariable("x_timestep", mesh, 1, degree=1)
+    x_timestep.read_timestep("unified", "x", 0, outputPath=str(tmp_path))
+    np.testing.assert_allclose(x_timestep.data[:, 0], x.data[:, 0], atol=1.0e-12)
+
+    mesh.write_checkpoint(
+        "unified_checkpoint",
+        index=0,
+        outputPath=str(tmp_path),
+        meshVars=[x],
+        create_xdmf=True,
+    )
+
+    checkpoint_var_file = tmp_path / "unified_checkpoint.mesh.x.00000.h5"
+    checkpoint_xdmf_file = tmp_path / "unified_checkpoint.mesh.00000.xdmf"
+    if uw.mpi.rank == 0:
+        assert checkpoint_xdmf_file.is_file()
+        with h5py.File(checkpoint_var_file, "r") as h5f:
+            assert "fields/x" in h5f
+            assert "vertex_fields/x_x" in h5f
+            assert "topologies/uw_mesh/dms/x/section" in h5f
+    uw.mpi.barrier()
+
+    mesh_reloaded = uw.discretisation.Mesh(
+        f"{tmp_path}/unified_checkpoint.mesh.00000.h5"
+    )
+    x_checkpoint = uw.discretisation.MeshVariable("x", mesh_reloaded, 1, degree=1)
+    x_checkpoint.read_checkpoint(str(checkpoint_var_file), data_name="x")
+    np.testing.assert_allclose(
+        x_checkpoint.data[:, 0],
+        x_checkpoint.coords[:, 0] + 2.0 * x_checkpoint.coords[:, 1],
+        atol=1.0e-12,
+    )
 
 
 def test_swarm_save_and_load(tmp_path):
