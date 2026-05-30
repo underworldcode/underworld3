@@ -1,14 +1,17 @@
 # Checkpoint Output And Reload Methods
 
-UW3 has two reload workflows for mesh and mesh-variable data. Timestep output
-can now include both payloads in the same files when requested:
+`write_timestep()` is the standard mesh and mesh-variable output API. It can
+write either or both output payloads:
 
 - XDMF/remap payloads for ParaView and `read_timestep()`.
 - PETSc DMPlex section/vector payloads for `read_checkpoint()`.
 
-## Method A: `write_timestep()` / `read_timestep()`
+`write_checkpoint()` is retained as a compatibility wrapper for older scripts,
+but new code should use `write_timestep(..., petsc_reload=True)`.
 
-This is the visualisation and flexible remap workflow.
+## Standard API
+
+This is the visualisation and flexible remap workflow by default.
 
 Example:
 
@@ -64,6 +67,19 @@ With both `create_xdmf=True` and `petsc_reload=True`, the same variable file can
 be used by `read_timestep()` for coordinate/KDTree remapping and by
 `read_checkpoint()` for exact PETSc-native reload.
 
+For PETSc reload output without XDMF files, use:
+
+```python
+mesh.write_timestep(
+    "restart",
+    index=0,
+    outputPath=str(output_dir),
+    meshVars=[velocity, pressure],
+    create_xdmf=False,
+    petsc_reload=True,
+)
+```
+
 ### Advantages
 
 - Produces XDMF/HDF5 files suitable for visualisation workflows.
@@ -81,11 +97,12 @@ be used by `read_timestep()` for coordinate/KDTree remapping and by
 - Discontinuous fields and high-order fields rely on coordinate remap behavior
   rather than PETSc section metadata.
 
-## Method B: `write_checkpoint()` / `read_checkpoint()`
+## Legacy Compatibility
 
-This is the restart and exact postprocessing workflow.
+`write_checkpoint()` is deprecated and retained for existing callers. It emits a
+`FutureWarning` directing users to `write_timestep(..., petsc_reload=True)`.
 
-Example:
+Legacy call:
 
 ```python
 mesh.write_checkpoint(
@@ -94,6 +111,19 @@ mesh.write_checkpoint(
     outputPath=str(output_dir),
     meshVars=[velocity, pressure],
     create_xdmf=False,
+)
+```
+
+Preferred replacement:
+
+```python
+mesh.write_timestep(
+    "checkout",
+    index=0,
+    outputPath=str(output_dir),
+    meshVars=[velocity, pressure],
+    create_xdmf=False,
+    petsc_reload=True,
 )
 ```
 
@@ -183,11 +213,11 @@ layout, it does not support `unique_id=True` or
 
 | Use case | Recommended method |
 | --- | --- |
-| ParaView/XDMF visualisation | `write_timestep()` |
-| Flexible remap onto another mesh | `write_timestep()` |
-| Exact restart/postprocessing | `write_timestep(..., petsc_reload=True)` or `write_checkpoint()` |
-| Large spherical benchmark metric evaluation | `write_checkpoint()` |
-| Avoid KDTree memory growth at high MPI counts | `write_checkpoint()` |
+| ParaView/XDMF visualisation | `write_timestep(..., create_xdmf=True)` |
+| Flexible remap onto another mesh | `write_timestep(..., create_xdmf=True)` |
+| Exact restart/postprocessing | `write_timestep(..., create_xdmf=False, petsc_reload=True)` |
+| Unified visualisation/remap plus PETSc reload | `write_timestep(..., create_xdmf=True, petsc_reload=True)` |
+| Avoid KDTree memory growth at high MPI counts | `write_timestep(..., petsc_reload=True)` with `read_checkpoint()` |
 
 For unified output, write both payload families in one call:
 
@@ -202,12 +232,19 @@ mesh.write_timestep(
 )
 ```
 
-It is also valid for production scripts to keep separate visualisation and
-restart outputs:
+If separate visualisation and restart-style file families are wanted, use two
+`write_timestep()` calls with different base names:
 
 ```python
 mesh.write_timestep("output", index=0, outputPath=str(output_dir), meshVars=[v, p])
-mesh.write_checkpoint("checkout", index=0, outputPath=str(output_dir), meshVars=[v, p])
+mesh.write_timestep(
+    "restart",
+    index=0,
+    outputPath=str(output_dir),
+    meshVars=[v, p],
+    create_xdmf=False,
+    petsc_reload=True,
+)
 ```
 
 The first output is for visualisation/remap. The second output is for restart or
@@ -215,19 +252,21 @@ metrics-from-checkpoint postprocessing.
 
 ## Spherical Benchmark Evidence
 
-The spherical Thieulot benchmark exposed the practical difference between the
-two methods. Boundary metric evaluation is run in a second step after the Stokes
-solve. The old reload path used `write_timestep()` output and `read_timestep()`;
-the new path uses `write_checkpoint()` output and `read_checkpoint()`.
+The spherical Thieulot benchmark exposed the practical difference between
+coordinate/KDTree remap and PETSc-native reload. Boundary metric evaluation is
+run in a second step after the Stokes solve. The old reload path used
+`read_timestep()`; the newer path uses PETSc DMPlex section/vector metadata and
+`read_checkpoint()`. New output should be written through
+`write_timestep(..., petsc_reload=True)`.
 
 ### Resource Usage
 
 | Resolution | Method | NCPUs | Walltime | CPU time | Memory used | Exit status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `1/64` | `write_timestep/read_timestep` | 144 | `00:03:43` | `07:04:27` | `211.27 GB` | `0` |
-| `1/64` | `write_checkpoint/read_checkpoint` | 144 | `00:02:41` | `05:21:14` | `233.67 GB` | `0` |
-| `1/128` | `write_timestep/read_timestep` | 1152 | `00:13:55` | `214:02:57` | `3.92 TB` | `0` |
-| `1/128` | `write_checkpoint/read_checkpoint` | 1152 | `00:03:57` | `64:19:53` | `1.83 TB` | `0` |
+| `1/64` | `read_timestep` remap | 144 | `00:03:43` | `07:04:27` | `211.27 GB` | `0` |
+| `1/64` | PETSc `read_checkpoint` reload | 144 | `00:02:41` | `05:21:14` | `233.67 GB` | `0` |
+| `1/128` | `read_timestep` remap | 1152 | `00:13:55` | `214:02:57` | `3.92 TB` | `0` |
+| `1/128` | PETSc `read_checkpoint` reload | 1152 | `00:03:57` | `64:19:53` | `1.83 TB` | `0` |
 
 For the `1/128` case, checkpoint reload reduced memory by about `2.09 TB` and
 reduced walltime by about `3.5x`.
@@ -236,7 +275,7 @@ reduced walltime by about `3.5x`.
 
 `1/128` spherical Thieulot benchmark:
 
-| Metric | `write_timestep/read_timestep` | `write_checkpoint/read_checkpoint` | Difference |
+| Metric | `read_timestep` remap | PETSc `read_checkpoint` reload | Difference |
 | --- | ---: | ---: | ---: |
 | `v_l2_norm` | `1.4319274480265082e-06` | `1.4319274480231255e-06` | `-3.38e-18` |
 | `p_l2_norm` | `5.985841567394967e-04` | `5.985841567395382e-04` | `4.15e-17` |
@@ -254,7 +293,7 @@ reuse the old `read_timestep()` remap path.
 
 `1/64` spherical Thieulot benchmark:
 
-| Metric | `write_timestep/read_timestep` | `write_checkpoint/read_checkpoint` | Difference |
+| Metric | `read_timestep` remap | PETSc `read_checkpoint` reload | Difference |
 | --- | ---: | ---: | ---: |
 | `v_l2_norm` | `1.1662200663950889e-05` | `1.1662200663957042e-05` | `6.15e-18` |
 | `p_l2_norm` | `2.7573367818459473e-03` | `2.7573367818460497e-03` | `1.02e-16` |
@@ -268,9 +307,8 @@ For production benchmark workflows:
 - run the solve stage first
 - use `write_timestep(..., create_xdmf=True, petsc_reload=True)` if one unified
   file family should support visualisation, remap, and PETSc-native reload
-- alternatively, write `write_timestep()` output for visualisation and
-  `write_checkpoint()` output for restart/postprocessing as separate file
-  families
+- alternatively, write separate `write_timestep()` outputs for visualisation and
+  PETSc reload by changing `create_xdmf` and `petsc_reload`
 - exit before metric evaluation
 - run a second metrics-from-checkpoint job
 - reload mesh from `<base>.mesh.<index>.h5`

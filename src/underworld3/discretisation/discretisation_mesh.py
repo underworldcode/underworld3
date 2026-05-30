@@ -2934,13 +2934,15 @@ class Mesh(Stateful, uw_object):
         separate_variable_files: bool = True,
         create_xdmf: bool = False,
     ):
-        """Write PETSc DMPlex checkpoint files for restart/postprocessing.
+        """Compatibility wrapper for PETSc DMPlex reload output.
 
-        Checkpoint output stores PETSc DMPlex section/vector metadata required
-        for exact parallel reload. By default this is restart output and does
-        not write XDMF or vertex-field visualisation datasets. Use
-        ``create_xdmf=True`` to write unified timestep-style output that also
-        contains PETSc reload metadata.
+        This method is retained for existing callers. New code should use
+        ``write_timestep(..., petsc_reload=True)`` so all mesh-variable output
+        goes through the standard timestep writer. By default this compatibility
+        method writes PETSc DMPlex section/vector metadata required for exact
+        parallel reload and does not write XDMF or vertex-field visualisation
+        datasets. Use ``create_xdmf=True`` to route through the unified
+        timestep-style output path.
 
         Parameters
         ----------
@@ -2969,6 +2971,16 @@ class Mesh(Stateful, uw_object):
             convention ``<base>.mesh.<variable>.<index>.h5``. This mode does
             not support ``unique_id=True`` or ``separate_variable_files=False``.
         """
+        import warnings
+
+        warnings.warn(
+            "write_checkpoint() is deprecated and retained for compatibility. "
+            "Use write_timestep(..., petsc_reload=True) for PETSc reload output; "
+            "set create_xdmf=True when visualization/remap payloads are also "
+            "needed.",
+            FutureWarning,
+            stacklevel=2,
+        )
 
         if outputPath:
             filename = os.path.join(outputPath, filename)

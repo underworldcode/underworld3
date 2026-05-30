@@ -171,13 +171,14 @@ def test_write_checkpoint_mesh_uses_petsc_topology(tmp_path):
     s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
     s_var.data[:, 0] = mesh._coords[:, 0]
 
-    mesh.write_checkpoint(
-        "restart",
-        outputPath=str(tmp_path),
-        meshUpdates=True,
-        meshVars=[s_var],
-        index=0,
-    )
+    with pytest.warns(FutureWarning, match="write_checkpoint\\(\\) is deprecated"):
+        mesh.write_checkpoint(
+            "restart",
+            outputPath=str(tmp_path),
+            meshUpdates=True,
+            meshVars=[s_var],
+            index=0,
+        )
 
     mesh_h5 = os.path.join(str(tmp_path), "restart.mesh.00000.h5")
 

@@ -100,14 +100,15 @@ def test_meshvariable_checkpoint_roundtrip(tmp_path):
         )
 
     checkpoint_base = tmp_path / "restart"
-    mesh.write_checkpoint(
-        "restart",
-        outputPath=str(tmp_path),
-        meshUpdates=False,
-        meshVars=[x, u, d],
-        index=0,
-        separate_variable_files=False,
-    )
+    with pytest.warns(FutureWarning, match="write_checkpoint\\(\\) is deprecated"):
+        mesh.write_checkpoint(
+            "restart",
+            outputPath=str(tmp_path),
+            meshUpdates=False,
+            meshVars=[x, u, d],
+            index=0,
+            separate_variable_files=False,
+        )
 
     mesh_reloaded = uw.discretisation.Mesh(f"{checkpoint_base}.mesh.00000.h5")
     x_reloaded = uw.discretisation.MeshVariable("x", mesh_reloaded, 1, degree=1)
@@ -121,13 +122,14 @@ def test_meshvariable_checkpoint_roundtrip(tmp_path):
     assert_reloaded_fields(x_reloaded, u_reloaded, d_reloaded)
 
     separate_base = tmp_path / "restart_separate"
-    mesh.write_checkpoint(
-        "restart_separate",
-        outputPath=str(tmp_path),
-        meshUpdates=False,
-        meshVars=[x, u, d],
-        index=0,
-    )
+    with pytest.warns(FutureWarning, match="write_checkpoint\\(\\) is deprecated"):
+        mesh.write_checkpoint(
+            "restart_separate",
+            outputPath=str(tmp_path),
+            meshUpdates=False,
+            meshVars=[x, u, d],
+            index=0,
+        )
 
     mesh_reloaded = uw.discretisation.Mesh(f"{separate_base}.mesh.00000.h5")
     x_reloaded = uw.discretisation.MeshVariable("x", mesh_reloaded, 1, degree=1)
@@ -188,13 +190,14 @@ def test_timestep_with_petsc_reload_roundtrip(tmp_path):
     x_timestep.read_timestep("unified", "x", 0, outputPath=str(tmp_path))
     np.testing.assert_allclose(x_timestep.data[:, 0], x.data[:, 0], atol=1.0e-12)
 
-    mesh.write_checkpoint(
-        "unified_checkpoint",
-        index=0,
-        outputPath=str(tmp_path),
-        meshVars=[x],
-        create_xdmf=True,
-    )
+    with pytest.warns(FutureWarning, match="write_checkpoint\\(\\) is deprecated"):
+        mesh.write_checkpoint(
+            "unified_checkpoint",
+            index=0,
+            outputPath=str(tmp_path),
+            meshVars=[x],
+            create_xdmf=True,
+        )
 
     checkpoint_var_file = tmp_path / "unified_checkpoint.mesh.x.00000.h5"
     checkpoint_xdmf_file = tmp_path / "unified_checkpoint.mesh.00000.xdmf"
