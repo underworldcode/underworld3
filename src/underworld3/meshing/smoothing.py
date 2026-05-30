@@ -1127,7 +1127,8 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                       step_frac=None, picard_relax=0.4,
                       outer_tol=1.0e-3, boundary_slip=False,
                       linear_solver="direct", phi_degree=2,
-                      move_anisotropy=None,
+                      move_anisotropy=None, move_frame=None,
+                      move_frame_localize=None,
                       target_side_rho=False):
     r"""Metric-driven mesh equidistribution — Benamou–Froese–Oberman
     convex-branch Monge–Ampère (PRESERVED; not the default path).
@@ -1413,17 +1414,39 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         if move_anisotropy is not None and cdim == 2:
             w_r, w_t = (float(move_anisotropy[0]),
                         float(move_anisotropy[1]))
-            ctr = old_coords.mean(axis=0)
-            rv = old_coords - ctr
-            rn = np.linalg.norm(rv, axis=1)
-            ok = rn > 1.0e-30
-            rhat = np.zeros_like(rv)
-            rhat[ok] = rv[ok] / rn[ok, None]
-            that = np.stack([-rhat[:, 1], rhat[:, 0]], axis=1)
+            if move_frame is not None:
+                # Fixed frame (e.g. a fault NORMAL): w_r weights the move
+                # along `move_frame` (across-fault), w_t the perpendicular
+                # (along-fault). Damping the along component (w_t<1) stops
+                # nodes sliding toward the metric's centre of gravity, so
+                # the isotropic-MA cluster is squeezed into a thin strip
+                # spread ALONG the whole feature line instead of clumping
+                # at its middle. Approach (3): reshape the realised move,
+                # MA operator untouched.
+                nh = np.asarray(move_frame, dtype=float)
+                nh = nh / max(np.linalg.norm(nh), 1.0e-30)
+                rhat = np.broadcast_to(nh, old_coords.shape).copy()
+                that = np.broadcast_to(
+                    np.array([-nh[1], nh[0]]), old_coords.shape).copy()
+            else:
+                ctr = old_coords.mean(axis=0)
+                rv = old_coords - ctr
+                rn = np.linalg.norm(rv, axis=1)
+                ok = rn > 1.0e-30
+                rhat = np.zeros_like(rv)
+                rhat[ok] = rv[ok] / rn[ok, None]
+                that = np.stack([-rhat[:, 1], rhat[:, 0]], axis=1)
             d_r = (disp * rhat).sum(axis=1)
             d_t = (disp * that).sum(axis=1)
-            disp = (w_r * d_r[:, None] * rhat
-                    + w_t * d_t[:, None] * that)
+            disp_rs = (w_r * d_r[:, None] * rhat
+                       + w_t * d_t[:, None] * that)
+            if move_frame is not None and move_frame_localize is not None:
+                # Only reshape near the feature; elsewhere keep the
+                # isotropic move (boundary layer / bulk unaffected).
+                wloc = np.asarray(move_frame_localize).reshape(-1, 1)
+                disp = wloc * disp_rs + (1.0 - wloc) * disp
+            else:
+                disp = disp_rs
 
         step = relax * disp
         if step_frac is not None and np.isfinite(step_frac):
@@ -1748,7 +1771,8 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                          boundary_slip=False,
                          linear_solver="direct", phi_degree=2,
                          move_anisotropy=None, metric_role="M",
-                         outer_tol=1.0e-4,
+                         outer_tol=1.0e-4, step_frac=None,
+                         area_floor_frac=0.01, pernode_backtrack=False,
                          rest_size_cap_max=None,
                          rest_size_cap_min=None,
                          rest_spring_K=1.0,
@@ -2525,7 +2549,28 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         # (the BFO path needs ω≈0.4 or its Hessian grows unbounded).
         step = float(relax) * disp
 
-        # --- coherent global signed-area backtrack + slip + move --
+        # --- per-node step cap (ported from _winslow_elliptic) ----
+        # The global signed-area backtrack below shrinks the WHOLE
+        # step uniformly until the worst cell is acceptable; it cannot
+        # stop a single node overshooting its cell while the rest move
+        # fine. For a metric peak/strip sitting ON the slip boundary
+        # that per-node overshoot is the sliver mechanism (boundary
+        # nodes bunch tangentially in one jump, the radial layer can't
+        # follow). Capping each node's move at ``step_frac`` of its
+        # min incident edge lets nodes migrate onto the feature over
+        # several composed outer steps instead of crushing in one —
+        # the lever that clears the residual boundary-row slivers the
+        # anisotropic tensor alone leaves behind.
+        if step_frac is not None and np.isfinite(step_frac):
+            h = _min_incident_edge(dm, old_coords)
+            mag = np.linalg.norm(step, axis=1)
+            cap = step_frac * h
+            clip = np.isfinite(cap) & (mag > cap) & (mag > 0.0)
+            sc_node = np.ones_like(mag)
+            sc_node[clip] = cap[clip] / mag[clip]
+            step = step * sc_node[:, None]
+
+        # --- signed-area backtrack + slip + move ------------------
         free = ~is_pinned
         scale = 1.0
         new_coords = old_coords.copy()
@@ -2544,26 +2589,59 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             # undeformed median rejects degenerate slivers (which
             # are 1000× smaller) without rejecting legitimate
             # refinement.
-            a_min_floor = 0.01 * _a0_undeformed_med
-            for _bt in range(10):
+            a_min_floor = float(area_floor_frac) * _a0_undeformed_med
+            if pernode_backtrack:
+                # PER-NODE backtrack. The global single-scale backtrack
+                # (below) sacrifices ALL motion to protect the one cell
+                # the (anisotropic) map wants to fold first: as the map
+                # repeatedly targets the same cell, the accepted global
+                # scale halves every outer step → false convergence with
+                # the mesh essentially unmoved (verified: the decoupled
+                # Winslow strip-refinement freezes this way even well
+                # within its fold limit). Instead give each node its own
+                # scale and only back off the nodes incident to a
+                # still-violating cell, so the rest of the mesh advances
+                # the full step while the folding neighbourhood relaxes.
+                node_scale = np.ones(n_verts)
                 trial = old_coords.copy()
-                trial[free] += scale * step[free]
-                trial = _project(trial)
-                a_signed = _signed_areas(trial, tris) * orient
-                a1min = float(a_signed.min())
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    a1min = uw.mpi.comm.allreduce(
-                        a1min, op=_MPI.MIN)
-                # Accept only if no cell flipped AND no cell
-                # collapsed below the area floor.
-                if a1min > a_min_floor:
-                    new_coords = trial
-                    break
-                scale *= 0.5
+                for _bt in range(24):
+                    trial = old_coords.copy()
+                    trial[free] += (node_scale[free, None]
+                                    * step[free])
+                    trial = _project(trial)
+                    a_signed = _signed_areas(trial, tris) * orient
+                    bad = a_signed <= a_min_floor
+                    nbad = int(bad.sum())
+                    if uw.mpi.size > 1:
+                        from mpi4py import MPI as _MPI
+                        nbad = uw.mpi.comm.allreduce(nbad, op=_MPI.SUM)
+                    if nbad == 0:
+                        break
+                    # halve only the scale of vertices of violating cells
+                    bv = np.unique(tris[bad].reshape(-1))
+                    node_scale[bv] *= 0.5
+                new_coords = trial
+                scale = float(node_scale[free].mean()) if free.any() else 1.0
             else:
-                scale = 0.0
-                new_coords = old_coords.copy()
+                for _bt in range(10):
+                    trial = old_coords.copy()
+                    trial[free] += scale * step[free]
+                    trial = _project(trial)
+                    a_signed = _signed_areas(trial, tris) * orient
+                    a1min = float(a_signed.min())
+                    if uw.mpi.size > 1:
+                        from mpi4py import MPI as _MPI
+                        a1min = uw.mpi.comm.allreduce(
+                            a1min, op=_MPI.MIN)
+                    # Accept only if no cell flipped AND no cell
+                    # collapsed below the area floor.
+                    if a1min > a_min_floor:
+                        new_coords = trial
+                        break
+                    scale *= 0.5
+                else:
+                    scale = 0.0
+                    new_coords = old_coords.copy()
         else:
             new_coords[free] += step[free]
             new_coords = _project(new_coords)
@@ -2581,6 +2659,359 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                 f"max|Δx|={d:.3e}")
         if d < outer_tol:
             break
+
+
+def _owned_cell_mask(dm):
+    """Local-chart boolean mask over cells (height stratum 0): True for
+    owned cells, False for ghost/overlap cells (leaves of the point SF).
+    Indexed like ``_tri_cells`` / ``_signed_areas`` (cell i ↔ point
+    cStart+i). Assembly must sum over OWNED cells only so that a
+    ``localToGlobal(ADD_VALUES)`` ghost reduction does not double-count
+    overlap cells.
+    """
+    cStart, cEnd = dm.getHeightStratum(0)
+    is_owned = np.ones(cEnd - cStart, dtype=bool)
+    sf = dm.getPointSF()
+    if sf is None:
+        return is_owned
+    try:
+        _n_roots, leaves, _remote = sf.getGraph()
+    except Exception:
+        return is_owned
+    if leaves is None or len(leaves) == 0:
+        return is_owned
+    for leaf in leaves:
+        if cStart <= leaf < cEnd:
+            is_owned[leaf - cStart] = False
+    return is_owned
+
+
+def _min_incident_edge_nd(cells, coords):
+    """Dimension-general shortest-incident-edge per vertex. ``cells`` is
+    (n_cells, d+1); returns (n_verts,). Used by the MMPDE per-node step
+    cap. (The 2D-only ``_min_incident_edge`` reads the DM directly; this
+    works for tets too and takes an explicit cell array so the caller can
+    restrict the stencil.)"""
+    n_verts = coords.shape[0]
+    ncorner = cells.shape[1]
+    v = np.full(n_verts, np.inf)
+    for a in range(ncorner):
+        for b in range(a + 1, ncorner):
+            e = np.linalg.norm(coords[cells[:, a]] - coords[cells[:, b]],
+                               axis=1)
+            np.minimum.at(v, cells[:, a], e)
+            np.minimum.at(v, cells[:, b], e)
+    return v
+
+
+def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+                   n_outer=150, p=1.5, theta=1.0 / 3.0, tau=1.0,
+                   step_frac=0.2, area_floor_frac=0.01,
+                   boundary_slip=False, outer_tol=1.0e-7,
+                   fd_eps=1.0e-6, **_ignored):
+    r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
+    MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
+    arXiv:1410.7872). Dimension-general (`d = 2, 3`) and parallel-safe.
+
+    Generates the physical mesh as the image of a **fixed computational
+    (reference) mesh** under the inverse coordinate map, minimizing
+    Huang's functional ``G = theta*sqrt(detM)*S**q + (1-2theta)*d**q *
+    r**p * detM**((1-p)/2)`` with ``q = d*p/2``, ``S = tr(J Minv J^T)``,
+    ``J = Ehat @ inv(E)``, ``r = det J``.
+    Because `G → ∞` as `det𝕁 → 0` the map is non-folding (Math. Comp. 87
+    (2018) 1887); because it is the inverse map of a convex computational
+    domain it genuinely *clusters and aligns* to `M` — a thin strip on a
+    fault, not the isotropic centre-of-gravity blob the scalar MA mover
+    produces, and not the non-clustering smooth of the decoupled
+    `_winslow_anisotropic`. See
+    ``docs/developer/design/anisotropic-mmpde-mover.md``.
+
+    ``metric`` is the SPD `d×d` metric tensor: a sympy `Matrix` (function
+    of ``mesh.CoordinateSystem.X``) or a ``VarType.TENSOR`` /
+    ``SYM_TENSOR`` :class:`MeshVariable`. Build it small **across** a
+    feature (along its normal) and base along it, localized near the
+    feature (e.g. `M = I + (R²-1)·exp(-(d_seg/W)²)·n nᵀ`).
+
+    Parallel safety (release gate: `np>=2` must match serial): the
+    per-element `d×d` algebra is rank-local (batched ``numpy.linalg``);
+    the **velocity assembly** `Σ_{K∋i}|K|v^K_i` is summed over **owned
+    cells** into the coordinate DM Vec with ``localToGlobal(ADD_VALUES)``
+    + ``globalToLocal`` (cross-rank ghost reduction — not ``np.add.at``
+    into a global array); the per-node step and the energy/area
+    line-search predicates are computed from owned/assembled data with
+    collective ``allreduce`` so every rank takes the same accept/backtrack
+    branch; only owned vertices move and ghosts are halo-synced each trial
+    so the final ``_deform_mesh`` is consistent.
+
+    Time integration: gradient flow `dx_i/dt = (P_i/τ)Σ|K|v`,
+    `P_i = detM(x_i)^{(p-1)/2}` (scale-free), explicit Euler with a
+    per-node step cap (``step_frac``·min-incident-edge) and an **energy
+    line-search backtrack** (accept only if no fold *and* `I_h`
+    decreases) so the descent is monotone. ``n_outer`` Euler steps.
+    """
+    import sympy
+    from petsc4py import PETSc
+    pinned_labels = tuple(pinned_labels)
+    cdim = mesh.cdim
+    if cdim not in (2, 3):
+        raise NotImplementedError(
+            "_winslow_mmpde supports 2D/3D simplex meshes only")
+    p = float(p); theta = float(theta); tau = float(tau)
+    q = cdim * p / 2.0
+    dq = float(cdim) ** q
+    parallel = uw.mpi.size > 1
+
+    # --- metric as evaluable sympy entries -------------------------
+    if isinstance(metric, uw.discretisation.MeshVariable):
+        Msym = metric.sym
+    else:
+        Msym = sympy.Matrix(metric)
+    if Msym.shape != (cdim, cdim):
+        raise ValueError(
+            f"_winslow_mmpde metric must be {cdim}×{cdim}, got "
+            f"{Msym.shape}")
+
+    def _eval_M(pts):
+        """Evaluate M at points → (n, cdim, cdim)."""
+        n = pts.shape[0]
+        out = np.empty((n, cdim, cdim))
+        for a in range(cdim):
+            for b in range(cdim):
+                e = Msym[a, b]
+                if getattr(e, "free_symbols", None):
+                    out[:, a, b] = np.asarray(
+                        uw.function.evaluate(e, pts)).reshape(-1)
+                else:
+                    out[:, a, b] = float(e)
+        return out
+
+    def _dM_dx(cen):
+        """∂M/∂x at centroids via centred FD on the analytic metric →
+        (n, cdim, cdim, cdim) indexed [cell, a, b, component]."""
+        n = cen.shape[0]
+        d = np.zeros((n, cdim, cdim, cdim))
+        for c in range(cdim):
+            sh = np.zeros(cdim); sh[c] = fd_eps
+            Mp = _eval_M(cen + sh)
+            Mm = _eval_M(cen - sh)
+            d[:, :, :, c] = (Mp - Mm) / (2.0 * fd_eps)
+        return d
+
+    # --- topology / parallel scaffolding ---------------------------
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    n_verts = pEnd - pStart
+    if cdim == 2:
+        cells_all = _tri_cells(dm)
+        signed_vol = _signed_areas
+    else:
+        cells_all = _tet_cells(dm)
+        signed_vol = _signed_volumes
+    if cells_all is None:
+        return
+    fact = 2.0 if cdim == 2 else 6.0           # d! → |K| = |detE|/d!
+    owned_cell = _owned_cell_mask(dm)
+    cells_own = cells_all[owned_cell]
+    is_owned_v = _owned_vertex_mask(dm)
+
+    coord_dm = dm.getCoordinateDM()
+    local_vec = dm.getCoordinatesLocal()
+    global_vec = dm.getCoordinates()
+    vloc = coord_dm.getLocalVec()
+    vglob = coord_dm.getGlobalVec()
+
+    coords = np.asarray(local_vec.array, dtype=np.double).reshape(-1, cdim).copy()
+
+    # Fixed computational reference = coords at first call, cached on mesh
+    # (ghosted: this rank's local array including halo).
+    ref = getattr(mesh, "_mmpde_reference_coords", None)
+    if ref is None or ref.shape != coords.shape:
+        ref = coords.copy()
+        mesh._mmpde_reference_coords = ref
+
+    # Unified Gamma boundary slip (shared with OT / MA movers).
+    from underworld3.meshing._ot_adapt import (
+        _resolve_slip, _build_slip_projector)
+    _slip_on = _resolve_slip(mesh, boundary_slip)
+
+    # Reference edge matrices (fixed) for the owned cells.
+    def _edge_mats(X, cells):
+        pc = X[cells]                               # (Nc, d+1, d)
+        cols = [pc[:, k + 1] - pc[:, 0] for k in range(cdim)]
+        return np.stack(cols, axis=2)               # (Nc, d, d) columns
+    Eh = _edge_mats(ref, cells_own)
+    detEh = np.linalg.det(Eh)
+
+    a0 = signed_vol(coords, cells_all)
+    orient = np.sign(np.median(a0)) or 1.0
+    a0_own_med = float(np.median(np.abs(signed_vol(coords, cells_own))))
+    if parallel:
+        a0_own_med = uw.mpi.comm.allreduce(a0_own_med) / uw.mpi.size
+    a_min_floor = float(area_floor_frac) * a0_own_med
+
+    def _halo_sync(X):
+        """Make ghost vertices exact copies of their owners."""
+        if not parallel:
+            return X
+        local_vec.array[:] = X.ravel()
+        coord_dm.localToGlobal(local_vec, global_vec, addv=False)
+        coord_dm.globalToLocal(global_vec, local_vec)
+        return np.asarray(local_vec.array).reshape(-1, cdim).copy()
+
+    def _energy(X):
+        """I_h = Σ_owned |K| G (collective)."""
+        E = _edge_mats(X, cells_own)
+        detE = np.linalg.det(E)
+        Einv = np.linalg.inv(E)
+        J = np.einsum('mij,mjk->mik', Eh, Einv)
+        r = detEh / detE
+        cen = X[cells_own].mean(axis=1)
+        M = _eval_M(cen); Minv = np.linalg.inv(M); detM = np.linalg.det(M)
+        JMi = np.einsum('mij,mjk->mik', J, Minv)
+        S = np.einsum('mij,mij->m', JMi, J)
+        G = (theta * np.sqrt(detM) * S ** q
+             + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
+        K = np.abs(detE) / fact
+        loc = float(np.sum(K * G))
+        if parallel:
+            loc = uw.mpi.comm.allreduce(loc)
+        return loc
+
+    def _min_area(X):
+        amin = float((signed_vol(X, cells_own) * orient).min())
+        if parallel:
+            from mpi4py import MPI as _MPI
+            amin = uw.mpi.comm.allreduce(amin, op=_MPI.MIN)
+        return amin
+
+    prevI = _energy(coords)
+    for outer in range(n_outer):
+        is_bnd = _pinned_mask(dm, pinned_labels)
+        is_pinned, _project = _build_slip_projector(
+            mesh, coords, is_bnd, n_verts, _slip_on)
+        free = ~is_pinned
+
+        # --- per-element terms on owned cells (rank-local d×d algebra) -
+        E = _edge_mats(coords, cells_own)
+        detE = np.linalg.det(E)
+        Einv = np.linalg.inv(E)
+        J = np.einsum('mij,mjk->mik', Eh, Einv)
+        r = detEh / detE
+        cen = coords[cells_own].mean(axis=1)
+        M = _eval_M(cen); Minv = np.linalg.inv(M); detM = np.linalg.det(M)
+        sdetM = np.sqrt(detM)
+        JMi = np.einsum('mij,mjk->mik', J, Minv)
+        S = np.einsum('mij,mij->m', JMi, J)
+        G = (theta * sdetM * S ** q
+             + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
+        K = np.abs(detE) / fact
+        # ∂G/∂𝕁 = 2qθ√detM S^{q-1} M⁻¹ 𝕁ᵀ ; ∂G/∂r = p(1-2θ)dq detM^{(1-p)/2} r^{p-1}
+        MinvJT = np.einsum('mij,mkj->mik', Minv, J)
+        dGdJ = (2.0 * q * theta * sdetM * S ** (q - 1.0))[:, None, None] * MinvJT
+        dGdr = (p * (1.0 - 2.0 * theta) * dq
+                * detM ** ((1 - p) / 2) * r ** (p - 1.0))
+        # local vertex velocities: V rows = -G E⁻¹ + E⁻¹ dGdJ Eh E⁻¹ + dGdr r E⁻¹
+        mid = np.einsum('mij,mjk,mkl,mln->min', Einv, dGdJ, Eh, Einv)
+        V = (-G[:, None, None] * Einv + mid
+             + (dGdr * r)[:, None, None] * Einv)        # (Nc, d, d): rows v1..vd
+        # grad_i (G+Jacobian part) = -Σ |K| v ; v0 = -(Σ_k vk)
+        vrows = V                                        # rows index local vert 1..d
+        v0 = -vrows.sum(axis=1)                          # (Nc, d)
+        grad_loc = np.zeros((n_verts, cdim))
+        np.add.at(grad_loc, cells_own[:, 0], -(K[:, None] * v0))
+        for k in range(cdim):
+            np.add.at(grad_loc, cells_own[:, k + 1],
+                      -(K[:, None] * vrows[:, k, :]))
+
+        # --- metric-variation term ∂G/∂M : ∂M/∂x (ESSENTIAL on the feature)
+        # ∂G/∂M = θ√detM[½Sq M⁻¹ - q S^{q-1} M⁻¹ 𝕁ᵀ𝕁 M⁻¹]
+        #         + (1-2θ)dq rᵖ (1-p)/2 detM^{(1-p)/2} M⁻¹
+        JTJ = np.einsum('mji,mjk->mik', J, J)
+        MJTJM = np.einsum('mij,mjk,mkl->mil', Minv, JTJ, Minv)
+        dGdM = (theta * sdetM)[:, None, None] * (
+            0.5 * (S ** q)[:, None, None] * Minv
+            - q * (S ** (q - 1.0))[:, None, None] * MJTJM)
+        dGdM += ((1.0 - 2.0 * theta) * dq * r ** p
+                 * ((1.0 - p) / 2.0) * detM ** ((1 - p) / 2)
+                 )[:, None, None] * Minv
+        dMdx = _dM_dx(cen)                                # (Nc,d,d,c)
+        # grad contribution per centroid component c, shared 1/(d+1) per vert
+        gmet = np.einsum('mab,mabc->mc', dGdM, dMdx)      # tr(dGdM·∂_cM)
+        gmet = (K / (cdim + 1.0))[:, None] * gmet
+        for k in range(cdim + 1):
+            np.add.at(grad_loc, cells_own[:, k], gmet)
+
+        # velocity = -grad, assembled cross-rank via coord DM (ADD ghost)
+        vel_loc = -grad_loc
+        if parallel:
+            vloc.array[:] = vel_loc.ravel()
+            coord_dm.localToGlobal(vloc, vglob, addv=True)
+            coord_dm.globalToLocal(vglob, vloc)
+            vel = np.asarray(vloc.array).reshape(-1, cdim).copy()
+        else:
+            vel = vel_loc
+
+        # P_i balancing at vertices (pointwise, complete everywhere)
+        Mv = _eval_M(coords); detMv = np.linalg.det(Mv)
+        Pi = detMv ** ((p - 1.0) / 2.0)
+        v = (Pi / tau)[:, None] * vel
+
+        # Per-node step cap from the min incident edge over rank-local
+        # cells. NOTE (parallel): a partition-boundary owned vertex may not
+        # see every incident edge from rank-local cells, so its cap differs
+        # slightly from serial → an ~0.006%-level serial/parallel drift in
+        # the final mesh. The velocity ASSEMBLY itself is bit-identical
+        # serial vs parallel (localToGlobal(ADD_VALUES) is exact); only this
+        # cap is rank-dependent. The drift is below the move's own
+        # non-determinism, so we accept it rather than force a ghost-complete
+        # MIN reduction (PETSc localToGlobal has no portable MIN/MAX mode
+        # here — MAX_VALUES errors on this DM). Left as a known small
+        # non-reproducibility; revisit only if a bit-exact mesh is required.
+        h = _min_incident_edge_nd(cells_all, coords)
+        mag = np.linalg.norm(v, axis=1)
+        cap = step_frac * h
+        sc = np.ones_like(mag)
+        m = (mag > cap) & (mag > 0.0)
+        sc[m] = cap[m] / mag[m]
+        step = v * sc[:, None]
+
+        # only owned interior vertices move; ghosts halo-synced each trial
+        free_owned = free & is_owned_v
+
+        # energy line-search backtrack (monotone, fold-free; collective)
+        scale = 1.0
+        accepted = coords
+        Inew = prevI
+        for _bt in range(24):
+            trial = coords.copy()
+            trial[free_owned] += scale * step[free_owned]
+            trial = _project(trial)
+            trial = _halo_sync(trial)
+            if _min_area(trial) > a_min_floor:
+                Itr = _energy(trial)
+                if Itr < prevI:
+                    accepted = trial; Inew = Itr; break
+            scale *= 0.5
+        else:
+            accepted = coords; Inew = prevI; scale = 0.0
+        dmax = float(np.linalg.norm(
+            (accepted - coords)[is_owned_v], axis=1).max(initial=0.0))
+        if parallel:
+            from mpi4py import MPI as _MPI
+            dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
+        coords = accepted
+        mesh._deform_mesh(coords)
+        if verbose:
+            uw.pprint(
+                f"  mmpde outer {outer+1}/{n_outer}: I={Inew:.6e} "
+                f"dI={Inew-prevI:+.2e} scale={scale:.3f} max|Δx|={dmax:.2e}")
+        if abs(Inew - prevI) < 1.0e-12 * max(abs(prevI), 1e-30) or dmax < outer_tol:
+            prevI = Inew
+            break
+        prevI = Inew
+
+    coord_dm.restoreLocalVec(vloc)
+    coord_dm.restoreGlobalVec(vglob)
 
 
 def _build_local_to_owned_map(dm, gsection, vec):
@@ -2948,12 +3379,21 @@ def smooth_mesh_interior(
                       f"alignment r={mm['alignment']:.3f})",
                       flush=True)
         if _metric_is_tensor and method not in (
-                "anisotropic", "aniso", "tensor"):
+                "anisotropic", "aniso", "tensor", "mmpde", "variational"):
             raise ValueError(
-                "a tensor-valued metric (the supplied-tensor path) "
-                "is only supported by method='anisotropic'; got "
+                "a tensor-valued metric (the supplied-tensor path) is "
+                "only supported by method='anisotropic' or 'mmpde'; got "
                 f"method={method!r}")
-        if method == "spring":
+        if method in ("mmpde", "variational"):
+            # Variational MMPDE (Huang–Kamenski): genuine anisotropic
+            # clustering ON a feature, non-folding, 2D/3D, parallel-safe.
+            # The metric IS the d×d tensor (sympy Matrix or TENSOR var);
+            # a scalar metric ρ is promoted to the isotropic tensor ρ·I.
+            if not _metric_is_tensor:
+                metric = metric * _sp.eye(mesh.cdim)
+            _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+                           boundary_slip=boundary_slip, **mk)
+        elif method == "spring":
             _winslow_spring(mesh, metric, pinned_labels, verbose,
                             boundary_slip=boundary_slip, **mk)
         elif method in ("ma", "monge-ampere", "monge_ampere"):
