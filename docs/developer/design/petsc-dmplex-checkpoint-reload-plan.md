@@ -74,8 +74,9 @@ XDMF, use `write_timestep(..., create_xdmf=False, petsc_reload=True)`.
 ### PETSc Reload Writing
 
 `Mesh.write_timestep(..., petsc_reload=True)` writes PETSc DMPlex reload
-metadata into per-variable HDF5 files. The legacy `Mesh.write_checkpoint(...)`
-compatibility wrapper writes PETSc DMPlex HDF5 storage version `3.0.0`.
+metadata into the standard per-variable timestep HDF5 files. The legacy
+`Mesh.write_checkpoint(...)` compatibility wrapper also writes PETSc DMPlex
+reload metadata, but uses the older checkpoint filename layout.
 
 The mesh file is named:
 
@@ -83,14 +84,22 @@ The mesh file is named:
 <base>.mesh.<index>.h5
 ```
 
-With the default `separate_variable_files=True`, each mesh variable is written
-to its own checkpoint file:
+With `write_timestep(..., petsc_reload=True)`, each mesh variable is written to
+its own timestep-layout file:
+
+```text
+<base>.mesh.<variable>.<index>.h5
+```
+
+The legacy `write_checkpoint(...)` wrapper writes one file per variable by
+default:
 
 ```text
 <base>.<variable>.<index>.h5
 ```
 
-With `separate_variable_files=False`, all variables are written into:
+With the legacy `write_checkpoint(..., separate_variable_files=False)` mode,
+all variables are written into:
 
 ```text
 <base>.checkpoint.<index>.h5
@@ -180,11 +189,11 @@ mpirun -np 2 ./uw python -m pytest \
 ## Spherical Benchmark Validation
 
 The motivating case is spherical benchmark postprocessing at high MPI counts.
-The old `write_timestep()` / `read_timestep()` path can build large KDTree
-mapping structures during reload. At `1/128` this used nearly the full 4.5 TB
+The coordinate-remap `read_timestep()` path can build large KDTree mapping
+structures during reload. At `1/128` this used nearly the full 4.5 TB
 allocation on Gadi.
 
-The checkpoint method avoids KDTree reload and preserves velocity/pressure
+The PETSc reload method avoids KDTree reload and preserves velocity/pressure
 metrics to roundoff. Boundary stress metrics require the benchmark to recover
 stress consistently after reload. In the spherical benchmark this is handled by
 projecting the six deviatoric-stress components and then forming `sigma_rr`.
@@ -193,10 +202,10 @@ projecting the six deviatoric-stress components and then forming `sigma_rr`.
 
 | Resolution | Method | NCPUs | Walltime | Memory used | Status |
 | --- | --- | ---: | ---: | ---: | --- |
-| `1/64` | `write_timestep/read_timestep` | 144 | `00:03:43` | `211.27 GB` | completed |
-| `1/64` | `write_checkpoint/read_checkpoint` | 144 | `00:02:41` | `233.67 GB` | completed |
-| `1/128` | `write_timestep/read_timestep` | 1152 | `00:13:55` | `3.92 TB` | completed near memory limit |
-| `1/128` | `write_checkpoint/read_checkpoint` | 1152 | `00:03:57` | `1.83 TB` | completed |
+| `1/64` | `write_timestep/read_timestep` remap | 144 | `00:03:43` | `211.27 GB` | completed |
+| `1/64` | `write_timestep(petsc_reload=True)/read_checkpoint` | 144 | `00:02:41` | `233.67 GB` | completed |
+| `1/128` | `write_timestep/read_timestep` remap | 1152 | `00:13:55` | `3.92 TB` | completed near memory limit |
+| `1/128` | `write_timestep(petsc_reload=True)/read_checkpoint` | 1152 | `00:03:57` | `1.83 TB` | completed |
 
 The `1/128` checkpoint reload reduced memory by about `2.09 TB` and walltime by
 about `3.5x` for the postprocessing run.
@@ -205,7 +214,7 @@ about `3.5x` for the postprocessing run.
 
 `1/128` spherical Thieulot benchmark:
 
-| Metric | `write_timestep/read_timestep` | `write_checkpoint/read_checkpoint` |
+| Metric | `write_timestep/read_timestep` remap | `write_timestep(petsc_reload=True)/read_checkpoint` |
 | --- | ---: | ---: |
 | `v_l2_norm` | `1.4319274480265082e-06` | `1.4319274480231255e-06` |
 | `p_l2_norm` | `5.985841567394967e-04` | `5.985841567395382e-04` |
@@ -222,7 +231,7 @@ projection after checkpoint reload.
 
 `1/64` spherical Thieulot benchmark:
 
-| Metric | `write_timestep/read_timestep` | `write_checkpoint/read_checkpoint` |
+| Metric | `write_timestep/read_timestep` remap | `write_timestep(petsc_reload=True)/read_checkpoint` |
 | --- | ---: | ---: |
 | `v_l2_norm` | `1.1662200663950889e-05` | `1.1662200663957042e-05` |
 | `p_l2_norm` | `2.7573367818459473e-03` | `2.7573367818460497e-03` |

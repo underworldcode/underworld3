@@ -245,7 +245,7 @@ classes. For a Python-side summary use
 |---|---|
 | Backtrack a few steps inside a running script (RK staging, adaptive Δt, predictor–corrector probes) | ``save_state()`` → token |
 | Persist whole-model state across runs (crash recovery, bisection studies, full restart) | ``save_state(file=…)`` / ``load_state(file=…)`` |
-| Restart from a previous run on a *different* rank count or remap onto a *different* resolution | ``mesh.write_timestep(create_xdmf=True)`` / ``MeshVariable.read_timestep()`` (KDTree remap) |
+| Restart from a previous run on a *different* rank count or remap onto a *different* resolution | ``mesh.write_timestep(...)`` / ``MeshVariable.read_timestep()`` (coordinate/KDTree remap) |
 | Efficient same-rank restart writing only specific variables for postprocessing | ``mesh.write_timestep(petsc_reload=True)`` / ``MeshVariable.read_checkpoint()`` (PETSc DMPlex per-variable) |
 | Visualisation for ParaView (XDMF + per-step HDF5) | ``mesh.write_timestep(create_xdmf=True)`` |
 

@@ -233,7 +233,7 @@ New code should prefer the equivalent `write_timestep()` calls above.
 | Use case | Recommended method |
 | --- | --- |
 | ParaView/XDMF visualisation | `write_timestep(..., create_xdmf=True)` |
-| Flexible remap onto another mesh | `write_timestep(..., create_xdmf=True)` |
+| Flexible remap onto another mesh | `write_timestep(...)` with `MeshVariable.read_timestep(...)` |
 | Exact restart/postprocessing | `write_timestep(..., create_xdmf=False, petsc_reload=True)` |
 | Unified visualisation/remap plus PETSc reload | `write_timestep(..., create_xdmf=True, petsc_reload=True)` |
 | Avoid KDTree memory growth at high MPI counts | `write_timestep(..., petsc_reload=True)` with `read_checkpoint()` |

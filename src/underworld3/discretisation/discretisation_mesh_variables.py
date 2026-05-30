@@ -1226,11 +1226,14 @@ class _BaseMeshVariable(Stateful, uw_object):
         verbose=False,
     ):
         """
-        Read a mesh variable from an arbitrary vertex-based checkpoint file
-        and reconstruct/interpolate the data field accordingly. The saved
-        mesh and the live mesh may have different sizes/decompositions; the
-        values are matched by nearest-neighbour kd-tree interpolation to
-        the live mesh nodes.
+        Read a mesh variable from ``Mesh.write_timestep()`` output using the
+        coordinate-remap path. The saved mesh and the live mesh may have
+        different sizes or decompositions; values are matched to the live mesh
+        nodes by nearest-neighbour KDTree interpolation.
+
+        This is the flexible remap reader. It is distinct from
+        ``read_checkpoint()``, which loads PETSc DMPlex section/vector metadata
+        for PETSc-native same-mesh reload.
 
         Parallel-safe and memory-bounded. Two transient swarms route the
         work without ever holding the full file on more than one rank:
@@ -1252,9 +1255,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
 
         # Format dispatch: ``data_filename`` may be either the
-        # legacy ``write_timestep`` prefix (in which case we
-        # reconstruct the per-variable file path the usual way) or a
-        # v1.1 snapshot wrapper path produced by
+        # ``write_timestep`` filename base (in which case we reconstruct the
+        # per-variable file path the usual way) or a v1.1 snapshot wrapper path
+        # produced by
         # ``model.save_state(file=…)``. The format-detection logic is
         # hidden from the user — same call, both formats.
         import h5py
