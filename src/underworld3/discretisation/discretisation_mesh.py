@@ -2736,22 +2736,57 @@ class Mesh(Stateful, uw_object):
         """
         Write mesh and selected variables for timestep output.
 
-        This writes:
-        - one mesh HDF5 file (shared/static or per-step, depending on ``meshUpdates``)
+        This is the standard mesh output method. It always writes:
+
+        - one mesh HDF5 file, shared across timesteps unless ``meshUpdates=True``
         - one HDF5 file per mesh variable
-        - optional proxy files for swarm variables
-        - optional XDMF file linking all output files
-        - optional PETSc DMPlex section/vector metadata for exact reload
+        - raw coordinate/value datasets under ``/fields`` for coordinate-based
+          reload with ``MeshVariable.read_timestep()``
 
-        When ``create_xdmf=True`` (the default), variable files also include
-        ParaView-compatible groups (``/vertex_fields`` or ``/cell_fields``),
-        and an XDMF file is generated on rank 0.
+        The optional payloads are controlled explicitly:
 
-        When ``petsc_reload=True``, variable files also include PETSc DMPlex
-        section/vector metadata. Those files can then be loaded by
-        ``MeshVariable.read_checkpoint()`` for exact same-mesh reload, while
-        still being readable by ``MeshVariable.read_timestep()`` for
-        coordinate/KDTree remapping if ``create_xdmf`` output was also written.
+        - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
+          receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
+          and rank 0 writes the companion ``.xdmf`` file.
+        - ``petsc_reload=True`` writes PETSc DMPlex section/vector metadata into
+          the same per-variable HDF5 files. These files can then be loaded with
+          ``MeshVariable.read_checkpoint()`` for PETSc-native same-mesh reload.
+
+        Common choices are:
+
+        - visualisation/remap only:
+          ``create_xdmf=True, petsc_reload=False``
+        - PETSc-native reload only:
+          ``create_xdmf=False, petsc_reload=True``
+        - unified visualisation/remap and PETSc reload:
+          ``create_xdmf=True, petsc_reload=True``
+
+        With both flags enabled, the same variable HDF5 file can be used by
+        ``MeshVariable.read_timestep()`` for coordinate/KDTree remapping and by
+        ``MeshVariable.read_checkpoint()`` for exact PETSc-native reload.
+
+        Parameters
+        ----------
+        filename
+            Output filename base. Files are written as
+            ``<filename>.mesh.<index>.h5`` and
+            ``<filename>.mesh.<variable>.<index>.h5``.
+        index
+            Timestep/output index used in generated filenames.
+        outputPath
+            Directory where output files are written.
+        meshVars
+            Mesh variables to write.
+        swarmVars
+            Swarm variables to write as proxy fields.
+        meshUpdates
+            If ``False``, reuse ``<filename>.mesh.00000.h5`` when it already
+            exists. If ``True``, write an indexed mesh file for this timestep.
+        create_xdmf
+            Write ParaView/XDMF-compatible datasets and companion XDMF file.
+        petsc_reload
+            Write PETSc DMPlex section/vector metadata for reload with
+            ``MeshVariable.read_checkpoint()``.
 
         """
         options = PETSc.Options()

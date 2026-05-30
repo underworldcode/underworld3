@@ -1124,8 +1124,9 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         Note: This is a low-level method intended to be called by wrapper
         functions such as ``mesh.write_timestep()`` which handle output paths,
-        XDMF generation, and multi-variable coordination. Prefer using
-        ``mesh.write_timestep()`` for normal checkpoint and visualisation output.
+        optional XDMF generation, optional PETSc reload metadata, and
+        multi-variable coordination. Prefer using ``mesh.write_timestep()`` for
+        mesh-variable output.
 
         Note: This is a COLLECTIVE operation - all MPI ranks must call it.
 
@@ -1465,10 +1466,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         filename: str,
         data_name: Optional[str] = None,
     ):
-        """Load this mesh variable from ``Mesh.write_checkpoint()`` output.
+        """Load this mesh variable from PETSc reload output.
 
         This is an exact PETSc DMPlex section/vector reload path. It does not
-        use the coordinate/KDTree remapping used by ``read_timestep()``.
+        use the coordinate/KDTree remapping used by ``read_timestep()``. New
+        output should be written with ``Mesh.write_timestep(...,
+        petsc_reload=True)``; legacy ``Mesh.write_checkpoint()`` files are also
+        supported.
         """
 
         if data_name is None:

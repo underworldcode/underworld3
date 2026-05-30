@@ -11,9 +11,19 @@ but new code should use `write_timestep(..., petsc_reload=True)`.
 
 ## Standard API
 
-This is the visualisation and flexible remap workflow by default.
+`write_timestep()` always writes the mesh file and one HDF5 file per mesh
+variable. Mesh-variable files always contain raw coordinate/value datasets under
+`/fields`, which are the source data used by `MeshVariable.read_timestep()` for
+coordinate/KDTree remapping.
 
-Example:
+The two optional payloads are selected with explicit flags:
+
+| Flag | Output payload | Reader/use case |
+| --- | --- | --- |
+| `create_xdmf=True` | `/vertex_fields` or `/cell_fields` compatibility datasets plus a companion `.xdmf` file | ParaView/XDMF visualisation |
+| `petsc_reload=True` | PETSc DMPlex section/vector metadata under `/topologies/uw_mesh/dms/...` | `MeshVariable.read_checkpoint()` PETSc-native reload |
+
+### Visualisation And Remap
 
 ```python
 mesh.write_timestep(
@@ -44,8 +54,10 @@ uses coordinate-based remapping. In practice this means the target variable is
 filled by comparing target coordinates to source coordinates, using a KDTree or
 similar nearest-neighbour/remap process.
 
-Set `petsc_reload=True` to add PETSc DMPlex section/vector metadata to the same
-per-variable timestep files:
+### Unified Visualisation And PETSc Reload
+
+Set both flags to write one file family that supports ParaView/XDMF,
+coordinate/KDTree remap, and PETSc-native reload:
 
 ```python
 mesh.write_timestep(
@@ -67,7 +79,9 @@ With both `create_xdmf=True` and `petsc_reload=True`, the same variable file can
 be used by `read_timestep()` for coordinate/KDTree remapping and by
 `read_checkpoint()` for exact PETSc-native reload.
 
-For PETSc reload output without XDMF files, use:
+### PETSc Reload Without XDMF
+
+For PETSc reload output without ParaView/XDMF payloads, use:
 
 ```python
 mesh.write_timestep(
@@ -79,6 +93,20 @@ mesh.write_timestep(
     petsc_reload=True,
 )
 ```
+
+This still writes raw `/fields` datasets, but it does not write
+`/vertex_fields`, `/cell_fields`, or a companion `.xdmf` file.
+
+Typical PETSc-reload-only files still use the timestep naming convention:
+
+```text
+restart.mesh.00000.h5
+restart.mesh.Velocity.00000.h5
+restart.mesh.Pressure.00000.h5
+```
+
+The variable files contain raw `/fields` datasets and PETSc reload metadata
+under `/topologies/uw_mesh/dms/<variable>/`.
 
 ### Advantages
 
@@ -127,7 +155,15 @@ mesh.write_timestep(
 )
 ```
 
-Default files:
+The preferred replacement writes timestep-style files:
+
+```text
+checkout.mesh.00000.h5
+checkout.mesh.Velocity.00000.h5
+checkout.mesh.Pressure.00000.h5
+```
+
+The legacy call writes checkpoint-style variable filenames:
 
 ```text
 checkout.mesh.00000.h5
@@ -165,10 +201,10 @@ Combined variable file:
 checkout.checkpoint.00000.h5
 ```
 
-The checkpoint files store PETSc DMPlex HDF5 storage version `3.0.0` data with
-the section/vector metadata required to reconstruct finite-element vectors.
-Reloading uses PETSc DMPlex topology, section, vector, and `PetscSF` metadata.
-It does not use KDTree coordinate remapping.
+These files store PETSc DMPlex HDF5 storage version `3.0.0` data with the
+section/vector metadata required to reconstruct finite-element vectors.
+Reloading uses PETSc DMPlex topology, section, vector, and `PetscSF` metadata;
+it does not use KDTree coordinate remapping.
 
 Set `create_xdmf=True` to route through the unified timestep writer. This writes
 XDMF/remap payloads and PETSc reload payloads together, using the timestep file
@@ -190,24 +226,7 @@ The variable files are then named
 layout, it does not support `unique_id=True` or
 `separate_variable_files=False`.
 
-### Advantages
-
-- Exact FE-vector reload path for restart and postprocessing.
-- Avoids KDTree memory spikes.
-- Preserves continuous, vector, and discontinuous variable layouts through
-  PETSc section metadata.
-- Per-variable files avoid forcing postprocessing to open one large combined
-  field checkpoint.
-- Better suited to large MPI jobs where memory locality matters.
-
-### Disadvantages
-
-- Does not write XDMF unless `create_xdmf=True`.
-- Does not write `/vertex_fields/...` visualisation datasets unless
-  `create_xdmf=True`.
-- Assumes the checkpoint mesh and variable checkpoint files are used together.
-- Different-rank reload should be validated for each workflow before relying on
-  it in production.
+New code should prefer the equivalent `write_timestep()` calls above.
 
 ## Which Method To Use
 
