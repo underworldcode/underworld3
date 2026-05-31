@@ -325,6 +325,44 @@ def _min_incident_edge(dm, coords):
     return h
 
 
+def _is_simplex_mesh(mesh):
+    """True iff every cell is a simplex (triangle in 2D, tetrahedron in
+    3D). The metric-driven adaptivity movers (spring/ma/ot/anisotropic/
+    mmpde) are simplex-only: they rely on the affine edge-matrix Jacobian
+    and the signed area/volume backtrack, which assume one edge matrix per
+    cell. A simplex cell cones to exactly ``cdim+1`` facets (3 edges in 2D,
+    4 faces in 3D); quads/hexes cone to more. UW3 meshes are homogeneous,
+    so the first owned cell decides it."""
+    dm = mesh.dm
+    cStart, cEnd = dm.getHeightStratum(0)
+    if cEnd <= cStart:
+        return True  # empty rank — nothing to disqualify
+    return dm.getConeSize(cStart) == mesh.cdim + 1
+
+
+def _assert_simplex_for_adaptivity(mesh):
+    """Raise a clear error if a non-simplex mesh is handed to the
+    metric-driven adaptivity strategy (rather than the previous silent
+    no-op when ``_tri_cells``/``_tet_cells`` returned ``None``)."""
+    if not _is_simplex_mesh(mesh):
+        raise NotImplementedError(
+            "metric-driven mesh adaptivity (smooth_mesh_interior with a "
+            "metric / method in {ma, ot, anisotropic, mmpde, spring}) "
+            "supports SIMPLEX meshes only (triangles in 2D, tetrahedra in "
+            "3D). This mesh has non-simplex cells (cone size "
+            f"{mesh.dm.getConeSize(mesh.dm.getHeightStratum(0)[0])} ≠ "
+            f"cdim+1={mesh.cdim + 1}). Use a simplex mesh, or a "
+            "structured-grid mover.")
+
+
+def _simplex_cells(dm, cdim):
+    """Dimension-general simplex connectivity: the ``(n_cells, cdim+1)``
+    vertex-index array (triangles in 2D, tetrahedra in 3D), or ``None`` if
+    the mesh is not all-simplex. Single entry point so the connectivity
+    cache and the movers don't each branch on ``cdim``."""
+    return _tri_cells(dm) if cdim == 2 else _tet_cells(dm)
+
+
 def _tri_cells(dm):
     """Triangle vertex-index triples (local-chart, v-pStart order).
 
@@ -3355,6 +3393,9 @@ def smooth_mesh_interior(
         skip_threshold = None
 
     if metric is not None:
+        # Lock the metric-driven adaptivity strategy to simplex meshes
+        # (was a silent no-op when the cell arrays came back None).
+        _assert_simplex_for_adaptivity(mesh)
         mk = dict(method_kwargs or {})
         # If a LIST of metrics is supplied, compose them into one scalar
         # density internally (user-facing convenience: hand the routine the
