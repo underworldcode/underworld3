@@ -2708,7 +2708,8 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
                    n_outer=150, p=1.5, theta=1.0 / 3.0, tau=1.0,
                    step_frac=0.2, area_floor_frac=0.01,
                    boundary_slip=False, outer_tol=1.0e-7,
-                   fd_eps=1.0e-6, **_ignored):
+                   fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
+                   **_ignored):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
     MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
     arXiv:1410.7872). Dimension-general (`d = 2, 3`) and parallel-safe.
@@ -2771,8 +2772,9 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
             f"_winslow_mmpde metric must be {cdim}×{cdim}, got "
             f"{Msym.shape}")
 
-    def _eval_M(pts):
-        """Evaluate M at points → (n, cdim, cdim)."""
+    def _eval_M_analytic(pts):
+        """Exact Eulerian metric via sympy evaluate → (n, cdim, cdim).
+        Correct but slow (sympy symbolic processing dominates the cost)."""
         n = pts.shape[0]
         out = np.empty((n, cdim, cdim))
         for a in range(cdim):
@@ -2784,6 +2786,16 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
                 else:
                     out[:, a, b] = float(e)
         return out
+
+    # `_eval_M` is (re)bound below once `ref` is known: either the exact
+    # analytic path, or a bake-once + Shepard/RBF interpolation from the
+    # FIXED reference cloud (Eulerian — the metric is a function of space,
+    # so we interpolate from a static cloud to the moving centroids, NOT a
+    # Lagrangian nodal field). RBF is ~10× faster per eval and smooths the
+    # analytic endpoint "elbow" kink; the metric is a guide field so the
+    # interpolation error costs no correctness (the line-search on I_h
+    # keeps the move valid for whatever M it is handed).
+    _eval_M = _eval_M_analytic
 
     def _dM_dx(cen):
         """∂M/∂x at centroids via centred FD on the analytic metric →
@@ -2828,6 +2840,26 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     if ref is None or ref.shape != coords.shape:
         ref = coords.copy()
         mesh._mmpde_reference_coords = ref
+
+    # --- RBF/Shepard bake of the metric (the production-fast path) ------
+    # Evaluate the analytic metric ONCE on the fixed reference cloud, then
+    # interpolate to the moving centroids each step via k-NN inverse-
+    # distance (Shepard). The reference cloud is fixed in space ⇒ Eulerian.
+    if metric_eval == "rbf":
+        from scipy.spatial import cKDTree
+        M_ref = _eval_M_analytic(ref)                    # one analytic pass
+        _tree = cKDTree(ref)
+        _kk = int(rbf_k) if rbf_k else (cdim + 2)
+
+        def _eval_M(pts):
+            dist, idx = _tree.query(pts, k=_kk)
+            if _kk == 1:
+                return M_ref[idx]
+            w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
+            w /= w.sum(axis=1, keepdims=True)
+            return np.einsum('nk,nkab->nab', w, M_ref[idx])
+    else:
+        _eval_M = _eval_M_analytic
 
     # Unified Gamma boundary slip (shared with OT / MA movers).
     from underworld3.meshing._ot_adapt import (
