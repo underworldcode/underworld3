@@ -58,6 +58,7 @@ Future extensions (separate PRs):
     path is serial-exact (rank-boundary nodes under-count forces)
 """
 
+import warnings
 from typing import Optional, Sequence
 
 import numpy as np
@@ -1230,7 +1231,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
     # built. See _ot_adapt._resolve_slip / _build_slip_projector.
     from underworld3.meshing._ot_adapt import (
         _resolve_slip, _build_slip_projector)
-    _slip_on = _resolve_slip(mesh, boundary_slip)
+    _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
 
     cache = _WINSLOW_CACHE.get(key)
     if cache is None:
@@ -1292,7 +1293,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         # boundary, so this slides boundary nodes and snaps them back onto
         # the surface (radial coordinate systems); Cartesian boundaries pin.
         is_pinned, _project = _build_slip_projector(
-            mesh, old_coords, is_bnd, n_verts, _slip_on)
+            mesh, old_coords, is_bnd, n_verts, boundary_slip)
 
         # Source-side density V at vertex i: LUMPED L2 projection of
         # cell-wise V_T = |T| (or |Tet|) — area-weighted average of
@@ -1627,7 +1628,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
     # is built. See _ot_adapt._resolve_slip / _build_slip_projector.
     from underworld3.meshing._ot_adapt import (
         _resolve_slip, _build_slip_projector)
-    _slip_on = _resolve_slip(mesh, boundary_slip)
+    _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
 
     key = (id(mesh), pinned_labels,
            pEnd - pStart, cEnd - cStart, cone_size,
@@ -1684,7 +1685,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
 
         # Unified Gamma_N boundary slip (shared helper; see _ot_adapt).
         is_pinned, _project = _build_slip_projector(
-            mesh, old_coords, is_bnd, n_verts, _slip_on)
+            mesh, old_coords, is_bnd, n_verts, boundary_slip)
 
         # --- compute V (patch volumes) on current mesh ---------
         if tris is None:
@@ -2471,9 +2472,9 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         # ``_ot_adapt._build_slip_projector`` / ``_boundary_vertex_normals``.
         from underworld3.meshing._ot_adapt import (
             _resolve_slip, _build_slip_projector)
-        _slip_on = _resolve_slip(mesh, boundary_slip)
+        _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
         is_pinned, _project = _build_slip_projector(
-            mesh, old_coords, is_bnd, n_verts, _slip_on)
+            mesh, old_coords, is_bnd, n_verts, boundary_slip)
 
         # D is fixed & Lagrangian (built once, above) — no
         # re-projection feedback. The outer loop is a damped
@@ -2902,7 +2903,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     # Unified Gamma boundary slip (shared with OT / MA movers).
     from underworld3.meshing._ot_adapt import (
         _resolve_slip, _build_slip_projector)
-    _slip_on = _resolve_slip(mesh, boundary_slip)
+    _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
 
     # Reference edge matrices (fixed) for the owned cells.
     def _edge_mats(X, cells):
@@ -2968,7 +2969,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     for outer in range(n_outer):
         is_bnd = _pinned_mask(dm, pinned_labels)
         is_pinned, _project = _build_slip_projector(
-            mesh, coords, is_bnd, n_verts, _slip_on)
+            mesh, coords, is_bnd, n_verts, boundary_slip)
         free = ~is_pinned
 
         # --- per-element terms on owned cells (rank-local d×d algebra) -
@@ -3135,7 +3136,8 @@ def smooth_mesh_interior(
     alpha: float = 0.5,
     metric=None,
     method: str = "mmpde",
-    boundary_slip: bool = False,
+    slip_surfaces=None,
+    boundary_slip=None,
     method_kwargs: Optional[dict] = None,
     verbose: bool = False,
     skip_threshold=_UNSET,
@@ -3257,15 +3259,27 @@ def smooth_mesh_interior(
         deep/near grading (the optimal-transport ≈10× needs *more
         nodes* — a topology change, not this smoother). See
         ``docs/developer/subsystems/mesh-metric-redistribution.md``.
-    boundary_slip : bool, default False
-        Let boundary nodes slide tangentially along their boundary
-        (snapped back to the boundary each step — they cannot leave
-        it; serial circular/spherical boundaries only). Strongly
-        helps the spring (+~10 % grading, faster); near-no-op for
-        ``ma`` (its natural Neumann BC already handles the
-        boundary). Off by default — for a free surface the boundary
-        is the moving surface, so sliding interacts with the
-        free-surface coupling; enable per use-context.
+    slip_surfaces : bool, str, sequence of str, or dict, optional
+        Which named codim-1 boundary surfaces may slide tangentially
+        (boundary nodes slide along the surface but cannot leave it):
+
+        * ``True`` — every named boundary slips.
+        * a label name or list of names — only those surfaces slip;
+          all other boundaries stay pinned.
+        * ``None`` / ``False`` / ``[]`` — pin every boundary (default).
+        * ``{label: snap_bool}`` — those labels slip; a ``False``
+          ``snap_bool`` marks a **free surface** that slides without
+          being snapped back to its reference shape (the surface is
+          itself the unknown), while ``True`` keeps it on the surface.
+
+        Slip directions use the projected P1 boundary normal
+        (:attr:`mesh.Gamma_P1`); a vertex slips only if it lies on
+        exactly one slip surface (junctions/corners pin). After the
+        tangential slide, non-free surfaces are returned to their
+        reference facets so they stay on the (convex) boundary.
+    boundary_slip : optional, **deprecated**
+        Backward-compatible alias for ``slip_surfaces`` (``True`` =
+        all boundaries slip). Use ``slip_surfaces`` in new code.
     method_kwargs : dict, optional
         Extra tuning forwarded to the chosen metric solver (ignored
         when ``metric is None``). Keeps the shared signature clean
@@ -3398,6 +3412,27 @@ def smooth_mesh_interior(
         f = 1 + 8 * sympy.exp(-((r0.sym[0] - 1.0) / 0.12) ** 2)
         smooth_mesh_interior(mesh, metric=f)
     """
+    # `slip_surfaces` supersedes the deprecated `boundary_slip` alias; the
+    # single resolved spec is threaded to the mover as `boundary_slip` (the
+    # movers/_build_slip_projector accept the full spec, incl. dicts).
+    if slip_surfaces is not None:
+        if boundary_slip is not None:
+            warnings.warn(
+                "smooth_mesh_interior: pass either slip_surfaces or the "
+                "deprecated boundary_slip, not both; using slip_surfaces.",
+                stacklevel=2,
+            )
+        boundary_slip = slip_surfaces
+    elif boundary_slip is not None and boundary_slip is not False:
+        warnings.warn(
+            "smooth_mesh_interior: `boundary_slip` is deprecated; use "
+            "`slip_surfaces` (True = all boundaries slip).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if boundary_slip is None:
+        boundary_slip = False
+
     if pinned_labels is None:
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)
@@ -4342,7 +4377,7 @@ def follow_metric(
         if method_kwargs:
             ma_kwargs.update(method_kwargs)
         smooth_mesh_interior(
-            mesh, metric=rho, method="ma", boundary_slip=boundary_slip,
+            mesh, metric=rho, method="ma", slip_surfaces=boundary_slip,
             method_kwargs=ma_kwargs,
             skip_threshold=skip_threshold, verbose=verbose)
         return not np.allclose(np.asarray(mesh.X.coords), old_X)
