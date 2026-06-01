@@ -2745,7 +2745,7 @@ def _min_incident_edge_nd(cells, coords):
 def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
                    n_outer=150, p=1.5, theta=1.0 / 3.0, tau=1.0,
                    step_frac=0.2, area_floor_frac=0.01,
-                   boundary_slip=False, outer_tol=1.0e-7,
+                   boundary_slip=False, outer_tol=1.0e-7, tol=1.0e-3,
                    fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
                    **_ignored):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
@@ -2918,6 +2918,16 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     if parallel:
         a0_own_med = uw.mpi.comm.allreduce(a0_own_med) / uw.mpi.size
     a_min_floor = float(area_floor_frac) * a0_own_med
+    # Representative background cell size h0 (mean reference edge length over
+    # owned cells), used to make the convergence test SCALE-RELATIVE: a move
+    # of dmax < tol·h0 is negligible vs the cell size, so the adapt has
+    # converged regardless of absolute coordinate units. (The old absolute
+    # outer_tol=1e-7 never fired — dx~1e-6 ≫ 1e-7 yet ≪ h0~0.08 — so every
+    # adapt ran to the n_outer cap.)
+    _ecols = np.linalg.norm(Eh, axis=1)            # (n_own, cdim) edge lengths
+    h0_scale = float(np.mean(_ecols)) if _ecols.size else 1.0
+    if parallel:
+        h0_scale = uw.mpi.comm.allreduce(h0_scale) / uw.mpi.size
 
     def _halo_sync(X):
         """Make ghost vertices exact copies of their owners."""
@@ -3075,10 +3085,15 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
             uw.pprint(
                 f"  mmpde outer {outer+1}/{n_outer}: I={Inew:.6e} "
                 f"dI={Inew-prevI:+.2e} scale={scale:.3f} max|Δx|={dmax:.2e}")
-        if abs(Inew - prevI) < 1.0e-12 * max(abs(prevI), 1e-30) or dmax < outer_tol:
-            prevI = Inew
-            break
+        # Converged when (a) the line-search could make no downhill move
+        # (scale collapsed to 0 — at a local minimum / stuck), or (b) the
+        # accepted node move is negligible relative to the cell size
+        # (dmax < tol·h0). tol defaults to 1e-3 (move < 0.1% of a cell).
+        # The legacy absolute `outer_tol` is retained as an additional, even
+        # tighter floor for callers that set it.
         prevI = Inew
+        if scale == 0.0 or dmax < tol * h0_scale or dmax < outer_tol:
+            break
 
     coord_dm.restoreLocalVec(vloc)
     coord_dm.restoreGlobalVec(vglob)
@@ -3119,7 +3134,7 @@ def smooth_mesh_interior(
     n_iters: int = 5,
     alpha: float = 0.5,
     metric=None,
-    method: str = "spring",
+    method: str = "mmpde",
     boundary_slip: bool = False,
     method_kwargs: Optional[dict] = None,
     verbose: bool = False,
@@ -3189,9 +3204,30 @@ def smooth_mesh_interior(
         positive and finite. ``None`` (default) ⇒ the
         graph-Laplacian Jacobi path, unchanged behaviour
         bit-for-bit.
-    method : {"spring", "ma"}, default "spring"
+    method : {"mmpde", "spring", "ma", "ot", "anisotropic"}, default "mmpde"
         Metric-grading solver (ignored when ``metric is None``):
 
+        * ``"mmpde"`` — **(default)** variational moving-mesh
+          adaptation (Huang–Kamenski; the direct simplex
+          discretization of the meshing functional). Generates the
+          physical mesh as the inverse-map image of a fixed
+          computational mesh, minimizing Huang's combined
+          equidistribution + alignment functional by an explicit,
+          line-searched gradient flow. Dimension-general (2D/3D),
+          matrix-free (no PETSc solve — small per-cell dense algebra
+          + a parallel Vec assembly), provably non-folding, and the
+          ONLY mover here that genuinely *clusters and aligns* to an
+          **anisotropic tensor** metric (a thin strip on a fault /
+          across a thermal front — not the isotropic centre-of-
+          gravity blob of ``"ma"`` nor the non-clustering smooth of
+          ``"anisotropic"``). Accepts a scalar density (promoted to
+          ``ρ·I``) or a ``d×d`` tensor metric. Default because it is
+          the most capable and the most straightforward to reason
+          about. See
+          :doc:`/developer/design/anisotropic-mmpde-mover` and
+          Huang & Kamenski, JCP 301 (2015) 322 (doi:10.1016/
+          j.jcp.2015.07.015); non-folding: Math. Comp. 87 (2018)
+          1887 (doi:10.1090/mcom/3271).
         * ``"spring"`` — *volumetric* elastic-spring equilibrium:
           equal edge springs (shape regulariser, equant cells, no
           slivers) + a per-cell area constraint

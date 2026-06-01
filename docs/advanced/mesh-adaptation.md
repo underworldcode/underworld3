@@ -379,8 +379,8 @@ For the mathematically inclined, see the [Developer Design Document](../develope
 
 When you want to concentrate resolution on an evolving feature
 **every timestep** without re-meshing — keeping the topology and
-all field data intact — use the anisotropic metric mover instead
-of `mesh.adapt`:
+all field data intact — use `smooth_mesh_interior` (the node-moving
+mover) instead of `mesh.adapt`:
 
 ```python
 import underworld3 as uw
@@ -396,10 +396,41 @@ from underworld3.meshing import (
 rho = metric_density_from_gradient(mesh, T, amp=8.0)
 
 # Move the nodes to that metric (topology / DOFs / variables
-# all preserved — no transfer needed).
-smooth_mesh_interior(
-    mesh, metric=rho, method="anisotropic",
-    method_kwargs=dict(aniso_cap=2.0, relax=0.2, n_outer=12))
+# all preserved — no transfer needed). method="mmpde" is the
+# DEFAULT and may be omitted; shown here for clarity.
+smooth_mesh_interior(mesh, metric=rho, method="mmpde",
+                     boundary_slip=True)
+```
+
+```{tip}
+**`method="mmpde"` is the default mover** (since this release): the
+variational moving-mesh adaptation of Huang & Kamenski. It is
+dimension-general (2D/3D), matrix-free (no PETSc solve — small
+per-cell dense algebra plus a parallel `Vec` assembly), provably
+non-folding, and — uniquely among the movers here — genuinely
+*clusters and aligns* to an **anisotropic tensor** metric. It is
+both the most capable and the most straightforward to reason about,
+which is why it is now the default. Pass a **scalar** density (as
+above; it is promoted to the isotropic tensor `ρ·I`) or a `d×d`
+**tensor** metric (e.g. {py:func}`fault_metric_tensor`, or a
+`grad T`-aligned boundary-layer tensor) to get true thin-across /
+long-along refinement. Full design + derivation:
+{doc}`/developer/design/anisotropic-mmpde-mover`.
+
+The earlier movers remain available via `method=`:
+`"spring"` (fast volumetric equant-cell smoother), `"ma"`
+(isotropic Monge–Ampère), `"ot"` (linear OT-improvement step),
+`"anisotropic"` (decoupled-Winslow tensor smoother — reshapes but
+does not cluster). Use them only when you specifically need their
+behaviour; `"mmpde"` supersedes `"anisotropic"` for fault / front
+refinement.
+
+Key `mmpde` knobs (via `method_kwargs`): `p` (functional exponent,
+1.5–2), `theta` (Huang alignment/equidistribution balance, 1/3),
+`step_frac` (per-node move cap, 0.2), `tol` (scale-relative
+convergence exit), `metric_eval` (`"rbf"` default — fast baked
+metric interpolation). `boundary_slip=True` lets boundary nodes
+slide tangentially (needed for surface-reaching features).
 ```
 
 `metric_density_from_gradient` builds
