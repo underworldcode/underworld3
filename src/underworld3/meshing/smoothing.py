@@ -3433,6 +3433,19 @@ def smooth_mesh_interior(
     if boundary_slip is None:
         boundary_slip = False
 
+    # Pre-create the projected-normal field (mesh.Gamma_P1 -> _n_proj) ONCE,
+    # here at the top, BEFORE the mover snapshots the DM and before any
+    # MeshVariable-valued metric is evaluated. Creating this MeshVariable
+    # mid-mover restructures the DM and invalidates the JIT/interpolation
+    # state a MeshVariable metric needs — a hard (uncatchable) abort. The
+    # in-mover _resolve_slip touch then finds it already built (a no-op).
+    # See project_uw3_smoother_footguns.
+    if boundary_slip not in (None, False, (), []):
+        try:
+            _ = mesh.Gamma_P1
+        except Exception:
+            pass
+
     if pinned_labels is None:
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)

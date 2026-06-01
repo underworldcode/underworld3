@@ -112,6 +112,26 @@ def test_named_subset_and_free_surface_dict():
 
 @pytest.mark.level_1
 @pytest.mark.tier_a
+def test_mmpde_slip_with_meshvariable_metric():
+    """Regression: mmpde + slip + a MeshVariable-valued metric must not abort.
+
+    Touching mesh.Gamma_P1 (to build the slip normals) creates the _n_proj
+    MeshVariable; doing so mid-mover restructured the DM and invalidated the
+    interpolation state a MeshVariable metric needs — a hard abort.
+    smooth_mesh_interior now pre-creates Gamma_P1 before dispatching, so this
+    runs cleanly. Pure-sympy metrics never hit it (no DM interpolation)."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1.0 / 10)
+    f = uw.discretisation.MeshVariable("Fm", mesh, 1, degree=1)
+    r = np.linalg.norm(np.asarray(f.coords), axis=1)
+    f.data[:, 0] = 1.0 + 4.0 * np.exp(-((r - 1.0) / 0.1) ** 2)  # refine outer ring
+    uw.meshing.smooth_mesh_interior(
+        mesh, metric=f.sym[0], method="mmpde", slip_surfaces=True,
+        method_kwargs=dict(n_outer=6, step_frac=0.2, tol=5.0e-3))
+    assert np.isfinite(np.asarray(mesh.X.coords)).all()
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
 def test_resolve_slip_forms():
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2)
     assert ota._resolve_slip(mesh, False) == ()
