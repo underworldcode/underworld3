@@ -569,7 +569,22 @@ class SolverBaseClass(uw_object):
             Typically 1 is enough for VEP kink-related divergence.
         verbose : bool, default=False
             Log each retry on rank 0.
+
+        Notes
+        -----
+        Optional ``self._pre_solve_hook`` — if set to a callable, it is
+        invoked as ``self._pre_solve_hook(self)`` immediately before each
+        ``snes.solve`` (operator, BCs and nullspaces are already attached
+        at this point). Default (attribute absent / ``None``) is a no-op,
+        so existing solvers are unaffected. This is the opt-in seam used to
+        override the multigrid level transfers with a geometry-aware
+        prolongation on mover-adapted meshes — see
+        ``underworld3.utilities.gmg_geometric_interpolation``. The hook runs
+        on every solve so it survives the per-adapt SNES/PC teardown.
         """
+        _hook = getattr(self, "_pre_solve_hook", None)
+        if _hook is not None:
+            _hook(self)
         self.snes.solve(None, gvec)
         if divergence_retries <= 0:
             return
