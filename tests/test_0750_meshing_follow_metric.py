@@ -311,12 +311,18 @@ def test_metric_choice_arc_length_builds_envelope():
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
-def test_follow_metric_ma_arclength_clean_and_captures():
+@pytest.mark.xfail(
+    reason="Strong metric capture (alignment>0.6) was an elliptic-ma MA-mover "
+    "property; the development merge's follow_metric uses the gentler "
+    "anisotropic mover (~0 alignment with the mild arc-length monitor). "
+    "Arc-length capture is validated via the OT mover (test_0760).",
+    strict=False)
+def test_follow_metric_arclength_clean_and_captures():
     m, T = _build_annulus_with_field()
     moved = uw.meshing.follow_metric(
-        m, T, refinement=3.0, metric="arc-length", mover="ma")
+        m, T, refinement=3.0, metric="arc-length")
     assert moved is True
-    assert _inverted_count(m) == 0          # Caffarelli: untangled map
+    assert _inverted_count(m) == 0          # untangled map (polish removes slivers)
     al = _sm.mesh_metric_mismatch(
         m, _sm.metric_density_from_gradient(
             m, T, refinement=3.0, metric_choice="arc-length", name="al2"))
@@ -325,12 +331,17 @@ def test_follow_metric_ma_arclength_clean_and_captures():
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
-def test_follow_metric_ma_boundary_slides_on_circle():
+@pytest.mark.xfail(
+    reason="follow_metric boundary-slip was an elliptic-ma MA-mover capability; "
+    "the development merge's follow_metric pins boundaries. Tangential boundary "
+    "slip is now via smooth_mesh_interior(method='mmpde', slip_surfaces=...) — "
+    "see test_0855.",
+    strict=False)
+def test_follow_metric_boundary_slides_on_circle():
     m, T = _build_annulus_with_field()
     isb = _sm._pinned_mask(m.dm, tuple(_sm._auto_pinned_labels(m)))
     X0 = np.asarray(m.X.coords).copy()
-    uw.meshing.follow_metric(m, T, refinement=3.0, metric="arc-length",
-                             mover="ma", boundary_slip=True)
+    uw.meshing.follow_metric(m, T, refinement=3.0, metric="arc-length")
     X = np.asarray(m.X.coords)
     r0 = np.linalg.norm(X0[isb], axis=1)
     r = np.linalg.norm(X[isb], axis=1)
@@ -340,7 +351,7 @@ def test_follow_metric_ma_boundary_slides_on_circle():
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
-def test_follow_metric_invalid_mover_raises():
+def test_follow_metric_invalid_metric_raises():
     m, T = _build_annulus_with_field()
     with pytest.raises(ValueError):
-        uw.meshing.follow_metric(m, T, refinement=3.0, mover="bogus")
+        uw.meshing.follow_metric(m, T, refinement=3.0, metric="bogus")
