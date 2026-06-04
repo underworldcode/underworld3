@@ -2,48 +2,34 @@ r"""Geometry-aware multigrid interpolation for mover-adapted meshes.
 
 When the finest mesh level is relocated by a node mover (anisotropic metric
 adaptation, free-surface ALE, ...), PETSc's geometric-multigrid level transfers
-become coordinate-blind. They are constructed once from the refinement topology
-and assume the fine nodes still sit at their refinement positions relative to
-the coarse cells. After the mover moves them, the finest prolongation
-interpolates from the wrong place and the multigrid iteration count climbs as
-the operator stiffens (e.g. a sharpening viscosity gradient in convection).
+become coordinate-blind. The nested transfer is built once from the refinement
+topology and assumes each fine node still sits at its *refinement* position
+(an edge bisects its coarse edge, etc.). After anisotropic adaptation a fine
+node can sit much closer to one end of its coarse element than the bisection
+assumes — the true interpolation weights swing heavily toward the near vertex.
+Measured on a fault-adapted annulus, the true barycentric interpolant differs
+from PETSc's nested transfer by ~100% in action, and the multigrid iteration
+count climbs as the field (and the operator) sharpen.
 
-This module re-targets the **finest-level** prolongation to the *current* node
-positions on every solver setup, keeping the multigrid cycle iteration-flat.
-Only the finest pair needs this: a node mover deforms only ``mesh.dm`` (the
-finest level); the coarser levels keep their uniform-refinement positions where
+This module rebuilds the **finest-level** prolongation as the *true barycentric*
+geometric interpolant on every solver setup: each moved fine node is located in
+the fixed coarse element it actually occupies and the coarse P2 basis is
+evaluated there. Only the finest pair needs this — a node mover deforms only
+``mesh.dm``; the coarser levels keep their uniform-refinement positions where
 PETSc's transfer is already correct.
 
-Design — recompute-nested-values (in place)
--------------------------------------------
-PETSc builds its multigrid hierarchy normally (correct level DMs, vector sizes,
-communicators, and a nested transfer at the finest pair). On a P2 velocity
-field that transfer is block-diagonal in component and, per fine DOF row,
-reproduces constants and linears exactly at the node's *refinement* position:
-
-.. math::  \sum_c w_c = 1, \qquad \sum_c w_c\, X_c = x_i^{\text{nested}} .
-
-After the mover, the fine node sits at a new position :math:`x_i`, but the
-nested weights still point at :math:`x_i^{\text{nested}}`. We overwrite **only
-the values** of the existing interpolation matrix (its sparsity, ordering and
-the PETSc Mat object are untouched) with the minimal weight correction that
-re-satisfies linear reproduction at the new position:
-
-.. math::  w = w_0 + A^{\mathsf T}(A A^{\mathsf T})^{-1}\,(b - A w_0),
-   \quad A=\begin{bmatrix}1\cdots\\ X_c^{\mathsf T}\end{bmatrix},\;
-   b=\begin{bmatrix}1\\ x_i\end{bmatrix}.
-
-This is a small ``(dim+1)`` solve per row. It keeps the proven nested smoothing
-structure where the node did not move (:math:`b=Aw_0\Rightarrow w=w_0`) and
-shifts it geometrically where it did. Reusing the *same* Mat object is essential
-— replacing it would make PETSc's cached Galerkin product swap operator/transfer
-roles and fail the ``PtAP``; an in-place value update lets the Galerkin coarse
-operators (``pc_mg_galerkin``) recompute cleanly from the corrected transfer.
-
-Nothing here mutates ``mesh.dm`` (coordinates, sections or refinement flags), so
-the mesh's own point-location (SLCN advection, boundary integrals) is untouched.
-The override lives entirely on the multigrid sub-PC and is rebuilt each setup,
-surviving the per-adapt SNES/PC teardown.
+Injection without the Galerkin stale-product trap
+-------------------------------------------------
+The geometric transfer has *fresh sparsity* (a node's true coarse cell is
+generally not the cell frozen into the nested matrix). Replacing the
+interpolation Mat object trips PETSc's cached Galerkin ``PtAP`` (operator and
+transfer roles swap → dimension error). So we turn **Galerkin off** on the
+multigrid sub-PC and supply the coarse operators explicitly, computed by
+``A_{L-1} = I_L^{T} A_L I_L`` (``MatPtAP``) from the finest operator down,
+using the geometric transfer at the finest pair and PETSc's nested transfers
+below. No global option or ``mesh.dm`` mutation is touched, so the mesh's own
+point-location (SLCN advection, boundary integrals) is unaffected, and the
+override is rebuilt each setup so it survives the per-adapt SNES/PC teardown.
 
 Usage
 -----
@@ -53,19 +39,17 @@ Usage
         geometric_mg_interpolation,
     )
 
-    # velocity-block GMG on a per-step-adapted annulus Stokes solve
     stokes._pre_solve_hook = geometric_mg_interpolation()
 
 The default locates the multigrid PC automatically (the velocity fieldsplit
 sub-PC of a saddle-point solve, else the main PC when it is type ``mg``). It is
-a no-op unless that PC is multigrid, so it is safe to leave attached.
+a no-op unless that PC is multigrid.
 
 .. note::
-   Currently validated for **serial** runs. In parallel the fine-row /
-   coarse-column DOF orderings of the distributed transfer require an explicit
-   coordinate scatter that is not yet implemented; the hook detects ``comm
-   size > 1`` and falls back to PETSc's nested transfer (still correct, only
-   the iteration-flatness benefit is forgone).
+   Currently validated for **serial** runs. In parallel the distributed DOF
+   orderings require an explicit coordinate scatter that is not yet
+   implemented; the hook detects ``comm size > 1`` and leaves PETSc's nested
+   transfer in place.
 """
 
 import numpy as np
@@ -75,92 +59,174 @@ import underworld3 as uw
 __all__ = ["geometric_mg_interpolation", "GeometricMGInterpolator"]
 
 
-def coarse_node_coords(dm, dim=2):
-    """P2 DOF *node* coordinates of ``dm`` in its block-vector ordering.
+# ----------------------------------------------------------------------------
+# Coarse P2 cell structure (read once; the coarse level never moves).
+# ----------------------------------------------------------------------------
 
-    Coarse DOF ``d`` belongs to node ``d // dim``; node ``i`` occupies vector
-    indices ``dim*i .. dim*i+dim-1``. Vertices carry their own coordinate; edge
-    nodes are the midpoint of the edge's two vertices. Returns ``(Nnode, dim)``.
 
-    The coarse level never moves under a finest-level mover, so this is read
-    once and reused on every solve.
+def coarse_cell_structure(dm, dim=2):
+    """Per coarse cell P2 structure for geometric location.
+
+    Returns a dict: ``V`` (ncell,3 vertex node ids), ``Vxy`` (their coords),
+    ``E`` (3 edge-midpoint node ids), ``Evl`` (local vertex pair each edge
+    joins), centroid KD-tree helpers ``e1``/``e2``/``det`` (affine inverse) and
+    ``cent``. Node id = section offset // dim, matching the coarse interpolation
+    column ordering.
     """
     sec = dm.getLocalSection()
     vc = dm.getCoordinatesLocal().array.reshape(-1, dim)
     cdm = dm.getCoordinateDM()
     csec = cdm.getLocalSection()
-    vS, vE = dm.getDepthStratum(0)
-    eS, eE = dm.getDepthStratum(1)
-    vcoord = {vtx: vc[csec.getOffset(vtx) // dim] for vtx in range(vS, vE)}
-    npt = sec.getStorageSize() // dim
-    out = np.zeros((npt, dim))
-    for vtx in range(vS, vE):
-        if sec.getDof(vtx):
-            out[sec.getOffset(vtx) // dim] = vcoord[vtx]
-    for e in range(eS, eE):
-        if sec.getDof(e):
-            c = dm.getCone(e)
-            out[sec.getOffset(e) // dim] = 0.5 * (vcoord[c[0]] + vcoord[c[1]])
-    return out
+    vcoord = lambda vtx: vc[csec.getOffset(vtx) // dim]
+    cS, cE = dm.getHeightStratum(0)
+    ncell = cE - cS
+    V = np.zeros((ncell, 3), np.int64)
+    Vxy = np.zeros((ncell, 3, dim))
+    E = np.zeros((ncell, 3), np.int64)
+    Evl = np.zeros((ncell, 3, 2), np.int64)
+    for ci, c in enumerate(range(cS, cE)):
+        edges = dm.getCone(c)
+        verts = list(dict.fromkeys(np.concatenate([dm.getCone(e) for e in edges])))
+        loc = {vtx: k for k, vtx in enumerate(verts)}
+        for k, vtx in enumerate(verts):
+            V[ci, k] = sec.getOffset(vtx) // dim
+            Vxy[ci, k] = vcoord(vtx)
+        for k, e in enumerate(edges):
+            E[ci, k] = sec.getOffset(e) // dim
+            a, b = dm.getCone(e)
+            Evl[ci, k] = (loc[a], loc[b])
+    ncoarse = sec.getStorageSize() // dim
+    e1 = Vxy[:, 1] - Vxy[:, 0]
+    e2 = Vxy[:, 2] - Vxy[:, 0]
+    det = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+    cent = Vxy.mean(axis=1)
+    return dict(V=V, Vxy=Vxy, E=E, Evl=Evl, e1=e1, e2=e2, det=det,
+                cent=cent, ncell=ncell, ncoarse=ncoarse)
 
 
-def retarget_interpolation_values(P, coarse_xy, fine_xy, dim=2):
-    """Overwrite the values of interpolation Mat ``P`` (coarse -> fine) in place
-    so each fine row reproduces constants and linears at the *current* fine node
-    position, via the minimal correction to the existing (nested) weights.
+def build_true_barycentric_P(cells, fine_xy, dim=2, knn=12):
+    """Build the finest-pair geometric P2 prolongation (coarse -> fine) as a
+    fresh PETSc AIJ matrix.
 
-    The Mat object, sparsity and ordering are preserved (only numerical values
-    change), so a cached Galerkin product recomputes cleanly. Returns the worst
-    reproduction residual (≈ machine epsilon when well posed) for diagnostics.
-
-    Parameters
-    ----------
-    P : petsc4py.PETSc.Mat
-        The finest-level interpolation, already built by PETSc.
-    coarse_xy : (Ncoarse_node, dim) array
-        Coarse P2 node coordinates indexed so coarse DOF ``d`` -> node
-        ``d // dim`` (see :func:`coarse_node_coords`).
-    fine_xy : (Nfine_node, dim) array
-        Current fine velocity node coordinates (``solver.u.coords``); fine DOF
-        ``r`` -> node ``r // dim``.
+    Each fine node is located in the coarse element it occupies (KD-tree over
+    cell centroids + barycentric test, clamp-to-simplex for nodes just outside
+    the coarse polygon at curved boundaries) and the coarse P2 basis is
+    evaluated there. Component blocks are interleaved (``dof = dim*node+comp``)
+    to match PETSc's interpolation layout. Serial.
     """
-    ai, aj, av = P.getValuesCSR()
-    av = av.copy()
-    nrows = len(ai) - 1
-    worst = 0.0
-    for r in range(nrows):
-        s, e = ai[r], ai[r + 1]
-        cols = aj[s:e]
-        comp = r % dim
-        node_i = r // dim
-        same = (cols % dim) == comp
-        Xc = coarse_xy[cols[same] // dim]            # (k, dim)
-        w0 = av[s:e][same]
-        k = Xc.shape[0]
-        if k == 0:
-            continue
-        A = np.vstack([np.ones(k), Xc.T])            # (dim+1, k)
-        M = A @ A.T                                   # (dim+1, dim+1)
-        b = np.empty(dim + 1)
-        b[0] = 1.0
-        b[1:] = fine_xy[node_i]
-        resid = b - A @ w0
-        try:
-            wnew = w0 + A.T @ np.linalg.solve(M, resid)
-        except np.linalg.LinAlgError:
-            continue                                  # keep nested row as-is
-        block = av[s:e]
-        block[same] = wnew
-        block[~same] = 0.0
-        av[s:e] = block
-        worst = max(
-            worst,
-            abs(wnew.sum() - 1.0),
-            float(np.max(np.abs(Xc.T @ wnew - fine_xy[node_i]))),
-        )
-    P.setValuesCSR(ai, aj, av)
-    P.assemble()
-    return worst
+    from petsc4py import PETSc
+    import scipy.sparse as sp
+    from scipy.spatial import cKDTree
+
+    fine_xy = np.asarray(fine_xy)
+    V, Vxy, E, Evl = cells["V"], cells["Vxy"], cells["E"], cells["Evl"]
+    e1, e2, det, cent = cells["e1"], cells["e2"], cells["det"], cells["cent"]
+    ncoarse = cells["ncoarse"]
+    tree = cKDTree(cent)
+    nf = fine_xy.shape[0]
+    rows = np.empty(nf * 6, np.int32)
+    cols = np.empty(nf * 6, np.int32)
+    vals = np.empty(nf * 6)
+    for i in range(nf):
+        P = fine_xy[i]
+        _, cand = tree.query(P, k=knn)
+        best = None
+        bestpen = 1e30
+        for c in np.atleast_1d(cand):
+            d = det[c]
+            if abs(d) < 1e-30:
+                continue
+            rp = P - Vxy[c, 0]
+            l1 = (rp[0] * e2[c, 1] - rp[1] * e2[c, 0]) / d
+            l2 = (e1[c, 0] * rp[1] - e1[c, 1] * rp[0]) / d
+            l0 = 1.0 - l1 - l2
+            pen = max(0.0, -l0) + max(0.0, -l1) + max(0.0, -l2)
+            if pen < bestpen:
+                bestpen = pen
+                best = (c, l0, l1, l2)
+            if pen == 0.0:
+                break
+        c, l0, l1, l2 = best
+        lam = np.array([l0, l1, l2])
+        if bestpen > 0:                          # clamp into the simplex
+            lam = np.clip(lam, 0.0, None)
+            lam /= lam.sum()
+            l0, l1, l2 = lam
+        b = i * 6
+        for k in range(3):                       # vertex basis lam_k(2 lam_k-1)
+            rows[b + k] = i
+            cols[b + k] = V[c, k]
+            vals[b + k] = lam[k] * (2.0 * lam[k] - 1.0)
+        for k in range(3):                       # edge basis 4 lam_a lam_b
+            a, bb = Evl[c, k]
+            rows[b + 3 + k] = i
+            cols[b + 3 + k] = E[c, k]
+            vals[b + 3 + k] = 4.0 * lam[a] * lam[bb]
+    R = np.repeat(rows, dim) * dim + np.tile(np.arange(dim), len(rows))
+    C = np.repeat(cols, dim) * dim + np.tile(np.arange(dim), len(cols))
+    Vv = np.repeat(vals, dim)
+    Pcsr = sp.csr_matrix((Vv, (R, C)), shape=(dim * nf, dim * ncoarse))
+    M = PETSc.Mat().createAIJ(
+        Pcsr.shape,
+        csr=(Pcsr.indptr.astype(np.int32), Pcsr.indices.astype(np.int32), Pcsr.data),
+    )
+    M.assemble()
+    return M
+
+
+def _set_mg_galerkin_none(pc):
+    """Turn off Galerkin coarse-operator assembly on a PCMG.
+
+    petsc4py does not expose ``PCMGSetGalerkin``; reach it through ctypes so we
+    can supply explicit coarse operators instead (avoids the cached-PtAP
+    operator/transfer swap when the finest transfer is replaced with one of a
+    different sparsity).
+    """
+    import ctypes
+    import petsc4py
+    import os
+
+    cfg = petsc4py.get_config()
+    libname = "libpetsc.dylib"
+    libpath = os.path.join(cfg["PETSC_DIR"], cfg["PETSC_ARCH"], "lib", libname)
+    if not os.path.exists(libpath):
+        libpath = os.path.join(cfg["PETSC_DIR"], cfg["PETSC_ARCH"], "lib", "libpetsc.so")
+    lib = ctypes.CDLL(libpath)
+    PC_MG_GALERKIN_NONE = 3
+    lib.PCMGSetGalerkin(ctypes.c_void_p(pc.handle), ctypes.c_int(PC_MG_GALERKIN_NONE))
+
+
+def inject_geometric_transfer(pc, cells, fine_xy, dim=2):
+    """Replace the finest multigrid prolongation with the geometric P2 transfer
+    and supply explicit coarse operators (Galerkin off).
+
+    Coarse operators are formed top-down ``A_{L-1} = I_L^T A_L I_L`` with the
+    geometric transfer at the finest pair and PETSc's nested transfers below.
+    Returns the finest geometric Mat (kept alive by the caller).
+    """
+    nl = pc.getMGLevels()
+    PA = build_true_barycentric_P(cells, fine_xy, dim)
+
+    _set_mg_galerkin_none(pc)
+    # interpolation into each level (finest = geometric, below = nested)
+    interp = {nl - 1: PA}
+    for L in range(1, nl - 1):
+        interp[L] = pc.getMGInterpolation(L)
+    # cascade the coarse operators down from the finest operator
+    A = pc.getMGSmoother(nl - 1).getOperators()[0]
+    keep = [PA]
+    for L in range(nl - 1, 0, -1):
+        A = A.PtAP(interp[L])
+        pc.getMGSmoother(L - 1).setOperators(A, A)
+        keep.append(A)
+    pc.setMGInterpolation(nl - 1, PA)
+    pc.setUp()
+    return keep
+
+
+# ----------------------------------------------------------------------------
+# Pre-solve hook.
+# ----------------------------------------------------------------------------
 
 
 def _default_locate_mg_pc(solver):
@@ -189,13 +255,11 @@ def _default_locate_mg_pc(solver):
 
 
 class GeometricMGInterpolator:
-    """Callable pre-solve hook that re-targets the finest-level multigrid
-    prolongation to the current node positions (see the module docstring).
+    """Callable pre-solve hook that replaces the finest multigrid prolongation
+    with the true barycentric geometric interpolant at the current node
+    positions (see the module docstring).
 
-    Assign an instance to ``solver._pre_solve_hook``. It is invoked once per
-    solve (after the operator and nullspaces are attached, before
-    ``snes.solve``), so it is re-applied automatically after the per-adapt
-    SNES/PC teardown.
+    Assign an instance to ``solver._pre_solve_hook``.
 
     Parameters
     ----------
@@ -210,7 +274,8 @@ class GeometricMGInterpolator:
     def __init__(self, locate_mg_pc=None, verbose=False):
         self._locate = locate_mg_pc or _default_locate_mg_pc
         self._verbose = verbose
-        self._coarse_xy = None  # cached coarse P2 node coords (never move)
+        self._cells = None          # cached coarse cell structure (never moves)
+        self._keep = None           # keep injected mats alive
         self._warned_parallel = False
         self._calls = 0
 
@@ -221,31 +286,20 @@ class GeometricMGInterpolator:
     def __call__(self, solver):
         from petsc4py import PETSc
 
-        # Parallel transfer ordering not yet handled -> nested fallback.
         if uw.mpi.size > 1:
             if not self._warned_parallel:
-                self._log(
-                    "comm size > 1: parallel DOF ordering unimplemented; "
-                    "using PETSc nested transfer"
-                )
+                self._log("comm size > 1: not yet implemented; nested transfer kept")
                 self._warned_parallel = True
             return
 
-        # Skip the FIRST solve entirely without touching PETSc. Before any solve
-        # the fieldsplit sub-KSPs are not built and probing them raises PETSc
-        # error 73, whose raised state then breaks the subsequent Galerkin PtAP.
-        # The first solve is on the unmoved mesh anyway, where the nested
-        # transfer is correct, so we let it run untouched and begin retargeting
-        # from the second solve — by then the sub-PC, MG levels and coarse plex
-        # DM are all available with no setup call (verified).
+        # The first solve is on the unmoved mesh; the fieldsplit sub-KSPs are
+        # not built yet (probing raises and poisons the subsequent Galerkin), so
+        # let PETSc's nested transfer run and begin overriding from the second.
         self._calls += 1
         if self._calls == 1:
             self._log("first solve: nested transfer (mesh assumed unmoved)")
             return
 
-        # IMPORTANT: never call ksp.setUp() here — forcing setup early builds a
-        # degenerate finest interpolation before the coarse DM exists and breaks
-        # the real solve. Query the already-set-up sub-PC instead.
         pc = self._locate(solver)
         if pc is None or pc.getType() != PETSc.PC.Type.MG:
             return
@@ -257,31 +311,30 @@ class GeometricMGInterpolator:
             return
 
         dim = solver.mesh.dim
-        if self._coarse_xy is None:
+        if self._cells is None:
             cdm = pc.getMGSmoother(nl - 2).getDM()
             if cdm is None or cdm.getType() != PETSc.DM.Type.PLEX:
                 self._log("coarse level DM not yet a plex; nested this solve")
                 return
-            self._coarse_xy = coarse_node_coords(cdm, dim)
-            self._log(f"cached coarse P2 node coords: {self._coarse_xy.shape[0]} nodes")
-
-        P = pc.getMGInterpolation(nl - 1)
-        fine_xy = np.asarray(solver.u.coords)
-        if P.getSize()[1] != self._coarse_xy.shape[0] * dim:
+            self._cells = coarse_cell_structure(cdm, dim)
             self._log(
-                f"coarse size {P.getSize()[1]} != cached "
-                f"{self._coarse_xy.shape[0] * dim}; skipping"
+                f"cached coarse cell structure: {self._cells['ncoarse']} nodes, "
+                f"{self._cells['ncell']} cells"
             )
-            return
 
-        worst = retarget_interpolation_values(P, self._coarse_xy, fine_xy, dim)
-        self._log(f"retargeted finest interpolation (reproduction resid {worst:.1e})")
+        fine_xy = np.asarray(solver.u.coords)
+        try:
+            self._keep = inject_geometric_transfer(pc, self._cells, fine_xy, dim)
+        except Exception as exc:
+            self._log(f"injection failed ({type(exc).__name__}: {exc}); nested kept")
+            return
+        self._log("injected true-barycentric finest transfer (galerkin off, explicit coarse ops)")
 
 
 def geometric_mg_interpolation(locate_mg_pc=None, verbose=False):
-    """Build a pre-solve hook that re-targets the finest-level multigrid
-    prolongation to current node positions each setup (geometry-aware GMG on
-    mover-adapted meshes).
+    """Build a pre-solve hook that replaces the finest multigrid prolongation
+    with the true barycentric geometric interpolant rebuilt from current node
+    positions each setup (geometry-aware GMG on mover-adapted meshes).
 
     See :class:`GeometricMGInterpolator`. Returns a callable suitable for
     ``solver._pre_solve_hook``.

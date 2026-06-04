@@ -2747,6 +2747,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
                    n_outer=150, p=1.5, theta=1.0 / 3.0, tau=1.0,
                    step_frac=0.2, area_floor_frac=0.01,
                    boundary_slip=False, outer_tol=1.0e-7, tol=1.0e-3,
+                   stol=None, stol_k=3,
                    fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
                    **_ignored):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
@@ -2966,6 +2967,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         return amin
 
     prevI = _energy(coords)
+    _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
     for outer in range(n_outer):
         is_bnd = _pinned_mask(dm, pinned_labels)
         is_pinned, _project = _build_slip_projector(
@@ -3055,6 +3057,14 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         m = (mag > cap) & (mag > 0.0)
         sc[m] = cap[m] / mag[m]
         step = v * sc[:, None]
+        # Robustness guard (esp. parallel): a degenerate / near-inverted cell can
+        # produce a non-finite gradient (inf v -> mag=inf -> sc=cap/inf=0 ->
+        # step = inf*0 = NaN here). A NaN/inf displacement then makes a NaN trial
+        # whose centroid query blows up `_energy`/`_eval_M` (kd-tree) and, on a
+        # subset of ranks, deadlocks the whole job. Zero any non-finite step so
+        # that node simply does not move this iteration while the rest of the
+        # mesh still adapts.
+        step = np.where(np.isfinite(step), step, 0.0)
 
         # only owned interior vertices move; ghosts halo-synced each trial
         free_owned = free & is_owned_v
@@ -3068,7 +3078,9 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
             trial[free_owned] += scale * step[free_owned]
             trial = _project(trial)
             trial = _halo_sync(trial)
-            if _min_area(trial) > a_min_floor:
+            # reject any non-finite trial (defense-in-depth: projection/halo
+            # could still introduce inf/NaN) so `_energy` never queries NaN.
+            if np.all(np.isfinite(trial)) and _min_area(trial) > a_min_floor:
                 Itr = _energy(trial)
                 if Itr < prevI:
                     accepted = trial; Inew = Itr; break
@@ -3093,6 +3105,26 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         # The legacy absolute `outer_tol` is retained as an additional, even
         # tighter floor for callers that set it.
         prevI = Inew
+        # Stagnation (residual stol) exit: PETSc-`stol`-style "give up when the
+        # meshing functional stops dropping well below the last steps". The
+        # node-step `dmax` is capped and never shrinks on this descent mover, so
+        # a step-test can't fire; instead test the *energy* (the residual) drop
+        # over the last `stol_k` accepted iterations -- a WINDOW (not single
+        # step), which is immune to the line-search per-iteration noise and to
+        # the occasional big drop after a scale reduction. Opt-in: stol=None/0
+        # preserves the previous behaviour bit-for-bit.
+        if stol is not None and stol > 0.0:
+            _Iwin.append(Inew)
+            if len(_Iwin) > stol_k:
+                _Iref = _Iwin[-1 - stol_k]
+                _rel = (_Iref - Inew) / max(abs(_Iref), 1.0e-30)
+                if _rel < stol:
+                    if verbose:
+                        uw.pprint(
+                            f"  mmpde stol-exit at outer {outer+1}/{n_outer}: "
+                            f"rel energy drop over last {stol_k} = {_rel:.2e} "
+                            f"< stol={stol:.1e}")
+                    break
         if scale == 0.0 or dmax < tol * h0_scale or dmax < outer_tol:
             break
 
