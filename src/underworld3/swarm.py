@@ -1006,6 +1006,14 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._meshVar = None
 
         if self._proxy:
+            # REINIT policy: a swarm proxy is re-projected from the
+            # *particles* on next access, so a mesh adapt should NOT
+            # interpolate the old proxy values onto the new node
+            # layout — that would freeze stale per-particle data on the
+            # new mesh and miss particle migration. The helper marks the
+            # var stale via _mark_reinit_stale; we wire that callback
+            # below to set ``self._proxy_stale = True`` so the next
+            # access re-projects.
             self._meshVar = uw.discretisation.MeshVariable(
                 "proxy_" + self.clean_name,
                 self.swarm.mesh,
@@ -1014,7 +1022,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 degree=self._proxy_degree,
                 continuous=self._proxy_continuous,
                 varsymbol=r"\left<" + self.symbol + r"\right>",
+                remesh_policy="reinit",
             )
+            # The remesh helper calls this on REINIT vars after an
+            # adapt. Bound here so the closure captures ``self`` (the
+            # SwarmVariable) rather than the proxy MeshVariable.
+            self._meshVar._remesh_reinit_callback = (
+                lambda _self=self: setattr(_self, "_proxy_stale", True))
 
     def _update(self):
         """

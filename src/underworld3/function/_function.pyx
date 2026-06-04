@@ -883,6 +883,14 @@ def evaluate_nd(   expr,
         # (and its internal update_lvec call), deadlocking the ranks that do enter.
         mesh.update_lvec()
 
+        # Interior (FE) vs exterior (RBF) classification. points_in_domain()
+        # itself defers to the bulletproof barycentric locator on parallel
+        # simplex/manifold meshes (mesh._eval_use_robust_location()), so on-
+        # face / partition-seam / domain-boundary node points are classified
+        # interior (FE path) rather than being rejected to rank-local RBF — the
+        # same fix that lets swarm migration claim them. Serial / non-simplex
+        # keep the cell-wall test (bit-identical). See
+        # parallel-repeated-solve-corruption.md.
         in_or_not = mesh.points_in_domain(coords_array, strict_validation=False)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
@@ -1151,9 +1159,21 @@ def petsc_interpolate(   expr,
             # CACHE MISS - Create structure and cache it
             cached_info = CachedDMInterpolationInfo()
 
-            # Get cell hints
-            # coords is already np.ndarray type (function signature ensures this)
-            cells = mesh.get_closest_cells(coords)
+            # Get cell hints.
+            # In PARALLEL use the bulletproof barycentric locator (the swarm-
+            # migration locator): get_closest_cells (first-pass kd-tree-nearest)
+            # can hand back a non-containing cell for on-face/seam node points,
+            # and that wrong cell is what the DMInterpolation recovery uses when
+            # DMLocatePoints drops the point -> a value from the wrong region.
+            # _robust_owning_cells returns the true containing cell (or a valid
+            # adjacent cell for on-face points). When the bypass is active
+            # (mesh._eval_use_robust_location()) this hint is trusted directly;
+            # otherwise it is the first-pass guess as before. Same single policy
+            # switch as the classifier and the DMInterpolation wrapper.
+            if mesh._eval_use_robust_location():
+                cells = mesh._robust_owning_cells(coords)
+            else:
+                cells = mesh.get_closest_cells(coords)
 
             # Create and set up DMInterpolation structure (EXPENSIVE)
             # This calls DMLocatePoints which is COLLECTIVE — all ranks must enter.

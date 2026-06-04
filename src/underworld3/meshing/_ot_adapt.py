@@ -23,18 +23,14 @@ Composition *within* an adapt is fine. See
 ``docs/developer/design/ot-adapt-api-proposal.md`` and the
 ``project_ot_reset_validated`` memory note.
 
-Boundary slip uses **topology-based outward vertex normals**
-(:func:`_boundary_vertex_normals`) — the geometric face normals of the
-boundary facets incident to each vertex, area-weighted averaged. This is
-truly generic: works on any 2D/3D simplicial mesh (Cartesian box, annulus,
-sphere, polyhedron, curved surface) because it depends only on the cell
-coordinates and connectivity, not on a symbolic normal field. (The old
-``mesh.Gamma_P1`` path evaluated PETSc's quadrature-point ``petsc_n``
-symbol at *vertices* — undefined off boundary quadrature, which is why it
-gave garbage normals on Cartesian boxes.) Face vertices slide tangentially;
-corners / edges (where incident facet normals disagree by more than
-~15°) are pinned. For radial coordinate systems a snap-back to fixed
-``|r|`` is layered on top so curved boundaries stay on the surface.
+Boundary slip uses the mesh's **projected boundary normals**
+(``mesh.Gamma_P1`` / ``mesh._update_projected_normals``) — the symbolic
+``mesh.Gamma`` projected to a P1 vector field and normalised. This is the
+general, free-surface-ready normal source: it is re-projected on demand here
+because the projected field goes stale every time the mesh deforms. No
+per-mesh-class normal code is used. Nodes whose projected normal is
+degenerate (box corners, or an occasional unlocatable vertex) are pinned
+rather than slipped.
 """
 
 import numpy as np
@@ -101,6 +97,173 @@ def _boundary_centre(mesh, boundary_coords: np.ndarray) -> np.ndarray:
     return s / max(n, 1)
 
 
+def _slip_normals(mesh, boundary_coords: np.ndarray):
+    """Unit outward normals at ``boundary_coords`` from the projected
+    boundary-normal field.
+
+    Re-projects ``mesh._projected_normals`` (``mesh.Gamma_P1``) first so the
+    normals reflect the mesh's *current* coordinates — the projected field is
+    stale after any deform. Returns ``(normals, valid)`` where ``normals`` is
+    ``(k, cdim)`` and ``valid`` is a boolean mask; ``valid`` is ``False`` for
+    nodes with a degenerate (zero / non-finite) normal (e.g. box corners
+    where opposing face normals cancel, or an occasional unlocatable vertex).
+    Such nodes should be pinned, not slipped.
+    """
+    cdim = mesh.cdim
+    n = np.zeros((boundary_coords.shape[0], cdim))
+    try:
+        mesh._update_projected_normals()
+        n = np.asarray(
+            uw.function.evaluate(mesh.Gamma_P1, boundary_coords)
+        ).reshape(-1, cdim)
+    except Exception:
+        # Projection unavailable / degenerate on this mesh — fall back to
+        # all-pinned boundaries (valid stays all-False below).
+        n = np.zeros((boundary_coords.shape[0], cdim))
+    mag = np.linalg.norm(n, axis=1)
+    valid = np.isfinite(mag) & (mag > 0.5)
+    out = np.zeros_like(n)
+    out[valid] = n[valid] / mag[valid, None]
+    return out, valid
+
+
+def _ot_adapt_step(
+    mesh,
+    field,
+    *,
+    refinement=3.0,
+    coarsening="auto",
+    grad_smoothing_length="auto",
+    metric_choice="front-following",
+    fields_to_remap=None,
+    fields_to_zero=None,
+    skip_threshold=None,
+    reference_coords=None,
+    verbose=False,
+) -> bool:
+    r"""Run one OT-reset adapt event. Returns ``True`` if the mesh moved,
+    ``False`` if the skip-on-aligned check short-circuited.
+
+    See the module docstring for the algorithm. ``field`` is the scalar
+    MeshVariable whose gradient drives refinement; it is always FE-remapped
+    onto the adapted mesh. ``reference_coords`` overrides the reset target
+    for this call only (defaults to ``mesh._ot_adapt_reference_coords``).
+
+    ``grad_smoothing_length`` de-noises ``|∇field|`` before the metric is
+    built: ``"auto"`` (default) ≈ the mesh's uniform cell size — the
+    validated setting that keeps the metric clean at production refinement;
+    ``None`` turns it off; a number or Pint length sets it explicitly
+    (user-supplied lengths are unit-aware via the projection's
+    non-dimensionalisation).
+    """
+    cdim = mesh.cdim
+    ref_R = float(refinement)
+    coar = coarsening
+    if coar != "auto":
+        coar = float(coar)
+    # Resolve the gradient de-noising length: "auto" ≈ uniform grid size.
+    if isinstance(grad_smoothing_length, str):
+        if grad_smoothing_length.strip().lower() != "auto":
+            raise ValueError(
+                "grad_smoothing_length string must be 'auto'; got "
+                f"{grad_smoothing_length!r}. Pass None (off) or a "
+                "unit-aware length.")
+        grad_smoothing_length = _auto_grad_smoothing_length(mesh)
+    # R for the alignment clamp matches follow_metric: max(refine, coarsen).
+    coar_val = (ref_R ** (1.0 / cdim)) if coar == "auto" else float(coar)
+    R_clamp = max(ref_R, coar_val)
+
+    if reference_coords is not None:
+        ref_X = np.asarray(reference_coords)
+    else:
+        ref_X = np.asarray(mesh._ot_adapt_reference_coords)
+
+    # For radial coordinate systems (where boundary slip is used), create the
+    # projected-normal field up front — before the metric builder / OT mover
+    # set up any solver DM. Creating that MeshVariable mid-mover would stale
+    # those DM handles (see project_uw3_smoother_footguns). Cartesian meshes
+    # pin their boundary (no slip), so no normal field is needed there.
+    if _is_radial_coords(mesh):
+        try:
+            mesh._update_projected_normals()
+        except Exception:
+            pass
+
+    # --- skip-on-aligned -------------------------------------------------
+    if skip_threshold is not None:
+        rho_now = uw.meshing.metric_density_from_gradient(
+            mesh, field, refinement=ref_R, coarsening=coar,
+            metric_choice=metric_choice,
+            gradient_smoothing_length=grad_smoothing_length,
+            degree=1, name="ot_adapt_skip")
+        mm = uw.meshing.mesh_metric_mismatch(
+            mesh, rho_now, resolution_ratio=R_clamp)
+        if mm["misalignment"] < float(skip_threshold):
+            if verbose:
+                uw.pprint(
+                    f"  OT_adapt: skip — misalignment "
+                    f"{mm['misalignment']:.3f} < {float(skip_threshold):.3f}")
+            return False
+
+    # Phase-1 remesh redesign: the snapshot/move/transfer dance is now
+    # owned by the adapt op via remesh_with_field_transfer. The closure
+    # below performs the reset-to-reference + metric-canvas write +
+    # OT-mover steps. The helper snapshots `field` (and every other
+    # REMAP variable on the mesh — including hidden solver history) at
+    # entry, runs the closure (which may clobber `field` for the metric
+    # canvas — that write is INTENDED to be discarded by the helper's
+    # post-move transfer), then performs ONE deform-back /
+    # global_evaluate / deform-forward pair to bring every REMAP var
+    # onto the adapted positions. Fields the user previously listed in
+    # ``fields_to_remap`` are now transferred automatically; the kwarg
+    # is preserved for API compatibility (vars must be REMAP-policy,
+    # which is the default — so listing them is a no-op).
+    from underworld3.discretisation.remesh import (
+        remesh_with_field_transfer)
+
+    def _do_move():
+        # Phase-2 ALE opt-out: the OT reset-to-reference step is a
+        # discrete jump in node positions, not a smooth displacement,
+        # so the linear ``v_mesh = Δx / dt`` interpretation that
+        # SemiLagrangian.on_remesh uses for ALE is meaningless here.
+        # Publish a flag so DDt hooks fall back to Phase-1 REMAP for
+        # this adapt; the mesh's _remesh_pending_scratch dict is the
+        # pre-fire channel into ctx.scratch.
+        if hasattr(mesh, "_remesh_pending_scratch"):
+            scratch = getattr(mesh, "_remesh_pending_scratch", None)
+            if scratch is not None:
+                scratch["ale_opt_out"] = True
+
+        old_X_local = np.asarray(mesh.X.coords).copy()
+        # --- step 1: capture `field` at the reference-mesh DOF positions
+        mesh._deform_mesh(ref_X)
+        ref_field_coords = np.asarray(field.coords).copy()
+        mesh._deform_mesh(old_X_local)
+        field_at_ref = np.asarray(
+            uw.function.global_evaluate(
+                field.sym[0], ref_field_coords)).reshape(-1)
+        # --- step 2: load the reference (clean) mesh with the remapped field
+        mesh._deform_mesh(ref_X)
+        field.data[:, 0] = field_at_ref
+        # --- step 3: build the gradient metric + run the OT mover
+        rho = uw.meshing.metric_density_from_gradient(
+            mesh, field, refinement=ref_R, coarsening=coar,
+            metric_choice=metric_choice,
+            gradient_smoothing_length=grad_smoothing_length,
+            degree=1, name="ot_adapt")
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=rho, method="ot", boundary_slip=True,
+            method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
+                               step_frac=_OT_STEP_FRAC),
+            verbose=verbose)
+
+    return remesh_with_field_transfer(
+        mesh, _do_move,
+        extra_zero=fields_to_zero,
+        verbose=verbose,
+    )
+
+# ===== grafted from feature/elliptic-ma: slip helpers for mmpde mover =====
 def _boundary_facets(mesh, cdim):
     """Boundary facets + opposite cell-vertex, found from the cell topology.
 
@@ -157,87 +320,6 @@ def _boundary_facets(mesh, cdim):
         bnd = f[bnd_mask]
         return bnd[:, :3], bnd[:, 3]
     return None, None
-
-
-def _boundary_vertex_normals(mesh, parallel_tol_deg=15.0):
-    """Topology-based outward unit normal at each boundary vertex.
-
-    The generic alternative to ``mesh.Gamma_P1`` — works on any 2D/3D
-    simplicial mesh (Cartesian box, annulus, sphere, polyhedron, curved
-    surface), because the boundary facet normals are computed
-    **geometrically** from the cell coordinates (not from the symbolic
-    PETSc face-normal ``petsc_n``, which is only defined at boundary
-    integration points and gives garbage when evaluated at vertices —
-    why ``Gamma_P1`` is unreliable on a Cartesian box).
-
-    For each boundary vertex, the per-facet outward normals are
-    **area-weighted averaged**, then we classify by how strongly the
-    incident normals agree:
-
-    * **face slip** (``is_face_slip=True``): all incident-facet normals lie
-      within ``parallel_tol_deg`` of the average → the vertex sits on one
-      smooth face (or a single tangent plane). Tangential slide is well-
-      defined; the projector removes the displacement's component along
-      ``normal``.
-    * **pin** (``is_face_slip=False``): the incident normals disagree
-      (corner, edge between two faces in 3D, …). The simple-and-safe
-      treatment is to pin these.
-
-    Returns ``(normals, is_face_slip)`` of shape ``(n_verts, cdim)`` and
-    ``(n_verts,)``; non-boundary vertices have zero normal and False.
-    """
-    cdim = mesh.cdim
-    facets, opp = _boundary_facets(mesh, cdim)
-    coords = np.asarray(mesh.X.coords)
-    n_verts = coords.shape[0]
-    if facets is None or len(facets) == 0:
-        return (np.zeros((n_verts, cdim)),
-                np.zeros(n_verts, dtype=bool))
-
-    if cdim == 2:
-        p0 = coords[facets[:, 0]]; p1 = coords[facets[:, 1]]
-        t = p1 - p0; tlen = np.linalg.norm(t, axis=1)
-        t = t / np.where(tlen > 1.0e-30, tlen, 1.0)[:, None]
-        ncand = np.stack([-t[:, 1], t[:, 0]], axis=1)
-        mid = 0.5 * (p0 + p1)
-        out = mid - coords[opp]
-        sgn = np.sign(np.einsum("ij,ij->i", out, ncand))
-        sgn = np.where(sgn == 0, 1.0, sgn)
-        fnorm = ncand * sgn[:, None]
-        farea = tlen                                       # edge length
-    else:
-        p0 = coords[facets[:, 0]]; p1 = coords[facets[:, 1]]
-        p2 = coords[facets[:, 2]]
-        cross = np.cross(p1 - p0, p2 - p0)
-        clen = np.linalg.norm(cross, axis=1)
-        ncand = cross / np.where(clen > 1.0e-30, clen, 1.0)[:, None]
-        centr = (p0 + p1 + p2) / 3.0
-        out = centr - coords[opp]
-        sgn = np.sign(np.einsum("ij,ij->i", out, ncand))
-        sgn = np.where(sgn == 0, 1.0, sgn)
-        fnorm = ncand * sgn[:, None]
-        farea = 0.5 * clen                                 # triangle area
-
-    sum_n = np.zeros((n_verts, cdim))
-    for col in range(facets.shape[1]):
-        np.add.at(sum_n, facets[:, col], fnorm * farea[:, None])
-    nmag = np.linalg.norm(sum_n, axis=1)
-    on = nmag > 1.0e-30
-    avg = np.zeros_like(sum_n)
-    avg[on] = sum_n[on] / nmag[on, None]
-
-    # classify: a boundary vertex is "face-slip" iff every incident facet
-    # normal is within `parallel_tol_deg` of the average — i.e. it sits on
-    # one smooth face.
-    cos_tol = float(np.cos(np.radians(parallel_tol_deg)))
-    bad_count = np.zeros(n_verts, dtype=int)
-    for col in range(facets.shape[1]):
-        vi = facets[:, col]
-        cos_a = np.einsum("ij,ij->i", fnorm, avg[vi])
-        bad = cos_a < cos_tol
-        np.add.at(bad_count, vi[bad], 1)
-    is_face_slip = on & (bad_count == 0)
-    return avg, is_face_slip
 
 
 def _all_boundary_labels(mesh):
@@ -525,146 +607,3 @@ def _build_slip_projector(mesh, old_coords, is_bnd, n_verts, slip_spec):
     return is_pinned, _project
 
 
-def _ot_adapt_step(
-    mesh,
-    field,
-    *,
-    refinement=3.0,
-    coarsening="auto",
-    grad_smoothing_length="auto",
-    metric_choice="front-following",
-    mover="ot",
-    fields_to_remap=None,
-    fields_to_zero=None,
-    skip_threshold=None,
-    reference_coords=None,
-    verbose=False,
-) -> bool:
-    r"""Run one OT-reset adapt event. Returns ``True`` if the mesh moved,
-    ``False`` if the skip-on-aligned check short-circuited.
-
-    See the module docstring for the algorithm. ``field`` is the scalar
-    MeshVariable whose gradient drives refinement; it is always FE-remapped
-    onto the adapted mesh. ``reference_coords`` overrides the reset target
-    for this call only (defaults to ``mesh._ot_adapt_reference_coords``).
-
-    ``grad_smoothing_length`` de-noises ``|∇field|`` before the metric is
-    built: ``"auto"`` (default) ≈ the mesh's uniform cell size — the
-    validated setting that keeps the metric clean at production refinement;
-    ``None`` turns it off; a number or Pint length sets it explicitly
-    (user-supplied lengths are unit-aware via the projection's
-    non-dimensionalisation).
-    """
-    cdim = mesh.cdim
-    ref_R = float(refinement)
-    coar = coarsening
-    if coar != "auto":
-        coar = float(coar)
-    # Resolve the gradient de-noising length: "auto" ≈ uniform grid size.
-    if isinstance(grad_smoothing_length, str):
-        if grad_smoothing_length.strip().lower() != "auto":
-            raise ValueError(
-                "grad_smoothing_length string must be 'auto'; got "
-                f"{grad_smoothing_length!r}. Pass None (off) or a "
-                "unit-aware length.")
-        grad_smoothing_length = _auto_grad_smoothing_length(mesh)
-    # R for the alignment clamp matches follow_metric: max(refine, coarsen).
-    coar_val = (ref_R ** (1.0 / cdim)) if coar == "auto" else float(coar)
-    R_clamp = max(ref_R, coar_val)
-
-    if reference_coords is not None:
-        ref_X = np.asarray(reference_coords)
-    else:
-        ref_X = np.asarray(mesh._ot_adapt_reference_coords)
-
-    old_X = np.asarray(mesh.X.coords).copy()
-
-    # Fields to FE-remap: `field` is always remapped; append extras (deduped).
-    remap = [field]
-    for f in (fields_to_remap or []):
-        if f is not field and f not in remap:
-            remap.append(f)
-    old_data = {f: np.asarray(f.data).copy() for f in remap}
-
-    # For radial coordinate systems (where boundary slip is used), create the
-    # projected-normal field up front — before the metric builder / OT mover
-    # set up any solver DM. Creating that MeshVariable mid-mover would stale
-    # those DM handles (see project_uw3_smoother_footguns). Cartesian meshes
-    # pin their boundary (no slip), so no normal field is needed there.
-    if _is_radial_coords(mesh):
-        try:
-            mesh._update_projected_normals()
-        except Exception:
-            pass
-
-    # --- skip-on-aligned -------------------------------------------------
-    if skip_threshold is not None:
-        rho_now = uw.meshing.metric_density_from_gradient(
-            mesh, field, refinement=ref_R, coarsening=coar,
-            metric_choice=metric_choice,
-            gradient_smoothing_length=grad_smoothing_length,
-            degree=1, name="ot_adapt_skip")
-        mm = uw.meshing.mesh_metric_mismatch(
-            mesh, rho_now, resolution_ratio=R_clamp)
-        if mm["misalignment"] < float(skip_threshold):
-            if verbose:
-                uw.pprint(
-                    f"  OT_adapt: skip — misalignment "
-                    f"{mm['misalignment']:.3f} < {float(skip_threshold):.3f}")
-            return False
-
-    # --- step 1: capture `field` at the reference-mesh DOF positions -----
-    mesh._deform_mesh(ref_X)
-    ref_field_coords = np.asarray(field.coords).copy()
-    mesh._deform_mesh(old_X)
-    field.data[...] = old_data[field]
-    field_at_ref = np.asarray(
-        uw.function.evaluate(field.sym[0], ref_field_coords)).reshape(-1)
-
-    # --- step 2: load the reference (clean) mesh with the remapped field -
-    mesh._deform_mesh(ref_X)
-    field.data[:, 0] = field_at_ref
-
-    # --- step 3: build the gradient metric + run the OT mover ------------
-    rho = uw.meshing.metric_density_from_gradient(
-        mesh, field, refinement=ref_R, coarsening=coar,
-        metric_choice=metric_choice,
-        gradient_smoothing_length=grad_smoothing_length,
-        degree=1, name="ot_adapt")
-    if mover in ("ma", "monge-ampere", "monge_ampere"):
-        # Elliptic Monge–Ampère: one Caffarelli-clean convex-potential map
-        # from the reset canvas (untangled by construction; no polish).
-        uw.meshing.smooth_mesh_interior(
-            mesh, metric=rho, method="ma", boundary_slip=True,
-            method_kwargs=dict(n_outer=1, n_picard=25), verbose=verbose)
-    elif mover in ("ot", "equidistribute"):
-        uw.meshing.smooth_mesh_interior(
-            mesh, metric=rho, method="ot", boundary_slip=True,
-            method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
-                               step_frac=_OT_STEP_FRAC),
-            verbose=verbose)
-    else:
-        raise ValueError(
-            f"OT_adapt mover must be 'ot' or 'ma', got {mover!r}")
-    new_X = np.asarray(mesh.X.coords).copy()
-
-    # --- step 4: FE-remap all fields from old_X onto the adapted mesh ----
-    # The metric-canvas write to `field` (step 2) is discarded here by
-    # design: every remapped field is re-derived from its *original*
-    # (old_X) data, so the final field is the true physical field carried
-    # onto the new positions.
-    new_coords = {f: np.asarray(f.coords).copy() for f in remap}
-    mesh._deform_mesh(old_X)
-    for f in remap:
-        f.data[...] = old_data[f]
-    remapped = {}
-    for f in remap:
-        val = np.asarray(uw.function.evaluate(f.sym, new_coords[f]))
-        remapped[f] = val.reshape(np.asarray(f.data).shape)
-    mesh._deform_mesh(new_X)
-    for f in remap:
-        f.data[...] = remapped[f]
-    for f in (fields_to_zero or []):
-        f.data[...] = 0.0
-
-    return True
