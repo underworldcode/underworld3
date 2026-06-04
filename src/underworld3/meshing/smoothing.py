@@ -3129,14 +3129,20 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     parallel = uw.mpi.size > 1
 
     # --- metric as evaluable sympy entries -------------------------
-    if isinstance(metric, uw.discretisation.MeshVariable):
-        Msym = metric.sym
-    else:
-        Msym = sympy.Matrix(metric)
+    # Accept a full d×d SPD tensor (sympy Matrix or tensor MeshVariable) OR a
+    # scalar density rho — the latter is coerced to the isotropic tensor rho*I,
+    # so mmpde takes the same metric forms as the ma/ot/anisotropic movers.
+    Msym = metric.sym if isinstance(metric, uw.discretisation.MeshVariable) else metric
+    if not isinstance(Msym, sympy.MatrixBase):
+        Msym = sympy.sympify(Msym)
+    if not isinstance(Msym, sympy.MatrixBase):        # bare scalar expression
+        Msym = sympy.eye(cdim) * Msym
+    elif Msym.shape == (1, 1):                        # 1x1 (scalar MeshVariable)
+        Msym = sympy.eye(cdim) * Msym[0, 0]
     if Msym.shape != (cdim, cdim):
         raise ValueError(
-            f"_winslow_mmpde metric must be {cdim}×{cdim}, got "
-            f"{Msym.shape}")
+            f"_winslow_mmpde metric must be {cdim}x{cdim} (or a scalar "
+            f"density), got {Msym.shape}")
 
     def _eval_M_analytic(pts):
         """Exact Eulerian metric via sympy evaluate → (n, cdim, cdim).
