@@ -1936,6 +1936,348 @@ class SNES_VE_Stokes(SNES_Stokes):
         return self.constitutive_model.Parameters.dt_elastic
 
 
+class _ConstraintBC:
+    """Bookkeeping for one multiplier-enforced boundary constraint.
+
+    Holds the multiplier field ``lam``, the prescribed normal velocity ``g``,
+    the (symbolic, row-vector) constraint normal, and the augmented-Lagrangian
+    parameter ``r`` (which is simultaneously the forward-problem penalty weight
+    and the multiplier-update step).
+    """
+
+    __slots__ = ("boundary", "g", "normal", "lam", "augmentation", "mask", "r_nodal")
+
+    def __init__(self, boundary, g, normal, lam, augmentation, mask):
+        self.boundary = boundary
+        self.g = g
+        self.normal = normal
+        self.lam = lam
+        # augmentation r may be a scalar or a spatial sympy expression (e.g.
+        # viscosity-weighted). r_nodal holds it sampled at the multiplier nodes
+        # for the dual update; it is (re)computed at solve time.
+        self.augmentation = augmentation
+        self.mask = mask
+        self.r_nodal = None
+
+
+class SNES_Stokes_Constrained(SNES_Stokes):
+    r"""
+    Stokes solver with boundary constraints enforced by a recoverable Lagrange
+    multiplier instead of a penalty.
+
+    For each constraint boundary :math:`\Gamma` the no-normal-flow (free-slip)
+    or prescribed-normal-velocity condition
+
+    .. math::
+
+        \mathbf{u} \cdot \mathbf{n} = g \quad \text{on } \Gamma
+
+    is enforced by introducing a scalar multiplier field :math:`\lambda` and an
+    **augmented-Lagrangian** (Uzawa / ALG2) outer loop. Each Stokes solve carries
+    a natural-BC traction with both the multiplier and a penalty augmentation,
+
+    .. math::
+
+        \mathbf{t} = \bigl[\lambda + r\,(\mathbf{u}\cdot\mathbf{n} - g)\bigr]\,\mathbf{n}
+        \quad \text{on } \Gamma ,
+
+    and the multiplier is updated with the same augmentation parameter,
+
+    .. math::
+
+        \lambda \leftarrow \lambda + r\,(\mathbf{u}\cdot\mathbf{n} - g) .
+
+    The penalty term :math:`r\,(\mathbf{u}\cdot\mathbf{n})\,\mathbf{n}` is exactly
+    the existing penalty free-slip BC: it preconditions every boundary mode
+    uniformly so the outer loop converges in a handful of iterations, while the
+    multiplier removes the penalty's accuracy bias — so a **moderate**,
+    well-conditioned :math:`r` gives both fast convergence and an *exact*
+    constraint (unlike a pure penalty, which must be made large and fragile).
+
+    At convergence :math:`\lambda` is the normal traction holding the boundary,
+    giving a direct estimate of dynamic surface topography,
+    :math:`h = \lambda / (\Delta\rho\, g)`. Access it via :meth:`multiplier`.
+
+    Notes
+    -----
+    The multiplier is represented as an ordinary full-mesh scalar field of the
+    same degree as the velocity. Only its trace on :math:`\Gamma` enters the
+    weak form (interior values are inert), so no boundary trace space is
+    required. This is a proof-of-concept (serial; one full Stokes solve per
+    outer iteration). See the design note
+    ``docs/developer/design/CONSTRAINED_FREESLIP_MULTIPLIER.md``.
+
+    See Also
+    --------
+    SNES_Stokes : The unconstrained saddle-point solver this extends.
+    """
+
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        degree: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
+        verbose: Optional[bool] = False,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            degree,
+            p_continuous,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        self._constraint_bcs = []
+        # Diagnostics from the most recent constrained solve.
+        self.constraint_iterations = 0
+        self.constraint_residual = None
+        self.constraint_total_linear_its = 0
+        return
+
+    def _viscosity_scale(self):
+        """A representative scalar viscosity, for sizing the initial Uzawa step."""
+        try:
+            mu = self.constitutive_model.Parameters.shear_viscosity_0
+            return float(mu)
+        except (TypeError, ValueError, AttributeError):
+            return 1.0
+
+    def add_constraint_bc(self, boundary, g=0.0, normal=None, augmentation=None,
+                          augmentation_base=1.0e3):
+        r"""Register a multiplier-enforced normal-velocity constraint on ``boundary``.
+
+        Parameters
+        ----------
+        boundary : str
+            Mesh boundary label (e.g. ``"Upper"``).
+        g : float or sympy expression, default 0.0
+            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n} = g`.
+            The default ``0`` is free-slip / no-normal-flow.
+        normal : sympy matrix, optional
+            Row-vector constraint normal. Defaults to the mesh's smooth
+            projected boundary normals ``mesh.Gamma_P1``.
+        augmentation : float or sympy expression, optional
+            Augmented-Lagrangian parameter :math:`r` — simultaneously the
+            forward-problem penalty weight and the multiplier-update step. Any
+            :math:`r>0` converges; larger is faster but stiffens the linear
+            solve. **Defaults to ``augmentation_base · μ(x)``** — weighted by the
+            local viscosity so the dimensionless penalty ratio is uniform across
+            viscosity contrasts (essential for variable-viscosity problems; a
+            flat ``r`` under-constrains high-viscosity regions). May be passed as
+            a spatial sympy expression directly.
+        augmentation_base : float, default 1e3
+            The base multiple used when ``augmentation`` is not given.
+
+        Returns
+        -------
+        lam : MeshVariable
+            The scalar multiplier field. After :meth:`solve`, its boundary
+            trace is the normal traction (topography proxy).
+        """
+        if normal is None:
+            normal = self.mesh.Gamma_P1
+
+        normal = sympy.Matrix(normal)
+        if normal.shape[0] != 1:
+            normal = normal.reshape(1, self.mesh.dim)
+
+        if augmentation is None:
+            # Viscosity-weighted augmentation r = augmentation_base * mu(x):
+            # keeps the penalty/viscous ratio uniform so high-viscosity boundary
+            # regions are constrained as well as low-viscosity ones.
+            try:
+                viscosity = self.constitutive_model.Parameters.shear_viscosity_0
+                augmentation = augmentation_base * viscosity
+            except (AttributeError, TypeError):
+                augmentation = augmentation_base * self._viscosity_scale()
+
+        idx = len(self._constraint_bcs)
+        # Multiplier at the velocity degree so its trace reaches every velocity
+        # normal-trace DOF (no penalty floor on the P2 mid-edge component).
+        lam = uw.discretisation.MeshVariable(
+            f"lambda_{self.instance_number}_{idx}",
+            self.mesh,
+            1,
+            degree=self._degree,
+        )
+        lam.data[:] = 0.0
+
+        # Boundary-node mask: restrict the multiplier update to the constraint
+        # boundary so interior values stay exactly zero and lambda is a clean,
+        # directly usable topography field. Build a P1 marker (1 on the boundary
+        # vertices, 0 elsewhere) and sample it at lambda's nodes: boundary
+        # mid-edge nodes interpolate to 1, interior nodes to < 0.5.
+        from underworld3.discretisation.discretisation_mesh import (
+            petsc_dm_find_labeled_points_local,
+        )
+
+        marker = uw.discretisation.MeshVariable(
+            f"_bmarker_{self.instance_number}_{idx}", self.mesh, 1, degree=1,
+        )
+        marker.data[:] = 0.0
+        point_indices = petsc_dm_find_labeled_points_local(
+            self.mesh.dm,
+            "UW_Boundaries",
+            getattr(self.mesh.boundaries, boundary).value,
+            sectionIndex=False,
+        )
+        if point_indices is not None:
+            marker.data[point_indices] = 1.0
+        mask = (
+            np.array(uw.function.evaluate(marker.sym, lam.coords)).reshape(-1) > 0.75
+        )
+
+        # Augmented-Lagrangian natural BC, registered once:
+        #   t = [ lambda + r (u.n - g) ] n
+        # The r(u.n)n part is the penalty BC (re-derived into the Jacobian each
+        # solve); the lambda part is the applied multiplier (fixed per solve).
+        nv = self.u.sym.dot(normal)
+        traction = (lam.sym[0] + augmentation * (nv - g)) * normal
+        self.add_natural_bc(traction, boundary)
+
+        self._constraint_bcs.append(
+            _ConstraintBC(boundary, g, normal, lam, augmentation=augmentation, mask=mask)
+        )
+        return lam
+
+    def multiplier(self, boundary):
+        """Return the multiplier field for ``boundary`` (None if not constrained).
+
+        After :meth:`solve`, the multiplier's boundary trace is the normal
+        traction holding the constraint; interior values are zero. Divide by
+        :math:`\\Delta\\rho\\,g` to obtain dynamic topography (see
+        :meth:`topography`).
+        """
+        for cbc in self._constraint_bcs:
+            if cbc.boundary == boundary:
+                return cbc.lam
+        return None
+
+    def topography(self, boundary, buoyancy_scale=1.0):
+        r"""Dynamic topography expression on ``boundary``.
+
+        Returns the symbolic field :math:`\lambda / (\Delta\rho\, g)` for the
+        constraint multiplier on ``boundary`` (zero away from the boundary).
+
+        Parameters
+        ----------
+        boundary : str
+            A constrained boundary label.
+        buoyancy_scale : float or sympy expression, default 1.0
+            The buoyancy scale :math:`\Delta\rho\, g` relating normal traction
+            to surface height.
+        """
+        lam = self.multiplier(boundary)
+        if lam is None:
+            raise ValueError(f"No constraint registered on boundary '{boundary}'.")
+        return lam.sym[0] / buoyancy_scale
+
+    def _constraint_rms(self, cbc):
+        """RMS of (u.n - g) over the constraint boundary, via boundary integral."""
+        vn = self.u.sym.dot(cbc.normal)
+        num = float(
+            uw.maths.BdIntegral(self.mesh, fn=(vn - cbc.g) ** 2,
+                                boundary=cbc.boundary).evaluate()
+        )
+        length = float(
+            uw.maths.BdIntegral(self.mesh, fn=1.0, boundary=cbc.boundary).evaluate()
+        )
+        return np.sqrt(num / length) if length > 0 else np.sqrt(num)
+
+    def _nodal_constraint_residual(self, cbc):
+        """(u.n - g) evaluated at the multiplier's nodes."""
+        expr = self.u.sym.dot(cbc.normal) - cbc.g
+        return np.array(
+            uw.function.evaluate(sympy.Matrix([[expr]]), cbc.lam.coords)
+        ).reshape(-1)
+
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        *,
+        constraint_rtol: float = 1.0e-3,
+        constraint_atol: float = 1.0e-12,
+        constraint_max_iterations: int = 40,
+        constraint_verbose: bool = False,
+        **kwargs,
+    ):
+        """Solve the constrained Stokes system.
+
+        With no constraint BCs registered this is an ordinary Stokes solve.
+        Otherwise it runs the augmented-Lagrangian outer loop until every
+        constraint boundary satisfies
+        ``RMS(u.n - g) < constraint_rtol · RMS|u| + constraint_atol`` (or the
+        iteration cap is hit). The tolerance is *relative* to the velocity scale
+        so it is problem-independent and needs no tuning. All other keyword
+        arguments are forwarded to the inner Stokes ``solve``.
+        """
+        if not self._constraint_bcs:
+            return super().solve(zero_init_guess=zero_init_guess, **kwargs)
+
+        # Sample the augmentation r at the multiplier nodes once (it may be a
+        # spatial / viscosity-weighted expression). Used for the dual update.
+        for cbc in self._constraint_bcs:
+            if isinstance(cbc.augmentation, (int, float)):
+                cbc.r_nodal = float(cbc.augmentation) * np.ones(cbc.lam.coords.shape[0])
+            else:
+                cbc.r_nodal = np.array(
+                    uw.function.evaluate(
+                        sympy.Matrix([[cbc.augmentation]]), cbc.lam.coords
+                    )
+                ).reshape(-1)
+
+        total_linear_its = 0
+        for k in range(constraint_max_iterations):
+            super().solve(zero_init_guess=(zero_init_guess and k == 0), **kwargs)
+            try:
+                total_linear_its += int(self.snes.getLinearSolveIterations())
+            except Exception:
+                pass
+
+            # Velocity scale for the relative tolerance (RMS speed over nodes).
+            v_scale = float(np.sqrt(np.mean(np.sum(self.u.data**2, axis=1))))
+            threshold = constraint_rtol * v_scale + constraint_atol
+
+            all_converged = True
+            worst = 0.0
+            for cbc in self._constraint_bcs:
+                rms = self._constraint_rms(cbc)
+                if rms >= threshold:
+                    all_converged = False
+                worst = max(worst, rms)
+                if constraint_verbose:
+                    uw.mpi.pprint(
+                        f"  [constraint {cbc.boundary}] iter {k}: "
+                        f"RMS(u.n-g) = {rms:.3e}  (rel {rms / max(v_scale, 1e-30):.2e}, "
+                        f"mean r = {cbc.r_nodal.mean():.3g})"
+                    )
+
+            self.constraint_iterations = k + 1
+            self.constraint_residual = worst
+            self.constraint_total_linear_its = total_linear_its
+
+            if all_converged:
+                if constraint_verbose:
+                    uw.mpi.pprint(f"Constraint loop converged in {k + 1} iterations.")
+                break
+
+            # Augmented-Lagrangian (ALG2) multiplier update, same r as the
+            # forward-problem penalty augmentation. Monotone-convergent for r>0.
+            # Restricted to boundary nodes so lambda stays a clean topography field.
+            for cbc in self._constraint_bcs:
+                resid = self._nodal_constraint_residual(cbc)
+                cbc.lam.data[cbc.mask, 0] += cbc.r_nodal[cbc.mask] * resid[cbc.mask]
+
+        return
+
+
 class SNES_Projection(SNES_Scalar):
     r"""
     Scalar projection solver for mapping functions to mesh variables.
