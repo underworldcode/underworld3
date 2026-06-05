@@ -2081,6 +2081,20 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             The scalar multiplier field. After :meth:`solve`, its boundary
             trace is the normal traction (topography proxy).
         """
+        # This proof-of-concept is serial only: the boundary mask construction
+        # and the node-wise multiplier update below are not MPI-decomposed.
+        if uw.mpi.size > 1:
+            raise NotImplementedError(
+                "SNES_Stokes_Constrained is serial-only (the boundary mask and "
+                "multiplier update are not MPI-safe). Run on a single rank."
+            )
+
+        if not hasattr(self.mesh.boundaries, boundary):
+            raise ValueError(
+                f"'{boundary}' is not a boundary of this mesh. "
+                f"Available: {[b.name for b in self.mesh.boundaries]}."
+            )
+
         if normal is None:
             normal = self.mesh.Gamma_P1
 
@@ -2122,14 +2136,26 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             f"_bmarker_{self.instance_number}_{idx}", self.mesh, 1, degree=1,
         )
         marker.data[:] = 0.0
+        if not self.mesh.dm.hasLabel("UW_Boundaries"):
+            raise RuntimeError(
+                "Mesh has no 'UW_Boundaries' label; cannot build the constraint "
+                "boundary mask."
+            )
+        # NB: petsc_dm_find_labeled_points_local returns np.array([0]) (vertex 0)
+        # when the label is absent and None when the value has no points, so an
+        # `is not None` check alone could silently mark vertex 0. The hasLabel
+        # guard above plus the explicit empty/None check below close that gap.
         point_indices = petsc_dm_find_labeled_points_local(
             self.mesh.dm,
             "UW_Boundaries",
             getattr(self.mesh.boundaries, boundary).value,
             sectionIndex=False,
         )
-        if point_indices is not None:
-            marker.data[point_indices] = 1.0
+        if point_indices is None or len(point_indices) == 0:
+            raise ValueError(
+                f"Boundary '{boundary}' has no labelled points on this mesh."
+            )
+        marker.data[point_indices] = 1.0
         mask = (
             np.array(uw.function.evaluate(marker.sym, lam.coords)).reshape(-1) > 0.75
         )
@@ -2234,6 +2260,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
                 ).reshape(-1)
 
         total_linear_its = 0
+        all_converged = False
         for k in range(constraint_max_iterations):
             super().solve(zero_init_guess=(zero_init_guess and k == 0), **kwargs)
             try:
@@ -2268,12 +2295,31 @@ class SNES_Stokes_Constrained(SNES_Stokes):
                     uw.mpi.pprint(f"Constraint loop converged in {k + 1} iterations.")
                 break
 
+            # On the final permitted iteration, do NOT apply another multiplier
+            # update: it would never be solved with, leaving u/p inconsistent
+            # with lambda. Stop here and warn loudly below instead.
+            if k == constraint_max_iterations - 1:
+                break
+
             # Augmented-Lagrangian (ALG2) multiplier update, same r as the
             # forward-problem penalty augmentation. Monotone-convergent for r>0.
             # Restricted to boundary nodes so lambda stays a clean topography field.
             for cbc in self._constraint_bcs:
                 resid = self._nodal_constraint_residual(cbc)
                 cbc.lam.data[cbc.mask, 0] += cbc.r_nodal[cbc.mask] * resid[cbc.mask]
+
+        if not all_converged:
+            import warnings
+
+            warnings.warn(
+                f"Constrained Stokes solve did NOT converge: worst "
+                f"RMS(u.n-g) = {self.constraint_residual:.3e} after "
+                f"{self.constraint_iterations} iterations "
+                f"(constraint_max_iterations={constraint_max_iterations}). "
+                f"Increase constraint_max_iterations or the augmentation.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         return
 
