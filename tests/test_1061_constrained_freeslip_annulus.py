@@ -110,6 +110,13 @@ def test_multiplier_api(solutions):
     assert topo_expr == lam.sym[0] / 2.0
 
 
+def test_constraint_bc_rejects_unknown_boundary(solutions):
+    """add_constraint_bc validates the boundary name up front."""
+    con = solutions["con"]
+    with pytest.raises(ValueError):
+        con.add_constraint_bc("Nonexistent")
+
+
 def test_topography_field_is_clean(solutions):
     """Multiplier interior is exactly zero; only the boundary trace is non-zero."""
     lam = solutions["lam"]
