@@ -444,8 +444,12 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
             # to the physical nodal range, is bit-identical to plain FE in
             # smooth regions, and is parallel-safe (rank-local). Same limiter
             # as the SemiLagrangian trace-back fix.
+            import os as _os
+            _mono = _os.environ.get("REMESH_MONOTONE", "clamp")
+            if _mono.lower() in ("", "0", "off", "none", "false"):
+                _mono = False
             try:
-                val = uw.function.global_evaluate(var.sym, target, monotone="clamp")
+                val = uw.function.global_evaluate(var.sym, target, monotone=_mono)
             except (ValueError, NotImplementedError):
                 # monotone needs a single-MeshVariable expr; composite /
                 # unsupported vars fall back to plain FE (still transferred).
