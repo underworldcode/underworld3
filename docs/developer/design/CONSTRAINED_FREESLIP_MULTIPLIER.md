@@ -194,6 +194,42 @@ evidence): the monolithic 3-field / co-dim-1 representation; 3D spherical shells
 space needing explicit removal); and live free-surface equilibrium integration
 (pass `λ` as the target normal-stress end-state).
 
+## Monolithic `P'=[p,h]` fieldsplit — feasibility spike
+
+A future direction (and a general "inject arbitrary constraints into the saddle
+point" capability): rather than a third field forcing a nested 3-way Schur, group
+pressure and the multiplier into a composite `P' = [p, h]` and keep a **2-way
+`u | P'`** split.
+
+**Spike result (confirmed):** a 3-field DM `(u, p, h)` on a real mesh, with the `p`
+and `h` index sets grouped (`pc_fieldsplit_1_fields 1,2`, or an explicit
+concatenated IS), produces exactly a 2-block `u | [p,h]` Schur fieldsplit
+(block sizes 84 | 84 = u | (p+h) on a coarse test). The nested-Schur /
+KSP-reconfiguration concern is therefore moot — the split structure is identical to
+the current `u | p` solver. (`/tmp/spike_pph.py`.)
+
+**Remaining work (bounded, ~2 weeks of Cython, behind a subclass):**
+- Register `h` as field 2 (one `dm.setField`).
+- `h`-equation residual: boundary part `∫_Γ ψ(n·u − g)` (the existing Nitsche path
+  already registers field-1 boundary residuals — same pattern) plus a small interior
+  screening `ε∫_Ω h ψ` to de-singularise the interior `h` block.
+- Three new Jacobian blocks: `uh`, `hu` (boundary integrals — the `UW_PetscDSSetBdJacobian`
+  machinery already does arbitrary field pairs for `up`/`pu`) and `hh` (interior mass);
+  `ph`/`hp` are zero.
+- Group `[p,h]` in the fieldsplit and extend the Schur PC (`p` keeps its `1/μ` mass PC;
+  `h` gets the screening diagonal).
+- The 3-IS field decomposition / nullspace path (currently assumes 2 fields).
+
+**Caveats:** the interior screening reintroduces a small `ε` (benign — it does not bias
+the boundary multiplier); the work touches the validated `uu/up/pu/pp` assembly, so it
+must live behind a subclass and be regression-tested. The one genuine PETSc limitation
+remains a *co-dimension-1* `h` (boundary-only DOFs) — avoided here by the full-domain +
+screening representation.
+
+**Recommendation:** the architecture is de-risked, but since the outer loop converges in
+2–3 iterations with no user-facing tuning, monolithic is scheduled work (a general
+saddle-point-constraint capability), not an urgent replacement.
+
 ## Files
 
 - `src/underworld3/systems/solvers.py` — `SNES_Stokes_Constrained`, `_ConstraintBC`.
