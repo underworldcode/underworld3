@@ -928,6 +928,14 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         """Convert array format (N,a,b) back to canonical data format (N,components)"""
         # Use existing pack logic but return numpy array instead of writing to PETSc
         # This is a pure conversion method - no PETSc access
+        # Empty-partition guard: an N=0 array has total size 0, so numpy cannot
+        # infer the -1 component dimension ("cannot reshape array of size 0 into
+        # shape (0,newaxis)"). This bites a rank that owns no local particles
+        # during a parallel read_timestep. Compute the component count from the
+        # trailing dims explicitly.
+        if array_data.size == 0:
+            ncomp = int(np.prod(array_data.shape[1:])) if array_data.ndim > 1 else 1
+            return array_data.reshape(array_data.shape[0], ncomp)
         return array_data.reshape(array_data.shape[0], -1)
 
     # Legacy methods preserved for backward compatibility (now do nothing)
