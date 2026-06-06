@@ -388,6 +388,7 @@ def _global_evaluate_impl(
     # Expert overrides (override mode settings)
     rbf=None,
     force_l2=None,
+    local_fallback=True,
 ):
     """
     Global evaluate with automatic unit-aware results.
@@ -434,6 +435,12 @@ def _global_evaluate_impl(
         Expert override: Force RBF interpolation everywhere. Overrides mode.
     force_l2 : bool, optional
         Expert override: Force L2 projection path. Overrides mode.
+    local_fallback : bool, optional
+        Parallel-only. When True (default), query points that no rank can
+        locate in-cell are resolved by a best-claim reduction so the parallel
+        result matches serial ``evaluate`` (extrapolate from the true nearest
+        cell). Set False to restore the legacy silently-wrong out-of-domain
+        behaviour. The ``GE_LOCAL_FALLBACK`` env var, if set, overrides this.
 
     Returns
     -------
@@ -560,6 +567,7 @@ def _global_evaluate_impl(
         check_extrapolated=check_extrapolated,
         force_l2=force_l2_flag,
         smoothing=smoothing,
+        local_fallback=local_fallback,
     )
 
     # Step 2: Re-dimensionalize and wrap with units (GATEWAY PRINCIPLE)
@@ -865,6 +873,7 @@ def global_evaluate(
     rbf=None,
     force_l2=None,
     monotone=False,
+    local_fallback=True,
 ):
     """Parallel-safe evaluate with automatic unit-aware results.
 
@@ -879,6 +888,10 @@ def global_evaluate(
         Opt-in bounded (monotone) interpolation post-process. See
         :func:`evaluate` for semantics. Not supported together with
         ``check_extrapolated`` (raises ``NotImplementedError``).
+    local_fallback : bool, optional
+        Parallel-only best-claim resolution of out-of-domain points so the
+        result matches serial ``evaluate``. Default True. See
+        :func:`_global_evaluate_impl`.
     """
     # Validate up front so an unknown option or the unsupported
     # monotone + check_extrapolated combination fails fast (no wasted eval).
@@ -903,6 +916,7 @@ def global_evaluate(
         smoothing=smoothing,
         rbf=rbf,
         force_l2=force_l2,
+        local_fallback=local_fallback,
     )
 
     if monotone_mode is None:

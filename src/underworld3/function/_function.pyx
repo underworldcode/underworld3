@@ -359,6 +359,7 @@ def global_evaluate_nd(   expr,
                 check_extrapolated=False,
                 force_l2=False,
                 smoothing=1e-6,
+                local_fallback=True,
             ):
 
     """
@@ -375,8 +376,11 @@ def global_evaluate_nd(   expr,
     result is independent of the number of ranks (up to the rank-local
     extrapolation residual near partition seams). Points that no rank can
     locate in-cell are resolved by a best-claim reduction over ranks (see the
-    out-of-domain block below); set ``GE_LOCAL_FALLBACK=0`` to restore the
-    legacy behaviour where such points returned silently-wrong values.
+    out-of-domain block below); pass ``local_fallback=False`` to restore the
+    legacy behaviour where such points returned silently-wrong values. The
+    ``GE_LOCAL_FALLBACK`` environment variable, if set, overrides the kwarg
+    (an operator escape hatch retained from the parallel-deadlock debugging
+    history; the kwarg is the supported control surface).
 
     Note it is not efficient to call this function to evaluate an expression at
     a single coordinate. Instead the user should provide a numpy array of all
@@ -572,8 +576,14 @@ def global_evaluate_nd(   expr,
     # legacy (silently-wrong out-of-domain) behaviour; default on.
     # ------------------------------------------------------------------
     import os
-    if uw.mpi.size > 1 and os.environ.get("GE_LOCAL_FALLBACK", "1") not in (
-            "0", "off", "false", "no", ""):
+    # The kwarg is the supported control; an explicitly-set env var overrides
+    # it (operator escape hatch — see DEADLOCK SAFETY / contract docstring).
+    _env_fallback = os.environ.get("GE_LOCAL_FALLBACK")
+    if _env_fallback is not None:
+        _local_fallback = _env_fallback not in ("0", "off", "false", "no", "")
+    else:
+        _local_fallback = bool(local_fallback)
+    if uw.mpi.size > 1 and _local_fallback:
         from mpi4py import MPI
 
         comm = uw.mpi.comm
