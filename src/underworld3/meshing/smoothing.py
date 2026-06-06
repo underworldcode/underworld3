@@ -3075,6 +3075,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
                    boundary_slip=False, outer_tol=1.0e-7, tol=1.0e-3,
                    stol=None, stol_k=3,
                    fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
+                   accel="cg", momentum=0.0,
                    **_ignored):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
     MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
@@ -3115,6 +3116,16 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     per-node step cap (``step_frac``·min-incident-edge) and an **energy
     line-search backtrack** (accept only if no fold *and* `I_h`
     decreases) so the descent is monotone. ``n_outer`` Euler steps.
+
+    The steepest-descent direction is accelerated by ``accel`` (default
+    ``"cg"``, nonlinear conjugate gradient, parameter-free): this cuts the
+    outer-iteration count ~13× on the first (uniform→radial) adapt vs plain
+    descent and makes adapt-every-step affordable. ``"heavyball"`` /
+    ``"hb-restart"`` use Polyak momentum with coefficient ``momentum`` (default
+    0.9 for those modes); ``"none"`` is plain descent. The line-search keeps
+    every accelerator fold-safe. (Previously controlled by the ``MMPDE_ACCEL`` /
+    ``MMPDE_MOMENTUM`` environment variables, now removed — pass as kwargs, e.g.
+    ``method_kwargs={"accel": "cg"}`` through ``smooth_mesh_interior``.)
     """
     import sympy
     from petsc4py import PETSc
@@ -3300,19 +3311,25 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
 
     prevI = _energy(coords)
     _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
-    import os as _os
-    # Acceleration of the first-order steepest-descent direction (opt-in). The
-    # energy+min-area line-search below stays the fold guard, so any accelerator
-    # overshoot is backtracked — never tangles (verified fold-proof even at
-    # step_frac=2). MMPDE_ACCEL: "none"|"heavyball"|"hb-restart"|"cg".
-    #   heavyball : step += beta * previous accepted displacement (Polyak)
+    # Acceleration of the first-order steepest-descent direction (``accel``).
+    # The energy+min-area line-search below stays the fold guard, so any
+    # accelerator overshoot is backtracked — never tangles (verified fold-proof
+    # even at step_frac=2). ``accel`` in {"none","heavyball","hb-restart","cg"}:
+    #   none      : plain steepest descent
+    #   heavyball : step += momentum * previous accepted displacement (Polyak);
+    #               ``momentum`` defaults to 0.9 if left at 0 for this mode
     #   hb-restart: heavyball + gradient restart (drop momentum when it opposes
     #               the descent direction — O'Donoghue & Candès robustness)
     #   cg        : nonlinear conjugate gradient (Polak-Ribière+), parameter-free
-    _mmpde_beta = float(_os.environ.get("MMPDE_MOMENTUM", 0.0))
-    _accel = _os.environ.get("MMPDE_ACCEL", "").lower()
-    if not _accel:
-        _accel = "heavyball" if _mmpde_beta > 0.0 else "none"
+    #               — the default (≈13× fewer outer iters than plain descent on
+    #               the first radial adapt, best mesh quality, no tuning).
+    _accel = str(accel).lower() if accel is not None else "none"
+    _valid_accel = ("none", "heavyball", "hb-restart", "cg")
+    if _accel not in _valid_accel:
+        raise ValueError(
+            f"_winslow_mmpde: unknown accel {accel!r}; "
+            f"choose from {_valid_accel}")
+    _mmpde_beta = float(momentum)
     if _accel in ("heavyball", "hb-restart") and _mmpde_beta == 0.0:
         _mmpde_beta = 0.9
     _prev_disp = np.zeros_like(coords)

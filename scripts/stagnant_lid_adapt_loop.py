@@ -410,11 +410,17 @@ def _adapt_step():
             # (a thin strip on a feature, not a centre-of-gravity blob), with
             # built-in boundary slip. Uses its OWN iteration to outer_tol
             # (n_outer~150) — do NOT inject the anisotropic mover's n_outer/relax.
+            # accel/momentum are now real _winslow_mmpde kwargs (no longer env
+            # reads in the library); the harness still reads env for script-level
+            # convenience and forwards them through method_kwargs. Default
+            # accel="cg" (parameter-free nonlinear CG — the production choice).
             uw.meshing.smooth_mesh_interior(
                 mesh, metric=rho, method="mmpde",
                 skip_threshold=sk, boundary_slip=_slip,
                 method_kwargs=dict(
-                    step_frac=float(os.environ.get("MMPDE_STEP", 0.2))),
+                    step_frac=float(os.environ.get("MMPDE_STEP", 0.2)),
+                    accel=os.environ.get("MMPDE_ACCEL", "cg"),
+                    momentum=float(os.environ.get("MMPDE_MOMENTUM", 0.0))),
                 verbose=True)
         else:  # 'anisotropic' (_winslow_anisotropic, approach-3 — shreds/backtracks)
             uw.meshing.smooth_mesh_interior(
