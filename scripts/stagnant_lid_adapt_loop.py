@@ -86,6 +86,11 @@ p.add_argument('--res', type=int, default=16,
                     'level). With REFINE>0 the coarse base is this '
                     'coarsened by 2^REFINE so the finest level keeps '
                     'this resolution. Default 16.')
+p.add_argument('--resolution-ratio', type=float, default=0.0,
+               help='Override the strategy resolution_ratio R (finest/coarsest '
+                    'cell-size ratio) of the metric, keeping the MMPDE mover. '
+                    'R>0 builds the metric with refinement=R + front-following '
+                    '(R=3 is well beyond strategy extreme=2.0). 0 = use --strategy.')
 p.add_argument('--Ra', type=float, default=1.0e7,
                help='Rayleigh number (default 1e7).')
 p.add_argument('--delta-eta', type=float, default=1.0e4,
@@ -351,7 +356,17 @@ def _adapt_step():
     # log it whether or not the adapt fires.
     coar_val = float(args.refinement) ** 0.5 if args.refinement > 0 else 1.0
     R = max(float(args.refinement), coar_val) if args.refinement > 0 else 1.0
-    if args.refinement > 0:
+    # --resolution-ratio R>0 overrides the strategy's resolution_ratio so the
+    # metric grades to a finest/coarsest cell-size ratio of R (R=3 is well beyond
+    # strategy 'extreme'=2.0), keeping the MMPDE mover.
+    _Rmet = float(args.resolution_ratio)
+    if _Rmet > 0:
+        R = _Rmet
+        rho_diag = uw.meshing.metric_density_from_gradient(
+            mesh, T, refinement=_Rmet, coarsening="auto",
+            metric_choice="front-following",
+            gradient_smoothing_length=grad_L, name="diag")
+    elif args.refinement > 0:
         rho_diag = uw.meshing.metric_density_from_gradient(
             mesh, T, refinement=float(args.refinement),
             coarsening="auto", metric_choice="front-following",
@@ -390,9 +405,15 @@ def _adapt_step():
         if not moved:
             return False, misalign
     else:
-        rho = uw.meshing.metric_density_from_gradient(
-            mesh, T, strategy=args.strategy, name="loop",
-            gradient_smoothing_length=grad_L)
+        if _Rmet > 0:
+            rho = uw.meshing.metric_density_from_gradient(
+                mesh, T, refinement=_Rmet, coarsening="auto",
+                metric_choice="front-following",
+                gradient_smoothing_length=grad_L, name="loop")
+        else:
+            rho = uw.meshing.metric_density_from_gradient(
+                mesh, T, strategy=args.strategy, name="loop",
+                gradient_smoothing_length=grad_L)
         # MOVER selects the mesh mover. 'ring' boundary slip (NOT 'box') lets
         # boundary nodes slide tangentially along the annulus arcs so the mesh
         # can refine the thermal boundary layers.

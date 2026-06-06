@@ -3827,6 +3827,20 @@ def metric_density_from_gradient(
     mesh : underworld3 mesh
     field : scalar MeshVariable or sympy scalar expression
         The field whose gradient drives refinement (e.g. ``T``).
+    refinement : float, optional
+        Target COARSEST:FINEST edge-length ratio ``R = h_max/h_min``
+        the metric grades to. When ``> 1`` this **overrides** ``amp``
+        (and the strategy default). Because the mover equidistributes
+        ``ρ`` (so cell edge ``h ∝ ρ^{-1/d}``), the full ``t∈[0,1]``
+        range gives ``h_max/h_min = (1 + amp)^{power/d}``; this is
+        inverted to set ``amp = R^{d/power} - 1``. So ``R`` is a
+        predictable, **mesh-independent** resolution knob (``R=2`` ⇒
+        finest cells ~2× smaller than the coarsest). The *realised*
+        ratio tracks ``R`` until the fixed node budget saturates it
+        (large ``R`` is capped — going further needs h-refinement to
+        add nodes, not just redistribution). ``None`` (default) ⇒ use
+        ``amp`` / the ``strategy`` preset. Exposed in the convection
+        harness as ``--resolution-ratio``.
     amp : float, default 8.0
         Bunching intensity: ``ρ_max = (1 + amp)^power`` where
         ``|∇field|`` is strongest. Larger ⇒ stronger
@@ -3910,6 +3924,15 @@ def metric_density_from_gradient(
         power = s["power"]
 
     cdim = mesh.cdim
+
+    # `refinement` R = target COARSEST:FINEST edge-length ratio (h_max/h_min).
+    # The mover equidistributes ρ=(1+amp·t)^power, so cell edge h ∝ ρ^(-1/d) and
+    # the full t∈[0,1] range gives h_max/h_min = (1+amp)^(power/d). Invert that to
+    # set amp, so R is a predictable, mesh-independent edge-length ratio. This
+    # OVERRIDES the strategy's amp (R is the explicit resolution knob).
+    # (Previously `refinement` was accepted but unused — a silent no-op.)
+    if refinement is not None and float(refinement) > 1.0:
+        amp = float(refinement) ** (cdim / float(power)) - 1.0
     X = mesh.CoordinateSystem.X
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
