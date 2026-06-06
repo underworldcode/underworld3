@@ -3300,6 +3300,32 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
 
     prevI = _energy(coords)
     _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
+    import os as _os
+    # Acceleration of the first-order steepest-descent direction (opt-in). The
+    # energy+min-area line-search below stays the fold guard, so any accelerator
+    # overshoot is backtracked — never tangles (verified fold-proof even at
+    # step_frac=2). MMPDE_ACCEL: "none"|"heavyball"|"hb-restart"|"cg".
+    #   heavyball : step += beta * previous accepted displacement (Polyak)
+    #   hb-restart: heavyball + gradient restart (drop momentum when it opposes
+    #               the descent direction — O'Donoghue & Candès robustness)
+    #   cg        : nonlinear conjugate gradient (Polak-Ribière+), parameter-free
+    _mmpde_beta = float(_os.environ.get("MMPDE_MOMENTUM", 0.0))
+    _accel = _os.environ.get("MMPDE_ACCEL", "").lower()
+    if not _accel:
+        _accel = "heavyball" if _mmpde_beta > 0.0 else "none"
+    if _accel in ("heavyball", "hb-restart") and _mmpde_beta == 0.0:
+        _mmpde_beta = 0.9
+    _prev_disp = np.zeros_like(coords)
+    _prev_v = np.zeros_like(coords)
+    _prev_dir = np.zeros_like(coords)
+
+    def _gdot(a, b, mask):
+        s = float(np.sum(a[mask] * b[mask]))
+        if parallel:
+            from mpi4py import MPI as _MPI
+            s = uw.mpi.comm.allreduce(s, op=_MPI.SUM)
+        return s
+
     for outer in range(n_outer):
         is_bnd = _pinned_mask(dm, pinned_labels)
         is_pinned, _project = _build_slip_projector(
@@ -3371,6 +3397,18 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         Pi = detMv ** ((p - 1.0) / 2.0)
         v = (Pi / tau)[:, None] * vel
 
+        # nonlinear-CG (Polak-Ribière+): replace the steepest-descent direction
+        # v with the conjugate direction d = v + beta_cg * d_prev (β from gradient
+        # history — parameter-free; auto-restarts when β<0).
+        if _accel == "cg":
+            _fo_cg = free & is_owned_v
+            _den = _gdot(_prev_v, _prev_v, _fo_cg)
+            _beta_cg = (max(0.0, _gdot(v, v - _prev_v, _fo_cg) / _den)
+                        if _den > 0.0 else 0.0)
+            _prev_v = v.copy()
+            v = v + _beta_cg * _prev_dir
+            _prev_dir = v.copy()
+
         # Per-node step cap from the min incident edge over rank-local
         # cells. NOTE (parallel): a partition-boundary owned vertex may not
         # see every incident edge from rank-local cells, so its cap differs
@@ -3398,6 +3436,16 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         # mesh still adapts.
         step = np.where(np.isfinite(step), step, 0.0)
 
+        if _accel in ("heavyball", "hb-restart") and _mmpde_beta > 0.0:
+            _disp = _prev_disp
+            if _accel == "hb-restart":
+                # gradient restart: drop momentum when it opposes the descent
+                # step (overlap < 0) so it never drives uphill.
+                if _gdot(step, _prev_disp, free & is_owned_v) < 0.0:
+                    _disp = np.zeros_like(_prev_disp)
+            step = step + _mmpde_beta * _disp
+            step = np.where(np.isfinite(step), step, 0.0)
+
         # only owned interior vertices move; ghosts halo-synced each trial
         free_owned = free & is_owned_v
 
@@ -3424,6 +3472,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         if parallel:
             from mpi4py import MPI as _MPI
             dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
+        _prev_disp = accepted - coords   # accepted move, for next-iter momentum
         coords = accepted
         mesh._deform_mesh(coords)
         if verbose:
