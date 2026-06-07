@@ -243,6 +243,8 @@ extensions = [
         sources=[
             "src/underworld3/function/analytic.pyx",
             "src/underworld3/function/AnalyticSolNL.c",
+            "src/underworld3/function/AnalyticSolCx.c",
+            "src/underworld3/function/solCx.c",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
