@@ -236,8 +236,21 @@ refactor promotes it to the one canonical implementation.
 Following `docs/developer/guides/branching-strategy.md` (extract the interface,
 land it on `development`, keep the feature branch to implementation):
 
-1. **Bounding-surface objects + mesh API, no behaviour change** (lands on
-   `development`):
+```{note}
+**Implementation reality (2026-06-07).** The unified slip projector
+(`_build_slip_projector`, `_resolve_slip`, `_gamma_p1_at_vertices`,
+`_nearest_on_facets_*`) lives on the mover **feature branch**, not on
+`development`. On `development` `_ot_adapt.py` has only the *primitive* helpers
+(`_slip_normals`, `_boundary_centre`, `_is_radial_coords`) and the movers use
+their older inline slip. So step 1 on `development` is implemented as a
+**self-contained, additive** API (it does not depend on the feature-branch
+projector), and step 2's bit-identical claim is interpreted as
+*machine-precision identical* — the analytic centre differs from the feature
+branch's boundary-COM `allreduce` only at round-off.
+```
+
+1. **Bounding-surface objects + mesh API, additive — no behaviour change**
+   (lands on `development`):
    - Add `mesh.bounding_surfaces`: a **new** collection of `BoundingSurface`
      objects keyed by boundary label, with `kind`/`is_free` + the
      `normals`/`tangent_project`/`restore`/`release` methods. **Leave
@@ -246,21 +259,26 @@ land it on `development`, keep the feature branch to implementation):
      `mesh.restore_to_surface`, `mesh.project_to_slip_surface`, and
      `register_tangent_slip_provider`.
    - Build `radial`/`plane` surfaces in the `Annulus`, `SphericalShell`,
-     `CubedSphere`, and box constructors.
-   - Internally, `mesh.boundary_slip` *delegates to the existing `_ot_adapt`
-     helpers*, with the per-surface object supplying the geometry instead of
-     `_is_radial_coords` + the centre `allreduce`. Verify bit-identical mesh
-     trajectories before/after (the `radial` restore is already what
-     `_build_slip_projector` does for radial meshes; the only change is *where
-     the centre/radius come from*).
-2. **Movers consume the public API**: replace the `_build_slip_projector` call
-   in `mmpde`/`ot` and the **inline** radial-snap blocks in `spring`/`ma` with
-   `mesh.boundary_slip(...)`. Delete the four private duplicates. Re-validate
-   the convection harness (serial + np=5) for bit-identical behaviour.
-3. **Follow-up (separate work)**: the `facet` concave-bias cure (mean-preserving
-   / smoothness constraint — the documented TODO) and the `free`-surface restore
-   mode (`release()` + live-surface follow) for the free-surface + adaptive-mesh
-   case (cf. `project_freesurface_ale_design`).
+     `CubedSphere`, and box constructors. **Self-contained**: `radial`/`plane`
+     `restore` are direct (analytic centre/radius, plane projection); `normals`
+     reuses the primitive `_slip_normals` (Gamma_P1); a label with **no**
+     analytic surface is **pinned** (safe default) — `facet` restore is a
+     follow-up. No dependence on the feature-branch projector.
+   - Because the `development` movers do not call the new API, step 1 cannot
+     change any existing trajectory (additive). Validate with **new tests**:
+     constructors register the right `kind`/geometry; `radial.restore` lands
+     points on `|r|`, `plane.restore` on the face; `release()` flips to `free`;
+     `mesh.boundaries` is unchanged.
+2. **Movers consume the public API** (on the mover feature branch, which has the
+   unified projector): replace the `_build_slip_projector` call in `mmpde`/`ot`
+   and the **inline** radial-snap blocks in `spring`/`ma` with
+   `mesh.boundary_slip(...)`. Delete the private duplicates. Re-validate the
+   convection harness (serial + np=5) for *machine-precision-identical*
+   behaviour (the centre source changes COM → analytic).
+3. **Follow-up (separate work)**: the `facet` restore + its concave-bias cure
+   (mean-preserving / smoothness constraint — the documented TODO) and the
+   `free`-surface restore mode (`release()` + live-surface follow) for the
+   free-surface + adaptive-mesh case (cf. `project_freesurface_ale_design`).
 
 ## Invariants the refactor must preserve
 
