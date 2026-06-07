@@ -2324,6 +2324,265 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         return
 
 
+class _BlockConstraintBC:
+    """Bookkeeping for one in-saddle-point multiplier constraint.
+
+    Holds the multiplier field ``lam`` (a full-domain scalar MeshVariable
+    registered as an extra DM field), the prescribed normal velocity ``g``, the
+    (symbolic, row-vector) constraint normal, and the mutable PETSc bookkeeping
+    (``petsc_id``/``label_val``) plus the JIT-compiled boundary functions
+    (``fns``) populated during assembly. Mirrors the natural-BC namedtuple but
+    stays a mutable object so the Cython assembly can stamp ids onto it.
+    """
+
+    __slots__ = ("boundary", "g", "normal", "lam", "augmentation",
+                 "interior_mask", "petsc_id_u", "petsc_id_h", "label_val", "fns")
+
+    def __init__(self, boundary, g, normal, lam, augmentation):
+        self.boundary = boundary
+        self.g = g
+        self.normal = normal
+        self.lam = lam
+        # Boolean over the multiplier's nodes: True on INTERIOR nodes (off the
+        # constraint boundary). The constant-on-interior h mode is a near-null
+        # mode (interior h appears only in the screening eM), so we hand it to
+        # the solver as a nullspace vector -- the gauge-fixing analogue of the
+        # constant-pressure nullspace. Set in add_constraint_bc.
+        self.interior_mask = None
+        # Augmented-Lagrangian parameter r: a penalty r(n·u−g)·n added to the
+        # u-row, giving a uu boundary stiffness r·(n⊗n) that conditions the
+        # [p,h] Schur complement WITHOUT biasing the multiplier (the h-row is
+        # still the exact constraint). 0 disables it (bare KKT).
+        self.augmentation = augmentation
+        # PETSc needs ONE boundary entry per (boundary, test-field): each entry
+        # evaluates only its registered field's residual + that field's Jacobian
+        # row. So a constraint registers the boundary twice — for field 0 (the
+        # u-row traction h·n and the uh Jacobian) and for the multiplier field
+        # (the h-row constraint n·u−g and the hu Jacobian).
+        self.petsc_id_u = -1
+        self.petsc_id_h = -1
+        self.label_val = -1
+        self.fns = {}
+
+
+class SNES_Stokes_BlockConstrained(SNES_Stokes):
+    r"""
+    Stokes solver that enforces :math:`\mathbf{u}\cdot\mathbf{n} = g` on a
+    boundary via a Lagrange multiplier living **inside** the saddle-point
+    system — a single coupled solve, not an outer loop.
+
+    A scalar multiplier field :math:`h` is added as a third DM field and grouped
+    with pressure into a 2-way :math:`\mathbf{u}\,|\,[p,h]` Schur split. The
+    coupled block system is
+
+    .. math::
+
+        \begin{bmatrix} A & B^{T} & C^{T} \\ B & 0 & 0 \\ C & 0 & \varepsilon M
+        \end{bmatrix}
+        \begin{bmatrix} \mathbf{u} \\ p \\ h \end{bmatrix} =
+        \begin{bmatrix} \mathbf{f} \\ 0 \\ g \end{bmatrix},
+
+    where :math:`C = \int_\Gamma (\mathbf{n}\cdot\mathbf{v})\,\psi` couples the
+    multiplier to the boundary normal velocity, and :math:`\varepsilon M =
+    \varepsilon\int_\Omega h\,\psi` is an interior screening mass that
+    de-singularises the otherwise-empty interior :math:`h` block (it does not
+    bias the boundary multiplier). At convergence :math:`h|_\Gamma = -\,
+    \mathbf{n}\cdot\boldsymbol{\sigma}\cdot\mathbf{n}` is the boundary normal
+    traction = dynamic topography; access it via :meth:`multiplier` /
+    :meth:`topography`.
+
+    This is the block (monolithic) counterpart of :class:`SNES_Stokes_Constrained`
+    (the augmented-Lagrangian outer-loop solver) and should match its answer to
+    discretisation error in one coupled solve. Serial only (the boundary mask is
+    not yet MPI-decomposed). See
+    ``docs/developer/design/CONSTRAINED_FREESLIP_MULTIPLIER.md``.
+
+    See Also
+    --------
+    SNES_Stokes_Constrained : The outer-loop counterpart (recovery API template).
+    SNES_Stokes : The unconstrained saddle-point solver this extends.
+    """
+
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        degree: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
+        verbose: Optional[bool] = False,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+    ):
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            degree,
+            p_continuous,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
+        )
+
+        # Block-constrained records (distinct from the outer-loop solver's
+        # self._constraint_bcs, which the base assembly must not touch).
+        self._block_constraint_bcs = []
+        return
+
+    def _viscosity_scale(self):
+        """A representative scalar viscosity, for sizing the interior screening."""
+        try:
+            mu = self.constitutive_model.Parameters.shear_viscosity_0
+            return float(mu)
+        except (TypeError, ValueError, AttributeError):
+            return 1.0
+
+    def add_constraint_bc(self, boundary, g=0.0, normal=None, screening=None,
+                          augmentation=None, augmentation_base=1.0e3, degree=None):
+        r"""Register a multiplier-enforced normal-velocity constraint on ``boundary``.
+
+        Adds a scalar multiplier field ``h`` (field id 2, 3, ...) to the
+        saddle-point system. **Milestone 1**: only the field and its interior
+        screening are wired (the field is inert — no boundary coupling yet, so
+        ``h`` is driven to zero and the velocity/pressure solution is identical
+        to ordinary Stokes). The boundary residual/coupling are added in later
+        milestones.
+
+        Parameters
+        ----------
+        boundary : str
+            Mesh boundary label (e.g. ``"Upper"``).
+        g : float or sympy expression, default 0.0
+            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n} = g`.
+        normal : sympy matrix, optional
+            Row-vector constraint normal. Defaults to ``mesh.Gamma_P1``.
+        screening : float or sympy expression, optional
+            Interior screening coefficient :math:`\varepsilon` (de-singularises
+            the interior multiplier DOFs). Defaults to ``1e-6``.
+        augmentation : float or sympy expression, optional
+            Augmented-Lagrangian parameter :math:`r`. Adds a penalty
+            :math:`r(\mathbf{n}\cdot\mathbf{u}-g)\,\mathbf{n}` to the u-row,
+            giving a ``uu`` boundary stiffness :math:`r\,(\mathbf{n}\otimes
+            \mathbf{n})` that conditions the :math:`[p,h]` Schur complement
+            **without biasing the multiplier** (the h-row is still the exact
+            constraint). Defaults to ``augmentation_base · μ(x)`` (viscosity-
+            weighted, like the outer-loop solver). Pass ``0`` for the bare KKT
+            system.
+        augmentation_base : float, default 1e3
+            Base multiple used when ``augmentation`` is not given.
+
+        Returns
+        -------
+        h : MeshVariable
+            The scalar multiplier field.
+        """
+        # Serial only for now: the boundary mask (later milestones) is not
+        # MPI-decomposed.
+        if uw.mpi.size > 1:
+            raise NotImplementedError(
+                "SNES_Stokes_BlockConstrained is serial-only for now."
+            )
+
+        if not hasattr(self.mesh.boundaries, boundary):
+            raise ValueError(
+                f"'{boundary}' is not a boundary of this mesh. "
+                f"Available: {[b.name for b in self.mesh.boundaries]}."
+            )
+
+        if normal is None:
+            normal = self.mesh.Gamma_P1
+        normal = sympy.Matrix(normal)
+        if normal.shape[0] != 1:
+            normal = normal.reshape(1, self.mesh.dim)
+
+        if screening is None:
+            # Small interior screening: de-singularises the interior h block
+            # without biasing the boundary multiplier. A viscosity-aware scale
+            # is chosen in a later milestone.
+            screening = 1.0e-6
+
+        g = sympy.sympify(g)
+
+        if augmentation is None:
+            # Viscosity-weighted augmentation r = augmentation_base · μ(x): keeps
+            # the conditioning ratio uniform across viscosity contrasts (same
+            # rationale as the outer-loop solver; r ∝ μ is mesh-independent).
+            try:
+                viscosity = self.constitutive_model.Parameters.shear_viscosity_0
+                augmentation = augmentation_base * viscosity
+            except (AttributeError, TypeError):
+                augmentation = augmentation_base * self._viscosity_scale()
+        augmentation = sympy.sympify(augmentation)
+
+        idx = len(self._block_constraint_bcs)
+        field_name = f"multiplier_{idx}"
+        # Multiplier degree defaults to the velocity degree so its trace reaches
+        # every velocity normal-trace DOF (no constraint floor on the P2 mid-edge
+        # component). A lower degree trades a little constraint accuracy for far
+        # fewer multiplier DOFs (cheaper [p,h] Schur block).
+        h_degree = self._degree if degree is None else degree
+        h = uw.discretisation.MeshVariable(
+            f"H{self.instance_number}_{idx}",
+            self.mesh,
+            1,
+            degree=h_degree,
+        )
+        h.data[:] = 0.0
+        h._solver_field_name = field_name
+
+        self._multipliers.append(h)
+        self._multiplier_screening.append(screening)
+        self.fields[field_name] = h
+        # New DM field → the discretisation and solver must be rebuilt.
+        self.is_setup = False
+        self._needs_function_rewire = True
+
+        cbc = _BlockConstraintBC(boundary, g, normal, h, augmentation)
+
+        # Interior mask: True on multiplier nodes OFF the constraint boundary.
+        # Build a P1 marker that is 1 on the boundary vertices and sample it at
+        # the multiplier's nodes (boundary mid-edge nodes interpolate to ~1).
+        from underworld3.discretisation.discretisation_mesh import (
+            petsc_dm_find_labeled_points_local,
+        )
+        marker = uw.discretisation.MeshVariable(
+            f"_bmask_{self.instance_number}_{idx}", self.mesh, 1, degree=1,
+        )
+        marker.data[:] = 0.0
+        if self.mesh.dm.hasLabel("UW_Boundaries"):
+            pts = petsc_dm_find_labeled_points_local(
+                self.mesh.dm, "UW_Boundaries",
+                getattr(self.mesh.boundaries, boundary).value, sectionIndex=False,
+            )
+            if pts is not None and len(pts) > 0:
+                marker.data[pts] = 1.0
+        on_boundary = np.array(uw.function.evaluate(marker.sym, h.coords)).reshape(-1) > 0.5
+        cbc.interior_mask = ~on_boundary
+
+        self._block_constraint_bcs.append(cbc)
+        return h
+
+    def multiplier(self, boundary):
+        """Return the multiplier field for ``boundary`` (None if not constrained).
+
+        After :meth:`solve`, the multiplier's boundary trace is the normal
+        traction holding the constraint. Divide by :math:`\\Delta\\rho\\,g` for
+        dynamic topography (see :meth:`topography`).
+        """
+        for cbc in self._block_constraint_bcs:
+            if cbc.boundary == boundary:
+                return cbc.lam
+        return None
+
+    def topography(self, boundary, buoyancy_scale=1.0):
+        r"""Dynamic topography expression :math:`h / (\Delta\rho\, g)` on ``boundary``."""
+        lam = self.multiplier(boundary)
+        if lam is None:
+            raise ValueError(f"No constraint registered on boundary '{boundary}'.")
+        return lam.sym[0] / buoyancy_scale
+
+
 class SNES_Projection(SNES_Scalar):
     r"""
     Scalar projection solver for mapping functions to mesh variables.

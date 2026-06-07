@@ -4144,6 +4144,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
+        # Optional saddle-point Lagrange multiplier fields (block-constrained
+        # Stokes). Each entry is a full-domain scalar MeshVariable registered
+        # as an extra DM field (id 2, 3, ...), grouped with pressure into the
+        # Schur split. EMPTY for ordinary Stokes — every multiplier-aware code
+        # path below is guarded by `if self._multipliers:` so that with no
+        # multiplier the emitted DS is bit-identical to the 2-field solver.
+        # _multiplier_screening[k] is the interior screening coefficient
+        # (eps M de-singularises the interior h block); see
+        # docs/developer/design/CONSTRAINED_FREESLIP_MULTIPLIER.md.
+        self._multipliers = []
+        self._multiplier_screening = []
+        self._block_constraint_bcs = []
+        # Pin interior (off-boundary) multiplier DOFs to 0 so the solved [p,h]
+        # block carries only the boundary trace (~√ndof instead of ~ndof/3 DOFs);
+        # the boundary trace is the only physical part. Default OFF: the current
+        # DMAddBoundary-based pinning fatally errors on refined meshes (the
+        # hierarchy pre-builds the local section, so the boundary is added "after
+        # section creation"). Opt in only on non-refined meshes until the
+        # order-independent PetscSection-constraint path lands.
+        self._reduce_interior_multiplier = False
+
         self._degree = degree
 
         ## Any problem with U,P, just define our own
@@ -4920,12 +4941,51 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         return null_vec
 
+    def _build_block_gauge_nullspace_vector(self):
+        """Combined constant-(pressure, multiplier) gauge mode (block-constrained).
+
+        On a free-slip (non-Dirichlet) boundary delta_u.n != 0, so
+        int_Gamma n.delta_u = int_Omega div(delta_u) != 0, and a constant
+        pressure (Bᵀ1) and a constant multiplier (Cᵀ1) couple to the SAME u-row
+        functional. The genuine near-null mode is therefore the COMBINED
+        (p = +1, h = -1 everywhere, u = 0): the u-row contribution
+        (1)·int n.delta_u + (-1)·int n.delta_u cancels, the h-row leaves only
+        eM·(-1) ~ 0. This replaces the pure constant-pressure mode for the block
+        solver (which is NOT a null mode when the constraint boundary is free).
+        """
+        template_vec = self.dm.getGlobalVec()
+        try:
+            null_vec = template_vec.duplicate()
+        finally:
+            self.dm.restoreGlobalVec(template_vec)
+
+        null_vec.set(0.0)
+
+        pressure_is = self._subdict["pressure"][0]
+        p_sub = null_vec.getSubVector(pressure_is)
+        p_sub.set(1.0)
+        null_vec.restoreSubVector(pressure_is, p_sub)
+
+        for cbc in self._block_constraint_bcs:
+            mult_is = self._subdict[cbc.lam._solver_field_name][0]
+            m_sub = null_vec.getSubVector(mult_is)
+            m_sub.set(-1.0)
+            null_vec.restoreSubVector(mult_is, m_sub)
+
+        return null_vec
+
     def _build_stokes_nullspace(self):
         """Create the configured coupled Stokes nullspace basis."""
 
         basis_vectors = []
 
-        if self._petsc_use_pressure_nullspace:
+        if self._block_constraint_bcs:
+            # Block-constrained free-slip: the gauge mode is the COMBINED
+            # constant-(pressure, multiplier) vector, not a pure constant
+            # pressure (see _build_block_gauge_nullspace_vector).
+            if self._petsc_use_pressure_nullspace:
+                basis_vectors.append(self._build_block_gauge_nullspace_vector())
+        elif self._petsc_use_pressure_nullspace:
             basis_vectors.append(self._build_pressure_nullspace_vector())
 
         for mode in self._petsc_velocity_nullspace_basis:
@@ -4957,10 +5017,47 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         return self._stokes_nullspace
 
+    def _setup_block_fieldsplit_options(self):
+        """Collapse the 3+ field DM to a 2-way velocity | [p,h] Schur split.
+
+        We group by DM FIELD INDEX (pc_fieldsplit_0_fields=0,
+        pc_fieldsplit_1_fields=1,2,...) rather than by IS: a field-index split
+        keeps the DM-field association, so geometric multigrid / FMG on the
+        velocity block can build its interpolation hierarchy (an IS-defined
+        split has no DM and PCMG errors out with PETSC_ERR_SUP). The grouped
+        splits are named "0"/"1", so we MIRROR the user-facing
+        fieldsplit_velocity_* / fieldsplit_pressure_* options (defaults + any
+        user/FMG overrides) onto fieldsplit_0_* / fieldsplit_1_* — existing
+        configs and FMG harnesses then apply unchanged. Must run before
+        setFromOptions. No-op if the user chose a non-fieldsplit pc_type.
+        """
+        opts = self.petsc_options
+        if str(opts.getAll().get("pc_type", "")) != "fieldsplit":
+            return  # respect a user's direct (lu) solve of the monolithic system
+
+        group1 = ["1"] + [str(cbc.lam._solver_field_id) for cbc in self._block_constraint_bcs]
+        opts["pc_fieldsplit_0_fields"] = "0"
+        opts["pc_fieldsplit_1_fields"] = ",".join(group1)
+
+        # Mirror velocity_->0_ and pressure_->1_, but DON'T clobber any
+        # fieldsplit_0_*/fieldsplit_1_* the user set explicitly (so the grouped
+        # [p,h] block PC can be overridden directly).
+        allopts = opts.getAll()
+        for key, val in list(allopts.items()):
+            mirrored = None
+            if key.startswith("fieldsplit_velocity_"):
+                mirrored = "fieldsplit_0_" + key[len("fieldsplit_velocity_"):]
+            elif key.startswith("fieldsplit_pressure_"):
+                mirrored = "fieldsplit_1_" + key[len("fieldsplit_pressure_"):]
+            if mirrored is not None and mirrored not in allopts:
+                opts[mirrored] = None if val in (None, "") else val
+
     def _attach_stokes_nullspace(self):
         """Attach the configured coupled Stokes nullspace to the solver matrices."""
 
-        if not self._petsc_use_pressure_nullspace and not self._petsc_velocity_nullspace_basis:
+        if (not self._petsc_use_pressure_nullspace
+                and not self._petsc_velocity_nullspace_basis
+                and not self._block_constraint_bcs):
             return
 
         pressure_bcs = self._pressure_dirichlet_bcs()
@@ -5246,6 +5343,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         fns_jacobian.append(self._pp_G0)
 
+        ## Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
+        ## for ordinary Stokes. Each multiplier h_k contributes an interior
+        ## screening residual  f0 = eps_k * h_k  and a diagonal mass Jacobian
+        ## hh_G0 = eps_k. The screening de-singularises the otherwise-empty
+        ## interior h block; with no boundary coupling (M1) h is driven to 0.
+        ## Boundary coupling (C, C^T) and off-diagonal blocks are added by the
+        ## natural-bc loop in later milestones.
+        self._h_F0 = []
+        self._hh_G0 = []
+        for mvar, eps in zip(self._multipliers, self._multiplier_screening):
+            h_F0 = sympy.ImmutableDenseMatrix(sympy.Array([eps * mvar.sym[0]]).reshape(1))
+            hh_G0 = sympy.ImmutableMatrix(
+                sympy.derive_by_array(sympy.Array([eps * mvar.sym[0]]), mvar.sym).reshape(1, 1)
+            )
+            self._h_F0.append(h_F0)
+            self._hh_G0.append(hh_G0)
+            fns_residual.append(h_F0)
+            fns_jacobian.append(hh_G0)
+
         # Now natural bcs (compiled into boundary integral terms)
         # Need to loop on them all ...
 
@@ -5317,6 +5433,59 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 fns_bd_jacobian += [bc.fns["pp_G0"]]
 
 
+        ## Lagrange-multiplier boundary coupling (block-constrained Stokes).
+        ## For each constraint, the boundary contributes the symmetric pair
+        ##   C^T :  field-0 traction   fn_f = h * n         (u-row, ∫_Γ h (n·δu))
+        ##   C   :  field-2 constraint fn_h = n·u − g       (h-row, ∫_Γ ψ(n·u−g))
+        ## off-diagonal boundary Jacobians  uh = ∂fn_f/∂h = n  (0, h)  and
+        ## hu = ∂fn_h/∂u = n  (h, 0), plus the augmented-Lagrangian uu boundary
+        ## stiffness uu = ∂fn_f/∂u = r·(n⊗n)  (0, 0) which conditions the [p,h]
+        ## Schur complement (r=0 ⇒ bare KKT, uu=0). Guarded: no-op for ordinary
+        ## Stokes.
+        cbc_permutation = (0, 2, 1, 3)
+        for cbc in self._block_constraint_bcs:
+            n_row = cbc.normal           # sympy 1×dim Matrix
+            g_sym = cbc.g
+            r_sym = cbc.augmentation     # augmented-Lagrangian parameter
+            H = sympy.Array(cbc.lam.sym).reshape(1)
+            hsym = cbc.lam.sym[0]
+
+            u_dot_n = sum(n_row[i] * self.u.sym[i] for i in range(dim))
+
+            # u-row residual:  fn_f = h·n  +  r(n·u − g)·n
+            # The r-term is the augmented-Lagrangian penalty: it adds a uu
+            # boundary stiffness r·(n⊗n) that conditions the Schur complement
+            # but does NOT bias the multiplier (the h-row stays the exact
+            # constraint, so h still converges to the true normal traction).
+            fn_f = sympy.Matrix(
+                [(hsym + r_sym * (u_dot_n - g_sym)) * n_row[i] for i in range(dim)]
+            ).as_immutable()
+            cbc.fns["u_f0"] = sympy.ImmutableDenseMatrix(sympy.Array(fn_f).reshape(dim))
+            fns_bd_residual += [cbc.fns["u_f0"]]
+
+            # h-row constraint residual  fn_h = n·u − g
+            fn_h = sympy.Array([u_dot_n - g_sym]).reshape(1)
+            cbc.fns["h_f0"] = sympy.ImmutableDenseMatrix(fn_h)
+            fns_bd_residual += [cbc.fns["h_f0"]]
+
+            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape)
+            G0 = sympy.derive_by_array(sympy.Array(fn_f), self.Unknowns.u.sym)
+            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(
+                sympy.permutedims(G0, cbc_permutation).reshape(dim, dim)
+            )
+            fns_bd_jacobian += [cbc.fns["uu_G0"]]
+
+            # uh (0, h):  ∂fn_f/∂h = n  — mirror the up_G0 (velocity,scalar) shape
+            G0 = sympy.derive_by_array(sympy.Array(fn_f), H)
+            cbc.fns["uh_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
+            fns_bd_jacobian += [cbc.fns["uh_G0"]]
+
+            # hu (h, 0):  ∂fn_h/∂u = n  — mirror the pu_G0 (scalar,velocity) shape
+            G0 = sympy.derive_by_array(fn_h, self.Unknowns.u.sym)
+            cbc.fns["hu_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
+            fns_bd_jacobian += [cbc.fns["hu_G0"]]
+
+
         self._fns_bd_residual = fns_bd_residual
         self._fns_bd_jacobian = fns_bd_jacobian
 
@@ -5335,11 +5504,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             print(f"Stokes: Jacobians complete, now compile", flush=True)
 
         prim_field_list = [self.u, self.p]
+        if self._multipliers:
+            prim_field_list = prim_field_list + list(self._multipliers)
+
+        # Essential-BC value functions. Block-constrained Stokes pins interior
+        # multiplier DOFs to 0 (boundary-only reduction) — ensure a compiled 0
+        # is available for that essential BC.
+        bc_value_fns = [x.fn for x in self.essential_bcs]
+        if self._block_constraint_bcs and self._reduce_interior_multiplier:
+            bc_value_fns.append(sympy.Matrix([[0]]).as_immutable())
+
         _getext_result = getext(
             self.mesh,
             JITCallbackSet(
                 residual=tuple(fns_residual),
-                bcs=tuple(x.fn for x in self.essential_bcs),
+                bcs=tuple(bc_value_fns),
                 jacobian=tuple(fns_jacobian),
                 bd_residual=tuple(fns_bd_residual),
                 bd_jacobian=tuple(fns_bd_jacobian),
@@ -5432,6 +5611,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_fe_p_id = self.dm.getNumFields()
             self.dm.setField( self.petsc_fe_p_id, self.petsc_fe_p)
 
+            # Saddle-point Lagrange multiplier fields (block-constrained Stokes).
+            # Registered as extra scalar fields (id 2, 3, ...) at the multiplier's
+            # own degree (velocity P2 by default, so the trace reaches every
+            # normal-trace DOF). Guarded: no-op for ordinary Stokes.
+            for mvar in self._multipliers:
+                h_degree = mvar.degree
+                h_prefix = "private_{}_{}_".format(self.petsc_options_prefix, mvar._solver_field_name)
+                options.setValue(h_prefix + "petscspace_degree", h_degree)
+                options.setValue(h_prefix + "petscdualspace_lagrange_continuity", mvar.continuous)
+                options.setValue(h_prefix + "petscdualspace_lagrange_node_endpoints", False)
+                fe_h = PETSc.FE().createDefault(mesh.dim, 1, mesh.isSimplex, mesh.qdegree, h_prefix, PETSc.COMM_SELF)
+                fe_h.setName(mvar._solver_field_name)
+                mvar._solver_field_id = self.dm.getNumFields()
+                self.dm.setField(mvar._solver_field_id, fe_h)
+
         self.dm.createDS()
 
         ## This part is done once on the solver dm ... not required every time we update the functions ...
@@ -5481,6 +5675,53 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
 
+        # Lagrange-multiplier constraint boundaries (block-constrained Stokes).
+        # PETSc evaluates a boundary entry's residual/Jacobian ONLY for the
+        # field it was registered with (key.field = boundary field). So each
+        # constraint registers the boundary TWICE: once for field 0 (carries the
+        # u-row traction h·n and the uh Jacobian) and once for the multiplier
+        # field (carries the h-row constraint n·u−g and the hu Jacobian).
+        # Guarded: no-op for ordinary Stokes.
+        cdef int [::1] cbc_comps_view
+        cdef int [::1] cbc_hcomps_view
+        for cbc in self._block_constraint_bcs:
+            cbc_boundary = cbc.boundary
+            cbc_value = mesh.boundaries[cbc_boundary].value
+            ind = cbc_value
+            cbc_fid_h = cbc.lam._solver_field_id
+
+            cbc_comps = np.arange(mesh.dim, dtype=np.int32)
+            cbc_comps_view = cbc_comps
+            cbc.petsc_id_u = PetscDSAddBoundary_UW(cdm.dm,
+                                6,
+                                str(cbc_boundary + "_constraint_u").encode('utf8'),
+                                str("UW_Boundaries").encode('utf8'),
+                                0,  # velocity field: u-row traction + uh Jacobian
+                                cbc_comps.shape[0],
+                                <const PetscInt *> &cbc_comps_view[0],
+                                <void (*)() noexcept>NULL,
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
+                                NULL, )
+
+            cbc_hcomps = np.array([0], dtype=np.int32)
+            cbc_hcomps_view = cbc_hcomps
+            cbc.petsc_id_h = PetscDSAddBoundary_UW(cdm.dm,
+                                6,
+                                str(cbc_boundary + "_constraint_h").encode('utf8'),
+                                str("UW_Boundaries").encode('utf8'),
+                                cbc_fid_h,  # multiplier field: h-row constraint + hu Jacobian
+                                cbc_hcomps.shape[0],
+                                <const PetscInt *> &cbc_hcomps_view[0],
+                                <void (*)() noexcept>NULL,
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
+                                NULL, )
+            cbc.label_val = cbc_value
+
+
         for index,bc in enumerate(self.essential_bcs):
             if uw.mpi.rank == 0 and self.verbose:
                 print("Setting bc {} ({})".format(index, bc.type))
@@ -5515,6 +5756,73 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 NULL, )
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
+
+
+        # Boundary-only multiplier reduction (block-constrained Stokes): pin the
+        # interior (off-constraint-boundary) multiplier DOFs to 0 via an
+        # essential BC, so the solved [p,h] Schur block carries only the boundary
+        # trace (~√ndof rather than ~ndof/3 DOFs). The interior trace is inert
+        # (only the boundary multiplier is physical), so this is lossless and
+        # collapses the constraint-Schur cost toward penalty. The constraint
+        # boundary's UW_Boundaries stratum already lists its boundary points
+        # (vertices + edges); everything else carrying an h DOF is interior.
+        cdef int h_one = 1
+        cdef int [::1] hcomp_view
+        if self._block_constraint_bcs and self._reduce_interior_multiplier:
+            # DMAddBoundary must precede local-section creation, so identify the
+            # interior points by TOPOLOGY (no section): every non-cell point that
+            # is NOT on the constraint boundary. PETSc constrains the h field only
+            # where it actually has DOFs among those points (no-op elsewhere).
+            h_cellS, h_cellE = self.dm.getHeightStratum(0)   # cells
+            h_chartS, h_chartE = self.dm.getChart()
+            h_zero_idx = self.ext_dict.ebc[sympy.Matrix([[0]]).as_immutable()]
+            for cbc in self._block_constraint_bcs:
+                fid_h = cbc.lam._solver_field_id
+                bvalue = mesh.boundaries[cbc.boundary].value
+                bd_is_h = self.dm.getLabel("UW_Boundaries").getStratumIS(bvalue)
+                # KEEP the FULL boundary closure. The UW_Boundaries stratum lists
+                # the boundary facets (and some vertices), but a P2 multiplier also
+                # has DOFs on the facet vertices/edges — including corner vertices
+                # labelled under adjacent boundaries. Use PETSc's own label
+                # completion: pure topology, order-independent (does NOT build the
+                # local section, so it is refined-safe — unlike createClosureIndex),
+                # and it adds the exact transitive closure, so no boundary-trace h
+                # DOF is ever mistakenly pinned.
+                keep_label = "_h_keep_{}".format(fid_h)
+                if not self.dm.hasLabel(keep_label):
+                    self.dm.createLabel(keep_label)
+                if bd_is_h is not None:
+                    for _sp in bd_is_h.getIndices().tolist():
+                        self.dm.setLabelValue(keep_label, _sp, 1)
+                self.dm.labelComplete(self.dm.getLabel(keep_label))
+                _keep_is = self.dm.getStratumIS(keep_label, 1)
+                bd_pts_h = set(_keep_is.getIndices().tolist()) if _keep_is is not None else set()
+                ilabel = "_h_interior_{}".format(fid_h)
+                # Label exists on every level (real on fine, empty on coarse —
+                # the velocity MG hierarchy never touches the h field, and the
+                # [p,h] block is solved only on the fine level).
+                for _d in self.dm_hierarchy:
+                    if not _d.hasLabel(ilabel):
+                        _d.createLabel(ilabel)
+                for p in range(h_chartS, h_chartE):
+                    if h_cellS <= p < h_cellE:
+                        continue                      # cells carry no h DOF (P1/P2)
+                    if p in bd_pts_h:
+                        continue                      # keep the boundary trace
+                    self.dm.setLabelValue(ilabel, p, 1)
+                hcomp = np.array([0], dtype=np.int32)
+                hcomp_view = hcomp
+                PetscDSAddBoundary_UW(cdm.dm,
+                                    5,
+                                    (ilabel + "_bc").encode('utf8'),
+                                    ilabel.encode('utf8'),
+                                    fid_h, 1,
+                                    <const PetscInt *> &hcomp_view[0],
+                                    <void (*)() noexcept>ext.fns_bcs[h_zero_idx],
+                                    NULL,
+                                    1,
+                                    <const PetscInt *> &h_one,
+                                    NULL, )
 
 
         for coarse_dm in self.dm_hierarchy:
@@ -5556,6 +5864,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         PetscDSSetJacobianPreconditioner(ds.ds, 0, 1, ext.fns_jacobian[i_jac[self._up_G0]], ext.fns_jacobian[i_jac[self._up_G1]], ext.fns_jacobian[i_jac[self._up_G2]], ext.fns_jacobian[i_jac[self._up_G3]])
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 0, ext.fns_jacobian[i_jac[self._pu_G0]], ext.fns_jacobian[i_jac[self._pu_G1]],                                 NULL,                                 NULL)
         PetscDSSetJacobianPreconditioner(ds.ds, 1, 1, ext.fns_jacobian[i_jac[self._pp_G0]],                                 NULL,                                 NULL,                                 NULL)
+
+        # Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
+        # for ordinary Stokes. Register the interior screening residual and the
+        # diagonal mass Jacobian/preconditioner on each multiplier's field.
+        for k, mvar in enumerate(self._multipliers):
+            fid = mvar._solver_field_id
+            PetscDSSetResidual(ds.ds, fid, ext.fns_residual[i_res[self._h_F0[k]]], NULL)
+            PetscDSSetJacobian(              ds.ds, fid, fid, ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL, NULL)
+            PetscDSSetJacobianPreconditioner(ds.ds, fid, fid, ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL, NULL)
 
         cdef DMLabel c_label
 
@@ -5693,6 +6010,61 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
                                     NULL, NULL, NULL)
 
+        # Lagrange-multiplier boundary coupling DS registration (block-constrained
+        # Stokes). Attaches the field-0 traction, field-h constraint, and the
+        # off-diagonal uh/hu boundary Jacobians to each constraint's boundary
+        # region. Guarded: no-op for ordinary Stokes.
+        if self._block_constraint_bcs:
+            i_bd_res = self.ext_dict.bd_res
+            i_bd_jac = self.ext_dict.bd_jac
+            c_label = self.dm.getLabel("UW_Boundaries")
+            for cbc in self._block_constraint_bcs:
+                label_val = cbc.label_val
+                fid_h = cbc.lam._solver_field_id
+                bid_u = cbc.petsc_id_u   # boundary entry registered for field 0
+                bid_h = cbc.petsc_id_h   # boundary entry registered for field h
+
+                # --- field-0 entry: u-row residual + uu (AL) + uh Jacobians ---
+                # traction + AL penalty residual  fn_f = h n + r(n·u−g) n
+                UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, bid_u,
+                                0, 0,
+                                ext.fns_bd_residual[i_bd_res[cbc.fns["u_f0"]]],
+                                NULL)
+                # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — augmented-Lagrangian stiffness
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_u,
+                                0, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uu_G0"]]],
+                                NULL, NULL, NULL)
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_u,
+                                0, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uu_G0"]]],
+                                NULL, NULL, NULL)
+                # uh (0, h):  ∂fn_f/∂h = n
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_u,
+                                0, fid_h, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uh_G0"]]],
+                                NULL, NULL, NULL)
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_u,
+                                0, fid_h, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uh_G0"]]],
+                                NULL, NULL, NULL)
+
+                # --- field-h entry: h-row constraint + hu Jacobian ---
+                # constraint residual  fn_h = n·u − g
+                UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, bid_h,
+                                fid_h, 0,
+                                ext.fns_bd_residual[i_bd_res[cbc.fns["h_f0"]]],
+                                NULL)
+                # hu (h, 0):  ∂fn_h/∂u = n
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_h,
+                                fid_h, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[cbc.fns["hu_G0"]]],
+                                NULL, NULL, NULL)
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_h,
+                                fid_h, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[cbc.fns["hu_G0"]]],
+                                NULL, NULL, NULL)
+
         if verbose:
             print(f"Weak form (DS)", flush=True)
             UW_PetscDSViewWF(ds.ds)
@@ -5720,6 +6092,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if not _rewire_only:
             for coarse_dm in self.dm_hierarchy:
                 coarse_dm.createClosureIndex(None)
+
+            # Block-constrained: group [pressure, multipliers] into a single
+            # Schur factor by DM FIELD INDEX, so the velocity block keeps its DM
+            # hierarchy for geometric MG/FMG. Must precede setFromOptions.
+            if self._block_constraint_bcs:
+                self._setup_block_fieldsplit_options()
 
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
@@ -6024,12 +6402,26 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             pressure_field_num = 1
 
             self._pressure_is = get_local_field_is(local_section, pressure_field_num)
-            
-            # Get indices for velocity (complement of pressure)
+
+            # Multiplier fields (block-constrained Stokes). Build a local IS per
+            # multiplier so its DOFs can be (a) excluded from the velocity
+            # complement and (b) copied back into the multiplier MeshVariable.
+            # Guarded: empty dict for ordinary Stokes.
+            self._multiplier_is = {}
+            multiplier_indices = set()
+            for mvar in self._multipliers:
+                # unconstrained=False -> include ALL multiplier DOFs (the pinned
+                # interior ones are present in the LOCAL vec at 0), so the copy
+                # back into the full-domain MeshVariable is size-correct.
+                mis = get_local_field_is(local_section, mvar._solver_field_id, unconstrained=False)
+                self._multiplier_is[mvar._solver_field_name] = mis
+                multiplier_indices |= set(mis.getIndices())
+
+            # Get indices for velocity (complement of pressure and multipliers)
             size = clvec.getLocalSize()
             all_indices = set(range(size))
             pressure_indices = set(self._pressure_is.getIndices())
-            velocity_indices = sorted(list(all_indices - pressure_indices))
+            velocity_indices = sorted(list(all_indices - pressure_indices - multiplier_indices))
             self._velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
 
         # Copy solution back into pressure and velocity variables
@@ -6043,6 +6435,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 subvec = clvec.getSubVector(self._pressure_is)
                 var.vec.array[:] = subvec.array[:]
                 clvec.restoreSubVector(self._pressure_is, subvec)
+            elif name in self._multiplier_is:
+                mis = self._multiplier_is[name]
+                subvec = clvec.getSubVector(mis)
+                var.vec.array[:] = subvec.array[:]
+                clvec.restoreSubVector(mis, subvec)
         self.mesh._stale_lvec = True
 
         # Sync _gvec so downstream consumers (write, stats) see the result
