@@ -61,7 +61,7 @@ class BoundingSurface:
     """
 
     def __init__(self, mesh, label, kind, *, centre=None, radius=None,
-                 point=None, normal=None, is_free=False):
+                 point=None, normal=None, reference_facets=None, is_free=False):
         if kind not in _VALID_KINDS:
             raise ValueError(
                 f"BoundingSurface kind must be one of {_VALID_KINDS}; got {kind!r}")
@@ -73,10 +73,18 @@ class BoundingSurface:
         self.radius = None if radius is None else _as_float(radius)
         self.point = None if point is None else np.asarray(point, dtype=float).ravel()
         self.normal = None if normal is None else _unit(normal)
+        # reference_facets: (nf, cdim, cdim) — line segments (2D) / triangles
+        # (3D) of the surface, captured from a FIXED reference, for the `facet`
+        # nearest-point restore on non-analytic surfaces.
+        self.reference_facets = (
+            None if reference_facets is None
+            else np.ascontiguousarray(reference_facets, dtype=float))
         if kind == "radial" and (self.centre is None or self.radius is None):
             raise ValueError("radial BoundingSurface requires centre and radius")
         if kind == "plane" and (self.point is None or self.normal is None):
             raise ValueError("plane BoundingSurface requires point and normal")
+        if kind == "facet" and self.reference_facets is None:
+            raise ValueError("facet BoundingSurface requires reference_facets")
 
     @property
     def mesh(self):
@@ -114,9 +122,10 @@ class BoundingSurface:
 
         ``radial`` — re-impose ``|r| = radius`` about ``centre`` (exact,
         concave-safe). ``plane`` — orthogonal projection onto the plane.
+        ``facet`` — nearest point on the surface's reference facets (segments
+        in 2D, triangles in 3D); convex-safe, with a documented concave bias.
         A ``free``/``is_free`` surface returns ``coords`` unchanged (it follows
-        the live discrete surface — a follow-up). ``facet`` is not implemented
-        in step 1 (such labels are pinned by the orchestrator).
+        the live discrete surface — a follow-up).
         """
         coords = np.asarray(coords, dtype=float)
         if self.is_free or self.kind == "free":
@@ -130,9 +139,13 @@ class BoundingSurface:
             d = ((coords - self.point) * self.normal).sum(axis=1, keepdims=True)
             return coords - d * self.normal
         if self.kind == "facet":
-            raise NotImplementedError(
-                "facet restore is a follow-up (see boundary-slip-strategy.md); "
-                "labels without an analytic surface are pinned in step 1.")
+            if coords.shape[0] == 0:
+                return coords
+            from underworld3.meshing._ot_adapt import (
+                _nearest_on_facets_2d, _nearest_on_facets_3d)
+            if coords.shape[1] == 2:
+                return _nearest_on_facets_2d(coords, self.reference_facets)
+            return _nearest_on_facets_3d(coords, self.reference_facets)
         return coords
 
     # -- state transition ----------------------------------------------------
