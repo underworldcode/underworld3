@@ -4158,12 +4158,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._block_constraint_bcs = []
         # Pin interior (off-boundary) multiplier DOFs to 0 so the solved [p,h]
         # block carries only the boundary trace (~√ndof instead of ~ndof/3 DOFs);
-        # the boundary trace is the only physical part. Default OFF: the current
-        # DMAddBoundary-based pinning fatally errors on refined meshes (the
-        # hierarchy pre-builds the local section, so the boundary is added "after
-        # section creation"). Opt in only on non-refined meshes until the
-        # order-independent PetscSection-constraint path lands.
-        self._reduce_interior_multiplier = False
+        # the boundary trace is the only physical part. Done by constraining the
+        # interior h DOFs directly in the fine local PetscSection
+        # (_constrain_interior_multipliers_in_section) — lossless (correct
+        # constraint-boundary closure) and refined/FMG-safe (no DMAddBoundary
+        # ordering restriction). Default ON.
+        self._reduce_interior_multiplier = True
 
         self._degree = degree
 
@@ -5507,12 +5507,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if self._multipliers:
             prim_field_list = prim_field_list + list(self._multipliers)
 
-        # Essential-BC value functions. Block-constrained Stokes pins interior
-        # multiplier DOFs to 0 (boundary-only reduction) — ensure a compiled 0
-        # is available for that essential BC.
+        # Essential-BC value functions. (Block-constrained Stokes reduces the
+        # interior multiplier DOFs by constraining them directly in the
+        # PetscSection — see _constrain_interior_multipliers_in_section — so no
+        # extra compiled essential-BC value is needed here.)
         bc_value_fns = [x.fn for x in self.essential_bcs]
-        if self._block_constraint_bcs and self._reduce_interior_multiplier:
-            bc_value_fns.append(sympy.Matrix([[0]]).as_immutable())
 
         _getext_result = getext(
             self.mesh,
@@ -5758,72 +5757,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
 
-        # Boundary-only multiplier reduction (block-constrained Stokes): pin the
-        # interior (off-constraint-boundary) multiplier DOFs to 0 via an
-        # essential BC, so the solved [p,h] Schur block carries only the boundary
-        # trace (~√ndof rather than ~ndof/3 DOFs). The interior trace is inert
-        # (only the boundary multiplier is physical), so this is lossless and
-        # collapses the constraint-Schur cost toward penalty. The constraint
-        # boundary's UW_Boundaries stratum already lists its boundary points
-        # (vertices + edges); everything else carrying an h DOF is interior.
-        cdef int h_one = 1
-        cdef int [::1] hcomp_view
-        if self._block_constraint_bcs and self._reduce_interior_multiplier:
-            # DMAddBoundary must precede local-section creation, so identify the
-            # interior points by TOPOLOGY (no section): every non-cell point that
-            # is NOT on the constraint boundary. PETSc constrains the h field only
-            # where it actually has DOFs among those points (no-op elsewhere).
-            h_cellS, h_cellE = self.dm.getHeightStratum(0)   # cells
-            h_chartS, h_chartE = self.dm.getChart()
-            h_zero_idx = self.ext_dict.ebc[sympy.Matrix([[0]]).as_immutable()]
-            for cbc in self._block_constraint_bcs:
-                fid_h = cbc.lam._solver_field_id
-                bvalue = mesh.boundaries[cbc.boundary].value
-                bd_is_h = self.dm.getLabel("UW_Boundaries").getStratumIS(bvalue)
-                # KEEP the FULL boundary closure. The UW_Boundaries stratum lists
-                # the boundary facets (and some vertices), but a P2 multiplier also
-                # has DOFs on the facet vertices/edges — including corner vertices
-                # labelled under adjacent boundaries. Use PETSc's own label
-                # completion: pure topology, order-independent (does NOT build the
-                # local section, so it is refined-safe — unlike createClosureIndex),
-                # and it adds the exact transitive closure, so no boundary-trace h
-                # DOF is ever mistakenly pinned.
-                keep_label = "_h_keep_{}".format(fid_h)
-                if not self.dm.hasLabel(keep_label):
-                    self.dm.createLabel(keep_label)
-                if bd_is_h is not None:
-                    for _sp in bd_is_h.getIndices().tolist():
-                        self.dm.setLabelValue(keep_label, _sp, 1)
-                self.dm.labelComplete(self.dm.getLabel(keep_label))
-                _keep_is = self.dm.getStratumIS(keep_label, 1)
-                bd_pts_h = set(_keep_is.getIndices().tolist()) if _keep_is is not None else set()
-                ilabel = "_h_interior_{}".format(fid_h)
-                # Label exists on every level (real on fine, empty on coarse —
-                # the velocity MG hierarchy never touches the h field, and the
-                # [p,h] block is solved only on the fine level).
-                for _d in self.dm_hierarchy:
-                    if not _d.hasLabel(ilabel):
-                        _d.createLabel(ilabel)
-                for p in range(h_chartS, h_chartE):
-                    if h_cellS <= p < h_cellE:
-                        continue                      # cells carry no h DOF (P1/P2)
-                    if p in bd_pts_h:
-                        continue                      # keep the boundary trace
-                    self.dm.setLabelValue(ilabel, p, 1)
-                hcomp = np.array([0], dtype=np.int32)
-                hcomp_view = hcomp
-                PetscDSAddBoundary_UW(cdm.dm,
-                                    5,
-                                    (ilabel + "_bc").encode('utf8'),
-                                    ilabel.encode('utf8'),
-                                    fid_h, 1,
-                                    <const PetscInt *> &hcomp_view[0],
-                                    <void (*)() noexcept>ext.fns_bcs[h_zero_idx],
-                                    NULL,
-                                    1,
-                                    <const PetscInt *> &h_one,
-                                    NULL, )
-
+        # Boundary-only multiplier reduction (block-constrained Stokes) is applied
+        # LATER, in _setup_solver, by constraining the interior (off-constraint-
+        # boundary) multiplier DOFs directly in the PetscSection
+        # (_constrain_interior_multipliers_in_section). That path is both lossless
+        # (the constraint-boundary closure is correct because createClosureIndex
+        # has finalised the section) and refined-safe (no DMAddBoundary, which
+        # cannot follow section creation). See that method for details.
 
         for coarse_dm in self.dm_hierarchy:
             self.dm.copyFields(coarse_dm)
@@ -5833,6 +5773,134 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         return
 
+
+    def _constrain_interior_multipliers_in_section(self):
+        """Lossless, refined-safe boundary-only multiplier reduction.
+
+        Block-constrained Stokes carries one Lagrange multiplier (field ``h``)
+        per constraint as a full-domain field, but only its boundary trace is
+        physical — the interior ``h`` DOFs are inert and merely inflate the
+        ``[p,h]`` Schur block (~ndof/3 extra DOFs). Here we constrain every
+        interior (off-constraint-boundary) ``h`` DOF DIRECTLY in the fine DM's
+        local PetscSection, so they drop out of the GLOBAL system (smaller Schur
+        block) while remaining present in the LOCAL vector at 0 (scatter-back
+        stays size-correct, see below).
+
+        This must run AFTER ``createClosureIndex`` (so the local section is
+        finalised with the velocity Dirichlet constraints baked in AND the
+        constraint-boundary closure is complete — the source of the earlier
+        DMAddBoundary path's loss) and BEFORE any consumer of the GLOBAL section
+        (the field-index fieldsplit grouping, the SNES, ``createFieldDecomposition``,
+        the nullspace). Constraining in the section has no "after section creation"
+        restriction, so it is also refined/FMG-safe — unlike the DMAddBoundary
+        essential-field pin it replaces.
+
+        Fine ``self.dm`` only: the coarse MG levels never carry an active ``h``
+        field in the solve, and ``copyFields``/``copyDS`` copy discretisations and
+        the DS (weak forms), not the section, so the velocity MG/FMG hierarchy and
+        the field-index fieldsplit grouping are undisturbed (they only see the
+        ``[p,h]`` block shrink).
+
+        Note (scatter-back): PetscSection constraints remove DOFs from the GLOBAL
+        section only; the LOCAL section still allocates them. The multiplier IS is
+        built with ``unconstrained=False`` and (for a scalar ``h``, 1 dof/point)
+        appends the local offset of every h-bearing point regardless of
+        constraint, so the copy back into the full-domain ``h`` MeshVariable is
+        size-correct without change.
+        """
+        from petsc4py import PETSc
+        import numpy as np
+
+        if not (self._block_constraint_bcs and self._reduce_interior_multiplier):
+            return
+
+        dm = self.dm
+        Sold = dm.getLocalSection()
+        cS, cE = Sold.getChart()
+        nF = Sold.getNumFields()
+
+        # 1. Boundary-trace KEEP set + interior-h set, per multiplier field.
+        #    createClosureIndex has run, so getTransitiveClosure gives the
+        #    COMPLETE closure — no boundary-trace h DOF is ever pinned (lossless).
+        interior_pts = {}  # fid_h -> set(points to additionally constrain)
+        for cbc in self._block_constraint_bcs:
+            fid_h = cbc.lam._solver_field_id
+            bvalue = self.mesh.boundaries[cbc.boundary].value
+            bd_is = dm.getLabel("UW_Boundaries").getStratumIS(bvalue)
+            keep = set()
+            if bd_is is not None:
+                for bp in bd_is.getIndices().tolist():
+                    keep.update(dm.getTransitiveClosure(bp)[0].tolist())
+            iset = interior_pts.setdefault(fid_h, set())
+            for p in range(cS, cE):
+                if Sold.getFieldDof(p, fid_h) > 0 and p not in keep:
+                    iset.add(p)
+
+        # Nothing to constrain (e.g. boundary-only multiplier discretisation).
+        if not any(interior_pts.values()):
+            return
+
+        # 2. Build a new local section mirroring the old (chart, fields, dofs and
+        #    ALL existing constraints) plus the new interior-h constraints.
+        Snew = PETSc.Section().create(comm=dm.getComm())
+        Snew.setNumFields(nF)
+        Snew.setChart(cS, cE)
+        for f in range(nF):
+            Snew.setFieldComponents(f, Sold.getFieldComponents(f))
+            Snew.setFieldName(f, Sold.getFieldName(f))
+
+        # 2a. DOFs and constraint DOF COUNTS — must precede setUp().
+        #     extra_field[(p, f)] = field-local index list of the ADDED constraints
+        extra_field = {}
+        for p in range(cS, cE):
+            Snew.setDof(p, Sold.getDof(p))
+            addl_total = 0
+            for f in range(nF):
+                fdof = Sold.getFieldDof(p, f)
+                Snew.setFieldDof(p, f, fdof)
+                fc = Sold.getFieldConstraintDof(p, f)
+                add_here = 0
+                if p in interior_pts.get(f, ()):
+                    # Constrain ALL (currently unconstrained) DOFs of this field
+                    # at this point — for a scalar h that is the single dof 0.
+                    old_ind = Sold.getFieldConstraintIndices(p, f)
+                    old_set = set(old_ind.tolist()) if old_ind is not None else set()
+                    new_idx = [i for i in range(fdof) if i not in old_set]
+                    if new_idx:
+                        extra_field[(p, f)] = new_idx
+                        add_here = len(new_idx)
+                Snew.setFieldConstraintDof(p, f, fc + add_here)
+                addl_total += add_here
+            Snew.setConstraintDof(p, Sold.getConstraintDof(p) + addl_total)
+
+        Snew.setUp()
+
+        # 2b. Constraint INDICES — must follow setUp(). Rebuild the point-local
+        #     aggregate from the field views so the cross-field offset convention
+        #     stays internally consistent (offset of field f = sum of lower fdof).
+        for p in range(cS, cE):
+            point_local = []
+            field_offset = 0
+            for f in range(nF):
+                fdof = Sold.getFieldDof(p, f)
+                old_ind = Sold.getFieldConstraintIndices(p, f)
+                fidx = set(old_ind.tolist()) if old_ind is not None else set()
+                if (p, f) in extra_field:
+                    fidx |= set(extra_field[(p, f)])
+                if fidx:
+                    fidx = sorted(fidx)
+                    Snew.setFieldConstraintIndices(p, f, np.array(fidx, dtype=np.int32))
+                    point_local.extend(field_offset + i for i in fidx)
+                field_offset += fdof
+            if point_local:
+                Snew.setConstraintIndices(p, np.array(sorted(point_local), dtype=np.int32))
+
+        dm.setLocalSection(Snew)
+        # Force the global-section rebuild (and fail fast if malformed); the
+        # constrained interior-h DOFs are now excluded from the global system.
+        dm.getGlobalSection()
+
+        return
 
 
     @timing.routine_timer_decorator
@@ -6092,6 +6160,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if not _rewire_only:
             for coarse_dm in self.dm_hierarchy:
                 coarse_dm.createClosureIndex(None)
+
+            # Boundary-only multiplier reduction: constrain the interior h DOFs
+            # directly in the (now finalised) fine local section. Lossless and
+            # refined-safe; must precede the fieldsplit grouping / SNES / field
+            # decomposition so they see the shrunken [p,h] global block.
+            self._constrain_interior_multipliers_in_section()
 
             # Block-constrained: group [pressure, multipliers] into a single
             # Schur factor by DM FIELD INDEX, so the velocity block keeps its DM
