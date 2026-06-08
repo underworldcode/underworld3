@@ -47,15 +47,15 @@ void _Velic_solCx(
   const double pos[],
   double _eta_A, double _eta_B, 	/* Input parameters: density, viscosity A, viscosity B */
   double _x_c, int _n, 			/* Input parameters: viscosity jump location, wavenumber in x */
-  double vel[], double* presssure, 
+  double vel[], double* pressure, 
   double total_stress[], double strain_rate[] )
 {
 
   if(_eta_A > _eta_B){
-    _solCx_A(pos, _eta_A, _eta_B, _x_c, _n, vel, presssure, total_stress, strain_rate);
+    _solCx_A(pos, _eta_A, _eta_B, _x_c, _n, vel, pressure, total_stress, strain_rate);
   }
   else{
-    _solCx_B(pos, _eta_A, _eta_B, _x_c, _n, vel, presssure, total_stress, strain_rate);
+    _solCx_B(pos, _eta_A, _eta_B, _x_c, _n, vel, pressure, total_stress, strain_rate);
   }
 
 }
@@ -66,7 +66,7 @@ void _solCx_A(
   const double pos[],
   double _eta_A, double _eta_B, 	/* Input parameters: density, viscosity A, viscosity B */
   double _x_c, int _n, 			/* Input parameters: viscosity jump location, wavenumber in x */
-  double vel[], double* presssure, 
+  double vel[], double* pressure, 
   double total_stress[], double strain_rate[] )
 {
   double Z,u1,u2,u3,u4,u5,u6,ZA,ZB,ZR;
@@ -750,8 +750,8 @@ void _solCx_A(
     vel[0] = sum1;
     vel[1] = sum2;
   }
-  if( presssure != NULL ) {
-    (*presssure) = sum5;
+  if( pressure != NULL ) {
+    (*pressure) = sum5;
   }
   if( total_stress != NULL ) {
     total_stress[0] = sum3;
@@ -776,7 +776,7 @@ void _solCx_B(
   const double pos[],
   double _eta_A, double _eta_B, 	/* Input parameters: density, viscosity A, viscosity B */
   double _x_c, int _n, 			/* Input parameters: viscosity jump location, wavenumber in x */
-  double vel[], double* presssure, 
+  double vel[], double* pressure, 
   double total_stress[], double strain_rate[] )
 {
   double Z,u1,u2,u3,u4,u5,u6,ZA,ZB,ZR;
@@ -1478,8 +1478,8 @@ void _solCx_B(
     vel[0] = sum1;
     vel[1] = sum2;
   }
-  if( presssure != NULL ) {
-    (*presssure) = sum5;
+  if( pressure != NULL ) {
+    (*pressure) = sum5;
   }
   if( total_stress != NULL ) {
     total_stress[0] = sum3;

@@ -92,8 +92,9 @@ class AnalyticSolNL_viscosity(AnalyticSolNL_base):
 
 
 # ----------------------------------------------------------------------------
-# SolCx: viscosity step in x (eta_A | eta_B at x_c), trigonometric density
-# forcing  f = (0, -cos(pi x) sin(n pi z))  on a unit box with free-slip walls.
+# SolCx: viscosity step in x (eta_A for x<x_c, eta_B for x>=x_c), trigonometric
+# density forcing  f = (0, +cos(pi x) sin(n pi z))  on a unit box with free-slip
+# walls. The +cos sign matches UW3's momentum convention (UW2 docs quote -cos).
 # args: (eta_A, eta_B, x_c, n, x, z)
 # ----------------------------------------------------------------------------
 class AnalyticSolCx_base(sympy_function_printable):
@@ -157,10 +158,14 @@ class SolCx:
     """
     def __init__(self, mesh, eta_A=1.0, eta_B=1.0e6, x_c=0.5, n=1):
         import sympy as _sp
+        if getattr(mesh, "dim", None) != 2:
+            raise ValueError("SolCx is a 2D analytic solution; mesh.dim must be 2.")
         if not (float(eta_A) > 0.0 and float(eta_B) > 0.0):
             raise ValueError("eta_A and eta_B must be positive.")
         if not (0.0 <= float(x_c) <= 1.0):
             raise ValueError("x_c must lie in [0, 1].")
+        if int(n) != n or int(n) < 1:
+            raise ValueError("n (z-wavenumber) must be a positive integer.")
         self.eta_A = float(eta_A)
         self.eta_B = float(eta_B)
         self.x_c   = float(x_c)
@@ -170,7 +175,8 @@ class SolCx:
         self.fn_velocity  = _sp.Matrix([AnalyticSolCx_velocity_x(*p, x, y),
                                         AnalyticSolCx_velocity_y(*p, x, y)])
         self.fn_pressure  = AnalyticSolCx_pressure(*p, x, y)
-        self.fn_viscosity = _sp.Piecewise((self.eta_B, x > self.x_c), (self.eta_A, True))
+        # tie-break at x==x_c matches the compiled SolCx_viscosity (eta_B for x>=x_c)
+        self.fn_viscosity = _sp.Piecewise((self.eta_A, x < self.x_c), (self.eta_B, True))
         self.fn_bodyforce = _sp.Matrix([_sp.Integer(0),
                                         _sp.cos(_sp.pi * x) * _sp.sin(self.n * _sp.pi * y)])
 

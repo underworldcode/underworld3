@@ -8,9 +8,10 @@
 **~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*/
 
 /* UW3 wrapper for the classic Velic "SolCx" analytic Stokes solution:
-   isoviscous step in x (eta_A for x<x_c, eta_B for x>x_c), trigonometric
-   density forcing  f = (0, -cos(pi x) sin(n pi z))  on a unit box with
-   free-slip walls. The heavy lifting is the verbatim Velic kernel in solCx.c
+   isoviscous step in x (eta_A for x<x_c, eta_B for x>=x_c), trigonometric
+   density forcing  f = (0, +cos(pi x) sin(n pi z))  (UW3 momentum-sign
+   convention; UW2 docs quote -cos) on a unit box with free-slip walls.
+   The heavy lifting is the verbatim Velic kernel in solCx.c
    (_Velic_solCx); these thin adapters expose it in the same vec2/scalar shape
    as AnalyticSolNL so analytic.pyx can wrap it identically. */
 
