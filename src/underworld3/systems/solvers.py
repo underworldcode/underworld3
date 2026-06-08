@@ -1948,19 +1948,13 @@ class _BlockConstraintBC:
     """
 
     __slots__ = ("boundary", "g", "normal", "lam", "augmentation",
-                 "interior_mask", "petsc_id_u", "petsc_id_h", "label_val", "fns")
+                 "petsc_id_u", "petsc_id_h", "label_val", "fns")
 
     def __init__(self, boundary, g, normal, lam, augmentation):
         self.boundary = boundary
         self.g = g
         self.normal = normal
         self.lam = lam
-        # Boolean over the multiplier's nodes: True on INTERIOR nodes (off the
-        # constraint boundary). The constant-on-interior h mode is a near-null
-        # mode (interior h appears only in the screening eM), so we hand it to
-        # the solver as a nullspace vector -- the gauge-fixing analogue of the
-        # constant-pressure nullspace. Set in add_constraint_bc.
-        self.interior_mask = None
         # Augmented-Lagrangian parameter r: a penalty r(n·u−g)·n added to the
         # u-row, giving a uu boundary stiffness r·(n⊗n) that conditions the
         # [p,h] Schur complement WITHOUT biasing the multiplier (the h-row is
@@ -2152,26 +2146,6 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         self._needs_function_rewire = True
 
         cbc = _BlockConstraintBC(boundary, g, normal, h, augmentation)
-
-        # Interior mask: True on multiplier nodes OFF the constraint boundary.
-        # Build a P1 marker that is 1 on the boundary vertices and sample it at
-        # the multiplier's nodes (boundary mid-edge nodes interpolate to ~1).
-        from underworld3.discretisation.discretisation_mesh import (
-            petsc_dm_find_labeled_points_local,
-        )
-        marker = uw.discretisation.MeshVariable(
-            f"_bmask_{self.instance_number}_{idx}", self.mesh, 1, degree=1,
-        )
-        marker.data[:] = 0.0
-        if self.mesh.dm.hasLabel("UW_Boundaries"):
-            pts = petsc_dm_find_labeled_points_local(
-                self.mesh.dm, "UW_Boundaries",
-                getattr(self.mesh.boundaries, boundary).value, sectionIndex=False,
-            )
-            if pts is not None and len(pts) > 0:
-                marker.data[pts] = 1.0
-        on_boundary = np.array(uw.function.evaluate(marker.sym, h.coords)).reshape(-1) > 0.5
-        cbc.interior_mask = ~on_boundary
 
         self._block_constraint_bcs.append(cbc)
         return h

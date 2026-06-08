@@ -11,7 +11,7 @@ Two regimes:
       via DEFAULT solver options (no per-script PETSc options); compared against
       the penalty reference, with topography recovery h ~ -n.sigma.n.
 
-Run: pixi run python -m pytest tests/test_1062_block_constrained_freeslip.py -v
+Run: pixi run python -m pytest tests/test_1061_constrained_freeslip.py -v
 """
 
 import pytest
@@ -137,7 +137,7 @@ def annulus():
     blk.add_dirichlet_bc((0.0, 0.0), "Lower")
     hb = blk.add_constraint_bc("Upper", g=0.0, normal=unit_r)
     # Enclosed -> pressure/multiplier gauge; DEFAULT grouped-Schur solver config.
-    blk._petsc_use_pressure_nullspace = True
+    blk.petsc_use_pressure_nullspace = True
     blk.tolerance = 1e-8
     blk.solve()
     return dict(mesh=mesh, unit_r=unit_r, R_O=R_O, CELL=CELL, ref=ref, blk=blk, hb=hb)

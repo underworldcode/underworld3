@@ -34,7 +34,7 @@ def test_constrained_solcx_matches_analytic():
     s.add_constraint_bc("Right",  g=0.0, normal=sympy.Matrix([[ 1.0, 0.0]]))
     s.add_constraint_bc("Bottom", g=0.0, normal=sympy.Matrix([[ 0.0, -1.0]]))
     s.add_constraint_bc("Top",    g=0.0, normal=sympy.Matrix([[ 0.0,  1.0]]))
-    s._petsc_use_pressure_nullspace = True
+    s.petsc_use_pressure_nullspace = True
     s.tolerance = 1.0e-9
     s.solve()
 
