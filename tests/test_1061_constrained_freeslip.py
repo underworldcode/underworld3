@@ -1,6 +1,6 @@
-"""Block-constrained free-slip: a Lagrange multiplier INSIDE the saddle point.
+"""Constrained free-slip: a Lagrange multiplier INSIDE the saddle point.
 
-SNES_Stokes_BlockConstrained enforces u.n = g on a boundary via a multiplier h
+SNES_Stokes_Constrained enforces u.n = g on a boundary via a multiplier h
 that lives in the coupled system (grouped u | [p,h] Schur split), in ONE solve.
 The converged h is the boundary normal traction = dynamic topography.
 
@@ -53,7 +53,7 @@ def box():
     ref.solve()
 
     mb = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.15, qdegree=3)
-    blk = uw.systems.Stokes_BlockConstrained(mb)
+    blk = uw.systems.Stokes_Constrained(mb)
     blk.constitutive_model = uw.constitutive_models.ViscousFlowModel
     blk.constitutive_model.Parameters.shear_viscosity_0 = MU
     blk.bodyforce = forcing(mb)
@@ -129,7 +129,7 @@ def annulus():
     ref.petsc_options["ksp_type"] = "fgmres"
     ref.solve()
 
-    blk = uw.systems.Stokes_BlockConstrained(mesh)
+    blk = uw.systems.Stokes_Constrained(mesh)
     blk.constitutive_model = uw.constitutive_models.ViscousFlowModel
     blk.constitutive_model.Parameters.shear_viscosity_0 = MU
     blk.saddle_preconditioner = 1.0 / MU
@@ -205,7 +205,7 @@ def test_box_variable_viscosity_matches_dirichlet(contrast):
     ref.solve()
 
     mb = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.1, qdegree=3)
-    blk = uw.systems.Stokes_BlockConstrained(mb)
+    blk = uw.systems.Stokes_Constrained(mb)
     blk.constitutive_model = uw.constitutive_models.ViscousFlowModel
     blk.constitutive_model.Parameters.shear_viscosity_0 = visc(mb)
     blk.bodyforce = forcing(mb)

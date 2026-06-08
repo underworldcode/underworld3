@@ -1,7 +1,12 @@
 # Constrained free-slip via a recoverable Lagrange multiplier (dynamic topography)
 
-**Status**: proof-of-concept (Phase 0 + Phase 1), serial. Branch
-`feature/constrained-freeslip-topography`.
+**Status**: shipped as `uw.systems.Stokes_Constrained` (serial). The constraint
+is enforced by a multiplier carried **inside** the saddle point (one coupled
+solve); the converged boundary multiplier is the normal traction = dynamic
+topography. An earlier augmented-Lagrangian **outer-loop** variant was removed in
+favour of this in-saddle formulation (it is straightforward to reproduce in
+Python if needed). Validated against the exact SolCx analytic solution
+(`tests/test_1062_constrained_solcx.py`).
 
 ## Motivation
 
