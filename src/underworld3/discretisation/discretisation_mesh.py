@@ -442,6 +442,11 @@ class Mesh(Stateful, uw_object):
 
         self.filename = filename
         self.boundaries = boundaries
+        # Bounding-surface objects (tangent-slip + restore), keyed by boundary
+        # label. SEPARATE from self.boundaries (the persisted gmsh/DMPlex
+        # labelling, untouched). Populated by analytic-geometry constructors;
+        # see docs/developer/design/boundary-slip-strategy.md.
+        self._bounding_surfaces = {}
         self.boundary_normals = boundary_normals
         self.regions = regions
         self.parent = None       # Set by extract_region() for submeshes
@@ -2006,6 +2011,170 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, '_projected_normals') or self._projected_normals is None:
             self._update_projected_normals()
         return self._projected_normals.sym
+
+    # ===================================================================
+    #  Bounding surfaces — per-surface tangent-slip + restore.
+    #  See docs/developer/design/boundary-slip-strategy.md. SEPARATE from
+    #  self.boundaries (the persisted gmsh/DMPlex labelling, untouched).
+    # ===================================================================
+    @property
+    def bounding_surfaces(self):
+        """Mapping ``{label: BoundingSurface}`` of this mesh's registered
+        bounding-surface objects (tangent-slip + restore).
+
+        This is a NEW collection, separate from and additional to
+        :attr:`boundaries` (the persisted gmsh/DMPlex label ``Enum``, left
+        untouched). Populated by analytic-geometry constructors (Annulus,
+        SphericalShell, CubedSphere, box meshes); user-extendable via
+        :meth:`register_tangent_slip_provider`.
+        """
+        if not hasattr(self, "_bounding_surfaces") or self._bounding_surfaces is None:
+            self._bounding_surfaces = {}
+        return self._bounding_surfaces
+
+    def register_tangent_slip_provider(self, label, surface):
+        """Install a :class:`BoundingSurface` object for a boundary ``label``
+        (separate from the persisted ``mesh.boundaries`` labelling).
+
+        Lets a user declare a custom analytic surface (e.g. an ellipsoid) the
+        constructors don't know about, or replace one (free-surface release).
+        """
+        from underworld3.meshing.bounding_surface import BoundingSurface
+        if not isinstance(surface, BoundingSurface):
+            raise TypeError(
+                "surface must be a BoundingSurface; got "
+                f"{type(surface).__name__}")
+        self.bounding_surfaces[str(label)] = surface
+        return surface
+
+    def _resolve_slip_spec(self, slip_spec):
+        """Resolve a ``slip_spec`` to ``(slip_labels tuple, free_labels set)``.
+
+        Back-compatible forms: ``True``/``"all"``/``"ring"``/``"box"`` → all
+        geometric boundary labels; ``False``/``None`` → none; a label name; a
+        list of labels; a ``dict {label: snap_bool}`` (``False`` = free
+        surface, slip but do not restore).
+        """
+        from underworld3.meshing.smoothing import _auto_pinned_labels
+        geo = _auto_pinned_labels(self)
+        if slip_spec is None or slip_spec is False:
+            return (), set()
+        if slip_spec is True:
+            return tuple(geo), set()
+        if isinstance(slip_spec, dict):
+            return tuple(slip_spec.keys()), {k for k, v in slip_spec.items() if not v}
+        if isinstance(slip_spec, str):
+            s = slip_spec.strip().lower()
+            if s in ("true", "on", "1", "all", "ring", "box", "axes", "axis"):
+                return tuple(geo), set()
+            if s in ("false", "off", "0", "none", ""):
+                return (), set()
+            return (slip_spec,), set()
+        return tuple(slip_spec), set()
+
+    def restore_to_surface(self, coords, label):
+        """Snap ``coords`` onto the named bounding surface (delegates to the
+        surface object's ``restore``)."""
+        return self.bounding_surfaces[str(label)].restore(
+            numpy.asarray(coords, dtype=float))
+
+    def tangent_project(self, coords, label, reference):
+        """Tangent-slide ``coords`` (displacement measured from ``reference``)
+        on the named bounding surface (delegates to the surface object)."""
+        return self.bounding_surfaces[str(label)].tangent_project(
+            numpy.asarray(coords, dtype=float),
+            numpy.asarray(reference, dtype=float))
+
+    def boundary_slip(self, slip_spec=True, reference_coords=None,
+                      boundary_labels=None):
+        """Build ``(is_pinned, project)`` for tangent slip on this mesh's
+        bounding surfaces — the orchestrator the metric movers call.
+
+        See ``docs/developer/design/boundary-slip-strategy.md``. The mesh
+        classifies which vertices slip vs pin (the cross-surface concern); each
+        surface object owns its tangent-project + restore.
+
+        A vertex **slips** iff it lies on **exactly one** slip surface that has a
+        registered analytic :class:`BoundingSurface`; non-boundary, junction
+        (≥2 surfaces), unregistered-surface, or degenerate-normal vertices are
+        **pinned** (the step-1 safe default — ``facet`` restore is a follow-up).
+
+        Parameters
+        ----------
+        slip_spec :
+            See :meth:`_resolve_slip_spec`. Default ``True`` (all surfaces).
+        reference_coords : ndarray, optional
+            Fixed reference vertex positions (local-chart vertex order) that
+            displacements are measured from. Defaults to ``mesh.X.coords``.
+        boundary_labels : iterable of str, optional
+            Boundary labels defining the boundary (``is_bnd``). Defaults to all
+            geometric boundary labels; pass a mover's pinned set for parity.
+
+        Returns
+        -------
+        (is_pinned, project) : (ndarray[bool], callable)
+            ``is_pinned`` is the per-vertex pinned mask (local-chart order);
+            ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
+            and returns it.
+        """
+        from underworld3.meshing.smoothing import _pinned_mask, _auto_pinned_labels
+
+        dm = self.dm
+        pStart, pEnd = dm.getDepthStratum(0)
+        n_verts = pEnd - pStart
+        if reference_coords is None:
+            reference_coords = numpy.asarray(self.X.coords, dtype=float)
+        ref = numpy.asarray(reference_coords, dtype=float)
+
+        all_labels = (tuple(boundary_labels) if boundary_labels is not None
+                      else _auto_pinned_labels(self))
+        is_bnd = _pinned_mask(dm, all_labels)
+
+        slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
+        surf = self.bounding_surfaces
+        # Only labels with a registered analytic surface can slip (step 1).
+        usable = [lab for lab in slip_labels if lab in surf]
+        masks = {lab: _pinned_mask(dm, (lab,)) for lab in usable}
+        count = numpy.zeros(n_verts, dtype=int)
+        for m in masks.values():
+            count += m.astype(int)
+        slip_mask = is_bnd & (count == 1)
+        is_pinned = is_bnd & ~slip_mask
+        vert_label = numpy.empty(n_verts, dtype=object)
+        for lab, m in masks.items():
+            vert_label[m & slip_mask] = lab
+
+        slip_b = numpy.nonzero(slip_mask)[0]
+        if slip_b.size == 0:
+            return is_pinned, (lambda Y: Y)
+        old_slip = ref[slip_b]
+        labels_b = vert_label[slip_b]
+
+        def project(Y):
+            Y = numpy.asarray(Y, dtype=float)
+            for lab in usable:
+                sel = labels_b == lab
+                if not sel.any():
+                    continue
+                bs = surf[lab]
+                idx = slip_b[sel]
+                slid = bs.tangent_project(Y[idx], old_slip[sel])
+                # FREE surfaces (dict spec False) slide but do not restore.
+                Y[idx] = slid if lab in free_labels else bs.restore(slid)
+            return Y
+
+        return is_pinned, project
+
+    def project_to_slip_surface(self, coords, slip_spec=True,
+                                reference_coords=None, boundary_labels=None):
+        """In-place convenience over :meth:`boundary_slip`: slide+restore the
+        slip vertices of ``coords`` (a full local-chart vertex array) and return
+        it. For callers that just want coordinates snapped back (a checkpoint
+        reload, a diagnostic, the free-surface module)."""
+        _is_pinned, project = self.boundary_slip(
+            slip_spec, reference_coords=reference_coords,
+            boundary_labels=boundary_labels)
+        return project(numpy.asarray(coords, dtype=float))
 
     @timing.routine_timer_decorator
     def update_lvec(self):

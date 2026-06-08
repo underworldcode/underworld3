@@ -542,6 +542,13 @@ def Annulus(
     x, y = new_mesh.X
     new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
 
+    # Bounding-surface objects for tangent slip: Upper/Lower are radial about the
+    # origin at the known radii (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_radial_surfaces
+    register_radial_surfaces(
+        new_mesh, centre=(0.0, 0.0),
+        label_radius={"Upper": radiusOuter, "Lower": radiusInner})
+
     return new_mesh
 
 

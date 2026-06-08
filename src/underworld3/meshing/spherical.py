@@ -277,6 +277,13 @@ def SphericalShell(
         sympy.Matrix([-y, x, 0]),   # rotation about z
     ]
 
+    # Bounding-surface objects for tangent slip: Upper/Lower are radial about the
+    # origin at the known radii (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_radial_surfaces
+    register_radial_surfaces(
+        new_mesh, centre=(0.0, 0.0, 0.0),
+        label_radius={"Upper": radiusOuter, "Lower": radiusInner})
+
     return new_mesh
 
 
@@ -1065,5 +1072,12 @@ def CubedSphere(
         sympy.Matrix([z, 0, -x]),
         sympy.Matrix([-y, x, 0]),
     ]
+
+    # Bounding-surface objects for tangent slip: Upper/Lower are radial about the
+    # origin at the known radii (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_radial_surfaces
+    register_radial_surfaces(
+        new_mesh, centre=(0.0, 0.0, 0.0),
+        label_radius={"Upper": radiusOuter, "Lower": radiusInner})
 
     return new_mesh
