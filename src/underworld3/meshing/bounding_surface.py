@@ -1,0 +1,251 @@
+"""Boundary-surface objects: per-surface tangent-slip + restore.
+
+See ``docs/developer/design/boundary-slip-strategy.md``.
+
+A :class:`BoundingSurface` binds a boundary *label* (a name in
+``mesh.boundaries`` — the persisted gmsh/DMPlex labelling, which is **not**
+replaced here) to that surface's geometry, slip state, and the tangent-project /
+restore operations for it. Surfaces live in the separate
+``mesh.bounding_surfaces`` collection.
+
+This is the step-1 (additive, self-contained) implementation: ``radial`` and
+``plane`` restore are analytic; ``facet`` (nearest reference facet) and the
+``free`` live-surface follow are follow-ups (the orchestrator pins labels with
+no analytic surface). The module depends only on the primitive
+``_ot_adapt`` helpers that exist on ``development`` (``_slip_normals``), not on
+the mover feature branch's unified projector.
+"""
+import numpy as np
+
+import underworld3 as uw
+
+_VALID_KINDS = ("radial", "plane", "facet", "free")
+
+
+def _unit(v):
+    v = np.asarray(v, dtype=float).ravel()
+    n = np.linalg.norm(v)
+    return v / n if n > 0 else v
+
+
+def _as_float(x):
+    """Coerce a radius/length that may be a UWQuantity / pint Quantity to a
+    bare non-dimensional float in the mesh's coordinate units."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        nd = uw.non_dimensionalise(x)
+        return float(getattr(nd, "magnitude", getattr(nd, "value", nd)))
+
+
+class BoundingSurface:
+    """One bounding surface of a mesh — its geometry, slip state, and methods.
+
+    Parameters
+    ----------
+    mesh : underworld3 mesh
+        The mesh this surface belongs to.
+    label : str
+        The boundary label (a name in ``mesh.boundaries``) this surface is for.
+    kind : {"radial", "plane", "facet", "free"}
+        ``radial`` — snap to ``|r| = radius`` about ``centre`` (annulus / sphere
+        / cylinder); ``plane`` — project onto the plane through ``point`` with
+        unit ``normal`` (box face); ``facet`` — nearest reference facet
+        (follow-up); ``free`` — follow the live deformed surface, analytic
+        restore is a no-op (follow-up).
+    centre, radius : for ``radial``.
+    point, normal : for ``plane``.
+    is_free : bool
+        If True (or ``kind == "free"``), :meth:`restore` is a no-op — the
+        surface follows the live discrete boundary rather than a fixed target.
+    """
+
+    def __init__(self, mesh, label, kind, *, centre=None, radius=None,
+                 point=None, normal=None, is_free=False):
+        if kind not in _VALID_KINDS:
+            raise ValueError(
+                f"BoundingSurface kind must be one of {_VALID_KINDS}; got {kind!r}")
+        self._mesh = mesh
+        self.label = str(label)
+        self.kind = kind
+        self.is_free = bool(is_free) or kind == "free"
+        self.centre = None if centre is None else np.asarray(centre, dtype=float).ravel()
+        self.radius = None if radius is None else _as_float(radius)
+        self.point = None if point is None else np.asarray(point, dtype=float).ravel()
+        self.normal = None if normal is None else _unit(normal)
+        if kind == "radial":
+            if self.centre is None or self.radius is None:
+                raise ValueError(
+                    "radial BoundingSurface requires centre and radius")
+            # radius == 0 is legitimate: a *solid* sphere/annulus registers its
+            # inner ("Lower") boundary at radius 0 (the centre point). Reject
+            # only NEGATIVE or non-finite radii (those give invalid projections).
+            if not (np.isfinite(self.radius) and self.radius >= 0.0):
+                raise ValueError(
+                    "radial BoundingSurface requires a finite, non-negative "
+                    f"radius; got {self.radius!r}")
+            if not np.all(np.isfinite(self.centre)):
+                raise ValueError(
+                    "radial BoundingSurface centre must be finite")
+        if kind == "plane":
+            if self.point is None or self.normal is None:
+                raise ValueError(
+                    "plane BoundingSurface requires point and normal")
+            # _unit() returns a ZERO vector for a degenerate/zero normal (not
+            # None), which would make restore() a silent no-op — reject it.
+            if not (np.all(np.isfinite(self.normal))
+                    and np.linalg.norm(self.normal) > 0.5):
+                raise ValueError(
+                    "plane BoundingSurface requires a finite, non-degenerate "
+                    "normal (a zero/near-zero normal makes restore() a no-op)")
+            if not np.all(np.isfinite(self.point)):
+                raise ValueError(
+                    "plane BoundingSurface point must be finite")
+
+    @property
+    def mesh(self):
+        return self._mesh
+
+    # -- normals -------------------------------------------------------------
+    def normals(self, coords):
+        """Outward unit normals at ``coords`` from the projected P1
+        boundary-normal field (``mesh.Gamma_P1``).
+
+        Returns ``(normals, valid)`` where ``valid`` is False at nodes whose
+        projected normal is degenerate (box corners, unlocatable points) — those
+        should be pinned, not slipped.
+
+        DESIGN NOTE (2026-06 — breadcrumb for a future session). This
+        RE-SOLVES the ``Gamma_P1`` projection on the surface's *current* mesh
+        state (``_slip_normals`` calls ``mesh._update_projected_normals()``),
+        so the normal follows mesh deformation — the state-aware behaviour the
+        ``free`` / ``release()`` surface-follow mode is designed to use. The
+        retired ``_build_slip_projector`` instead read a *cached* ``_n_proj``
+        field (the deleted ``_gamma_p1_at_vertices`` helper: KDTree match, no
+        solve, normal frozen at the reference mesh) — cheaper but not
+        deformation-aware. ``mesh.boundary_slip`` calls this ONCE per build
+        (not per ``project()`` call), so the cost is ~one projection solve per
+        mover outer-iteration; parity with the cached path was machine
+        precision (~1e-16) on a centred annulus. **If this ever shows up as a
+        hot-path regression (fine meshes / many adapts), add a cached
+        fast-path here** — read ``mesh._projected_normals.data`` directly (as
+        ``_gamma_p1_at_vertices`` did in git history) and re-solve only for
+        free surfaces. See docs/developer/design/boundary-slip-strategy.md.
+        """
+        from underworld3.meshing._ot_adapt import _slip_normals
+        return _slip_normals(self._mesh, np.ascontiguousarray(coords, dtype=float))
+
+    # -- tangent slide -------------------------------------------------------
+    def tangent_project(self, coords, reference):
+        """Tangent-slide: remove this surface's normal component of the
+        displacement ``coords - reference`` (the projected P1 normal is taken at
+        ``reference``). Nodes with a degenerate normal keep ``reference``.
+        """
+        coords = np.asarray(coords, dtype=float)
+        reference = np.asarray(reference, dtype=float)
+        n, valid = self.normals(reference)
+        disp = coords - reference
+        dn = (disp * n).sum(axis=1, keepdims=True)
+        slid = reference + (disp - dn * n)
+        return np.where(valid[:, None], slid, reference)
+
+    # -- restore to surface --------------------------------------------------
+    def restore(self, coords):
+        """Snap ``coords`` back onto this surface (kind-specific).
+
+        ``radial`` — re-impose ``|r| = radius`` about ``centre`` (exact,
+        concave-safe). ``plane`` — orthogonal projection onto the plane.
+        A ``free``/``is_free`` surface returns ``coords`` unchanged (it follows
+        the live discrete surface — a follow-up). ``facet`` is not implemented
+        in step 1 (such labels are pinned by the orchestrator).
+        """
+        coords = np.asarray(coords, dtype=float)
+        if self.is_free or self.kind == "free":
+            return coords
+        if self.kind == "radial":
+            v = coords - self.centre
+            nrm = np.linalg.norm(v, axis=1)
+            nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
+            return self.centre + v * (self.radius / nrm)[:, None]
+        if self.kind == "plane":
+            d = ((coords - self.point) * self.normal).sum(axis=1, keepdims=True)
+            return coords - d * self.normal
+        if self.kind == "facet":
+            raise NotImplementedError(
+                "facet restore is a follow-up (see boundary-slip-strategy.md); "
+                "labels without an analytic surface are pinned in step 1.")
+        return coords
+
+    # -- state transition ----------------------------------------------------
+    def release(self):
+        """Flip a rigid (``radial``/``plane``) surface to ``free``: subsequent
+        :meth:`restore` follows the live discrete surface instead of the analytic
+        target. Records the previous kind on ``self._prev_kind``."""
+        self._prev_kind = self.kind
+        self.kind = "free"
+        self.is_free = True
+        return self
+
+    def __repr__(self):
+        g = ""
+        if self.kind == "radial":
+            g = f", centre={self.centre}, radius={self.radius}"
+        elif self.kind == "plane":
+            g = f", point={self.point}, normal={self.normal}"
+        return (f"BoundingSurface(label={self.label!r}, kind={self.kind!r}, "
+                f"is_free={self.is_free}{g})")
+
+
+# -- constructor-side registration helpers ---------------------------------
+def register_radial_surfaces(mesh, centre, label_radius):
+    """Register ``radial`` surfaces: ``label_radius = {label_name: radius}``.
+
+    Called by analytic radial-boundary constructors (Annulus, SphericalShell,
+    CubedSphere). ``centre`` is the common centre (e.g. the origin)."""
+    centre = np.asarray(centre, dtype=float).ravel()
+    for lab, r in label_radius.items():
+        mesh.register_tangent_slip_provider(
+            lab, BoundingSurface(mesh, lab, "radial", centre=centre, radius=r))
+
+
+def register_plane_surfaces(mesh, label_plane):
+    """Register ``plane`` surfaces: ``label_plane = {label_name: (point, normal)}``.
+
+    Called by box constructors for axis-aligned (or general) faces."""
+    for lab, (p, n) in label_plane.items():
+        mesh.register_tangent_slip_provider(
+            lab, BoundingSurface(mesh, lab, "plane", point=p, normal=n))
+
+
+def register_box_face_surfaces(mesh, minCoords, maxCoords):
+    """Register ``plane`` surfaces for an axis-aligned box's faces.
+
+    Matches the box constructors' labels:
+    2D — ``Left``/``Right`` (``x = x_min/max``), ``Bottom``/``Top``
+    (``y = y_min/max``); 3D — ``Left``/``Right`` (``x``), ``Front``/``Back``
+    (``y``), ``Bottom``/``Top`` (``z``). Box corners/edges are junctions of two
+    faces and are pinned by the slip orchestrator (the normal is ambiguous).
+    """
+    lo = np.asarray(minCoords, dtype=float).ravel()
+    hi = np.asarray(maxCoords, dtype=float).ravel()
+    dim = lo.shape[0]
+    planes = {}
+    if dim == 2:
+        ex, ey = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+        planes["Left"] = (lo, ex)
+        planes["Right"] = ([hi[0], lo[1]], ex)
+        planes["Bottom"] = (lo, ey)
+        planes["Top"] = ([lo[0], hi[1]], ey)
+    elif dim == 3:
+        ex, ey, ez = (np.array([1.0, 0.0, 0.0]),
+                      np.array([0.0, 1.0, 0.0]),
+                      np.array([0.0, 0.0, 1.0]))
+        planes["Left"] = (lo, ex)
+        planes["Right"] = ([hi[0], lo[1], lo[2]], ex)
+        planes["Front"] = (lo, ey)
+        planes["Back"] = ([lo[0], hi[1], lo[2]], ey)
+        planes["Bottom"] = (lo, ez)
+        planes["Top"] = ([lo[0], lo[1], hi[2]], ez)
+    else:
+        return
+    register_plane_surfaces(mesh, planes)
