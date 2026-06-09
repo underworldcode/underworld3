@@ -2117,7 +2117,8 @@ class Mesh(Stateful, uw_object):
             ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
             and returns it.
         """
-        from underworld3.meshing.smoothing import _pinned_mask, _auto_pinned_labels
+        from underworld3.meshing.smoothing import (
+            _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
 
         dm = self.dm
         pStart, pEnd = dm.getDepthStratum(0)
@@ -2128,6 +2129,11 @@ class Mesh(Stateful, uw_object):
 
         all_labels = (tuple(boundary_labels) if boundary_labels is not None
                       else _auto_pinned_labels(self))
+        # TODO(follow-up): _pinned_mask expands labels through vertices/edges
+        # only, so a 3D boundary label that tags FACES alone (a mesh loaded with
+        # markVertices=False) leaves its boundary vertices unmarked. This is a
+        # pre-existing limitation of the shared helper used by every mover; the
+        # fix (close faces→edges→vertices) belongs with _pinned_mask itself.
         is_bnd = _pinned_mask(dm, all_labels)
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
@@ -2144,7 +2150,13 @@ class Mesh(Stateful, uw_object):
         for lab, m in masks.items():
             vert_label[m & slip_mask] = lab
 
-        slip_b = numpy.nonzero(slip_mask)[0]
+        # Project only OWNED slip vertices: the movers halo-sync owned→ghost
+        # after calling project(), so a leaf/ghost receives its owner's
+        # projected value — modifying non-owned coordinates here is both
+        # wasteful and a parallel-safety hazard. (Serial: every vertex is
+        # owned, so this is a no-op.) is_pinned stays the full geometric
+        # classification, which is rank-consistent for shared vertices.
+        slip_b = numpy.nonzero(slip_mask & _owned_vertex_mask(dm))[0]
         if slip_b.size == 0:
             return is_pinned, (lambda Y: Y)
         old_slip = ref[slip_b]

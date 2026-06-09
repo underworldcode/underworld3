@@ -93,6 +93,24 @@ def test_invalid_kind_and_missing_geometry_raise():
         BoundingSurface(m, "x", "plane", point=[0, 0])  # needs normal
 
 
+def test_degenerate_geometry_raises():
+    # A zero / non-finite normal would make plane restore() a silent no-op;
+    # a non-positive / non-finite radius produces invalid radial projections.
+    # Both must be rejected at construction.
+    m = _annulus()
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "plane", point=[0, 0], normal=[0, 0])
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "plane", point=[0, 0],
+                        normal=[np.nan, 0])
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "radial", centre=[0, 0], radius=0.0)
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "radial", centre=[0, 0], radius=-1.0)
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "radial", centre=[0, 0], radius=np.inf)
+
+
 def test_boundary_slip_keeps_nodes_on_boundary():
     m = _annulus()
     ref = np.asarray(m.X.coords, dtype=float).copy()

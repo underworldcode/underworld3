@@ -73,10 +73,31 @@ class BoundingSurface:
         self.radius = None if radius is None else _as_float(radius)
         self.point = None if point is None else np.asarray(point, dtype=float).ravel()
         self.normal = None if normal is None else _unit(normal)
-        if kind == "radial" and (self.centre is None or self.radius is None):
-            raise ValueError("radial BoundingSurface requires centre and radius")
-        if kind == "plane" and (self.point is None or self.normal is None):
-            raise ValueError("plane BoundingSurface requires point and normal")
+        if kind == "radial":
+            if self.centre is None or self.radius is None:
+                raise ValueError(
+                    "radial BoundingSurface requires centre and radius")
+            if not (np.isfinite(self.radius) and self.radius > 0.0):
+                raise ValueError(
+                    "radial BoundingSurface requires a finite positive radius; "
+                    f"got {self.radius!r}")
+            if not np.all(np.isfinite(self.centre)):
+                raise ValueError(
+                    "radial BoundingSurface centre must be finite")
+        if kind == "plane":
+            if self.point is None or self.normal is None:
+                raise ValueError(
+                    "plane BoundingSurface requires point and normal")
+            # _unit() returns a ZERO vector for a degenerate/zero normal (not
+            # None), which would make restore() a silent no-op — reject it.
+            if not (np.all(np.isfinite(self.normal))
+                    and np.linalg.norm(self.normal) > 0.5):
+                raise ValueError(
+                    "plane BoundingSurface requires a finite, non-degenerate "
+                    "normal (a zero/near-zero normal makes restore() a no-op)")
+            if not np.all(np.isfinite(self.point)):
+                raise ValueError(
+                    "plane BoundingSurface point must be finite")
 
     @property
     def mesh(self):
