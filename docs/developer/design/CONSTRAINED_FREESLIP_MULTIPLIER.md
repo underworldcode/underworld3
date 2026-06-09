@@ -437,6 +437,30 @@ So the conflict appears only in the corner of *fully-unanchored* geometry **and*
 (`RMS(u·n) ~ 10⁻⁹`) and recover topography from the consistent-boundary-flux
 stress `−n·σ·n` (no `r`-amplification), not from `λ` directly.
 
+### The same story for the interior incompressibility penalty
+
+The boundary constraint `u·n=g` (multiplier `λ`) is the surface analogue of the
+interior constraint `∇·u=0` (multiplier `p`). UW3's Stokes carries an **optional
+augmented-Lagrangian grad-div penalty** for incompressibility, `λ ∫ μ (∇·u)(∇·v)`,
+on by setting `solver.penalty` (default `0`). Everything above transfers:
+
+- **Scaling.** The penalty is multiplied by the local viscosity `μ`
+  (`constitutive_model.K`) — exactly as the boundary AL is `∝ μ` — so the ratio
+  penalty/`μ` stays uniform. The `penalty` parameter is therefore a
+  *dimensionless* `O(1)` base. A bare constant (the previous behaviour) over-
+  stiffens low-`μ` regions into velocity locking under contrast (measured: a
+  constant `100` gave SolCx velocity error `0.1`, while the `μ`-scaled `O(1)`
+  penalty gives `~10⁻⁵`).
+- **Pressure correction.** Because the penalty sits in the *operator*, the
+  recovered `p` is the multiplier, not the mechanical pressure:
+  `p_mech = p − penalty·μ·(∇·u)`. At convergence they agree; pointwise they differ
+  by ≈ a couple of percent of `|p|` at `penalty = O(1)`. For a pressure-dependent
+  constitutive law use `p_mech`; for visualisation, raw `p` is adequate.
+- **Usually unnecessary.** The `1/μ` Schur preconditioner already conditions the
+  pressure block (outer KSP is unchanged with or without the penalty), so the
+  default `penalty = 0` — where `p` is the clean physical pressure and needs no
+  correction — is the right starting point.
+
 ## Files
 
 - `src/underworld3/systems/solvers.py` — `SNES_Stokes_Constrained`, `_BlockConstraintBC`.

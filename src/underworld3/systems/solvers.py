@@ -1434,13 +1434,19 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: (
-            self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
+            self.stress
+            + self.penalty * self.constitutive_model.K * self.div_u * sympy.eye(self.mesh.dim)
         ),
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
         combining deviatoric stress $\boldsymbol{\tau}$, pressure $p$,
-        and penalty term for weak incompressibility.
+        and the **viscosity-scaled** augmented-Lagrangian penalty term
+        $\lambda\,\mu\,(\nabla\cdot\mathbf{u})\,\mathbf{I}$ for weak
+        incompressibility. The penalty is multiplied by the local viscosity
+        $\mu$ (``constitutive_model.K``) so that, under spatially-variable
+        viscosity, the ratio penalty/$\mu$ stays uniform — a bare constant
+        would over-stiffen low-viscosity regions and lock the velocity there.
         """,
     )
 
@@ -1725,29 +1731,48 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def penalty(self):
-        r"""Augmented Lagrangian penalty parameter.
+        r"""Augmented Lagrangian penalty parameter (dimensionless, viscosity-scaled).
 
-        The penalty $\lambda$ adds a term to the weak form that
-        penalizes non-zero divergence:
+        The penalty adds a **viscosity-weighted** grad-div term to the weak form
+        that penalizes non-zero divergence:
 
         .. math::
-            \lambda \int (\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
+            \lambda \int \mu\,(\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
 
-        This improves convergence for incompressible flow without
-        changing the solution (since $\nabla \cdot \mathbf{u} = 0$
-        at convergence).
+        where :math:`\mu` is the local viscosity (``constitutive_model.K``). The
+        :math:`\mu`-weighting keeps the effective penalty proportional to the
+        local stress scale, so the ratio penalty/:math:`\mu` is uniform across a
+        spatially-variable viscosity field. (A bare *constant* penalty would be
+        huge relative to the stress in low-:math:`\mu` regions and negligible in
+        high-:math:`\mu` regions — over-stiffening the former into velocity
+        locking. See the design note ``CONSTRAINED_FREESLIP_MULTIPLIER``.) So the
+        parameter here is a **dimensionless** base of :math:`O(1)`.
 
         Returns
         -------
         UWexpression
-            Augmented Lagrangian penalty parameter (typically $O(1)$).
+            Dimensionless augmented-Lagrangian penalty base (typically :math:`O(1)`).
 
         Notes
         -----
-        Set to zero for standard Stokes without augmentation.
-        Unlike classical penalty methods that require very large values,
-        the Augmented Lagrangian approach uses modest penalties of $O(1)$
-        to improve solver convergence.
+        Set to zero (the default) for a standard saddle-point Stokes solve; the
+        ``saddle_preconditioner`` already conditions the pressure Schur, so the
+        penalty is usually unnecessary for convergence.
+
+        **Pressure correction.** This term is part of the *operator*, so when it
+        is non-zero the recovered pressure ``p`` is the Lagrange multiplier, not
+        the mechanical pressure. The total isotropic stress is
+        :math:`-p + \lambda\,\mu\,(\nabla\cdot\mathbf{u})`, so the mechanical
+        pressure is
+
+        .. math::
+            p_\text{mech} = p - \lambda\,\mu\,(\nabla\cdot\mathbf{u}).
+
+        At convergence :math:`\nabla\cdot\mathbf{u}\to 0` so the two agree, but
+        *pointwise* they differ by the penalty term (≈ a couple of percent of
+        :math:`|p|` at :math:`\lambda=O(1)`). For a pressure-dependent
+        constitutive law (yield, density, rheology), use :math:`p_\text{mech}`;
+        for visualisation or weak pressure dependence the raw ``p`` is adequate.
 
         References
         ----------
