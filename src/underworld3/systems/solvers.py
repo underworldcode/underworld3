@@ -2034,6 +2034,17 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # In-saddle multiplier constraints (see add_constraint_bc). Empty for an
         # ordinary Stokes solve, so the base assembly is unaffected.
         self._block_constraint_bcs = []
+
+        # Default the grouped [p, lambda] Schur preconditioner to `selfp` (the base
+        # Stokes default is `a11`). The constraint Schur complement
+        # S_lambda = C A^-1 C^T needs a preconditioner built from the actual operator
+        # blocks; selfp forms S ~ A11 - A10 diag(A00)^-1 A01, whose lambda-lambda corner
+        # is -C diag(A)^-1 C^T = the true constraint Schur, automatically. This cracks
+        # strong boundary-viscosity-contrast walls that the bare `a11` mass cannot, makes
+        # the augmentation optional on moderate contrast, and keeps the recovered
+        # multiplier (= dynamic topography) clean at small augmentation. Override via
+        # `solver.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"` if desired.
+        self.petsc_options["pc_fieldsplit_schur_precondition"] = "selfp"
         return
 
     def _viscosity_scale(self):

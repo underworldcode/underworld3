@@ -4156,6 +4156,22 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
+        # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
+        # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
+        # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
+        # and independent of the augmentation r. When True, the lambda block's
+        # PRECONDITIONER mass (Pmat only) uses 1/mu (= saddle_preconditioner) while the
+        # true operator (Amat) (lambda,lambda) block stays = eps (exact Newton). This is
+        # the boundary-trace analog of _pp_G0 = 1/mu on pressure, and decouples
+        # convergence from r so r can shrink -> cleaner recovered lambda (= topography).
+        # When on, the lambda block reuses pressure's already-compiled _pp_G0 = 1/mu
+        # for its preconditioner block (same scaling, no extra JIT term). On uniform mu
+        # (fieldsplit) it is bit-identical; on moderate contrast it cracks the wall and
+        # makes the augmentation optional. Default OFF (opt-in): a monolithic lu solve
+        # factorizes the Pmat (pc_use_amat is a no-op here), so this Pmat term is NOT
+        # inert for direct solves — flipping the default on regresses the direct-lu
+        # constraint enforcement. See ~/.claude/plans for the load-bearing-Pmat note.
+        self._multiplier_schur_pc = False
         # Pin interior (off-boundary) multiplier DOFs to 0 so the solved [p,h]
         # block carries only the boundary trace (~√ndof instead of ~ndof/3 DOFs);
         # the boundary trace is the only physical part. Done by constraining the
@@ -4802,7 +4818,42 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def petsc_use_pressure_nullspace(self, value):
         self._petsc_use_pressure_nullspace = bool(value)
         self._reset_stokes_nullspace()
-        self.is_setup = False
+
+    @property
+    def multiplier_schur_pc(self):
+        """
+        Give each Lagrange-multiplier (constraint) block its own viscosity-scaled
+        Schur preconditioner.
+
+        The constraint Schur complement ``S_lambda = C A^-1 C^T`` scales as
+        ``1/mu`` (since ``A ~ mu K``), exactly like the pressure Schur
+        ``S_p ~ mu^-1 M_p`` and **independent of the augmentation** ``r``. When
+        enabled, the multiplier block's *preconditioner* (Pmat) diagonal reuses
+        pressure's ``1/mu`` mass while the true operator (Amat) block stays the
+        screening ``eps`` — so Newton is unchanged and this is a pure
+        preconditioner term (the boundary-trace analog of the pressure
+        ``saddle_preconditioner``).
+
+        Effect: convergence decouples from ``r``. On moderate boundary viscosity
+        contrast (e.g. annulus mu_hi ~ 1e3) the augmentation becomes optional
+        (``augmentation=0`` converges) and the recovered multiplier (= dynamic
+        topography) is cleaner at small ``r``. On extreme contrast (eta jump 1e6)
+        a small augmentation floor is still needed, but the requirement shrinks by
+        orders of magnitude. Pair with ``snes_type='ksponly'`` for linear Stokes —
+        the block solver's default ``newtonls`` defect-corrects a linear system in
+        many steps when the Schur approximation is stiff.
+
+        Default ``False`` (opt-in). On the fieldsplit/iterative path it is
+        bit-identical on uniform ``mu`` and cracks the moderate-contrast wall;
+        but a monolithic ``lu`` solve factorizes the Pmat (``pc_use_amat`` is a
+        no-op there), so this term is not inert for direct solves — hence opt-in.
+        """
+        return self._multiplier_schur_pc
+
+    @multiplier_schur_pc.setter
+    def multiplier_schur_pc(self, value):
+        self._multiplier_schur_pc = bool(value)
+        self.is_setup = False   # force DS re-registration on next solve
 
     @property
     def petsc_velocity_nullspace_basis(self):
@@ -5938,9 +5989,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # diagonal mass Jacobian/preconditioner on each multiplier's field.
         for k, mvar in enumerate(self._multipliers):
             fid = mvar._solver_field_id
+            # Operator (Amat) (lambda,lambda) block is ALWAYS the true screening eps so
+            # Newton stays exact; only the preconditioner (Pmat) block swaps to the 1/mu
+            # Schur mass when _multiplier_schur_pc is on (pure-Pmat, can't corrupt Newton —
+            # the exact analog of pressure's _pp_G0 living only in JacobianPreconditioner).
+            # Reuse pressure's already-compiled _pp_G0 (= 1/mu, same scaling) so there is
+            # NO extra JIT term (the 1/mu Piecewise of SolCx is otherwise compiled twice).
+            hh_pc = self._pp_G0 if self._multiplier_schur_pc else self._hh_G0[k]
             PetscDSSetResidual(ds.ds, fid, ext.fns_residual[i_res[self._h_F0[k]]], NULL)
             PetscDSSetJacobian(              ds.ds, fid, fid, ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL, NULL)
-            PetscDSSetJacobianPreconditioner(ds.ds, fid, fid, ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL, NULL)
+            PetscDSSetJacobianPreconditioner(ds.ds, fid, fid, ext.fns_jacobian[i_jac[hh_pc]], NULL, NULL, NULL)
 
         cdef DMLabel c_label
 
