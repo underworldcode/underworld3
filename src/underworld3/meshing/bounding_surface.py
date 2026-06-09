@@ -111,6 +111,23 @@ class BoundingSurface:
         Returns ``(normals, valid)`` where ``valid`` is False at nodes whose
         projected normal is degenerate (box corners, unlocatable points) — those
         should be pinned, not slipped.
+
+        DESIGN NOTE (2026-06 — breadcrumb for a future session). This
+        RE-SOLVES the ``Gamma_P1`` projection on the surface's *current* mesh
+        state (``_slip_normals`` calls ``mesh._update_projected_normals()``),
+        so the normal follows mesh deformation — the state-aware behaviour the
+        ``free`` / ``release()`` surface-follow mode is designed to use. The
+        retired ``_build_slip_projector`` instead read a *cached* ``_n_proj``
+        field (the deleted ``_gamma_p1_at_vertices`` helper: KDTree match, no
+        solve, normal frozen at the reference mesh) — cheaper but not
+        deformation-aware. ``mesh.boundary_slip`` calls this ONCE per build
+        (not per ``project()`` call), so the cost is ~one projection solve per
+        mover outer-iteration; parity with the cached path was machine
+        precision (~1e-16) on a centred annulus. **If this ever shows up as a
+        hot-path regression (fine meshes / many adapts), add a cached
+        fast-path here** — read ``mesh._projected_normals.data`` directly (as
+        ``_gamma_p1_at_vertices`` did in git history) and re-solve only for
+        free surfaces. See docs/developer/design/boundary-slip-strategy.md.
         """
         from underworld3.meshing._ot_adapt import _slip_normals
         return _slip_normals(self._mesh, np.ascontiguousarray(coords, dtype=float))
