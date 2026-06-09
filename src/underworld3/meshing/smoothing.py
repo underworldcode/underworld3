@@ -3202,6 +3202,12 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         vel_loc = -grad_loc
         if parallel:
             vloc.array[:] = vel_loc.ravel()
+            # localToGlobal(ADD_VALUES) accumulates into vglob; it is fetched
+            # once (getGlobalVec, before the loop) and reused every outer iter,
+            # so it must be zeroed first — otherwise it carries stale pooled
+            # values on the first use and the previous iteration's assembled
+            # velocity on every subsequent one.
+            vglob.zeroEntries()
             coord_dm.localToGlobal(vloc, vglob, addv=True)
             coord_dm.globalToLocal(vglob, vloc)
             vel = np.asarray(vloc.array).reshape(-1, cdim).copy()

@@ -2488,12 +2488,17 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
         ep = _edge_pairs(mesh.dm)
         Xc = np.asarray(mesh.X.coords)
         if ep.shape[0]:
-            h0 = float(np.linalg.norm(
-                Xc[ep[:, 1]] - Xc[ep[:, 0]], axis=1).mean())
+            _el = np.linalg.norm(Xc[ep[:, 1]] - Xc[ep[:, 0]], axis=1)
+            _esum, _ecnt = float(_el.sum()), int(_el.shape[0])
         else:
-            h0 = 1.0
+            _esum, _ecnt = 0.0, 0
         if uw.mpi.size > 1:
-            h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+            _esum = uw.mpi.comm.allreduce(_esum)
+            _ecnt = uw.mpi.comm.allreduce(_ecnt)
+        # TRUE global mean edge length (sum/count). Averaging per-rank means
+        # (allreduce(mean)/size) mis-weights ranks with unequal edge counts and
+        # lets an empty partition's sentinel 1.0 pollute the result.
+        h0 = (_esum / _ecnt) if _ecnt > 0 else 1.0
         W = h0 / 6.0
     else:
         try:
@@ -2714,12 +2719,15 @@ def _mesh_h0(mesh):
     ep = _edge_pairs(mesh.dm)
     Xc = np.asarray(mesh.X.coords)
     if ep.shape[0]:
-        h0 = float(np.linalg.norm(Xc[ep[:, 1]] - Xc[ep[:, 0]], axis=1).mean())
+        _el = np.linalg.norm(Xc[ep[:, 1]] - Xc[ep[:, 0]], axis=1)
+        _esum, _ecnt = float(_el.sum()), int(_el.shape[0])
     else:
-        h0 = 1.0
+        _esum, _ecnt = 0.0, 0
     if uw.mpi.size > 1:
-        h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
-    return h0
+        _esum = uw.mpi.comm.allreduce(_esum)
+        _ecnt = uw.mpi.comm.allreduce(_ecnt)
+    # TRUE global mean edge length (sum/count), not a mean of per-rank means.
+    return (_esum / _ecnt) if _ecnt > 0 else 1.0
 
 
 def _fault_min_distance_np(P, polylines):
