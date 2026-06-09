@@ -1,6 +1,8 @@
 """Named-surface tangent slip for the metric movers.
 
-Locks the ``slip_surfaces`` API in ``_ot_adapt._build_slip_projector``:
+Locks the ``slip_surfaces`` API on ``mesh.boundary_slip`` (the mesh-owned
+contract the movers now consume; the private ``_ot_adapt._build_slip_projector``
+it replaced has been removed — see boundary-slip-strategy.md):
 
 * slip-vs-pin is **label-driven** — a boundary vertex slips iff it lies on
   exactly one slip surface; this fixes the old topology classifier that
@@ -29,8 +31,9 @@ def test_annulus_inner_ring_slips():
     n_verts = coords.shape[0]
     is_bnd = _pinned_mask(mesh.dm, ota._all_boundary_labels(mesh))
 
-    is_pinned, project = ota._build_slip_projector(
-        mesh, coords.copy(), is_bnd, n_verts, True)
+    is_pinned, project = mesh.boundary_slip(
+        True, reference_coords=coords.copy(),
+        boundary_labels=ota._all_boundary_labels(mesh))
     slip = is_bnd & ~is_pinned
 
     r = np.linalg.norm(coords, axis=1)
@@ -60,8 +63,9 @@ def test_box_corners_pin_edges_slip():
     n_verts = coords.shape[0]
     is_bnd = _pinned_mask(mesh.dm, ota._all_boundary_labels(mesh))
 
-    is_pinned, project = ota._build_slip_projector(
-        mesh, coords.copy(), is_bnd, n_verts, True)
+    is_pinned, project = mesh.boundary_slip(
+        True, reference_coords=coords.copy(),
+        boundary_labels=ota._all_boundary_labels(mesh))
     slip = is_bnd & ~is_pinned
 
     corner = ((np.isclose(coords[:, 0], 0) | np.isclose(coords[:, 0], 1)) &
@@ -92,16 +96,18 @@ def test_named_subset_and_free_surface_dict():
     inner = (r > 0.4) & (r < 0.6)
 
     # only the Upper (outer) ring slips; Lower pins
-    is_pinned, _ = ota._build_slip_projector(
-        mesh, coords.copy(), is_bnd, n_verts, ["Upper"])
+    is_pinned, _ = mesh.boundary_slip(
+        ["Upper"], reference_coords=coords.copy(),
+        boundary_labels=ota._all_boundary_labels(mesh))
     slip = is_bnd & ~is_pinned
     assert (slip & outer).sum() > 0
     assert (slip & inner).sum() == 0           # Lower pinned
 
     # dict free-surface form must resolve both labels as slipping and run the
     # no-snap branch for Upper without error
-    is_pinned2, project2 = ota._build_slip_projector(
-        mesh, coords.copy(), is_bnd, n_verts, {"Upper": False, "Lower": True})
+    is_pinned2, project2 = mesh.boundary_slip(
+        {"Upper": False, "Lower": True}, reference_coords=coords.copy(),
+        boundary_labels=ota._all_boundary_labels(mesh))
     slip2 = is_bnd & ~is_pinned2
     assert (slip2 & outer).sum() > 0 and (slip2 & inner).sum() > 0
     Y = coords.copy()

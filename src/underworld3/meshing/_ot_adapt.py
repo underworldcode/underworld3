@@ -81,22 +81,6 @@ def _auto_grad_smoothing_length(mesh):
     return h0 if units is None else h0 * units
 
 
-def _boundary_centre(mesh, boundary_coords: np.ndarray) -> np.ndarray:
-    """Parallel-safe centroid of the boundary node coordinates (the centre
-    used for the radial snap-back)."""
-    n_loc = int(boundary_coords.shape[0])
-    s_loc = (boundary_coords.sum(axis=0)
-             if n_loc else np.zeros(mesh.cdim))
-    if uw.mpi.size > 1:
-        from mpi4py import MPI as _MPI
-
-        s = uw.mpi.comm.allreduce(s_loc, op=_MPI.SUM)
-        n = uw.mpi.comm.allreduce(n_loc, op=_MPI.SUM)
-    else:
-        s, n = s_loc, n_loc
-    return s / max(n, 1)
-
-
 def _slip_normals(mesh, boundary_coords: np.ndarray):
     """Unit outward normals at ``boundary_coords`` from the projected
     boundary-normal field.
@@ -339,14 +323,6 @@ def _all_boundary_labels(mesh):
     return tuple(out)
 
 
-def _label_vertex_mask(dm, label_name):
-    """Local-chart boolean vertex mask for one named label (closure of its
-    tagged points/edges/faces). Thin single-label wrapper over the same
-    logic as :func:`_pinned_mask`."""
-    from underworld3.meshing.smoothing import _pinned_mask
-    return _pinned_mask(dm, (label_name,))
-
-
 def _resolve_slip(mesh, slip_spec):
     """Resolve the ``slip_spec`` (the value passed as ``boundary_slip`` /
     ``slip_surfaces``) into a tuple of named slip-surface labels, and
@@ -391,37 +367,6 @@ def _resolve_slip(mesh, slip_spec):
         except Exception:
             pass
     return labels
-
-
-def _gamma_p1_at_vertices(mesh, n_verts, cdim):
-    """Projected P1 outward unit normal at every local-chart vertex, as an
-    ``(n_verts, cdim)`` array. Reads the cached ``_n_proj`` MeshVariable and
-    maps its DOF order onto the local-chart vertex order via the vertices'
-    coordinates (degree-1 ⇒ one DOF per vertex). Non-boundary rows are
-    whatever the projection holds there (unused — only slip rows are read)."""
-    _ = mesh.Gamma_P1                                  # ensure built
-    nproj = mesh._projected_normals
-    ndata = np.asarray(nproj.data).reshape(-1, cdim)
-    ncoords = np.asarray(nproj.coords)
-    vcoords = np.asarray(mesh.X.coords)
-    out = np.zeros((n_verts, cdim))
-    if ndata.shape[0] == vcoords.shape[0]:
-        # Common case: same count — match by nearest coordinate (robust to
-        # any DOF-vs-vertex reordering).
-        from scipy.spatial import cKDTree
-        tree = cKDTree(ncoords)
-        _, idx = tree.query(vcoords)
-        out[:] = ndata[idx]
-    else:
-        from scipy.spatial import cKDTree
-        tree = cKDTree(ncoords)
-        _, idx = tree.query(vcoords)
-        out[:] = ndata[idx]
-    # renormalise (projection may leave |n|≈1 but be safe)
-    mag = np.linalg.norm(out, axis=1)
-    ok = mag > 1.0e-30
-    out[ok] /= mag[ok, None]
-    return out
 
 
 def _nearest_on_facets_2d(pts, seg):
@@ -475,135 +420,3 @@ def _nearest_on_facets_3d(pts, tri):
         dd = ((proj - p) ** 2).sum(axis=1)
         out[i] = proj[dd.argmin()]
     return out
-
-
-def _build_slip_projector(mesh, old_coords, is_bnd, n_verts, slip_spec):
-    """Build ``(is_pinned, project_fn)`` for named-surface tangent slip,
-    shared by all metric movers.
-
-    ``slip_spec`` is whatever ``_resolve_slip`` accepts (``True`` = all
-    boundaries, a label, a list of labels, or a ``dict`` ``{label: snap_bool}``
-    whose ``False`` values mark FREE surfaces that slip without snapping back).
-    For each named slip surface:
-
-      * **slip-vs-pin is label-driven** (not normal-agreement): a boundary
-        vertex slips iff it belongs to **exactly one** slip surface. Vertices
-        on a non-slip boundary (count 0) or at a **junction** of two slip
-        surfaces (count ≥2 — e.g. a box corner, where the normal is
-        ambiguous) are pinned. This fixes the old topology classifier, which
-        spuriously pinned a *coarse but smooth* curved ring (adjacent facet
-        normals diverge >15° on a low-resolution polygon, yet it is no
-        corner).
-      * the tangential slide uses the **projected P1 normal**
-        (:attr:`mesh.Gamma_P1`) — smooth and consistently oriented, reliable
-        on curved boundaries where the raw face normal is noisy.
-      * **return-to-bounds**: after the tangent step, each slip node is
-        re-projected onto the nearest point of its surface's **reference
-        facets** (captured once from ``old_coords``), so it stays on the
-        (convex) surface instead of creeping inward chord-wise over many
-        iterations. A surface whose dict value is ``False`` skips this (FREE
-        surfaces, where the geometry is itself the unknown).
-    """
-    slip_labels = _resolve_slip(mesh, slip_spec)
-    # FREE surfaces (snap_bool == False in a dict spec) slip but don't snap.
-    no_snap = (
-        {lab for lab, snap in slip_spec.items() if not snap}
-        if isinstance(slip_spec, dict) else set()
-    )
-    if not (slip_labels and is_bnd.any()):
-        def _project(Y):
-            return Y
-        return is_bnd.copy(), _project
-
-    cdim = mesh.cdim
-    dm = mesh.dm
-    # per-label vertex masks → slip count per vertex
-    label_masks = {lab: _label_vertex_mask(dm, lab) for lab in slip_labels}
-    count = np.zeros(n_verts, dtype=int)
-    for m in label_masks.values():
-        count += m.astype(int)
-    slip_mask = is_bnd & (count == 1)            # exactly one slip surface
-    is_pinned = is_bnd & ~slip_mask              # non-slip + junctions pinned
-    slip_b = np.nonzero(slip_mask)[0]
-    if slip_b.size == 0:
-        def _project(Y):
-            return Y
-        return is_pinned, _project
-
-    n_all = _gamma_p1_at_vertices(mesh, n_verts, cdim)
-    n_slip = n_all[slip_b]
-    old_slip = old_coords[slip_b]
-
-    # Return-to-bounds. Two snap modes, per the design's cure menu:
-    #   (1) ANALYTIC snap for known radial geometries (annulus / sphere /
-    #       cylinder) — re-impose each slip node's reference |r| about the
-    #       boundary centre. EXACT (no chord sag) and, crucially, free of the
-    #       concave-inward bias the facet snap suffers on the inner ring.
-    #   (2) FACET snap (nearest reference boundary facet) as the
-    #       geometry-general fallback for surfaces with no analytic form.
-    # FREE surfaces (dict value False) skip snapping in either mode.
-    radial = _is_radial_coords(mesh)
-    centre = r_target = snap_radial = None
-    if radial:
-        bidx = np.nonzero(is_bnd)[0]
-        centre = _boundary_centre(mesh, old_coords[bidx])
-        # reference radius per slip vertex (each ring snaps to its own |r|)
-        r_target = np.linalg.norm(old_slip - centre, axis=1)
-        # snap unless the vertex's slip surface is FREE (no_snap)
-        free_vert = np.zeros(n_verts, dtype=bool)
-        for lab in no_snap:
-            free_vert |= label_masks[lab]
-        snap_radial = ~free_vert[slip_b]
-
-    # Reference facets per slip label, for the FACET fallback. A boundary
-    # facet belongs to label L iff all its vertices carry L; captured from
-    # old_coords (the FIXED reference surface).
-    facets, _opp = _boundary_facets(mesh, cdim)
-    snap_facets_by_label = {}
-    if (not radial) and facets is not None and facets.size:
-        for lab, lm in label_masks.items():
-            if lab in no_snap:
-                continue
-            fac_in = lm[facets].all(axis=1)      # facet fully in label L
-            if fac_in.any():
-                snap_facets_by_label[lab] = old_coords[facets[fac_in]]
-    # vertex -> its (single) slip label, for facet-snap routing
-    vert_label = np.empty(n_verts, dtype=object)
-    for lab, lm in label_masks.items():
-        vert_label[lm & slip_mask] = lab
-
-    def _project(Y):
-        # tangential slide: remove the projected-normal component
-        disp = Y[slip_b] - old_slip
-        dn = (disp * n_slip).sum(axis=1, keepdims=True)
-        Y[slip_b] = old_slip + (disp - dn * n_slip)
-        if radial:
-            # (1) analytic |r| snap — exact, concave-safe; skip FREE surfaces
-            v = Y[slip_b] - centre
-            nrm = np.linalg.norm(v, axis=1)
-            nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-            snapped = centre + v * (r_target / nrm)[:, None]
-            Y[slip_b] = np.where(snap_radial[:, None], snapped, Y[slip_b])
-        else:
-            # (2) facet fallback. TODO(watch): facet return-to-bounds is
-            # exact-to-the-POLYGON — safe for CONVEX surfaces but biases a
-            # CONCAVE one (chords sit inside the true arc, so nodes creep
-            # inward over many iterations). Radial geometries take the
-            # analytic branch above and are immune; a genuinely concave,
-            # non-analytic surface would need a smoothness / mean-preserving
-            # constraint (cure (2) in the design). Watching how fast it
-            # degrades on such a case before adding that.
-            for lab, fcoords in snap_facets_by_label.items():
-                sel = np.array([vert_label[v] == lab for v in slip_b])
-                if not sel.any():
-                    continue
-                pts = Y[slip_b[sel]]
-                if cdim == 2:
-                    Y[slip_b[sel]] = _nearest_on_facets_2d(pts, fcoords)
-                else:
-                    Y[slip_b[sel]] = _nearest_on_facets_3d(pts, fcoords)
-        return Y
-
-    return is_pinned, _project
-
-

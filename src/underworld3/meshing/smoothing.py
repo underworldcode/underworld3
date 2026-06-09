@@ -58,6 +58,7 @@ Future extensions (separate PRs):
     path is serial-exact (rank-boundary nodes under-count forces)
 """
 
+import warnings
 from typing import Optional, Sequence
 
 import numpy as np
@@ -566,7 +567,6 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
     else:
         edges, deg = cache
 
-    is_bnd = _pinned_mask(dm, pinned_labels)
     tris = _tri_cells(dm)
     cdim = mesh.cdim
     v0 = edges[:, 0]
@@ -574,54 +574,15 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
 
     coords = np.asarray(mesh.X.coords, dtype=np.double).copy()
 
-    # Boundary tangential slip. Fully locking every boundary node
-    # freezes the rim's angular distribution, so near a feature the
-    # interior must distort (the "touchy"/anisotropic refinement).
-    # Instead let boundary nodes SLIDE ALONG the boundary while
-    # staying EXACTLY ON it: each ring gets its OWN centre (robust
-    # if rings are not perfectly concentric) and every slip node is
-    # snapped back to its original distance from that centre after
-    # each step — so a slip node can change θ but can NEVER move
-    # off / away from the surface (the radial DOF is removed, not
-    # just penalised). One node per ring is a hard anchor (kills
-    # the ring's rigid-rotation gauge). The global inversion guard
-    # also blocks a slip node overtaking a neighbour (boundary
-    # self-tangle). TODO: a general deformed / free-surface
-    # boundary needs projection onto the boundary polyline, not a
-    # per-ring radius — circular form is exact for the Annulus.
-    if boundary_slip and is_bnd.any():
-        bc = np.nonzero(is_bnd)[0]
-        c0 = coords[bc].mean(axis=0)
-        rg = np.round(np.linalg.norm(coords[bc] - c0, axis=1), 6)
-        is_anchor = np.zeros(n_verts, dtype=bool)
-        slip_center = np.zeros((n_verts, cdim))
-        slip_rtarget = np.zeros(n_verts)
-        for rv in np.unique(rg):
-            grp = bc[rg == rv]
-            rc = coords[grp].mean(axis=0)        # this ring's centre
-            is_anchor[grp[np.argmax(
-                (coords[grp] - rc)[:, 0])]] = True
-            slip_center[grp] = rc
-            slip_rtarget[grp] = np.linalg.norm(
-                coords[grp] - rc, axis=1)
-        is_slip = is_bnd & ~is_anchor
-        is_pinned = is_anchor
-        sidx = np.nonzero(is_slip)[0]
-        s_ctr = slip_center[sidx]
-        s_rad = slip_rtarget[sidx]
-
-        def _project(Y):
-            v = Y[sidx] - s_ctr
-            nrm = np.linalg.norm(v, axis=1)
-            nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-            Y[sidx] = s_ctr + v * (s_rad / nrm)[:, None]
-            return Y
-    else:
-        is_pinned = is_bnd
-        is_slip = np.zeros(n_verts, dtype=bool)
-
-        def _project(Y):
-            return Y
+    # Boundary tangential slip via the mesh-owned contract
+    # (boundary-slip-strategy.md): each slip vertex slides tangentially and
+    # snaps back onto its bounding surface (radial ring / plane / facet);
+    # non-slip, junction, and degenerate-normal vertices pin. Replaces the
+    # per-ring COM radial snap (one node/ring anchored the rotation gauge);
+    # the global inversion guard below still blocks a slip node overtaking a
+    # neighbour, and tangential θ-drift is a harmless re-parameterisation.
+    is_pinned, _project = mesh.boundary_slip(
+        boundary_slip, reference_coords=coords, boundary_labels=pinned_labels)
 
     free = ~is_pinned
 
@@ -1309,120 +1270,22 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
 
     for outer in range(n_outer):
         dm = mesh.dm
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # Boundary tangential slip (same per-ring radius projection
-        # as the spring). MA's natural Neumann BC (∇φ·n̂=0) already
-        # makes ∇φ tangential at the boundary, so letting boundary
-        # nodes move by ∇φ then snapping back to their ring radius
-        # is the redistribution the formulation naturally wants —
-        # fully pinning them discards it. Nodes provably stay on
-        # the surface (radial DOF removed; drift ~machine ε). One
-        # node/ring anchors the rotation gauge.
-        _slip_mode = boundary_slip
-        if isinstance(_slip_mode, str):
-            _slip_mode = _slip_mode.lower()
-            if _slip_mode not in ("ring", "box", "axes", "axis"):
-                raise ValueError(
-                    f"boundary_slip must be False/True/'ring'/'box', "
-                    f"got {boundary_slip!r}")
-            if _slip_mode in ("axes", "axis"):
-                _slip_mode = "box"
-        elif _slip_mode is True:
-            _slip_mode = "ring"
-        if _slip_mode and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            if _slip_mode == "ring":
-                c0 = old_coords[bc].mean(axis=0)
-                rg = np.round(
-                    np.linalg.norm(old_coords[bc] - c0, axis=1),
-                    6)
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                slip_center = np.zeros((n_verts, _cdim))
-                slip_rtarget = np.zeros(n_verts)
-                for rv in np.unique(rg):
-                    grp = bc[rg == rv]
-                    rc = old_coords[grp].mean(axis=0)
-                    is_anchor[grp[np.argmax(
-                        (old_coords[grp] - rc)[:, 0])]] = True
-                    slip_center[grp] = rc
-                    slip_rtarget[grp] = np.linalg.norm(
-                        old_coords[grp] - rc, axis=1)
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                _sidx = np.nonzero(is_slip)[0]
-                _sctr = slip_center[_sidx]
-                _srad = slip_rtarget[_sidx]
-
-                def _project(Y):
-                    v = Y[_sidx] - _sctr
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                    return Y
-            else:  # "box" — axis-aligned edge slip
-                # Pin corners (on 2 box edges); allow other
-                # boundary nodes to slide along their single
-                # edge. Detect edges from boundary coord extents.
-                bc_coords = old_coords[bc]
-                xmin = bc_coords[:, 0].min()
-                xmax = bc_coords[:, 0].max()
-                ymin = bc_coords[:, 1].min()
-                ymax = bc_coords[:, 1].max()
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    xmin = uw.mpi.comm.allreduce(
-                        float(xmin), op=_MPI.MIN)
-                    xmax = uw.mpi.comm.allreduce(
-                        float(xmax), op=_MPI.MAX)
-                    ymin = uw.mpi.comm.allreduce(
-                        float(ymin), op=_MPI.MIN)
-                    ymax = uw.mpi.comm.allreduce(
-                        float(ymax), op=_MPI.MAX)
-                tol = 1.0e-9 * max(xmax - xmin, ymax - ymin, 1.0)
-                on_xmin = np.abs(bc_coords[:, 0] - xmin) < tol
-                on_xmax = np.abs(bc_coords[:, 0] - xmax) < tol
-                on_ymin = np.abs(bc_coords[:, 1] - ymin) < tol
-                on_ymax = np.abs(bc_coords[:, 1] - ymax) < tol
-                on_x_edge = on_xmin | on_xmax
-                on_y_edge = on_ymin | on_ymax
-                is_corner_loc = on_x_edge & on_y_edge
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                is_anchor[bc[is_corner_loc]] = True
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                # For each slip node, record which axis is fixed
-                # and the target value on that axis.
-                fixed_axis = np.full(n_verts, -1, dtype=np.int8)
-                fixed_val = np.zeros(n_verts)
-                xfix = on_x_edge & ~is_corner_loc
-                yfix = on_y_edge & ~is_corner_loc
-                fixed_axis[bc[xfix]] = 0
-                fixed_val[bc[xfix]] = bc_coords[xfix, 0]
-                fixed_axis[bc[yfix]] = 1
-                fixed_val[bc[yfix]] = bc_coords[yfix, 1]
-                _sidx = np.nonzero(is_slip)[0]
-                _sax = fixed_axis[_sidx]
-                _sval = fixed_val[_sidx]
-                _ix0 = _sidx[_sax == 0]
-                _ix1 = _sidx[_sax == 1]
-                _v0 = _sval[_sax == 0]
-                _v1 = _sval[_sax == 1]
-
-                def _project(Y):
-                    Y[_ix0, 0] = _v0
-                    Y[_ix1, 1] = _v1
-                    return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md): MA's natural Neumann BC (∇φ·n̂=0) makes
+        # ∇φ tangential at the boundary, so slip vertices slide along their
+        # surface (radial ring / box face / facet) and snap back; non-slip,
+        # junction, and degenerate-normal vertices pin. Replaces the inline
+        # per-ring / box-edge snap (the 'ring'/'box' hint is now inferred from
+        # the registered bounding surfaces).
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=old_coords,
+            boundary_labels=pinned_labels)
 
         if tris is not None and n_outer > 1:
             patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
@@ -1723,61 +1586,20 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
 
     for outer in range(n_outer):
         dm = mesh.dm
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # --- boundary slip via projected normals (mesh.Gamma_P1) ------
-        # Unified, geometry-agnostic slip (replaces the old box/ring
-        # special cases). Boundary nodes slide tangentially — we zero the
-        # projected-normal component of their displacement — and, for
-        # curved (radial) coordinate systems, snap back to their reference
-        # |r| so they stay on the surface. The normal comes from
-        # mesh.Gamma_P1 (the symbolic mesh.Gamma projected to a P1 field),
-        # which is valid for every geometry and is the same source used for
-        # free surfaces. Nodes with a degenerate projected normal (box
-        # corners where opposing face normals cancel, or an occasional
-        # unlocatable vertex) are pinned rather than slipped. `boundary_slip`
-        # is a bool; legacy 'ring'/'box'/'axes' strings are accepted as
-        # aliases for slip-on.
-        from underworld3.meshing._ot_adapt import (
-            _slip_normals, _boundary_centre, _is_radial_coords)
-
-        if _slip_on and is_bnd.any():
-            bidx = np.nonzero(is_bnd)[0]
-            bcoords = old_coords[bidx]
-            n_hat, valid = _slip_normals(mesh, bcoords)
-            slip_b = bidx[valid]
-            is_pinned = np.zeros(n_verts, dtype=bool)
-            is_pinned[bidx[~valid]] = True   # degenerate-normal nodes pinned
-            _n_slip = n_hat[valid]
-            _old_slip = old_coords[slip_b]
-            _radial = _is_radial_coords(mesh)
-            if _radial:
-                _centre = _boundary_centre(mesh, bcoords)
-                _r_target = np.linalg.norm(_old_slip - _centre, axis=1)
-
-            def _project(Y):
-                # tangential slide: remove the normal component of the
-                # boundary-node displacement
-                disp = Y[slip_b] - _old_slip
-                dn = (disp * _n_slip).sum(axis=1, keepdims=True)
-                Y[slip_b] = _old_slip + (disp - dn * _n_slip)
-                # snap curved boundaries back onto the surface (fixed |r|)
-                if _radial:
-                    v = Y[slip_b] - _centre
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[slip_b] = _centre + v * (_r_target / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md). Slip stays gated to radial meshes via
+        # ``_slip_on`` (a Cartesian boundary pins — the vertex-evaluated facet
+        # normal is degenerate there, see above); on a radial mesh the
+        # registered radial surfaces do the tangent slide + |r| restore.
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip if _slip_on else False,
+            reference_coords=old_coords, boundary_labels=pinned_labels)
 
         # --- compute V (patch volumes) on current mesh ---------
         if tris is None:
@@ -2444,7 +2266,6 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         dm = mesh.dm
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
@@ -2457,43 +2278,15 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         if metric_refresh_per_iter and outer > 0:
             _build_M_tensor()
 
-        # Boundary tangential slip — identical per-ring radius
-        # projection to _winslow_elliptic (the radial DOF is
-        # removed, so slip nodes provably stay on their ring; one
-        # node/ring anchors the rotation gauge).
-        if boundary_slip and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            c0 = old_coords[bc].mean(axis=0)
-            rg = np.round(
-                np.linalg.norm(old_coords[bc] - c0, axis=1), 6)
-            is_anchor = np.zeros(n_verts, dtype=bool)
-            slip_center = np.zeros((n_verts, _cdim))
-            slip_rtarget = np.zeros(n_verts)
-            for rv in np.unique(rg):
-                grp = bc[rg == rv]
-                rc = old_coords[grp].mean(axis=0)
-                is_anchor[grp[np.argmax(
-                    (old_coords[grp] - rc)[:, 0])]] = True
-                slip_center[grp] = rc
-                slip_rtarget[grp] = np.linalg.norm(
-                    old_coords[grp] - rc, axis=1)
-            is_slip = is_bnd & ~is_anchor
-            is_pinned = is_anchor
-            _sidx = np.nonzero(is_slip)[0]
-            _sctr = slip_center[_sidx]
-            _srad = slip_rtarget[_sidx]
-
-            def _project(Y):
-                v = Y[_sidx] - _sctr
-                nrm = np.linalg.norm(v, axis=1)
-                nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md): slip vertices slide tangentially and
+        # snap back onto their bounding surface (radial ring / plane / facet);
+        # non-slip, junction, and degenerate-normal vertices pin. Replaces the
+        # inline per-ring COM radial snap (one node/ring anchored the rotation
+        # gauge; the signed-area backtrack below still guards against tangle).
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=old_coords,
+            boundary_labels=pinned_labels)
 
         # D is fixed & Lagrangian (built once, above) — no
         # re-projection feedback. The outer loop is a damped
@@ -3244,9 +3037,11 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     else:
         _eval_M = _eval_M_analytic
 
-    # Unified Gamma boundary slip (shared with OT / MA movers).
-    from underworld3.meshing._ot_adapt import (
-        _resolve_slip, _build_slip_projector)
+    # Mesh-owned boundary slip is applied per outer iter via mesh.boundary_slip
+    # (below). Pre-touch Gamma_P1 here so the projected-normal MeshVariable
+    # exists before any DM snapshot (footgun-safe; redundant with the central
+    # pre-touch in smooth_mesh_interior, kept as defence-in-depth).
+    from underworld3.meshing._ot_adapt import _resolve_slip
     _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
 
     # Reference edge matrices (fixed) for the owned cells.
@@ -3344,9 +3139,13 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         return s
 
     for outer in range(n_outer):
-        is_bnd = _pinned_mask(dm, pinned_labels)
-        is_pinned, _project = _build_slip_projector(
-            mesh, coords, is_bnd, n_verts, boundary_slip)
+        # Mesh-owned tangent slip (see boundary-slip-strategy.md): the
+        # reference is the current coords (refreshed each outer iter), so the
+        # tangent slide / surface restore are measured from this iteration's
+        # mesh — matching the previous per-iter _build_slip_projector build.
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=coords,
+            boundary_labels=pinned_labels)
         free = ~is_pinned
 
         # --- per-element terms on owned cells (rank-local d×d algebra) -
@@ -3634,6 +3433,19 @@ def _smooth_mesh_interior_bare(
             _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                               boundary_slip=boundary_slip, **mk)
         elif method in ("ot", "equidistribute", "improve"):
+            # The OT / equidistribution mover is incomplete — e.g. its boundary
+            # slip is gated to radial geometries (box boundaries are pinned, not
+            # slid; see boundary-slip-strategy.md) — and is expected to be
+            # superseded by ``method='mmpde'`` with a scalar metric. This fires
+            # for every OT use, including the internal ``mesh.OT_adapt`` reset
+            # path. (Python shows a given DeprecationWarning once per location.)
+            warnings.warn(
+                "smooth_mesh_interior(method='ot'/'equidistribute'/'improve') "
+                "is an incomplete mesh mover (boundary slip is gated to radial "
+                "geometries) and is expected to be superseded by "
+                "method='mmpde' with a scalar metric. Prefer 'mmpde' for "
+                "production adaptive meshing.",
+                DeprecationWarning, stacklevel=2)
             _winslow_equidistribute(mesh, metric, pinned_labels,
                                      verbose,
                                      boundary_slip=boundary_slip,

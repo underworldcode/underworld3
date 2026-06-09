@@ -93,6 +93,25 @@ def test_invalid_kind_and_missing_geometry_raise():
         BoundingSurface(m, "x", "plane", point=[0, 0])  # needs normal
 
 
+def test_degenerate_geometry_raises():
+    # A zero / non-finite normal would make plane restore() a silent no-op;
+    # a non-positive / non-finite radius produces invalid radial projections.
+    # Both must be rejected at construction.
+    m = _annulus()
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "plane", point=[0, 0], normal=[0, 0])
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "plane", point=[0, 0],
+                        normal=[np.nan, 0])
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "radial", centre=[0, 0], radius=-1.0)
+    with pytest.raises(ValueError):
+        BoundingSurface(m, "x", "radial", centre=[0, 0], radius=np.inf)
+    # radius == 0 is VALID (a solid sphere/annulus registers its inner boundary
+    # at the centre, radius 0) — must NOT raise.
+    BoundingSurface(m, "x", "radial", centre=[0, 0], radius=0.0)
+
+
 def test_boundary_slip_keeps_nodes_on_boundary():
     m = _annulus()
     ref = np.asarray(m.X.coords, dtype=float).copy()
@@ -120,27 +139,43 @@ def test_boundary_slip_keeps_nodes_on_boundary():
     assert np.allclose(Y2[interior], Yin[interior])
 
 
-def test_boundary_slip_pins_when_no_surface_registered():
+def test_boundary_slip_facet_fallback_when_no_surface_registered():
+    # Step-2: a slip label with NO registered analytic surface no longer pins;
+    # mesh.boundary_slip builds a transient `facet` surface from the reference
+    # facets, so the vertices slip along the boundary polygon (the same path a
+    # mesh loaded from file takes). See boundary-slip-strategy.md.
+    from underworld3.meshing._ot_adapt import (
+        _boundary_facets, _nearest_on_facets_2d)
     m = _annulus()
     m.bounding_surfaces.clear()      # remove the analytic surfaces
     ref = np.asarray(m.X.coords, dtype=float).copy()
     is_pinned, project = m.boundary_slip(True, reference_coords=ref)
     r_ref = np.linalg.norm(ref, axis=1)
     bnd = np.isclose(r_ref, 1.0, atol=1e-6) | np.isclose(r_ref, 0.5, atol=1e-6)
-    # With no registered surfaces, every boundary vertex is pinned, no slip.
-    assert is_pinned[bnd].all()
-    Y = ref + 0.05
-    assert np.allclose(project(Y.copy()), Y)  # nothing slips
+    # Most boundary vertices now SLIP (only true junctions/degenerate pin).
+    assert not is_pinned[bnd].all()
+    assert (~is_pinned[bnd]).sum() > 0.5 * bnd.sum()
+    # Transient facet surfaces are local to the call — they don't leak in.
+    assert len(m.bounding_surfaces) == 0
+    # A tangential perturbation slips ON the reference-facet polygon: projected
+    # boundary nodes lie on the nearest reference boundary facet (chord), to fp.
+    th = np.arctan2(ref[:, 1], ref[:, 0])
+    Y = ref.copy()
+    Y[bnd] = ref[bnd] + 0.03 * np.column_stack(
+        [np.cos(th[bnd] + 1.0), np.sin(th[bnd] + 1.0)])
+    Y2 = project(Y.copy())
+    facets, _ = _boundary_facets(m, m.cdim)
+    seg = ref[facets]                                    # all boundary chords
+    slip_b = np.nonzero(bnd & ~is_pinned)[0]
+    nearest = _nearest_on_facets_2d(Y2[slip_b], seg)
+    assert np.allclose(Y2[slip_b], nearest, atol=1e-9)
 
 
-def test_spherical_shell_registers_radial():
-    m = uw.meshing.SphericalShell(radiusInner=0.5, radiusOuter=1.0, cellSize=0.4)
-    bs = m.bounding_surfaces
-    assert bs["Upper"].kind == "radial" and np.isclose(bs["Upper"].radius, 1.0)
-    assert bs["Lower"].kind == "radial" and np.isclose(bs["Lower"].radius, 0.5)
-    assert bs["Upper"].centre.shape == (3,)
-    out = bs["Upper"].restore(np.array([[1.3, 0.0, 0.0], [0.0, 0.7, 0.7]]))
-    assert np.allclose(np.linalg.norm(out, axis=1), 1.0)
+# NOTE: SphericalShell (3D radial) registration is tested in
+# tests/test_0002_bounding_surface_3d.py — it must run in the early test batch
+# because SphericalShell construction is fragile under the accumulated PETSc
+# state of the heavy test_05*/07* batch (a pre-existing mesh-lifecycle issue,
+# unrelated to boundary slip). The Annulus tests above cover the radial logic.
 
 
 def test_box_registers_plane_surfaces():

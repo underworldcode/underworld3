@@ -79,10 +79,34 @@ class BoundingSurface:
         self.reference_facets = (
             None if reference_facets is None
             else np.ascontiguousarray(reference_facets, dtype=float))
-        if kind == "radial" and (self.centre is None or self.radius is None):
-            raise ValueError("radial BoundingSurface requires centre and radius")
-        if kind == "plane" and (self.point is None or self.normal is None):
-            raise ValueError("plane BoundingSurface requires point and normal")
+        if kind == "radial":
+            if self.centre is None or self.radius is None:
+                raise ValueError(
+                    "radial BoundingSurface requires centre and radius")
+            # radius == 0 is legitimate: a *solid* sphere/annulus registers its
+            # inner ("Lower") boundary at radius 0 (the centre point). Reject
+            # only NEGATIVE or non-finite radii (those give invalid projections).
+            if not (np.isfinite(self.radius) and self.radius >= 0.0):
+                raise ValueError(
+                    "radial BoundingSurface requires a finite, non-negative "
+                    f"radius; got {self.radius!r}")
+            if not np.all(np.isfinite(self.centre)):
+                raise ValueError(
+                    "radial BoundingSurface centre must be finite")
+        if kind == "plane":
+            if self.point is None or self.normal is None:
+                raise ValueError(
+                    "plane BoundingSurface requires point and normal")
+            # _unit() returns a ZERO vector for a degenerate/zero normal (not
+            # None), which would make restore() a silent no-op — reject it.
+            if not (np.all(np.isfinite(self.normal))
+                    and np.linalg.norm(self.normal) > 0.5):
+                raise ValueError(
+                    "plane BoundingSurface requires a finite, non-degenerate "
+                    "normal (a zero/near-zero normal makes restore() a no-op)")
+            if not np.all(np.isfinite(self.point)):
+                raise ValueError(
+                    "plane BoundingSurface point must be finite")
         if kind == "facet" and self.reference_facets is None:
             raise ValueError("facet BoundingSurface requires reference_facets")
 
@@ -98,6 +122,23 @@ class BoundingSurface:
         Returns ``(normals, valid)`` where ``valid`` is False at nodes whose
         projected normal is degenerate (box corners, unlocatable points) — those
         should be pinned, not slipped.
+
+        DESIGN NOTE (2026-06 — breadcrumb for a future session). This
+        RE-SOLVES the ``Gamma_P1`` projection on the surface's *current* mesh
+        state (``_slip_normals`` calls ``mesh._update_projected_normals()``),
+        so the normal follows mesh deformation — the state-aware behaviour the
+        ``free`` / ``release()`` surface-follow mode is designed to use. The
+        retired ``_build_slip_projector`` instead read a *cached* ``_n_proj``
+        field (the deleted ``_gamma_p1_at_vertices`` helper: KDTree match, no
+        solve, normal frozen at the reference mesh) — cheaper but not
+        deformation-aware. ``mesh.boundary_slip`` calls this ONCE per build
+        (not per ``project()`` call), so the cost is ~one projection solve per
+        mover outer-iteration; parity with the cached path was machine
+        precision (~1e-16) on a centred annulus. **If this ever shows up as a
+        hot-path regression (fine meshes / many adapts), add a cached
+        fast-path here** — read ``mesh._projected_normals.data`` directly (as
+        ``_gamma_p1_at_vertices`` did in git history) and re-solve only for
+        free surfaces. See docs/developer/design/boundary-slip-strategy.md.
         """
         from underworld3.meshing._ot_adapt import _slip_normals
         return _slip_normals(self._mesh, np.ascontiguousarray(coords, dtype=float))
