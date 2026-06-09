@@ -12,15 +12,20 @@ cdef extern from "AnalyticSolNL.h" nogil:
     ctypedef struct vec2:
         double x
         double z
+    ctypedef struct tensor2:
+        double xx
+        double zz
+        double xz
     vec2   SolNL_velocity(  double eta0, unsigned n, double r, double x, double y )
     vec2   SolNL_bodyforce( double eta0, unsigned n, double r, double x, double y )
     double SolNL_viscosity( double eta0, unsigned n, double r, double x, double y )
 
 cdef extern from "AnalyticSolCx.h" nogil:
-    # vec2 already declared above (shared typedef via AnalyticSolNL.h)
-    vec2   SolCx_velocity(  double eta_A, double eta_B, double x_c, int n, double x, double z )
-    double SolCx_pressure(  double eta_A, double eta_B, double x_c, int n, double x, double z )
-    double SolCx_viscosity( double eta_A, double eta_B, double x_c, int n, double x, double z )
+    # vec2 / tensor2 already declared above (shared typedefs via AnalyticSolNL.h)
+    vec2    SolCx_velocity(  double eta_A, double eta_B, double x_c, int n, double x, double z )
+    double  SolCx_pressure(  double eta_A, double eta_B, double x_c, int n, double x, double z )
+    double  SolCx_viscosity( double eta_A, double eta_B, double x_c, int n, double x, double z )
+    tensor2 SolCx_stress(    double eta_A, double eta_B, double x_c, int n, double x, double z )
 
 class sympy_function_printable(sympy.Function):
     """
@@ -131,6 +136,25 @@ class AnalyticSolCx_viscosity(AnalyticSolCx_base):
         from sympy import sympify
         return sympify(SolCx_viscosity( self.args[0],self.args[1],self.args[2],self.args[3],self.args[4],self.args[5] ))
 
+# Exact total (Cauchy) stress components sigma_ij from the Velic kernel's
+# total_stress array: xx, zz (= yy in the x-z plane), xz. Dynamic topography on
+# the top boundary (n = y_hat) is -n.sigma.n = -sigma_zz.
+class AnalyticSolCx_stress_xx(AnalyticSolCx_base):
+    _printstr = "SolCx_stress({}).xx"
+    def _eval_evalf(self,prec):
+        from sympy import sympify
+        return sympify(SolCx_stress( self.args[0],self.args[1],self.args[2],self.args[3],self.args[4],self.args[5] ).xx)
+class AnalyticSolCx_stress_yy(AnalyticSolCx_base):
+    _printstr = "SolCx_stress({}).zz"
+    def _eval_evalf(self,prec):
+        from sympy import sympify
+        return sympify(SolCx_stress( self.args[0],self.args[1],self.args[2],self.args[3],self.args[4],self.args[5] ).zz)
+class AnalyticSolCx_stress_xy(AnalyticSolCx_base):
+    _printstr = "SolCx_stress({}).xz"
+    def _eval_evalf(self,prec):
+        from sympy import sympify
+        return sympify(SolCx_stress( self.args[0],self.args[1],self.args[2],self.args[3],self.args[4],self.args[5] ).xz)
+
 
 class SolCx:
     r"""Velic *SolCx* analytic Stokes solution — the canonical free-slip,
@@ -175,6 +199,10 @@ class SolCx:
         self.fn_velocity  = _sp.Matrix([AnalyticSolCx_velocity_x(*p, x, y),
                                         AnalyticSolCx_velocity_y(*p, x, y)])
         self.fn_pressure  = AnalyticSolCx_pressure(*p, x, y)
+        # exact total (Cauchy) stress components (sigma_xx, sigma_yy, sigma_xy)
+        self.fn_stress_xx = AnalyticSolCx_stress_xx(*p, x, y)
+        self.fn_stress_yy = AnalyticSolCx_stress_yy(*p, x, y)
+        self.fn_stress_xy = AnalyticSolCx_stress_xy(*p, x, y)
         # tie-break at x==x_c matches the compiled SolCx_viscosity (eta_B for x>=x_c)
         self.fn_viscosity = _sp.Piecewise((self.eta_A, x < self.x_c), (self.eta_B, True))
         self.fn_bodyforce = _sp.Matrix([_sp.Integer(0),
@@ -196,3 +224,22 @@ class SolCx:
         import numpy as _np
         ua = self.evaluate_velocity(velocity_var.coords)
         return float(_np.linalg.norm(velocity_var.data - ua) / _np.linalg.norm(ua))
+
+    def evaluate_stress(self, coords):
+        """Exact total (Cauchy) stress at ``coords`` (N×2 array), via the
+        compiled kernel. Returns an (N, 3) array of (sigma_xx, sigma_yy,
+        sigma_xy)."""
+        import numpy as _np
+        p = (self.eta_A, self.eta_B, self.x_c, self.n)
+        out = _np.empty((len(coords), 3))
+        for i in range(len(coords)):
+            xi = float(coords[i, 0]); yi = float(coords[i, 1])
+            out[i, 0] = float(AnalyticSolCx_stress_xx(*p, xi, yi).evalf())
+            out[i, 1] = float(AnalyticSolCx_stress_yy(*p, xi, yi).evalf())
+            out[i, 2] = float(AnalyticSolCx_stress_xy(*p, xi, yi).evalf())
+        return out
+
+    def topography_top(self, coords):
+        """Exact dynamic topography -n.sigma.n on the top boundary (n = y_hat),
+        i.e. -sigma_yy, at ``coords`` (N×2 array). Returns a length-N array."""
+        return -self.evaluate_stress(coords)[:, 1]
