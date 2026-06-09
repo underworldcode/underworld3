@@ -152,14 +152,11 @@ def test_boundary_slip_pins_when_no_surface_registered():
     assert np.allclose(project(Y.copy()), Y)  # nothing slips
 
 
-def test_spherical_shell_registers_radial():
-    m = uw.meshing.SphericalShell(radiusInner=0.5, radiusOuter=1.0, cellSize=0.4)
-    bs = m.bounding_surfaces
-    assert bs["Upper"].kind == "radial" and np.isclose(bs["Upper"].radius, 1.0)
-    assert bs["Lower"].kind == "radial" and np.isclose(bs["Lower"].radius, 0.5)
-    assert bs["Upper"].centre.shape == (3,)
-    out = bs["Upper"].restore(np.array([[1.3, 0.0, 0.0], [0.0, 0.7, 0.7]]))
-    assert np.allclose(np.linalg.norm(out, axis=1), 1.0)
+# NOTE: SphericalShell (3D radial) registration is tested in
+# tests/test_0002_bounding_surface_3d.py — it must run in the early test batch
+# because SphericalShell construction is fragile under the accumulated PETSc
+# state of the heavy test_05*/07* batch (a pre-existing mesh-lifecycle issue,
+# unrelated to boundary slip). The Annulus tests above cover the radial logic.
 
 
 def test_box_registers_plane_surfaces():
