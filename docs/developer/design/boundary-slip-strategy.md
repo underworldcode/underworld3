@@ -330,6 +330,142 @@ branch's boundary-COM `allreduce` only at round-off.
    branch and are immune; the bias only bites a concave *non-analytic* surface,
    which no current production case hits.)
 
+## Roadmap: from boundary slip to a mesh-owned surface contract (2026-06-09)
+
+The tangent-slip contract above is the first instance of a more general idea: a
+mesh keeps **declared surfaces** intact as it redistributes its nodes. This
+section records the design we settled on for growing it from "the outer
+boundary" to "any surface the mesh must preserve" — driven by the metric movers
+(it is squarely *mesh-redistributor* work), with codim-1 **submesh extraction**
+as the horizon we steer by rather than a separate effort. None of this is
+implemented yet; it is the agreed direction and the constraints it must honour.
+
+### Principles (load-bearing)
+
+- **Declaration over topology, never an alternative topology.** DMPlex and its
+  labels are authoritative. A `BoundingSurface` only *annotates* a label the
+  mesh already owns ("this label of mine means a radial / plane / free
+  surface"); it never *defines* topology. There is nothing to keep in sync —
+  the same discipline that keeps `mesh.boundaries` (the persisted labelling)
+  untouched, promoted to a rule. *The mesh decides what is important and what
+  its declared objects represent.*
+- **Geometry is per-surface, never per-mesh.** A spherical *regional* mesh is
+  the decisive case: its caps are `radial` but its great-circle side cuts are
+  `plane`, and the mesh's `SPHERICAL` `CoordinateSystem` is *wrong* for those
+  sides. There is no single "mesh geometry" to inherit. Because each label
+  carries its own `kind`, the heterogeneous case is correct by construction —
+  **nothing reads the mesh's coordinate frame, only a surface's geometry.**
+  This one rule disarms the r/θ/φ-on-a-plane trap, the deferred `geographic`
+  case, and the dimension-drop ambiguity together.
+- **A submesh declares its *own* surfaces; it does not inherit the parent's.**
+  An internal interface becomes a bounding surface of an extracted submesh
+  because *topologically it now is one* — the submesh, being a mesh, declares
+  it. The connection is that both meshes annotate the *same persisted label*
+  (and may reference the same geometry object): **borrow by reference, never
+  re-home.** Re-deriving a surface's geometry under a dimension/coordinate
+  change *is* the hard part — that is what stays deferred (geometry
+  inheritance), and the per-surface reference is the seam that lets us tackle it
+  later one `kind` at a time without re-plumbing extraction.
+
+### Geometry-kind ⟂ capabilities
+
+A surface has a **geometry kind** (`radial`/`plane`/`facet`/`free`) and a set of
+**orthogonal capabilities**, declared independently:
+
+- **`tangent_moving`** — the mover keeps nodes *on* this surface
+  (`tangent_project + restore`). This is the broad, near-universal requirement:
+  slip but stay on the surface to *preserve* it. It applies to outer
+  boundaries, regional edge cuts, **internal interfaces**, and free surfaces
+  alike. An internal interface *needs* it for the same reason an outer boundary
+  does, turned inward — adapt the mesh without slip-constraining the interface
+  and its nodes drift off it, destroying the surface you meant to preserve.
+- **`extractable`** — a codim-1 submesh can be filtered from this surface. The
+  narrower, opt-in capability; desirable but separate from preservation.
+
+The build priority follows: `tangent_moving` for internal interfaces is the part
+with *teeth* (correctness under adaptation); `extractable` is convenience on top.
+
+**Concrete first extension.** Today the mover's slip gate is `is_bnd` — only
+*outer* codim-1 labels are slip-eligible. To preserve an internal interface, its
+label must enter the slip set even though those nodes are topologically interior,
+and `mesh.boundary_slip` projects them onto the interface's `BoundingSurface`
+exactly as it does an outer ring. The per-surface orchestration ("project nodes
+on surface X back onto X, pin the junctions") already does the right thing; the
+only change is that the eligible-vertex set becomes *"any vertex on a
+`tangent_moving` surface"* rather than *"on the outer boundary."*
+
+### Scope: interfaces yes, faults no
+
+Bounding surfaces are the named codim-1 surfaces a mesh *declares* as
+actual-or-potential boundaries — outer boundaries **and** internal interfaces
+(including the free surface, which is just an internal-interface surface that has
+been `release()`-d to `free`). A **fault is not** one of these: it is an
+internal feature represented its own way (not a subdomain boundary; material is
+~continuous across it, with slip), and the registry must not absorb it. Nothing
+auto-classifies an internal surface — the interface-mesh constructor declares the
+interface as a bounding surface; the fault machinery declares faults its own way.
+
+### Declaration mechanism
+
+- **Built-in meshes are the worked example.** The analytic constructors register
+  at construction via helpers (`register_radial_surfaces`, a `plane` /
+  internal-interface helper to add); that constructor code is the canonical
+  template, because the helpers are *also* the public API a user calls by hand
+  after loading their own gmsh. Keep them ergonomic and obvious.
+- **User gmsh is the number→name→geometry sync.** gmsh gives numbers, DMPlex
+  gives named-but-opaque labels, the geometry lives nowhere until UW3 declares
+  it. The seam already isolates the hard part: `BoundingSurface` keys off the
+  **label name**, never the gmsh number, so registration sits *after* the
+  existing numbers→names mapping (`mesh.boundaries`), on stable names. Helpers to
+  ease that chain are future work but bolt onto a name-based seam.
+
+### Persistence (checkpoint roundtrip)
+
+Surfaces are currently reconstructed only by re-running the constructor — a mesh
+*loaded* from a checkpoint gets nothing but the `facet` default. Bounding-surface
+metadata must therefore ride in the HDF5 next to the boundary-label metadata, and
+reload must rebuild the objects. What is persisted is small and is *annotation,
+not topology* (the DMPlex/labels roundtrip by their own mechanism; the surface
+info is a sidecar keyed by label name), and it is kind-dependent:
+
+- `radial` / `plane` — persist the few construction scalars (centre/radius,
+  point/normal); exact reconstruction.
+- `facet` — do not persist; it is derived from the current boundary facets, so
+  regenerate on load.
+- `free` — persist the mode flag (+ reference if any); the geometry is live.
+
+A submesh roundtrips *its own* declared surfaces, consistent with "each mesh
+declares its own."
+
+### Discoverability
+
+If the mesh *declares* its surfaces, the declarations must be *inspectable* —
+and a checkpoint-loaded mesh must be *equally* self-describing (this is why
+persistence matters, not just reconstruction-by-constructor). By examination the
+mesh should answer:
+
+- **What surfaces do I define?** — enumerate `mesh.bounding_surfaces`, with a
+  human-readable summary of `label · kind · capabilities · geometry`.
+- **By capability** — "which are `tangent_moving`? which are `extractable`?" — so
+  the mover and the submesh extractor each ask the mesh for *their* set instead
+  of hard-coding label names.
+- **How do I access them** — the same objects carry both the operations
+  (normals/restore) and the access path (slip via `mesh.boundary_slip`,
+  extraction via `extract_surface(surface)`); discovery and use are one surface.
+
+### Suggested build order (smallest-first)
+
+1. **Registration helpers as template code** — mostly exists; add the
+   `plane` / internal-interface helper and register regional edge cuts as
+   `plane` (a correctness gap for boundary-slip on regional meshes *today*).
+2. **`tangent_moving` for internal interfaces** — generalise the slip gate from
+   `is_bnd` to "any `tangent_moving` surface." The part with teeth.
+3. **HDF5 persistence** of the analytic surface metadata for checkpoint
+   roundtrip; discoverability falls out of it.
+4. **`extractable` + submesh re-declaration** — extraction accepts a surface and
+   the child re-declares its surviving labels. Geometry inheritance stays parked.
+5. **numbers→names→geometry helpers** for hand-rolled gmsh — later.
+
 ## Deferred cases (handle after the simple analytic geometries)
 
 - **Geographic meshes are an odd case** (flagged in review, 2026-06-06). The
