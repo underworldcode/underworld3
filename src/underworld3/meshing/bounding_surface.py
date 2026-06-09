@@ -77,10 +77,13 @@ class BoundingSurface:
             if self.centre is None or self.radius is None:
                 raise ValueError(
                     "radial BoundingSurface requires centre and radius")
-            if not (np.isfinite(self.radius) and self.radius > 0.0):
+            # radius == 0 is legitimate: a *solid* sphere/annulus registers its
+            # inner ("Lower") boundary at radius 0 (the centre point). Reject
+            # only NEGATIVE or non-finite radii (those give invalid projections).
+            if not (np.isfinite(self.radius) and self.radius >= 0.0):
                 raise ValueError(
-                    "radial BoundingSurface requires a finite positive radius; "
-                    f"got {self.radius!r}")
+                    "radial BoundingSurface requires a finite, non-negative "
+                    f"radius; got {self.radius!r}")
             if not np.all(np.isfinite(self.centre)):
                 raise ValueError(
                     "radial BoundingSurface centre must be finite")

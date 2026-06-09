@@ -104,11 +104,12 @@ def test_degenerate_geometry_raises():
         BoundingSurface(m, "x", "plane", point=[0, 0],
                         normal=[np.nan, 0])
     with pytest.raises(ValueError):
-        BoundingSurface(m, "x", "radial", centre=[0, 0], radius=0.0)
-    with pytest.raises(ValueError):
         BoundingSurface(m, "x", "radial", centre=[0, 0], radius=-1.0)
     with pytest.raises(ValueError):
         BoundingSurface(m, "x", "radial", centre=[0, 0], radius=np.inf)
+    # radius == 0 is VALID (a solid sphere/annulus registers its inner boundary
+    # at the centre, radius 0) — must NOT raise.
+    BoundingSurface(m, "x", "radial", centre=[0, 0], radius=0.0)
 
 
 def test_boundary_slip_keeps_nodes_on_boundary():
