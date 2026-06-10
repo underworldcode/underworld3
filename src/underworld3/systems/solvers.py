@@ -1704,21 +1704,28 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def saddle_preconditioner(self):
-        r"""Preconditioner for the Schur complement in the saddle-point system.
+        r"""Pressure Schur-complement preconditioner — **usually leave unset**.
 
-        For the Stokes system, the default preconditioner is :math:`1/\eta`
-        (inverse viscosity), which approximates the Schur complement
-        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T`.
+        Approximates the Schur complement
+        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T \sim 1/\eta`
+        (inverse viscosity). When this is unset (the default, ``None``) the solver
+        automatically uses :math:`1/\eta = 1/`\ ``constitutive_model.K`` — the
+        correct local-viscosity scaling for any constitutive model. Setting it
+        explicitly to ``1/viscosity`` is therefore **redundant** (and only a chance
+        to supply an inconsistent viscosity); just leave it at the default.
 
         Returns
         -------
-        sympy.Expr
-            Preconditioner expression (typically inverse viscosity).
+        sympy.Expr or None
+            Preconditioner expression, or ``None`` to use the automatic
+            ``1/constitutive_model.K``.
 
         Notes
         -----
-        A good preconditioner significantly improves convergence of the
-        iterative solver. For variable viscosity, use the local viscosity.
+        This is an **advanced override**, useful only when the automatic
+        ``1/K`` is not the right Schur scaling — e.g. an anisotropic/tensorial
+        ``K``, or deliberate preconditioner tuning. (``Stokes_Constrained`` builds
+        its Schur preconditioner automatically and does not expose this property.)
         """
         return self._saddle_preconditioner
 
@@ -2071,6 +2078,28 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # `solver.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"` if desired.
         self.petsc_options["pc_fieldsplit_schur_precondition"] = "selfp"
         return
+
+    @property
+    def saddle_preconditioner(self):
+        """Not used by ``Stokes_Constrained`` — the Schur preconditioner is built
+        automatically.
+
+        The grouped :math:`[p,\\lambda]` Schur preconditioner is formed by
+        ``selfp`` from the operator blocks, and the pressure mass it needs is the
+        ``1/viscosity`` (``1/constitutive_model.K``) term supplied automatically.
+        There is nothing for the user to set; this property is inert and assigning
+        to it raises. (The base :class:`SNES_Stokes` keeps a settable
+        ``saddle_preconditioner`` as an advanced override.)
+        """
+        return None
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        raise AttributeError(
+            "Stokes_Constrained does not use `saddle_preconditioner`: the Schur "
+            "preconditioner is built automatically (selfp + the 1/viscosity mass "
+            "from constitutive_model.K). Remove this assignment."
+        )
 
     def _viscosity_scale(self):
         """A representative scalar viscosity, for sizing the interior screening."""

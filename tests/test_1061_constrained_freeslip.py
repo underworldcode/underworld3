@@ -121,7 +121,6 @@ def annulus():
     ref = uw.systems.Stokes(mesh)
     ref.constitutive_model = uw.constitutive_models.ViscousFlowModel
     ref.constitutive_model.Parameters.shear_viscosity_0 = MU
-    ref.saddle_preconditioner = 1.0 / MU
     ref.bodyforce = buoy * unit_r
     ref.add_dirichlet_bc((0.0, 0.0), "Lower")
     ref.add_natural_bc(1e6 * MU * unit_r.dot(ref.u.sym) * unit_r, "Upper")
@@ -132,7 +131,6 @@ def annulus():
     blk = uw.systems.Stokes_Constrained(mesh)
     blk.constitutive_model = uw.constitutive_models.ViscousFlowModel
     blk.constitutive_model.Parameters.shear_viscosity_0 = MU
-    blk.saddle_preconditioner = 1.0 / MU
     blk.bodyforce = buoy * unit_r
     blk.add_dirichlet_bc((0.0, 0.0), "Lower")
     hb = blk.add_constraint_bc("Upper", g=0.0, normal=unit_r)
@@ -242,7 +240,6 @@ def contrast_annulus():
     blk = uw.systems.Stokes_Constrained(mesh)
     blk.constitutive_model = uw.constitutive_models.ViscousFlowModel
     blk.constitutive_model.Parameters.shear_viscosity_0 = mu
-    blk.saddle_preconditioner = 1.0 / mu
     blk.bodyforce = buoy * unit_r
     blk.add_dirichlet_bc((0.0, 0.0), "Lower")
     # reduced augmentation (1e2, vs the 1e4 default): only viable with a Schur PC
