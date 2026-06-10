@@ -4170,7 +4170,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # makes the augmentation optional. Default OFF (opt-in): a monolithic lu solve
         # factorizes the Pmat (pc_use_amat is a no-op here), so this Pmat term is NOT
         # inert for direct solves — flipping the default on regresses the direct-lu
-        # constraint enforcement. See ~/.claude/plans for the load-bearing-Pmat note.
+        # constraint enforcement. See the design note
+        # docs/developer/design/CONSTRAINED_FREESLIP_MULTIPLIER.md (the warning on the
+        # coupled vs sub-block preconditioner placement).
         self._multiplier_schur_pc = False
         # Pin interior (off-boundary) multiplier DOFs to 0 so the solved [p,h]
         # block carries only the boundary trace (~√ndof instead of ~ndof/3 DOFs);
@@ -4818,6 +4820,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def petsc_use_pressure_nullspace(self, value):
         self._petsc_use_pressure_nullspace = bool(value)
         self._reset_stokes_nullspace()
+        # Force re-setup so the changed nullspace is re-registered with PETSc if
+        # this is toggled after the solver has already been set up (matches
+        # `petsc_use_nullspace`; `_attach_stokes_nullspace` runs inside the
+        # is_setup-gated `_setup_solver`).
+        self.is_setup = False
 
     @property
     def multiplier_schur_pc(self):
