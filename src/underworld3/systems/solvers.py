@@ -1434,13 +1434,19 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: (
-            self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
+            self.stress
+            + self.penalty * self.constitutive_model.K * self.div_u * sympy.eye(self.mesh.dim)
         ),
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
         combining deviatoric stress $\boldsymbol{\tau}$, pressure $p$,
-        and penalty term for weak incompressibility.
+        and the **viscosity-scaled** augmented-Lagrangian penalty term
+        $\lambda\,\mu\,(\nabla\cdot\mathbf{u})\,\mathbf{I}$ for weak
+        incompressibility. The penalty is multiplied by the local viscosity
+        $\mu$ (``constitutive_model.K``) so that, under spatially-variable
+        viscosity, the ratio penalty/$\mu$ stays uniform — a bare constant
+        would over-stiffen low-viscosity regions and lock the velocity there.
         """,
     )
 
@@ -1698,21 +1704,28 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def saddle_preconditioner(self):
-        r"""Preconditioner for the Schur complement in the saddle-point system.
+        r"""Pressure Schur-complement preconditioner — **usually leave unset**.
 
-        For the Stokes system, the default preconditioner is :math:`1/\eta`
-        (inverse viscosity), which approximates the Schur complement
-        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T`.
+        Approximates the Schur complement
+        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T \sim 1/\eta`
+        (inverse viscosity). When this is unset (the default, ``None``) the solver
+        automatically uses :math:`1/\eta = 1/`\ ``constitutive_model.K`` — the
+        correct local-viscosity scaling for any constitutive model. Setting it
+        explicitly to ``1/viscosity`` is therefore **redundant** (and only a chance
+        to supply an inconsistent viscosity); just leave it at the default.
 
         Returns
         -------
-        sympy.Expr
-            Preconditioner expression (typically inverse viscosity).
+        sympy.Expr or None
+            Preconditioner expression, or ``None`` to use the automatic
+            ``1/constitutive_model.K``.
 
         Notes
         -----
-        A good preconditioner significantly improves convergence of the
-        iterative solver. For variable viscosity, use the local viscosity.
+        This is an **advanced override**, useful only when the automatic
+        ``1/K`` is not the right Schur scaling — e.g. an anisotropic/tensorial
+        ``K``, or deliberate preconditioner tuning. (``Stokes_Constrained`` builds
+        its Schur preconditioner automatically and does not expose this property.)
         """
         return self._saddle_preconditioner
 
@@ -1725,29 +1738,48 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     @property
     def penalty(self):
-        r"""Augmented Lagrangian penalty parameter.
+        r"""Augmented Lagrangian penalty parameter (dimensionless, viscosity-scaled).
 
-        The penalty $\lambda$ adds a term to the weak form that
-        penalizes non-zero divergence:
+        The penalty adds a **viscosity-weighted** grad-div term to the weak form
+        that penalizes non-zero divergence:
 
         .. math::
-            \lambda \int (\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
+            \lambda \int \mu\,(\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
 
-        This improves convergence for incompressible flow without
-        changing the solution (since $\nabla \cdot \mathbf{u} = 0$
-        at convergence).
+        where :math:`\mu` is the local viscosity (``constitutive_model.K``). The
+        :math:`\mu`-weighting keeps the effective penalty proportional to the
+        local stress scale, so the ratio penalty/:math:`\mu` is uniform across a
+        spatially-variable viscosity field. (A bare *constant* penalty would be
+        huge relative to the stress in low-:math:`\mu` regions and negligible in
+        high-:math:`\mu` regions — over-stiffening the former into velocity
+        locking. See the design note ``CONSTRAINED_FREESLIP_MULTIPLIER``.) So the
+        parameter here is a **dimensionless** base of :math:`O(1)`.
 
         Returns
         -------
         UWexpression
-            Augmented Lagrangian penalty parameter (typically $O(1)$).
+            Dimensionless augmented-Lagrangian penalty base (typically :math:`O(1)`).
 
         Notes
         -----
-        Set to zero for standard Stokes without augmentation.
-        Unlike classical penalty methods that require very large values,
-        the Augmented Lagrangian approach uses modest penalties of $O(1)$
-        to improve solver convergence.
+        Set to zero (the default) for a standard saddle-point Stokes solve; the
+        ``saddle_preconditioner`` already conditions the pressure Schur, so the
+        penalty is usually unnecessary for convergence.
+
+        **Pressure correction.** This term is part of the *operator*, so when it
+        is non-zero the recovered pressure ``p`` is the Lagrange multiplier, not
+        the mechanical pressure. The total isotropic stress is
+        :math:`-p + \lambda\,\mu\,(\nabla\cdot\mathbf{u})`, so the mechanical
+        pressure is
+
+        .. math::
+            p_\text{mech} = p - \lambda\,\mu\,(\nabla\cdot\mathbf{u}).
+
+        At convergence :math:`\nabla\cdot\mathbf{u}\to 0` so the two agree, but
+        *pointwise* they differ by the penalty term (≈ a couple of percent of
+        :math:`|p|` at :math:`\lambda=O(1)`). For a pressure-dependent
+        constitutive law (yield, density, rheology), use :math:`p_\text{mech}`;
+        for visualisation or weak pressure dependence the raw ``p`` is adequate.
 
         References
         ----------
@@ -2034,7 +2066,40 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # In-saddle multiplier constraints (see add_constraint_bc). Empty for an
         # ordinary Stokes solve, so the base assembly is unaffected.
         self._block_constraint_bcs = []
+
+        # Default the grouped [p, lambda] Schur preconditioner to `selfp` (the base
+        # Stokes default is `a11`). The constraint Schur complement
+        # S_lambda = C A^-1 C^T needs a preconditioner built from the actual operator
+        # blocks; selfp forms S ~ A11 - A10 diag(A00)^-1 A01, whose lambda-lambda corner
+        # is -C diag(A)^-1 C^T = the true constraint Schur, automatically. This cracks
+        # strong boundary-viscosity-contrast walls that the bare `a11` mass cannot, makes
+        # the augmentation optional on moderate contrast, and keeps the recovered
+        # multiplier (= dynamic topography) clean at small augmentation. Override via
+        # `solver.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"` if desired.
+        self.petsc_options["pc_fieldsplit_schur_precondition"] = "selfp"
         return
+
+    @property
+    def saddle_preconditioner(self):
+        """Not used by ``Stokes_Constrained`` — the Schur preconditioner is built
+        automatically.
+
+        The grouped :math:`[p,\\lambda]` Schur preconditioner is formed by
+        ``selfp`` from the operator blocks, and the pressure mass it needs is the
+        ``1/viscosity`` (``1/constitutive_model.K``) term supplied automatically.
+        There is nothing for the user to set; this property is inert and assigning
+        to it raises. (The base :class:`SNES_Stokes` keeps a settable
+        ``saddle_preconditioner`` as an advanced override.)
+        """
+        return None
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        raise AttributeError(
+            "Stokes_Constrained does not use `saddle_preconditioner`: the Schur "
+            "preconditioner is built automatically (selfp + the 1/viscosity mass "
+            "from constitutive_model.K). Remove this assignment."
+        )
 
     def _viscosity_scale(self):
         """A representative scalar viscosity, for sizing the interior screening."""

@@ -27,7 +27,6 @@ def test_constrained_solcx_matches_analytic():
     s = uw.systems.Stokes_Constrained(mesh)
     s.constitutive_model = uw.constitutive_models.ViscousFlowModel
     s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
-    s.saddle_preconditioner = 1.0 / sol.fn_viscosity
     s.bodyforce = sol.fn_bodyforce
     # free-slip on all four walls via in-saddle multipliers
     s.add_constraint_bc("Left",   g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))

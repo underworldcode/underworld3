@@ -121,7 +121,6 @@ def annulus():
     ref = uw.systems.Stokes(mesh)
     ref.constitutive_model = uw.constitutive_models.ViscousFlowModel
     ref.constitutive_model.Parameters.shear_viscosity_0 = MU
-    ref.saddle_preconditioner = 1.0 / MU
     ref.bodyforce = buoy * unit_r
     ref.add_dirichlet_bc((0.0, 0.0), "Lower")
     ref.add_natural_bc(1e6 * MU * unit_r.dot(ref.u.sym) * unit_r, "Upper")
@@ -132,7 +131,6 @@ def annulus():
     blk = uw.systems.Stokes_Constrained(mesh)
     blk.constitutive_model = uw.constitutive_models.ViscousFlowModel
     blk.constitutive_model.Parameters.shear_viscosity_0 = MU
-    blk.saddle_preconditioner = 1.0 / MU
     blk.bodyforce = buoy * unit_r
     blk.add_dirichlet_bc((0.0, 0.0), "Lower")
     hb = blk.add_constraint_bc("Upper", g=0.0, normal=unit_r)
@@ -217,3 +215,74 @@ def test_box_variable_viscosity_matches_dirichlet(contrast):
 
     rel = np.sqrt(np.sum((ref.u.data - blk.u.data) ** 2)) / np.sqrt(np.sum(ref.u.data ** 2))
     assert rel < 1e-4
+
+
+# --------------------------------------------------------------------------- #
+# (D) constraint Schur preconditioner under strong lateral viscosity contrast.
+#     The bare `a11` (mass) Schur PC walls when the boundary viscosity contrast is
+#     strong (the augmentation r carries all the conditioning, which also corrupts
+#     the recovered lambda = topography). The constrained solver defaults to `selfp`,
+#     which builds the true constraint Schur -C diag(A)^-1 C^T from the actual
+#     operator blocks: it cracks the wall, makes the augmentation optional, and keeps
+#     lambda clean at small r. Uniform mu still converges (the well-conditioned case).
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def contrast_annulus():
+    R_I, R_O, CELL, RA, MU_HI = 0.5, 1.0, 0.1, 1.0e2, 1.0e3
+    mesh = uw.meshing.Annulus(radiusInner=R_I, radiusOuter=R_O, cellSize=CELL, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    unit_r = sympy.Matrix([[x / r, y / r]])
+    th = sympy.atan2(y, x)
+    mu = MU * (MU_HI / MU) ** ((1 + sympy.cos(th)) / 2)   # smooth lateral ramp
+    buoy = RA * sympy.cos(3 * th) * (r - R_I) / (R_O - R_I)
+
+    blk = uw.systems.Stokes_Constrained(mesh)
+    blk.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    blk.constitutive_model.Parameters.shear_viscosity_0 = mu
+    blk.bodyforce = buoy * unit_r
+    blk.add_dirichlet_bc((0.0, 0.0), "Lower")
+    # reduced augmentation (1e2, vs the 1e4 default): only viable with a Schur PC
+    # that conditions the constraint block — here the default `selfp`.
+    hb = blk.add_constraint_bc("Upper", g=0.0, normal=unit_r, augmentation_base=1.0e2)
+    blk.petsc_use_pressure_nullspace = True
+    blk.tolerance = 1e-8
+    blk.petsc_options["snes_linesearch_type"] = "basic"
+    blk.solve()
+    return dict(mesh=mesh, unit_r=unit_r, R_O=R_O, blk=blk, hb=hb)
+
+
+def test_contrast_converges(contrast_annulus):
+    """With the default selfp Schur PC, reduced augmentation still converges."""
+    blk = contrast_annulus["blk"]
+    assert blk.snes.getConvergedReason() > 0
+
+
+def test_contrast_constraint_enforced(contrast_annulus):
+    blk, unit_r, mesh = contrast_annulus["blk"], contrast_annulus["unit_r"], contrast_annulus["mesh"]
+    vn = blk.u.sym.dot(unit_r)
+    num = float(uw.maths.BdIntegral(mesh, fn=vn**2, boundary="Upper").evaluate())
+    length = float(uw.maths.BdIntegral(mesh, fn=1.0, boundary="Upper").evaluate())
+    assert np.sqrt(num / length) < 1.0e-3
+
+
+def test_contrast_topography_recovery(contrast_annulus):
+    """At reduced augmentation the multiplier recovers -n.sigma.n (clean topography)."""
+    blk, unit_r, hb = contrast_annulus["blk"], contrast_annulus["unit_r"], contrast_annulus["hb"]
+    R_O = contrast_annulus["R_O"]
+    srr = uw.discretisation.MeshVariable("srr_contrast", blk.mesh, 1, degree=2)
+    proj = uw.systems.Projection(blk.mesh, srr)
+    proj.uw_function = (unit_r * blk.stress * unit_r.T)[0, 0]
+    proj.solve()
+    ch = hb.coords
+    onb = np.sqrt(ch[:, 0] ** 2 + ch[:, 1] ** 2) > R_O - 0.01
+    corr = np.corrcoef(hb.data[onb, 0], -srr.data[onb, 0])[0, 1]
+    assert corr > 0.99
+
+
+def test_selfp_is_default_schur_pc(annulus):
+    """The constrained solver defaults to the selfp Schur preconditioner."""
+    blk = annulus["blk"]
+    assert str(blk.petsc_options.getAll().get("pc_fieldsplit_schur_precondition")) == "selfp"
+    # the experimental hand-scaled 1/mu Pmat term stays opt-in (off)
+    assert blk.multiplier_schur_pc is False
