@@ -477,26 +477,52 @@ print(f"  init done {time.time()-t0:.1f}s "
 
 hist = []
 t_sim = 0.0
+# Width of one history row. The row is assembled in TWO places — here (seeding
+# from history.npz on --resume) and the per-step append in the loop. They MUST
+# stay column-for-column identical: a mismatch makes a later np.asarray(hist)
+# raise a cryptic "inhomogeneous shape" mid-run (it bit the FMG restart test).
+# The assert below fails loudly at resume time instead, and this constant is the
+# single source of truth for the width.
+_HIST_NCOL = 16
 if resume_label:
     hpath = os.path.join(OUT_DIR, "history.npz")
     if os.path.exists(hpath):
-        z = np.load(hpath)
-        for i in range(len(z['step'])):
-            if int(z['step'][i]) > resume_step:
-                continue
-            _mis = (float(z['misalignment'][i])
-                    if 'misalignment' in z.files else float('nan'))
-            hist.append((int(z['step'][i]),
-                         float(z['t'][i]),
-                         float(z['dt'][i]),
-                         float(z['wall'][i]),
-                         float(z['vrms'][i]),
-                         float(z['Nu'][i]),
-                         float(z['Tmin'][i]),
-                         float(z['Tmax'][i]),
-                         int(z['adapted'][i]),
-                         _mis))
+        # A run interrupted mid-write (an OOM / jetsam kill, Ctrl-C during the
+        # np.savez) can leave a truncated/corrupt history.npz (BadZipFile / bad
+        # CRC). The *simulation* state lives in the mesh + field checkpoints, not
+        # here, so a bad plot-history must NOT block the restart — warn and carry
+        # on with no seeded history.
+        try:
+            z = np.load(hpath)
+            # Solver/timing columns are absent in a pre-instrumentation npz.
+            _has_solver = 'stokes_ksp_its' in z.files
+            for i in range(len(z['step'])):
+                if int(z['step'][i]) > resume_step:
+                    continue
+                _mis = (float(z['misalignment'][i])
+                        if 'misalignment' in z.files else float('nan'))
+                hist.append((
+                    int(z['step'][i]), float(z['t'][i]), float(z['dt'][i]),
+                    float(z['wall'][i]), float(z['vrms'][i]), float(z['Nu'][i]),
+                    float(z['Tmin'][i]), float(z['Tmax'][i]), int(z['adapted'][i]),
+                    _mis,
+                    int(z['stokes_ksp_its'][i]) if _has_solver else -1,
+                    int(z['stokes_snes_its'][i]) if _has_solver else -1,
+                    int(z['adv_ksp_its'][i]) if _has_solver else -1,
+                    float(z['t_stokes'][i]) if _has_solver else 0.0,
+                    float(z['t_advdiff'][i]) if _has_solver else 0.0,
+                    float(z['t_adapt'][i]) if _has_solver else 0.0,
+                ))
+        except Exception as _e:
+            hist = []
+            print(f"  WARNING: prior history.npz unreadable "
+                  f"({type(_e).__name__}: {_e}); resuming without seeded "
+                  f"history (simulation state is intact in the checkpoints).")
         if hist:
+            assert all(len(r) == _HIST_NCOL for r in hist), (
+                f"resumed history rows have inconsistent widths "
+                f"{sorted({len(r) for r in hist})}; the resume-seed tuple (here) "
+                f"and the per-step append tuple must both be {_HIST_NCOL} columns.")
             t_sim = hist[-1][1]
             print(f"  resumed history: {len(hist)} entries, "
                   f"t={t_sim:.5f}")
