@@ -79,7 +79,8 @@ def test_fmg_without_hierarchy_falls_back():
     # Asking for fmg on a mesh with no hierarchy warns and uses GAMG.
     stokes = _make_stokes(mesh_plain)
     stokes.preconditioner = "fmg"
-    stokes.solve()
+    with pytest.warns(UserWarning, match="falling back to GAMG"):
+        stokes.solve()
     assert _vel_pc(stokes) == "gamg"
     assert stokes.snes.getConvergedReason() > 0
 

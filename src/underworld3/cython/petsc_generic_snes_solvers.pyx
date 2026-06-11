@@ -179,14 +179,14 @@ class SolverBaseClass(uw_object):
                 opts.delValue(f"{prefix}{key}")
             self._pc_managed_value = "mg"
         else:
-            if self._preconditioner == "fmg":
-                if uw.mpi.rank == 0:
-                    print(
-                        f"[{self.name}] preconditioner='fmg' requested but the mesh "
-                        f"has no refinement hierarchy; falling back to GAMG. Build the "
-                        f"mesh with refinement >= 1 to enable geometric multigrid.",
-                        flush=True,
-                    )
+            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
+                import warnings
+                warnings.warn(
+                    f"[{self.name}] preconditioner='fmg' requested but the mesh "
+                    f"has no refinement hierarchy; falling back to GAMG. Build the "
+                    f"mesh with refinement >= 1 to enable geometric multigrid.",
+                    stacklevel=2,
+                )
             opts[f"{prefix}pc_type"] = "gamg"
             opts[f"{prefix}pc_gamg_type"] = "agg"
             opts[f"{prefix}pc_gamg_repartition"] = True
