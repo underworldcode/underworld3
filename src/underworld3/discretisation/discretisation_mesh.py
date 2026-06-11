@@ -429,11 +429,10 @@ class Mesh(Stateful, uw_object):
                 # the multigrid interpolation is rank-local and does not hang.
                 self._sidecar_coarse_levels = None
                 try:
-                    fh = h5py.File(plex_or_meshfile, "r")
-                    n_coarse = int(
-                        fh["metadata"].attrs.get("hierarchy_coarse_levels", 0)
-                    )
-                    fh.close()
+                    with h5py.File(plex_or_meshfile, "r") as fh:
+                        n_coarse = int(
+                            fh["metadata"].attrs.get("hierarchy_coarse_levels", 0)
+                        )
                 except (KeyError, OSError):
                     n_coarse = 0
                 if n_coarse > 0:

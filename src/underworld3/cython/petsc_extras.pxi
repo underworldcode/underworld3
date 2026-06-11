@@ -56,7 +56,6 @@ cdef extern from "petsc.h" nogil:
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
     PetscErrorCode DMPlexSetRegularRefinement( PetscDM dm, PetscBool regular)
-    PetscErrorCode DMPlexGetRegularRefinement( PetscDM dm, PetscBool *regular)
     PetscErrorCode MatInterpolate(PetscMat A, PetscVec x, PetscVec y)
     PetscErrorCode DMSetLocalSection(PetscDM, PetscSection)
     

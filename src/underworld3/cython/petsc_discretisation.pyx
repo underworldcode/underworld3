@@ -181,15 +181,6 @@ def petsc_dm_set_regular_refinement(dm, regular=True):
         return
 
 
-def petsc_dm_get_regular_refinement(dm) -> bool:
-        """Return whether a DMPlex is flagged as a regular refinement of its
-        coarse DM (see :func:`petsc_dm_set_regular_refinement`)."""
-        cdef DM c_dm = dm
-        cdef PetscBool flag = PETSC_FALSE
-        CHKERRQ( DMPlexGetRegularRefinement(c_dm.dm, &flag) )
-        return bool(flag)
-
-
 
 # This is not cython, does it need to be here or in discretisation.py ?
 
