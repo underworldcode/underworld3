@@ -112,29 +112,50 @@ Because `"auto"` does not overwrite options you set yourself, you can keep
 
 ## Benchmark: FMG vs GAMG on a deforming adaptive mesh
 
-The payoff is clearest on an aggressively adapted mesh. The following is a
-Stokes convection run (annulus, res ≈ 32, radius ratio 8, mode-1, `np=5`) whose
-mesh is continuously deformed by the MMPDE coordinate mover. The geometric
-hierarchy (3 levels) survives every step — topology is preserved — and the solve
-converges cleanly (`snes` reason 3) throughout. Both configurations were run on
-the *identical* adapted-mesh sequence.
+The payoff is clearest on an aggressively adapted mesh. The figure below is a
+Stokes convection run (annulus, Ra = 10⁷, Δη = 10³, res 32, resolution-ratio
+R = 8, mode-1, `np = 5`) whose mesh is continuously deformed by the MMPDE
+coordinate mover, adapted every timestep. The geometric hierarchy (3 levels)
+survives every step — topology is preserved — and both engines converge cleanly
+(`snes` reason 3) throughout. FMG (`PCVEL=gmg MG_TYPE=full`) and GAMG
+(`PCVEL=amg`) ran the *identical* adapted-mesh sequence over 50 steps.
 
-The metric that matters is the **inner velocity-block KSP iteration count** as the
-cell anisotropy sharpens (the outer Schur KSP is 1 iteration in both cases, so the
-entire cost lives in this inner block):
+```{figure} figures/bench_fmg_vs_gamg_velocity_ksp.svg
+:alt: Inner velocity-block KSP iterations and Stokes-solve wall time versus adaptation step, for FMG and GAMG.
 
-| velocity-block KSP iters | step 1 (near-uniform) | steps 5–10 | steps 15–20 (sharp) | Stokes wall, step 20 |
-|--------------------------|:---------------------:|:----------:|:-------------------:|:--------------------:|
-| **FMG** (geometric)      | 5                     | ~4         | ~4                  | 12.5 s               |
-| **GAMG** (algebraic)     | 75                    | ~85–115    | ~125–147            | 23.6 s               |
+**Velocity-block solver scaling under adaptive remeshing.** Inner velocity-block
+KSP iterations (top) and Stokes-solve wall time (bottom) versus adaptation step.
+Geometric full multigrid (FMG) keeps a mesh-independent ≈ 5 inner iterations as
+the cells stretch, where algebraic multigrid (GAMG) runs a volatile ≈ 64–131
+(≈ 23×) without cliffing at this anisotropy. The wall-clock gap is only ≈ 1.8×:
+each GAMG V-cycle is far cheaper than an FMG F-cycle, and the cold-start Stokes
+solve after each adapt (common to both) dominates the time. The outer Schur KSP
+converges in one iteration for both — the difference is entirely in the inner
+velocity block.
+```
 
-FMG stays **flat at ~4 iterations** — the textbook mesh-independent geometric-MG
-signature — while GAMG climbs from 75 to ~147 (volatile and growing, ~25–35× FMG's
-count and ~2× the wall-clock) as the algebraic aggregates degrade under the
-stretched cells. A 250-step continuation confirms FMG holds the full horizon
-without cliffing once the hierarchy is established. GAMG did not outright fail in
-20 steps here, but the trend is unmistakable and on sharper problems it reaches
-`DIVERGED_PC_FAILED`.
+The metric that matters is the **inner velocity-block KSP iteration count** — the
+outer Schur KSP is one iteration for both engines, so the entire difference lives
+in this inner block:
+
+- **FMG** holds a **mesh-independent ≈ 5** iterations (3–6) as the anisotropy
+  sharpens — the geometric-MG signature.
+- **GAMG** runs a **volatile ≈ 64–131** (median ≈ 114, so ≈ 23×) as the algebraic
+  aggregates cope with the stretched cells. It does *not* cliff at R = 8 over
+  these 50 steps, but it is unpredictable from step to step.
+
+The wall-clock gap is only **≈ 1.8×**, not 23×: a single GAMG V-cycle is far
+cheaper than an FMG F-cycle, and the cold-start Stokes solve after each adapt
+(common to both engines) dominates the per-step time. So the value of geometric
+FMG here is **predictability and mesh-independence** — properties that widen with
+problem size and multigrid depth — rather than a large raw speed-up. The iteration
+gap is also where GAMG eventually loses robustness on harder problems (higher
+anisotropy, more levels).
+
+The per-step data is in
+[`figures/bench_fmg_vs_gamg_velocity_ksp.csv`](figures/bench_fmg_vs_gamg_velocity_ksp.csv);
+the reproduction command and full provenance are in the companion note
+`figures/bench_fmg_vs_gamg_velocity_ksp.md`.
 
 ## When to use which
 

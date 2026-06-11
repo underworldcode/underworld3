@@ -326,10 +326,12 @@ default and never rewrites pc options a solver/user configured directly
 `tests/test_1014_stokes_multigrid.py`.
 
 Benchmark-validated on a deforming adaptive mesh (annulus res32, R=8,
-mode-1, np=5, MMPDE mover): the 3-level hierarchy survives every step
-and the inner velocity-block KSP stays flat at ~4 iters under FMG where
-GAMG climbs 75→~147 (~25-35×, ~2× wall) as cells stretch. Table in
-`docs/advanced/multigrid-preconditioning.md`.
+mode-1, np=5, MMPDE mover, 50 steps): the 3-level hierarchy survives
+every step and the inner velocity-block KSP stays flat at ~5 iters under
+FMG where GAMG is a volatile ~64-131 (~23×) without cliffing at this
+anisotropy; wall-clock gap only ~1.8× (the cold-start Stokes solve, common
+to both, dominates the time). The value is predictability/mesh-independence,
+not raw speed. Figure + data in `docs/advanced/multigrid-preconditioning.md`.
 
 Still pairs naturally with the error-estimator design arc — the same
 multi-level structure yields both the anisotropy-robust PC and the
