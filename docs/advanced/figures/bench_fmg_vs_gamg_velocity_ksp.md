@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Handover — FMG vs GAMG benchmark figure + adaptive-convection animation
 
 Produced 2026-06-11 from the boundary-slip / anisotropic-mover branch (PR #228).
