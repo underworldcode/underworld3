@@ -5,10 +5,15 @@ reload from a checkpoint, ``Mesh(file)`` must transparently restore that
 hierarchy in parallel too — without the cross-partition interpolation hang that
 a naive (graph-partitioned) reload of independently-loaded levels produces.
 
-The fix co-locates the levels by distributing the fine and every coarse level
-with PETSc's Simple partitioner: because the fine carries canonical refinement
-numbering, equal contiguous splits put each rank's coarse cells and their fine
-children on the same rank, so the multigrid interpolation is rank-local.
+The fix co-locates the levels by reconstructing the hierarchy the same way a
+fresh ``refinement`` mesh is built: distribute the coarsest level first, then
+``refine()`` it locally. ``refine()`` never moves points across the
+decomposition (only ``distribute()`` does), so every coarse cell and all of its
+children are guaranteed co-resident on one rank — the multigrid interpolation is
+rank-local at any np. (The earlier approach distributed independently-built
+levels and misaligned at parallel np, aborting inside
+``DMPlexComputeInterpolatorNested``.) The saved deformed fine coordinates are
+then stamped back on via an exact reference-coordinate lookup.
 
 Run:
 
