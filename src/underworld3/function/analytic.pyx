@@ -230,13 +230,16 @@ class SolCx:
         compiled kernel. Returns an (N, 3) array of (sigma_xx, sigma_yy,
         sigma_xy)."""
         import numpy as _np
-        p = (self.eta_A, self.eta_B, self.x_c, self.n)
-        out = _np.empty((len(coords), 3))
+        cdef Py_ssize_t i
+        cdef double xi, yi
+        cdef tensor2 s
+        out = _np.empty((len(coords), 3), dtype=_np.float64)
         for i in range(len(coords)):
             xi = float(coords[i, 0]); yi = float(coords[i, 1])
-            out[i, 0] = float(AnalyticSolCx_stress_xx(*p, xi, yi).evalf())
-            out[i, 1] = float(AnalyticSolCx_stress_yy(*p, xi, yi).evalf())
-            out[i, 2] = float(AnalyticSolCx_stress_xy(*p, xi, yi).evalf())
+            s = SolCx_stress(self.eta_A, self.eta_B, self.x_c, self.n, xi, yi)
+            out[i, 0] = s.xx
+            out[i, 1] = s.zz
+            out[i, 2] = s.xz
         return out
 
     def topography_top(self, coords):
