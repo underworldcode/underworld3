@@ -67,6 +67,203 @@ class SolverBaseClass(uw_object):
         self._pressure_is = None
         self._subdict = {}
 
+        # Preconditioner selection — see the `preconditioner` property.
+        # `_pc_option_prefix` is set by subclasses that participate in the easy
+        # FMG/GAMG switch ("" for scalar/vector, "fieldsplit_velocity_" for
+        # Stokes); None means "this solver manages its own PC options" and the
+        # helper below is a no-op.
+        self._preconditioner = "auto"
+        self._pc_option_prefix = None
+        # The pc_type value this helper last managed. Subclasses that opt in set
+        # their __init__ default ("gamg"); used in "auto" mode to tell an
+        # untouched framework default (eligible for FMG upgrade) apart from an
+        # explicit user override of pc_type, which must be respected.
+        self._pc_managed_value = "gamg"
+        # Latches once the user (or harness) is seen to have set the PC options
+        # themselves. _apply_preconditioner_options() runs on EVERY _build (so
+        # "auto" can re-resolve after a remesh), and without this latch the
+        # override detection only holds on the first build: once we adopted the
+        # user's pc_type as our managed value, a later rebuild could no longer
+        # tell "user set mg" from "we set mg" and would clobber their tuned
+        # smoother / coarse-solver options with the framework FMG bundle.
+        self._pc_user_override = False
+
+    @property
+    def preconditioner(self):
+        """Preconditioner selection for the (velocity) block.
+
+        One of:
+
+        - ``"auto"`` (default) — use geometric Full Multigrid (FMG) when the
+          mesh carries a genuine refinement hierarchy
+          (``len(mesh.dm_hierarchy) > 1``, i.e. built with ``refinement >= 1``),
+          otherwise fall back to algebraic multigrid (GAMG).
+        - ``"fmg"`` (alias ``"mg"``) — force geometric multigrid. Requires a
+          refinement hierarchy; warns and falls back to GAMG if none exists.
+        - ``"gamg"`` — force algebraic multigrid (the historical default).
+
+        Geometric multigrid is inherently robust to mesh anisotropy (it is built
+        from the geometric refinement hierarchy, not the operator connection
+        graph), which makes it the preferred choice on adapted/deformed meshes.
+        The hierarchy survives the coordinate-deforming adaptation movers and
+        only collapses under a true remesh — in which case ``"auto"``
+        transparently reverts to GAMG.
+
+        For Stokes this governs the velocity fieldsplit block; for scalar/vector
+        solvers it governs the top-level preconditioner. Other solvers ignore it.
+        """
+        return self._preconditioner
+
+    @preconditioner.setter
+    def preconditioner(self, value):
+        choice = str(value).lower()
+        if choice == "mg":
+            choice = "fmg"
+        if choice not in ("auto", "fmg", "gamg"):
+            raise ValueError(
+                f"preconditioner must be 'auto', 'fmg', or 'gamg' (got {value!r})"
+            )
+        self._preconditioner = choice
+        # Force a full rebuild so the new option bundle is pushed to PETSc.
+        self.is_setup = False
+
+    def _apply_preconditioner_options(self):
+        """Push the PETSc option bundle implied by ``self.preconditioner``.
+
+        Called from ``_build`` so that ``"auto"`` re-resolves against the
+        *current* mesh — e.g. after a remesh that collapses the refinement
+        hierarchy. Solvers opt in by setting ``self._pc_option_prefix`` (``""``
+        or ``"fieldsplit_velocity_"``); the default (None) makes this a no-op.
+        """
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return
+
+        opts = self.petsc_options
+
+        # The mesh is the source of truth for hierarchy depth: the solver's own
+        # dm_hierarchy is a clone of it and may not be populated this early.
+        n_levels = len(getattr(self.mesh, "dm_hierarchy", []) or [])
+
+        if self._preconditioner == "auto":
+            # Auto mode is deliberately conservative: it only ever *adds*
+            # geometric multigrid, never rewrites an existing GAMG/other
+            # configuration (internal utility solvers — mesh smoothing, OT,
+            # projections — set their own carefully tuned pc options that must
+            # be left intact).
+            if self._pc_user_override:
+                # User/harness owns the PC options — never re-apply our bundle,
+                # even across remesh rebuilds (see _pc_user_override init note).
+                return
+            current = opts.getString(f"{prefix}pc_type")
+            if current and current != self._pc_managed_value:
+                # Preconditioner was set explicitly elsewhere — respect it, and
+                # latch so later rebuilds keep respecting it.
+                self._pc_user_override = True
+                self._pc_managed_value = current
+                return
+            if n_levels > 1:
+                want_fmg = True
+            else:
+                # No hierarchy. Only act to revert a previous FMG upgrade of
+                # ours (e.g. after a remesh collapsed the hierarchy); otherwise
+                # leave the existing default/tuned options untouched.
+                if self._pc_managed_value != "mg":
+                    return
+                want_fmg = False
+        elif self._preconditioner == "fmg":
+            want_fmg = n_levels > 1
+        else:  # "gamg" — explicit, always applied
+            want_fmg = False
+
+        if want_fmg:
+            # Geometric Full Multigrid on the refinement hierarchy. Galerkin
+            # (RAP) coarse operators are required because UW3 does not install
+            # residual/Jacobian callbacks on the coarse DMs.
+            opts[f"{prefix}pc_type"] = "mg"
+            opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
+            opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
+            # richardson+sor (not chebyshev): chebyshev needs eigenvalue
+            # estimates of the smoothed operator, which are fragile on the
+            # indefinite / variable-viscosity Stokes velocity block and diverge;
+            # richardson+sor is the benchmark-validated, mesh-independent choice.
+            opts[f"{prefix}mg_levels_ksp_type"] = "richardson"
+            opts[f"{prefix}mg_levels_pc_type"] = "sor"
+            opts[f"{prefix}mg_levels_ksp_max_it"] = 4
+            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
+            # redundant+lu, not bare lu: a bare serial LU cannot factor a
+            # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
+            # after 0 iterations). redundant gathers the (small) coarse system to
+            # one rank and is identical to lu in serial — so it is np-safe by
+            # default without surprising small-np users.
+            opts[f"{prefix}mg_coarse_pc_type"] = "redundant"
+            opts[f"{prefix}mg_coarse_redundant_pc_type"] = "lu"
+            # Clear stale GAMG-only keys so toggling back and forth is clean.
+            for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
+                opts.delValue(f"{prefix}{key}")
+            self._pc_managed_value = "mg"
+        else:
+            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
+                import warnings
+                warnings.warn(
+                    f"[{self.name}] preconditioner='fmg' requested but the mesh "
+                    f"has no refinement hierarchy; falling back to GAMG. Build the "
+                    f"mesh with refinement >= 1 to enable geometric multigrid.",
+                    stacklevel=2,
+                )
+            opts[f"{prefix}pc_type"] = "gamg"
+            opts[f"{prefix}pc_gamg_type"] = "agg"
+            opts[f"{prefix}pc_gamg_repartition"] = True
+            opts[f"{prefix}pc_mg_type"] = "additive"
+            opts[f"{prefix}pc_gamg_agg_nsmooths"] = 2
+            opts[f"{prefix}mg_levels_ksp_max_it"] = 3
+            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
+            # Clear stale geometric-MG-only keys.
+            for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
+                        "mg_levels_pc_type", "mg_coarse_pc_type",
+                        "mg_coarse_redundant_pc_type"):
+                opts.delValue(f"{prefix}{key}")
+            self._pc_managed_value = "gamg"
+
+    def _enforce_galerkin_for_geometric_mg(self):
+        """Geometric multigrid in UW3 REQUIRES Galerkin (RAP) coarse operators.
+
+        UW3 installs no residual/Jacobian callbacks on the coarse DMs of the
+        refinement hierarchy, so PETSc cannot re-discretise the operator there.
+        With Galerkin RAP the coarse operators are assembled as R*A*P from the
+        fine operator and the coarse DMs are used only for interpolation — which
+        is the only mode that works. If ``pc_type=mg`` is selected on a block we
+        manage but Galerkin is unset (or explicitly ``none``), PETSc instead
+        tries to build coarse operators itself and fails cryptically: PETSc
+        error 73 ("KSPSetDM without ComputeOperators") in serial, or
+        ``DMCoarsen -> DMAdaptMetric -> ParMmg`` (which is 3D-only) in parallel.
+
+        So rather than let users trip those, force ``pc_mg_galerkin=both``
+        whenever a managed block uses geometric MG, regardless of who selected
+        it (user, harness, or our own auto/fmg bundle). A bare ``=None`` flag
+        already engages RAP (reads back as ``''`` but is *present*); only a
+        genuinely-unset or ``none`` value is overridden.
+        """
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return
+        opts = self.petsc_options
+        if opts.getString(f"{prefix}pc_type") != "mg":
+            return
+        gkey = f"{prefix}pc_mg_galerkin"
+        if (not opts.hasName(gkey)) or opts.getString(gkey) == "none":
+            if uw.mpi.rank == 0:
+                import warnings
+                warnings.warn(
+                    f"[{self.name}] geometric multigrid (pc_type=mg) requires "
+                    f"Galerkin coarse operators in UW3 — forcing {gkey}=both. "
+                    f"(UW3 installs no coarse-DM operator callbacks, so coarse "
+                    f"re-discretisation is unsupported and fails as PETSc error "
+                    f"73 / ParMmg.)",
+                    stacklevel=2,
+                )
+            opts[gkey] = "both"
+
     def _check_expression_meshes(self):
         """Check that all MeshVariable symbols in solver expressions
         belong to this solver's mesh.
@@ -596,6 +793,13 @@ class SolverBaseClass(uw_object):
 
         if self.is_setup:
             return
+
+        # Resolve the preconditioner choice (auto/fmg/gamg) against the current
+        # mesh hierarchy and push the option bundle before the per-class
+        # _setup_solver runs snes.setFromOptions(). No-op unless the solver
+        # opted in via _pc_option_prefix (Stokes / scalar / vector).
+        self._apply_preconditioner_options()
+        self._enforce_galerkin_for_geometric_mg()
 
         # === Fast path 1: constants-only change ===
         # If JIT cache key matches, the compiled code is identical — only
@@ -1616,6 +1820,13 @@ class SNES_Scalar(SolverBaseClass):
 
         # ROBUST and general GAMG, heavy-duty solvers in the suite
 
+        # Participate in the auto FMG/GAMG switch (see the `preconditioner`
+        # property). The pc/mg keys below are the GAMG default;
+        # _apply_preconditioner_options() upgrades this block to geometric FMG
+        # at build time when the mesh carries a refinement hierarchy, and
+        # otherwise leaves these defaults in place.
+        self._pc_option_prefix = ""
+
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_type"] = "gmres"
         self.petsc_options["pc_type"] = "gamg"
@@ -2468,6 +2679,13 @@ class SNES_Vector(SolverBaseClass):
 
         # options = PETSc.Options()
         # options["dm_adaptor"]= "pragmatic"
+
+        # Participate in the auto FMG/GAMG switch (see the `preconditioner`
+        # property). The pc/mg keys below are the GAMG default;
+        # _apply_preconditioner_options() upgrades this block to geometric FMG
+        # at build time when the mesh carries a refinement hierarchy, and
+        # otherwise leaves these defaults in place.
+        self._pc_option_prefix = ""
 
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
@@ -4214,6 +4432,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self._tolerance = 1.0e-4
         self._strategy = "default"
+
+        # Participate in the auto FMG/GAMG switch on the velocity fieldsplit
+        # block (see the `preconditioner` property). The velocity pc/mg keys
+        # set below are the GAMG default; _apply_preconditioner_options()
+        # upgrades the velocity block to geometric FMG at build time when the
+        # mesh carries a refinement hierarchy, and otherwise leaves them.
+        self._pc_option_prefix = "fieldsplit_velocity_"
 
         self.petsc_options["snes_rtol"] = self._tolerance
         self.petsc_options["snes_ksp_ew"] = None

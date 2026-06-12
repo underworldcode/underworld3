@@ -308,10 +308,34 @@ note (cf. `snes-atol-convergence-scale.md`) before implementation.
 anisotropy-robust (the hierarchy is built geometrically, not from
 the operator's connection graph).
 
-**Status:** UW3 has `dm_hierarchy` / `refineHierarchy`
-infrastructure. Pairs naturally with the error-estimator design
-arc — the same multi-level structure yields both the
-anisotropy-robust PC and the absolute error indicator.
+**Status:** **Landed.** A mesh built with `refinement >= 1` carries a
+`dm_hierarchy`, and the solvers now switch to geometric Full Multigrid
+on it automatically. The user-facing control is the `preconditioner`
+property (`"auto"` | `"fmg"` | `"gamg"`) on the Stokes / scalar / vector
+solvers; `"auto"` (the default) selects FMG when a hierarchy is present
+and falls back to GAMG otherwise.
+
+Implementation: `SolverBaseClass._apply_preconditioner_options()` in
+`petsc_generic_snes_solvers.pyx`, invoked from `_build` so `"auto"`
+re-resolves against the current mesh (a true remesh collapses the
+hierarchy → automatic GAMG fallback). The auto path is deliberately
+conservative — it only *adds* geometric MG on top of an untouched
+default and never rewrites pc options a solver/user configured directly
+(e.g. the tuned GAMG in the OT/φ-Poisson smoother). User guide:
+`docs/advanced/multigrid-preconditioning.md`. Tests:
+`tests/test_1014_stokes_multigrid.py`.
+
+Benchmark-validated on a deforming adaptive mesh (annulus res32, R=8,
+mode-1, np=5, MMPDE mover, 50 steps): the 3-level hierarchy survives
+every step and the inner velocity-block KSP stays flat at ~5 iters under
+FMG where GAMG is a volatile ~64-131 (~23×) without cliffing at this
+anisotropy; wall-clock gap only ~1.8× (the cold-start Stokes solve, common
+to both, dominates the time). The value is predictability/mesh-independence,
+not raw speed. Figure + data in `docs/advanced/multigrid-preconditioning.md`.
+
+Still pairs naturally with the error-estimator design arc — the same
+multi-level structure yields both the anisotropy-robust PC and the
+absolute error indicator.
 
 ## Mesh-quality / `mesh.quality()` API
 

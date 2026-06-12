@@ -18,6 +18,12 @@ Profile, optimize, and scale your simulations.
 
 **[→ Performance Guide](performance.md)**
 
+### Multigrid Preconditioning (FMG vs GAMG)
+Robust, anisotropy-tolerant solves on adapted meshes — build a mesh with
+`refinement` and the solver uses geometric Full Multigrid automatically.
+
+**[→ Multigrid Preconditioning](multigrid-preconditioning.md)**
+
 ### Complex Rheologies
 Implement advanced material models and constitutive laws.
 
@@ -86,6 +92,7 @@ Ready to contribute to Underworld3?
 
 parallel-computing
 performance
+multigrid-preconditioning
 complex-rheologies
 vep-transverse-isotropy-faults
 custom-meshes
