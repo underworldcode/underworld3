@@ -166,6 +166,20 @@ def _from_plexh5(
         return sf0, h5plex
 
 
+def _hierarchy_sidecar_name(mesh_filename, level):
+    """Filename for a coarse hierarchy sidecar of a mesh checkpoint.
+
+    The geometric-multigrid (FMG) hierarchy is persisted as a single extra
+    single-DM HDF5 file holding the **coarsest** level (``level=0``) beside the
+    main mesh checkpoint — PETSc's ``HDF5_PETSC`` format does not support several
+    DMPlex objects in one file. The intermediate coarse levels are rebuilt by
+    refinement on reload, so only ``mymesh.hierarchy.L0.h5`` is written. The
+    ``level`` argument is kept for forward-compatibility.
+    """
+    base, ext = os.path.splitext(mesh_filename)
+    return f"{base}.hierarchy.L{level}{ext}"
+
+
 class Mesh(Stateful, uw_object):
     r"""
     Unstructured mesh with PETSc DMPlex backend.
@@ -408,6 +422,35 @@ class Mesh(Stateful, uw_object):
 
                 f.close()
 
+                # Restore the geometric-multigrid (FMG) coarse hierarchy from
+                # sidecar files, if present. Works in serial and parallel: the
+                # coarse levels and the fine are co-located on reload by the
+                # Simple partitioner (see the hierarchy-construction branch), so
+                # the multigrid interpolation is rank-local and does not hang.
+                self._sidecar_coarse_levels = None
+                try:
+                    with h5py.File(plex_or_meshfile, "r") as fh:
+                        n_coarse = int(
+                            fh["metadata"].attrs.get("hierarchy_coarse_levels", 0)
+                        )
+                except (KeyError, OSError):
+                    n_coarse = 0
+                if n_coarse > 0:
+                    sidecar = _hierarchy_sidecar_name(plex_or_meshfile, 0)
+                    if os.path.isfile(sidecar):
+                        # Load the coarsest level and rebuild the intermediate
+                        # coarse levels by refining it (n_coarse - 1 times). They
+                        # come back canonically numbered — all the co-located
+                        # nested interpolation needs — and the hierarchy branch
+                        # then Simple-distributes each level. (refine() propagates
+                        # the boundary labels from the coarsest.)
+                        coarsest = _from_plexh5(sidecar, PETSc.COMM_WORLD)
+                        levels = [coarsest]
+                        for _ in range(n_coarse - 1):
+                            levels[-1].setRefinementUniform()
+                            levels.append(levels[-1].refine())
+                        self._sidecar_coarse_levels = levels
+
                 # Do not call setFromOptions() here. DMPlexTopologyLoad()
                 # returns the topology SF needed to reload checkpoint fields.
                 # setFromOptions() can repartition/reorder the DM before UW
@@ -529,7 +572,55 @@ class Mesh(Stateful, uw_object):
 
         uw.mpi.barrier()
 
-        if not refinement is None and refinement > 0:
+        if getattr(self, "_sidecar_coarse_levels", None):
+
+            # Reloaded mesh with a persisted FMG hierarchy: splice the loaded
+            # coarse levels under the working (fine) dm and link them so PETSc's
+            # geometric multigrid sees a refinement hierarchy. The loaded coarse
+            # DMs keep the canonical refine() numbering the nested interpolator
+            # needs (a *reconstructed* coarse would not — see the
+            # checkpoint-hierarchy design note).
+            #
+            # Co-location (serial and parallel): distribute the fine AND every
+            # coarse level with the Simple (contiguous-by-canonical-index)
+            # partitioner. Because the fine carries the canonical refinement
+            # numbering (coarse cell c -> fine cells c*numSubcells+r, contiguous),
+            # equal contiguous splits put each rank's coarse cells and their fine
+            # children on the same rank. The multigrid interpolation is then
+            # rank-local — this is what avoids the cross-partition hang that a
+            # default (graph) partitioner produces on independently-loaded levels.
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_set_regular_refinement,
+            )
+
+            for _hdm in [self.dm] + list(self._sidecar_coarse_levels):
+                if not _hdm.isDistributed():
+                    _hdm.getPartitioner().setType(PETSc.Partitioner.Type.SIMPLE)
+            if not self.dm.isDistributed():
+                self.sf1 = self.dm.distribute()
+            for _cdm in self._sidecar_coarse_levels:
+                if not _cdm.isDistributed():
+                    _cdm.distribute()
+
+            self.dm_hierarchy = list(self._sidecar_coarse_levels) + [self.dm]
+            for i in range(len(self.dm_hierarchy) - 1):
+                self.dm_hierarchy[i + 1].setCoarseDM(self.dm_hierarchy[i])
+                # The fine level IS a uniform refinement of the coarse (canonical
+                # numbering, co-located) — flag it so PETSc builds the exact
+                # nested interpolator rather than falling back to point location.
+                petsc_dm_set_regular_refinement(self.dm_hierarchy[i + 1], True)
+
+            self.dm_h = self.dm_hierarchy[-1]
+            self.dm_h.setName("uw_hierarchical_dm")
+
+            # Working dm is a link-free clone of the finest level (mirrors the
+            # refinement branch). It must NOT carry a coarse-DM link or
+            # mesh.update_lvec()'s createFieldDecomposition recurses into the
+            # 0-field coarse levels and fails.
+            self.dm = self.dm_h.clone()
+            self._sidecar_coarse_levels = None
+
+        elif not refinement is None and refinement > 0:
 
             self.dm.setRefinementUniform()
 
@@ -3396,7 +3487,33 @@ class Mesh(Stateful, uw_object):
                     }
                     g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
 
+                # Number of coarse multigrid levels in the hierarchy (= number
+                # of refinements from the stored coarsest level up to the fine
+                # mesh). Used on reload to rebuild the intermediate levels.
+                g.attrs["hierarchy_coarse_levels"] = len(self.dm_hierarchy) - 1
+
                 f.close()
+
+        # Persist the geometric-multigrid (FMG) hierarchy as a SINGLE sidecar
+        # holding the coarsest level only. On reload the intermediate coarse
+        # levels are rebuilt by refining it (they come back canonically numbered,
+        # which is all the co-located nested interpolation needs). Without this
+        # file a reloaded mesh has a single level and falls back to GAMG. One
+        # single-DM HDF5 file (PETSc's HDF5_PETSC format holds one DMPlex per
+        # file). Collective write. See _hierarchy_sidecar_name and the .h5 reload.
+        if len(self.dm_hierarchy) > 1:
+            coarse_dm = self.dm_hierarchy[0]
+            sidecar = _hierarchy_sidecar_name(filename, 0)
+            cviewer = PETSc.ViewerHDF5().create(sidecar, "w", comm=PETSc.COMM_WORLD)
+            cviewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+            saved_name = coarse_dm.getName()
+            coarse_dm.setName("uw_mesh")  # _from_plexh5 loads the DM named "uw_mesh"
+            try:
+                cviewer(coarse_dm)
+            finally:
+                coarse_dm.setName(saved_name)
+                cviewer.popFormat()
+                cviewer.destroy()
 
     def vtk(self, filename: str):
         """
