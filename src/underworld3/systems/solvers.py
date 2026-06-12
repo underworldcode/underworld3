@@ -2487,15 +2487,16 @@ class SNES_Projection(SNES_Scalar):
         except (TypeError, ValueError):
             return sympy.sqrt(s)
         if sval < 0:
-            return None
+            raise ValueError(
+                f"smoothing is negative ({sval}); smoothing_length is undefined")
         L_nd = sval ** 0.5
-        # Re-dimensionalise to length units if a scaling context
-        # is set; fall back to the plain ND float otherwise.
-        try:
+        # Return a Pint Quantity only if the user set a dimensional value via
+        # the setter; plain-float input round-trips as a plain float so the
+        # meaning of the number the user passed is preserved.
+        if getattr(self, "_smoothing_is_dimensional", False):
             return uw.scaling.dimensionalise(
                 L_nd, uw.scaling.units.meter)
-        except Exception:
-            return L_nd
+        return L_nd
 
     @smoothing_length.setter
     def smoothing_length(self, L):
@@ -2507,18 +2508,20 @@ class SNES_Projection(SNES_Scalar):
         before being squared and stored as ``self._smoothing``.
         """
         self._needs_function_rewire = True
-        # Unit-aware: route through non_dimensionalise so the
-        # caller can pass `2.0 * uw.scaling.units.meter` or a
-        # plain float interchangeably.
-        try:
+        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
+        # non-dimensionalised through the active scaling context and reduced to
+        # a plain float (uw.non_dimensionalise returns a dimensionless
+        # UWQuantity, which sympify can't square); a plain number is taken as
+        # already non-dimensional.
+        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
+        if is_dim:
             L_nd = uw.non_dimensionalise(L)
-        except Exception:
-            # Fall back to magnitude-or-float coercion if the
-            # value doesn't carry/expect units.
-            if hasattr(L, "magnitude"):
-                L_nd = L.magnitude
-            else:
-                L_nd = L
+            L_nd = float(getattr(L_nd, "magnitude", L_nd))
+        else:
+            L_nd = float(L)
+        if L_nd < 0:
+            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
+        self._smoothing_is_dimensional = is_dim
         self._smoothing = sympify(L_nd) ** 2
 
     @property
@@ -2709,25 +2712,34 @@ class SNES_Vector_Projection(SNES_Vector):
         except (TypeError, ValueError):
             return sympy.sqrt(s)
         if sval < 0:
-            return None
+            raise ValueError(
+                f"smoothing is negative ({sval}); smoothing_length is undefined")
         L_nd = sval ** 0.5
-        try:
+        # Return a Pint Quantity only if the user set a dimensional value via
+        # the setter; plain-float input round-trips as a plain float.
+        if getattr(self, "_smoothing_is_dimensional", False):
             return uw.scaling.dimensionalise(
                 L_nd, uw.scaling.units.meter)
-        except Exception:
-            return L_nd
+        return L_nd
 
     @smoothing_length.setter
     def smoothing_length(self, L):
         """Set the smoothing length scale (unit-aware)."""
         self._needs_function_rewire = True
-        try:
+        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
+        # non-dimensionalised through the active scaling context and reduced to
+        # a plain float (uw.non_dimensionalise returns a dimensionless
+        # UWQuantity, which sympify can't square); a plain number is taken as
+        # already non-dimensional.
+        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
+        if is_dim:
             L_nd = uw.non_dimensionalise(L)
-        except Exception:
-            if hasattr(L, "magnitude"):
-                L_nd = L.magnitude
-            else:
-                L_nd = L
+            L_nd = float(getattr(L_nd, "magnitude", L_nd))
+        else:
+            L_nd = float(L)
+        if L_nd < 0:
+            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
+        self._smoothing_is_dimensional = is_dim
         self._smoothing = sympify(L_nd) ** 2
 
     @property
@@ -3052,25 +3064,34 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
         except (TypeError, ValueError):
             return sympy.sqrt(s)
         if sval < 0:
-            return None
+            raise ValueError(
+                f"smoothing is negative ({sval}); smoothing_length is undefined")
         L_nd = sval ** 0.5
-        try:
+        # Return a Pint Quantity only if the user set a dimensional value via
+        # the setter; plain-float input round-trips as a plain float.
+        if getattr(self, "_smoothing_is_dimensional", False):
             return uw.scaling.dimensionalise(
                 L_nd, uw.scaling.units.meter)
-        except Exception:
-            return L_nd
+        return L_nd
 
     @smoothing_length.setter
     def smoothing_length(self, L):
         """Set the smoothing length scale (unit-aware)."""
         self._needs_function_rewire = True
-        try:
+        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
+        # non-dimensionalised through the active scaling context and reduced to
+        # a plain float (uw.non_dimensionalise returns a dimensionless
+        # UWQuantity, which sympify can't square); a plain number is taken as
+        # already non-dimensional.
+        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
+        if is_dim:
             L_nd = uw.non_dimensionalise(L)
-        except Exception:
-            if hasattr(L, "magnitude"):
-                L_nd = L.magnitude
-            else:
-                L_nd = L
+            L_nd = float(getattr(L_nd, "magnitude", L_nd))
+        else:
+            L_nd = float(L)
+        if L_nd < 0:
+            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
+        self._smoothing_is_dimensional = is_dim
         self._smoothing = sympify(L_nd) ** 2
 
     @property
