@@ -1,0 +1,107 @@
+# Underworld3 feature manifest
+# =============================
+# Declarative registry of shippable features for maturity-gated releases.
+#
+# At release time (and any time via `./uw dev release-check`), scripts/release_gate.py
+# runs each feature's `validation` selection against the current checkout and
+# decides whether the feature can be ANNOUNCED at the maturity its owner claims:
+#
+#   supported    — tier_a/b tests exist and pass on the release candidate. Guaranteed.
+#   preview      — code is on main, but the release does NOT guarantee it works.
+#   experimental — present, not announced as working.
+#
+# The announced maturity is min(claim, tests_maturity):
+#   * an owner may be deliberately cautious (claim `preview` even though tests pass);
+#   * the gate may downgrade (claim `supported` but a test fails -> preview).
+# It NEVER blocks the dev->main merge — the code ships regardless; only the
+# announcement in the release notes changes.
+#
+# "Supported" is tied to the existing tier markers by construction: a feature's
+# selection is filtered to `tier_a or tier_b` (see validation.markers), so
+# passing == validated. There is NO per-feature pytest marker to maintain — the
+# manifest scopes WHICH tests belong to a feature; the tier markers scope WHICH
+# are trustworthy.
+#
+# Full guide: docs/developer/guides/release-process.md
+#
+# Schema (per feature):
+#   key:     stable slug (used in tool output and the drift check)
+#   title:   human title for the release notes
+#   owner:   GitHub handle of the person who vouches for it
+#   claim:   supported | preview | experimental  (what the owner wants to announce)
+#   summary: one-line description for the release notes
+#   validation:
+#     paths:   list of test files/globs that scope the feature (required to be announceable)
+#     select:  optional pytest -k expression to narrow within those files
+#     markers: marker expression; defaults to "tier_a or tier_b" — leave as default
+#              unless you have a good reason
+#     levels:  optional "1,2,3" level filter for cost control (per-feature override)
+#   docs:    optional list of doc pages describing the feature
+
+schema_version: 1
+
+features:
+  - key: units-system
+    title: "Units and Scaling System"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      Pint-backed dimensional quantities, non-dimensionalisation, and unit-aware
+      expression arithmetic.
+    validation:
+      paths:
+        - tests/test_0700_units_system.py
+        - tests/test_0710_units_utilities.py
+        - tests/test_0751_subtraction_chain_units.py
+        - tests/test_0752_units_scale_factor_preservation.py
+        - tests/test_0754_arithmetic_closure_complete.py
+      markers: "tier_a or tier_b"
+    docs:
+      - docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md
+
+  - key: mesh-smoothing
+    title: "Winslow Mesh Smoother"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      Parallel-safe interior mesh smoothing (smooth_mesh_interior) — the
+      foundation the adaptive movers and geometric multigrid build on.
+    validation:
+      paths:
+        - tests/test_0850_mesh_smoothing.py
+      markers: "tier_a or tier_b"
+
+  - key: mesh-adaptation
+    title: "MMPDE Mesh Mover / Adaptive Remeshing"
+    owner: "@lmoresi"
+    # Claimed `preview` on purpose: the tier_a tests below pass, but we are not
+    # yet ready to GUARANTEE the mover across production problems. The gate will
+    # show tests-pass but announce it as preview (min(claim, tests) == preview).
+    # This is the canonical "code is on main but unguaranteed" case.
+    claim: preview
+    summary: >
+      follow_metric / OT mesh movement and variable transfer for anisotropic
+      mesh adaptation.
+    validation:
+      paths:
+        - tests/test_0750_meshing_follow_metric.py
+        - tests/test_0760_mesh_ot_adapt.py
+        - tests/test_0830_mesh_adapt_variable_transfer.py
+      markers: "tier_a or tier_b"
+
+  - key: fmg
+    title: "Geometric Multigrid / FMG Preconditioner"
+    owner: "@lmoresi"
+    # Claimed `supported`, but there is no dedicated tier_a/b validation suite
+    # yet. The gate will report an empty selection and DOWNGRADE this to
+    # experimental — exactly the signal we want: FMG cannot be announced as
+    # supported until it has a tier_a test. Add one, then this row goes green.
+    claim: supported
+    summary: >
+      Automatic geometric full-multigrid preconditioning for the SNES solvers
+      on refinement meshes (the `preconditioner` property).
+    validation:
+      paths:
+        - tests/test_101*.py
+      select: "multigrid or fmg or preconditioner"
+      markers: "tier_a or tier_b"
