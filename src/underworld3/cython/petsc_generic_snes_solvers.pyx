@@ -2133,7 +2133,26 @@ class SNES_Scalar(SolverBaseClass):
 
         Used by scalar Poisson on a fully-Neumann domain or a closed
         manifold. See :attr:`petsc_use_constant_nullspace`.
+
+        The minimum-norm property holds for a solve from a zero initial
+        guess; with a warm start (``zero_init_guess=False``) the result
+        may differ by an additive constant in the nullspace.
         """
+        # The constant vector is only a genuine nullspace of the Jacobian when
+        # nothing pins the solution. Dirichlet (essential) BCs break the constant
+        # mode, so attaching the nullspace then is at best a no-op and at worst
+        # misleading. Warn rather than fail, since the flag may be set before BCs.
+        if len(getattr(self, "essential_bcs", [])) > 0 and uw.mpi.rank == 0:
+            import warnings
+            warnings.warn(
+                f"SNES_Scalar ({self.name}): petsc_use_constant_nullspace=True with "
+                f"{len(self.essential_bcs)} essential (Dirichlet) BC(s). The constant "
+                "vector is generally not a nullspace of the Jacobian when Dirichlet BCs "
+                "are present; use the constant nullspace only on fully-Neumann or "
+                "closed-manifold problems.",
+                stacklevel=2,
+            )
+
         self.snes.setUp()
         jacobian = self.snes.getJacobian()
         operator_matrix = jacobian[0]
