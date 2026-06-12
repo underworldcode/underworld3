@@ -98,8 +98,9 @@ pytest --config-file=tests/pytest.ini <expanded paths> \
 It then resolves `tests_maturity` from the result:
 
 - non-empty selection under `tier_a or tier_b` **and** all pass → `supported`
-- tests ran but some failed, or only unvalidated/`tier_c` tests exist → `preview`
-- no tests at all → `experimental`
+- tests ran but some failed → `preview`
+- empty selection (no `tier_a`/`tier_b` tests — e.g. only `tier_c`), all selected
+  tests skipped, no tests at all, or a pytest execution error → `experimental`
 
 "Supported" is therefore tied to the validated tiers *by construction* — you
 cannot announce a feature as supported without `tier_a`/`tier_b` tests that pass.

@@ -58,7 +58,7 @@ def manifest_covered_files() -> set[str]:
     covered = set()
     for feat in data.get("features", []):
         for pat in (feat.get("validation", {}) or {}).get("paths", []) or []:
-            for hit in glob.glob(os.path.join(REPO_ROOT, pat)):
+            for hit in glob.glob(os.path.join(REPO_ROOT, pat), recursive=True):
                 covered.add(os.path.relpath(hit, REPO_ROOT))
     return covered
 

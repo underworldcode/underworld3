@@ -78,7 +78,7 @@ def _expand_paths(paths: list[str]) -> list[str]:
     """Expand globs relative to the repo root. Returns repo-relative paths."""
     matched: list[str] = []
     for pat in paths:
-        hits = glob.glob(os.path.join(REPO_ROOT, pat))
+        hits = glob.glob(os.path.join(REPO_ROOT, pat), recursive=True)
         for h in sorted(hits):
             matched.append(os.path.relpath(h, REPO_ROOT))
     return matched
@@ -157,10 +157,19 @@ def _run_feature(feature: dict, cli_levels: str | None) -> dict:
         proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env,
                               capture_output=True, text=True)
 
-        # pytest exit 5 == no tests collected (empty selection under markers)
+        # pytest exit codes: 0=passed, 1=failed, 2=interrupted, 3=internal
+        # error, 4=usage error, 5=no tests collected.
         if proc.returncode == 5:
             result["note"] = "selection is empty under tier_a/b markers"
             result["tests_maturity"] = "experimental"
+        elif proc.returncode not in (0, 1):
+            # The gate could not run this feature's tests, so we cannot validate
+            # it — never call it supported, and flag the error loudly rather than
+            # silently reporting "experimental/skipped".
+            result["tests_maturity"] = "experimental"
+            tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+            hint = f": {tail[-1]}" if tail else ""
+            result["note"] = f"pytest execution error (exit {proc.returncode}){hint}"
         else:
             counts = _parse_junit(junit_path)
             result.update(counts)

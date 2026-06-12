@@ -1521,7 +1521,7 @@ _confirm() {
     [ "$_c" = "y" ] || [ "$_c" = "Y" ]
 }
 
-# ./uw release-check [levels]
+# ./uw dev release-check [levels]
 # Dry-run of the per-feature validation gate against the current checkout.
 # Read-only; tells you which features currently pass (announceable as supported).
 run_release_check() {
@@ -1536,7 +1536,7 @@ run_release_check() {
         --levels "$levels" report
 }
 
-# ./uw branch-hygiene [--prune]
+# ./uw dev branch-hygiene [--prune]
 # Report (and optionally delete) branches that are merged into development.
 # Never touches branches with an open PR. Targets the "dangling branches" pileup.
 run_branch_hygiene() {
@@ -1552,12 +1552,20 @@ run_branch_hygiene() {
     git fetch --prune --quiet origin 2>/dev/null || git fetch --prune origin
 
     # Head branches of open PRs — never prune these.
-    local open_pr_branches=""
+    # gh_ok is set only when the open-PR query genuinely succeeds. An empty list
+    # from a *successful* query means "no open PRs" (safe). An empty list from a
+    # failed/unauth'd query must NOT be treated as "no open PRs" — otherwise
+    # --prune could delete branches that actually have open PRs.
+    local open_pr_branches="" gh_ok=0
     if command -v gh >/dev/null 2>&1; then
-        open_pr_branches=$(gh pr list --state open --limit 200 \
-            --json headRefName --jq '.[].headRefName' 2>/dev/null)
+        if open_pr_branches=$(gh pr list --state open --limit 200 \
+            --json headRefName --jq '.[].headRefName' 2>/dev/null); then
+            gh_ok=1
+        else
+            echo -e "  ${YELLOW}gh could not list open PRs (auth/access?) — pruning disabled.${NC}"
+        fi
     else
-        echo -e "  ${YELLOW}gh not found — cannot cross-check open PRs; nothing will be pruned.${NC}"
+        echo -e "  ${YELLOW}gh not found — cannot cross-check open PRs; pruning disabled.${NC}"
     fi
 
     # Remote branches merged into development (prune candidates), minus the trunks.
@@ -1618,6 +1626,13 @@ run_branch_hygiene() {
     if [ "$do_prune" -eq 0 ]; then
         echo "Report only. Re-run with --prune to delete merged branches:"
         echo "  ./uw dev branch-hygiene --prune"
+        return
+    fi
+
+    if [ "$gh_ok" -eq 0 ]; then
+        echo -e "${YELLOW}Refusing to --prune: the open-PR cross-check is unavailable,${NC}"
+        echo "so a branch with an open PR could be deleted by mistake."
+        echo "Authenticate gh ('gh auth login') and retry."
         return
     fi
 
@@ -1695,7 +1710,7 @@ run_feature_audit() {
     echo "  Validated-test coverage:  python scripts/check_manifest_coverage.py"
 }
 
-# ./uw release [--version vX.Y.Z] [--rc N] [--yes] [--dry-run]
+# ./uw dev release [--version vX.Y.Z] [--rc N] [--yes] [--dry-run]
 # Orchestrate the quarterly development -> main promotion. Every state-changing
 # step is confirmed. Stops BEFORE the production tag push so main's branch
 # protection (PR + review) stays intact; CI release.yml owns the GitHub release.
@@ -1707,7 +1722,7 @@ run_release() {
             --rc) rc="$2"; shift 2 ;;
             --yes|-y) assume_yes=1; shift ;;
             --dry-run) dry_run=1; shift ;;
-            *) echo "Unknown option: $1"; echo "Usage: ./uw release [--version vX.Y.Z] [--rc N] [--yes] [--dry-run]"; exit 1 ;;
+            *) echo "Unknown option: $1"; echo "Usage: ./uw dev release [--version vX.Y.Z] [--rc N] [--yes] [--dry-run]"; exit 1 ;;
         esac
     done
 
@@ -1728,8 +1743,12 @@ run_release() {
     if [ "$behind" -gt 0 ]; then
         echo -e "  ${YELLOW}Local development is $behind commit(s) behind origin. Pull first.${NC}"; exit 1
     fi
+    local unpushed=$(git rev-list --count origin/development..HEAD 2>/dev/null || echo 0)
+    if [ "$unpushed" -gt 0 ]; then
+        echo -e "  ${YELLOW}Local development has $unpushed unpushed commit(s). Push first so the RC tag matches what reviewers and CI see on origin.${NC}"; exit 1
+    fi
     local ahead=$(git rev-list --count origin/main..origin/development 2>/dev/null || echo 0)
-    echo -e "  ${GREEN}✓${NC} on development, clean, $ahead commit(s) ahead of main"
+    echo -e "  ${GREEN}✓${NC} on development, clean, in sync with origin, $ahead commit(s) ahead of main"
 
     echo ""
     echo -e "${BOLD}[2/7] Version${NC}"
