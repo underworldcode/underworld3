@@ -79,6 +79,14 @@ class SolverBaseClass(uw_object):
         # untouched framework default (eligible for FMG upgrade) apart from an
         # explicit user override of pc_type, which must be respected.
         self._pc_managed_value = "gamg"
+        # Latches once the user (or harness) is seen to have set the PC options
+        # themselves. _apply_preconditioner_options() runs on EVERY _build (so
+        # "auto" can re-resolve after a remesh), and without this latch the
+        # override detection only holds on the first build: once we adopted the
+        # user's pc_type as our managed value, a later rebuild could no longer
+        # tell "user set mg" from "we set mg" and would clobber their tuned
+        # smoother / coarse-solver options with the framework FMG bundle.
+        self._pc_user_override = False
 
     @property
     def preconditioner(self):
@@ -143,9 +151,15 @@ class SolverBaseClass(uw_object):
             # configuration (internal utility solvers — mesh smoothing, OT,
             # projections — set their own carefully tuned pc options that must
             # be left intact).
+            if self._pc_user_override:
+                # User/harness owns the PC options — never re-apply our bundle,
+                # even across remesh rebuilds (see _pc_user_override init note).
+                return
             current = opts.getString(f"{prefix}pc_type")
             if current and current != self._pc_managed_value:
-                # Preconditioner was set explicitly elsewhere — respect it.
+                # Preconditioner was set explicitly elsewhere — respect it, and
+                # latch so later rebuilds keep respecting it.
+                self._pc_user_override = True
                 self._pc_managed_value = current
                 return
             if n_levels > 1:
@@ -168,12 +182,22 @@ class SolverBaseClass(uw_object):
             # residual/Jacobian callbacks on the coarse DMs.
             opts[f"{prefix}pc_type"] = "mg"
             opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
-            opts[f"{prefix}pc_mg_galerkin"] = "both"
-            opts[f"{prefix}mg_levels_ksp_type"] = "chebyshev"
+            opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
+            # richardson+sor (not chebyshev): chebyshev needs eigenvalue
+            # estimates of the smoothed operator, which are fragile on the
+            # indefinite / variable-viscosity Stokes velocity block and diverge;
+            # richardson+sor is the benchmark-validated, mesh-independent choice.
+            opts[f"{prefix}mg_levels_ksp_type"] = "richardson"
             opts[f"{prefix}mg_levels_pc_type"] = "sor"
             opts[f"{prefix}mg_levels_ksp_max_it"] = 4
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
-            opts[f"{prefix}mg_coarse_pc_type"] = "lu"       # direct coarse solve (serial)
+            # redundant+lu, not bare lu: a bare serial LU cannot factor a
+            # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
+            # after 0 iterations). redundant gathers the (small) coarse system to
+            # one rank and is identical to lu in serial — so it is np-safe by
+            # default without surprising small-np users.
+            opts[f"{prefix}mg_coarse_pc_type"] = "redundant"
+            opts[f"{prefix}mg_coarse_redundant_pc_type"] = "lu"
             # Clear stale GAMG-only keys so toggling back and forth is clean.
             for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
                 opts.delValue(f"{prefix}{key}")
@@ -196,9 +220,49 @@ class SolverBaseClass(uw_object):
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
             # Clear stale geometric-MG-only keys.
             for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
-                        "mg_levels_pc_type", "mg_coarse_pc_type"):
+                        "mg_levels_pc_type", "mg_coarse_pc_type",
+                        "mg_coarse_redundant_pc_type"):
                 opts.delValue(f"{prefix}{key}")
             self._pc_managed_value = "gamg"
+
+    def _enforce_galerkin_for_geometric_mg(self):
+        """Geometric multigrid in UW3 REQUIRES Galerkin (RAP) coarse operators.
+
+        UW3 installs no residual/Jacobian callbacks on the coarse DMs of the
+        refinement hierarchy, so PETSc cannot re-discretise the operator there.
+        With Galerkin RAP the coarse operators are assembled as R*A*P from the
+        fine operator and the coarse DMs are used only for interpolation — which
+        is the only mode that works. If ``pc_type=mg`` is selected on a block we
+        manage but Galerkin is unset (or explicitly ``none``), PETSc instead
+        tries to build coarse operators itself and fails cryptically: PETSc
+        error 73 ("KSPSetDM without ComputeOperators") in serial, or
+        ``DMCoarsen -> DMAdaptMetric -> ParMmg`` (which is 3D-only) in parallel.
+
+        So rather than let users trip those, force ``pc_mg_galerkin=both``
+        whenever a managed block uses geometric MG, regardless of who selected
+        it (user, harness, or our own auto/fmg bundle). A bare ``=None`` flag
+        already engages RAP (reads back as ``''`` but is *present*); only a
+        genuinely-unset or ``none`` value is overridden.
+        """
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return
+        opts = self.petsc_options
+        if opts.getString(f"{prefix}pc_type") != "mg":
+            return
+        gkey = f"{prefix}pc_mg_galerkin"
+        if (not opts.hasName(gkey)) or opts.getString(gkey) == "none":
+            if uw.mpi.rank == 0:
+                import warnings
+                warnings.warn(
+                    f"[{self.name}] geometric multigrid (pc_type=mg) requires "
+                    f"Galerkin coarse operators in UW3 — forcing {gkey}=both. "
+                    f"(UW3 installs no coarse-DM operator callbacks, so coarse "
+                    f"re-discretisation is unsupported and fails as PETSc error "
+                    f"73 / ParMmg.)",
+                    stacklevel=2,
+                )
+            opts[gkey] = "both"
 
     def _check_expression_meshes(self):
         """Check that all MeshVariable symbols in solver expressions
@@ -735,6 +799,7 @@ class SolverBaseClass(uw_object):
         # _setup_solver runs snes.setFromOptions(). No-op unless the solver
         # opted in via _pc_option_prefix (Stokes / scalar / vector).
         self._apply_preconditioner_options()
+        self._enforce_galerkin_for_geometric_mg()
 
         # === Fast path 1: constants-only change ===
         # If JIT cache key matches, the compiled code is identical — only

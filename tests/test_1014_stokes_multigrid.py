@@ -101,3 +101,56 @@ def test_scalar_poisson_auto_geometric_mg():
     poisson.solve()
     assert poisson.petsc_options.getString("pc_type") == "mg"
     assert poisson.snes.getConvergedReason() > 0
+
+
+def test_explicit_velocity_options_survive_rebuild():
+    # Regression: in "auto" mode the helper must NOT clobber user-set
+    # velocity-block PC options when it re-runs. _apply_preconditioner_options()
+    # is called on EVERY _build (so "auto" re-resolves after a remesh); a
+    # mesh-mover deform triggers exactly such a rebuild. Previously the override
+    # was respected only on the first call — the second overwrote the user's
+    # tuned coarse-solver / smoother with the framework FMG bundle. Drive the
+    # helper directly (twice) to test the option latch in isolation.
+    stokes = _make_stokes(mesh_refined)
+    vp = "fieldsplit_velocity_"
+    stokes.petsc_options[vp + "pc_type"] = "mg"
+    stokes.petsc_options[vp + "mg_coarse_pc_type"] = "redundant"
+    stokes.petsc_options[vp + "mg_coarse_redundant_pc_type"] = "lu"
+    stokes.petsc_options[vp + "mg_levels_ksp_type"] = "richardson"
+
+    stokes._apply_preconditioner_options()  # first build: adopt + respect
+    assert stokes.petsc_options.getString(vp + "mg_coarse_pc_type") == "redundant"
+    stokes._apply_preconditioner_options()  # rebuild: must STILL respect them
+    assert stokes.petsc_options.getString(vp + "pc_type") == "mg"
+    assert stokes.petsc_options.getString(vp + "mg_coarse_pc_type") == "redundant"
+    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_type") == "richardson"
+
+
+def test_geometric_mg_without_galerkin_is_repaired():
+    # UW3's geometric MG REQUIRES Galerkin RAP (no coarse-DM operator callbacks
+    # are installed, so PETSc cannot re-discretise on the coarse levels). A user
+    # who selects pc_type=mg but omits pc_mg_galerkin must be repaired (forced to
+    # "both") and warned — not left to fail as PETSc error 73 (serial) or
+    # DMCoarsen->ParMmg (parallel).
+    stokes = _make_stokes(mesh_refined)
+    vp = "fieldsplit_velocity_"
+    stokes.petsc_options[vp + "pc_type"] = "mg"
+    # deliberately DO NOT set pc_mg_galerkin
+    with pytest.warns(UserWarning, match="requires Galerkin"):
+        stokes.solve()
+    assert stokes.petsc_options.getString(vp + "pc_mg_galerkin") == "both"
+    assert stokes.snes.getConvergedReason() > 0
+
+
+def test_default_fmg_bundle_is_parallel_safe():
+    # The property's OWN default FMG bundle must be usable at np>1 unaided: a
+    # parallel-safe coarse solver (redundant+lu, not bare serial lu) and a
+    # robust smoother (richardson+sor, not eigen-estimate-fragile chebyshev).
+    stokes = _make_stokes(mesh_refined)
+    stokes.preconditioner = "fmg"
+    stokes.solve()
+    vp = "fieldsplit_velocity_"
+    assert stokes.petsc_options.getString(vp + "mg_coarse_pc_type") == "redundant"
+    assert stokes.petsc_options.getString(vp + "mg_coarse_redundant_pc_type") == "lu"
+    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_type") == "richardson"
+    assert stokes.snes.getConvergedReason() > 0
