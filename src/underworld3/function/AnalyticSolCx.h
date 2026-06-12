@@ -24,8 +24,9 @@
    the result depends solely on the arguments, so redundant calls (e.g. the
    x and z components evaluated separately) can be collapsed by the compiler. */
 
-vec2   SolCx_velocity(  double eta_A, double eta_B, double x_c, int n, const double x, const double z ) __attribute__((const));
-double SolCx_pressure(  double eta_A, double eta_B, double x_c, int n, const double x, const double z ) __attribute__((const));
-double SolCx_viscosity( double eta_A, double eta_B, double x_c, int n, const double x, const double z ) __attribute__((const));
+vec2    SolCx_velocity(  double eta_A, double eta_B, double x_c, int n, const double x, const double z ) __attribute__((const));
+double  SolCx_pressure(  double eta_A, double eta_B, double x_c, int n, const double x, const double z ) __attribute__((const));
+double  SolCx_viscosity( double eta_A, double eta_B, double x_c, int n, const double x, const double z ) __attribute__((const));
+tensor2 SolCx_stress(    double eta_A, double eta_B, double x_c, int n, const double x, const double z ) __attribute__((const));
 
 #endif

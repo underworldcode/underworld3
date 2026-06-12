@@ -43,3 +43,17 @@ double SolCx_viscosity( double eta_A, double eta_B, double x_c, int n, const dou
     (void) n; (void) z;
     return ( x < x_c ) ? eta_A : eta_B;
 }
+
+tensor2 SolCx_stress( double eta_A, double eta_B, double x_c, int n, const double x, const double z )
+{
+    double pos[2];
+    double total_stress[3];   /* [0]=sigma_xx, [1]=sigma_zz, [2]=sigma_xz (full Cauchy) */
+    tensor2 out;
+    pos[0] = x;
+    pos[1] = z;
+    _Velic_solCx( pos, eta_A, eta_B, x_c, n, NULL, NULL, total_stress, NULL );
+    out.xx = total_stress[0];
+    out.zz = total_stress[1];
+    out.xz = total_stress[2];
+    return out;
+}
