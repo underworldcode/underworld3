@@ -422,12 +422,13 @@ class Mesh(Stateful, uw_object):
 
                 f.close()
 
-                # Restore the geometric-multigrid (FMG) coarse hierarchy from
-                # sidecar files, if present. Works in serial and parallel: the
-                # coarse levels and the fine are co-located on reload by the
-                # Simple partitioner (see the hierarchy-construction branch), so
-                # the multigrid interpolation is rank-local and does not hang.
-                self._sidecar_coarse_levels = None
+                # Restore the geometric-multigrid (FMG) coarse hierarchy from the
+                # sidecar, if present. We keep the *undistributed* coarsest level
+                # and the refinement count; the hierarchy is rebuilt below exactly
+                # the way a fresh refinement mesh is built — distribute the
+                # coarsest, then refine() locally — which is robust in serial and
+                # at any parallel decomposition. (See the splice block.)
+                self._sidecar_coarsest = None
                 try:
                     with h5py.File(plex_or_meshfile, "r") as fh:
                         n_coarse = int(
@@ -438,18 +439,11 @@ class Mesh(Stateful, uw_object):
                 if n_coarse > 0:
                     sidecar = _hierarchy_sidecar_name(plex_or_meshfile, 0)
                     if os.path.isfile(sidecar):
-                        # Load the coarsest level and rebuild the intermediate
-                        # coarse levels by refining it (n_coarse - 1 times). They
-                        # come back canonically numbered — all the co-located
-                        # nested interpolation needs — and the hierarchy branch
-                        # then Simple-distributes each level. (refine() propagates
-                        # the boundary labels from the coarsest.)
-                        coarsest = _from_plexh5(sidecar, PETSc.COMM_WORLD)
-                        levels = [coarsest]
-                        for _ in range(n_coarse - 1):
-                            levels[-1].setRefinementUniform()
-                            levels.append(levels[-1].refine())
-                        self._sidecar_coarse_levels = levels
+                        self._sidecar_coarsest = _from_plexh5(
+                            sidecar, PETSc.COMM_WORLD
+                        )
+                        self._sidecar_n_coarse = n_coarse
+                        self._sidecar_meshfile = plex_or_meshfile
 
                 # Do not call setFromOptions() here. DMPlexTopologyLoad()
                 # returns the topology SF needed to reload checkpoint fields.
@@ -572,43 +566,74 @@ class Mesh(Stateful, uw_object):
 
         uw.mpi.barrier()
 
-        if getattr(self, "_sidecar_coarse_levels", None):
+        if getattr(self, "_sidecar_coarsest", None) is not None:
 
-            # Reloaded mesh with a persisted FMG hierarchy: splice the loaded
-            # coarse levels under the working (fine) dm and link them so PETSc's
-            # geometric multigrid sees a refinement hierarchy. The loaded coarse
-            # DMs keep the canonical refine() numbering the nested interpolator
-            # needs (a *reconstructed* coarse would not — see the
-            # checkpoint-hierarchy design note).
+            # Reloaded mesh with a persisted FMG hierarchy. Rebuild the geometric
+            # multigrid hierarchy exactly as a fresh refinement mesh does:
+            # distribute the coarsest level, then refine() it locally. refine()
+            # never moves points across the decomposition (only distribute()
+            # does), so a coarse cell and all of its children are guaranteed
+            # co-resident on one rank — precisely what the nested interpolator
+            # needs, and robust at any np. (Independently distributing pre-built
+            # levels misaligns at uneven np and aborts inside
+            # DMPlexComputeInterpolatorNested.)
             #
-            # Co-location (serial and parallel): distribute the fine AND every
-            # coarse level with the Simple (contiguous-by-canonical-index)
-            # partitioner. Because the fine carries the canonical refinement
-            # numbering (coarse cell c -> fine cells c*numSubcells+r, contiguous),
-            # equal contiguous splits put each rank's coarse cells and their fine
-            # children on the same rank. The multigrid interpolation is then
-            # rank-local — this is what avoids the cross-partition hang that a
-            # default (graph) partitioner produces on independently-loaded levels.
-            from underworld3.cython.petsc_discretisation import (
-                petsc_dm_set_regular_refinement,
-            )
+            # The refine-built fine carries *reference* coordinates, so the saved
+            # (deformed) fine coordinates are stamped onto it afterwards. The
+            # reference geometry rebuilt here (refine-of-coarsest) is bit-identical
+            # to the one at save time, so every distributed fine vertex maps to
+            # exactly one canonical vertex by an *exact* nearest-reference lookup,
+            # and the deformed value is read straight from the saved fine's
+            # canonical-ordered coordinates. (See the checkpoint-hierarchy design
+            # note.)
+            n_coarse = self._sidecar_n_coarse
+            cdim = self._sidecar_coarsest.getCoordinateDim()
 
-            for _hdm in [self.dm] + list(self._sidecar_coarse_levels):
-                if not _hdm.isDistributed():
-                    _hdm.getPartitioner().setType(PETSc.Partitioner.Type.SIMPLE)
-            if not self.dm.isDistributed():
-                self.sf1 = self.dm.distribute()
-            for _cdm in self._sidecar_coarse_levels:
-                if not _cdm.isDistributed():
-                    _cdm.distribute()
+            # --- canonical (reference, deformed) coordinate pair, on rank 0 ---
+            # BOTH arrays are built rank-locally on COMM_SELF so they share ONE
+            # canonical ordering (serial .h5 load order == serial refine order,
+            # verified). That shared ordering is what makes deformed_canon[k] and
+            # reference_canon[k] the *same physical vertex* — the stamp pairs them
+            # by that index. (Reading the deformed coords from the COMM_WORLD
+            # undistributed load instead can use a different vertex ordering and
+            # silently scrambles the stamp.) COMM_SELF work is rank-local, so it
+            # cannot perturb the collective distribute of self._sidecar_coarsest.
+            if uw.mpi.rank == 0:
+                _df = _from_plexh5(self._sidecar_meshfile, PETSc.COMM_SELF)
+                deformed_canon = (
+                    _df.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+                )
+                _cs = _from_plexh5(
+                    _hierarchy_sidecar_name(self._sidecar_meshfile, 0),
+                    PETSc.COMM_SELF,
+                )
+                for _ in range(n_coarse):
+                    _cs.setRefinementUniform()
+                    _cs = _cs.refine()
+                reference_canon = (
+                    _cs.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+                )
+            else:
+                deformed_canon = None
+                reference_canon = None
+            deformed_canon = uw.mpi.comm.bcast(deformed_canon, root=0)
+            reference_canon = uw.mpi.comm.bcast(reference_canon, root=0)
 
-            self.dm_hierarchy = list(self._sidecar_coarse_levels) + [self.dm]
-            for i in range(len(self.dm_hierarchy) - 1):
-                self.dm_hierarchy[i + 1].setCoarseDM(self.dm_hierarchy[i])
-                # The fine level IS a uniform refinement of the coarse (canonical
-                # numbering, co-located) — flag it so PETSc builds the exact
-                # nested interpolator rather than falling back to point location.
-                petsc_dm_set_regular_refinement(self.dm_hierarchy[i + 1], True)
+            # --- aligned hierarchy: distribute the coarsest, then local refine,
+            #     EXACTLY as the fresh refinement branch below does (proven to
+            #     build a correct nested geometric-MG hierarchy at any np):
+            #     setRefinementUniform() on the base before distribute(), then a
+            #     plain refine() loop. refine() flags the regular refinement
+            #     itself — setting it by hand on a non-uniformly-refined DM
+            #     instead corrupts the nested interpolator and the solve diverges.
+            self._sidecar_coarsest.setRefinementUniform()
+            if not self._sidecar_coarsest.isDistributed():
+                self.sf1 = self._sidecar_coarsest.distribute()
+            self.dm_hierarchy = [self._sidecar_coarsest]
+            for i in range(n_coarse):
+                dm_refined = self.dm_hierarchy[i].refine()
+                dm_refined.setCoarseDM(self.dm_hierarchy[i])
+                self.dm_hierarchy.append(dm_refined)
 
             self.dm_h = self.dm_hierarchy[-1]
             self.dm_h.setName("uw_hierarchical_dm")
@@ -618,7 +643,17 @@ class Mesh(Stateful, uw_object):
             # mesh.update_lvec()'s createFieldDecomposition recurses into the
             # 0-field coarse levels and fails.
             self.dm = self.dm_h.clone()
-            self._sidecar_coarse_levels = None
+
+            # Defer the deformed-coordinate stamp: the hierarchy and working dm
+            # are built with REFERENCE coordinates here, and the saved deformed
+            # coordinates are applied through the normal _deform_mesh() path at
+            # the END of __init__ (once self._coords and the rebuild machinery
+            # exist). A raw setCoordinatesLocal() at this point — before the
+            # coordinate cache/callbacks are set up — leaves the mesh in an
+            # inconsistent state and the geometric multigrid solve diverges. Stash
+            # the canonical (reference, deformed) pair for the deferred apply.
+            self._pending_hierarchy_stamp = (reference_canon, deformed_canon, cdim)
+            self._sidecar_coarsest = None
 
         elif not refinement is None and refinement > 0:
 
@@ -883,6 +918,33 @@ class Mesh(Stateful, uw_object):
 
         # Navigation / coordinates etc
         self.nuke_coords_and_rebuild(verbose)
+
+        # Apply a deferred FMG-hierarchy deformed-coordinate stamp (set in the
+        # reload/splice branch above). The hierarchy + working dm were rebuilt
+        # with reference coordinates; now the mesh is fully constructed we map
+        # each local vertex to its canonical twin by an EXACT reference-coordinate
+        # lookup and apply the saved deformed coordinates through _deform_mesh().
+        _pending = getattr(self, "_pending_hierarchy_stamp", None)
+        if _pending is not None:
+            self._pending_hierarchy_stamp = None
+            if os.environ.get("UW_NOSTAMP") != "1":
+                from underworld3 import kdtree as _kdtree
+
+                _ref_canon, _def_canon, _cdim = _pending
+                _ref_local = numpy.ascontiguousarray(
+                    self.dm.getCoordinatesLocal().array.reshape(-1, _cdim)
+                )
+                _tree = _kdtree.KDTree(numpy.ascontiguousarray(_ref_canon))
+                _tree.build_index()
+                _idx, _d2, _found = _tree.find_closest_point(_ref_local)
+                if _d2.size and float(numpy.sqrt(_d2.max())) > 1.0e-8:
+                    raise RuntimeError(
+                        "FMG hierarchy restore: deformed-coordinate stamp is not "
+                        f"exact (max lookup distance "
+                        f"{float(numpy.sqrt(_d2.max())):.2e}); the reloaded "
+                        "reference geometry does not match the saved fine."
+                    )
+                self._deform_mesh(_def_canon[_idx].reshape(-1, _cdim))
 
         if verbose and uw.mpi.rank == 0:
             print(
