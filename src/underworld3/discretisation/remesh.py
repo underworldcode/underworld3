@@ -431,9 +431,29 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         if target is None or target.size == 0:
             continue
         try:
-            # global_evaluate resolves off-rank targets via swarm
-            # migration; serial path is bit-identical to evaluate().
-            val = uw.function.global_evaluate(var.sym, target)
+            # global_evaluate resolves off-rank targets via swarm migration.
+            #
+            # monotone='clamp' bounds each resampled value to its k-NN
+            # source-nodal range. On a freshly-adapted mesh the NEW boundary
+            # DOFs sit a sagitta OUTSIDE the OLD boundary cell (arc vs chord),
+            # so the old P2/P3 field, FE-evaluated there, overshoots wildly —
+            # in parallel the migrate lands those points in a containing cell
+            # on another rank and the overshoot is delivered as a "valid"
+            # (un-flagged) value. That is the parallel free-slip v.n "leak":
+            # a corrupt boundary T/V remap, NOT a BC bug. The clamp bounds it
+            # to the physical nodal range, is bit-identical to plain FE in
+            # smooth regions, and is parallel-safe (rank-local). Same limiter
+            # as the SemiLagrangian trace-back fix.
+            import os as _os
+            _mono = _os.environ.get("REMESH_MONOTONE", "clamp")
+            if _mono.lower() in ("", "0", "off", "none", "false"):
+                _mono = False
+            try:
+                val = uw.function.global_evaluate(var.sym, target, monotone=_mono)
+            except (ValueError, NotImplementedError):
+                # monotone needs a single-MeshVariable expr; composite /
+                # unsupported vars fall back to plain FE (still transferred).
+                val = uw.function.global_evaluate(var.sym, target)
         except Exception as exc:
             if verbose:
                 uw.pprint(

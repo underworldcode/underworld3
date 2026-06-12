@@ -58,6 +58,7 @@ Future extensions (separate PRs):
     path is serial-exact (rank-boundary nodes under-count forces)
 """
 
+import warnings
 from typing import Optional, Sequence
 
 import numpy as np
@@ -566,7 +567,6 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
     else:
         edges, deg = cache
 
-    is_bnd = _pinned_mask(dm, pinned_labels)
     tris = _tri_cells(dm)
     cdim = mesh.cdim
     v0 = edges[:, 0]
@@ -574,54 +574,15 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
 
     coords = np.asarray(mesh.X.coords, dtype=np.double).copy()
 
-    # Boundary tangential slip. Fully locking every boundary node
-    # freezes the rim's angular distribution, so near a feature the
-    # interior must distort (the "touchy"/anisotropic refinement).
-    # Instead let boundary nodes SLIDE ALONG the boundary while
-    # staying EXACTLY ON it: each ring gets its OWN centre (robust
-    # if rings are not perfectly concentric) and every slip node is
-    # snapped back to its original distance from that centre after
-    # each step — so a slip node can change θ but can NEVER move
-    # off / away from the surface (the radial DOF is removed, not
-    # just penalised). One node per ring is a hard anchor (kills
-    # the ring's rigid-rotation gauge). The global inversion guard
-    # also blocks a slip node overtaking a neighbour (boundary
-    # self-tangle). TODO: a general deformed / free-surface
-    # boundary needs projection onto the boundary polyline, not a
-    # per-ring radius — circular form is exact for the Annulus.
-    if boundary_slip and is_bnd.any():
-        bc = np.nonzero(is_bnd)[0]
-        c0 = coords[bc].mean(axis=0)
-        rg = np.round(np.linalg.norm(coords[bc] - c0, axis=1), 6)
-        is_anchor = np.zeros(n_verts, dtype=bool)
-        slip_center = np.zeros((n_verts, cdim))
-        slip_rtarget = np.zeros(n_verts)
-        for rv in np.unique(rg):
-            grp = bc[rg == rv]
-            rc = coords[grp].mean(axis=0)        # this ring's centre
-            is_anchor[grp[np.argmax(
-                (coords[grp] - rc)[:, 0])]] = True
-            slip_center[grp] = rc
-            slip_rtarget[grp] = np.linalg.norm(
-                coords[grp] - rc, axis=1)
-        is_slip = is_bnd & ~is_anchor
-        is_pinned = is_anchor
-        sidx = np.nonzero(is_slip)[0]
-        s_ctr = slip_center[sidx]
-        s_rad = slip_rtarget[sidx]
-
-        def _project(Y):
-            v = Y[sidx] - s_ctr
-            nrm = np.linalg.norm(v, axis=1)
-            nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-            Y[sidx] = s_ctr + v * (s_rad / nrm)[:, None]
-            return Y
-    else:
-        is_pinned = is_bnd
-        is_slip = np.zeros(n_verts, dtype=bool)
-
-        def _project(Y):
-            return Y
+    # Boundary tangential slip via the mesh-owned contract
+    # (boundary-slip-strategy.md): each slip vertex slides tangentially and
+    # snaps back onto its bounding surface (radial ring / plane / facet);
+    # non-slip, junction, and degenerate-normal vertices pin. Replaces the
+    # per-ring COM radial snap (one node/ring anchored the rotation gauge);
+    # the global inversion guard below still blocks a slip node overtaking a
+    # neighbour, and tangential θ-drift is a harmless re-parameterisation.
+    is_pinned, _project = mesh.boundary_slip(
+        boundary_slip, reference_coords=coords, boundary_labels=pinned_labels)
 
     free = ~is_pinned
 
@@ -1309,120 +1270,22 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
 
     for outer in range(n_outer):
         dm = mesh.dm
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # Boundary tangential slip (same per-ring radius projection
-        # as the spring). MA's natural Neumann BC (∇φ·n̂=0) already
-        # makes ∇φ tangential at the boundary, so letting boundary
-        # nodes move by ∇φ then snapping back to their ring radius
-        # is the redistribution the formulation naturally wants —
-        # fully pinning them discards it. Nodes provably stay on
-        # the surface (radial DOF removed; drift ~machine ε). One
-        # node/ring anchors the rotation gauge.
-        _slip_mode = boundary_slip
-        if isinstance(_slip_mode, str):
-            _slip_mode = _slip_mode.lower()
-            if _slip_mode not in ("ring", "box", "axes", "axis"):
-                raise ValueError(
-                    f"boundary_slip must be False/True/'ring'/'box', "
-                    f"got {boundary_slip!r}")
-            if _slip_mode in ("axes", "axis"):
-                _slip_mode = "box"
-        elif _slip_mode is True:
-            _slip_mode = "ring"
-        if _slip_mode and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            if _slip_mode == "ring":
-                c0 = old_coords[bc].mean(axis=0)
-                rg = np.round(
-                    np.linalg.norm(old_coords[bc] - c0, axis=1),
-                    6)
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                slip_center = np.zeros((n_verts, _cdim))
-                slip_rtarget = np.zeros(n_verts)
-                for rv in np.unique(rg):
-                    grp = bc[rg == rv]
-                    rc = old_coords[grp].mean(axis=0)
-                    is_anchor[grp[np.argmax(
-                        (old_coords[grp] - rc)[:, 0])]] = True
-                    slip_center[grp] = rc
-                    slip_rtarget[grp] = np.linalg.norm(
-                        old_coords[grp] - rc, axis=1)
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                _sidx = np.nonzero(is_slip)[0]
-                _sctr = slip_center[_sidx]
-                _srad = slip_rtarget[_sidx]
-
-                def _project(Y):
-                    v = Y[_sidx] - _sctr
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                    return Y
-            else:  # "box" — axis-aligned edge slip
-                # Pin corners (on 2 box edges); allow other
-                # boundary nodes to slide along their single
-                # edge. Detect edges from boundary coord extents.
-                bc_coords = old_coords[bc]
-                xmin = bc_coords[:, 0].min()
-                xmax = bc_coords[:, 0].max()
-                ymin = bc_coords[:, 1].min()
-                ymax = bc_coords[:, 1].max()
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    xmin = uw.mpi.comm.allreduce(
-                        float(xmin), op=_MPI.MIN)
-                    xmax = uw.mpi.comm.allreduce(
-                        float(xmax), op=_MPI.MAX)
-                    ymin = uw.mpi.comm.allreduce(
-                        float(ymin), op=_MPI.MIN)
-                    ymax = uw.mpi.comm.allreduce(
-                        float(ymax), op=_MPI.MAX)
-                tol = 1.0e-9 * max(xmax - xmin, ymax - ymin, 1.0)
-                on_xmin = np.abs(bc_coords[:, 0] - xmin) < tol
-                on_xmax = np.abs(bc_coords[:, 0] - xmax) < tol
-                on_ymin = np.abs(bc_coords[:, 1] - ymin) < tol
-                on_ymax = np.abs(bc_coords[:, 1] - ymax) < tol
-                on_x_edge = on_xmin | on_xmax
-                on_y_edge = on_ymin | on_ymax
-                is_corner_loc = on_x_edge & on_y_edge
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                is_anchor[bc[is_corner_loc]] = True
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                # For each slip node, record which axis is fixed
-                # and the target value on that axis.
-                fixed_axis = np.full(n_verts, -1, dtype=np.int8)
-                fixed_val = np.zeros(n_verts)
-                xfix = on_x_edge & ~is_corner_loc
-                yfix = on_y_edge & ~is_corner_loc
-                fixed_axis[bc[xfix]] = 0
-                fixed_val[bc[xfix]] = bc_coords[xfix, 0]
-                fixed_axis[bc[yfix]] = 1
-                fixed_val[bc[yfix]] = bc_coords[yfix, 1]
-                _sidx = np.nonzero(is_slip)[0]
-                _sax = fixed_axis[_sidx]
-                _sval = fixed_val[_sidx]
-                _ix0 = _sidx[_sax == 0]
-                _ix1 = _sidx[_sax == 1]
-                _v0 = _sval[_sax == 0]
-                _v1 = _sval[_sax == 1]
-
-                def _project(Y):
-                    Y[_ix0, 0] = _v0
-                    Y[_ix1, 1] = _v1
-                    return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md): MA's natural Neumann BC (∇φ·n̂=0) makes
+        # ∇φ tangential at the boundary, so slip vertices slide along their
+        # surface (radial ring / box face / facet) and snap back; non-slip,
+        # junction, and degenerate-normal vertices pin. Replaces the inline
+        # per-ring / box-edge snap (the 'ring'/'box' hint is now inferred from
+        # the registered bounding surfaces).
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=old_coords,
+            boundary_labels=pinned_labels)
 
         if tris is not None and n_outer > 1:
             patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
@@ -1723,61 +1586,20 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
 
     for outer in range(n_outer):
         dm = mesh.dm
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # --- boundary slip via projected normals (mesh.Gamma_P1) ------
-        # Unified, geometry-agnostic slip (replaces the old box/ring
-        # special cases). Boundary nodes slide tangentially — we zero the
-        # projected-normal component of their displacement — and, for
-        # curved (radial) coordinate systems, snap back to their reference
-        # |r| so they stay on the surface. The normal comes from
-        # mesh.Gamma_P1 (the symbolic mesh.Gamma projected to a P1 field),
-        # which is valid for every geometry and is the same source used for
-        # free surfaces. Nodes with a degenerate projected normal (box
-        # corners where opposing face normals cancel, or an occasional
-        # unlocatable vertex) are pinned rather than slipped. `boundary_slip`
-        # is a bool; legacy 'ring'/'box'/'axes' strings are accepted as
-        # aliases for slip-on.
-        from underworld3.meshing._ot_adapt import (
-            _slip_normals, _boundary_centre, _is_radial_coords)
-
-        if _slip_on and is_bnd.any():
-            bidx = np.nonzero(is_bnd)[0]
-            bcoords = old_coords[bidx]
-            n_hat, valid = _slip_normals(mesh, bcoords)
-            slip_b = bidx[valid]
-            is_pinned = np.zeros(n_verts, dtype=bool)
-            is_pinned[bidx[~valid]] = True   # degenerate-normal nodes pinned
-            _n_slip = n_hat[valid]
-            _old_slip = old_coords[slip_b]
-            _radial = _is_radial_coords(mesh)
-            if _radial:
-                _centre = _boundary_centre(mesh, bcoords)
-                _r_target = np.linalg.norm(_old_slip - _centre, axis=1)
-
-            def _project(Y):
-                # tangential slide: remove the normal component of the
-                # boundary-node displacement
-                disp = Y[slip_b] - _old_slip
-                dn = (disp * _n_slip).sum(axis=1, keepdims=True)
-                Y[slip_b] = _old_slip + (disp - dn * _n_slip)
-                # snap curved boundaries back onto the surface (fixed |r|)
-                if _radial:
-                    v = Y[slip_b] - _centre
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[slip_b] = _centre + v * (_r_target / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md). Slip stays gated to radial meshes via
+        # ``_slip_on`` (a Cartesian boundary pins — the vertex-evaluated facet
+        # normal is degenerate there, see above); on a radial mesh the
+        # registered radial surfaces do the tangent slide + |r| restore.
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip if _slip_on else False,
+            reference_coords=old_coords, boundary_labels=pinned_labels)
 
         # --- compute V (patch volumes) on current mesh ---------
         if tris is None:
@@ -2444,7 +2266,6 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         dm = mesh.dm
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
@@ -2457,43 +2278,15 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         if metric_refresh_per_iter and outer > 0:
             _build_M_tensor()
 
-        # Boundary tangential slip — identical per-ring radius
-        # projection to _winslow_elliptic (the radial DOF is
-        # removed, so slip nodes provably stay on their ring; one
-        # node/ring anchors the rotation gauge).
-        if boundary_slip and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            c0 = old_coords[bc].mean(axis=0)
-            rg = np.round(
-                np.linalg.norm(old_coords[bc] - c0, axis=1), 6)
-            is_anchor = np.zeros(n_verts, dtype=bool)
-            slip_center = np.zeros((n_verts, _cdim))
-            slip_rtarget = np.zeros(n_verts)
-            for rv in np.unique(rg):
-                grp = bc[rg == rv]
-                rc = old_coords[grp].mean(axis=0)
-                is_anchor[grp[np.argmax(
-                    (old_coords[grp] - rc)[:, 0])]] = True
-                slip_center[grp] = rc
-                slip_rtarget[grp] = np.linalg.norm(
-                    old_coords[grp] - rc, axis=1)
-            is_slip = is_bnd & ~is_anchor
-            is_pinned = is_anchor
-            _sidx = np.nonzero(is_slip)[0]
-            _sctr = slip_center[_sidx]
-            _srad = slip_rtarget[_sidx]
-
-            def _project(Y):
-                v = Y[_sidx] - _sctr
-                nrm = np.linalg.norm(v, axis=1)
-                nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md): slip vertices slide tangentially and
+        # snap back onto their bounding surface (radial ring / plane / facet);
+        # non-slip, junction, and degenerate-normal vertices pin. Replaces the
+        # inline per-ring COM radial snap (one node/ring anchored the rotation
+        # gauge; the signed-area backtrack below still guards against tangle).
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=old_coords,
+            boundary_labels=pinned_labels)
 
         # D is fixed & Lagrangian (built once, above) — no
         # re-projection feedback. The outer loop is a damped
@@ -2706,6 +2499,7 @@ def smooth_mesh_interior(
     verbose: bool = False,
     skip_threshold=_UNSET,
     strategy: Optional[str] = None,
+    slip_surfaces=None,
 ):
     r"""Smooth a mesh's interior vertices, optionally toward a
     spatially-varying target spacing.
@@ -2942,6 +2736,25 @@ def smooth_mesh_interior(
         f = 1 + 8 * sympy.exp(-((r0.sym[0] - 1.0) / 0.12) ** 2)
         smooth_mesh_interior(mesh, metric=f)
     """
+    # slip_surfaces is the public alias for the deprecated boundary_slip;
+    # resolve to a single spec threaded to the bare mover.
+    if slip_surfaces is not None:
+        if boundary_slip not in (None, False):
+            warnings.warn(
+                "smooth_mesh_interior: pass either slip_surfaces or the "
+                "deprecated boundary_slip, not both; using slip_surfaces.",
+                stacklevel=2)
+        boundary_slip = slip_surfaces
+    if boundary_slip is None:
+        boundary_slip = False
+    # Pre-create the projected-normal field (mesh.Gamma_P1) ONCE here,
+    # before the mover snapshots the DM. Creating this MeshVariable mid-
+    # mover restructures the DM and hard-aborts (project_uw3_smoother_footguns).
+    if boundary_slip not in (None, False, (), []):
+        try:
+            _ = mesh.Gamma_P1
+        except Exception:
+            pass
     # Phase-1 remesh redesign: the adapt op now owns field transfer.
     # Wrap the mover body so every REMAP-policy variable on the mesh is
     # snapshotted, the mover runs, and a single deform-back /
@@ -2984,6 +2797,544 @@ def smooth_mesh_interior(
         skip_threshold=skip_threshold,
         strategy=strategy,
     )
+
+
+
+# ===== grafted from feature/elliptic-ma: mmpde mover + helpers =====
+def _tet_cells(dm):
+    """Tetrahedron vertex-index quadruples (local-chart), or ``None`` if the
+    mesh is not all-tet. The 3D analogue of :func:`_tri_cells` — used for the
+    signed-volume backtrack of the equidistribution mover in 3D."""
+    cStart, cEnd = dm.getHeightStratum(0)
+    pStart, pEnd = dm.getDepthStratum(0)
+    tets = []
+    for c in range(cStart, cEnd):
+        closure = dm.getTransitiveClosure(c)[0]
+        vs = [p - pStart for p in closure if pStart <= p < pEnd]
+        if len(vs) != 4:
+            return None
+        tets.append(vs)
+    if not tets:
+        return None
+    return np.asarray(tets, dtype=np.int64)
+
+
+def _owned_cell_mask(dm):
+    """Local-chart boolean mask over cells (height stratum 0): True for
+    owned cells, False for ghost/overlap cells (leaves of the point SF).
+    Indexed like ``_tri_cells`` / ``_signed_areas`` (cell i ↔ point
+    cStart+i). Assembly must sum over OWNED cells only so that a
+    ``localToGlobal(ADD_VALUES)`` ghost reduction does not double-count
+    overlap cells.
+    """
+    cStart, cEnd = dm.getHeightStratum(0)
+    is_owned = np.ones(cEnd - cStart, dtype=bool)
+    sf = dm.getPointSF()
+    if sf is None:
+        return is_owned
+    try:
+        _n_roots, leaves, _remote = sf.getGraph()
+    except Exception:
+        return is_owned
+    if leaves is None or len(leaves) == 0:
+        return is_owned
+    for leaf in leaves:
+        if cStart <= leaf < cEnd:
+            is_owned[leaf - cStart] = False
+    return is_owned
+
+
+def _min_incident_edge_nd(cells, coords):
+    """Dimension-general shortest-incident-edge per vertex. ``cells`` is
+    (n_cells, d+1); returns (n_verts,). Used by the MMPDE per-node step
+    cap. (The 2D-only ``_min_incident_edge`` reads the DM directly; this
+    works for tets too and takes an explicit cell array so the caller can
+    restrict the stencil.)"""
+    n_verts = coords.shape[0]
+    ncorner = cells.shape[1]
+    v = np.full(n_verts, np.inf)
+    for a in range(ncorner):
+        for b in range(a + 1, ncorner):
+            e = np.linalg.norm(coords[cells[:, a]] - coords[cells[:, b]],
+                               axis=1)
+            np.minimum.at(v, cells[:, a], e)
+            np.minimum.at(v, cells[:, b], e)
+    return v
+
+
+def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+                   n_outer=150, p=1.5, theta=1.0 / 3.0, tau=1.0,
+                   step_frac=0.2, area_floor_frac=0.01,
+                   boundary_slip=False, outer_tol=1.0e-7, tol=1.0e-3,
+                   stol=None, stol_k=3,
+                   fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
+                   accel="cg", momentum=0.0,
+                   **_ignored):
+    r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
+    MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
+    arXiv:1410.7872). Dimension-general (`d = 2, 3`) and parallel-safe.
+
+    Generates the physical mesh as the image of a **fixed computational
+    (reference) mesh** under the inverse coordinate map, minimizing
+    Huang's functional ``G = theta*sqrt(detM)*S**q + (1-2theta)*d**q *
+    r**p * detM**((1-p)/2)`` with ``q = d*p/2``, ``S = tr(J Minv J^T)``,
+    ``J = Ehat @ inv(E)``, ``r = det J``.
+    Because `G → ∞` as `det𝕁 → 0` the map is non-folding (Math. Comp. 87
+    (2018) 1887); because it is the inverse map of a convex computational
+    domain it genuinely *clusters and aligns* to `M` — a thin strip on a
+    fault, not the isotropic centre-of-gravity blob the scalar MA mover
+    produces, and not the non-clustering smooth of the decoupled
+    `_winslow_anisotropic`. See
+    ``docs/developer/design/anisotropic-mmpde-mover.md``.
+
+    ``metric`` is the SPD `d×d` metric tensor: a sympy `Matrix` (function
+    of ``mesh.CoordinateSystem.X``) or a ``VarType.TENSOR`` /
+    ``SYM_TENSOR`` :class:`MeshVariable`. Build it small **across** a
+    feature (along its normal) and base along it, localized near the
+    feature (e.g. `M = I + (R²-1)·exp(-(d_seg/W)²)·n nᵀ`).
+
+    Parallel safety (release gate: `np>=2` must match serial): the
+    per-element `d×d` algebra is rank-local (batched ``numpy.linalg``);
+    the **velocity assembly** `Σ_{K∋i}|K|v^K_i` is summed over **owned
+    cells** into the coordinate DM Vec with ``localToGlobal(ADD_VALUES)``
+    + ``globalToLocal`` (cross-rank ghost reduction — not ``np.add.at``
+    into a global array); the per-node step and the energy/area
+    line-search predicates are computed from owned/assembled data with
+    collective ``allreduce`` so every rank takes the same accept/backtrack
+    branch; only owned vertices move and ghosts are halo-synced each trial
+    so the final ``_deform_mesh`` is consistent.
+
+    Time integration: gradient flow `dx_i/dt = (P_i/τ)Σ|K|v`,
+    `P_i = detM(x_i)^{(p-1)/2}` (scale-free), explicit Euler with a
+    per-node step cap (``step_frac``·min-incident-edge) and an **energy
+    line-search backtrack** (accept only if no fold *and* `I_h`
+    decreases) so the descent is monotone. ``n_outer`` Euler steps.
+
+    The steepest-descent direction is accelerated by ``accel`` (default
+    ``"cg"``, nonlinear conjugate gradient, parameter-free): this cuts the
+    outer-iteration count ~13× on the first (uniform→radial) adapt vs plain
+    descent and makes adapt-every-step affordable. ``"heavyball"`` /
+    ``"hb-restart"`` use Polyak momentum with coefficient ``momentum`` (default
+    0.9 for those modes); ``"none"`` is plain descent. The line-search keeps
+    every accelerator fold-safe. (Previously controlled by the ``MMPDE_ACCEL`` /
+    ``MMPDE_MOMENTUM`` environment variables, now removed — pass as kwargs, e.g.
+    ``method_kwargs={"accel": "cg"}`` through ``smooth_mesh_interior``.)
+    """
+    import sympy
+    from petsc4py import PETSc
+    pinned_labels = tuple(pinned_labels)
+    cdim = mesh.cdim
+    if cdim not in (2, 3):
+        raise NotImplementedError(
+            "_winslow_mmpde supports 2D/3D simplex meshes only")
+    p = float(p); theta = float(theta); tau = float(tau)
+    q = cdim * p / 2.0
+    dq = float(cdim) ** q
+    parallel = uw.mpi.size > 1
+
+    # --- metric as evaluable sympy entries -------------------------
+    # Accept a full d×d SPD tensor (sympy Matrix or tensor MeshVariable) OR a
+    # scalar density rho — the latter is coerced to the isotropic tensor rho*I,
+    # so mmpde takes the same metric forms as the ma/ot/anisotropic movers.
+    Msym = metric.sym if isinstance(metric, uw.discretisation.MeshVariable) else metric
+    if not isinstance(Msym, sympy.MatrixBase):
+        Msym = sympy.sympify(Msym)
+    if not isinstance(Msym, sympy.MatrixBase):        # bare scalar expression
+        Msym = sympy.eye(cdim) * Msym
+    elif Msym.shape == (1, 1):                        # 1x1 (scalar MeshVariable)
+        Msym = sympy.eye(cdim) * Msym[0, 0]
+    if Msym.shape != (cdim, cdim):
+        raise ValueError(
+            f"_winslow_mmpde metric must be {cdim}x{cdim} (or a scalar "
+            f"density), got {Msym.shape}")
+
+    def _eval_M_analytic(pts):
+        """Exact Eulerian metric via sympy evaluate → (n, cdim, cdim).
+        Correct but slow (sympy symbolic processing dominates the cost)."""
+        n = pts.shape[0]
+        out = np.empty((n, cdim, cdim))
+        for a in range(cdim):
+            for b in range(cdim):
+                e = Msym[a, b]
+                if getattr(e, "free_symbols", None):
+                    out[:, a, b] = np.asarray(
+                        uw.function.evaluate(e, pts)).reshape(-1)
+                else:
+                    out[:, a, b] = float(e)
+        return out
+
+    # `_eval_M` is (re)bound below once `ref` is known: either the exact
+    # analytic path, or a bake-once + Shepard/RBF interpolation from the
+    # FIXED reference cloud (Eulerian — the metric is a function of space,
+    # so we interpolate from a static cloud to the moving centroids, NOT a
+    # Lagrangian nodal field). RBF is ~10× faster per eval and smooths the
+    # analytic endpoint "elbow" kink; the metric is a guide field so the
+    # interpolation error costs no correctness (the line-search on I_h
+    # keeps the move valid for whatever M it is handed).
+    _eval_M = _eval_M_analytic
+
+    def _dM_dx(cen):
+        """∂M/∂x at centroids via centred FD on the analytic metric →
+        (n, cdim, cdim, cdim) indexed [cell, a, b, component]."""
+        n = cen.shape[0]
+        d = np.zeros((n, cdim, cdim, cdim))
+        for c in range(cdim):
+            sh = np.zeros(cdim); sh[c] = fd_eps
+            Mp = _eval_M(cen + sh)
+            Mm = _eval_M(cen - sh)
+            d[:, :, :, c] = (Mp - Mm) / (2.0 * fd_eps)
+        return d
+
+    # --- topology / parallel scaffolding ---------------------------
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    n_verts = pEnd - pStart
+    if cdim == 2:
+        cells_all = _tri_cells(dm)
+        signed_vol = _signed_areas
+    else:
+        cells_all = _tet_cells(dm)
+        signed_vol = _signed_volumes
+    if cells_all is None:
+        return
+    fact = 2.0 if cdim == 2 else 6.0           # d! → |K| = |detE|/d!
+    owned_cell = _owned_cell_mask(dm)
+    cells_own = cells_all[owned_cell]
+    is_owned_v = _owned_vertex_mask(dm)
+
+    coord_dm = dm.getCoordinateDM()
+    local_vec = dm.getCoordinatesLocal()
+    global_vec = dm.getCoordinates()
+    vloc = coord_dm.getLocalVec()
+    vglob = coord_dm.getGlobalVec()
+
+    coords = np.asarray(local_vec.array, dtype=np.double).reshape(-1, cdim).copy()
+
+    # Fixed computational reference = coords at first call, cached on mesh
+    # (ghosted: this rank's local array including halo).
+    ref = getattr(mesh, "_mmpde_reference_coords", None)
+    if ref is None or ref.shape != coords.shape:
+        ref = coords.copy()
+        mesh._mmpde_reference_coords = ref
+
+    # --- RBF/Shepard bake of the metric (the production-fast path) ------
+    # Evaluate the analytic metric ONCE on the fixed reference cloud, then
+    # interpolate to the moving centroids each step via k-NN inverse-
+    # distance (Shepard). The reference cloud is fixed in space ⇒ Eulerian.
+    if metric_eval == "rbf":
+        from scipy.spatial import cKDTree
+        M_ref = _eval_M_analytic(ref)                    # one analytic pass
+        _tree = cKDTree(ref)
+        _kk = int(rbf_k) if rbf_k else (cdim + 2)
+
+        def _eval_M(pts):
+            dist, idx = _tree.query(pts, k=_kk)
+            if _kk == 1:
+                return M_ref[idx]
+            w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
+            w /= w.sum(axis=1, keepdims=True)
+            return np.einsum('nk,nkab->nab', w, M_ref[idx])
+    else:
+        _eval_M = _eval_M_analytic
+
+    # Mesh-owned boundary slip is applied per outer iter via mesh.boundary_slip
+    # (below). Pre-touch Gamma_P1 here so the projected-normal MeshVariable
+    # exists before any DM snapshot (footgun-safe; redundant with the central
+    # pre-touch in smooth_mesh_interior, kept as defence-in-depth).
+    from underworld3.meshing._ot_adapt import _resolve_slip
+    _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
+
+    # Reference edge matrices (fixed) for the owned cells.
+    def _edge_mats(X, cells):
+        pc = X[cells]                               # (Nc, d+1, d)
+        cols = [pc[:, k + 1] - pc[:, 0] for k in range(cdim)]
+        return np.stack(cols, axis=2)               # (Nc, d, d) columns
+    Eh = _edge_mats(ref, cells_own)
+    detEh = np.linalg.det(Eh)
+
+    a0 = signed_vol(coords, cells_all)
+    orient = np.sign(np.median(a0)) or 1.0
+    a0_own_med = float(np.median(np.abs(signed_vol(coords, cells_own))))
+    if parallel:
+        a0_own_med = uw.mpi.comm.allreduce(a0_own_med) / uw.mpi.size
+    a_min_floor = float(area_floor_frac) * a0_own_med
+    # Representative background cell size h0 (mean reference edge length over
+    # owned cells), used to make the convergence test SCALE-RELATIVE: a move
+    # of dmax < tol·h0 is negligible vs the cell size, so the adapt has
+    # converged regardless of absolute coordinate units. (The old absolute
+    # outer_tol=1e-7 never fired — dx~1e-6 ≫ 1e-7 yet ≪ h0~0.08 — so every
+    # adapt ran to the n_outer cap.)
+    _ecols = np.linalg.norm(Eh, axis=1)            # (n_own, cdim) edge lengths
+    h0_scale = float(np.mean(_ecols)) if _ecols.size else 1.0
+    if parallel:
+        h0_scale = uw.mpi.comm.allreduce(h0_scale) / uw.mpi.size
+
+    def _halo_sync(X):
+        """Make ghost vertices exact copies of their owners."""
+        if not parallel:
+            return X
+        local_vec.array[:] = X.ravel()
+        coord_dm.localToGlobal(local_vec, global_vec, addv=False)
+        coord_dm.globalToLocal(global_vec, local_vec)
+        return np.asarray(local_vec.array).reshape(-1, cdim).copy()
+
+    def _energy(X):
+        """I_h = Σ_owned |K| G (collective)."""
+        E = _edge_mats(X, cells_own)
+        detE = np.linalg.det(E)
+        Einv = np.linalg.inv(E)
+        J = np.einsum('mij,mjk->mik', Eh, Einv)
+        r = detEh / detE
+        cen = X[cells_own].mean(axis=1)
+        M = _eval_M(cen); Minv = np.linalg.inv(M); detM = np.linalg.det(M)
+        JMi = np.einsum('mij,mjk->mik', J, Minv)
+        S = np.einsum('mij,mij->m', JMi, J)
+        G = (theta * np.sqrt(detM) * S ** q
+             + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
+        K = np.abs(detE) / fact
+        loc = float(np.sum(K * G))
+        if parallel:
+            loc = uw.mpi.comm.allreduce(loc)
+        return loc
+
+    def _min_area(X):
+        amin = float((signed_vol(X, cells_own) * orient).min())
+        if parallel:
+            from mpi4py import MPI as _MPI
+            amin = uw.mpi.comm.allreduce(amin, op=_MPI.MIN)
+        return amin
+
+    prevI = _energy(coords)
+    _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
+    # Acceleration of the first-order steepest-descent direction (``accel``).
+    # The energy+min-area line-search below stays the fold guard, so any
+    # accelerator overshoot is backtracked — never tangles (verified fold-proof
+    # even at step_frac=2). ``accel`` in {"none","heavyball","hb-restart","cg"}:
+    #   none      : plain steepest descent
+    #   heavyball : step += momentum * previous accepted displacement (Polyak);
+    #               ``momentum`` defaults to 0.9 if left at 0 for this mode
+    #   hb-restart: heavyball + gradient restart (drop momentum when it opposes
+    #               the descent direction — O'Donoghue & Candès robustness)
+    #   cg        : nonlinear conjugate gradient (Polak-Ribière+), parameter-free
+    #               — the default (≈13× fewer outer iters than plain descent on
+    #               the first radial adapt, best mesh quality, no tuning).
+    _accel = str(accel).lower() if accel is not None else "none"
+    _valid_accel = ("none", "heavyball", "hb-restart", "cg")
+    if _accel not in _valid_accel:
+        raise ValueError(
+            f"_winslow_mmpde: unknown accel {accel!r}; "
+            f"choose from {_valid_accel}")
+    _mmpde_beta = float(momentum)
+    if _accel in ("heavyball", "hb-restart") and _mmpde_beta == 0.0:
+        _mmpde_beta = 0.9
+    _prev_disp = np.zeros_like(coords)
+    _prev_v = np.zeros_like(coords)
+    _prev_dir = np.zeros_like(coords)
+
+    def _gdot(a, b, mask):
+        s = float(np.sum(a[mask] * b[mask]))
+        if parallel:
+            from mpi4py import MPI as _MPI
+            s = uw.mpi.comm.allreduce(s, op=_MPI.SUM)
+        return s
+
+    for outer in range(n_outer):
+        # Mesh-owned tangent slip (see boundary-slip-strategy.md): the
+        # reference is the current coords (refreshed each outer iter), so the
+        # tangent slide / surface restore are measured from this iteration's
+        # mesh — matching the previous per-iter _build_slip_projector build.
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=coords,
+            boundary_labels=pinned_labels)
+        free = ~is_pinned
+
+        # --- per-element terms on owned cells (rank-local d×d algebra) -
+        E = _edge_mats(coords, cells_own)
+        detE = np.linalg.det(E)
+        Einv = np.linalg.inv(E)
+        J = np.einsum('mij,mjk->mik', Eh, Einv)
+        r = detEh / detE
+        cen = coords[cells_own].mean(axis=1)
+        M = _eval_M(cen); Minv = np.linalg.inv(M); detM = np.linalg.det(M)
+        sdetM = np.sqrt(detM)
+        JMi = np.einsum('mij,mjk->mik', J, Minv)
+        S = np.einsum('mij,mij->m', JMi, J)
+        G = (theta * sdetM * S ** q
+             + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
+        K = np.abs(detE) / fact
+        # ∂G/∂𝕁 = 2qθ√detM S^{q-1} M⁻¹ 𝕁ᵀ ; ∂G/∂r = p(1-2θ)dq detM^{(1-p)/2} r^{p-1}
+        MinvJT = np.einsum('mij,mkj->mik', Minv, J)
+        dGdJ = (2.0 * q * theta * sdetM * S ** (q - 1.0))[:, None, None] * MinvJT
+        dGdr = (p * (1.0 - 2.0 * theta) * dq
+                * detM ** ((1 - p) / 2) * r ** (p - 1.0))
+        # local vertex velocities: V rows = -G E⁻¹ + E⁻¹ dGdJ Eh E⁻¹ + dGdr r E⁻¹
+        mid = np.einsum('mij,mjk,mkl,mln->min', Einv, dGdJ, Eh, Einv)
+        V = (-G[:, None, None] * Einv + mid
+             + (dGdr * r)[:, None, None] * Einv)        # (Nc, d, d): rows v1..vd
+        # grad_i (G+Jacobian part) = -Σ |K| v ; v0 = -(Σ_k vk)
+        vrows = V                                        # rows index local vert 1..d
+        v0 = -vrows.sum(axis=1)                          # (Nc, d)
+        grad_loc = np.zeros((n_verts, cdim))
+        np.add.at(grad_loc, cells_own[:, 0], -(K[:, None] * v0))
+        for k in range(cdim):
+            np.add.at(grad_loc, cells_own[:, k + 1],
+                      -(K[:, None] * vrows[:, k, :]))
+
+        # --- metric-variation term ∂G/∂M : ∂M/∂x (ESSENTIAL on the feature)
+        # ∂G/∂M = θ√detM[½Sq M⁻¹ - q S^{q-1} M⁻¹ 𝕁ᵀ𝕁 M⁻¹]
+        #         + (1-2θ)dq rᵖ (1-p)/2 detM^{(1-p)/2} M⁻¹
+        JTJ = np.einsum('mji,mjk->mik', J, J)
+        MJTJM = np.einsum('mij,mjk,mkl->mil', Minv, JTJ, Minv)
+        dGdM = (theta * sdetM)[:, None, None] * (
+            0.5 * (S ** q)[:, None, None] * Minv
+            - q * (S ** (q - 1.0))[:, None, None] * MJTJM)
+        dGdM += ((1.0 - 2.0 * theta) * dq * r ** p
+                 * ((1.0 - p) / 2.0) * detM ** ((1 - p) / 2)
+                 )[:, None, None] * Minv
+        dMdx = _dM_dx(cen)                                # (Nc,d,d,c)
+        # grad contribution per centroid component c, shared 1/(d+1) per vert
+        gmet = np.einsum('mab,mabc->mc', dGdM, dMdx)      # tr(dGdM·∂_cM)
+        gmet = (K / (cdim + 1.0))[:, None] * gmet
+        for k in range(cdim + 1):
+            np.add.at(grad_loc, cells_own[:, k], gmet)
+
+        # velocity = -grad, assembled cross-rank via coord DM (ADD ghost)
+        vel_loc = -grad_loc
+        if parallel:
+            vloc.array[:] = vel_loc.ravel()
+            # localToGlobal(ADD_VALUES) accumulates into vglob; it is fetched
+            # once (getGlobalVec, before the loop) and reused every outer iter,
+            # so it must be zeroed first — otherwise it carries stale pooled
+            # values on the first use and the previous iteration's assembled
+            # velocity on every subsequent one.
+            vglob.zeroEntries()
+            coord_dm.localToGlobal(vloc, vglob, addv=True)
+            coord_dm.globalToLocal(vglob, vloc)
+            vel = np.asarray(vloc.array).reshape(-1, cdim).copy()
+        else:
+            vel = vel_loc
+
+        # P_i balancing at vertices (pointwise, complete everywhere)
+        Mv = _eval_M(coords); detMv = np.linalg.det(Mv)
+        Pi = detMv ** ((p - 1.0) / 2.0)
+        v = (Pi / tau)[:, None] * vel
+
+        # nonlinear-CG (Polak-Ribière+): replace the steepest-descent direction
+        # v with the conjugate direction d = v + beta_cg * d_prev (β from gradient
+        # history — parameter-free; auto-restarts when β<0).
+        if _accel == "cg":
+            _fo_cg = free & is_owned_v
+            _den = _gdot(_prev_v, _prev_v, _fo_cg)
+            _beta_cg = (max(0.0, _gdot(v, v - _prev_v, _fo_cg) / _den)
+                        if _den > 0.0 else 0.0)
+            _prev_v = v.copy()
+            v = v + _beta_cg * _prev_dir
+            _prev_dir = v.copy()
+
+        # Per-node step cap from the min incident edge over rank-local
+        # cells. NOTE (parallel): a partition-boundary owned vertex may not
+        # see every incident edge from rank-local cells, so its cap differs
+        # slightly from serial → an ~0.006%-level serial/parallel drift in
+        # the final mesh. The velocity ASSEMBLY itself is bit-identical
+        # serial vs parallel (localToGlobal(ADD_VALUES) is exact); only this
+        # cap is rank-dependent. The drift is below the move's own
+        # non-determinism, so we accept it rather than force a ghost-complete
+        # MIN reduction (PETSc localToGlobal has no portable MIN/MAX mode
+        # here — MAX_VALUES errors on this DM). Left as a known small
+        # non-reproducibility; revisit only if a bit-exact mesh is required.
+        h = _min_incident_edge_nd(cells_all, coords)
+        mag = np.linalg.norm(v, axis=1)
+        cap = step_frac * h
+        sc = np.ones_like(mag)
+        m = (mag > cap) & (mag > 0.0)
+        sc[m] = cap[m] / mag[m]
+        step = v * sc[:, None]
+        # Robustness guard (esp. parallel): a degenerate / near-inverted cell can
+        # produce a non-finite gradient (inf v -> mag=inf -> sc=cap/inf=0 ->
+        # step = inf*0 = NaN here). A NaN/inf displacement then makes a NaN trial
+        # whose centroid query blows up `_energy`/`_eval_M` (kd-tree) and, on a
+        # subset of ranks, deadlocks the whole job. Zero any non-finite step so
+        # that node simply does not move this iteration while the rest of the
+        # mesh still adapts.
+        step = np.where(np.isfinite(step), step, 0.0)
+
+        if _accel in ("heavyball", "hb-restart") and _mmpde_beta > 0.0:
+            _disp = _prev_disp
+            if _accel == "hb-restart":
+                # gradient restart: drop momentum when it opposes the descent
+                # step (overlap < 0) so it never drives uphill.
+                if _gdot(step, _prev_disp, free & is_owned_v) < 0.0:
+                    _disp = np.zeros_like(_prev_disp)
+            step = step + _mmpde_beta * _disp
+            step = np.where(np.isfinite(step), step, 0.0)
+
+        # only owned interior vertices move; ghosts halo-synced each trial
+        free_owned = free & is_owned_v
+
+        # energy line-search backtrack (monotone, fold-free; collective)
+        scale = 1.0
+        accepted = coords
+        Inew = prevI
+        for _bt in range(24):
+            trial = coords.copy()
+            trial[free_owned] += scale * step[free_owned]
+            trial = _project(trial)
+            trial = _halo_sync(trial)
+            # reject any non-finite trial (defense-in-depth: projection/halo
+            # could still introduce inf/NaN) so `_energy` never queries NaN.
+            if np.all(np.isfinite(trial)) and _min_area(trial) > a_min_floor:
+                Itr = _energy(trial)
+                if Itr < prevI:
+                    accepted = trial; Inew = Itr; break
+            scale *= 0.5
+        else:
+            accepted = coords; Inew = prevI; scale = 0.0
+        dmax = float(np.linalg.norm(
+            (accepted - coords)[is_owned_v], axis=1).max(initial=0.0))
+        if parallel:
+            from mpi4py import MPI as _MPI
+            dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
+        _prev_disp = accepted - coords   # accepted move, for next-iter momentum
+        coords = accepted
+        mesh._deform_mesh(coords)
+        if verbose:
+            uw.pprint(
+                f"  mmpde outer {outer+1}/{n_outer}: I={Inew:.6e} "
+                f"dI={Inew-prevI:+.2e} scale={scale:.3f} max|Δx|={dmax:.2e}")
+        # Converged when (a) the line-search could make no downhill move
+        # (scale collapsed to 0 — at a local minimum / stuck), or (b) the
+        # accepted node move is negligible relative to the cell size
+        # (dmax < tol·h0). tol defaults to 1e-3 (move < 0.1% of a cell).
+        # The legacy absolute `outer_tol` is retained as an additional, even
+        # tighter floor for callers that set it.
+        prevI = Inew
+        # Stagnation (residual stol) exit: PETSc-`stol`-style "give up when the
+        # meshing functional stops dropping well below the last steps". The
+        # node-step `dmax` is capped and never shrinks on this descent mover, so
+        # a step-test can't fire; instead test the *energy* (the residual) drop
+        # over the last `stol_k` accepted iterations -- a WINDOW (not single
+        # step), which is immune to the line-search per-iteration noise and to
+        # the occasional big drop after a scale reduction. Opt-in: stol=None/0
+        # preserves the previous behaviour bit-for-bit.
+        if stol is not None and stol > 0.0:
+            _Iwin.append(Inew)
+            if len(_Iwin) > stol_k:
+                _Iref = _Iwin[-1 - stol_k]
+                _rel = (_Iref - Inew) / max(abs(_Iref), 1.0e-30)
+                if _rel < stol:
+                    if verbose:
+                        uw.pprint(
+                            f"  mmpde stol-exit at outer {outer+1}/{n_outer}: "
+                            f"rel energy drop over last {stol_k} = {_rel:.2e} "
+                            f"< stol={stol:.1e}")
+                    break
+        if scale == 0.0 or dmax < tol * h0_scale or dmax < outer_tol:
+            break
+
+    coord_dm.restoreLocalVec(vloc)
+    coord_dm.restoreGlobalVec(vglob)
+
+
 
 
 def _smooth_mesh_interior_bare(
@@ -3088,6 +3439,19 @@ def _smooth_mesh_interior_bare(
             _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                               boundary_slip=boundary_slip, **mk)
         elif method in ("ot", "equidistribute", "improve"):
+            # The OT / equidistribution mover is incomplete — e.g. its boundary
+            # slip is gated to radial geometries (box boundaries are pinned, not
+            # slid; see boundary-slip-strategy.md) — and is expected to be
+            # superseded by ``method='mmpde'`` with a scalar metric. This fires
+            # for every OT use, including the internal ``mesh.OT_adapt`` reset
+            # path. (Python shows a given DeprecationWarning once per location.)
+            warnings.warn(
+                "smooth_mesh_interior(method='ot'/'equidistribute'/'improve') "
+                "is an incomplete mesh mover (boundary slip is gated to radial "
+                "geometries) and is expected to be superseded by "
+                "method='mmpde' with a scalar metric. Prefer 'mmpde' for "
+                "production adaptive meshing.",
+                DeprecationWarning, stacklevel=2)
             _winslow_equidistribute(mesh, metric, pinned_labels,
                                      verbose,
                                      boundary_slip=boundary_slip,
@@ -3096,6 +3460,9 @@ def _smooth_mesh_interior_bare(
             _winslow_anisotropic(mesh, metric, pinned_labels,
                                  verbose,
                                  boundary_slip=boundary_slip, **mk)
+        elif method in ("mmpde", "variational"):
+            _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+                           boundary_slip=boundary_slip, **mk)
         else:
             raise ValueError(
                 f"smooth_mesh_interior: unknown method {method!r}; "
@@ -3278,6 +3645,20 @@ def metric_density_from_gradient(
     mesh : underworld3 mesh
     field : scalar MeshVariable or sympy scalar expression
         The field whose gradient drives refinement (e.g. ``T``).
+    refinement : float, optional
+        Target COARSEST:FINEST edge-length ratio ``R = h_max/h_min``
+        the metric grades to. When ``> 1`` this **overrides** ``amp``
+        (and the strategy default). Because the mover equidistributes
+        ``ρ`` (so cell edge ``h ∝ ρ^{-1/d}``), the full ``t∈[0,1]``
+        range gives ``h_max/h_min = (1 + amp)^{power/d}``; this is
+        inverted to set ``amp = R^{d/power} - 1``. So ``R`` is a
+        predictable, **mesh-independent** resolution knob (``R=2`` ⇒
+        finest cells ~2× smaller than the coarsest). The *realised*
+        ratio tracks ``R`` until the fixed node budget saturates it
+        (large ``R`` is capped — going further needs h-refinement to
+        add nodes, not just redistribution). ``None`` (default) ⇒ use
+        ``amp`` / the ``strategy`` preset. Exposed in the convection
+        harness as ``--resolution-ratio``.
     amp : float, default 8.0
         Bunching intensity: ``ρ_max = (1 + amp)^power`` where
         ``|∇field|`` is strongest. Larger ⇒ stronger
@@ -3361,6 +3742,15 @@ def metric_density_from_gradient(
         power = s["power"]
 
     cdim = mesh.cdim
+
+    # `refinement` R = target COARSEST:FINEST edge-length ratio (h_max/h_min).
+    # The mover equidistributes ρ=(1+amp·t)^power, so cell edge h ∝ ρ^(-1/d) and
+    # the full t∈[0,1] range gives h_max/h_min = (1+amp)^(power/d). Invert that to
+    # set amp, so R is a predictable, mesh-independent edge-length ratio. This
+    # OVERRIDES the strategy's amp (R is the explicit resolution knob).
+    # (Previously `refinement` was accepted but unused — a silent no-op.)
+    if refinement is not None and float(refinement) > 1.0:
+        amp = float(refinement) ** (cdim / float(power)) - 1.0
     X = mesh.CoordinateSystem.X
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
@@ -3552,10 +3942,21 @@ def metric_density_from_gradient(
             rho_raw = np.maximum(gmag, 1.0e-30) ** 2
             rho0.data[:, 0] = np.clip(
                 rho_raw, np.exp(log_rho_min), np.exp(log_rho_max))
+        elif metric_choice == "arc-length":
+            # Smooth arc-length monitor rho = sqrt(1 + (A*ghat)^2),
+            # ghat = |grad field|/g_hi, A = sqrt(ref^4 - 1) so rho = ref^2 at
+            # the hi-percentile gradient. Grades continuously from rho=1 in
+            # flat regions (no clip kink) -> cleaner OT / Monge-Ampere meshes.
+            A = np.sqrt(max(ref_val ** 4 - 1.0, 0.0))
+            ghat = gmag / max(g_hi, 1.0e-30)
+            rho_al = np.sqrt(1.0 + (A * ghat) ** 2)
+            rho0.data[:, 0] = np.clip(
+                rho_al, np.exp(log_rho_min), np.exp(log_rho_max))
         else:
             raise ValueError(
-                f"metric_choice must be 'front-following' or "
-                f"'gradient-uniform', got {metric_choice!r}")
+                f"metric_choice must be 'front-following', "
+                f"'gradient-uniform', or 'arc-length', got "
+                f"{metric_choice!r}")
         return rho0.sym[0]
 
     if mode == "raw":

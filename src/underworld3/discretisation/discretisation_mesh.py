@@ -2119,8 +2119,11 @@ class Mesh(Stateful, uw_object):
         """
         from underworld3.meshing.smoothing import (
             _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
+        from underworld3.meshing._ot_adapt import _boundary_facets
+        from underworld3.meshing.bounding_surface import BoundingSurface
 
         dm = self.dm
+        cdim = self.cdim
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
         if reference_coords is None:
@@ -2137,10 +2140,31 @@ class Mesh(Stateful, uw_object):
         is_bnd = _pinned_mask(dm, all_labels)
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
-        surf = self.bounding_surfaces
-        # Only labels with a registered analytic surface can slip (step 1).
+        # Per-label vertex masks (closure of each label's tagged facets).
+        masks = {lab: _pinned_mask(dm, (lab,)) for lab in slip_labels}
+
+        # Resolve a BoundingSurface for every slip label. Constructor-registered
+        # labels (radial / plane) restore analytically; a slip label with NO
+        # registered surface (a loaded mesh, an internal boundary) gets a
+        # *transient* ``facet`` surface built from THIS call's reference facets
+        # — nearest-reference-facet restore, matching the mover's
+        # ``_build_slip_projector`` facet fallback rather than pinning. FREE
+        # labels (dict ``False``) still slide-without-restore regardless of
+        # kind (handled in ``project`` below). A label with no boundary facets
+        # at all stays unusable → its vertices pin (the safe default).
+        surf = dict(self.bounding_surfaces)
+        unreg = [lab for lab in slip_labels if lab not in surf]
+        if unreg:
+            facets, _opp = _boundary_facets(self, cdim)
+            if facets is not None and facets.size:
+                for lab in unreg:
+                    fac_in = masks[lab][facets].all(axis=1)
+                    if fac_in.any():
+                        surf[lab] = BoundingSurface(
+                            self, lab, "facet",
+                            reference_facets=ref[facets[fac_in]])
         usable = [lab for lab in slip_labels if lab in surf]
-        masks = {lab: _pinned_mask(dm, (lab,)) for lab in usable}
+        masks = {lab: masks[lab] for lab in usable}
         count = numpy.zeros(n_verts, dtype=int)
         for m in masks.values():
             count += m.astype(int)
@@ -2162,17 +2186,42 @@ class Mesh(Stateful, uw_object):
         old_slip = ref[slip_b]
         labels_b = vert_label[slip_b]
 
+        # Precompute each slip vertex's tangent-slide normal ONCE, at the fixed
+        # reference (see the re-solve-vs-cached trade-off in the DESIGN NOTE on
+        # ``BoundingSurface.normals``). The metric movers call ``project``
+        # repeatedly inside their line-search backtrack; re-deriving the
+        # projected normal (a ``Gamma_P1`` re-solve via ``_slip_normals``) on
+        # every call would be a severe regression. The normal is taken at the
+        # reference and is constant
+        # across the backtrack — matching ``_build_slip_projector``, which also
+        # fixes the normal per build. A slip vertex with a degenerate normal
+        # (``valid`` False — e.g. a corner the junction rule missed) keeps its
+        # reference position under the slide; the surface restore still applies.
+        normals_b = numpy.zeros((slip_b.size, cdim))
+        valid_b = numpy.zeros(slip_b.size, dtype=bool)
+        for lab in usable:
+            sel = labels_b == lab
+            if not sel.any():
+                continue
+            nrm, val = surf[lab].normals(old_slip[sel])
+            normals_b[sel] = nrm
+            valid_b[sel] = val
+
         def project(Y):
             Y = numpy.asarray(Y, dtype=float)
+            # tangent slide with the precomputed reference normals
+            disp = Y[slip_b] - old_slip
+            dn = (disp * normals_b).sum(axis=1, keepdims=True)
+            slid = numpy.where(valid_b[:, None],
+                               old_slip + (disp - dn * normals_b), old_slip)
             for lab in usable:
                 sel = labels_b == lab
                 if not sel.any():
                     continue
-                bs = surf[lab]
                 idx = slip_b[sel]
-                slid = bs.tangent_project(Y[idx], old_slip[sel])
                 # FREE surfaces (dict spec False) slide but do not restore.
-                Y[idx] = slid if lab in free_labels else bs.restore(slid)
+                Y[idx] = (slid[sel] if lab in free_labels
+                          else surf[lab].restore(slid[sel]))
             return Y
 
         return is_pinned, project
