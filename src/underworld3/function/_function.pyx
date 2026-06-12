@@ -371,7 +371,9 @@ def global_evaluate_nd(   expr,
 
     Contract: this is a faithful *parallel* counterpart of :func:`evaluate` —
     a query point is interpolated wherever in the mesh it lands (on any rank),
-    a point just outside the mesh is extrapolated from its true nearest cell,
+    a point just outside the mesh is extrapolated from its nearest cell (the
+    globally nearest by a centroid-distance heuristic, with the lowest rank as
+    the tie-break in parallel),
     and ``check_extrapolated`` returns an inside/outside flag per point. The
     result is independent of the number of ranks (up to the rank-local
     extrapolation residual near partition seams). Points that no rank can
@@ -580,7 +582,7 @@ def global_evaluate_nd(   expr,
     # it (operator escape hatch — see DEADLOCK SAFETY / contract docstring).
     _env_fallback = os.environ.get("GE_LOCAL_FALLBACK")
     if _env_fallback is not None:
-        _local_fallback = _env_fallback not in ("0", "off", "false", "no", "")
+        _local_fallback = _env_fallback.strip().lower() not in ("0", "off", "false", "no", "")
     else:
         _local_fallback = bool(local_fallback)
     if uw.mpi.size > 1 and _local_fallback:
