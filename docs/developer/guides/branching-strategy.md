@@ -33,6 +33,10 @@ feature/Z ────────────────────┘
 ### `main` — stable releases
 
 - Receives merges from `development` at release time (quarterly, or when ready).
+  The quarterly merge brings over the **whole** stable state of `development` —
+  it is *not* a surgical cherry-pick of one feature. Which features are *announced
+  as working* is decided by the release notes, not by branch surgery
+  (see [Maturity-gated promotion](#maturity-gated-promotion) below).
 - Critical bug fixes are cherry-picked from `development` between releases.
 - Every merge is tagged: `v3.0.0`, `v3.0.1` (patch), `v3.1.0` (quarterly).
 - Binder launcher tracks the latest release tag.
@@ -117,6 +121,28 @@ Bug found
 | Binder update | Each release | Binder workflow triggers on tag push |
 
 Version numbers are managed by setuptools-scm from git tags — see `version-management.md`.
+
+### Maturity-gated promotion
+
+The quarterly `development → main` merge brings over everything stable on
+`development`. The hard part is not *which commits* move — it is being able to say
+"feature X is released and **works**" without claiming the same for half-finished
+work that rode along.
+
+The project solves this with **release notes, not branch surgery**. A declarative
+manifest (`docs/release-notes/feature-manifest.yaml`) lists each shippable feature
+and the tests that validate it. At release time a gate runs each feature's tests
+and sorts it into:
+
+- **Supported (validated)** — `tier_a`/`tier_b` tests pass; guaranteed.
+- **Preview (present, unguaranteed)** — code is on `main` but not guaranteed.
+
+So the MMPDE mover's code can be on `main` while the release announces only the
+validated features as supported — the mover stays "preview" until its validation
+is trusted. Run the gate any time with `./uw dev release-check`, and drive the
+whole promotion with `./uw dev release`.
+
+**Full guide**: `release-process.md`.
 
 ## CI Requirements
 
