@@ -385,6 +385,7 @@ configure_petsc() {
                 --download-bison=1 \
                 --with-petsc4py=1 \
 		--with-slepc4py=1 \
+                --with-shared-libraries=1 \
                 --with-make-np=40
             ;;
         gadi)
