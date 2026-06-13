@@ -105,3 +105,16 @@ features:
         - tests/test_101*.py
       select: "multigrid or fmg or preconditioner"
       markers: "tier_a or tier_b"
+
+  - key: constant-nullspace
+    title: "Constant Nullspace (singular scalar solvers)"
+    owner: "@lmoresi"
+    claim: supported
+    summary: >
+      SNES_Scalar.constant_nullspace returns the minimum-norm solution for
+      pure-Neumann / closed-manifold scalar problems whose operator has a
+      constant kernel (the singular Poisson case).
+    validation:
+      paths:
+        - tests/test_1056_constant_nullspace.py
+      markers: "tier_a or tier_b"
