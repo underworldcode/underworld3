@@ -45,6 +45,35 @@ def _temporary_petsc_option(key, value):
             opts[key] = old_value
 
 
+# The ``dm_plex_gmsh_*`` options configure how PETSc imports a Gmsh ``.msh``
+# file (coordinate space dimension, label handling, …). They are GLOBAL on the
+# PETSc options database and are *import-time scratch* — meaningful only for the
+# single import that follows. A mesh constructor that sets one (notably the
+# manifold-surface generators set ``dm_plex_gmsh_spacedim = 2``) and then raises
+# before cleanup leaks it, and the stale option silently corrupts the NEXT gmsh
+# import (e.g. a subsequent SphericalShell is read with spacedim=2 → a 2-D mesh
+# in a 3-D cdim → a "cannot reshape" crash, or a corrupt cache). ``_from_gmsh``
+# therefore clears the whole namespace after every import (see below).
+_GMSH_IMPORT_OPTION_KEYS = (
+    "dm_plex_gmsh_spacedim",
+    "dm_plex_gmsh_multiple_tags",
+    "dm_plex_gmsh_use_regions",
+    "dm_plex_gmsh_mark_vertices",
+)
+
+
+def _clear_gmsh_import_options():
+    """Remove all ``dm_plex_gmsh_*`` import-scratch options from the global
+    PETSc options database (idempotent)."""
+    opts = PETSc.Options()
+    for key in _GMSH_IMPORT_OPTION_KEYS:
+        try:
+            if opts.hasName(key):
+                opts.delValue(key)
+        except Exception:
+            pass
+
+
 ## Add the ability to inherit an Enum, so we can add standard boundary
 ## types to ones that are supplied by the users / the meshing module
 ## https://stackoverflow.com/questions/46073413/python-enum-combination
@@ -103,29 +132,24 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
     # this process is more efficient done on the root process and then distributed
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
-    if uw.mpi.rank == 0:
-        plex_0 = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=PETSc.COMM_SELF)
+    try:
+        if uw.mpi.rank == 0:
+            plex_0 = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=PETSc.COMM_SELF)
 
-        plex_0.setName("uw_mesh")
-        plex_0.markBoundaryFaces("All_Boundaries", 1001)
+            plex_0.setName("uw_mesh")
+            plex_0.markBoundaryFaces("All_Boundaries", 1001)
 
-        viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
-        viewer(plex_0)
-        viewer.destroy()
-
-        # ## Now add some metadata to the mesh (not sure how to do this with the Viewer)
-
-        # import h5py, json
-
-        # f = h5py.File('filename + ".h5",'r+')
-
-        # boundaries_dict = {i.name: i.value for i in cs_mesh.boundaries}
-        # string_repr = json.dumps(boundaries_dict)
-
-        # g = f.create_group("metadata")
-        # g.attrs["boundaries"] = string_repr
-
-        # f.close()
+            viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
+            viewer(plex_0)
+            viewer.destroy()
+    finally:
+        # The gmsh import options are import-time scratch — meaningful only for
+        # the createFromFile above. Clear the whole namespace so a value set by
+        # the caller for THIS import (notably ``dm_plex_gmsh_spacedim`` for a
+        # manifold-surface generator) cannot leak into the next gmsh import and
+        # silently produce a wrong-dimension mesh (e.g. a later SphericalShell
+        # read as 2-D). Runs on success or failure.
+        _clear_gmsh_import_options()
 
     # Now we have an h5 file and we can hand this to _from_plexh5
 
@@ -762,6 +786,26 @@ class Mesh(Stateful, uw_object):
             print(
                 f"PETSc dmplex set-up complete",
                 flush=True,
+            )
+
+        # Validate that the DM's coordinate array is consistent with the
+        # coordinate dimension before reshaping. A mismatch here almost always
+        # means a STALE or CORRUPT cached mesh file — e.g. a cached .h5 that was
+        # written as a lower-dimension mesh (the classic symptom of a leaked
+        # ``dm_plex_gmsh_spacedim`` during generation; see _from_gmsh). Raise a
+        # clear, actionable error instead of an opaque numpy "cannot reshape"
+        # failure.
+        _coord_size = self.dm.getCoordinatesLocal().array.size
+        if self.cdim and _coord_size % self.cdim != 0:
+            _src = f" ('{self.filename}')" if getattr(self, "filename", None) else ""
+            raise RuntimeError(
+                f"Mesh coordinate array (size {_coord_size}) is not divisible by "
+                f"the coordinate dimension cdim={self.cdim}, so it cannot be a "
+                f"valid set of {self.cdim}-D node coordinates. This usually "
+                f"indicates a stale or corrupt cached mesh file{_src} (e.g. a "
+                f"cache written at a different space dimension). Delete the "
+                f"cached '.meshes/*.msh' and '.msh.h5' for this mesh and "
+                f"regenerate."
             )
 
         # Expose mesh points through special numpy array class with a callback
