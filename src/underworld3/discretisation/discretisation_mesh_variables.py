@@ -234,14 +234,21 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
-        # Variable type inference
+        # Variable type inference. On a cd-1 mesh (dim < cdim, e.g.
+        # SphericalManifold), vector fields are stored with ``cdim``
+        # components — the natural embedded-Cartesian representation
+        # of a surface-tangent vector. We accept either dim or cdim
+        # as a vector match; on volume meshes dim == cdim and the
+        # two branches coincide.
         if vtype == None:
             if isinstance(num_components, int) and num_components == 1:
                 vtype = uw.VarType.SCALAR
-            elif isinstance(num_components, int) and num_components == mesh.dim:
+            elif (isinstance(num_components, int)
+                  and (num_components == mesh.dim or num_components == mesh.cdim)):
                 vtype = uw.VarType.VECTOR
             elif isinstance(num_components, tuple):
-                if num_components[0] == mesh.dim and num_components[1] == mesh.dim:
+                if ((num_components[0] == mesh.dim and num_components[1] == mesh.dim)
+                        or (num_components[0] == mesh.cdim and num_components[1] == mesh.cdim)):
                     vtype = uw.VarType.TENSOR
                 else:
                     vtype = uw.VarType.MATRIX
@@ -303,19 +310,26 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             self._units = None
 
-        # Component and shape handling
+        # Component and shape handling.
+        # Vector / tensor fields are sized by ``cdim`` (the embedded
+        # coordinate space) rather than ``dim`` (topological). For
+        # volume meshes dim == cdim so this is unchanged; for manifold
+        # meshes (e.g. SphericalManifold: dim=2, cdim=3) vectors are
+        # 3-component (tangent-constrained) and rank-2 tensors are
+        # 3x3 — matching the gradient / flux dimensions the JIT and
+        # solver layers expect.
         if vtype == uw.VarType.SCALAR:
             self.shape = (1, 1)
             self.num_components = 1
         elif vtype == uw.VarType.VECTOR:
-            self.shape = (1, mesh.dim)
-            self.num_components = mesh.dim
+            self.shape = (1, mesh.cdim)
+            self.num_components = mesh.cdim
         elif vtype == uw.VarType.TENSOR:
-            self.num_components = mesh.dim * mesh.dim
-            self.shape = (mesh.dim, mesh.dim)
+            self.num_components = mesh.cdim * mesh.cdim
+            self.shape = (mesh.cdim, mesh.cdim)
         elif vtype == uw.VarType.SYM_TENSOR:
-            self.num_components = math.comb(mesh.dim + 1, 2)
-            self.shape = (mesh.dim, mesh.dim)
+            self.num_components = math.comb(mesh.cdim + 1, 2)
+            self.shape = (mesh.cdim, mesh.cdim)
         elif vtype == uw.VarType.MATRIX:
             self.num_components = self.shape[0] * self.shape[1]
 
@@ -336,8 +350,11 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
-            self._sym = sympy.Matrix.zeros(1, mesh.dim)
-            for comp in range(mesh.dim):
+            # cdim components — embedded-coord vector. Volume meshes
+            # have dim==cdim so unchanged; manifold meshes get the
+            # extra component(s) the gradient/flux need.
+            self._sym = sympy.Matrix.zeros(1, mesh.cdim)
+            for comp in range(mesh.cdim):
                 self._sym[0, comp] = UnderworldFunction(
                     self.symbol,
                     self,
@@ -349,11 +366,12 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
         elif vtype == uw.VarType.TENSOR:
-            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
+            # cdim x cdim — embedded-coord rank-2 tensor.
+            self._sym = sympy.Matrix.zeros(mesh.cdim, mesh.cdim)
 
             # Matrix form (any number of components)
-            for i in range(mesh.dim):
-                for j in range(mesh.dim):
+            for i in range(mesh.cdim):
+                for j in range(mesh.cdim):
                     self._sym[i, j] = UnderworldFunction(
                         self.symbol,
                         self,
@@ -363,11 +381,12 @@ class _BaseMeshVariable(Stateful, uw_object):
                     )(*self.mesh.r)
 
         elif vtype == uw.VarType.SYM_TENSOR:
-            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
+            # cdim x cdim symmetric.
+            self._sym = sympy.Matrix.zeros(mesh.cdim, mesh.cdim)
 
             # Matrix form (any number of components)
-            for i in range(mesh.dim):
-                for j in range(0, mesh.dim):
+            for i in range(mesh.cdim):
+                for j in range(0, mesh.cdim):
                     if j >= i:
                         self._sym[i, j] = UnderworldFunction(
                             self.symbol,

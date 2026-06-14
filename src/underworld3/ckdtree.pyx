@@ -350,6 +350,7 @@ cdef class KDTree:
         # For consistency with pykdtree
         if k==1:
             i = i.reshape(-1)
+            d = d.reshape(-1)
 
         if sqr_dists:
             return d, i

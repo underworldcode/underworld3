@@ -17,6 +17,7 @@ from .spherical import (
     SphericalShellInternalBoundary,
     SegmentofSphere,
     CubedSphere,
+    SphericalManifold,
 )
 
 from .annulus import (
@@ -73,6 +74,7 @@ __all__ = [
     "SphericalShellInternalBoundary",
     "SegmentofSphere",
     "CubedSphere",
+    "SphericalManifold",
     # Annulus/cylindrical meshes
     "Annulus",
     "QuarterAnnulus",

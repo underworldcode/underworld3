@@ -1859,6 +1859,15 @@ class SNES_Scalar(SolverBaseClass):
         self.boundary_conditions = False
         # self._constitutive_model = None
 
+        # Constant-nullspace handling. When True, attach a MatNullSpace
+        # with the constant mode to the Jacobian operator before each
+        # KSP solve. Needed for scalar problems on a closed manifold or
+        # a fully-Neumann domain where the operator (e.g. Laplacian)
+        # has a 1-D constant kernel and the linear system is otherwise
+        # singular. Default False — every solver with any Dirichlet BC
+        # or reaction term is non-singular and shouldn't pay the cost.
+        self._petsc_use_constant_nullspace = False
+
         self.verbose = verbose
 
         self._rebuild_after_mesh_update = self._build  # Maybe just reboot the dm
@@ -1950,6 +1959,25 @@ class SNES_Scalar(SolverBaseClass):
         if self.verbose and uw.mpi.rank == 0:
             print(f"SNES_Scalar ({self.name}): attached constant "
                   f"nullspace", flush=True)
+
+    @property
+    def petsc_use_constant_nullspace(self):
+        """Whether to attach a constant MatNullSpace to the Jacobian.
+
+        Set to ``True`` for scalar problems on closed manifolds (e.g.
+        Poisson on a ``SphericalManifold``) or fully-Neumann domains
+        where the linear operator has a constant kernel. PETSc projects
+        the right-hand side onto the orthogonal complement of the
+        nullspace and selects the minimum-norm solution from the
+        affine null-affine family, so the system becomes uniquely
+        solvable up to that nullspace.
+        """
+        return self._petsc_use_constant_nullspace
+
+    @petsc_use_constant_nullspace.setter
+    def petsc_use_constant_nullspace(self, value):
+        self._petsc_use_constant_nullspace = bool(value)
+        self.is_setup = False
 
     @property
     def tolerance(self):
@@ -2161,7 +2189,11 @@ class SNES_Scalar(SolverBaseClass):
         # Don't unwrap here — let getext()'s two-phase unwrap handle it.
         # This preserves constant UWexpressions as symbols for the constants[] mechanism.
         f0  = sympy.Array(self.F0.sym).reshape(1).as_immutable()
-        F1  = sympy.Array(self.F1.sym).reshape(dim).as_immutable()
+        # F1 is the flux vector, which lives in the embedded coordinate
+        # space (cdim components). For volume meshes dim==cdim so this
+        # is unchanged; for manifold meshes (dim=2, cdim=3) the flux
+        # is genuinely 3-component.
+        F1  = sympy.Array(self.F1.sym).reshape(cdim).as_immutable()
 
         self._u_f0 = f0
         self._u_F1 = F1
@@ -2376,8 +2408,46 @@ class SNES_Scalar(SolverBaseClass):
 
             UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
 
+        if self._petsc_use_constant_nullspace:
+            self._attach_constant_nullspace()
+
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
+
+    def _attach_constant_nullspace(self):
+        """Attach a constant MatNullSpace to the Jacobian.
+
+        Calls ``snes.setUp()`` first to ensure the Jacobian template
+        exists, then sets a constant-mode nullspace on both the
+        operator and preconditioner matrices (and the transpose
+        nullspace, since the projector is symmetric). PETSc projects
+        each KSP right-hand side onto the orthogonal complement of
+        the nullspace before solving, and returns the minimum-norm
+        solution within the affine null space.
+
+        Used for scalar Poisson on closed manifolds and fully-Neumann
+        domains. See ``petsc_use_constant_nullspace``.
+        """
+        self.snes.setUp()
+        jacobian = self.snes.getJacobian()
+        operator_matrix = jacobian[0]
+        preconditioner_matrix = jacobian[1] if len(jacobian) > 1 else None
+
+        nullspace = PETSc.NullSpace().create(
+            constant=True, vectors=(), comm=self.dm.comm,
+        )
+
+        operator_matrix.setNullSpace(nullspace)
+        operator_matrix.setTransposeNullSpace(nullspace)
+        if preconditioner_matrix is not None and preconditioner_matrix.handle != operator_matrix.handle:
+            preconditioner_matrix.setNullSpace(nullspace)
+            preconditioner_matrix.setTransposeNullSpace(nullspace)
+
+        if self.verbose and uw.mpi.rank == 0:
+            print(
+                f"SNES_Scalar ({self.name}): attached constant nullspace",
+                flush=True,
+            )
 
     @timing.routine_timer_decorator
     def solve(self,
@@ -2802,7 +2872,11 @@ class SNES_Vector(SolverBaseClass):
         self.is_setup = False
 
         mesh = self.mesh
-        dim = mesh.dim
+        # For SNES_Vector, the unknown is a vector field with as many
+        # components as the embedding space (cdim). On volume meshes
+        # cdim == dim. On manifold meshes (dim < cdim) the vector lives
+        # in the embedding space with an implicit tangency constraint.
+        dim = mesh.cdim
 
         # Surface normal components — use projected P1 normals by default.
         # These are smooth, consistently oriented, and converge in 3D.
@@ -3045,7 +3119,10 @@ class SNES_Vector(SolverBaseClass):
                 print(f"SNES_Vector ({self.name}): Pointwise functions need to be built", flush=True)
 
         N = self.mesh.N
-        dim = self.mesh.dim
+        # For SNES_Vector, the vector has cdim components in the
+        # embedding space — see the boundary-condition setup above.
+        # Volume meshes have cdim == dim so this is unchanged for them.
+        dim = self.mesh.cdim
         cdim = self.mesh.cdim
 
         sympy.core.cache.clear_cache()
@@ -3628,10 +3705,12 @@ class SNES_MultiComponent(SolverBaseClass):
             n_components = int(u_Field.shape[0]) * int(u_Field.shape[1])
         if n_components < 1:
             raise ValueError("n_components must be >= 1")
-        if mesh.cdim != mesh.dim:
-            raise ValueError(
-                "SNES_MultiComponent currently assumes mesh.cdim == mesh.dim."
-            )
+        # NB: SNES_MultiComponent works on manifold meshes (dim < cdim)
+        # because ``n_components`` is decoupled from mesh.dim by design —
+        # each component is an independent scalar problem with no
+        # cross-coupling. The spatial-derivative iteration inside
+        # _setup_pointwise_functions uses mesh.cdim (the gradient lives
+        # in the embedded space). Validated on SphericalManifold 2026-05-23.
 
         self._n_components = int(n_components)
 
@@ -3845,14 +3924,19 @@ class SNES_MultiComponent(SolverBaseClass):
                 print(f"SNES_MultiComponent ({self.name}): Pointwise functions need to be built", flush=True)
 
         N = self.mesh.N
-        dim = self.mesh.dim
+        # Spatial-derivative iteration uses cdim (the embedded gradient
+        # has cdim partial derivatives, one per coordinate of the
+        # embedding space). On volume meshes cdim == dim so the
+        # behaviour is unchanged. Distinct from mesh.dim, which is the
+        # topological dim used for FE element construction at line ~173.
+        dim = self.mesh.cdim
         Nc = self._n_components
 
         sympy.core.cache.clear_cache()
 
         # User-provided expressions.
         #   F0 shape: (1, Nc) row matrix  — per-component residual
-        #   F1 shape: (Nc, dim)           — per-component flux
+        #   F1 shape: (Nc, cdim)          — per-component flux
         F0_user = sympy.Matrix(self.F0.sym)
         F1_user = sympy.Matrix(self.F1.sym)
 
