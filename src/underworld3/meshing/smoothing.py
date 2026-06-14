@@ -2546,68 +2546,71 @@ def smooth_surface_field(
 
     Notes
     -----
-    Serial-correct. The parallel path is a drop-in: assemble the
-    vertex-vertex adjacency with :func:`_build_adjacency_matrix` (already
-    parallel-correct, bit-identical serial/parallel) and the owned-vertex map
-    with :func:`_build_local_to_owned_map`, then run the same blend via
-    ``A.mult`` on the global Vec and ``globalToLocal`` the result back. The
-    serial path here exercises the algorithm on the (serial) free-surface
-    testbed; the parallel wiring is a contained follow-up.
+    Parallel-correct and **bit-identical serial vs parallel**. The
+    neighbour-average is a single ``A.mult`` against the parallel
+    vertex-vertex adjacency from :func:`_build_adjacency_matrix` (assembled
+    with GLOBAL vertex indices, so an owned row sees every neighbour — even
+    those owned by another rank not in this rank's overlap); the field is
+    loaded into / read out of the global Vec via
+    :func:`_build_local_to_owned_map`, and the smoothed result is scattered
+    back to the field's local array (ghosts filled) with ``globalToLocal``.
+    The constant mode (eigenvalue 0) is preserved exactly on any rank count.
     """
-    dm = field.mesh.dm
-    pStart, pEnd = dm.getDepthStratum(0)
-    eStart, eEnd = dm.getDepthStratum(1)
-    nv = pEnd - pStart
+    from petsc4py import PETSc
 
-    # Vertex-edge graph from the edge cones (depth-1 points). On a
-    # 1-manifold the edges ARE the top cells; on a 2-manifold they are the
-    # facet edges — getDepthStratum(1) is the edge stratum either way.
-    e0 = []
-    e1 = []
-    for e in range(eStart, eEnd):
-        cone = dm.getCone(e)
-        if len(cone) != 2:
-            continue
-        v0, v1 = cone[0] - pStart, cone[1] - pStart
-        if 0 <= v0 < nv and 0 <= v1 < nv:
-            e0.append(v0)
-            e1.append(v1)
-    e0 = np.asarray(e0, dtype=np.int64)
-    e1 = np.asarray(e1, dtype=np.int64)
+    mesh = field.mesh
 
-    deg = np.zeros(nv)
-    np.add.at(deg, e0, 1.0)
-    np.add.at(deg, e1, 1.0)
-    deg_safe = np.maximum(deg, 1.0)
+    # Parallel vertex-vertex adjacency (entries 1.0; global indices) + the
+    # 1-dof-per-vertex scalar DM that owns the Vec/section layout.
+    A, dm_scalar, gsection = _build_adjacency_matrix(mesh)
 
-    pinned = None
-    if pinned_labels:
-        pinned = _pinned_mask(dm, tuple(pinned_labels))
+    g = dm_scalar.createGlobalVector()
+    tmp = g.duplicate()
+    ones = g.duplicate()
+    ones.set(1.0)
+    deg = g.duplicate()
+    A.mult(ones, deg)                       # row sums = vertex degrees
+    deg_arr = deg.array_r
+    deg_safe = np.where(deg_arr > 0.0, deg_arr, 1.0)
+
+    owned_local, owned_vec_pos, is_owned = _build_local_to_owned_map(
+        dm_scalar, gsection, g)
 
     if taubin and mu is None:
         # Standard Taubin: 1/λ + 1/μ = k_pb  ⇒  μ = 1/(k_pb − 1/λ) < 0.
         mu = 1.0 / (passband - 1.0 / alpha)
 
-    # field.data is the local degree-1 array, ordered by vertex
-    # (data[i] ↔ vertex pStart+i ↔ mesh.X.coords[i]).
-    x = np.asarray(field.data[:, 0], dtype=float).copy()
+    # Load the field (local: owned+ghost) into the global Vec (owned rows).
+    # field.data[i] ↔ vertex pStart+i (degree-1), matching the owned map.
+    fvals = np.asarray(field.data[:, 0], dtype=float)
+    g.array[owned_vec_pos] = fvals[owned_local]
 
-    def _blend(x, f):
-        s = np.zeros(nv)
-        np.add.at(s, e0, x[e1])
-        np.add.at(s, e1, x[e0])
-        avg = np.where(deg > 0, s / deg_safe, x)
-        xn = x + f * (avg - x)
-        if pinned is not None:
-            xn[pinned] = x[pinned]
-        return xn
+    # Positions of pinned owned vertices within the global Vec (held fixed).
+    pin_vec_pos = None
+    if pinned_labels:
+        pmask = _pinned_mask(mesh.dm, tuple(pinned_labels))   # local-chart mask
+        full_to_vec = np.full(is_owned.shape[0], -1, dtype=np.int64)
+        full_to_vec[owned_local] = owned_vec_pos
+        pin_owned = owned_local[pmask[owned_local]]
+        pin_vec_pos = full_to_vec[pin_owned]
+        pin_vals = g.array_r[pin_vec_pos].copy()
+
+    def _blend(f):
+        A.mult(g, tmp)                       # tmp = Σ_{neighbours} (global-correct)
+        a = g.array                          # writable view of owned rows
+        a += f * (tmp.array_r / deg_safe - a)
+        if pin_vec_pos is not None:
+            a[pin_vec_pos] = pin_vals
 
     for _ in range(n_iters):
-        x = _blend(x, alpha)
+        _blend(alpha)
         if taubin:
-            x = _blend(x, mu)
+            _blend(mu)
 
-    field.data[:, 0] = x
+    # Scatter owned -> local (fills ghosts) and write back to the field.
+    lvec = dm_scalar.createLocalVector()
+    dm_scalar.globalToLocal(g, lvec)
+    field.data[:, 0] = lvec.array_r
     return field
 
 
