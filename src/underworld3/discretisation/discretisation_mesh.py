@@ -796,6 +796,19 @@ class Mesh(Stateful, uw_object):
                 # been garbage collected but the NDArray proxy still exists.
                 return
 
+            # ``NDArray_With_Callback.__array_finalize__`` propagates this
+            # callback (and the owner) to every view / fancy-index copy of the
+            # coordinate array. Only the mesh's *canonical* coordinate array
+            # represents an actual coordinate update; a derived sub-array (e.g.
+            # a boundary subset built inside the tangent-slip / bounding-surface
+            # / mover machinery) that merely inherited this callback must NOT
+            # trigger a full-mesh deform. Identity-gate on the canonical
+            # ``_coords`` — note this is NOT a size filter, so a genuinely
+            # malformed full coordinate update still reaches ``_deform_mesh``
+            # and surfaces loudly rather than being silently dropped.
+            if array is not mesh._coords:
+                return
+
             if verbose:
                 uw.pprint(0, f"Mesh update callback - mesh deform")
 
