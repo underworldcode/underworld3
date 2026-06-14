@@ -57,6 +57,7 @@ from .faults import (
 
 from .smoothing import (
     smooth_mesh_interior,
+    smooth_surface_field,
     metric_density_from_gradient,
     mesh_metric_mismatch,
     follow_metric,
@@ -102,6 +103,7 @@ __all__ = [
     "FaultCollection",
     # Mesh smoothing
     "smooth_mesh_interior",
+    "smooth_surface_field",
     "metric_density_from_gradient",
     "mesh_metric_mismatch",
     "follow_metric",

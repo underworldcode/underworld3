@@ -2487,6 +2487,130 @@ def _build_local_to_owned_map(dm, gsection, vec):
             is_owned)
 
 
+def smooth_surface_field(
+    field,
+    n_iters: int = 10,
+    alpha: float = 0.5,
+    taubin: bool = True,
+    mu: Optional[float] = None,
+    passband: float = 0.1,
+    pinned_labels: Optional[Sequence[str]] = None,
+):
+    r"""Low-pass a scalar field over a (surface) mesh's vertex-edge graph.
+
+    The *field* analogue of the coordinate graph-Laplacian Jacobi path in
+    :func:`smooth_mesh_interior`. Each sweep blends every vertex value toward
+    the mean of its edge-neighbours,
+
+    .. math::
+
+        h_i \leftarrow h_i + f\,\Big( \tfrac{1}{|N(i)|}\sum_{j\in N(i)} h_j
+                                       - h_i \Big),
+
+    attenuating high-wavenumber (facet-scale / sawtooth) content while leaving
+    the smooth, long-wavelength field. Plain Laplacian smoothing
+    (``taubin=False``) also damps the smooth part and shrinks amplitudes; the
+    **Taubin** :math:`\lambda\,|\,\mu` scheme — a positive blend ``alpha``
+    followed by a negative back-step ``mu`` each iteration — is a near-flat
+    passband low-pass that leaves the mean and the long-wavelength amplitude
+    essentially unchanged (the discrete analogue of a volume-preserving
+    filter).
+
+    Designed for the free-surface height field carried on a codim-1 surface
+    submesh (:meth:`Mesh.extract_surface`): the graph operator needs only the
+    edge connectivity, so it works on a 1-manifold loop where an FE solve is
+    not yet available. No global gather, no FFT — unlike a spectral
+    (Fourier ``h(θ)``) low-pass it is purely local on the surface graph.
+
+    Parameters
+    ----------
+    field : degree-1 scalar ``MeshVariable``
+        Smoothed **in place** (its nodal values are overwritten).
+    n_iters : int, default 10
+        Number of Taubin (or plain-Laplacian) iterations.
+    alpha : float, default 0.5
+        Positive blend factor :math:`\lambda \in (0, 1]`.
+    taubin : bool, default True
+        Apply the volume-preserving :math:`\lambda\,|\,\mu` pair each
+        iteration. ``False`` ⇒ plain Laplacian smoothing (shrinks).
+    mu : float, optional
+        Negative back-step factor. Default derived from ``passband`` as
+        :math:`\mu = 1/(k_{pb} - 1/\lambda)` (the standard Taubin choice;
+        gives :math:`|\mu| \gtrsim \lambda`). Ignored when ``taubin`` is False.
+    passband : float, default 0.1
+        Taubin passband wavenumber :math:`k_{pb}` used to derive ``mu``.
+    pinned_labels : sequence of str, optional
+        Boundary labels whose vertices are held fixed (e.g. the endpoints of
+        an open surface arc). A closed loop (annulus / shell ``Upper``) has
+        none, so the default ``None`` is correct there.
+
+    Notes
+    -----
+    Serial-correct. The parallel path is a drop-in: assemble the
+    vertex-vertex adjacency with :func:`_build_adjacency_matrix` (already
+    parallel-correct, bit-identical serial/parallel) and the owned-vertex map
+    with :func:`_build_local_to_owned_map`, then run the same blend via
+    ``A.mult`` on the global Vec and ``globalToLocal`` the result back. The
+    serial path here exercises the algorithm on the (serial) free-surface
+    testbed; the parallel wiring is a contained follow-up.
+    """
+    dm = field.mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    eStart, eEnd = dm.getDepthStratum(1)
+    nv = pEnd - pStart
+
+    # Vertex-edge graph from the edge cones (depth-1 points). On a
+    # 1-manifold the edges ARE the top cells; on a 2-manifold they are the
+    # facet edges — getDepthStratum(1) is the edge stratum either way.
+    e0 = []
+    e1 = []
+    for e in range(eStart, eEnd):
+        cone = dm.getCone(e)
+        if len(cone) != 2:
+            continue
+        v0, v1 = cone[0] - pStart, cone[1] - pStart
+        if 0 <= v0 < nv and 0 <= v1 < nv:
+            e0.append(v0)
+            e1.append(v1)
+    e0 = np.asarray(e0, dtype=np.int64)
+    e1 = np.asarray(e1, dtype=np.int64)
+
+    deg = np.zeros(nv)
+    np.add.at(deg, e0, 1.0)
+    np.add.at(deg, e1, 1.0)
+    deg_safe = np.maximum(deg, 1.0)
+
+    pinned = None
+    if pinned_labels:
+        pinned = _pinned_mask(dm, tuple(pinned_labels))
+
+    if taubin and mu is None:
+        # Standard Taubin: 1/λ + 1/μ = k_pb  ⇒  μ = 1/(k_pb − 1/λ) < 0.
+        mu = 1.0 / (passband - 1.0 / alpha)
+
+    # field.data is the local degree-1 array, ordered by vertex
+    # (data[i] ↔ vertex pStart+i ↔ mesh.X.coords[i]).
+    x = np.asarray(field.data[:, 0], dtype=float).copy()
+
+    def _blend(x, f):
+        s = np.zeros(nv)
+        np.add.at(s, e0, x[e1])
+        np.add.at(s, e1, x[e0])
+        avg = np.where(deg > 0, s / deg_safe, x)
+        xn = x + f * (avg - x)
+        if pinned is not None:
+            xn[pinned] = x[pinned]
+        return xn
+
+    for _ in range(n_iters):
+        x = _blend(x, alpha)
+        if taubin:
+            x = _blend(x, mu)
+
+    field.data[:, 0] = x
+    return field
+
+
 def smooth_mesh_interior(
     mesh,
     pinned_labels: Optional[Sequence[str]] = None,
