@@ -4147,7 +4147,13 @@ class Mesh(Stateful, uw_object):
                 # Compute face normal from point coordinates (already plain numpy arrays)
                 point_data = point_coords
 
-                if self.dim == 2 and self.cdim == 2:
+                if self.dim == 1:
+                    # 1-manifold (annulus / shell boundary loop as a surface
+                    # submesh): a cell is an edge, its faces are end vertices.
+                    # Outward direction is along the edge, away from the cell
+                    # centroid (the sign fix below orients it).
+                    normal = face_centroid - cell_centroid
+                elif self.dim == 2 and self.cdim == 2:
                     # 2-D volume mesh — perpendicular to edge in the
                     # plane of the mesh.
                     vector = point_data[1] - point_data[0]
@@ -4422,7 +4428,14 @@ class Mesh(Stateful, uw_object):
             face_centroid = point_coords.mean(axis=0)
             cell_centroid = nav_centroids[cell - cStart]
 
-            if self.dim == 2 and self.cdim == 2:
+            if self.dim == 1:
+                # 1-manifold (annulus / shell boundary loop extracted as a
+                # surface submesh): a "cell" is an edge whose faces are its
+                # two end vertices (face_num_points == 1). The outward
+                # direction at a face vertex is along the edge, away from the
+                # cell centroid; the inward/outward sign fix below orients it.
+                normal = face_centroid - cell_centroid
+            elif self.dim == 2 and self.cdim == 2:
                 # 2-D volume mesh
                 vector = point_coords[1] - point_coords[0]
                 normal = numpy.array((-vector[1], vector[0]))
