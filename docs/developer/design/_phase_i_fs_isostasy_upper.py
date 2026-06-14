@@ -54,7 +54,7 @@ def run(scheme, dt_factor, n_steps, res=20, blob_amp=0.6,
         cap_gamma=None, target_t=None, velocity_align=False,
         vel_smooth=None, topo_smooth=None, sl_correction=False,
         tangent_slip=False, use_mover=False, mover_iters=5,
-        verbose=True):
+        surface_smooth=0, verbose=True):
     """One upper-surface isostatic-relaxation run.
 
     cap_gdt: explicit-scheme (fe/rk2/rk4) γΔt cap (curvS/etd_topo unaffected).
@@ -138,6 +138,32 @@ def run(scheme, dt_factor, n_steps, res=20, blob_amp=0.6,
     if verbose:
         print(f"  {len(upper_idx)} nodes on upper (free) boundary",
               flush=True)
+
+    # Optional: codim-1 surface submesh for graph-Laplacian / Taubin
+    # smoothing of the surface height profile. Parallel-clean and works on
+    # the 1-manifold loop (no FE solve, no Fourier gather) — the surface
+    # analogue of a low-pass on h(θ). Extracted once; the graph operator
+    # uses only connectivity, so it survives surface deformation.
+    surf = None
+    if surface_smooth:
+        surf = mesh.extract_surface(mesh.boundaries.Upper.name)
+        h_surf = uw.discretisation.MeshVariable(
+            f"hsurf_{label}", surf, vtype=uw.VarType.SCALAR, degree=1)
+        # surf node ← nearest volume upper node (same physical vertices).
+        # NB: built for the flat-IC upper_idx ordering; valid while upper_idx
+        # is not re-sorted (i.e. without --tangent-slip). Rebuild per call if
+        # combining with tangent-slip.
+        _stree = uw.kdtree.KDTree(np.asarray(surf.X.coords).copy())
+        _sd, _si = _stree.query(mesh.X.coords[upper_idx], sqr_dists=False)
+        s_of_upper = np.asarray(_si).reshape(-1)
+
+        def smooth_surface_profile(h_upper):
+            """Low-pass a per-upper-node radial profile through the surface
+            submesh (graph-Laplacian / Taubin); returns the smoothed array."""
+            h_surf.data[s_of_upper, 0] = h_upper
+            uw.meshing.smooth_surface_field(
+                h_surf, n_iters=surface_smooth, alpha=0.6, taubin=True)
+            return np.asarray(h_surf.data[s_of_upper, 0])
 
     # Diffuser (Poisson) to propagate the surface increment inward
     diffuser = uw.systems.Poisson(mesh, Vr)
@@ -494,6 +520,18 @@ def run(scheme, dt_factor, n_steps, res=20, blob_amp=0.6,
         else:
             raise ValueError(update)
 
+        if surf is not None:
+            # Graph-Laplacian / Taubin low-pass of the surface height profile
+            # on the extracted submesh, then re-snap the surface ring radially
+            # to the smoothed profile. Damps facet-scale sawtooth while
+            # preserving the smooth topography (and, via Taubin, the volume).
+            _pos = mesh.X.coords[upper_idx]
+            _rr = np.sqrt((_pos ** 2).sum(axis=1))
+            _h_sm = smooth_surface_profile(_rr - r_o)
+            _new = mesh.X.coords.copy()
+            _new[upper_idx] = (r_o + _h_sm)[:, None] * (_pos / _rr[:, None])
+            mesh._deform_mesh(_new)
+
         stokes.solve(zero_init_guess=False)
 
         upper_dr = surface_dr()
@@ -575,6 +613,12 @@ def main():
                         "accommodation — moves only the surface ring per step.")
     parser.add_argument('--mover-iters', type=int, default=5,
                         help="smooth_mesh_interior sweeps per step (--mover).")
+    parser.add_argument('--surface-smooth', type=int, default=0,
+                        help="Graph-Laplacian/Taubin low-pass of the surface "
+                        "height profile via a codim-1 surface submesh "
+                        "(mesh.extract_surface + smooth_surface_field); value "
+                        "is the iteration count (0 = off). Parallel-clean; "
+                        "needs no 1D-manifold FE solve.")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -618,7 +662,8 @@ def main():
                     vel_smooth=args.vel_smooth, topo_smooth=args.topo_smooth,
                     sl_correction=args.sl,
                     tangent_slip=args.tangent_slip,
-                    use_mover=args.mover, mover_iters=args.mover_iters)
+                    use_mover=args.mover, mover_iters=args.mover_iters,
+                    surface_smooth=args.surface_smooth)
             results.append(r)
         except Exception as e:
             print(f"  *** EXCEPTION in {s}: {e!r} ***", flush=True)
