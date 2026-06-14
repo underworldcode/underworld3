@@ -1649,6 +1649,189 @@ class Mesh(Stateful, uw_object):
 
         return sub_mesh
 
+    def extract_surface(self, label_name, label_value=None, verbose=False):
+        """Extract the codimension-1 surface marked by ``label_name`` as a mesh.
+
+        The third submesh flavour (alongside :meth:`extract_region`, which
+        filters cells of the *same* dimension): a *surface submesh* is a real
+        :class:`Mesh` for the parent's codim-1 boundary stratum, sharing exact
+        vertex positions with the parent. On a 3D ``SphericalShell``,
+        ``shell.extract_surface("Upper")`` returns a 2-manifold embedded in
+        3-space (``dim = parent.dim - 1``, ``cdim = parent.cdim``).
+
+        Mechanism: ``DMPlexCreateSubmesh`` on the face label produces a cd-1
+        DM but retains an upward-DAG phantom stratum (one point per parent
+        volume cell) that breaks closure-based navigation; ``DMPlexFilter`` on
+        ``(depth, dim-1)`` strips it, leaving a clean standalone manifold. The
+        two subpoint IS's compose into a single surface→parent point map.
+
+        Parent ↔ submesh DOF transfer reuses :meth:`restrict` / :meth:`prolongate`
+        (the same KDTree coordinate-match-at-1e-10 path as ``extract_region``);
+        surface vertices are an *exact* subset of the parent's, so it is
+        bit-exact.
+
+        Parameters
+        ----------
+        label_name : str
+            Name of the parent boundary label whose marked faces become the
+            cells of the surface submesh (e.g. ``"Upper"``).
+        label_value : int, optional
+            Stratum value within the label. If ``None``, resolved from
+            ``self.boundaries[label_name].value``.
+
+        Returns
+        -------
+        Mesh
+            A surface mesh with ``parent`` set to this mesh and the standard
+            submesh lineage (``subpoint_is``, registration with
+            ``_registered_submeshes``).
+
+        Raises
+        ------
+        ValueError
+            If ``label_name`` is missing from the parent or its face stratum
+            is empty (loud-fail contract — no degenerate-mesh fallback).
+        """
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_submesh_from_label,
+            petsc_dm_filter_by_label,
+        )
+
+        # --- resolve the label value (from boundaries, not regions) ---
+        if label_value is None:
+            if self.boundaries is None:
+                raise ValueError(
+                    "No boundaries defined on this mesh. "
+                    "Provide label_value explicitly."
+                )
+            try:
+                label_value = self.boundaries[label_name].value
+            except KeyError:
+                raise ValueError(
+                    f"Boundary '{label_name}' not found on parent mesh. "
+                    f"Available: {[b.name for b in self.boundaries]}"
+                )
+
+        # --- loud-fail if the parent has no faces marked with this label ---
+        # NB: never call getStratumIS(v) for a value not in the live value set
+        # — that hard-aborts PETSc on some labels (cf. the "Centre" pseudo-
+        # label). Probe getValueIS() first.
+        label = self.dm.getLabel(label_name)
+        if label is None:
+            raise ValueError(
+                f"Parent DM has no label '{label_name}'. "
+                f"Cannot extract a surface submesh from it."
+            )
+        vals_is = label.getValueIS()
+        live_values = (
+            set(int(v) for v in vals_is.getIndices())
+            if vals_is is not None else set()
+        )
+        if int(label_value) not in live_values:
+            raise ValueError(
+                f"Label '{label_name}' has no stratum with value {label_value} "
+                f"on the parent (live values: {sorted(live_values)}). "
+                f"There is no surface to extract."
+            )
+        sis = label.getStratumIS(label_value)
+        if sis is None or sis.getSize() == 0:
+            raise ValueError(
+                f"Label '{label_name}' (value {label_value}) has an empty face "
+                f"stratum on the parent. There is no surface to extract."
+            )
+
+        # Stage 1: cd-1 DM (with the phantom upward-DAG stratum).
+        sub_with_phantoms = petsc_dm_create_submesh_from_label(
+            self.dm, label_name, label_value, marked_faces=True,
+        )
+        # Stage 2: strip the phantom — keep only the surface cells (height-0
+        # of the cd-1 chart, i.e. depth dim-1) and their downward closure.
+        surf_dm = petsc_dm_filter_by_label(
+            sub_with_phantoms, "depth", self.dim - 1,
+        )
+
+        # Compose the two subpoint maps (surf -> sub1 -> parent) BEFORE the
+        # Mesh constructor wraps the DM (constructor side-effects can
+        # invalidate cached IS handles).
+        stage1_sp = sub_with_phantoms.getSubpointIS()
+        stage2_sp = surf_dm.getSubpointIS()
+        composed_indices = stage1_sp.getIndices()[stage2_sp.getIndices()]
+        subpoint_is = PETSc.IS().createGeneral(
+            composed_indices, comm=surf_dm.getComm(),
+        )
+
+        # Surviving boundaries: enumerate the SUBMESH's labels by index
+        # (probing parent labels by name on a submesh DM can hard-abort), and
+        # get each label's live value set before asking for any stratum.
+        sub_boundaries = None
+        if self.boundaries is not None:
+            parent_by_name = {b.name: b.value for b in self.boundaries}
+            surviving = {}
+            for i in range(surf_dm.getNumLabels()):
+                name = surf_dm.getLabelName(i)
+                if name not in parent_by_name:
+                    continue  # internal PETSc label (celltype, depth)
+                if name in ("Null_Boundary", "All_Boundaries", "Centre"):
+                    continue
+                lab = surf_dm.getLabel(name)
+                if lab is None:
+                    continue
+                try:
+                    vis = lab.getValueIS()
+                    vals = (
+                        set(int(v) for v in vis.getIndices())
+                        if vis is not None else set()
+                    )
+                except Exception:
+                    continue
+                pv = parent_by_name[name]
+                if pv not in vals:
+                    continue
+                lsis = lab.getStratumIS(pv)
+                if lsis is not None and lsis.getSize() > 0:
+                    surviving[name] = pv
+            sub_boundaries = Enum("Boundaries", surviving) if surviving else None
+
+        # Construct the surface Mesh (dim = parent.dim - 1, cdim preserved).
+        surf_mesh = Mesh(
+            surf_dm,
+            degree=self.degree,
+            qdegree=self.qdegree,
+            boundaries=sub_boundaries,
+            coordinate_system_type=self.CoordinateSystemType,
+            verbose=verbose,
+        )
+
+        # Submesh lineage — same shape as extract_region
+        surf_mesh.parent = self
+        surf_mesh.subpoint_is = subpoint_is
+        surf_mesh._parent_mesh_version = self._mesh_version
+        surf_mesh._extract_label_name = label_name
+        surf_mesh._extract_label_value = label_value
+        surf_mesh._is_surface_submesh = True  # disambiguates from extract_region
+        surf_mesh.regions = self.regions
+        surf_mesh._dof_maps = {}
+
+        # Vertex map (sub_rows -> parent_rows for coincident verts). Inlined
+        # via a KDTree on the coordinate arrays rather than
+        # ``_build_vertex_map`` (which assumes ``X._get_kdtree`` — broken for
+        # both submesh flavours, UW3 issue #197). Surface vertices are an
+        # exact subset of the parent's, so the 1e-10 match is bit-exact.
+        import underworld3 as _uw
+        sub_coords = numpy.asarray(surf_mesh._coords)
+        parent_coords = numpy.asarray(self._coords)
+        tree = _uw.kdtree.KDTree(sub_coords)
+        dists, indices = tree.query(parent_coords, sqr_dists=False)
+        dists = numpy.asarray(dists).reshape(-1)
+        indices = numpy.asarray(indices).reshape(-1)
+        matched = dists < 1.0e-10
+        surf_mesh._vertex_map = (indices[matched], numpy.where(matched)[0])
+
+        # Register with parent for coordinate sync notifications
+        self._registered_submeshes.add(surf_mesh)
+
+        return surf_mesh
+
     def _build_vertex_map(self):
         """Build vertex index mapping between submesh and parent.
 
