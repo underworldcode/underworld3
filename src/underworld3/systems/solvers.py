@@ -2149,12 +2149,18 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         h : MeshVariable
             The scalar multiplier field.
         """
-        # Serial only for now: the boundary mask (later milestones) is not
-        # MPI-decomposed.
-        if uw.mpi.size > 1:
-            raise NotImplementedError(
-                "SNES_Stokes_Constrained is serial-only for now."
-            )
+        # Parallel-safe: the interior-multiplier reduction
+        # (_constrain_interior_multipliers_in_section) is rank-local section
+        # surgery (it uses the distributed boundary label IS and iterates the
+        # local chart), so the global system — and hence the velocity solve and
+        # the gauge-invariant boundary traction — are partition-independent.
+        # Validated bit-identical at np=1/2/4 (velocity L2 and mean-stripped
+        # boundary topography) in
+        # tests/parallel/test_1063_constrained_freeslip_parallel.py.
+        # NOTE: on enclosed problems the raw multiplier h carries the [p,λ] gauge
+        # constant, of which the solver lands on a partition-dependent
+        # representative — strip its boundary mean for a reproducible topography
+        # (`topography(..., reference="mean")`).
 
         if not hasattr(self.mesh.boundaries, boundary):
             raise ValueError(
@@ -2227,12 +2233,55 @@ class SNES_Stokes_Constrained(SNES_Stokes):
                 return cbc.lam
         return None
 
-    def topography(self, boundary, buoyancy_scale=1.0):
-        r"""Dynamic topography expression :math:`h / (\Delta\rho\, g)` on ``boundary``."""
+    def topography(self, boundary, buoyancy_scale=1.0, reference=None):
+        r"""Dynamic topography expression :math:`h / (\Delta\rho\, g)` on ``boundary``.
+
+        For an **enclosed** problem (no net normal flow through any boundary) the
+        multiplier :math:`h` is determined only up to the :math:`[p,\lambda]` gauge
+        constant, and the solver lands on a **partition-dependent representative**
+        of it — the velocity and the *deviation* of :math:`h` are unaffected, but
+        the absolute level of :math:`h` is not reproducible across ranks. For such
+        problems pass ``reference="mean"`` to subtract the boundary mean and obtain
+        a gauge-fixed, partition-independent topography. The default
+        (``reference=None``) returns the raw multiplier — correct for problems with
+        **no** gauge freedom (e.g. an open boundary), where the mean of :math:`h` is
+        the physical mean traction and must NOT be removed.
+
+        Parameters
+        ----------
+        boundary : str
+            Constrained boundary label.
+        buoyancy_scale : float, default 1.0
+            Divide by :math:`\Delta\rho\,g` to convert traction to length.
+        reference : {None, "mean"}, default None
+            ``None`` returns the raw multiplier (correct when there is no gauge
+            freedom). ``"mean"`` subtracts the boundary mean (gauge-fixed,
+            reproducible) — use for enclosed problems.
+
+        Notes
+        -----
+        ``reference="mean"`` evaluates two ``BdIntegral`` reductions immediately
+        to compute the boundary mean, which are **collective** MPI operations —
+        in parallel it must be called on every rank (do not guard it behind a
+        single-rank branch). ``reference=None`` is a pure symbolic accessor with
+        no reduction.
+        """
         lam = self.multiplier(boundary)
         if lam is None:
             raise ValueError(f"No constraint registered on boundary '{boundary}'.")
-        return lam.sym[0] / buoyancy_scale
+        expr = lam.sym[0]
+        if reference == "mean":
+            # Subtract the boundary mean of h via parallel-safe surface integrals
+            # (BdIntegral handles the cross-rank reduction); this fixes the gauge.
+            blen = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=sympy.Integer(1), boundary=boundary).evaluate()
+            hbar = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=lam.sym[0], boundary=boundary).evaluate() / blen
+            expr = expr - hbar
+        elif reference is not None:
+            raise ValueError(
+                f"reference must be 'mean' or None, got {reference!r}")
+        return expr / buoyancy_scale
 
 
 class SNES_Projection(SNES_Scalar):
