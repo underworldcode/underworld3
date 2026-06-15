@@ -2636,7 +2636,7 @@ class SNES_Vector_Projection(SNES_Vector):
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: (
             self.smoothing * self.Unknowns.E
-            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
+            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.cdim)
         ),
         "Vector projection pointwise smoothing term: F_1(u)",
     )
@@ -3292,9 +3292,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
             self.Unknowns.DuDt = DuDt
 
+        # Flux placeholder: cdim-sized to match the embedded-coord
+        # flux vector (volume meshes have dim==cdim so this is
+        # unchanged; manifold meshes have cdim > dim and need the
+        # extra component).
         self.Unknowns.DFDt = SemiLagrangian_DDt(
             self.mesh,
-            sympy.Matrix([[0] * self.mesh.dim]),  # Actual function is not defined at this point
+            sympy.Matrix([[0] * self.mesh.cdim]),  # Actual function is not defined at this point
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree,
@@ -3861,8 +3865,11 @@ class SNES_Diffusion(SNES_Scalar):
             self.Unknowns.DuDt = DuDt
 
         if DFDt is None:
+            # Flux placeholder must match the flux dimension (cdim — the
+            # embedded coordinate space), not the topological dim. On
+            # volume meshes dim==cdim so this is unchanged.
             self.Unknowns.DFDt = Symbolic_DDt(
-                sympy.Matrix([[0] * self.mesh.dim]),
+                sympy.Matrix([[0] * self.mesh.cdim]),
                 varsymbol=rf"{{F[ {self.u.symbol} ] }}",
                 theta=theta,
                 bcs=None,

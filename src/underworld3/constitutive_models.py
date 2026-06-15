@@ -311,7 +311,15 @@ class Constitutive_Model(uw_object):
         self._DFDt = self.Unknowns.DFDt
         self._DuDt = self.Unknowns.DuDt
 
-        self.dim = u.mesh.dim
+        # Constitutive tensors relate gradients to fluxes; both live in
+        # the embedded coordinate space (cdim-dimensional), not the
+        # topological one. ``u.sym.jacobian(mesh.N)`` produces a
+        # (u_dim x cdim) matrix, so the conductivity / viscosity
+        # tensor must also be cdim-sized to multiply against it. For
+        # volume meshes ``dim == cdim`` so this is a no-op; for
+        # manifold meshes (e.g. SphericalManifold: dim=2, cdim=3) the
+        # constitutive tensor correctly acts on the 3-component flux.
+        self.dim = u.mesh.cdim
         self.u_dim = u.num_components
 
         self.Parameters = self._Parameters(self)

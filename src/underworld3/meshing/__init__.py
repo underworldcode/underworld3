@@ -17,6 +17,7 @@ from .spherical import (
     SphericalShellInternalBoundary,
     SegmentofSphere,
     CubedSphere,
+    SphericalManifold,
 )
 
 from .annulus import (
@@ -56,6 +57,7 @@ from .faults import (
 
 from .smoothing import (
     smooth_mesh_interior,
+    smooth_surface_field,
     metric_density_from_gradient,
     mesh_metric_mismatch,
     follow_metric,
@@ -73,6 +75,7 @@ __all__ = [
     "SphericalShellInternalBoundary",
     "SegmentofSphere",
     "CubedSphere",
+    "SphericalManifold",
     # Annulus/cylindrical meshes
     "Annulus",
     "QuarterAnnulus",
@@ -100,6 +103,7 @@ __all__ = [
     "FaultCollection",
     # Mesh smoothing
     "smooth_mesh_interior",
+    "smooth_surface_field",
     "metric_density_from_gradient",
     "mesh_metric_mismatch",
     "follow_metric",

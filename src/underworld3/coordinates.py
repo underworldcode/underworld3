@@ -964,7 +964,12 @@ class SphericalCoordinateAccessor:
         """
         self.cs = coordinate_system
         self.mesh = coordinate_system.mesh
-        self._dim = self.mesh.dim  # 2 for polar, 3 for spherical
+        # 2 for polar (cdim=2 mesh), 3 for spherical (cdim=3 mesh —
+        # either a 3-D volume mesh or a 2-manifold in 3-space).
+        # Always branch on cdim, not dim: spherical coords are a
+        # function of the embedded Cartesian (x, y, z) which has
+        # cdim components.
+        self._dim = self.mesh.cdim
 
         # Cache for coordinate arrays
         self._r_cache = None
@@ -1499,7 +1504,13 @@ class CoordinateSystem:
             self._rRotN = self._rRotN_sym.subs(th, t)
             self._xRotN = sympy.eye(self.mesh.dim)
 
-        elif system == CoordinateSystemType.SPHERICAL and self.mesh.dim == 3:
+        elif system == CoordinateSystemType.SPHERICAL and self.mesh.cdim == 3:
+            # Spherical coords (r, θ, φ) are a function of the
+            # embedded Cartesian coordinates (x, y, z). The right test
+            # for "can we expose spherical?" is therefore cdim == 3,
+            # not dim == 3 — this branch fires on both the 3-D volume
+            # mesh case (SphericalShell, dim=3, cdim=3) and the
+            # 2-manifold case (SphericalManifold, dim=2, cdim=3).
             self.type = "Spherical"
 
             # _X already contains UWCoordinates, _x is a copy for the "lowercase" alias
@@ -1578,7 +1589,11 @@ class CoordinateSystem:
             self._rRotN_sym = rRotN_sym
             self._rRotN = rRotN
 
-            self._xRotN = sympy.eye(self.mesh.dim)
+            # The Cartesian basis is cdim-dimensional. For a 3-D volume
+            # mesh dim == cdim so this is unchanged; for a 2-manifold
+            # in 3-space (cdim=3, dim=2) we still want a 3x3 identity
+            # for the embedded-Cartesian basis rotation.
+            self._xRotN = sympy.eye(self.mesh.cdim)
 
         elif system == CoordinateSystemType.GEOGRAPHIC and self.mesh.dim == 3:
             """

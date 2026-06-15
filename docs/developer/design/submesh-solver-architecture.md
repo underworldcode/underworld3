@@ -21,27 +21,40 @@ Underworld3 needs to support solving different equations on different subsets of
 
 5. **Normalised `Gamma_N`** (merged) — `mesh.Gamma_N` now returns a unit normal. Penalty and Nitsche BCs are mesh-independent.
 
-## Two Submesh Flavours: Subdomain and Resolution Level
+## Three Submesh Flavours: Subdomain, Resolution Level, Surface
 
 A *submesh* in UW3 is any mesh pulled out of a parent mesh that retains a
 lineage link (`parent`, registration in `parent._registered_submeshes`)
-and supports explicit field transfer back and forth. There are two
+and supports explicit field transfer back and forth. There are three
 flavours, and they share one usage pattern:
 
 > **get a submesh → build a solver on it → map fields back and forth**
 
-| | Subdomain | Resolution level |
-|---|---|---|
-| Constructor | `mesh.extract_region("Inner")` | `coarsened_companion(fine, levels=1)` |
-| PETSc mechanism | `DMPlexFilter` (cell subset) | `dm.refine()` nested hierarchy |
-| Parent ↔ child map | `getSubpointIS()` (point-level) | nested `createInjection` / `createInterpolation` (DOF-level) |
-| Transfer fidelity | exact (shared nodes) | exact (nested FE) |
-| Example | `docs/examples/submesh_investigation/test_region_ds_submesh.py` | `docs/examples/submesh_investigation/example_refined_companion.py` |
+| | Subdomain | Resolution level | Surface |
+|---|---|---|---|
+| Constructor | `mesh.extract_region("Inner")` | `coarsened_companion(fine, levels=1)` | `extract_surface(mesh, "Upper")` |
+| PETSc mechanism | `DMPlexFilter` (cell subset) | `dm.refine()` nested hierarchy | `DMPlexCreateSubmesh` then `DMPlexFilter(depth, 2)` (strip phantom DAG) |
+| dim, cdim | `parent.dim`, `parent.cdim` | `parent.dim`, `parent.cdim` | `parent.dim − 1`, `parent.cdim` |
+| Parent ↔ child map | `getSubpointIS()` (point-level) | nested `createInjection` / `createInterpolation` (DOF-level) | `getSubpointIS()` (point-level) |
+| Transfer fidelity | exact (shared nodes) | exact (nested FE) | exact (shared nodes) |
+| Example | `docs/examples/submesh_investigation/test_region_ds_submesh.py` | `docs/examples/submesh_investigation/example_refined_companion.py` | `docs/examples/submesh_investigation/example_surface_extraction.py` |
 
-Both examples solve the **same** annulus + radial-buoyancy Stokes problem
-so the flavours are directly comparable: one solves on a *subdomain* of
-the annulus, the other on a *coarser resolution* of the whole annulus,
-and both map the solution back to the parent.
+The subdomain and resolution-level examples solve the **same** annulus +
+radial-buoyancy Stokes problem so those two flavours are directly
+comparable: one solves on a *subdomain* of the annulus, the other on a
+*coarser resolution* of the whole annulus, and both map the solution
+back to the parent.
+
+The surface flavour produces a 2-manifold embedded in 3-space
+(`dim=2, cdim=3`) and is the natural carrier for *lateral surface
+processes*: surface diffusion, surface advection, surface evolution.
+Phase 1 (the lineage layer: extract, restrict/prolongate round-trip,
+registration with the parent, navigation, `evaluate(expr, surface_pts)`)
+lands as the investigation under
+`docs/examples/submesh_investigation/surface_submesh_prototype.py`.
+Phase 2 — making a solver actually run on the manifold (Laplace–
+Beltrami) — is tracked in the *Surface submesh: solver path* section
+below.
 
 ### Design contract for the resolution-level flavour: refine-DM mode only
 
@@ -107,6 +120,152 @@ Status: prototype + both parallel examples + gating tests
 `docs/examples/submesh_investigation/` is the sign-off artifact;
 promotion of `coarsened_companion` into the `Mesh` API proper is a
 follow-up.
+
+### Design contract for the surface flavour: two-stage strip, no fallback
+
+A surface submesh is extractable **only when the parent carries a
+non-empty boundary-face stratum** for the named label. Mirrors the
+loud-failure stance of the other two flavours: `extract_surface` raises
+on an unknown label, on a label whose value isn't in the parent's live
+value set, or on an empty stratum. There is deliberately no geometric
+fallback that might silently produce a degenerate mesh.
+
+The PETSc construction is **two-stage** — both primitives are already
+wrapped in UW3's cython layer:
+
+```
+sub1 = petsc_dm_create_submesh_from_label(parent.dm, label, value, marked_faces=True)
+sub2 = petsc_dm_filter_by_label(sub1, "depth", 2)   # for parent.dim == 3
+subpoint_is = compose(sub2.getSubpointIS(), sub1.getSubpointIS())
+```
+
+Stage 1 (`DMPlexCreateSubmesh`) gives a cd-1 DM with the right cells,
+edges and vertices, but PETSc additionally retains an **upward-DAG
+phantom stratum**: depth-3 (= parent.dim) points, one per parent
+volume cell, celltype 12, included inside each surface cell's downward
+closure tuple. This linkage is there so the resulting DM can still be
+navigated as "a slice of the parent" (assemble surface integrals from
+parent volume cells). For a standalone surface mesh we don't use that
+linkage, and the phantom points are actively harmful — every consumer
+that does `closure[-n:]` slicing to grab vertices (the kd-tree
+builder, centroid pickers, control-point face markers — three copies
+of the same idiom in `discretisation_mesh.py` alone) gets sometimes
+the right answer and sometimes a phantom point inside the slice.
+
+Stage 2 (`DMPlexFilter(depth, 2)`) keeps only the cells of `sub1` and
+their downward closure (edges, vertices). The result is a **genuine
+standalone 2-manifold mesh** with a clean 3-stratum chart
+(`depth = 0, 1, 2`; celltypes `[0, 1, 3]`). Cell closures are length 7
+(1 cell + 3 edges + 3 vertices) and `closure[-3:]` reliably returns
+vertices. The standard `Mesh._build_kd_tree_index` and downstream
+navigation code run on this DM without any cd-1 special-casing.
+
+The composed subpoint IS gives a direct surface → parent point map
+(point IDs in the parent's chart). The properties carry through:
+
+- `surf.dim = parent.dim − 1`, `surf.cdim = parent.cdim` (2 and 3 for
+  the sphere case);
+- vertex coordinates land on the parent surface to machine precision
+  (we measured 2.2e-16 on `SphericalShell.Upper`);
+- parent boundary labels propagate onto the submesh: the *selecting*
+  label (e.g. `"Upper"`) survives carrying the surface itself;
+  sibling boundary labels (`"Lower"`) survive as empty strata which
+  the submesh constructor filters out.
+
+**One PETSc footgun, worth knowing about.** Calling
+`label.getStratumIS(value)` on a `DMPlexCreateSubmesh` DM for a value
+that isn't in `getValueIS()` hard-aborts PETSc (no Python-catchable
+exception). The prototype enumerates `surface_dm.getNumLabels()` by
+index and checks each label's live value set first.
+
+**Navigation on the manifold.** For an on-surface query point (the
+contract assumption — query points come *from* the manifold), the
+centroid kd-tree ranks faces by chord distance, which agrees with
+the owning-face ranking to first order on any convex manifold (sphere,
+ellipsoid). `get_closest_cells(surface_dof_coords)` returns valid
+surface cell IDs and `evaluate(expr, surface_pts)` works to machine
+precision. The cell-containment-by-half-space-rule helpers
+(`_test_if_points_in_cells_internal`, `_mark_faces_inside_and_out`)
+use a 2-D perpendicular construction that doesn't make sense for a
+curved cell, so the cd-1 mesh path skips that rejection step and
+trusts the centroid kd-tree result. A proper manifold in-cell test
+(project the query into the cell's tangent plane, then barycentric)
+is Phase 2 work — only needed if we ever support off-surface queries.
+
+```python
+shell   = uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.5,
+                                    cellSize=0.2)
+surface = extract_surface(shell, "Upper")           # parent = shell
+
+# Round-trip a parent scalar via shared-vertex KDTree (1e-10 match)
+T_p = uw.discretisation.MeshVariable("T_p", shell,   1, degree=1)
+T_s = uw.discretisation.MeshVariable("T_s", surface, 1, degree=1)
+surface.restrict(T_p, T_s)                          # parent -> surface, bit-exact
+# … work on the surface …
+surface.prolongate(T_s, T_p)                        # surface -> parent, bit-exact at surface DOFs
+
+# Symbolic expressions can be evaluated at surface points directly
+vals = uw.function.evaluate(T_s.sym[0], surface.X.coords)   # to machine precision
+```
+
+Status (Phase 1): prototype + documented example +
+contract test
+(`docs/examples/submesh_investigation/{surface_submesh_prototype.py,
+example_surface_extraction.py, test_surface_submesh_contract.py}`) all
+passing.
+
+### Surface submesh: solver path (Phase 2)
+
+Phase 1 produces the *mesh*. Phase 2 makes a solver run on it. UW3's
+solver stack was built when `dim == cdim` was implicit; a surface
+submesh — `dim = parent.dim − 1`, `cdim = parent.cdim` — exercises
+that path from a new angle.
+
+Concrete deliverable: lateral surface diffusion (Laplace–Beltrami,
+`∫_M ∇_M T · ∇_M w dA`) on the upper surface of a `SphericalShell`,
+verified against the analytic spherical-harmonic decay
+`exp(-l(l+1) κ t / R²)`. Either a `SurfaceDiffusion`/`LaplaceBeltrami`
+sibling of `Poisson`, or a flag on `Poisson` — decide after the JIT
+audit. The Phase 1 example
+(`example_surface_extraction.py`) is the natural site to add this once
+the solver path is operational.
+
+The investigation needs to clear (at least) these knowns:
+
+1. **JIT pointwise functions on `dim != cdim`.** `petsc_x[i]` indexing
+   should run to `cdim`; gradient-of-basis indexing to `dim`
+   (tangent-space). Audit `utilities/_jitextension.py` for any
+   `range(self.dim)` that should be `range(self.cdim)` (or vice
+   versa). Phase 1 status: navigation and `evaluate()` work via the
+   standard volume-mesh code path on the stripped chart — no JIT
+   change was needed for that. Assembly is the open question.
+2. **FE assembly with non-square Jacobian.** PETSc DMPlex computes
+   element Jacobians from the embedded coordinates and produces the
+   correct surface metric automatically *when the FE machinery is
+   exercised with* `dim != cdim`. Confirm this on a trivial bilinear
+   form before assuming it.
+3. **Coordinate-system symbols.** `mesh.X` on the surface submesh is a
+   3-vector; `mesh.dim` is 2. Code that iterates `range(mesh.dim)`
+   over `mesh.X` components silently misses the third — exactly the
+   kind of cdim/dim conflation the audit needs to catch.
+4. **Manifold in-cell test.** `_test_if_points_in_cells_internal` /
+   `_mark_faces_inside_and_out` use a 2-D perpendicular construction
+   to place face-relative control points and run the half-space test.
+   The cd-1 path currently skips that step (centroid kd-tree only).
+   A proper version projects the query into the cell's tangent plane
+   then runs barycentric. Only needed if we ever support off-surface
+   queries; on-surface queries already work via the centroid path.
+5. **Surface outward normal.** For intrinsic surface diffusion the
+   bilinear form is metric-only, no explicit normal needed. For
+   coupled problems (surface advection driven by a 3D flow), we need
+   the surface's outward unit normal in 3-space — distinct from
+   `mesh.Gamma_N` which is the normal to the *boundary* of the mesh
+   (a closed sphere has none). Possibly a new symbol
+   (`mesh.surface_normal`); deferred until needed.
+6. **Boundary conditions on a closed surface.** `SphericalShell.Upper`
+   has no boundary curve, so no Dirichlet/Neumann is needed for the
+   first pass. A partial-surface submesh would add another dim/cdim
+   layer (BCs on a 1D curve in 3D); out of scope for the first pass.
 
 ## Design Principles
 
@@ -182,7 +341,7 @@ The label names are preserved from the parent (they survive `DMPlexFilter`). The
 | `DMPlex.getSubpointIS()` | IS mapping submesh → parent points | Available in petsc4py |
 | `DMSetRegionDS(dm, label, fields, ds, dsIn)` | Per-region discrete system | **Segfaults**, no examples |
 | `DMGetCellDS(dm, point, &ds, &dsIn)` | Per-cell DS dispatch in assembly | Works but requires Region DS |
-| `DMPlexCreateSubmesh(dm, label, value, ...)` | Co-dimension 1 submesh (boundaries) | Works but wrong dimension |
+| `DMPlexCreateSubmesh(dm, label, value, ...)` | Co-dimension 1 submesh (boundaries) | **Works**, used by `extract_surface` (dim=parent.dim−1, cdim=parent.cdim) |
 | `VecScatter` / `PetscSF` | Parallel data transfer | Standard PETSc |
 
 ### PETSc Alternatives Investigated (2026-04-05)

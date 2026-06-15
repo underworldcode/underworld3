@@ -45,6 +45,35 @@ def _temporary_petsc_option(key, value):
             opts[key] = old_value
 
 
+# The ``dm_plex_gmsh_*`` options configure how PETSc imports a Gmsh ``.msh``
+# file (coordinate space dimension, label handling, …). They are GLOBAL on the
+# PETSc options database and are *import-time scratch* — meaningful only for the
+# single import that follows. A mesh constructor that sets one (notably the
+# manifold-surface generators set ``dm_plex_gmsh_spacedim = 2``) and then raises
+# before cleanup leaks it, and the stale option silently corrupts the NEXT gmsh
+# import (e.g. a subsequent SphericalShell is read with spacedim=2 → a 2-D mesh
+# in a 3-D cdim → a "cannot reshape" crash, or a corrupt cache). ``_from_gmsh``
+# therefore clears the whole namespace after every import (see below).
+_GMSH_IMPORT_OPTION_KEYS = (
+    "dm_plex_gmsh_spacedim",
+    "dm_plex_gmsh_multiple_tags",
+    "dm_plex_gmsh_use_regions",
+    "dm_plex_gmsh_mark_vertices",
+)
+
+
+def _clear_gmsh_import_options():
+    """Remove all ``dm_plex_gmsh_*`` import-scratch options from the global
+    PETSc options database (idempotent)."""
+    opts = PETSc.Options()
+    for key in _GMSH_IMPORT_OPTION_KEYS:
+        try:
+            if opts.hasName(key):
+                opts.delValue(key)
+        except Exception:
+            pass
+
+
 ## Add the ability to inherit an Enum, so we can add standard boundary
 ## types to ones that are supplied by the users / the meshing module
 ## https://stackoverflow.com/questions/46073413/python-enum-combination
@@ -103,29 +132,24 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
     # this process is more efficient done on the root process and then distributed
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
-    if uw.mpi.rank == 0:
-        plex_0 = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=PETSc.COMM_SELF)
+    try:
+        if uw.mpi.rank == 0:
+            plex_0 = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=PETSc.COMM_SELF)
 
-        plex_0.setName("uw_mesh")
-        plex_0.markBoundaryFaces("All_Boundaries", 1001)
+            plex_0.setName("uw_mesh")
+            plex_0.markBoundaryFaces("All_Boundaries", 1001)
 
-        viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
-        viewer(plex_0)
-        viewer.destroy()
-
-        # ## Now add some metadata to the mesh (not sure how to do this with the Viewer)
-
-        # import h5py, json
-
-        # f = h5py.File('filename + ".h5",'r+')
-
-        # boundaries_dict = {i.name: i.value for i in cs_mesh.boundaries}
-        # string_repr = json.dumps(boundaries_dict)
-
-        # g = f.create_group("metadata")
-        # g.attrs["boundaries"] = string_repr
-
-        # f.close()
+            viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
+            viewer(plex_0)
+            viewer.destroy()
+    finally:
+        # The gmsh import options are import-time scratch — meaningful only for
+        # the createFromFile above. Clear the whole namespace so a value set by
+        # the caller for THIS import (notably ``dm_plex_gmsh_spacedim`` for a
+        # manifold-surface generator) cannot leak into the next gmsh import and
+        # silently produce a wrong-dimension mesh (e.g. a later SphericalShell
+        # read as 2-D). Runs on success or failure.
+        _clear_gmsh_import_options()
 
     # Now we have an h5 file and we can hand this to _from_plexh5
 
@@ -566,6 +590,12 @@ class Mesh(Stateful, uw_object):
 
         uw.mpi.barrier()
 
+        # Default: no navigation-only auxiliary DM. Only the
+        # no-refinement / no-coarsening branch sets up a non-None
+        # _nav_dm on manifold meshes. Other branches leave it as None
+        # which means the navigation indices use self.dm directly.
+        self._nav_dm = None
+
         if getattr(self, "_sidecar_coarsest", None) is not None:
 
             # Reloaded mesh with a persisted FMG hierarchy. Rebuild the geometric
@@ -720,6 +750,21 @@ class Mesh(Stateful, uw_object):
             if not self.dm.isDistributed():
                 self.sf1 = self.dm.distribute()
 
+            # On manifold meshes (dim != cdim — e.g. SphericalManifold
+            # and future bounded-surface patches) we want each rank to
+            # see its neighbours' partition-boundary cells so that
+            # surface query points near the seam can be located by
+            # local navigation rather than ending up orphaned. Apply
+            # the 1-cell overlap on a *clone* of the DM and use that
+            # clone solely for the navigation kdtree / in-cell test.
+            # The solver / FE assembly DM stays non-overlapped — PETSc
+            # FE assembly with overlap double-counts contributions at
+            # the partition seam via LocalToGlobal+ADD_VALUES, breaking
+            # accuracy. Volume meshes don't enter this branch.
+            if uw.mpi.size > 1 and self.dm.getDimension() != self.dm.getCoordinateDim():
+                self._nav_dm = self.dm.clone()
+                self._nav_dm.distributeOverlap(1)
+
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
 
@@ -743,6 +788,26 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
+        # Validate that the DM's coordinate array is consistent with the
+        # coordinate dimension before reshaping. A mismatch here almost always
+        # means a STALE or CORRUPT cached mesh file — e.g. a cached .h5 that was
+        # written as a lower-dimension mesh (the classic symptom of a leaked
+        # ``dm_plex_gmsh_spacedim`` during generation; see _from_gmsh). Raise a
+        # clear, actionable error instead of an opaque numpy "cannot reshape"
+        # failure.
+        _coord_size = self.dm.getCoordinatesLocal().array.size
+        if self.cdim and _coord_size % self.cdim != 0:
+            _src = f" ('{self.filename}')" if getattr(self, "filename", None) else ""
+            raise RuntimeError(
+                f"Mesh coordinate array (size {_coord_size}) is not divisible by "
+                f"the coordinate dimension cdim={self.cdim}, so it cannot be a "
+                f"valid set of {self.cdim}-D node coordinates. This usually "
+                f"indicates a stale or corrupt cached mesh file{_src} (e.g. a "
+                f"cache written at a different space dimension). Delete the "
+                f"cached '.meshes/*.msh' and '.msh.h5' for this mesh and "
+                f"regenerate."
+            )
+
         # Expose mesh points through special numpy array class with a callback
         # on all setter operations
 
@@ -750,6 +815,18 @@ class Mesh(Stateful, uw_object):
             numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
             owner=self,
         )
+
+        # Navigation-only coord view. On manifold meshes the nav DM is
+        # a 1-cell-overlap clone with extra ghost vertices; navigation
+        # indices (kdtree, in-cell control points) read from these
+        # coords. On volume meshes _nav_dm is None and we reuse the
+        # main coords.
+        if self._nav_dm is not None:
+            self._nav_coords = numpy.array(
+                self._nav_dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
+            )
+        else:
+            self._nav_coords = self._coords
 
         # The callback is to rebuild the mesh data structures - we already have a routine
         # to handle that so we just wrap it here.
@@ -761,6 +838,19 @@ class Mesh(Stateful, uw_object):
                 # object teardown (e.g. at application exit or during mesh
                 # replacement), where the owning Python mesh object has already
                 # been garbage collected but the NDArray proxy still exists.
+                return
+
+            # ``NDArray_With_Callback.__array_finalize__`` propagates this
+            # callback (and the owner) to every view / fancy-index copy of the
+            # coordinate array. Only the mesh's *canonical* coordinate array
+            # represents an actual coordinate update; a derived sub-array (e.g.
+            # a boundary subset built inside the tangent-slip / bounding-surface
+            # / mover machinery) that merely inherited this callback must NOT
+            # trigger a full-mesh deform. Identity-gate on the canonical
+            # ``_coords`` — note this is NOT a size filter, so a genuinely
+            # malformed full coordinate update still reaches ``_deform_mesh``
+            # and surfaces loudly rather than being silently dropped.
+            if array is not mesh._coords:
                 return
 
             if verbose:
@@ -1615,6 +1705,189 @@ class Mesh(Stateful, uw_object):
         self._registered_submeshes.add(sub_mesh)
 
         return sub_mesh
+
+    def extract_surface(self, label_name, label_value=None, verbose=False):
+        """Extract the codimension-1 surface marked by ``label_name`` as a mesh.
+
+        The third submesh flavour (alongside :meth:`extract_region`, which
+        filters cells of the *same* dimension): a *surface submesh* is a real
+        :class:`Mesh` for the parent's codim-1 boundary stratum, sharing exact
+        vertex positions with the parent. On a 3D ``SphericalShell``,
+        ``shell.extract_surface("Upper")`` returns a 2-manifold embedded in
+        3-space (``dim = parent.dim - 1``, ``cdim = parent.cdim``).
+
+        Mechanism: ``DMPlexCreateSubmesh`` on the face label produces a cd-1
+        DM but retains an upward-DAG phantom stratum (one point per parent
+        volume cell) that breaks closure-based navigation; ``DMPlexFilter`` on
+        ``(depth, dim-1)`` strips it, leaving a clean standalone manifold. The
+        two subpoint IS's compose into a single surface→parent point map.
+
+        Parent ↔ submesh DOF transfer reuses :meth:`restrict` / :meth:`prolongate`
+        (the same KDTree coordinate-match-at-1e-10 path as ``extract_region``);
+        surface vertices are an *exact* subset of the parent's, so it is
+        bit-exact.
+
+        Parameters
+        ----------
+        label_name : str
+            Name of the parent boundary label whose marked faces become the
+            cells of the surface submesh (e.g. ``"Upper"``).
+        label_value : int, optional
+            Stratum value within the label. If ``None``, resolved from
+            ``self.boundaries[label_name].value``.
+
+        Returns
+        -------
+        Mesh
+            A surface mesh with ``parent`` set to this mesh and the standard
+            submesh lineage (``subpoint_is``, registration with
+            ``_registered_submeshes``).
+
+        Raises
+        ------
+        ValueError
+            If ``label_name`` is missing from the parent or its face stratum
+            is empty (loud-fail contract — no degenerate-mesh fallback).
+        """
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_submesh_from_label,
+            petsc_dm_filter_by_label,
+        )
+
+        # --- resolve the label value (from boundaries, not regions) ---
+        if label_value is None:
+            if self.boundaries is None:
+                raise ValueError(
+                    "No boundaries defined on this mesh. "
+                    "Provide label_value explicitly."
+                )
+            try:
+                label_value = self.boundaries[label_name].value
+            except KeyError:
+                raise ValueError(
+                    f"Boundary '{label_name}' not found on parent mesh. "
+                    f"Available: {[b.name for b in self.boundaries]}"
+                )
+
+        # --- loud-fail if the parent has no faces marked with this label ---
+        # NB: never call getStratumIS(v) for a value not in the live value set
+        # — that hard-aborts PETSc on some labels (cf. the "Centre" pseudo-
+        # label). Probe getValueIS() first.
+        label = self.dm.getLabel(label_name)
+        if label is None:
+            raise ValueError(
+                f"Parent DM has no label '{label_name}'. "
+                f"Cannot extract a surface submesh from it."
+            )
+        vals_is = label.getValueIS()
+        live_values = (
+            set(int(v) for v in vals_is.getIndices())
+            if vals_is is not None else set()
+        )
+        if int(label_value) not in live_values:
+            raise ValueError(
+                f"Label '{label_name}' has no stratum with value {label_value} "
+                f"on the parent (live values: {sorted(live_values)}). "
+                f"There is no surface to extract."
+            )
+        sis = label.getStratumIS(label_value)
+        if sis is None or sis.getSize() == 0:
+            raise ValueError(
+                f"Label '{label_name}' (value {label_value}) has an empty face "
+                f"stratum on the parent. There is no surface to extract."
+            )
+
+        # Stage 1: cd-1 DM (with the phantom upward-DAG stratum).
+        sub_with_phantoms = petsc_dm_create_submesh_from_label(
+            self.dm, label_name, label_value, marked_faces=True,
+        )
+        # Stage 2: strip the phantom — keep only the surface cells (height-0
+        # of the cd-1 chart, i.e. depth dim-1) and their downward closure.
+        surf_dm = petsc_dm_filter_by_label(
+            sub_with_phantoms, "depth", self.dim - 1,
+        )
+
+        # Compose the two subpoint maps (surf -> sub1 -> parent) BEFORE the
+        # Mesh constructor wraps the DM (constructor side-effects can
+        # invalidate cached IS handles).
+        stage1_sp = sub_with_phantoms.getSubpointIS()
+        stage2_sp = surf_dm.getSubpointIS()
+        composed_indices = stage1_sp.getIndices()[stage2_sp.getIndices()]
+        subpoint_is = PETSc.IS().createGeneral(
+            composed_indices, comm=surf_dm.getComm(),
+        )
+
+        # Surviving boundaries: enumerate the SUBMESH's labels by index
+        # (probing parent labels by name on a submesh DM can hard-abort), and
+        # get each label's live value set before asking for any stratum.
+        sub_boundaries = None
+        if self.boundaries is not None:
+            parent_by_name = {b.name: b.value for b in self.boundaries}
+            surviving = {}
+            for i in range(surf_dm.getNumLabels()):
+                name = surf_dm.getLabelName(i)
+                if name not in parent_by_name:
+                    continue  # internal PETSc label (celltype, depth)
+                if name in ("Null_Boundary", "All_Boundaries", "Centre"):
+                    continue
+                lab = surf_dm.getLabel(name)
+                if lab is None:
+                    continue
+                try:
+                    vis = lab.getValueIS()
+                    vals = (
+                        set(int(v) for v in vis.getIndices())
+                        if vis is not None else set()
+                    )
+                except Exception:
+                    continue
+                pv = parent_by_name[name]
+                if pv not in vals:
+                    continue
+                lsis = lab.getStratumIS(pv)
+                if lsis is not None and lsis.getSize() > 0:
+                    surviving[name] = pv
+            sub_boundaries = Enum("Boundaries", surviving) if surviving else None
+
+        # Construct the surface Mesh (dim = parent.dim - 1, cdim preserved).
+        surf_mesh = Mesh(
+            surf_dm,
+            degree=self.degree,
+            qdegree=self.qdegree,
+            boundaries=sub_boundaries,
+            coordinate_system_type=self.CoordinateSystemType,
+            verbose=verbose,
+        )
+
+        # Submesh lineage — same shape as extract_region
+        surf_mesh.parent = self
+        surf_mesh.subpoint_is = subpoint_is
+        surf_mesh._parent_mesh_version = self._mesh_version
+        surf_mesh._extract_label_name = label_name
+        surf_mesh._extract_label_value = label_value
+        surf_mesh._is_surface_submesh = True  # disambiguates from extract_region
+        surf_mesh.regions = self.regions
+        surf_mesh._dof_maps = {}
+
+        # Vertex map (sub_rows -> parent_rows for coincident verts). Inlined
+        # via a KDTree on the coordinate arrays rather than
+        # ``_build_vertex_map`` (which assumes ``X._get_kdtree`` — broken for
+        # both submesh flavours, UW3 issue #197). Surface vertices are an
+        # exact subset of the parent's, so the 1e-10 match is bit-exact.
+        import underworld3 as _uw
+        sub_coords = numpy.asarray(surf_mesh._coords)
+        parent_coords = numpy.asarray(self._coords)
+        tree = _uw.kdtree.KDTree(sub_coords)
+        dists, indices = tree.query(parent_coords, sqr_dists=False)
+        dists = numpy.asarray(dists).reshape(-1)
+        indices = numpy.asarray(indices).reshape(-1)
+        matched = dists < 1.0e-10
+        surf_mesh._vertex_map = (indices[matched], numpy.where(matched)[0])
+
+        # Register with parent for coordinate sync notifications
+        self._registered_submeshes.add(surf_mesh)
+
+        return surf_mesh
 
     def _build_vertex_map(self):
         """Build vertex index mapping between submesh and parent.
@@ -3718,25 +3991,32 @@ class Mesh(Stateful, uw_object):
             return
 
         dim = self.dim
-        # def mesh_face_skeleton_kdtree(mesh):
+        # Navigation indices build from the nav DM (a 1-cell-overlap
+        # clone on manifold meshes; identical to self.dm on volume
+        # meshes). Cell indices in the resulting _indexMap and
+        # _centroid_index correspond to nav-DM local cell ordering.
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
 
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        fStart, fEnd = self.dm.getHeightStratum(1)
-        pStart, pEnd = self.dm.getDepthStratum(0)
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        fStart, fEnd = nav_dm.getHeightStratum(1)
+        pStart, pEnd = nav_dm.getDepthStratum(0)
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
         control_points_list = []
         control_points_cell_list = []
+        centroids_list = []
 
         for cell, cell_id in enumerate(range(cStart, cEnd)):
 
-            cell_faces = self.dm.getCone(cell_id)
-            points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_faces = nav_dm.getCone(cell_id)
+            points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = self._coords[points - pStart]
+            cell_point_coords = nav_coords[points - pStart]
             cell_centroid = cell_point_coords.mean(axis=0)
+            centroids_list.append(cell_centroid)
 
             # for face in range(cell_num_faces):
 
@@ -3785,12 +4065,14 @@ class Mesh(Stateful, uw_object):
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
-        # We don't need an indexMap for this one because there is only one point per cell
-        # and the returned kdtree value IS the index.
-        # Note: self._centroids is not yet defined:
-
-        self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
-        # self._centroid_index.build_index()
+        # Cell-centroid kdtree, built from the nav-DM cells in the
+        # same enumeration order as _indexMap, so the indices it
+        # returns can be used directly as nav-DM cell indices.
+        # We keep _nav_centroids separate from _centroids (which is
+        # the main-DM cell centroids set in __init__) so the FE-side
+        # ``_centroids`` semantics are unchanged on manifold meshes.
+        self._nav_centroids = numpy.array(centroids_list)
+        self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         return
 
@@ -3881,12 +4163,16 @@ class Mesh(Stateful, uw_object):
             return
 
         dim = self.dim
-        # def mesh_face_skeleton_kdtree(mesh):
+        # Build face control points from the nav DM (includes ghost
+        # cells on manifold meshes). Volume meshes have _nav_dm is
+        # None and we use self.dm directly.
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
 
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        fStart, fEnd = self.dm.getHeightStratum(1)
-        pStart, pEnd = self.dm.getDepthStratum(0)
-        num_local_cells = self.dm.getHeightStratum(0)[1]
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        fStart, fEnd = nav_dm.getHeightStratum(1)
+        pStart, pEnd = nav_dm.getDepthStratum(0)
+        num_local_cells = cEnd - cStart
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
@@ -3894,23 +4180,23 @@ class Mesh(Stateful, uw_object):
         # All elements in our mesh are a single type
 
         mesh_cell_outer_control_points = numpy.ndarray(
-            shape=(cell_num_faces, num_local_cells, self.dim)
+            shape=(cell_num_faces, num_local_cells, self.cdim)
         )
         mesh_cell_inner_control_points = numpy.ndarray(
-            shape=(cell_num_faces, num_local_cells, self.dim)
+            shape=(cell_num_faces, num_local_cells, self.cdim)
         )
 
         for cell, cell_id in enumerate(range(cStart, cEnd)):
-            cell_faces = self.dm.getCone(cell_id)
-            points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_faces = nav_dm.getCone(cell_id)
+            points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_point_coords = self._coords[points - pStart]
+            cell_point_coords = nav_coords[points - pStart]
 
             for face in range(cell_num_faces):
 
-                points = self.dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
+                points = nav_dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
                 # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-                point_coords = self._coords[points - pStart]
+                point_coords = nav_coords[points - pStart]
 
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
@@ -3918,13 +4204,32 @@ class Mesh(Stateful, uw_object):
                 # Compute face normal from point coordinates (already plain numpy arrays)
                 point_data = point_coords
 
-                # 2D case
-                if self.dim == 2:
+                if self.dim == 1:
+                    # 1-manifold (annulus / shell boundary loop as a surface
+                    # submesh): a cell is an edge, its faces are end vertices.
+                    # Outward direction is along the edge, away from the cell
+                    # centroid (the sign fix below orients it).
+                    normal = face_centroid - cell_centroid
+                elif self.dim == 2 and self.cdim == 2:
+                    # 2-D volume mesh — perpendicular to edge in the
+                    # plane of the mesh.
                     vector = point_data[1] - point_data[0]
                     normal = numpy.array((-vector[1], vector[0]))
-
-                # 3D simplex case (probably also OK for hexes)
+                elif self.dim == 2 and self.cdim == 3:
+                    # 2-manifold in 3-space — perpendicular to the
+                    # edge, lying in the cell's tangent plane (the
+                    # natural generalisation of the 2-D rule, where
+                    # the implicit z-hat is replaced by the explicit
+                    # cell normal).
+                    cell_normal = numpy.cross(
+                        cell_point_coords[1] - cell_point_coords[0],
+                        cell_point_coords[2] - cell_point_coords[0],
+                    )
+                    edge_vector = point_data[1] - point_data[0]
+                    normal = numpy.cross(cell_normal, edge_vector)
                 else:
+                    # 3-D simplex / hex face — face normal from two
+                    # in-face edges.
                     normal = numpy.cross(
                         (point_data[1] - point_data[0]),
                         (point_data[2] - point_data[0]),
@@ -3945,6 +4250,48 @@ class Mesh(Stateful, uw_object):
 
         return
 
+    def _get_owned_cells_mask(self):
+        """Return a boolean array of length n_local_cells (NAV-DM
+        cells) where True means the cell is owned by this rank, False
+        means it's a ghost cell brought in by
+        ``DMPlexDistributeOverlap``.
+
+        On a non-overlapped DM (the default for volume meshes), every
+        cell is owned and the mask is all True — the downstream filter
+        is a no-op. On the nav DM of a manifold mesh, ghost cells
+        appear as leaves of the point SF in the cell range
+        ``[cStart, cEnd)``.
+
+        Cached on the mesh; rebuilt only when ``_mesh_version`` changes.
+        """
+        version = self._mesh_version
+        cache = getattr(self, "_owned_cells_mask_cache", None)
+        if cache is not None and cache.get("version") == version:
+            return cache["mask"]
+
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        n_local = cEnd - cStart
+        mask = numpy.ones(n_local, dtype=bool)
+
+        sf = nav_dm.getPointSF()
+        if sf is not None:
+            try:
+                _, leaves, _ = sf.getGraph()
+            except Exception:
+                leaves = None
+            if leaves is not None and len(leaves) > 0:
+                leaves = numpy.asarray(leaves)
+                # Leaves are global point IDs; cells live in [cStart, cEnd).
+                cell_leaves = leaves[
+                    (leaves >= cStart) & (leaves < cEnd)
+                ] - cStart
+                if cell_leaves.size > 0:
+                    mask[cell_leaves] = False
+
+        self._owned_cells_mask_cache = {"version": version, "mask": mask}
+        return mask
+
     def _test_if_points_in_cells_internal(self, points, cells,
                                           on_boundary=True, tol=0.0):
         """
@@ -3953,6 +4300,13 @@ class Mesh(Stateful, uw_object):
         with the convex polygon / polyhedron defined by a cell.
 
         Exact if applied to a linear mesh, approximate otherwise.
+
+        On an overlapped DM (manifold meshes), a query point may land in
+        a *ghost* cell — a cell owned by another rank and present locally
+        only as part of the partition halo. Ghost cells are explicitly
+        rejected so a single rank claims each point cleanly; the migrate
+        loop's iterative fallback then routes the rejected point to the
+        actual owning rank (where the same cell is genuinely owned).
 
         Parameters
         ----------
@@ -4043,7 +4397,15 @@ class Mesh(Stateful, uw_object):
                     - ((control_points_i - points) ** 2).sum(axis=1)
                 ) > 0
 
-        return numpy.all(insiders, axis=1)
+        result = numpy.all(insiders, axis=1)
+
+        # Reject ghost-cell claims so ownership remains unique. No-op on
+        # non-overlapped DMs where every cell is owned.
+        owned_mask = self._get_owned_cells_mask()
+        valid_cell = (cells >= 0) & (cells < owned_mask.shape[0])
+        result[valid_cell] = result[valid_cell] & owned_mask[cells[valid_cell]]
+
+        return result
 
     def _mark_local_boundary_faces_inside_and_out(self):
         """
@@ -4061,37 +4423,94 @@ class Mesh(Stateful, uw_object):
         ):
             return
 
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        fStart, fEnd = self.dm.getHeightStratum(1)
-        pStart, pEnd = self.dm.getDepthStratum(0)
+        # Build boundary control points from the nav DM (sees the
+        # ghost cells on manifold meshes). On volume meshes nav_dm is
+        # self.dm.
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
+
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        fStart, fEnd = nav_dm.getHeightStratum(1)
+        pStart, pEnd = nav_dm.getDepthStratum(0)
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
+        # On an overlapped DM (manifold meshes with the partition halo),
+        # the outer edge of the halo masquerades as a boundary: faces
+        # there have ``getJoin(face).shape[0] == 1`` because only one
+        # of the two adjacent cells is in this rank's local view —
+        # and that one is a ghost. Filter to faces whose single
+        # bounding cell is OWNED locally; otherwise we'd build
+        # control points along the partition seam and reject legitimate
+        # interior points. No-op on non-overlapped DMs.
+        owned_mask = self._get_owned_cells_mask()
         boundary_faces = []
         for face in range(fStart, fEnd):
-            if self.dm.getJoin(face).shape[0] == 1:
-                boundary_faces.append(face)
+            join = nav_dm.getJoin(face)
+            if join.shape[0] != 1:
+                continue
+            cell = int(join[0])
+            if cell < cStart or cell >= cEnd:
+                continue
+            if not owned_mask[cell - cStart]:
+                continue
+            boundary_faces.append(face)
 
         boundary_faces = numpy.array(boundary_faces)
+
+        # Closed manifolds (e.g. SphericalManifold) have no boundary
+        # faces — the kdtree path is honestly empty. Let the caller's
+        # closest-local-cell short-circuit handle on-surface queries.
+        if len(boundary_faces) == 0:
+            self.boundary_face_control_points_kdtree = None
+            self.boundary_face_control_points_sign = None
+            self._domain_radius_squared = float("inf")
+            return
 
         control_points_list = []
         control_point_sign_list = []
 
-        for face in boundary_faces:
-            cell = self.dm.getJoin(face)[0]
-            points = self.dm.getTransitiveClosure(face)[0][-face_num_points:]
-            point_coords = self._coords[points - pStart]  # Use raw array for internal calculations
-            face_centroid = point_coords.mean(axis=0)
-            cell_centroid = self._centroids[cell - cStart]
+        # Pick the right centroid source: _nav_centroids if it's been
+        # built (set in _build_kd_tree_index from nav-DM cells), else
+        # the main-DM _centroids. On volume meshes these are equal.
+        nav_centroids = getattr(self, "_nav_centroids", None)
+        if nav_centroids is None:
+            nav_centroids = self._centroids
 
-            # 2D case
-            if self.dim == 2:
+        for face in boundary_faces:
+            cell = nav_dm.getJoin(face)[0]
+            points = nav_dm.getTransitiveClosure(face)[0][-face_num_points:]
+            point_coords = nav_coords[points - pStart]  # Use raw array for internal calculations
+            face_centroid = point_coords.mean(axis=0)
+            cell_centroid = nav_centroids[cell - cStart]
+
+            if self.dim == 1:
+                # 1-manifold (annulus / shell boundary loop extracted as a
+                # surface submesh): a "cell" is an edge whose faces are its
+                # two end vertices (face_num_points == 1). The outward
+                # direction at a face vertex is along the edge, away from the
+                # cell centroid; the inward/outward sign fix below orients it.
+                normal = face_centroid - cell_centroid
+            elif self.dim == 2 and self.cdim == 2:
+                # 2-D volume mesh
                 vector = point_coords[1] - point_coords[0]
                 normal = numpy.array((-vector[1], vector[0]))
-
+            elif self.dim == 2 and self.cdim == 3:
+                # Bounded 2-manifold in 3-space (e.g. a partial-surface
+                # patch). In-tangent-plane perpendicular to the
+                # boundary edge — needs the cell's third vertex to
+                # build the cell normal.
+                cell_points = nav_dm.getTransitiveClosure(cell)[0][-cell_num_points:]
+                cell_point_coords = nav_coords[cell_points - pStart]
+                cell_normal = numpy.cross(
+                    cell_point_coords[1] - cell_point_coords[0],
+                    cell_point_coords[2] - cell_point_coords[0],
+                )
+                edge_vector = point_coords[1] - point_coords[0]
+                normal = numpy.cross(cell_normal, edge_vector)
             else:
-                # 3D simplex case (probably also OK for hexes)
+                # 3-D simplex / hex face
                 normal = numpy.cross(
                     (point_coords[1] - point_coords[0]),
                     (point_coords[2] - point_coords[0]),
@@ -4169,6 +4588,14 @@ class Mesh(Stateful, uw_object):
 
         if model_points.shape[0] == 0:
             return numpy.array([], dtype=bool)
+
+        # Cd-1 surface mesh: no boundary-face control points exist
+        # (see _mark_local_boundary_faces_inside_and_out). Per the
+        # surface-mesh contract, query points are assumed to lie on
+        # the manifold; the closest-local-cell test is the right
+        # filter, not an inside/outside split.
+        if self.boundary_face_control_points_kdtree is None:
+            return self._get_closest_local_cells_internal(model_points) != -1
 
         dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
             model_points, k=1, sqr_dists=True
@@ -4332,11 +4759,16 @@ class Mesh(Stateful, uw_object):
         else:
             return np.zeros((0,))
 
-        # We need to filter points that lie outside the mesh but
-        # still are allocated a nearby element by this distance-only check.
-
         cells = self._indexMap[closest_points]
         cStart, cEnd = self.dm.getHeightStratum(0)
+
+        # We need to filter points that lie outside the mesh but
+        # still are allocated a nearby element by this distance-only check.
+        # On a 2-manifold in 3-space the in-cell test is the
+        # in-tangent-plane half-space rule (Site A in
+        # _mark_faces_inside_and_out generalises the perpendicular
+        # construction to ``cell_normal × edge``), so this works
+        # uniformly on volume meshes and cd-1 manifolds.
 
         inside = self._test_if_points_in_cells_internal(
             coords, cells, on_boundary=on_boundary, tol=tol)
@@ -4345,7 +4777,12 @@ class Mesh(Stateful, uw_object):
 
         # Part 2 - try to find the lost points by walking nearby cells
 
-        num_local_cells = self._centroids.shape[0]
+        # Size by the nav-DM cell count, which is what _centroid_index
+        # was built from (includes ghost cells on manifold meshes).
+        nav_centroids = getattr(self, "_nav_centroids", None)
+        if nav_centroids is None:
+            nav_centroids = self._centroids
+        num_local_cells = nav_centroids.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
         dist2, closest_centroids = self._centroid_index.query(
@@ -4602,7 +5039,7 @@ class Mesh(Stateful, uw_object):
         from underworld3.utilities import gather_data
 
         domain_centroid = self._centroids.mean(axis=0)
-        all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.dim)
+        all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.cdim)
         return all_centroids
 
     def _get_domain_kdtree(self):

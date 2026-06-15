@@ -2487,6 +2487,133 @@ def _build_local_to_owned_map(dm, gsection, vec):
             is_owned)
 
 
+def smooth_surface_field(
+    field,
+    n_iters: int = 10,
+    alpha: float = 0.5,
+    taubin: bool = True,
+    mu: Optional[float] = None,
+    passband: float = 0.1,
+    pinned_labels: Optional[Sequence[str]] = None,
+):
+    r"""Low-pass a scalar field over a (surface) mesh's vertex-edge graph.
+
+    The *field* analogue of the coordinate graph-Laplacian Jacobi path in
+    :func:`smooth_mesh_interior`. Each sweep blends every vertex value toward
+    the mean of its edge-neighbours,
+
+    .. math::
+
+        h_i \leftarrow h_i + f\,\Big( \tfrac{1}{|N(i)|}\sum_{j\in N(i)} h_j
+                                       - h_i \Big),
+
+    attenuating high-wavenumber (facet-scale / sawtooth) content while leaving
+    the smooth, long-wavelength field. Plain Laplacian smoothing
+    (``taubin=False``) also damps the smooth part and shrinks amplitudes; the
+    **Taubin** :math:`\lambda\,|\,\mu` scheme — a positive blend ``alpha``
+    followed by a negative back-step ``mu`` each iteration — is a near-flat
+    passband low-pass that leaves the mean and the long-wavelength amplitude
+    essentially unchanged (the discrete analogue of a volume-preserving
+    filter).
+
+    Designed for the free-surface height field carried on a codim-1 surface
+    submesh (:meth:`Mesh.extract_surface`): the graph operator needs only the
+    edge connectivity, so it works on a 1-manifold loop where an FE solve is
+    not yet available. No global gather, no FFT — unlike a spectral
+    (Fourier ``h(θ)``) low-pass it is purely local on the surface graph.
+
+    Parameters
+    ----------
+    field : degree-1 scalar ``MeshVariable``
+        Smoothed **in place** (its nodal values are overwritten).
+    n_iters : int, default 10
+        Number of Taubin (or plain-Laplacian) iterations.
+    alpha : float, default 0.5
+        Positive blend factor :math:`\lambda \in (0, 1]`.
+    taubin : bool, default True
+        Apply the volume-preserving :math:`\lambda\,|\,\mu` pair each
+        iteration. ``False`` ⇒ plain Laplacian smoothing (shrinks).
+    mu : float, optional
+        Negative back-step factor. Default derived from ``passband`` as
+        :math:`\mu = 1/(k_{pb} - 1/\lambda)` (the standard Taubin choice;
+        gives :math:`|\mu| \gtrsim \lambda`). Ignored when ``taubin`` is False.
+    passband : float, default 0.1
+        Taubin passband wavenumber :math:`k_{pb}` used to derive ``mu``.
+    pinned_labels : sequence of str, optional
+        Boundary labels whose vertices are held fixed (e.g. the endpoints of
+        an open surface arc). A closed loop (annulus / shell ``Upper``) has
+        none, so the default ``None`` is correct there.
+
+    Notes
+    -----
+    Parallel-correct and **bit-identical serial vs parallel**. The
+    neighbour-average is a single ``A.mult`` against the parallel
+    vertex-vertex adjacency from :func:`_build_adjacency_matrix` (assembled
+    with GLOBAL vertex indices, so an owned row sees every neighbour — even
+    those owned by another rank not in this rank's overlap); the field is
+    loaded into / read out of the global Vec via
+    :func:`_build_local_to_owned_map`, and the smoothed result is scattered
+    back to the field's local array (ghosts filled) with ``globalToLocal``.
+    The constant mode (eigenvalue 0) is preserved exactly on any rank count.
+    """
+    from petsc4py import PETSc
+
+    mesh = field.mesh
+
+    # Parallel vertex-vertex adjacency (entries 1.0; global indices) + the
+    # 1-dof-per-vertex scalar DM that owns the Vec/section layout.
+    A, dm_scalar, gsection = _build_adjacency_matrix(mesh)
+
+    g = dm_scalar.createGlobalVector()
+    tmp = g.duplicate()
+    ones = g.duplicate()
+    ones.set(1.0)
+    deg = g.duplicate()
+    A.mult(ones, deg)                       # row sums = vertex degrees
+    deg_arr = deg.array_r
+    deg_safe = np.where(deg_arr > 0.0, deg_arr, 1.0)
+
+    owned_local, owned_vec_pos, is_owned = _build_local_to_owned_map(
+        dm_scalar, gsection, g)
+
+    if taubin and mu is None:
+        # Standard Taubin: 1/λ + 1/μ = k_pb  ⇒  μ = 1/(k_pb − 1/λ) < 0.
+        mu = 1.0 / (passband - 1.0 / alpha)
+
+    # Load the field (local: owned+ghost) into the global Vec (owned rows).
+    # field.data[i] ↔ vertex pStart+i (degree-1), matching the owned map.
+    fvals = np.asarray(field.data[:, 0], dtype=float)
+    g.array[owned_vec_pos] = fvals[owned_local]
+
+    # Positions of pinned owned vertices within the global Vec (held fixed).
+    pin_vec_pos = None
+    if pinned_labels:
+        pmask = _pinned_mask(mesh.dm, tuple(pinned_labels))   # local-chart mask
+        full_to_vec = np.full(is_owned.shape[0], -1, dtype=np.int64)
+        full_to_vec[owned_local] = owned_vec_pos
+        pin_owned = owned_local[pmask[owned_local]]
+        pin_vec_pos = full_to_vec[pin_owned]
+        pin_vals = g.array_r[pin_vec_pos].copy()
+
+    def _blend(f):
+        A.mult(g, tmp)                       # tmp = Σ_{neighbours} (global-correct)
+        a = g.array                          # writable view of owned rows
+        a += f * (tmp.array_r / deg_safe - a)
+        if pin_vec_pos is not None:
+            a[pin_vec_pos] = pin_vals
+
+    for _ in range(n_iters):
+        _blend(alpha)
+        if taubin:
+            _blend(mu)
+
+    # Scatter owned -> local (fills ghosts) and write back to the field.
+    lvec = dm_scalar.createLocalVector()
+    dm_scalar.globalToLocal(g, lvec)
+    field.data[:, 0] = lvec.array_r
+    return field
+
+
 def smooth_mesh_interior(
     mesh,
     pinned_labels: Optional[Sequence[str]] = None,

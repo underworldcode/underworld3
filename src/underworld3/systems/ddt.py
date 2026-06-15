@@ -1039,9 +1039,21 @@ class Eulerian(uw_object):
                 self.mesh, self.psi_star[0], verbose=False
             )
         elif self.vtype == uw.VarType.VECTOR:
-            self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
-                self.mesh, self.psi_star[0], verbose=False
-            )
+            # Manifold meshes (dim < cdim): use the multi-component
+            # projection to sidestep SNES_Vector's pre-manifold
+            # mesh.dim/cdim entanglement. See sibling block in the
+            # SLCN init for the rationale.
+            if self.mesh.dim != self.mesh.cdim:
+                self._psi_star_projection_solver = uw.systems.solvers.SNES_MultiComponent_Projection(
+                    self.mesh,
+                    u_Field=self.psi_star[0],
+                    n_components=self.mesh.cdim,
+                    verbose=False,
+                )
+            else:
+                self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh, self.psi_star[0], verbose=False
+                )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
             import math
             dim = self.mesh.dim
@@ -1591,9 +1603,14 @@ class SemiLagrangian(uw_object):
         self._workVar.remesh_policy = RemeshPolicy.CARRY
         self._workVar._remesh_managed_by = self
 
-        # We just need one swarm since this is inherently a sequential operation
-        nswarm = uw.swarm.NodalPointSwarm(self._workVar, verbose)
-        self._nswarm_psi = nswarm
+        # Historically this allocated a NodalPointSwarm cache here, but
+        # the actual trace-back path uses ``uw.function.global_evaluate``
+        # on the upstream coords directly — the swarm was vestigial and
+        # nothing reads ``_nswarm_psi`` anywhere in the codebase. Skip
+        # the allocation; on manifold meshes it would fail anyway because
+        # DMSwarm's built-in coord field is dim-sized while manifold
+        # coords are cdim-sized.
+        self._nswarm_psi = None
 
         # The projection operator for mapping swarm values to the mesh - needs to be different for
         # each variable type, unfortunately ...
@@ -1603,11 +1620,27 @@ class SemiLagrangian(uw_object):
                 self.mesh, self.psi_star[0], verbose=False
             )
         elif vtype == uw.VarType.VECTOR:
-            self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
-                self.mesh,
-                self.psi_star[0],
-                verbose=False,
-            )
+            # On manifold meshes (dim < cdim) SNES_Vector has
+            # pre-manifold mesh.dim/cdim entanglement in its FE
+            # attachment + Jacobian construction. The flux projection
+            # has no cross-component coupling though, so the
+            # block-diagonal SNES_MultiComponent_Projection (with
+            # n_components = cdim) is mathematically the right tool
+            # and sidesteps SNES_Vector entirely. Volume meshes
+            # continue to use SNES_Vector_Projection.
+            if self.mesh.dim != self.mesh.cdim:
+                self._psi_star_projection_solver = uw.systems.solvers.SNES_MultiComponent_Projection(
+                    self.mesh,
+                    u_Field=self.psi_star[0],
+                    n_components=self.mesh.cdim,
+                    verbose=False,
+                )
+            else:
+                self._psi_star_projection_solver = uw.systems.solvers.SNES_Vector_Projection(
+                    self.mesh,
+                    self.psi_star[0],
+                    verbose=False,
+                )
 
         elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
             import math
