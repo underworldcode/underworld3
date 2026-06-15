@@ -84,10 +84,54 @@ term; `follow_metric` refinement) is the next, focused piece of work.
 is **WIP/experimental**: it cannot be bolted onto the radial diffuser (whose
 Fourier reconstruction assumes a fixed angular grid) — it needs the 2D mover.
 
+## Convection (mechanism ported into the zoo)
+
+The validated mechanism — interior **mover** + **tangent-slip** (height-field
+carry) + **surface smoother** (Taubin low-pass via `extract_surface`) — is wired
+into `_phase_i_fs_convection_zoo.py` as three flags (`--mover`,
+`--tangent-slip`, `--surface-smooth N`), running **end-of-step, before the ALE
+`v_mesh` delta**, so all node motion (tangential slide + surface re-snap +
+interior relax) is captured by `v_mesh` and absorbed by SLCN's `V_fn = v −
+v_mesh`. ALE stays load-bearing.
+
+**Tangent-slip now works with the diffuser path.** The isostasy note (above) flagged
+that tangent-slip "cannot be bolted onto the radial diffuser (fixed angular grid)."
+The zoo port fixes that: after the FREE-mode `project_to_slip_surface` slide, it
+**re-sorts `internal_idx`/`internal_th` by current angle** so the Fourier
+reconstruction stays ordered; the surface-smoother map is node-identity (passed the
+current index ordering), so it follows the re-sort for free.
+
+**Goal-1 baseline (rk4 + ALE, res 20, Ra=ρg=1e5, θ=0.5, monotone=clamp).**
+Reproduces the May-14 reference: `Nu = 13.6 / 16.8` at steps 5/10 (exact), same
+Nu-growth curve thereafter with a 1–2 step phase shift in the steep transient
+(expected for a chaotic fast-growth phase; not a regression). Plain rk4 (no `_sl`
+term) drifts in volume and blows up past step ~25 (`T` overshoot, ΔA/A −16%) — the
+deficiency the mechanism below addresses.
+
+**Goal-2 A/B (rk4 + tangent-slip  vs  rk4_sl/SL; res 16, Ra=ρg=1e4, mode-5 IC,
+both with mover + surface-smooth + ALE, 50 steps):**
+- All three pieces run **clean** — no tangling, `T ∈ [0,1]` throughout,
+  `ΔA/A < 0.07%` in both (vs plain-rk4's drift). Surfaces are smooth mode-5
+  profiles (no sawtooth → smoother working).
+- **tangent-slip ≈ SL** in the early symmetric transient (Nu agrees to **<0.5%**
+  through step ~20). They diverge slowly thereafter (Nu 11.2 vs 10.5 ≈ 7%,
+  `h_max` 3.97e-3 vs 3.22e-3 ≈ 23% by step 50): tangent-slip carries topography
+  *exactly* while the SL FE trace-back is mildly diffusive, so tangent-slip retains
+  more amplitude → marginally hotter. Both clean and bounded.
+- Caveat: 50 steps ≈ `t=0.03` ≪ thermal time ~1, so this is the *early* transient,
+  not steady state. The genuine discriminator (net, time-varying lateral transport)
+  needs the harder regimes — Goal 3.
+- Figure + work-logs: `~/+Simulations/fs_convection_goal4/`.
+
 ## Open / next
 
+- **etd_topo held-lid in convection** (not yet ported): the L-stable surface
+  integrator (held free-slip solve → `h_eq` from mean-relative `σ_nn/ρg`, relax
+  toward it) for the high-Ra ringing regime. The zoo currently evolves the free
+  surface with its existing rk4/rk4_sl integrators; etd_topo is the Goal-4 piece.
+- **Goal 3 A/B** — break symmetry/steadiness (asymmetric IC, higher Ra,
+  plume-shedding, longer runs) so lateral transport is net/time-varying; only then
+  does tangent-slip-vs-SL genuinely bite. Compare h(θ), Nu, vrms, ΔA/A.
 - MMPDE mover **advantage**: occasional interior restore (not every step);
-  boundary-slip tangential redistribution (retires SL); `follow_metric` near the
-  surface.
-- **Convection** — where SL / tangent-slip / problem-dependent stability bite.
+  `follow_metric` surface refinement.
 - Internal-interface revisit; rung-2 pure relaxation (`h_eq=0` → exact decay).

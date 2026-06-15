@@ -1614,6 +1614,37 @@ def main():
                    help="If set, stop the run when cumulative simulated "
                    "time exceeds this value (in addition to --n-steps). "
                    "For example 5.0 ≈ 5 thermal diffusion times.")
+    # --- Goal-2 mechanism wiring (mover + tangent-slip + surface smoother) ---
+    # These three are the validated free-surface mechanism ported from the
+    # isostasy testbed (_phase_i_fs_isostasy_upper.py). They run end-of-step,
+    # BEFORE the ALE v_mesh delta, so all interior/surface node motion is
+    # captured by v_mesh and absorbed by SLCN's V_fn = v - v_mesh (ALE is
+    # load-bearing; without it Nu collapses). See plan
+    # continue-the-free-surface-mmpde-mover-*.md (Goal 2).
+    p.add_argument('--mover', action='store_true',
+                   help="Interior mesh mover: relax interior nodes with "
+                   "uw.meshing.smooth_mesh_interior (method='spring', "
+                   "uniform/Jacobi quality move, Upper+Lower pinned) once "
+                   "per step after the surface deformation. Replaces the "
+                   "ad-hoc winslow Jacobi; the src mover has the non-tangling "
+                   "signed-area backtrack. ALE absorbs the per-step node "
+                   "motion.")
+    p.add_argument('--mover-iters', type=int, default=5,
+                   help="smooth_mesh_interior sweeps per step (--mover).")
+    p.add_argument('--tangent-slip', action='store_true',
+                   help="Let upper-surface nodes slide tangentially with the "
+                   "flow (height-field carry) via project_to_slip_surface "
+                   "FREE mode — the lateral-transport mechanism that can "
+                   "retire the SL trace-back. The radial part of the "
+                   "tangential displacement is dropped so the topography just "
+                   "set by the scheme is undisturbed.")
+    p.add_argument('--surface-smooth', type=int, default=0,
+                   help="Graph-Laplacian/Taubin low-pass of the surface "
+                   "height profile via a codim-1 surface submesh "
+                   "(mesh.extract_surface + smooth_surface_field), then "
+                   "re-snap the surface ring radially. Value = iteration "
+                   "count (0 = off). Sawtooth-only: small counts; a blanket "
+                   "low-pass over-damps the signal. Parallel-clean.")
     args = p.parse_args()
 
     if args.p_degree >= args.v_degree:
@@ -1681,6 +1712,45 @@ def main():
               flush=True)
         _reset_gamma_history()
         os.makedirs(SNAP_DIR, exist_ok=True)
+
+        # --- Goal-2: one-time surface submesh for --surface-smooth ---
+        # Extract the Upper boundary as a codim-1 submesh and build a
+        # FIXED node-identity permutation surf_node <- internal_idx[k]
+        # from the (flat) initial config. surf nodes ARE the upper
+        # vertices, so the nearest-match at init is the identity
+        # permutation by node, which stays valid as positions move
+        # (it is a node map, not a position lookup). Parallel-clean;
+        # smooth_surface_field uses only the 1D edge graph.
+        surf_smoother = None
+        if args.surface_smooth:
+            import underworld3 as uw
+            _m = state['mesh']
+            _surf = _m.extract_surface(_m.boundaries.Upper.name)
+            _h_surf = uw.discretisation.MeshVariable(
+                f"hsurf_{scheme}", _surf, vtype=uw.VarType.SCALAR,
+                degree=1)
+            _idx0 = np.asarray(state['internal_idx'])
+            _stree = uw.kdtree.KDTree(np.asarray(_surf.X.coords).copy())
+            _sd, _si = _stree.query(_m.X.coords[_idx0], sqr_dists=False)
+            _s_of_upper = np.asarray(_si).reshape(-1)
+            # Node-identity map (parent upper vertex id -> surf node).
+            # Fixed by identity, so it survives both deformation and the
+            # tangent-slip re-sort of internal_idx (we pass the CURRENT
+            # idx ordering in and look each up).
+            _node_to_surf = {int(_idx0[k]): int(_s_of_upper[k])
+                             for k in range(len(_idx0))}
+
+            def surf_smoother(h_upper, cur_idx):
+                """Taubin low-pass a per-internal-node radial profile
+                through the surface submesh; returns the smoothed array
+                aligned to cur_idx (the current internal_idx order)."""
+                s_cur = np.array([_node_to_surf[int(i)] for i in cur_idx],
+                                 dtype=int)
+                _h_surf.data[s_cur, 0] = h_upper
+                uw.meshing.smooth_surface_field(
+                    _h_surf, n_iters=args.surface_smooth, alpha=0.6,
+                    taubin=True)
+                return np.asarray(_h_surf.data[s_cur, 0])
 
         # Optional restart-from-checkpoint: load mesh coords + T + V
         # from a saved snapshot. Internal solver state (Anderson, KSP,
@@ -1853,6 +1923,58 @@ def main():
                     state,
                     n_iters=args.winslow_iters,
                     alpha=args.winslow_alpha)
+            # --- Goal-2 mechanism: tangent-slip + surface smoother + mover ---
+            # Run AFTER the step's deformation, BEFORE the ALE v_mesh
+            # delta, so all node motion (tangential slide + surface
+            # re-snap + interior relax) is captured by v_mesh and
+            # absorbed by SLCN's V_fn = v - v_mesh. Order: tangential
+            # slide first (lateral transport), then smooth the surface
+            # ring (sets Upper geometry), then relax the interior with
+            # Upper pinned.
+            _mv = state['mesh']
+            if args.tangent_slip and dt > 0:
+                import underworld3 as uw
+                _idx = state['internal_idx']
+                _vv = state['v']
+                _vx = np.asarray(uw.function.evaluate(
+                    _vv.sym[0], _mv.X.coords[_idx])).flatten()
+                _vy = np.asarray(uw.function.evaluate(
+                    _vv.sym[1], _mv.X.coords[_idx])).flatten()
+                _Y = _mv.X.coords.copy()
+                _Y[_idx, 0] += dt * _vx
+                _Y[_idx, 1] += dt * _vy
+                # FREE mode: keep the tangential displacement, drop the
+                # radial part so the topography just set is undisturbed;
+                # the node carries its height around the annulus.
+                _Y = _mv.project_to_slip_surface(
+                    _Y, slip_spec={_mv.boundaries.Upper.name: False},
+                    reference_coords=_mv.X.coords)
+                _mv._deform_mesh(_Y)
+                # Nodes slid tangentially → re-sort the surface θ-grid so
+                # the Fourier deform path (next step) stays ordered. The
+                # surf-smoother map is node-identity, so it follows the
+                # reorder for free (we pass the current idx in).
+                _c = _mv.X.coords[_idx]
+                _o = np.argsort(np.arctan2(_c[:, 1], _c[:, 0]))
+                state['internal_idx'] = np.asarray(_idx)[_o]
+                _cc = _mv.X.coords[state['internal_idx']]
+                state['internal_th'] = np.arctan2(_cc[:, 1], _cc[:, 0])
+            if surf_smoother is not None:
+                _idx = state['internal_idx']; _ro = state['r_o']
+                _pos = _mv.X.coords[_idx]
+                _rr = np.sqrt((_pos ** 2).sum(axis=1))
+                _h_sm = surf_smoother(_rr - _ro, _idx)
+                _new = _mv.X.coords.copy()
+                _new[_idx] = (_ro + _h_sm)[:, None] * (_pos / _rr[:, None])
+                _mv._deform_mesh(_new)
+            if args.mover:
+                import underworld3 as uw
+                uw.meshing.smooth_mesh_interior(
+                    _mv,
+                    pinned_labels=[_mv.boundaries.Upper.name,
+                                   _mv.boundaries.Lower.name],
+                    method='spring', n_iters=args.mover_iters,
+                    alpha=0.5)
             # ALE correction: compute mesh velocity at v's DOFs and
             # write into v_mesh, so SLCN's V_fn = v - v_mesh traces
             # back at the right relative velocity. Off → leaves v_mesh
