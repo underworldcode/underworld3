@@ -2257,6 +2257,14 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             ``None`` returns the raw multiplier (correct when there is no gauge
             freedom). ``"mean"`` subtracts the boundary mean (gauge-fixed,
             reproducible) — use for enclosed problems.
+
+        Notes
+        -----
+        ``reference="mean"`` evaluates two ``BdIntegral`` reductions immediately
+        to compute the boundary mean, which are **collective** MPI operations —
+        in parallel it must be called on every rank (do not guard it behind a
+        single-rank branch). ``reference=None`` is a pure symbolic accessor with
+        no reduction.
         """
         lam = self.multiplier(boundary)
         if lam is None:

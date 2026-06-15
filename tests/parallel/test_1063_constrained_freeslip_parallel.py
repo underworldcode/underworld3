@@ -4,11 +4,13 @@ The in-saddle Lagrange-multiplier free-slip solver was previously guarded
 serial-only. The interior-multiplier reduction is in fact rank-local section
 surgery, so the GLOBAL system — and hence the velocity solve and the
 gauge-invariant boundary traction — are partition-independent. This test
-verifies that, for both isotropic and transverse-isotropic rheology:
+verifies that, for both isotropic and transverse-isotropic rheology, the
+parallel solve reproduces the serial reference to a **tight tolerance** (the
+residual difference is the parallel reduction order, not the solver):
 
-  * the velocity L2 norm (``∫ v·v``) is bit-identical serial vs parallel, and
-  * the MEAN-STRIPPED boundary topography (``∫(h - h̄)² `` on the constrained
-    boundary) is bit-identical serial vs parallel.
+  * the velocity L2 norm (``∫ v·v``), and
+  * the MEAN-STRIPPED boundary topography (``∫(h - h̄)²`` on the constrained
+    boundary), computed via ``solver.topography(boundary, reference="mean")``.
 
 The raw multiplier ``h`` carries the ``[p,λ]`` gauge constant — the solver lands
 on a partition-dependent representative of it — so only the mean-stripped
@@ -66,12 +68,11 @@ def _solve_diagnostics(kind):
     st.solve(zero_init_guess=True)
 
     L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
-    blen = float(uw.maths.BdIntegral(
-        mesh=mesh, fn=sympy.Integer(1), boundary="Upper").evaluate())
-    hbar = float(uw.maths.BdIntegral(
-        mesh=mesh, fn=h.sym[0], boundary="Upper").evaluate()) / blen
+    # gauge-fixed topography via the solver's own accessor (exercises the
+    # reference="mean" code path); its L2 over the constrained boundary.
+    topo_fn = st.topography("Upper", reference="mean")
     topo = float(np.sqrt(uw.maths.BdIntegral(
-        mesh=mesh, fn=(h.sym[0] - hbar) ** 2, boundary="Upper").evaluate()))
+        mesh=mesh, fn=topo_fn ** 2, boundary="Upper").evaluate()))
     return L2, topo
 
 
