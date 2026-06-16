@@ -3365,6 +3365,22 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             theta=theta,
         )
 
+        # Phase-2 remesh: the advected field must ride the mesh (CARRY)
+        # coherently with its own semi-Lagrangian history (psi_star,
+        # already CARRY + managed). Under the default REMAP it would be
+        # geometrically re-interpolated onto the new node positions AND
+        # then have v_mesh = Δx/dt subtracted in the next trace-back —
+        # a DOUBLE compensation for the mesh motion, inconsistent with
+        # the once-compensated CARRY'd history. Stamping it CARRY +
+        # managed-by-DuDt makes deform()/adapt transfer it on the single
+        # ALE trace-back path (and REMAP it correctly on an OT opt-out
+        # reset). Only meaningful when DuDt traces back (SemiLagrangian);
+        # Eulerian/Lagrangian fields keep the default policy.
+        if isinstance(self.Unknowns.DuDt, SemiLagrangian_DDt):
+            from underworld3.discretisation.remesh import RemeshPolicy
+            self.u.remesh_policy = RemeshPolicy.CARRY
+            self.u._remesh_managed_by = self.Unknowns.DuDt
+
         return
 
     @property

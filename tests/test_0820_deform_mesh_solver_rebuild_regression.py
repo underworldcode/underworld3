@@ -48,7 +48,10 @@ def test_stokes_velocity_updates_after_second_deform():
         diff.solve()
         disp = np.zeros((mesh.X.coords.shape[0], mesh.dim))
         disp[:, -1] = uw.function.evaluate(Dz.sym[0], mesh.X.coords)[:, 0, 0]
-        mesh._deform_mesh(mesh.X.coords + disp)
+        # This regression deliberately tests the gated internal primitive's
+        # solver-rebuild (is_setup=False) contract — open the sanctioned scope.
+        with mesh._coord_mutation():
+            mesh._deform_mesh(mesh.X.coords + disp)
 
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
