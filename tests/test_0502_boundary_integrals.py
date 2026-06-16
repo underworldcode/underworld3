@@ -293,6 +293,52 @@ def test_bd_integral_annulus_internal_normal_tangential():
     assert abs(value) < 0.05, f"Expected ~0, got {value}"
 
 
+# --- Spherical shell internal boundary tests ---
+
+from underworld3.meshing import SphericalShellInternalBoundary
+
+_R_SHELL_INNER = 0.55
+_R_SHELL_INTERNAL = 0.775
+_R_SHELL_OUTER = 1.0
+_mesh_spherical_internal = None
+
+
+def _get_spherical_internal_mesh():
+    global _mesh_spherical_internal
+    if _mesh_spherical_internal is None:
+        _mesh_spherical_internal = SphericalShellInternalBoundary(
+            radiusOuter=_R_SHELL_OUTER,
+            radiusInternal=_R_SHELL_INTERNAL,
+            radiusInner=_R_SHELL_INNER,
+            cellSize=0.25,
+            degree=1,
+            qdegree=2,
+        )
+        uw.discretisation.MeshVariable(
+            "T_spherical_internal", _mesh_spherical_internal, 1, degree=1
+        )
+    return _mesh_spherical_internal
+
+
+def test_bd_integral_spherical_internal_boundary_areas():
+    """SphericalShellInternalBoundary preserves Lower/Internal/Upper labels."""
+
+    mesh_spherical = _get_spherical_internal_mesh()
+    expected_areas = {
+        "Lower": 4.0 * np.pi * _R_SHELL_INNER**2,
+        "Internal": 4.0 * np.pi * _R_SHELL_INTERNAL**2,
+        "Upper": 4.0 * np.pi * _R_SHELL_OUTER**2,
+    }
+
+    for boundary, expected in expected_areas.items():
+        value = uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary=boundary).evaluate()
+        relative_error = abs(value - expected) / expected
+        assert relative_error < 0.06, (
+            f"{boundary} area should be close to {expected:.4f}; "
+            f"got {value:.4f} (relative error {relative_error:.3f})"
+        )
+
+
 def _build_spherical_shell_for_integrals():
     from underworld3.meshing import SphericalShell
 
