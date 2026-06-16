@@ -571,9 +571,13 @@ def SphericalShellInternalBoundary(
     else:
         uw_filename = filename
 
-    # Check if r_i is greater than 0
     if radiusInner <= 0:
         raise ValueError("The inner radius must be greater than 0.")
+    if not radiusInner < radiusInternal < radiusOuter:
+        raise ValueError(
+            "SphericalShellInternalBoundary requires "
+            "radiusInner < radiusInternal < radiusOuter."
+        )
 
     if uw.mpi.rank == 0:
         gmsh.initialize()
@@ -612,8 +616,16 @@ def SphericalShellInternalBoundary(
             return np.sqrt(bb[3]**2 + bb[4]**2 + bb[5]**2) / np.sqrt(3.0)
 
         volumes = gmsh.model.getEntities(3)
-        shell_vols = [vol for vol in volumes if np.isclose(bbox_radius(vol), radiusOuter, atol=cellSize * 0.5)]
-        duplicate_vols = [vol for vol in volumes if np.isclose(bbox_radius(vol), radiusInternal, atol=cellSize * 0.5)]
+        shell_vols = [
+            vol
+            for vol in volumes
+            if np.isclose(bbox_radius(vol), radiusOuter, atol=cellSize * 0.5)
+        ]
+        duplicate_vols = [
+            vol
+            for vol in volumes
+            if np.isclose(bbox_radius(vol), radiusInternal, atol=cellSize * 0.5)
+        ]
 
         if len(shell_vols) != 1:
             raise RuntimeError(
