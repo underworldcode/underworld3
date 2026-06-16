@@ -2410,7 +2410,7 @@ class DarcyFlowModel(Constitutive_Model):
 
         ddu = self.grad_u - self.Parameters.s.sym
 
-        return self._q(ddu)
+        return -self._q(ddu)
 
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):

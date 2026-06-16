@@ -164,7 +164,7 @@ class SNES_Poisson(SNES_Scalar):
 
     .. math::
 
-        \nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
+        -\nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
 
     where :math:`\mathbf{F} = \boldsymbol{\kappa} \nabla u` relates the flux to
     gradients in the unknown :math:`u`.
@@ -257,7 +257,7 @@ class SNES_Poisson(SNES_Scalar):
         The source term :math:`f` appears on the right-hand side:
 
         .. math::
-            \nabla \cdot (\kappa \nabla u) = f
+            -\nabla \cdot (\kappa \nabla u) = f
 
         Returns
         -------
@@ -434,7 +434,7 @@ class SNES_Darcy(SNES_Scalar):
 
     # =========================================================================
     # PETSc Residual Templates
-    # For Darcy flow: -∇·(K∇p) = f, with velocity v = -K∇p
+    # For Darcy flow: -∇·(κ(∇h - s)) = f, with velocity q = -κ(∇h - s)
     # =========================================================================
 
     F0 = Template(
@@ -449,25 +449,28 @@ class SNES_Darcy(SNES_Scalar):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: self.darcy_flux,
-        r"""Darcy flux term (pointwise).
+        lambda self: -self.darcy_flux,
+        r"""Gradient flux term for PDE assembly (pointwise).
 
-        The $\mathbf{F}_1$ vector is the Darcy flux $K \nabla p$,
-        where $K$ is the permeability.
+        The $\mathbf{F}_1$ vector is $\kappa(\nabla h - \mathbf{s})$, the negative
+        of the physical Darcy velocity. This sign is required so that
+        $\nabla \cdot \mathbf{F}_1 = f_0$ recovers the correct strong form
+        $-\nabla \cdot [\kappa(\nabla h - \mathbf{s})] = f$.
         """,
     )
 
     @timing.routine_timer_decorator
     def darcy_problem_description(self):
         """Build residual terms for Darcy flow FEM assembly."""
-        # f1 residual term (weighted integration)
+        # f0 residual term (pointwise)
         self._f0 = self.F0.sym
 
         # f1 residual term (integration by parts / gradients)
+        # F1 = κ(∇h − s) = −q, correct for PDE assembly
         self._f1 = self.F1.sym
 
-        # Flow calculation
-        self._v_projector.uw_function = -self.F1.sym
+        # Flow calculation uses physical Darcy velocity q, not F1
+        self._v_projector.uw_function = self.darcy_flux
 
         return
 
@@ -543,11 +546,11 @@ class SNES_Darcy(SNES_Scalar):
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
 
-        # Now solve flow field: v = -flux = -K(grad(h) - s)
+        # Now solve flow field: v = flux = κ(grad(h) - s)
 
         # self._v_projector.petsc_options["snes_rtol"] = 1.0e-6
         # self._v_projector.petsc_options.delValue("ksp_monitor")
-        self._v_projector.uw_function = -self.darcy_flux
+        self._v_projector.uw_function = self.darcy_flux
         self._v_projector.solve(zero_init_guess)
 
         return
@@ -800,7 +803,9 @@ class SNES_TransientDarcy(SNES_Darcy):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            # DFDt must track κ(∇h−s) = −q (gradient flux, not physical velocity)
+            # so that adams_moulton_flux() produces the correct F1 for PDE assembly.
+            self.DFDt.psi_fn = -self.constitutive_model.flux.T
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
