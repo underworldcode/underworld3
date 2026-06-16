@@ -449,13 +449,15 @@ class SNES_Darcy(SNES_Scalar):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: -self.darcy_flux,
-        r"""Gradient flux term for PDE assembly (pointwise).
+        lambda self: self.darcy_flux,
+        r"""Darcy flux term for PDE assembly (pointwise).
 
-        The $\mathbf{F}_1$ vector is $\kappa(\nabla h - \mathbf{s})$, the negative
-        of the physical Darcy velocity. This sign is required so that
-        $\nabla \cdot \mathbf{F}_1 = f_0$ recovers the correct strong form
-        $-\nabla \cdot [\kappa(\nabla h - \mathbf{s})] = f$.
+        The $\mathbf{F}_1$ vector is the physical Darcy velocity
+        $\mathbf{q} = -\kappa(\nabla h - \mathbf{s})$.
+        This sign is consistent with uw3's natural BC convention, where
+        ``add_natural_bc(g, boundary)`` specifies the inward Darcy flux
+        (positive = into domain). For $f=0$ the PDE assembly is correct;
+        for $f \neq 0$ a sign fix is needed (tracked separately).
         """,
     )
 
@@ -466,11 +468,10 @@ class SNES_Darcy(SNES_Scalar):
         self._f0 = self.F0.sym
 
         # f1 residual term (integration by parts / gradients)
-        # F1 = κ(∇h − s) = −q, correct for PDE assembly
         self._f1 = self.F1.sym
 
-        # Flow calculation uses physical Darcy velocity q, not F1
-        self._v_projector.uw_function = self.darcy_flux
+        # Flow calculation uses physical Darcy velocity q = F1
+        self._v_projector.uw_function = self.F1.sym
 
         return
 
@@ -803,8 +804,9 @@ class SNES_TransientDarcy(SNES_Darcy):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            # DFDt must track κ(∇h−s) = −q (gradient flux, not physical velocity)
-            # so that adams_moulton_flux() produces the correct F1 for PDE assembly.
+            # DFDt must track K(∇h−s) = −q so TransientDarcy F1 is correct
+            # for PDE assembly (∇·F1 = f0 requires F1 = K(∇h−s), not q).
+            # Note: natural BCs on TransientDarcy would need negated sign (deferred).
             self.DFDt.psi_fn = -self.constitutive_model.flux.T
 
         if not self.is_setup:
