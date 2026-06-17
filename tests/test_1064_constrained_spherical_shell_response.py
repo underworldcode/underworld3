@@ -1,9 +1,12 @@
 """3-D spherical-shell constrained free-slip response regression.
 
-This test records two facts exposed by the Zhong et al. (2008)-style benchmark:
+This test records facts exposed by the Zhong et al. (2008)-style benchmark:
 
-* with monolithic LU, ``Stokes_Constrained`` and Nitsche free slip solve the same
-  internal-boundary Stokes response to within a tight tolerance;
+* the validated Nitsche/default field-split path reproduces the Zhong velocity
+  scale for this low-resolution response case;
+* a direct-LU diagnostic path gives matching Nitsche and constrained responses,
+  but it does not reproduce the validated Nitsche/default response and should
+  not be treated as the benchmark reference;
 * the practical fast grouped-Schur constrained path currently does not reproduce
   the Zhong velocity response and remains an expected failure.
 
@@ -111,6 +114,8 @@ def solve_response(method, solver_mode):
         stokes.petsc_options["pc_type"] = "lu"
         stokes.petsc_options["pc_factor_mat_solver_type"] = "mumps"
         stokes.petsc_options["pc_use_amat"] = None
+    elif solver_mode == "default":
+        pass
     elif solver_mode == "fieldsplit_exact":
         if method != "constrained":
             raise ValueError(
@@ -160,7 +165,18 @@ def solve_response(method, solver_mode):
     )
 
 
-def test_monolithic_constrained_matches_monolithic_nitsche_response():
+def test_default_nitsche_matches_zhong_velocity_response():
+    surface_velocity, cmb_velocity, snes_reason = solve_response(
+        "nitsche",
+        "default",
+    )
+
+    assert snes_reason > 0
+    assert abs(surface_velocity - ZHONG_SURFACE_VELOCITY) / ZHONG_SURFACE_VELOCITY < 0.05
+    assert abs(cmb_velocity - ZHONG_CMB_VELOCITY) / ZHONG_CMB_VELOCITY < 0.05
+
+
+def test_direct_lu_diagnostic_constrained_matches_direct_lu_diagnostic_nitsche():
     nitsche_surface, nitsche_cmb, nitsche_reason = solve_response(
         "nitsche",
         "monolithic",
@@ -178,15 +194,16 @@ def test_monolithic_constrained_matches_monolithic_nitsche_response():
 
 @pytest.mark.xfail(
     reason=(
-        "Known constrained field-split algebra failure: exact LU sub-solves in "
-        "the velocity | [p,h] split still do not reproduce monolithic LU."
+        "Known constrained field-split failure: LU sub-solves in the "
+        "velocity | [p,h] preconditioner still do not reproduce the validated "
+        "Nitsche/default velocity response."
     ),
     strict=True,
 )
-def test_exact_fieldsplit_constrained_matches_monolithic_nitsche_response():
+def test_lu_subsolve_fieldsplit_constrained_matches_default_nitsche_response():
     nitsche_surface, nitsche_cmb, nitsche_reason = solve_response(
         "nitsche",
-        "monolithic",
+        "default",
     )
     constrained_surface, constrained_cmb, constrained_reason = solve_response(
         "constrained",
