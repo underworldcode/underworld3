@@ -93,6 +93,7 @@ Ready to contribute to Underworld3?
 parallel-computing
 performance
 multigrid-preconditioning
+solver-iteration-callbacks
 complex-rheologies
 vep-transverse-isotropy-faults
 custom-meshes

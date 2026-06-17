@@ -67,6 +67,11 @@ class SolverBaseClass(uw_object):
         self._pressure_is = None
         self._subdict = {}
 
+        # Per-Newton-iteration callbacks (PETSc SNESSetUpdate). Empty by default
+        # -> no hook is installed and the solve path is unchanged. See
+        # add_update_callback().
+        self._snes_update_callbacks = []
+
         # Preconditioner selection — see the `preconditioner` property.
         # `_pc_option_prefix` is set by subclasses that participate in the easy
         # FMG/GAMG switch ("" for scalar/vector, "fieldsplit_velocity_" for
@@ -87,6 +92,83 @@ class SolverBaseClass(uw_object):
         # tell "user set mg" from "we set mg" and would clobber their tuned
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
+
+    def add_update_callback(self, callback):
+        r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
+
+        The callback is invoked as ``callback(solver, iteration)``. Immediately
+        before the call the current Newton iterate is scattered into the solver's
+        field MeshVariables (so the callback can read ``v``, ``p``, ... at the
+        current iterate); immediately afterwards the (possibly modified) fields
+        are gathered back into the iterate. Typical uses:
+
+        - re-fire an auxiliary solve each iteration — e.g. a Helmholtz/Projection
+          smoother that supplies a regularised field the residual depends on
+          (gradient-plasticity / shear-band stabilisation);
+        - impose a gauge consistently inside the nonlinear solve — e.g. remove the
+          mean pressure on a surface so the pressure null space is pinned
+          (see :meth:`set_pressure_gauge` on the Stokes solver).
+
+        Callbacks run in registration order. Registering one forces a re-setup so
+        the PETSc ``SNESSetUpdate`` hook is attached. With no callbacks registered
+        no hook is installed and the solve path is byte-for-byte unchanged.
+        """
+        self._snes_update_callbacks.append(callback)
+        self._needs_function_rewire = True
+        return callback
+
+    def _maybe_install_snes_update(self):
+        """Attach the SNESSetUpdate dispatcher iff callbacks are registered."""
+        if self.snes is not None and self._snes_update_callbacks:
+            self.snes.setUpdate(self._dispatch_snes_update)
+
+    def _scatter_global_to_fields(self, gvec):
+        """Copy the global solution vector into the solver's field MeshVariables."""
+        for name, var in self.fields.items():
+            if name not in self._subdict:
+                continue
+            gis, subdm = self._subdict[name]
+            sgvec = gvec.getSubVector(gis)
+            subdm.globalToLocal(sgvec, var.vec)
+            gvec.restoreSubVector(gis, sgvec)
+        self.mesh._stale_lvec = True
+        for name, var in self.fields.items():
+            base = getattr(var, "_base_var", var)
+            if hasattr(base, "_sync_lvec_to_gvec"):
+                base._sync_lvec_to_gvec()
+            if hasattr(base, "_canonical_data"):
+                base._canonical_data = None
+
+    def _gather_fields_to_global(self, gvec):
+        """Copy the solver's field MeshVariables back into the global solution vector."""
+        for name, var in self.fields.items():
+            if name not in self._subdict:
+                continue
+            gis, subdm = self._subdict[name]
+            sgvec = gvec.getSubVector(gis)
+            subdm.localToGlobal(var.vec, sgvec)
+            gvec.restoreSubVector(gis, sgvec)
+
+    def _refresh_auxiliary_vec(self):
+        """Rebuild the mesh auxiliary vector so the residual / nested solves see the
+        current field values (callbacks may have changed v, p, or auxiliary fields)."""
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+
+    def _dispatch_snes_update(self, snes, iteration):
+        """PETSc SNESSetUpdate hook: sync iterate->fields, run callbacks, sync back.
+
+        The mesh auxiliary vector is refreshed (a) before callbacks, so a callback
+        reading v/p (e.g. a Helmholtz/Projection smoother) sees the current iterate,
+        and (b) after, so the outer residual sees any fields the callbacks updated.
+        """
+        gvec = snes.getSolution()
+        self._scatter_global_to_fields(gvec)
+        self._refresh_auxiliary_vec()
+        for callback in self._snes_update_callbacks:
+            callback(self, iteration)
+        self._gather_fields_to_global(gvec)
+        self._refresh_auxiliary_vec()
 
     @property
     def preconditioner(self):
@@ -767,6 +849,9 @@ class SolverBaseClass(uw_object):
         verbose : bool, default=False
             Log each retry on rank 0.
         """
+        # Attach the per-iteration callback dispatcher here (after all
+        # setFromOptions in the solve path). No-op when no callbacks registered.
+        self._maybe_install_snes_update()
         self.snes.solve(None, gvec)
         if divergence_retries <= 0:
             return
@@ -6756,6 +6841,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
+
+        # SNESSetUpdate fires only at the START of each iteration, so the final
+        # converged iterate is otherwise un-hooked. Apply the callbacks once more
+        # to it (e.g. so a pressure gauge pins the FINAL pressure, and an
+        # auxiliary field is consistent with the converged solution).
+        if self._snes_update_callbacks:
+            self._dispatch_snes_update(self.snes, -1)
 
         cdef DM dm = self.dm
         cdef Vec clvec = self.dm.getLocalVec()
