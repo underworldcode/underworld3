@@ -111,6 +111,16 @@ def solve_response(method, solver_mode):
         stokes.petsc_options["pc_type"] = "lu"
         stokes.petsc_options["pc_factor_mat_solver_type"] = "mumps"
         stokes.petsc_options["pc_use_amat"] = None
+    elif solver_mode == "fieldsplit_exact":
+        if method != "constrained":
+            raise ValueError(
+                "fieldsplit_exact mode is only defined for constrained runs"
+            )
+        stokes.petsc_options["pc_fieldsplit_schur_precondition"] = "selfp"
+        stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "preonly"
+        stokes.petsc_options["fieldsplit_velocity_pc_type"] = "lu"
+        stokes.petsc_options["fieldsplit_1_ksp_type"] = "preonly"
+        stokes.petsc_options["fieldsplit_1_pc_type"] = "lu"
     elif solver_mode == "fast_schur":
         if method != "constrained":
             raise ValueError("fast_schur mode is only defined for constrained runs")
@@ -158,6 +168,29 @@ def test_monolithic_constrained_matches_monolithic_nitsche_response():
     constrained_surface, constrained_cmb, constrained_reason = solve_response(
         "constrained",
         "monolithic",
+    )
+
+    assert nitsche_reason > 0
+    assert constrained_reason > 0
+    assert abs(constrained_surface - nitsche_surface) / nitsche_surface < 0.01
+    assert abs(constrained_cmb - nitsche_cmb) / nitsche_cmb < 0.01
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Known constrained field-split algebra failure: exact LU sub-solves in "
+        "the velocity | [p,h] split still do not reproduce monolithic LU."
+    ),
+    strict=True,
+)
+def test_exact_fieldsplit_constrained_matches_monolithic_nitsche_response():
+    nitsche_surface, nitsche_cmb, nitsche_reason = solve_response(
+        "nitsche",
+        "monolithic",
+    )
+    constrained_surface, constrained_cmb, constrained_reason = solve_response(
+        "constrained",
+        "fieldsplit_exact",
     )
 
     assert nitsche_reason > 0
