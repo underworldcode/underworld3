@@ -3609,7 +3609,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             max_i(s_i) - min_i(s_i)` where `s_i = (x_i -
             centroid) · v̂` over the cell vertices. This is the
             distance material actually traverses through the cell
-            per unit |v|, and is **always ≥ the isotropic
+            per unit ``|v|``, and is **always ≥ the isotropic
             mesh._radii estimate**, by 1.5–3× for equant cells
             (geometric factor) and up to ~10× for cells that the
             mover has stretched along the flow direction. On
