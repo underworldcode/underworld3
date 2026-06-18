@@ -1702,6 +1702,43 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                     converted_value.append(item)
             self._bodyforce.sym = sympy.Matrix(converted_value)
 
+    def set_pressure_gauge(self, boundary, reference=0.0):
+        r"""Pin the pressure gauge by removing the surface-mean pressure each iteration.
+
+        On enclosed / all-Dirichlet-velocity problems the pressure is determined
+        only up to an additive constant (a constant null space). This registers a
+        per-iteration callback (see :meth:`add_update_callback`) that subtracts the
+        mean pressure over ``boundary`` from the whole pressure field at every
+        nonlinear iteration, fixing a *specific, physical* gauge:
+
+        .. math:: \frac{1}{|\Gamma|}\int_\Gamma p \, dS = \texttt{reference}
+
+        e.g. ``stokes.set_pressure_gauge("Top")`` makes the mean pressure on the
+        top surface zero. This is an alternative (or complement) to a constant
+        pressure null space when you want the gauge tied to a surface rather than
+        to an arbitrary constant chosen by the solver.
+
+        Parameters
+        ----------
+        boundary : str
+            Mesh boundary label over which the mean pressure is fixed.
+        reference : float, default 0.0
+            Target mean pressure on ``boundary``.
+
+        Returns
+        -------
+        the registered callback (so it can be identified/removed later).
+        """
+        p = self.Unknowns.p
+        area = uw.maths.BdIntegral(self.mesh, 1.0, boundary).evaluate()
+        p_surface_integral = uw.maths.BdIntegral(self.mesh, p.sym[0, 0], boundary)
+
+        def _pressure_gauge(solver, iteration):
+            mean = p_surface_integral.evaluate() / area
+            p.data[...] -= (mean - reference)
+
+        return self.add_update_callback(_pressure_gauge)
+
     @property
     def saddle_preconditioner(self):
         r"""Pressure Schur-complement preconditioner — **usually leave unset**.
@@ -3572,7 +3609,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             max_i(s_i) - min_i(s_i)` where `s_i = (x_i -
             centroid) · v̂` over the cell vertices. This is the
             distance material actually traverses through the cell
-            per unit |v|, and is **always ≥ the isotropic
+            per unit ``|v|``, and is **always ≥ the isotropic
             mesh._radii estimate**, by 1.5–3× for equant cells
             (geometric factor) and up to ~10× for cells that the
             mover has stretched along the flow direction. On

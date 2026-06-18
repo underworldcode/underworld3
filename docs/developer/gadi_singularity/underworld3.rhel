@@ -1,0 +1,209 @@
+#####################################################################
+# Multi stage Containerfile for Underworld 3
+# UW3 container based on UW2 version
+# This UW3 container is based on pixi amr-dev environment
+#  see https://docs.docker.com/get-started/docker-concepts/building-images/multi-stage-builds/
+#
+# Stages:
+# 1. 'runtime'
+#    The runtime environment (packages, permissions, ENV vars.) 
+#    is consistent accross all stages of this Containerfile. 
+#
+# 2. 'builder'
+#    The builder layer, takes the runtime layer and add compiling / building software
+#    that is added to /usr/local and /opt/venv
+#
+# 3. 'final' == runtime + min. builder
+#    The final image is a composite of the runtime layer and the
+#    minimal sections of the builder layer's final software stack.
+#
+# To build use podman from the top level underworld didrectory. i.e.
+#  $ podman build .  \
+            --platform linux/amd64 \
+#           --format docker \
+#           --build-arg UW3_BRANCH=xxx \
+#           -t new_image_name \
+#           -f ./docs/developer/gadi_singularity/underworld3.rhel
+#####################################################################
+
+# The following are passed in via --build-arg
+# Must go before the 1st FROM see
+# https://docs.docker.com/engine/reference/builder/#understand-how-arg-and-from-interact
+ARG PYTHON_VERSION="3.12"
+ARG BASE_IMAGE="quay.io/rockylinux/rockylinux:8.10"
+ARG PETSC_IMAGE="ghcr.io/jcgraciosa/petsc:3.25.0-ompi"
+ARG UW3_BRANCH="development"
+
+# 'petsc-image' will be used later on in builder stage COPY command 
+FROM ${PETSC_IMAGE} as petsc-image
+
+####################
+# Stage 1: 'runtime'
+####################
+FROM ${BASE_IMAGE} as runtime
+LABEL maintainer="https://github.com/underworldcode/"
+
+# need to repeat ARGS after every FROM 
+ARG PYTHON_VERSION
+
+#### Containerfile ENV vars - for all image stages
+ENV LANG=C.UTF-8
+ENV PYVER=${PYTHON_VERSION}
+
+# add user jovyan
+ENV NB_USER jovyan
+ENV NB_HOME /home/$NB_USER
+RUN useradd -m -s /bin/bash -N $NB_USER
+
+# runtime packages - [vim, git] are optional
+RUN yum update -y \
+&&  yum install -y \
+        ca-certificates \
+        bash-completion \
+        openssh \
+        openblas \
+        openmpi \
+        python${PYVER}-pip \
+        python${PYVER}-devel \
+        zlib \
+        mesa-libGL \
+        mesa-libGLU \
+        mesa-libOSMesa \
+        libX11 \
+        libXrender \
+        libXext \
+        libXfixes \
+        libXcursor \
+        libXinerama \
+        libXrandr \
+        libXft \
+        fontconfig \
+&&  yum clean all \
+&&  rm -rf /var/cache/yum
+
+# add system openmpi to $PATH and $LD_LIBRARY_PATH
+ENV PATH=/usr/lib64/openmpi/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+ENV PYOPT=/opt/venv
+# build and set open permissions on virtual environment
+RUN python${PYVER} -m venv $PYOPT \
+&&  chmod ugo+rwx $PYOPT
+
+# define python env vars.
+# prepappending on PATH means all pip install will goto the PYOPT
+ENV PATH=$PYOPT/bin:$PATH
+ENV PYTHONPATH=$PYTHONPATH:$PYOPT/lib/python${PYVER}/site-packages
+# taken from PETSC images - will be needed in the final image
+ENV PETSC_DIR=/usr/local
+ENV PYTHONPATH=$PYTHONPATH:$PETSC_DIR/lib
+
+####################
+# Stage 2: 'builder'
+####################
+FROM petsc-image as builder
+ARG PYTHON_VERSION
+ARG UW3_BRANCH
+
+# root to install with yum
+USER root
+RUN yum install -y\
+        cmake \
+        make \
+        git \
+        gcc \
+        gcc-c++ \
+        gcc-gfortran \
+        findutils \
+        openmpi-devel \
+&&  yum clean all \
+&&  rm -rf /var/cache/yum
+# NOTE: underworld2 does not yum install gcc
+
+# install python build time and runtime requirements here
+RUN python${PYVER} -m pip install --no-cache-dir \
+        "setuptools>=75" \
+        "cython>=3.1" \
+        "scipy>=1.15" \
+        "numpy<2" \
+        matplotlib \
+        pint \
+        pytest \
+        jupytext \
+        sympy   \
+        "pydantic>=2" \
+        pyyaml \
+        psutil \
+        typing_extensions \
+        xxhash \
+        trimesh \
+        ipython \
+        jupyterlab \
+        "ipywidgets<9.0.0" \
+        jupyter-server-proxy \
+        "trame>=2.5.2" \
+        "trame-vtk>=2.5.8" \
+        "trame-vuetify>=2.3.1" \
+        cmocean \
+        colorcet \
+        imageio \
+        imageio-ffmpeg \
+        "rich<14" \
+        meshio \
+        pyvista
+# gmsh wheels are only available for x86_64; skip gracefully on aarch64 (local Apple Silicon builds)
+RUN pip install --no-cache-dir gmsh pygmsh || echo "gmsh/pygmsh not available on this platform, skipping"
+
+# H5PY with mpi - match pixi version constraint! 
+RUN CC=mpicc HDF5_MPI="ON" HDF5_DIR=${PETSC_DIR} \
+    python${PYVER} -m pip install \
+        --no-binary=h5py \
+        --no-cache-dir \
+        "h5py>=3.12" 
+
+# separate so if this fails, don't need to reinstall everything again with layer caching
+# vtk-osmesa wheels only available for x86_64; skip gracefully on aarch64 (local Apple Silicon builds)
+RUN pip install --no-cache-dir --extra-index-url https://wheels.vtk.org vtk-osmesa \
+    || echo "vtk-osmesa not available on this platform, skipping"
+
+# Clone and install uw3
+RUN git clone --depth 1 --branch ${UW3_BRANCH} \
+    https://github.com/underworldcode/underworld3.git /tmp/underworld3
+WORKDIR /tmp/underworld3
+RUN pip install --no-build-isolation --no-cache-dir .
+
+# record 'builder' stage packages used
+RUN python${PYVER} -m pip freeze >/opt/requirements.txt \
+&& dnf history userinstalled >/opt/installed.txt
+
+####################
+# Stage 3: 'final', a combination of 'runtime' and 'builder' stages
+####################
+
+FROM runtime as final
+
+COPY --from=builder --chown=$NB_USER:users /opt /opt
+COPY --from=builder --chown=$NB_USER:users /usr/local /usr/local
+
+# must make directory before COPY into it for permissions to work ()
+# set default viewer to a notebook see https://jupytext.readthedocs.io/en/latest/text-notebooks.html#with-a-double-click
+RUN mkdir -p $NB_HOME/workspace $NB_HOME/Underworld3/ \
+&&  chown $NB_USER:users -R $NB_HOME \
+&&  jupyter-server extension enable --sys-prefix jupyter_server_proxy \
+&&  jupytext-config set-default-viewer 
+
+# confirm if these are the ones to put into the container 
+# copy examples, tests, etc. 
+COPY --chown=$NB_USER:users ./docs/examples  $NB_HOME/Underworld3/examples
+COPY --chown=$NB_USER:users ./docs/beginner  $NB_HOME/Underworld3/beginner
+COPY --chown=$NB_USER:users ./docs/advanced  $NB_HOME/Underworld3/advanced
+
+EXPOSE 8888
+WORKDIR $NB_HOME
+USER $NB_USER
+
+# Declare a volume space
+VOLUME $NB_HOME/workspace
+
+CMD ["jupyter-lab", "--no-browser", "--ip='0.0.0.0'"]
+

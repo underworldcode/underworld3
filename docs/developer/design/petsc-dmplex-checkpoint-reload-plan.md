@@ -15,18 +15,21 @@ the failure mode is already known.
 
 ## Objective
 
-Provide an exact PETSc DMPlex checkpoint reload path for UW3 mesh variables.
-This path is intended for restart and large-scale postprocessing, not
-visualisation.
+Provide an exact PETSc DMPlex reload path for UW3 mesh variables. This path is
+intended for restart and large-scale postprocessing. It is now exposed through
+the standard `write_timestep(..., petsc_reload=True)` output method; legacy
+`write_checkpoint()` calls remain supported as a compatibility wrapper.
 
 Target workflow:
 
 ```python
-mesh.write_checkpoint(
+mesh.write_timestep(
     "checkout",
+    index=0,
     outputPath=str(output_dir),
     meshVars=[v_soln, p_soln],
-    index=0,
+    create_xdmf=False,
+    petsc_reload=True,
 )
 ```
 
@@ -34,8 +37,8 @@ Default output:
 
 ```text
 checkout.mesh.00000.h5
-checkout.Velocity.00000.h5
-checkout.Pressure.00000.h5
+checkout.mesh.Velocity.00000.h5
+checkout.mesh.Pressure.00000.h5
 ```
 
 Reload workflow:
@@ -45,31 +48,35 @@ mesh = uw.discretisation.Mesh("checkout.mesh.00000.h5")
 v_soln = uw.discretisation.MeshVariable("Velocity", mesh, mesh.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("Pressure", mesh, 1, degree=1)
 
-v_soln.read_checkpoint("checkout.Velocity.00000.h5", data_name="Velocity")
-p_soln.read_checkpoint("checkout.Pressure.00000.h5", data_name="Pressure")
+v_soln.read_checkpoint("checkout.mesh.Velocity.00000.h5", data_name="Velocity")
+p_soln.read_checkpoint("checkout.mesh.Pressure.00000.h5", data_name="Pressure")
 ```
 
 The reload path must not use `KDTree` remapping. It must restore FE data through
 PETSc DMPlex topology, section, vector, and `PetscSF` metadata.
 
-## Existing Output Methods
+## Output Payloads
 
-UW3 has two related but different output paths.
+`mesh.write_timestep(...)` is the standard output method. It can write either
+or both output payloads.
 
-| Method | Purpose | Reload method | Strength | Limitation |
+| Payload | Writer option | Reload method | Strength | Limitation |
 | --- | --- | --- | --- | --- |
-| `mesh.write_timestep(...)` | Visualisation and flexible field remap | `MeshVariable.read_timestep(...)` | Writes XDMF and vertex-field data; can map data onto a different mesh | Uses coordinate/KDTree remapping; memory-heavy for large meshes and high MPI counts |
-| `mesh.write_checkpoint(...)` | Restart and exact postprocessing | `MeshVariable.read_checkpoint(...)` | Uses PETSc DMPlex section/vector metadata; avoids KDTree | Not a visualisation output; no XDMF or vertex-field datasets |
+| XDMF/remap | `create_xdmf=True` | `MeshVariable.read_timestep(...)` | Writes XDMF and vertex-field data; can map data onto a different mesh | Uses coordinate/KDTree remapping; memory-heavy for large meshes and high MPI counts |
+| PETSc reload | `petsc_reload=True` | `MeshVariable.read_checkpoint(...)` | Uses PETSc DMPlex section/vector metadata; avoids KDTree | Requires compatible PETSc mesh metadata |
 
-The benchmark scripts should use `write_timestep()` when they need
-visualisation files, and `write_checkpoint()` when they need restart-safe,
-memory-efficient postprocessing.
+For unified output, use `write_timestep(..., create_xdmf=True,
+petsc_reload=True)`. For restart-safe, memory-efficient postprocessing without
+XDMF, use `write_timestep(..., create_xdmf=False, petsc_reload=True)`.
 
 ## Implemented Design
 
-### Checkpoint Writing
+### PETSc Reload Writing
 
-`Mesh.write_checkpoint(...)` writes PETSc DMPlex HDF5 storage version `3.0.0`.
+`Mesh.write_timestep(..., petsc_reload=True)` writes PETSc DMPlex reload
+metadata into the standard per-variable timestep HDF5 files. The legacy
+`Mesh.write_checkpoint(...)` compatibility wrapper also writes PETSc DMPlex
+reload metadata, but uses the older checkpoint filename layout.
 
 The mesh file is named:
 
@@ -77,14 +84,22 @@ The mesh file is named:
 <base>.mesh.<index>.h5
 ```
 
-With the default `separate_variable_files=True`, each mesh variable is written
-to its own checkpoint file:
+With `write_timestep(..., petsc_reload=True)`, each mesh variable is written to
+its own timestep-layout file:
+
+```text
+<base>.mesh.<variable>.<index>.h5
+```
+
+The legacy `write_checkpoint(...)` wrapper writes one file per variable by
+default:
 
 ```text
 <base>.<variable>.<index>.h5
 ```
 
-With `separate_variable_files=False`, all variables are written into:
+With the legacy `write_checkpoint(..., separate_variable_files=False)` mode,
+all variables are written into:
 
 ```text
 <base>.checkpoint.<index>.h5
@@ -174,11 +189,11 @@ mpirun -np 2 ./uw python -m pytest \
 ## Spherical Benchmark Validation
 
 The motivating case is spherical benchmark postprocessing at high MPI counts.
-The old `write_timestep()` / `read_timestep()` path can build large KDTree
-mapping structures during reload. At `1/128` this used nearly the full 4.5 TB
+The coordinate-remap `read_timestep()` path can build large KDTree mapping
+structures during reload. At `1/128` this used nearly the full 4.5 TB
 allocation on Gadi.
 
-The checkpoint method avoids KDTree reload and preserves velocity/pressure
+The PETSc reload method avoids KDTree reload and preserves velocity/pressure
 metrics to roundoff. Boundary stress metrics require the benchmark to recover
 stress consistently after reload. In the spherical benchmark this is handled by
 projecting the six deviatoric-stress components and then forming `sigma_rr`.
@@ -187,10 +202,10 @@ projecting the six deviatoric-stress components and then forming `sigma_rr`.
 
 | Resolution | Method | NCPUs | Walltime | Memory used | Status |
 | --- | --- | ---: | ---: | ---: | --- |
-| `1/64` | `write_timestep/read_timestep` | 144 | `00:03:43` | `211.27 GB` | completed |
-| `1/64` | `write_checkpoint/read_checkpoint` | 144 | `00:02:41` | `233.67 GB` | completed |
-| `1/128` | `write_timestep/read_timestep` | 1152 | `00:13:55` | `3.92 TB` | completed near memory limit |
-| `1/128` | `write_checkpoint/read_checkpoint` | 1152 | `00:03:57` | `1.83 TB` | completed |
+| `1/64` | `write_timestep/read_timestep` remap | 144 | `00:03:43` | `211.27 GB` | completed |
+| `1/64` | `write_timestep(petsc_reload=True)/read_checkpoint` | 144 | `00:02:41` | `233.67 GB` | completed |
+| `1/128` | `write_timestep/read_timestep` remap | 1152 | `00:13:55` | `3.92 TB` | completed near memory limit |
+| `1/128` | `write_timestep(petsc_reload=True)/read_checkpoint` | 1152 | `00:03:57` | `1.83 TB` | completed |
 
 The `1/128` checkpoint reload reduced memory by about `2.09 TB` and walltime by
 about `3.5x` for the postprocessing run.
@@ -199,7 +214,7 @@ about `3.5x` for the postprocessing run.
 
 `1/128` spherical Thieulot benchmark:
 
-| Metric | `write_timestep/read_timestep` | `write_checkpoint/read_checkpoint` |
+| Metric | `write_timestep/read_timestep` remap | `write_timestep(petsc_reload=True)/read_checkpoint` |
 | --- | ---: | ---: |
 | `v_l2_norm` | `1.4319274480265082e-06` | `1.4319274480231255e-06` |
 | `p_l2_norm` | `5.985841567394967e-04` | `5.985841567395382e-04` |
@@ -216,7 +231,7 @@ projection after checkpoint reload.
 
 `1/64` spherical Thieulot benchmark:
 
-| Metric | `write_timestep/read_timestep` | `write_checkpoint/read_checkpoint` |
+| Metric | `write_timestep/read_timestep` remap | `write_timestep(petsc_reload=True)/read_checkpoint` |
 | --- | ---: | ---: |
 | `v_l2_norm` | `1.1662200663950889e-05` | `1.1662200663957042e-05` |
 | `p_l2_norm` | `2.7573367818459473e-03` | `2.7573367818460497e-03` |
@@ -236,11 +251,9 @@ projection after checkpoint reload.
 
 The checkpoint reload implementation is ready for review when:
 
-- `write_checkpoint()` writes PETSc DMPlex HDF5 storage version `3.0.0`.
-- `write_checkpoint()` supports `outputPath`.
-- `write_checkpoint()` defaults to one checkpoint file per variable.
-- `write_checkpoint(..., separate_variable_files=False)` still supports a
-  combined variable checkpoint file.
+- `write_timestep(..., petsc_reload=True)` writes PETSc DMPlex reload metadata.
+- `write_timestep(..., petsc_reload=True)` supports `outputPath`.
+- legacy `write_checkpoint()` remains available as a compatibility wrapper.
 - `MeshVariable.read_checkpoint(...)` reloads through PETSc metadata, not
   coordinate/KDTree remapping.
 - scalar, vector, and discontinuous variables roundtrip in tests.

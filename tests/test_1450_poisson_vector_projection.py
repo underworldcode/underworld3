@@ -64,6 +64,17 @@ def test_vector_projection_after_poisson():
 
 
 def test_vector_projection_after_poisson_with_units():
+    # Strict units mode requires reference quantities to be set before
+    # creating meshes or MeshVariables with units.
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    model.set_reference_quantities(
+        domain_depth=uw.quantity(1.0, "m"),
+        plate_velocity=uw.quantity(1.0, "m/s"),
+        mantle_viscosity=uw.quantity(1.0, "Pa*s"),
+        temperature_difference=uw.quantity(1.0, "K"),
+    )
+
     """
     Test that Vector_Projection works with unit-aware meshes after Poisson solve.
 

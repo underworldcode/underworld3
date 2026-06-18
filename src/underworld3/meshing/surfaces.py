@@ -704,6 +704,10 @@ class Surface:
 
         # Level 3: Cached proxy MeshVariable for distance
         self._distance_var: Optional[uw.discretisation.MeshVariable] = None
+        # Companion UNSIGNED (edge-clamped) distance field. influence_function()
+        # interpolates THIS rather than Abs() of the signed field — see
+        # _compute_distance_field for why the signed field is unsafe to abs.
+        self._abs_distance_var: Optional[uw.discretisation.MeshVariable] = None
 
         # Dimension (2 or 3) - detected from mesh or control points
         self._dim = None
@@ -759,6 +763,7 @@ class Surface:
             # If distance var exists, it needs to be recreated with new symbol
             if self._distance_var is not None:
                 self._distance_var = None
+                self._abs_distance_var = None
                 self._distance_stale = True
 
     def _dimensionalise_coords(self, coords: np.ndarray) -> np.ndarray:
@@ -1133,6 +1138,37 @@ class Surface:
 
         return self._distance_var
 
+    @property
+    def abs_distance(self) -> "uw.discretisation.MeshVariable":
+        """Unsigned (edge-clamped) distance from mesh nodes to the surface.
+
+        Unlike ``Abs(self.distance.sym[0])``, this field is safe to interpolate
+        near a surface edge. The signed ``distance`` field changes sign across
+        the surface, and its zero-contour extends along the surface's
+        infinite-line/plane PAST the finite edge; interpolating it (any
+        non-nodal evaluation) and taking ``Abs`` produces a spurious near-zero
+        valley beyond the edge. This unsigned field is ``>= 0`` everywhere and,
+        beyond the edge, is simply the radial distance to the endpoint, so its
+        interpolant never crosses zero there. Used by :meth:`influence_function`.
+
+        Returns:
+            MeshVariable with unsigned distance values at each mesh node.
+            Access ``.sym[0]`` for use in expressions.
+        """
+        if self.mesh is None:
+            raise RuntimeError(
+                f"Surface '{self.name}' requires a mesh to compute distance field. "
+                "Set mesh in constructor or via surface.mesh = mesh"
+            )
+
+        self._ensure_discretized()
+
+        if self._distance_stale:
+            self._compute_distance_field()
+            self._distance_stale = False
+
+        return self._abs_distance_var
+
     def _compute_distance_field(self) -> None:
         """Compute signed distance field from mesh nodes to surface.
 
@@ -1187,8 +1223,31 @@ class Surface:
             # Keep signed distance - helpers use sympy.Abs() when needed
             distances = dist_result.point_data["implicit_distance"]
 
+        # Companion UNSIGNED distance field. The per-node distance is already
+        # edge-clamped (the segment/surface distance falls back to the nearest
+        # ENDPOINT beyond the edge), so |distances| is the true, edge-aware
+        # distance to the FINITE surface at every node. We store it separately
+        # because the *signed* field is unsafe to interpolate near an edge:
+        # its zero-contour follows the surface's infinite-line/plane and so
+        # extends PAST the finite edge. A consumer that interpolates the signed
+        # field (any non-nodal evaluation) and then takes Abs() gets a spurious
+        # near-zero |distance| valley along that extension — i.e. the influence
+        # bleeds out beyond the end of the surface. The unsigned field is >= 0
+        # and beyond the edge it is just the radial distance to the endpoint,
+        # so its interpolant never crosses zero there. influence_function()
+        # therefore uses this field, not Abs(signed).
+        if self._abs_distance_var is None:
+            self._abs_distance_var = uw.discretisation.MeshVariable(
+                f"surf_{self.name}_absdistance",
+                self.mesh,
+                1,
+                degree=self.mesh.degree,
+                varsymbol=f"|d_{{{self._symbol}}}|",
+            )
+
         with uw.synchronised_array_update():
             self._distance_var.data[:, 0] = distances
+            self._abs_distance_var.data[:, 0] = np.abs(distances)
 
     # --- Influence function ---
 
@@ -1204,9 +1263,11 @@ class Surface:
         Creates a sympy expression that varies from value_near (at the surface)
         to value_far (far from the surface) based on the chosen profile.
 
-        Uses the absolute value of the signed distance field, so the influence
-        is symmetric on both sides of the surface. For asymmetric behavior,
-        access the signed distance directly via ``surface.distance.sym[0]``.
+        Uses the unsigned, edge-clamped distance field (:attr:`abs_distance`),
+        so the influence is symmetric on both sides of the surface AND decays
+        correctly beyond a finite edge (it does not bleed along the surface's
+        line/plane past the end). For asymmetric behaviour, access the signed
+        distance directly via ``surface.distance.sym[0]``.
 
         Parameters
         ----------
@@ -1248,8 +1309,12 @@ class Surface:
         # Accept quantities and convert to nondimensional mesh coordinates
         width = _to_nd_length(width)
 
-        # Use absolute distance - influence is symmetric about surface
-        d = sympy.Abs(self.distance.sym[0])
+        # Use the UNSIGNED (edge-clamped) distance FIELD, not Abs() of the signed
+        # field. The signed field's zero-contour extends past a finite edge, so
+        # Abs() of its interpolant lights up a spurious weak zone beyond the
+        # surface end; the unsigned field is edge-aware between nodes too. See
+        # abs_distance / _compute_distance_field.
+        d = self.abs_distance.sym[0]
 
         if profile == "step":
             return sympy.Piecewise(

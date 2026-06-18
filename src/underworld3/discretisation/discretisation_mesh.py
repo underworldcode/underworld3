@@ -1914,9 +1914,21 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, "_vertex_map") and self._vertex_map is not None:
             return self._vertex_map
 
-        # Use cached KDTree from coordinate variable
-        tree = self.X._get_kdtree()
-        dists, indices = tree.query(self.parent.X.coords_nd, sqr_dists=False)
+        # Build a KDTree directly on the coordinate arrays rather than
+        # ``self.X._get_kdtree()`` — ``mesh.X`` is a CoordinateSystem, which has
+        # no ``_get_kdtree`` (that lives on MeshVariable/swarm vars), so the old
+        # call raised AttributeError on every extract_region (UW3 issue #197).
+        # This mirrors the proven inline path in ``extract_surface``: submesh
+        # vertices are an exact subset of the parent's, so the 1e-10 coincidence
+        # match is bit-exact.
+        import underworld3 as _uw
+
+        sub_coords = numpy.asarray(self._coords)
+        parent_coords = numpy.asarray(self.parent._coords)
+        tree = _uw.kdtree.KDTree(sub_coords)
+        dists, indices = tree.query(parent_coords, sqr_dists=False)
+        dists = numpy.asarray(dists).reshape(-1)
+        indices = numpy.asarray(indices).reshape(-1)
         matched = dists < 1.0e-10
 
         # parent_rows[i] -> sub_rows[i]: matched vertex pairs
@@ -3527,19 +3539,62 @@ class Mesh(Stateful, uw_object):
         swarmVars: Optional[list] = [],
         meshUpdates: bool = False,
         create_xdmf: bool = True,
+        petsc_reload: bool = False,
     ):
         """
-        Write mesh and selected variables for visualisation output.
+        Write mesh and selected variables for timestep output.
 
-        This writes:
-        - one mesh HDF5 file (shared/static or per-step, depending on ``meshUpdates``)
+        This is the standard mesh output method. It always writes:
+
+        - one mesh HDF5 file, shared across timesteps unless ``meshUpdates=True``
         - one HDF5 file per mesh variable
-        - optional proxy files for swarm variables
-        - optional XDMF file linking all output files
+        - raw coordinate/value datasets under ``/fields`` for coordinate-based
+          reload with ``MeshVariable.read_timestep()``
 
-        When ``create_xdmf=True`` (the default), variable files also include
-        ParaView-compatible groups (``/vertex_fields`` or ``/cell_fields``),
-        and an XDMF file is generated on rank 0.
+        The optional payloads are controlled explicitly:
+
+        - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
+          receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
+          and rank 0 writes the companion ``.xdmf`` file.
+        - ``petsc_reload=True`` writes PETSc DMPlex section/vector metadata into
+          the same per-variable HDF5 files. These files can then be loaded with
+          ``MeshVariable.read_checkpoint()`` for PETSc-native same-mesh reload.
+
+        Common choices are:
+
+        - visualisation/remap only:
+          ``create_xdmf=True, petsc_reload=False``
+        - PETSc-native reload only:
+          ``create_xdmf=False, petsc_reload=True``
+        - unified visualisation/remap and PETSc reload:
+          ``create_xdmf=True, petsc_reload=True``
+
+        With both flags enabled, the same variable HDF5 file can be used by
+        ``MeshVariable.read_timestep()`` for coordinate/KDTree remapping and by
+        ``MeshVariable.read_checkpoint()`` for exact PETSc-native reload.
+
+        Parameters
+        ----------
+        filename
+            Output filename base. Files are written as
+            ``<filename>.mesh.<index>.h5`` and
+            ``<filename>.mesh.<variable>.<index>.h5``.
+        index
+            Timestep/output index used in generated filenames.
+        outputPath
+            Directory where output files are written.
+        meshVars
+            Mesh variables to write.
+        swarmVars
+            Swarm variables to write as proxy fields.
+        meshUpdates
+            If ``False``, reuse ``<filename>.mesh.00000.h5`` when it already
+            exists. If ``True``, write an indexed mesh file for this timestep.
+        create_xdmf
+            Write ParaView/XDMF-compatible datasets and companion XDMF file.
+        petsc_reload
+            Write PETSc DMPlex section/vector metadata for reload with
+            ``MeshVariable.read_checkpoint()``.
 
         """
         options = PETSc.Options()
@@ -3577,20 +3632,25 @@ class Mesh(Stateful, uw_object):
             mesh_file = output_base_name + f".mesh.{index:05}.h5"
             self.write(mesh_file)
 
-        if create_xdmf:
-            _write_mesh_viz_groups(self, mesh_file)
-
+        variables = []
         if meshVars is not None:
             for var in meshVars:
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
                 var.write(save_location)
                 if create_xdmf:
                     _write_compat_groups(self, var, save_location)
+                variables.append((var, save_location))
 
         if swarmVars is not None:
             for svar in swarmVars:
                 save_location = output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
                 svar.write_proxy(save_location)
+                if petsc_reload:
+                    variables.append((svar._meshVar, save_location))
+
+        if petsc_reload:
+            for var, save_location in variables:
+                self._write_petsc_reload_file(save_location, [var], mode="a")
 
         if create_xdmf and uw.mpi.rank == 0:
             checkpoint_xdmf(
@@ -3662,6 +3722,48 @@ class Mesh(Stateful, uw_object):
             create_xdmf=True,
         )
 
+    def _write_petsc_reload_variable(self, viewer, var):
+        """Write one variable's PETSc DMPlex reload metadata to ``viewer``."""
+
+        if var._lvec is None:
+            var._set_vec(available=True)
+
+        iset, subdm = self.dm.createSubDM(var.field_id)
+        subdm.setName(var.clean_name)
+        old_lvec_name = var._lvec.getName()
+
+        try:
+            var._lvec.setName(var.clean_name)
+            self.dm.sectionView(viewer, subdm)
+            self.dm.localVectorView(viewer, subdm, var._lvec)
+        finally:
+            var._lvec.setName(old_lvec_name)
+            iset.destroy()
+            subdm.destroy()
+
+    def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
+        """Write PETSc DMPlex section/vector reload metadata."""
+
+        old_dm_name = self.dm.getName()
+        self.dm.setName("uw_mesh")
+
+        viewer = PETSc.ViewerHDF5().create(
+            checkpoint_file, mode, comm=PETSc.COMM_WORLD
+        )
+        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        try:
+            self.dm.sectionView(viewer, self.dm)
+
+            for var in variables:
+                self._write_petsc_reload_variable(viewer, var)
+
+            uw.mpi.barrier()
+        finally:
+            viewer.popFormat()
+            viewer.destroy()
+            if old_dm_name is not None:
+                self.dm.setName(old_dm_name)
+
     @timing.routine_timer_decorator
     def write_checkpoint(
         self,
@@ -3673,12 +3775,17 @@ class Mesh(Stateful, uw_object):
         index: Optional[int] = 0,
         unique_id: Optional[bool] = False,
         separate_variable_files: bool = True,
+        create_xdmf: bool = False,
     ):
-        """Write PETSc DMPlex checkpoint files for restart/postprocessing.
+        """Compatibility wrapper for PETSc DMPlex reload output.
 
-        Checkpoint output stores PETSc DMPlex section/vector metadata required
-        for exact parallel reload. Unlike ``write_timestep()``, this is restart
-        output and does not write XDMF or vertex-field visualisation datasets.
+        This method is retained for existing callers. New code should use
+        ``write_timestep(..., petsc_reload=True)`` so all mesh-variable output
+        goes through the standard timestep writer. By default this compatibility
+        method writes PETSc DMPlex section/vector metadata required for exact
+        parallel reload and does not write XDMF or vertex-field visualisation
+        datasets. Use ``create_xdmf=True`` to route through the unified
+        timestep-style output path.
 
         Parameters
         ----------
@@ -3700,48 +3807,58 @@ class Mesh(Stateful, uw_object):
             If ``True`` (default), write one file per variable:
             ``<base>.<variable>.<index>.h5``. If ``False``, write all variables
             into one file: ``<base>.checkpoint.<index>.h5``.
+        create_xdmf
+            If ``True``, route through ``write_timestep()`` and write XDMF,
+            vertex/cell compatibility groups, coordinate/KDTree remap data,
+            and PETSc reload metadata. The output uses the timestep filename
+            convention ``<base>.mesh.<variable>.<index>.h5``. This mode does
+            not support ``unique_id=True`` or ``separate_variable_files=False``.
         """
+        import warnings
+
+        warnings.warn(
+            "write_checkpoint() is deprecated and retained for compatibility. "
+            "Use write_timestep(..., petsc_reload=True) for PETSc reload output; "
+            "set create_xdmf=True when visualization/remap payloads are also "
+            "needed.",
+            FutureWarning,
+            stacklevel=2,
+        )
 
         if outputPath:
             filename = os.path.join(outputPath, filename)
+
+        if create_xdmf:
+            if unique_id:
+                raise RuntimeError(
+                    "write_checkpoint(create_xdmf=True) uses write_timestep() "
+                    "layout and does not support unique_id=True."
+                )
+            if not separate_variable_files:
+                raise RuntimeError(
+                    "write_checkpoint(create_xdmf=True) uses per-variable "
+                    "timestep files and does not support "
+                    "separate_variable_files=False."
+                )
+            output_dir = os.path.dirname(filename)
+            output_name = os.path.basename(filename)
+            self.write_timestep(
+                output_name,
+                index=index,
+                outputPath=output_dir,
+                meshVars=meshVars,
+                swarmVars=swarmVars,
+                meshUpdates=meshUpdates,
+                create_xdmf=True,
+                petsc_reload=True,
+            )
+            return
 
         def _checkpoint_filename(var_name=None):
             variable_part = f".{var_name}" if var_name is not None else ".checkpoint"
             if unique_id:
                 return filename + f"{uw.mpi.unique}{variable_part}.{index:05}.h5"
             return filename + f"{variable_part}.{index:05}.h5"
-
-        def _write_variable(viewer, var):
-            if var._lvec is None:
-                var._set_vec(available=True)
-
-            iset, subdm = self.dm.createSubDM(var.field_id)
-            subdm.setName(var.clean_name)
-            old_lvec_name = var._lvec.getName()
-
-            try:
-                var._lvec.setName(var.clean_name)
-                self.dm.sectionView(viewer, subdm)
-                self.dm.localVectorView(viewer, subdm, var._lvec)
-            finally:
-                var._lvec.setName(old_lvec_name)
-                iset.destroy()
-                subdm.destroy()
-
-        def _write_checkpoint_file(checkpoint_file, variables):
-            viewer = PETSc.ViewerHDF5().create(checkpoint_file, "w", comm=PETSc.COMM_WORLD)
-            viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
-            try:
-                # Store the parallel-mesh section information for restoring the checkpoint.
-                self.dm.sectionView(viewer, self.dm)
-
-                for var in variables:
-                    _write_variable(viewer, var)
-
-                uw.mpi.barrier()  # should not be required
-            finally:
-                viewer.popFormat()
-                viewer.destroy()
 
         old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")
@@ -3756,10 +3873,10 @@ class Mesh(Stateful, uw_object):
                     mesh_file = filename + f".mesh.{index:05}.h5"
                     path = Path(mesh_file)
                     if not path.is_file():
-                        self.write(mesh_file)
+                        self.write(mesh_file, petsc_format=True)
 
                 else:
-                    self.write(filename + f".mesh.{index:05}.h5")
+                    self.write(filename + f".mesh.{index:05}.h5", petsc_format=True)
 
                 variables = []
                 if meshVars is not None:
@@ -3769,9 +3886,13 @@ class Mesh(Stateful, uw_object):
 
                 if separate_variable_files:
                     for var in variables:
-                        _write_checkpoint_file(_checkpoint_filename(var.clean_name), [var])
+                        self._write_petsc_reload_file(
+                            _checkpoint_filename(var.clean_name), [var], mode="w"
+                        )
                 else:
-                    _write_checkpoint_file(_checkpoint_filename(), variables)
+                    self._write_petsc_reload_file(
+                        _checkpoint_filename(), variables, mode="w"
+                    )
         finally:
             if old_dm_name is not None:
                 self.dm.setName(old_dm_name)
@@ -3881,7 +4002,12 @@ class Mesh(Stateful, uw_object):
             self._stale_lvec = True
 
     @timing.routine_timer_decorator
-    def write(self, filename: str, index: Optional[int] = None):
+    def write(
+        self,
+        filename: str,
+        index: Optional[int] = None,
+        petsc_format: Optional[bool] = None,
+    ):
         """
         Save mesh data to the specified hdf5 file.
 
@@ -3893,11 +4019,16 @@ class Mesh(Stateful, uw_object):
         index :
             Not yet implemented. An optional index which might
             correspond to the timestep (for example).
+        petsc_format :
+            If True, force PETSc DMPlex HDF5 checkpoint/restart topology.
+            If False, force PETSc HDF5_VIZ topology only.
+            If None, use PETSc's default HDF5 layout, which includes the
+            restart-style topology and labels as well as visualization
+            topology for XDMF.
 
         """
 
-        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
-        if index:
+        if index is not None:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
             ## I'm unsure if the corresponding xdmf functionality is enabled via
@@ -3905,11 +4036,19 @@ class Mesh(Stateful, uw_object):
             # viewer.pushTimestepping(viewer)
             # viewer.setTimestep(index)
 
-        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
         try:
+            if petsc_format is not None:
+                viewer_format = (
+                    PETSc.Viewer.Format.HDF5_PETSC
+                    if petsc_format
+                    else PETSc.Viewer.Format.HDF5_VIZ
+                )
+                viewer.pushFormat(viewer_format)
             viewer(self.dm)
         finally:
-            viewer.popFormat()
+            if petsc_format is not None:
+                viewer.popFormat()
             viewer.destroy()
 
         ## Add boundary metadata to the file
@@ -5792,120 +5931,6 @@ class Mesh(Stateful, uw_object):
         return
 
 
-## This is a temporary replacement for the PETSc xdmf generator
-## Simplified to allow us to decide how we want to checkpoint
-
-
-def _petsc_numbering_to_global_ids(numbering):
-    """Convert PETSc numbering entries to non-negative global ids."""
-
-    gids = numpy.asarray(numbering, dtype=numpy.int64).copy()
-    negative = gids < 0
-    gids[negative] = -gids[negative] - 1
-    return gids
-
-
-def _local_viz_cell_connectivity(mesh):
-    """Return local cell-to-vertex connectivity in global vertex ids."""
-
-    dm = mesh.dm
-    pStart, pEnd = dm.getDepthStratum(0)
-    cStart, cEnd = dm.getHeightStratum(0)
-    vertex_numbering = dm.getVertexNumbering().getIndices()
-    vertex_gids = _petsc_numbering_to_global_ids(vertex_numbering)
-    cell_num_points = mesh.element.entities[mesh.dim]
-
-    cell_points_list = []
-    for cell_id in range(cStart, cEnd):
-        closure = dm.getTransitiveClosure(cell_id)[0]
-        # Filter closure to strictly retain true vertices
-        points = numpy.asarray(
-            [p for p in closure if pStart <= p < pEnd],
-            dtype=numpy.int64,
-        )
-        if len(points) != cell_num_points:
-            raise RuntimeError(f"Expected {cell_num_points} vertices for cell {cell_id}, got {len(points)}.")
-        cell_points_list.append(vertex_gids[points - pStart])
-
-    if not cell_points_list:
-        return numpy.empty((0, cell_num_points), dtype=numpy.int64)
-
-    if mesh.dim == 3:
-        if dm.isSimplex():
-            reorder = [0, 2, 1, 3]
-        else:
-            reorder = [0, 3, 2, 1, 4, 5, 6, 7]
-        cell_points_list = [pts[reorder] for pts in cell_points_list]
-
-    return numpy.asarray(cell_points_list, dtype=numpy.int64)
-
-
-def _write_mesh_viz_groups(mesh, mesh_h5_path):
-    """Write ParaView-safe ``/viz`` geometry/topology groups into a mesh HDF5."""
-
-    import underworld3 as uw
-    dm = mesh.dm
-    pStart, pEnd = dm.getDepthStratum(0)
-    vertex_numbering = dm.getVertexNumbering().getIndices()
-    vertex_gids = _petsc_numbering_to_global_ids(vertex_numbering)
-
-    coords_local = numpy.asarray(dm.getCoordinatesLocal().array, dtype=numpy.float64).reshape(-1, mesh.dim)
-    n_local_vertices = pEnd - pStart
-    if coords_local.shape[0] != n_local_vertices:
-        coords_local = numpy.asarray(mesh.X.coords, dtype=numpy.float64)
-        if coords_local.shape[0] != n_local_vertices:
-            raise RuntimeError(
-                f"Could not match local coordinate rows ({coords_local.shape[0]}) "
-                f"to DMPlex vertex count ({n_local_vertices}) for {mesh_h5_path}."
-            )
-
-    local_cells = _local_viz_cell_connectivity(mesh)
-
-    # Gather GIDs and coordinates separately to prevent float64 upcasting of integer GIDs
-    gathered_gids = uw.mpi.comm.gather(vertex_gids, root=0)
-    gathered_coords = uw.mpi.comm.gather(coords_local, root=0)
-    gathered_cells = uw.mpi.comm.gather(local_cells, root=0)
-    uw.mpi.barrier()
-
-    if uw.mpi.rank == 0:
-        import h5py
-
-        gid_blocks = [block for block in gathered_gids if block is not None and block.size > 0]
-        coord_blocks = [block for block in gathered_coords if block is not None and block.size > 0]
-        cell_blocks = [block for block in gathered_cells if block is not None and block.size > 0]
-
-        if gid_blocks:
-            all_gids = numpy.concatenate(gid_blocks)
-            all_coords = numpy.vstack(coord_blocks)
-            
-            # Vectorized deduplication (numpy.unique returns sorted unique elements)
-            ordered_gids, unique_indices = numpy.unique(all_gids, return_index=True)
-            ordered_vertices = all_coords[unique_indices]
-        else:
-            ordered_gids = numpy.empty((0,), dtype=numpy.int64)
-            ordered_vertices = numpy.empty((0, mesh.dim), dtype=numpy.float64)
-
-        if cell_blocks:
-            all_cells = numpy.vstack(cell_blocks)
-            # Vectorized remapping using searchsorted (O(N log M) instead of Python dict lookup)
-            dense_cells = numpy.searchsorted(ordered_gids, all_cells)
-        else:
-            all_cells = numpy.empty((0, mesh.element.entities[mesh.dim]), dtype=numpy.int64)
-            dense_cells = numpy.empty_like(all_cells)
-
-        with h5py.File(mesh_h5_path, "a") as h5:
-            if "viz" in h5:
-                del h5["viz"]
-            viz = h5.create_group("viz")
-            geom = viz.create_group("geometry")
-            topo = viz.create_group("topology")
-            geom.create_dataset("vertices", data=ordered_vertices)
-            topo_cells = topo.create_dataset("cells", data=dense_cells)
-            topo_cells.attrs["cell_dim"] = mesh.dim
-
-    uw.mpi.barrier()
-
-
 def _write_compat_groups(mesh, var, var_h5_path):
     """Write ``/vertex_fields/`` or ``/cell_fields/`` compatibility groups.
 
@@ -5988,20 +6013,42 @@ def checkpoint_xdmf(
         geomPath = "geometry"
         geom = h5["geometry"]
 
-    if "viz" in h5 and "topology" in h5["viz"]:
+    if "viz" in h5 and "topology" in h5["viz"] and "cells" in h5["viz"]["topology"]:
         topoPath = "viz/topology"
         topo = h5["viz"]["topology"]
-    else:
+    elif "topology" in h5 and "cells" in h5["topology"]:
         topoPath = "topology"
         topo = h5["topology"]
+    else:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: no direct cell "
+            "connectivity dataset found at /viz/topology/cells."
+        )
 
     vertices = geom["vertices"]
     numVertices = vertices.shape[0]
     spaceDim = vertices.shape[1]
     cells = topo["cells"]
+    if len(cells.shape) != 2:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: {topoPath}/cells has "
+            f"shape {cells.shape}. XDMF requires a 2D direct cell-to-vertex "
+            "connectivity dataset."
+        )
     numCells = cells.shape[0]
     numCorners = cells.shape[1]
     cellDim = topo["cells"].attrs["cell_dim"]
+    topology_precision = cells.dtype.itemsize
+
+    if numCorners <= 1:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: {topoPath}/cells has "
+            f"shape {cells.shape}. XDMF requires direct cell-to-vertex "
+            "connectivity, not PETSc DMPlex internal topology."
+        )
 
     if topoPath == "topology":
         warnings.warn(
@@ -6067,7 +6114,7 @@ def checkpoint_xdmf(
     <DataItem Name="cells"
               ItemType="Uniform"
               Format="HDF"
-              NumberType="Float" Precision="8"
+              NumberType="Int" Precision="{topology_precision}"
               Dimensions="{numCells} {numCorners}">
       &MeshData;:/{topoPath}/cells
     </DataItem>
@@ -6155,27 +6202,17 @@ def checkpoint_xdmf(
         else:
             variable_type = "Vector"
 
+        data_dimensions = f"{numItems}" if numComponents == 1 else f"{numItems} {numComponents}"
         var_attribute = f"""
         <Attribute
            Name="{var.clean_name}"
            Type="{variable_type}"
            Center="{center}">
-          <DataItem ItemType="HyperSlab"
-                Dimensions="1 {numItems} {numComponents}"
-                Type="HyperSlab">
-            <DataItem
-               Dimensions="3 3"
-               Format="XML">
-              0 0 0
-              1 1 1
-              1 {numItems} {numComponents}
-            </DataItem>
-            <DataItem
-               DataType="Float" Precision="8"
-               Dimensions="1 {numItems} {numComponents}"
-               Format="HDF">
-              &{var.clean_name+"_Data"};:/{dataset_path}
-            </DataItem>
+          <DataItem
+             DataType="Float" Precision="8"
+             Dimensions="{data_dimensions}"
+             Format="HDF">
+            &{var.clean_name+"_Data"};:/{dataset_path}
           </DataItem>
         </Attribute>
         """

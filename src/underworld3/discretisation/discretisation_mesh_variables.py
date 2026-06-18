@@ -1143,8 +1143,9 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         Note: This is a low-level method intended to be called by wrapper
         functions such as ``mesh.write_timestep()`` which handle output paths,
-        XDMF generation, and multi-variable coordination. Prefer using
-        ``mesh.write_timestep()`` for normal checkpoint and visualisation output.
+        optional XDMF generation, optional PETSc reload metadata, and
+        multi-variable coordination. Prefer using ``mesh.write_timestep()`` for
+        mesh-variable output.
 
         Note: This is a COLLECTIVE operation - all MPI ranks must call it.
 
@@ -1244,11 +1245,14 @@ class _BaseMeshVariable(Stateful, uw_object):
         verbose=False,
     ):
         """
-        Read a mesh variable from an arbitrary vertex-based checkpoint file
-        and reconstruct/interpolate the data field accordingly. The saved
-        mesh and the live mesh may have different sizes/decompositions; the
-        values are matched by nearest-neighbour kd-tree interpolation to
-        the live mesh nodes.
+        Read a mesh variable from ``Mesh.write_timestep()`` output using the
+        coordinate-remap path. The saved mesh and the live mesh may have
+        different sizes or decompositions; values are matched to the live mesh
+        nodes by nearest-neighbour KDTree interpolation.
+
+        This is the flexible remap reader. It is distinct from
+        ``read_checkpoint()``, which loads PETSc DMPlex section/vector metadata
+        for PETSc-native same-mesh reload.
 
         Parallel-safe and memory-bounded. Two transient swarms route the
         work without ever holding the full file on more than one rank:
@@ -1270,9 +1274,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
 
         # Format dispatch: ``data_filename`` may be either the
-        # legacy ``write_timestep`` prefix (in which case we
-        # reconstruct the per-variable file path the usual way) or a
-        # v1.1 snapshot wrapper path produced by
+        # ``write_timestep`` filename base (in which case we reconstruct the
+        # per-variable file path the usual way) or a v1.1 snapshot wrapper path
+        # produced by
         # ``model.save_state(file=…)``. The format-detection logic is
         # hidden from the user — same call, both formats.
         import h5py
@@ -1484,10 +1488,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         filename: str,
         data_name: Optional[str] = None,
     ):
-        """Load this mesh variable from ``Mesh.write_checkpoint()`` output.
+        """Load this mesh variable from PETSc reload output.
 
         This is an exact PETSc DMPlex section/vector reload path. It does not
-        use the coordinate/KDTree remapping used by ``read_timestep()``.
+        use the coordinate/KDTree remapping used by ``read_timestep()``. New
+        output should be written with ``Mesh.write_timestep(...,
+        petsc_reload=True)``; legacy ``Mesh.write_checkpoint()`` files are also
+        supported.
         """
 
         if data_name is None:
