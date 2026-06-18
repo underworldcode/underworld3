@@ -22,7 +22,7 @@
 #           --platform linux/amd64 \
 #           --format docker \
 #           -t new_image_name \
-#           -f ./docs/development/gadi_singularity/petsc.rhel
+#           -f ./docs/developer/gadi_singularity/petsc.rhel
 #####################################################################
 
 # The following are passed in via --build-args

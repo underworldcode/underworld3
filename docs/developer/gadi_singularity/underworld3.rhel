@@ -23,7 +23,7 @@
 #           --format docker \
 #           --build-arg UW3_BRANCH=xxx \
 #           -t new_image_name \
-#           -f ./docs/development/gadi_singularity/underworld3.rhel
+#           -f ./docs/developer/gadi_singularity/underworld3.rhel
 #####################################################################
 
 # The following are passed in via --build-arg
@@ -136,7 +136,6 @@ RUN python${PYVER} -m pip install --no-cache-dir \
         psutil \
         typing_extensions \
         xxhash \
-        pykdtree \
         trimesh \
         ipython \
         jupyterlab \
