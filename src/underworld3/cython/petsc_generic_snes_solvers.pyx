@@ -18,6 +18,34 @@ from underworld3.utilities._api_tools import class_or_instance_method
 from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
+from underworld3.function.expressions import unwrap_expression as _unwrap_expression
+
+
+def _jacobian_unwrap(expr):
+    """Expand UWexpressions down to (but NOT including) constant atoms, for use
+    as the input to a Jacobian derivative (``derive_by_array`` / ``diff``).
+
+    Applied element-wise over a sympy ``Matrix``/``Array`` so atoms embedded in
+    the residual flux are reached. Non-constant UWexpressions (e.g. the
+    effective viscosity ``Min(eta0, tau_y/2/eps_II)``) are expanded so the
+    derivative sees their field / grad-v dependence and forms the full Newton
+    tangent. Truly-constant atoms (``eta0``, ``tau_y``, ...) are kept as the
+    *same* symbol object so the JIT ``constants[]`` runtime-update mechanism is
+    preserved — the keep-constants predicate is shared with
+    ``getext()._extract_constants`` so the two cannot drift apart.
+
+    This is a no-op for constant-viscosity problems (eta has no grad-v
+    dependence), so those Jacobians stay bit-identical.
+
+    See ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+    """
+    f = lambda e: _unwrap_expression(e, mode="symbolic_keep_constants")
+    if isinstance(expr, sympy.MatrixBase):
+        return expr.applyfunc(f)
+    if isinstance(expr, sympy.NDimArray):
+        return sympy.Array([f(e) for e in expr], expr.shape)
+    return f(expr)  # scalar expression
+
 
 include "petsc_extras.pxi"
 
@@ -39,6 +67,38 @@ class SolverBaseClass(uw_object):
         self.mesh_dm_coordinate_hash = None
         self.compiled_extensions = None
         self.constants_manifest = []
+
+        # Jacobian tangent selection: False | True | "continuation".
+        #
+        #   False (default): differentiate the residual flux *as wrapped* — the
+        #     effective viscosity is frozen, giving a Picard / defect-correction
+        #     tangent. BIT-IDENTICAL to the long-standing behaviour. Globally
+        #     robust; load-bearing for the tuned hard-yield viscoplastic paths.
+        #   True: unwrap the flux before differentiation so the tangent captures
+        #     d(eta)/d(grad v) (full Newton). Fast near the solution; its yield
+        #     kink can stall the line search far from it.
+        #   "continuation": Picard -> Newton. Blend J(alpha) = J_picard +
+        #     alpha*(J_newton - J_picard) with alpha a constants[] parameter
+        #     ramped 0 -> 1 by a SNES monitor as the residual drops. Picard
+        #     locates the basin, Newton gives quadratic convergence inside it
+        #     (cf. Spiegelman et al. 2016; ASPECT defect-correction-then-Newton).
+        #     alpha=0 is bit-identical to Picard, so no recompile to switch.
+        #
+        # The Newton flux for a model whose flux has a non-smooth yield kink is
+        # the model's own smooth law (constitutive_model.flux_jacobian) when it
+        # provides one; otherwise the exact unwrapped flux.
+        #
+        # See docs/developer/design/jacobian-unwrap-constants-bug.md.
+        self.consistent_jacobian = False
+        # Picard->Newton continuation parameter (constants[]-routed so it can be
+        # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
+        self._newton_alpha = uw.function.expression(
+            r"\alpha_{N}", sympy.Float(0.0),
+            "Picard->Newton continuation fraction (0=Picard, 1=Newton)",
+        )
+        # Switch threshold: ramp alpha toward 1 once the relative residual falls
+        # below this (the basin-of-attraction heuristic for Newton).
+        self.newton_switch_rtol = 1.0e-2
 
         # Fine-grained rebuild flags backing the is_setup property. See the
         # is_setup docstring and _build() for how these are consumed.
@@ -87,6 +147,86 @@ class SolverBaseClass(uw_object):
         # tell "user set mg" from "we set mg" and would clobber their tuned
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
+
+    def _jacobian_source(self, expr, newton_expr=None):
+        """Prepare a residual flux for Jacobian differentiation.
+
+        ``expr`` is the exact (Picard) flux; ``newton_expr`` is the consistent
+        (Newton) flux to use — when None it is the unwrapped ``expr`` (the
+        derivative then captures d(eta)/d(grad v)). The residual itself is never
+        passed through here, so the converged solution always satisfies the
+        exact constitutive law.
+
+        Returns, by ``consistent_jacobian`` mode:
+          * False  -> ``expr``  (frozen viscosity; bit-identical Picard tangent)
+          * True   -> ``newton_expr``  (full consistent Newton tangent)
+          * "continuation" -> ``expr + alpha*(newton_expr - expr)`` with alpha a
+            constants[] parameter ramped 0->1 at solve time. Differentiating
+            this gives ``G_picard + alpha*(G_newton - G_picard)`` because alpha
+            is constant w.r.t. the unknowns. alpha=0 is bit-identical to Picard.
+
+        No-op for constant viscosity (``newton_expr`` == ``expr``).
+        """
+        mode = self.consistent_jacobian
+        if not mode:
+            return expr
+        if newton_expr is None:
+            newton_expr = _jacobian_unwrap(expr)
+        if mode == "continuation":
+            a = self._newton_alpha
+            if isinstance(expr, sympy.MatrixBase):
+                ne = newton_expr if isinstance(newton_expr, sympy.MatrixBase) \
+                    else sympy.Matrix(newton_expr)
+                return expr + a * (ne - expr)
+            if isinstance(expr, sympy.NDimArray):
+                # flatten to scalars first — iterating an N-d Array yields
+                # sub-arrays, not elements
+                ex = expr.reshape(expr._loop_size)
+                ne = sympy.Array(newton_expr).reshape(expr._loop_size)
+                return sympy.Array(
+                    [e + a * (n - e) for e, n in zip(ex, ne)], expr.shape
+                )
+            return expr + a * (newton_expr - expr)  # scalar
+        return newton_expr
+
+    def _newton_flux(self, exact_F1):
+        """Newton (consistent) flux for the bulk ``F1`` Jacobian source.
+
+        Returns the constitutive model's own smooth tangent law
+        (``constitutive_model.flux_jacobian``) when it supplies one — matched to
+        the container/shape of ``exact_F1`` — otherwise ``None`` so that
+        :meth:`_jacobian_source` falls back to the exact flux unwrapped. Lets a
+        model whose flux has a non-smooth yield kink provide a physically
+        motivated smooth tangent without changing the residual.
+        """
+        cm = getattr(self, "constitutive_model", None)
+        smooth = getattr(cm, "flux_jacobian", None) if cm is not None else None
+        if smooth is None:
+            return None
+        try:
+            sm = sympy.Array(smooth)
+            ex = sympy.Array(exact_F1)
+            if sm.shape != ex.shape:
+                sm = sm.reshape(*ex.shape)
+            if isinstance(exact_F1, sympy.MatrixBase):
+                return sympy.Matrix(exact_F1.shape[0], exact_F1.shape[1], list(sm))
+            return sm
+        except Exception:
+            return None
+
+    def _set_newton_alpha(self, value):
+        """Set the Picard->Newton continuation fraction and push it to the DS.
+
+        alpha is routed through ``constants[]`` (it appears as a constant atom
+        in the blended Jacobian), so this updates the live tangent WITHOUT a JIT
+        recompile. No-op outside ``consistent_jacobian == "continuation"`` (alpha
+        is then absent from the constants manifest).
+        """
+        self._newton_alpha.sym = sympy.Float(value)
+        try:
+            self._update_constants()
+        except Exception:
+            pass
 
     @property
     def preconditioner(self):
@@ -767,7 +907,10 @@ class SolverBaseClass(uw_object):
         verbose : bool, default=False
             Log each retry on rank 0.
         """
-        self.snes.solve(None, gvec)
+        if self.consistent_jacobian == "continuation":
+            self._continuation_solve(gvec, verbose=verbose)
+        else:
+            self.snes.solve(None, gvec)
         if divergence_retries <= 0:
             return
         for _r in range(divergence_retries):
@@ -781,6 +924,36 @@ class SolverBaseClass(uw_object):
                     flush=True,
                 )
             self.snes.solve(None, gvec)
+
+    def _continuation_solve(self, gvec, verbose=False):
+        """Picard -> Newton continuation via the constants[]-routed alpha.
+
+        Stage 1 solves with the frozen (Picard) tangent (alpha=0) to a loose
+        tolerance to enter Newton's basin of attraction; stage 2 ramps to the
+        consistent (Newton) tangent (alpha=1) and warm-starts to the requested
+        tolerance. alpha is toggled through ``constants[]`` so neither stage
+        triggers a JIT recompile (cf. Spiegelman et al. 2016; ASPECT).
+        """
+        rtol, atol, stol, max_it = self.snes.getTolerances()
+
+        # Stage 1 — Picard (alpha=0), loose tolerance.
+        self._set_newton_alpha(0.0)
+        self.snes.setTolerances(rtol=max(self.newton_switch_rtol, rtol))
+        self.snes.solve(None, gvec)
+        if verbose and uw.mpi.rank == 0:
+            print(f"continuation Picard: reason={self.snes.getConvergedReason()} "
+                  f"it={self.snes.getIterationNumber()}", flush=True)
+
+        # Stage 2 — Newton (alpha=1), requested tolerance, warm-started.
+        self._set_newton_alpha(1.0)
+        self.snes.setTolerances(rtol=rtol, atol=atol, stol=stol, max_it=max_it)  # restore
+        self.snes.solve(None, gvec)
+        if verbose and uw.mpi.rank == 0:
+            print(f"continuation Newton: reason={self.snes.getConvergedReason()} "
+                  f"it={self.snes.getIterationNumber()}", flush=True)
+
+        # Restore a clean Picard tangent for any subsequent solve (next step).
+        self._set_newton_alpha(0.0)
 
     @timing.routine_timer_decorator
     def _build(self,
@@ -2174,8 +2347,8 @@ class SNES_Scalar(SolverBaseClass):
         # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
 
-        # Don't unwrap here — let getext()'s two-phase unwrap handle it.
-        # This preserves constant UWexpressions as symbols for the constants[] mechanism.
+        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
+        # it (preserves constant UWexpressions as symbols for constants[]).
         f0  = sympy.Array(self.F0.sym).reshape(1).as_immutable()
         # F1 is the flux vector, which lives in the embedded coordinate
         # space (cdim components). For volume meshes dim==cdim so this
@@ -2191,10 +2364,17 @@ class SNES_Scalar(SolverBaseClass):
 
         fns_residual = [self._u_f0, self._u_F1]
 
-        G0 = sympy.derive_by_array(f0, U)
-        G1 = sympy.derive_by_array(f0, L)
-        G2 = sympy.derive_by_array(F1, U)
-        G3 = sympy.derive_by_array(F1, L)
+        # JACOBIAN: unwrap (keep constants) + smooth Min/Max kinks so the
+        # derivative sees the field-dependence of any nonlinear coefficient
+        # (full Newton) while the residual keeps the exact form. No-op for
+        # constant coefficients -> bit-identical. See _jacobian_source.
+        f0_jac = self._jacobian_source(f0)
+        F1_jac = self._jacobian_source(F1, self._newton_flux(F1))
+
+        G0 = sympy.derive_by_array(f0_jac, U)
+        G1 = sympy.derive_by_array(f0_jac, L)
+        G2 = sympy.derive_by_array(F1_jac, U)
+        G3 = sympy.derive_by_array(F1_jac, L)
 
         # Re-organise if needed / make hashable
 
@@ -3092,8 +3272,9 @@ class SNES_Vector(SolverBaseClass):
         # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
 
         # Residual piece shapes: f0 is (dim,) per-component, F1 is (dim, dim).
-        # Don't unwrap here — let getext()'s two-phase unwrap handle it.
-        # This preserves constant UWexpressions as symbols for the constants[] mechanism.
+        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
+        # it (preserves constant UWexpressions as symbols for constants[]). The
+        # Jacobian sources (f0_jac_list / F1_user_jac) are derived below.
         F0_user = sympy.Matrix(self.F0.sym)
         F1_user = sympy.Matrix(self.F1.sym)
 
@@ -3126,6 +3307,13 @@ class SNES_Vector(SolverBaseClass):
         U_list = [self.u.sym[0, c] for c in range(dim)]
         L = self.Unknowns.L
 
+        # JACOBIAN sources: unwrap (keep constants) + smooth Min/Max kinks so
+        # each sympy.diff below sees the field-dependence of any nonlinear
+        # coefficient (full Newton) while the residual above stays exact. No-op
+        # for constant coefficients -> bit-identical. See _jacobian_source.
+        f0_jac_list = [self._jacobian_source(e) for e in f0_list]
+        F1_jac = self._jacobian_source(F1_user, self._newton_flux(F1_user))
+
         # Explicit-index Jacobian construction — writes each entry directly
         # into PETSc's flat [fc, gc, df, dg] layout via row-major 2D matrices.
         # See docs/developer/subsystems/petsc-jacobian-layout.md for the
@@ -3137,21 +3325,21 @@ class SNES_Vector(SolverBaseClass):
         G0 = sympy.zeros(Nc, Nc)
         for fc in range(Nc):
             for gc in range(Nc):
-                G0[fc, gc] = sympy.diff(f0_list[fc], U_list[gc])
+                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
         # G1[fc*Nc + gc, df]             = ∂f0[fc] / ∂L[gc, df]
         G1 = sympy.zeros(Nc * Nc, dim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(dim):
-                    G1[fc * Nc + gc, df] = sympy.diff(f0_list[fc], L[gc, df])
+                    G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
 
         # G2[fc*Nc + gc, df]             = ∂F1[fc, df] / ∂U[gc]
         G2 = sympy.zeros(Nc * Nc, dim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(dim):
-                    G2[fc * Nc + gc, df] = sympy.diff(F1_user[fc, df], U_list[gc])
+                    G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
 
         # G3[fc*Nc + gc, df*dim + dg]    = ∂F1[fc, df] / ∂L[gc, dg]
         G3 = sympy.zeros(Nc * Nc, dim * dim)
@@ -3159,7 +3347,7 @@ class SNES_Vector(SolverBaseClass):
             for gc in range(Nc):
                 for df in range(dim):
                     for dg in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_user[fc, df], L[gc, dg])
+                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -3223,6 +3411,10 @@ class SNES_Vector(SolverBaseClass):
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
 
+                    # Nitsche gradient-traction Jacobian source (unwrap + smooth
+                    # kinks); residual u_F1 above stays exact. See _jacobian_source.
+                    bd_F1_jac = self._jacobian_source(bd_F1)
+
                     # BC G2[fc*Nc + gc, df]          = ∂bd_F1[fc, df]/∂U[gc]
                     # BC G3[fc*Nc + gc, df*dim + dg] = ∂bd_F1[fc, df]/∂L[gc, dg]
                     bd_G2 = sympy.zeros(Nc * Nc, dim)
@@ -3230,9 +3422,9 @@ class SNES_Vector(SolverBaseClass):
                     for fc in range(Nc):
                         for gc in range(Nc):
                             for df in range(dim):
-                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1[fc, df], U_list[gc])
+                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
                                 for dg in range(dim):
-                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1[fc, df], L[gc, dg])
+                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
@@ -3920,6 +4112,13 @@ class SNES_MultiComponent(SolverBaseClass):
         U_list = [self.u.sym[0, c] for c in range(Nc)]
         L = self.Unknowns.L
 
+        # JACOBIAN sources: unwrap (keep constants) + smooth Min/Max kinks so
+        # each sympy.diff below sees the field-dependence of any nonlinear
+        # coefficient (full Newton) while the residual above stays exact. No-op
+        # for constant coefficients -> bit-identical. See _jacobian_source.
+        f0_jac_list = [self._jacobian_source(e) for e in f0_list]
+        F1_jac = self._jacobian_source(F1_user, self._newton_flux(F1_user))
+
         # ----- Explicit-differentiation Jacobian construction -----
         # PETSc's element-matrix assembly walks the Jacobian arrays in the
         # order [test_component, trial_component, test_deriv, trial_deriv].
@@ -3937,21 +4136,21 @@ class SNES_MultiComponent(SolverBaseClass):
         G0 = sympy.zeros(Nc, Nc)
         for fc in range(Nc):
             for gc in range(Nc):
-                G0[fc, gc] = sympy.diff(f0_list[fc], U_list[gc])
+                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
         #  G1[fc*Nc + gc, df]          = ∂f0[fc] / ∂L[gc, df]
         G1 = sympy.zeros(Nc * Nc, dim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(dim):
-                    G1[fc * Nc + gc, df] = sympy.diff(f0_list[fc], L[gc, df])
+                    G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
 
         #  G2[fc*Nc + gc, df]          = ∂F1[fc, df] / ∂U[gc]
         G2 = sympy.zeros(Nc * Nc, dim)
         for fc in range(Nc):
             for gc in range(Nc):
                 for df in range(dim):
-                    G2[fc * Nc + gc, df] = sympy.diff(F1_user[fc, df], U_list[gc])
+                    G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
 
         #  G3[fc*Nc + gc, df*dim + dg] = ∂F1[fc, df] / ∂L[gc, dg]
         G3 = sympy.zeros(Nc * Nc, dim * dim)
@@ -3959,7 +4158,7 @@ class SNES_MultiComponent(SolverBaseClass):
             for gc in range(Nc):
                 for df in range(dim):
                     for dg in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_user[fc, df], L[gc, dg])
+                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -4014,14 +4213,18 @@ class SNES_MultiComponent(SolverBaseClass):
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
 
+                    # Nitsche gradient-traction Jacobian source (unwrap + smooth
+                    # kinks); residual u_F1 above stays exact. See _jacobian_source.
+                    bd_F1_jac = self._jacobian_source(bd_F1)
+
                     bd_G2 = sympy.zeros(Nc * Nc, dim)
                     bd_G3 = sympy.zeros(Nc * Nc, dim * dim)
                     for fc in range(Nc):
                         for gc in range(Nc):
                             for df in range(dim):
-                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1[fc, df], U_list[gc])
+                                bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
                                 for dg in range(dim):
-                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1[fc, df], L[gc, dg])
+                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
@@ -5563,8 +5766,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## and do these one by one as required by PETSc. However, at the moment, this
         ## is working .. so be careful !!
 
-        # Don't unwrap here — let getext()'s two-phase unwrap handle it.
-        # This preserves constant UWexpressions as symbols for the constants[] mechanism.
+        # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
+        # it (preserves constant UWexpressions as symbols for constants[]). The
+        # JACOBIAN sources are unwrapped separately below (see _jac_source) so
+        # the derivative sees through the viscosity — that is the Newton fix.
         F0  = sympy.Array(self.F0.sym)
         F1  = sympy.Array(self.F1.sym)
         PF0  = sympy.Array(self.PF0.sym)
@@ -5591,15 +5796,39 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         U = sympy.Array(self.u.sym).reshape(dim)
         P = sympy.Array(self.p.sym).reshape(1)
 
+        # Expand UWexpressions down to (but NOT including) constant atoms,
+        # element-wise, for the Jacobian derivative ONLY. This exposes the
+        # field / grad-v dependence of the (effective) viscosity so that
+        # derive_by_array forms the full Newton tangent (e.g. Min -> Heaviside
+        # yield switch), instead of freezing eta_eff as an opaque atom and
+        # silently running a Picard / defect-correction tangent. Truly-constant
+        # atoms (eta0, tau_y, ...) survive as symbols so the constants[]
+        # runtime-update mechanism is preserved (the keep-constants predicate
+        # is shared with getext()'s _extract_constants, so they cannot drift).
+        # The residual fns above (self._u_F0/_u_F1/_p_F0) are left untouched —
+        # getext() unwraps those itself. For constant-viscosity problems this
+        # is a no-op (eta has no grad-v dependence) so the Jacobian is
+        # bit-identical. See docs/developer/design/jacobian-unwrap-constants-bug.md
+        #
+        # (see consistent_jacobian / _jacobian_source: default Picard, bit-
+        # identical; True -> Newton; "continuation" -> alpha-blended.)
+        F0_jac  = self._jacobian_source(F0)
+        PF0_jac = self._jacobian_source(PF0)
+
         # Optional override: differentiate an alternative F1 to build the
         # uu and up Jacobian blocks while leaving the residual F1
         # unchanged. Used for inexact Newton (e.g. softmin Jacobian with
-        # Min residual at a yield kink). When None, autodiff F1 itself.
+        # Min residual at a yield kink). When None, autodiff F1 itself —
+        # the Newton flux being the model's smooth law (flux_jacobian) if it
+        # provides one, else the exact flux unwrapped.
         F1_jac_src = getattr(self, "_F1_jacobian_source", None)
-        F1_for_jac = sympy.Array(F1_jac_src) if F1_jac_src is not None else F1
+        if F1_jac_src is not None:
+            F1_for_jac = self._jacobian_source(sympy.Array(F1_jac_src))
+        else:
+            F1_for_jac = self._jacobian_source(F1, self._newton_flux(F1))
 
-        G0 = sympy.derive_by_array(F0, self.u.sym)
-        G1 = sympy.derive_by_array(F0, self.Unknowns.L)
+        G0 = sympy.derive_by_array(F0_jac, self.u.sym)
+        G1 = sympy.derive_by_array(F0_jac, self.Unknowns.L)
         G2 = sympy.derive_by_array(F1_for_jac, self.u.sym)
         G3 = sympy.derive_by_array(F1_for_jac, self.Unknowns.L)
 
@@ -5624,8 +5853,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # U/P block (check permutations - hard to validate without a full collection of examples)
 
-        G0 = sympy.derive_by_array(F0, self.p.sym)
-        G1 = sympy.derive_by_array(F0, self._G)
+        G0 = sympy.derive_by_array(F0_jac, self.p.sym)
+        G1 = sympy.derive_by_array(F0_jac, self._G)
         G2 = sympy.derive_by_array(F1_for_jac, self.p.sym)
         G3 = sympy.derive_by_array(F1_for_jac, self._G)
 
@@ -5638,8 +5867,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # P/U block (check permutations)
 
-        G0 = sympy.derive_by_array(PF0, self.u.sym)
-        G1 = sympy.derive_by_array(PF0, self.Unknowns.L)
+        G0 = sympy.derive_by_array(PF0_jac, self.u.sym)
+        G1 = sympy.derive_by_array(PF0_jac, self.Unknowns.L)
         # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 !
         # G3 = sympy.derive_by_array(FP1, self.Unknowns.L)
 
@@ -5716,8 +5945,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
 
-                    G2 = sympy.derive_by_array(bd_F1, self.Unknowns.u.sym)
-                    G3 = sympy.derive_by_array(bd_F1, self.Unknowns.L)
+                    # Nitsche gradient-traction depends on eta(grad v); unwrap +
+                    # smooth-kink the Jacobian source so its tangent is Newton-
+                    # consistent (same fix as the bulk). Residual u_F1 stays exact.
+                    bd_F1_jac = self._jacobian_source(bd_F1)
+                    G2 = sympy.derive_by_array(bd_F1_jac, self.Unknowns.u.sym)
+                    G3 = sympy.derive_by_array(bd_F1_jac, self.Unknowns.L)
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim, dim))
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim, dim*dim))
                     fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]

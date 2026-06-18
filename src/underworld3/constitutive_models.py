@@ -573,6 +573,26 @@ class Constitutive_Model(uw_object):
 
         return uw.maths.tensor.rank2_to_voigt(flux, dim=self.dim)
 
+    @property
+    def flux_jacobian(self):
+        """Optional smooth surrogate flux for Jacobian assembly.
+
+        Returns ``None`` by default, meaning the solver differentiates the
+        exact :attr:`flux` (the Newton fix unwraps it first; a generic Min/Max
+        kink-smoothing fallback then rounds any remaining yield kink).
+
+        A model whose flux has a non-smooth yield kink (e.g. hard-``Min``
+        viscoplasticity) may override this to supply a physically-motivated
+        *smooth constitutive law for the tangent only*. The residual still uses
+        the exact :attr:`flux`, so the converged solution satisfies the true
+        constitutive law — only the Newton search direction is smoothed, giving
+        a robust, line-search-friendly tangent without changing the answer.
+
+        Shape must match :attr:`flux` (the solver substitutes it for ``F1`` when
+        forming the velocity-gradient Jacobian blocks).
+        """
+        return None
+
     def _reset(self):
         """Flags that the expressions in the consitutive tensor need to be refreshed and also that the
         solver will need to rebuild the stiffness matrix and jacobians"""

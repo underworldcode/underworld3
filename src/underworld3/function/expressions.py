@@ -82,6 +82,12 @@ def _unwrap_atom(atom, mode='nondimensional'):
         mode: 'nondimensional' - use .data for ND values (JIT/evaluate)
               'dimensional' - use .value for display
               'symbolic' - use .sym for symbolic substitution
+              'symbolic_keep_constants' - like 'symbolic', but stop at truly
+                  constant UWexpressions (eta0, tau_y, ...), leaving them as the
+                  *same* symbol object so the JIT constants[] mechanism still
+                  routes them. Used to unwrap F0/F1 *before* the Jacobian
+                  derivative so field/grad-v dependence of the viscosity is
+                  differentiated (full Newton) while constants stay symbolic.
 
     Returns:
         The unwrapped value (float, sympy.Number, or sympy expression)
@@ -112,12 +118,26 @@ def _unwrap_atom(atom, mode='nondimensional'):
             if isinstance(inner, UWQuantity) and not isinstance(inner, UWexpression):
                 return _unwrap_atom(inner, mode)
             return inner
+        elif mode == 'symbolic_keep_constants':
+            # Expand non-constant UWexpressions one level (reveals the field /
+            # grad-v dependence of the viscosity); leave truly-constant atoms
+            # untouched as the SAME object so they survive to constants[].
+            # The predicate is shared with _extract_constants() so the set of
+            # atoms kept symbolic here is exactly the set routed to constants[]
+            # by getext() — they cannot drift apart.
+            from underworld3.utilities._jitextension import _is_truly_constant
+            if _is_truly_constant(atom, UWexpression):
+                return atom
+            return atom.sym
         else:  # symbolic
             return atom.sym
 
     # UWQuantity (not wrapped in UWexpression)
     if isinstance(atom, UWQuantity):
-        if mode == 'nondimensional':
+        if mode in ('nondimensional', 'symbolic_keep_constants'):
+            # A bare UWQuantity is never a constants[] entry (those are
+            # UWexpression atoms), so for keep-constants we resolve it to a
+            # value just like nondimensional rather than leaving it unresolved.
             import underworld3
             if underworld3._is_scaling_active() and atom.has_units:
                 try:
@@ -189,6 +209,9 @@ def unwrap_expression(expr, mode='nondimensional', depth=None):
         mode: 'nondimensional' - for JIT compilation and evaluation (uses .data)
               'dimensional' - for user display (uses .value)
               'symbolic' - just expand .sym structure
+              'symbolic_keep_constants' - expand .sym structure but stop at
+                  truly-constant UWexpressions (keep them as symbols for
+                  constants[]). Use before Jacobian differentiation.
         depth: Maximum expansion depth (None = complete expansion)
 
     Returns:
