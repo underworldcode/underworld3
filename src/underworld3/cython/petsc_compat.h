@@ -45,6 +45,12 @@ PetscErrorCode DMSetAuxiliaryVec_UW(DM dm, DMLabel label, PetscInt value, PetscI
     return DMSetAuxiliaryVec(dm, label, value, part, aux);
 }
 
+PetscErrorCode UW_PetscDSGetBoundaryWeakForm(PetscDS ds, PetscInt bd, PetscWeakForm *wf)
+{
+    PetscCall(PetscDSGetBoundary(ds, bd, wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
+    return PETSC_SUCCESS;
+}
+
 // copy paste function signitures from $PETSC_DIR/include/petscds.h - would be nice to automate this.
 #define UW_SIG_F0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]
 #define UW_SIG_G0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]

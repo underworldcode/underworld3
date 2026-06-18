@@ -6703,6 +6703,131 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.restoreLocalVec(xlocal)
             self.dm.restoreGlobalVec(gvec)
 
+    def compute_boundary_residual_fields(self, boundary, time=None, verbose=False, residual_field_id=0):
+        """Return the registered FEM boundary residual for one named boundary.
+
+        This is a low-level diagnostic hook for weak-boundary-condition
+        debugging. It assembles PETSc's boundary residual terms registered on
+        ``boundary`` through ``DMPlexComputeBdResidualSingle``. For Nitsche
+        free slip, this includes the full registered weak boundary residual,
+        not only the scalar penalty term. The returned arrays are local to each
+        rank and have the same flat layout as the corresponding MeshVariable
+        PETSc vector.
+        """
+        cdef DM _time_dm_boundary_residual
+        cdef DM dm
+        cdef Vec xvec
+        cdef Vec fvec
+        cdef PetscFormKey key
+        cdef PetscDS ds
+        cdef PetscWeakForm wf
+        cdef DMLabel c_label
+
+        self._build(verbose, False, None)
+
+        boundary_bc = None
+        for bc in self.natural_bcs:
+            if bc.boundary == boundary and bc.f_id == residual_field_id:
+                boundary_bc = bc
+                break
+        if boundary_bc is None:
+            raise ValueError(
+                f"No natural/Nitsche boundary residual is registered for "
+                f"boundary '{boundary}' and field {residual_field_id}."
+            )
+
+        if time is not None:
+            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                t_nd = float(uw.non_dimensionalise(time))
+            else:
+                t_nd = float(time)
+            _time_dm_boundary_residual = self.dm
+            UW_DMSetTime(_time_dm_boundary_residual.dm, t_nd)
+
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+
+        gvec = self.dm.getGlobalVec()
+        xlocal = self.dm.getLocalVec()
+        flocal = self.dm.getLocalVec()
+        gvec.setArray(0.0)
+        xlocal.setArray(0.0)
+        flocal.setArray(0.0)
+
+        try:
+            for name, var in self.fields.items():
+                sgvec = gvec.getSubVector(self._subdict[name][0])
+                subdm = self._subdict[name][1]
+                subdm.localToGlobal(var.vec, sgvec)
+                gvec.restoreSubVector(self._subdict[name][0], sgvec)
+
+            self.dm.globalToLocal(gvec, xlocal)
+
+            dm = self.dm
+            xvec = xlocal
+            fvec = flocal
+            CHKERRQ(DMGetDS(dm.dm, &ds))
+            CHKERRQ(UW_PetscDSGetBoundaryWeakForm(
+                ds, <PetscInt>boundary_bc.PETScID, &wf,
+            ))
+
+            c_label = self.dm.getLabel("UW_Boundaries")
+            key.label = c_label.dmlabel
+            key.value = <PetscInt>boundary_bc.boundary_label_val
+            key.field = <PetscInt>residual_field_id
+            key.part = 0
+            CHKERRQ(DMPlexComputeBdResidualSingle(
+                dm.dm, wf, key, xvec.vec, NULL, 0.0, fvec.vec,
+            ))
+
+            local_section = self.dm.getLocalSection()
+            pStart, pEnd = local_section.getChart()
+            out = {}
+
+            for name, var in self.fields.items():
+                field_id = getattr(var, "_solver_field_id", None)
+                if field_id is None:
+                    field_id = getattr(var, "field_id", None)
+                if field_id is None:
+                    continue
+
+                is_field = None
+                created_is_field = False
+                if name == "velocity" and getattr(self, "_velocity_is", None) is not None:
+                    is_field = self._velocity_is
+                elif name == "pressure" and getattr(self, "_pressure_is", None) is not None:
+                    is_field = self._pressure_is
+                elif getattr(self, "_multiplier_is", None) is not None and name in self._multiplier_is:
+                    is_field = self._multiplier_is[name]
+                else:
+                    indices = []
+                    for point in range(pStart, pEnd):
+                        dof = local_section.getFieldDof(point, field_id)
+                        if dof > 0:
+                            offset = local_section.getFieldOffset(point, field_id)
+                            for i in range(dof):
+                                indices.append(offset + i)
+
+                    is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+                    created_is_field = True
+
+                try:
+                    subvec = flocal.getSubVector(is_field)
+                    try:
+                        out[name] = np.array(subvec.array, copy=True)
+                    finally:
+                        flocal.restoreSubVector(is_field, subvec)
+                finally:
+                    if created_is_field:
+                        is_field.destroy()
+
+            return out
+        finally:
+            self.dm.restoreLocalVec(flocal)
+            self.dm.restoreLocalVec(xlocal)
+            self.dm.restoreGlobalVec(gvec)
+
     @timing.routine_timer_decorator
     def solve(self,
               zero_init_guess: bool = True,
