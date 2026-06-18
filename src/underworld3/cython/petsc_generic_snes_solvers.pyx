@@ -109,15 +109,16 @@ class SolverBaseClass(uw_object):
           mean pressure on a surface so the pressure null space is pinned
           (see :meth:`set_pressure_gauge` on the Stokes solver).
 
-        Callbacks run in registration order. Registering one forces a re-setup so
-        the PETSc ``SNESSetUpdate`` hook is attached. With no callbacks registered
-        no hook is installed and the solve path is byte-for-byte unchanged.
+        Callbacks run in registration order. The ``SNESSetUpdate`` hook is
+        (re)attached at the start of every solve (in ``_snes_solve_with_retries``
+        via ``_attach_snes_update_hook``), so registering a callback needs no
+        rebuild or function rewire. With no callbacks registered no hook is
+        installed and the solve path is byte-for-byte unchanged.
         """
         self._snes_update_callbacks.append(callback)
-        self._needs_function_rewire = True
         return callback
 
-    def _maybe_install_snes_update(self):
+    def _attach_snes_update_hook(self):
         """Attach the SNESSetUpdate dispatcher iff callbacks are registered."""
         if self.snes is not None and self._snes_update_callbacks:
             self.snes.setUpdate(self._dispatch_snes_update)
@@ -861,14 +862,12 @@ class SolverBaseClass(uw_object):
         """
         # Attach the per-iteration callback dispatcher here (after all
         # setFromOptions in the solve path). No-op when no callbacks registered.
-        self._maybe_install_snes_update()
+        self._attach_snes_update_hook()
         self.snes.solve(None, gvec)
-        if divergence_retries <= 0:
-            return
         for _r in range(divergence_retries):
             reason = self.snes.getConvergedReason()
             if reason >= 0:
-                return
+                break
             if verbose and uw.mpi.rank == 0:
                 print(
                     f"SNES DIVERGED (reason={reason}); "
@@ -876,6 +875,14 @@ class SolverBaseClass(uw_object):
                     flush=True,
                 )
             self.snes.solve(None, gvec)
+
+        # SNESSetUpdate fires only at the START of each iteration, so the final
+        # converged iterate is otherwise un-hooked. Apply the callbacks once more
+        # to it — for every solver — so a pressure gauge pins the FINAL pressure
+        # and any auxiliary field is consistent with the converged solution.
+        # No-op when no callbacks registered.
+        if self._snes_update_callbacks:
+            self._dispatch_snes_update(self.snes, -1)
 
     @timing.routine_timer_decorator
     def _build(self,
@@ -6981,12 +6988,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._attach_stokes_nullspace()
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
-        # SNESSetUpdate fires only at the START of each iteration, so the final
-        # converged iterate is otherwise un-hooked. Apply the callbacks once more
-        # to it (e.g. so a pressure gauge pins the FINAL pressure, and an
-        # auxiliary field is consistent with the converged solution).
-        if self._snes_update_callbacks:
-            self._dispatch_snes_update(self.snes, -1)
+        # (The final-iterate callback dispatch is centralised in
+        # _snes_solve_with_retries so every solver gets it.)
 
         cdef DM dm = self.dm
         cdef Vec clvec = self.dm.getLocalVec()

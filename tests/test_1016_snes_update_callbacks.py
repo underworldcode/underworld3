@@ -120,6 +120,28 @@ def test_scalar_solver_callback_sees_driven_boundary():
     assert np.allclose(seen["top"], 3.0, atol=1.0e-8), f"phi on Top = {seen['top']}"
 
 
+def test_final_iterate_dispatch_on_scalar_solver():
+    # The callbacks are documented as being applied once to the final converged
+    # iterate (SNESSetUpdate only fires at iteration START). That final dispatch
+    # is centralised in _snes_solve_with_retries, so non-Stokes solvers get it
+    # too -- signalled by an iteration == -1 call after the solve completes.
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+    phi = uw.discretisation.MeshVariable("phif", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=phi)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 1.0
+    for bc in ("Bottom", "Top", "Left", "Right"):
+        poisson.add_dirichlet_bc(0.0, bc)
+
+    iters = []
+    poisson.add_update_callback(lambda solver, iteration: iters.append(iteration))
+    poisson.solve()
+
+    assert -1 in iters, f"final-iterate dispatch did not fire on scalar solver: {iters}"
+
+
 def test_vector_solver_callback_sees_driven_boundary():
     # Vector-solver analogue: a callback on a Vector_Projection reads both
     # components of the field on a non-zero Dirichlet boundary as imposed.
