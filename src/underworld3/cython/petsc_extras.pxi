@@ -44,6 +44,7 @@ cdef extern from "petsc_compat.h":
     PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, PetscInt *, void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
     PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
     PetscErrorCode UW_PetscDSGetBoundaryWeakForm(PetscDS, PetscInt, PetscWeakForm *)
+    PetscErrorCode UW_DMPlexComputeResidualByKeyVolumeOnly( PetscDM, PetscFormKey, PetscIS, PetscReal, PetscVec, PetscVec, PetscReal, PetscVec, void *)
     # PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*)
 
     PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*)

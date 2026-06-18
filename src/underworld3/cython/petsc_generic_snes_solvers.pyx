@@ -6582,19 +6582,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if uw.mpi.rank == 0 and self.verbose:
             print(f"Region DS: inactive region '{label_name}' gets trivial DS", flush=True)
 
-    def compute_volume_residual_fields(self, time=None, verbose=False, cell_indices=None, residual_field_id=None):
+    def compute_volume_residual_fields(
+        self,
+        time=None,
+        verbose=False,
+        cell_indices=None,
+        residual_field_id=None,
+        include_boundary_terms=False,
+    ):
         """Return PETSc FEM residual fields in each solver field's local layout.
 
         This is a low-level diagnostic hook for post-processing derived
         boundary quantities such as consistent-boundary-flux traction. By
         default it calls PETSc's ``DMPlexSNESComputeResidualFEM`` directly. If
         ``cell_indices`` is supplied, it instead calls
-        ``DMPlexComputeResidualByKey`` on those local cells and the requested
-        test field. PETSc's keyed residual path also appends registered
-        boundary residuals, so this is a total residual diagnostic, not a
-        volume-only CBF recovery. The returned arrays are local to each rank
-        and have the same flat layout as the corresponding MeshVariable PETSc
-        vector.
+        a UW wrapper around ``DMPlexComputeResidualByKey`` on a cloned DM with
+        a copied ``PetscDS`` that has no registered boundary objects, so the
+        selected-cell path returns volume terms only. Set
+        ``include_boundary_terms=True`` to call PETSc's original keyed
+        residual behavior, which appends registered boundary residuals. The
+        returned arrays are local to each rank and have the same flat layout as
+        the corresponding MeshVariable PETSc vector.
         """
         cdef DM _time_dm_residual
         cdef DM dm
@@ -6602,6 +6610,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         cdef Vec fvec
         cdef PetscFormKey key
         cdef IS ccell_is
+        cdef PetscReal residual_time = 0.0
+        cdef PetscReal implicit_form_time = <PetscReal>-1.7976931348623157e308
 
         self._build(verbose, False, None)
 
@@ -6612,6 +6622,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 t_nd = float(time)
             _time_dm_residual = self.dm
             UW_DMSetTime(_time_dm_residual.dm, t_nd)
+            residual_time = <PetscReal>t_nd
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -6650,10 +6661,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     key.value = 0
                     key.field = <PetscInt>residual_field_id
                     key.part = 0
-                    CHKERRQ(DMPlexComputeResidualByKey(
-                        dm.dm, key, ccell_is.iset, <PetscReal>-1.7976931348623157e308,
-                        xvec.vec, NULL, 0.0, fvec.vec, NULL,
-                    ))
+                    if include_boundary_terms:
+                        CHKERRQ(DMPlexComputeResidualByKey(
+                            dm.dm, key, ccell_is.iset, implicit_form_time,
+                            xvec.vec, NULL, residual_time, fvec.vec, NULL,
+                        ))
+                    else:
+                        CHKERRQ(UW_DMPlexComputeResidualByKeyVolumeOnly(
+                            dm.dm, key, ccell_is.iset, implicit_form_time,
+                            xvec.vec, NULL, residual_time, fvec.vec, NULL,
+                        ))
                 finally:
                     cell_is.destroy()
 
