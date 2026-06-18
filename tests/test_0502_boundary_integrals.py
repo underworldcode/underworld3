@@ -320,8 +320,15 @@ def _get_spherical_internal_mesh():
     return _mesh_spherical_internal
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_bd_integral_spherical_internal_boundary_areas():
-    """SphericalShellInternalBoundary preserves Lower/Internal/Upper labels."""
+    """SphericalShellInternalBoundary preserves Lower/Internal/Upper labels.
+
+    Overrides the module-level level_1/tier_a marks: this builds a full 3D
+    gmsh+embed mesh (not a seconds-scale level_1 op), and the embed generator
+    is not yet production-soaked for tier_a. See PR #242 review.
+    """
 
     mesh_spherical = _get_spherical_internal_mesh()
     expected_areas = {

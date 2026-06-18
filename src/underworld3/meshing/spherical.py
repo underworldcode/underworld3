@@ -557,9 +557,13 @@ def SphericalShellInternalBoundary(
         Internal = 12
         Upper = 13
 
-    class regions(Enum):
-        Inner = 101
-        Outer = 102
+    # NOTE: this generator builds a SINGLE shell volume [radiusInner, radiusOuter]
+    # with the radiusInternal sphere *embedded* as a conformal internal surface
+    # (the `Internal` boundary). Unlike the old occ.fragment approach it does NOT
+    # split the volume into Inner/Outer region sub-volumes, so no Inner/Outer
+    # region physical groups exist and `mesh.regions` is left as None — region
+    # extraction is intentionally unsupported here (use the `Internal` boundary
+    # label for the internal interface). See PR #242.
 
     import gmsh
 
@@ -741,7 +745,9 @@ def SphericalShellInternalBoundary(
 
     # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
 
-    new_mesh.regions = regions
+    # Single-volume embed design (see note above): no Inner/Outer region groups
+    # exist on the DM, so leave mesh.regions as None rather than advertising
+    # labels that extract_region() cannot resolve.
 
     # Full spherical shell with internal boundary: 3 rigid rotation modes
     x, y, z = new_mesh.X
