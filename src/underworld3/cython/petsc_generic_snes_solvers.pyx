@@ -6583,17 +6583,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             print(f"Region DS: inactive region '{label_name}' gets trivial DS", flush=True)
 
     def compute_volume_residual_fields(self, time=None, verbose=False, cell_indices=None, residual_field_id=None):
-        """Return the volume-only FEM residual in each solver field's local layout.
+        """Return PETSc FEM residual fields in each solver field's local layout.
 
         This is a low-level diagnostic hook for post-processing derived
         boundary quantities such as consistent-boundary-flux traction. By
         default it calls PETSc's ``DMPlexSNESComputeResidualFEM`` directly. If
         ``cell_indices`` is supplied, it instead calls
         ``DMPlexComputeResidualByKey`` on those local cells and the requested
-        test field. Boundary residuals registered through natural, Nitsche, or
-        multiplier boundary terms are not included. The returned arrays are
-        local to each rank and have the same flat layout as the corresponding
-        MeshVariable PETSc vector.
+        test field. PETSc's keyed residual path also appends registered
+        boundary residuals, so this is a total residual diagnostic, not a
+        volume-only CBF recovery. The returned arrays are local to each rank
+        and have the same flat layout as the corresponding MeshVariable PETSc
+        vector.
         """
         cdef DM _time_dm_residual
         cdef DM dm
