@@ -1,20 +1,26 @@
 # Per-iteration solver callbacks
 
-UW3 solvers can run a user callback **at the start of every nonlinear (Newton/SNES)
+Any UW3 solver can run a user callback **at the start of every nonlinear (Newton/SNES)
 iteration**, via PETSc's `SNESSetUpdate`. This is the right hook whenever something
 the solve depends on must be *recomputed from the current iterate* as the nonlinear
 solve proceeds — rather than only once per timestep.
 
 ```python
-stokes.add_update_callback(my_callback)   # my_callback(solver, iteration)
+solver.add_update_callback(my_callback)   # my_callback(solver, iteration)
 ```
 
 Before each call the current Newton iterate is scattered into the solver's field
-variables (so the callback can read `v`, `p`, … at the current iterate); after the
-call the (possibly modified) fields are gathered back into the iterate, and the mesh
-auxiliary vector is refreshed so the next residual evaluation sees any changes. The
-callbacks are also applied once to the final converged iterate. With no callback
-registered the solve path is unchanged.
+variable(s) — its single unknown for a scalar/vector solver, or velocity, pressure
+(and any block-constraint multipliers) for Stokes — so the callback can read the
+fields at the current iterate. After the call the (possibly modified) fields are
+gathered back into the iterate, and the mesh auxiliary vector is refreshed so the
+next residual evaluation sees any changes. The callbacks are also applied once to the
+final converged iterate. With no callback registered the solve path is unchanged.
+
+The scattered fields are correct **everywhere**, including on driven (non-zero
+Dirichlet) boundaries: the scatter mirrors the post-solve copy-back —
+`globalToLocal` followed by `DMPlexSNESComputeBoundaryFEM` — so a callback that reads
+a field next to a driven boundary sees the imposed value, not a stale one.
 
 ```{note}
 Callbacks run in registration order and receive `(solver, iteration)`. They may
@@ -79,15 +85,9 @@ stokes.solve()
 
 At convergence `ebar` is the nonlocal average of the strain rate of the converged
 velocity, and the regularised yield law has been applied self-consistently within the
-nonlinear solve (rather than lagged across timesteps).
-
-```{warning}
-The field scatter currently delivers the iterate's **interior** and zero-Dirichlet
-boundary velocity exactly; the boundary-FEM-correct scatter for **non-zero Dirichlet
-velocity** DOFs (driven boundaries) is being finalised. Until then, prefer this
-pattern with no-slip / natural driving, where the velocity seen by the callback is
-exact everywhere.
-```
+nonlinear solve (rather than lagged across timesteps). Because the scatter is
+boundary-correct (see above), the smoother sees the imposed velocity even where the
+shear band meets a driven wall.
 
 ## When to use this vs. a timestep update
 
