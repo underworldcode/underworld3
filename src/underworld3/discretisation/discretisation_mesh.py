@@ -1914,9 +1914,21 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, "_vertex_map") and self._vertex_map is not None:
             return self._vertex_map
 
-        # Use cached KDTree from coordinate variable
-        tree = self.X._get_kdtree()
-        dists, indices = tree.query(self.parent.X.coords_nd, sqr_dists=False)
+        # Build a KDTree directly on the coordinate arrays rather than
+        # ``self.X._get_kdtree()`` — ``mesh.X`` is a CoordinateSystem, which has
+        # no ``_get_kdtree`` (that lives on MeshVariable/swarm vars), so the old
+        # call raised AttributeError on every extract_region (UW3 issue #197).
+        # This mirrors the proven inline path in ``extract_surface``: submesh
+        # vertices are an exact subset of the parent's, so the 1e-10 coincidence
+        # match is bit-exact.
+        import underworld3 as _uw
+
+        sub_coords = numpy.asarray(self._coords)
+        parent_coords = numpy.asarray(self.parent._coords)
+        tree = _uw.kdtree.KDTree(sub_coords)
+        dists, indices = tree.query(parent_coords, sqr_dists=False)
+        dists = numpy.asarray(dists).reshape(-1)
+        indices = numpy.asarray(indices).reshape(-1)
         matched = dists < 1.0e-10
 
         # parent_rows[i] -> sub_rows[i]: matched vertex pairs
