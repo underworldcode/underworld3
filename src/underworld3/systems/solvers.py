@@ -3229,7 +3229,34 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     V_fn : MeshVariable or sympy.Basic
         Velocity field for advection.
     order : int, default=1
-        Time integration order (1 or 2).
+        Time integration order. Note the scheme has **two** order knobs that
+        must be paired consistently (see ``theta``):
+
+        - the advective time-derivative ``DuDt`` carries the **BDF** order of
+          the backward difference along the characteristic;
+        - the diffusive flux ``DFDt`` carries the **Adams-Moulton/θ** flux
+          integrator.
+
+        When ``DuDt`` is built internally (``DuDt=None``) it is fixed at BDF
+        order 1, so this ``order`` raises only the *flux* AM order — i.e.
+        ``order=1, theta=0.5`` is the canonical **SLCN** (BDF1 difference +
+        Crank-Nicolson flux), the standard second-order scheme. To run
+        **SL-BDF2** (BDF2 difference + Backward-Euler-centred flux, second
+        order without CN's spurious resonance) supply an explicit order-2
+        ``DuDt`` and set ``theta=1.0`` on the flux:
+
+        .. code-block:: python
+
+           duDt = uw.systems.ddt.SemiLagrangian(
+               mesh, T.sym, V_fn, vtype=uw.VarType.SCALAR,
+               degree=T.degree, continuous=T.continuous, order=2)
+           adv = uw.systems.AdvDiffusionSLCN(mesh, T, V_fn, DuDt=duDt, order=1)
+           adv.DFDt.theta = 1.0   # flux implicit at n+1 (BDF2-consistent)
+
+        A BDF2 stencil with a Crank-Nicolson flux (``order=2`` + ``theta=0.5``)
+        centres the two sides at different times and is **not** a consistent
+        second-order scheme. See
+        ``docs/advanced/semi-lagrangian-time-integration.md``.
     restore_points_func : callable, optional
         Function to restore particles to valid domain.
     verbose : bool, default=False
@@ -3274,6 +3301,23 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
           SLCN+CN ringing dominates the discretisation error.
         - ``0.0``: Forward Euler — unstable for stiff diffusion;
           included for completeness.
+    old_frame_traceback : bool, default=False
+        Use the old-frame semi-Lagrangian reach-back for the advective
+        ``DuDt`` history on a moving mesh (free surface or interior-node
+        adaptation). Forwarded to the internally-constructed ``DuDt``
+        only — the diffusive ``DFDt`` keeps the standard ALE path
+        (validated sufficient at Ra=1e5; the unstable mode rides the
+        advective scalar, not the dissipative flux).
+
+        When ``True``, the trace-back computes the departure foot from
+        the PHYSICAL velocity and samples ``psi_star`` on the mesh
+        ephemerally restored to the previous-step geometry, instead of
+        the lossy ``v_mesh = Δx/dt`` fold on the new mesh. This cures the
+        high-Ra free-surface convection blow-up (T leaves [0,1] ~step 20
+        at Ra=1e5). **Contract:** pass the physical velocity as
+        ``V_fn`` (NOT ``v − v_mesh``) — the old-frame trace-back must not
+        double-compensate the mesh motion. See
+        ``docs/developer/design/lagged-clone-sl-history.md``.
 
     Notes
     -----
@@ -3286,6 +3330,11 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     algorithm for the numerical solution of advection-diffusion problems.
     *Geochemistry, Geophysics, Geosystems*, 7(4).
     https://doi.org/10.1029/2005GC001073
+
+    Bonaventura, L., Calzola, E., Carlini, E., & Ferretti, R. (2021). Second
+    order fully semi-Lagrangian discretizations of advection-diffusion-reaction
+    systems. *Journal of Scientific Computing*, 88, 23.
+    https://doi.org/10.1007/s10915-021-01518-8 (SL-BDF2 vs SL-CN).
 
     See Also
     --------
@@ -3316,6 +3365,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         monotone_mode: Optional[str] = None,
         theta: float = 0.5,
+        old_frame_traceback: bool = False,
     ):
         ## Parent class will set up default values etc
         super().__init__(
@@ -3363,6 +3413,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 smoothing=0.0,
                 monotone_mode=monotone_mode,
                 theta=theta,
+                old_frame_traceback=old_frame_traceback,
             )
 
         else:
