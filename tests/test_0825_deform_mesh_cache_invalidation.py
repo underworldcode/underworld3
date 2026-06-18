@@ -57,7 +57,11 @@ def test_topology_version_bumps_on_deform():
     coords = np.asarray(mesh.X.coords)
     perturbed = coords.copy()
     perturbed[:, 0] += 1.0e-3 * coords[:, 1]
-    mesh._deform_mesh(perturbed)
+    # _deform_mesh is the internal primitive (gated against bare use on a
+    # live mesh); this test deliberately exercises it, so open the
+    # sanctioned _coord_mutation scope.
+    with mesh._coord_mutation():
+        mesh._deform_mesh(perturbed)
     assert mesh._topology_version > before, (
         "_topology_version should be incremented by _deform_mesh")
 
@@ -69,7 +73,8 @@ def test_evaluation_hash_invalidated_on_deform():
     coords = np.asarray(mesh.X.coords)
     perturbed = coords.copy()
     perturbed[:, 1] += 5.0e-4 * coords[:, 0]
-    mesh._deform_mesh(perturbed)
+    with mesh._coord_mutation():
+        mesh._deform_mesh(perturbed)
     assert mesh._evaluation_hash is None
     assert mesh._evaluation_interpolated_results is None
 
@@ -83,7 +88,8 @@ def test_dminterpolation_cache_invalidated_on_deform():
     coords = np.asarray(mesh.X.coords)
     perturbed = coords.copy()
     perturbed[:, 1] += 1.0e-3 * coords[:, 0]
-    mesh._deform_mesh(perturbed)
+    with mesh._coord_mutation():
+        mesh._deform_mesh(perturbed)
     n_after = len(getattr(
         mesh._dminterpolation_cache, "_cache", {}))
     assert n_after == 0, (

@@ -25,10 +25,10 @@ Typical uses:
 
 The same entry points serve two storage modes — in-memory for fast
 intra-run stash, and on-disk for persistent restart / postprocessing.
-You pick by giving (or not giving) a ``file=``. The existing
-``mesh.write_timestep()`` / ``read_timestep()`` and
-``mesh.write_checkpoint()`` / ``MeshVariable.read_checkpoint()``
-paths are unchanged and continue to serve their existing roles (see
+You pick by giving (or not giving) a ``file=``. Mesh-variable output uses
+``mesh.write_timestep()`` with explicit payload flags; reload uses either
+``MeshVariable.read_timestep()`` for coordinate/KDTree remap or
+``MeshVariable.read_checkpoint()`` for PETSc-native reload (see
 "Choosing between paths" at the bottom).
 
 ## The API
@@ -245,8 +245,8 @@ classes. For a Python-side summary use
 |---|---|
 | Backtrack a few steps inside a running script (RK staging, adaptive Δt, predictor–corrector probes) | ``save_state()`` → token |
 | Persist whole-model state across runs (crash recovery, bisection studies, full restart) | ``save_state(file=…)`` / ``load_state(file=…)`` |
-| Restart from a previous run on a *different* rank count or remap onto a *different* resolution | ``mesh.write_timestep()`` / ``MeshVariable.read_timestep()`` (KDTree remap) |
-| Efficient same-rank restart writing only specific variables for postprocessing | ``mesh.write_checkpoint()`` / ``MeshVariable.read_checkpoint()`` (PETSc DMPlex per-variable) |
+| Restart from a previous run on a *different* rank count or remap onto a *different* resolution | ``mesh.write_timestep(...)`` / ``MeshVariable.read_timestep()`` (coordinate/KDTree remap) |
+| Efficient same-rank restart writing only specific variables for postprocessing | ``mesh.write_timestep(petsc_reload=True)`` / ``MeshVariable.read_checkpoint()`` (PETSc DMPlex per-variable) |
 | Visualisation for ParaView (XDMF + per-step HDF5) | ``mesh.write_timestep(create_xdmf=True)`` |
 
 ## Related

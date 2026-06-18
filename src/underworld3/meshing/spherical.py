@@ -557,13 +557,16 @@ def SphericalShellInternalBoundary(
         Internal = 12
         Upper = 13
 
-    # NOTE: this generator builds a SINGLE shell volume [radiusInner, radiusOuter]
-    # with the radiusInternal sphere *embedded* as a conformal internal surface
-    # (the `Internal` boundary). Unlike the old occ.fragment approach it does NOT
-    # split the volume into Inner/Outer region sub-volumes, so no Inner/Outer
-    # region physical groups exist and `mesh.regions` is left as None — region
-    # extraction is intentionally unsupported here (use the `Internal` boundary
-    # label for the internal interface). See PR #242.
+    # This generator builds a SINGLE shell volume [radiusInner, radiusOuter] with
+    # the radiusInternal sphere *embedded* as a conformal internal surface (the
+    # `Internal` boundary). Because it is one OCC volume, gmsh cannot emit Inner/
+    # Outer region physical groups — so the Inner/Outer cell regions used by
+    # mesh.extract_region() are created AFTER import by classifying each cell by
+    # its centroid radius relative to radiusInternal (exact: the embedded surface
+    # is conformal, so no cell straddles it). See PR #242.
+    class regions(Enum):
+        Inner = 101
+        Outer = 102
 
     import gmsh
 
@@ -745,9 +748,29 @@ def SphericalShellInternalBoundary(
 
     # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
 
-    # Single-volume embed design (see note above): no Inner/Outer region groups
-    # exist on the DM, so leave mesh.regions as None rather than advertising
-    # labels that extract_region() cannot resolve.
+    new_mesh.regions = regions
+
+    # Materialise the Inner/Outer cell regions on the DM (single-volume embed
+    # design — see note above — so gmsh emitted no region groups). Classify each
+    # LOCAL cell by centroid radius vs radiusInternal: the embedded internal
+    # surface is conformal, so every cell lies wholly inside or outside it, and
+    # the test is geometric/rank-local (partition-independent — no SF needed).
+    # extract_region("Inner"/"Outer") filters the DM on these labels.
+    _region_dm = new_mesh.dm
+    _cStart, _cEnd = _region_dm.getHeightStratum(0)
+    for _rname in (regions.Inner.name, regions.Outer.name):
+        if _region_dm.hasLabel(_rname):
+            _region_dm.removeLabel(_rname)
+        _region_dm.createLabel(_rname)
+    _inner_label = _region_dm.getLabel(regions.Inner.name)
+    _outer_label = _region_dm.getLabel(regions.Outer.name)
+    for _c in range(_cStart, _cEnd):
+        _centroid = _region_dm.computeCellGeometryFVM(_c)[1]
+        _rc = float(np.linalg.norm(_centroid))
+        if _rc < radiusInternal:
+            _inner_label.setValue(_c, regions.Inner.value)
+        else:
+            _outer_label.setValue(_c, regions.Outer.value)
 
     # Full spherical shell with internal boundary: 3 rigid rotation modes
     x, y, z = new_mesh.X

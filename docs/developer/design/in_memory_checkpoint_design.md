@@ -49,33 +49,33 @@ benefits:
    paths, which surfaces gaps and bugs that disk-only checkpointing
    exposes only at quarterly-test cadence.
 
-## Two checkpoint paths today (audit-confirmed)
+## Two mesh-variable output paths
 
-The audit (read-only investigation, current `main`) confirmed two
-distinct on-disk paths in `src/underworld3/`:
+This design note predates the unified timestep writer. The current public API
+keeps the same two reload semantics, but exposes new output through
+`Mesh.write_timestep(...)`:
 
-**Path A — PETScSection-based (native checkpoint).**
-- `Mesh.write_checkpoint(...)` at `discretisation/discretisation_mesh.py:1892–1953`.
-- Uses `dm.sectionView(viewer, subdm)` and `dm.globalVectorView(viewer, subdm, var._gvec)`
-  through a `PETSc.ViewerHDF5()`.
-- Captures mesh topology, deformed coordinates, MV DOF values, and
-  swarm-variable values via the `_meshVar` proxy.
-- Lower-level; bound to the producing DM.
+**Coordinate-remap path.**
+- Write with `Mesh.write_timestep(...)`.
+- Read selected variables with `MeshVariable.read_timestep(...)`.
+- Uses `/fields` coordinate/value datasets and coordinate/KDTree remapping.
+- Can load data onto a different mesh or MPI decomposition.
 
-**Path B — write_timestep (visualization-oriented).**
-- `Mesh.write_timestep(...)` at `discretisation/discretisation_mesh.py:1750–1830`
-  and `Swarm.write_timestep(...)` at `swarm.py:3726–3810`.
-- Per-variable HDF5 + XDMF for ParaView; mixes `PETSc.ViewerHDF5()`
-  with direct `h5py` writes (`swarm.py:1772–1850`).
-- More flexible — can be re-loaded at different resolution /
-  decomposition; bulkier; the user-facing visualisation pipeline.
+**PETSc-native reload path.**
+- Write with `Mesh.write_timestep(..., petsc_reload=True)`.
+- Read selected variables with `MeshVariable.read_checkpoint(...)`.
+- Uses PETSc DMPlex topology, section, vector, and `PetscSF` metadata.
+- Intended for exact same-mesh finite-element vector reload.
 
-**For in-memory snapshot, Path A is the conceptual model.** Restore
-goes back to the same DM, so the resolution/decomposition flexibility
-of Path B is unneeded. But the in-memory backend will not actually use
-the HDF5 Viewer — it will copy section structure + global-vector data
-directly into numpy arrays. Same conceptual capture, different
-mechanism.
+`Mesh.write_checkpoint(...)` is retained as a compatibility wrapper for older
+scripts. New code should use `Mesh.write_timestep(..., petsc_reload=True)` for
+PETSc-native reload output.
+
+**For in-memory snapshot, the PETSc-native path is the conceptual model.**
+Restore goes back to the same DM, so the resolution/decomposition flexibility
+of coordinate remap is unneeded. But the in-memory backend does not use the
+HDF5 Viewer — it copies section structure and vector data directly into numpy
+arrays. Same conceptual capture, different mechanism.
 
 ## What state must be captured
 
@@ -352,7 +352,7 @@ section.
 In rough dependency order:
 
 1. **Backend abstraction layer.** Extract the "capture" logic from the
-   "store" logic in `Mesh.write_checkpoint()`. Introduce a
+   output-storage logic used for PETSc-native reload. Introduce a
    `CheckpointBackend` protocol (e.g., `save_section`, `save_vector`,
    `save_metadata`, `load_section`, `load_vector`, `load_metadata`).
    Shaped from day one to support both backends — the in-memory case
@@ -365,9 +365,8 @@ In rough dependency order:
    - `InMemoryBackend` — dict of numpy arrays. Trivial once the
      abstraction exists.
    - `OnDiskFullStateBackend` — single monolithic HDF5 file. Shares
-     PETSc-state serialisation with the existing `write_checkpoint`
-     path (already HDF5); adds Python-state serialisation as HDF5
-     attributes/groups.
+   PETSc-state serialisation with the existing PETSc-native reload path
+   (already HDF5); adds Python-state serialisation as HDF5 attributes/groups.
 3. **Adopt the serialisation contract for new solver-internal code.**
    Decision: option (C) — state as first-class dataclass (see "General
    serialisation contract" section). Any new algorithm-helper class

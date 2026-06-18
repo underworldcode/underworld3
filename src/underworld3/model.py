@@ -621,7 +621,7 @@ class Model(PintNativeModelMixin, BaseModel):
         With ``file=<path>``, writes a persistent on-disk snapshot at
         that path (plus a sibling ``.bulk/`` directory holding the
         bulk PETSc + swarm sidecars). Survives the process; suitable
-        for restart, postprocessing, transferring runs.
+        for same-model restart and postprocessing workflows.
 
         Either way the captured state is the full model: all
         registered meshes and mesh-variables, all swarms with

@@ -67,6 +67,11 @@ class SolverBaseClass(uw_object):
         self._pressure_is = None
         self._subdict = {}
 
+        # Per-Newton-iteration callbacks (PETSc SNESSetUpdate). Empty by default
+        # -> no hook is installed and the solve path is unchanged. See
+        # add_update_callback().
+        self._snes_update_callbacks = []
+
         # Preconditioner selection — see the `preconditioner` property.
         # `_pc_option_prefix` is set by subclasses that participate in the easy
         # FMG/GAMG switch ("" for scalar/vector, "fieldsplit_velocity_" for
@@ -87,6 +92,93 @@ class SolverBaseClass(uw_object):
         # tell "user set mg" from "we set mg" and would clobber their tuned
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
+
+    def add_update_callback(self, callback):
+        r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
+
+        The callback is invoked as ``callback(solver, iteration)``. Immediately
+        before the call the current Newton iterate is scattered into the solver's
+        field MeshVariables (so the callback can read ``v``, ``p``, ... at the
+        current iterate); immediately afterwards the (possibly modified) fields
+        are gathered back into the iterate. Typical uses:
+
+        - re-fire an auxiliary solve each iteration — e.g. a Helmholtz/Projection
+          smoother that supplies a regularised field the residual depends on
+          (gradient-plasticity / shear-band stabilisation);
+        - impose a gauge consistently inside the nonlinear solve — e.g. remove the
+          mean pressure on a surface so the pressure null space is pinned
+          (see :meth:`set_pressure_gauge` on the Stokes solver).
+
+        Callbacks run in registration order. Registering one forces a re-setup so
+        the PETSc ``SNESSetUpdate`` hook is attached. With no callbacks registered
+        no hook is installed and the solve path is byte-for-byte unchanged.
+        """
+        self._snes_update_callbacks.append(callback)
+        self._needs_function_rewire = True
+        return callback
+
+    def _maybe_install_snes_update(self):
+        """Attach the SNESSetUpdate dispatcher iff callbacks are registered."""
+        if self.snes is not None and self._snes_update_callbacks:
+            self.snes.setUpdate(self._dispatch_snes_update)
+
+    def _scatter_global_to_fields(self, gvec):
+        """Scatter the global iterate into the solver's field MeshVariable,
+        correct on driven (non-zero Dirichlet) boundaries.
+
+        Single-field solvers (scalar / vector / multi-component) store the whole
+        solution in ``self.u`` on ``self.dm``. A plain ``globalToLocal`` leaves a
+        field's non-zero Dirichlet (driven) boundary DOFs stale — those are not in
+        the global vector; they are imposed on the LOCAL vector by
+        ``DMPlexSNESComputeBoundaryFEM``. So a callback reading the field on a
+        driven boundary would otherwise see a wrong value. This mirrors the
+        post-solve copy-back: globalToLocal -> boundary FEM -> copy into the field.
+
+        Stokes overrides this to split its multi-field DM (see
+        ``SNES_Stokes_SaddlePt._scatter_global_to_fields``).
+        """
+        cdef DM dm = self.dm
+        cdef Vec clvec = self.dm.getLocalVec()
+        self.dm.globalToLocal(gvec, clvec)
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+        self.u.vec.array[:] = clvec.array[:]
+        self.dm.restoreLocalVec(clvec)
+
+        self.mesh._stale_lvec = True
+        base = getattr(self.u, "_base_var", self.u)
+        if hasattr(base, "_sync_lvec_to_gvec"):
+            base._sync_lvec_to_gvec()
+        if hasattr(base, "_canonical_data"):
+            base._canonical_data = None
+
+    def _gather_fields_to_global(self, gvec):
+        """Gather the solver's field MeshVariable back into the global iterate.
+
+        Single-field default (``localToGlobal`` drops the boundary DOFs, which are
+        re-imposed next iteration). Stokes overrides for its multi-field DM.
+        """
+        self.dm.localToGlobal(self.u.vec, gvec)
+
+    def _refresh_auxiliary_vec(self):
+        """Rebuild the mesh auxiliary vector so the residual / nested solves see the
+        current field values (callbacks may have changed v, p, or auxiliary fields)."""
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+
+    def _dispatch_snes_update(self, snes, iteration):
+        """PETSc SNESSetUpdate hook: sync iterate->fields, run callbacks, sync back.
+
+        The mesh auxiliary vector is refreshed (a) before callbacks, so a callback
+        reading v/p (e.g. a Helmholtz/Projection smoother) sees the current iterate,
+        and (b) after, so the outer residual sees any fields the callbacks updated.
+        """
+        gvec = snes.getSolution()
+        self._scatter_global_to_fields(gvec)
+        self._refresh_auxiliary_vec()
+        for callback in self._snes_update_callbacks:
+            callback(self, iteration)
+        self._gather_fields_to_global(gvec)
+        self._refresh_auxiliary_vec()
 
     @property
     def preconditioner(self):
@@ -767,6 +859,9 @@ class SolverBaseClass(uw_object):
         verbose : bool, default=False
             Log each retry on rank 0.
         """
+        # Attach the per-iteration callback dispatcher here (after all
+        # setFromOptions in the solve path). No-op when no callbacks registered.
+        self._maybe_install_snes_update()
         self.snes.solve(None, gvec)
         if divergence_retries <= 0:
             return
@@ -887,6 +982,11 @@ class SolverBaseClass(uw_object):
             if hasattr(self, "_velocity_is") and self._velocity_is is not None:
                 self._velocity_is.destroy()
                 self._velocity_is = None
+
+            if getattr(self, "_multiplier_is", None):
+                for mis in self._multiplier_is.values():
+                    mis.destroy()
+                self._multiplier_is = {}
 
             if hasattr(self, "_subdict") and self._subdict:
                 for name, (is_set, subdm) in self._subdict.items():
@@ -6846,6 +6946,130 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.restoreLocalVec(xlocal)
             self.dm.restoreGlobalVec(gvec)
 
+    def _ensure_local_field_index_sets(self, clvec, local_section):
+        """Build (once) and cache the LOCAL index sets that decompose a parent-DM
+        local vector into the per-field MeshVariable storage: velocity, pressure
+        and any block-constraint multipliers.
+
+        The index sets are state-independent given the section, so they are built
+        on first use and reused until a rebuild resets ``_pressure_is`` to None
+        (see ``_build``). Used both by the post-solve copy-back and the
+        mid-solve callback scatter (``_scatter_global_to_fields``).
+        """
+        if getattr(self, "_pressure_is", None) is not None:
+            return
+
+        # Function to get index set for a field
+        def get_local_field_is(section, field, unconstrained=False):
+            """
+            This function returns the index set of unconstrained points if True, or all points if False.
+            """
+            pStart, pEnd = section.getChart()
+            indices = []
+            for p in range(pStart, pEnd):
+                dof = section.getFieldDof(p, field)
+                if dof > 0:
+                    offset = section.getFieldOffset(p, field)
+                    if not unconstrained and self.Unknowns.p.continuous:
+                        indices.append(offset)
+                    else:
+                        cind = section.getFieldConstraintIndices(p, field)
+                        constrained = set(cind) if cind is not None else set()
+                        for i in range(dof):
+                            if i not in constrained:
+                                index = offset + i
+                                indices.append(index)
+            is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+            return is_field
+
+        # Field numbers (adjust based on your setup)
+        velocity_field_num = 0
+        pressure_field_num = 1
+
+        self._pressure_is = get_local_field_is(local_section, pressure_field_num)
+
+        # Multiplier fields (block-constrained Stokes). Build a local IS per
+        # multiplier so its DOFs can be (a) excluded from the velocity
+        # complement and (b) copied back into the multiplier MeshVariable.
+        # Guarded: empty dict for ordinary Stokes.
+        self._multiplier_is = {}
+        multiplier_indices = set()
+        for mvar in self._multipliers:
+            # unconstrained=False -> include ALL multiplier DOFs (the pinned
+            # interior ones are present in the LOCAL vec at 0), so the copy
+            # back into the full-domain MeshVariable is size-correct.
+            mis = get_local_field_is(local_section, mvar._solver_field_id, unconstrained=False)
+            self._multiplier_is[mvar._solver_field_name] = mis
+            multiplier_indices |= set(mis.getIndices())
+
+        # Get indices for velocity (complement of pressure and multipliers)
+        size = clvec.getLocalSize()
+        all_indices = set(range(size))
+        pressure_indices = set(self._pressure_is.getIndices())
+        velocity_indices = sorted(list(all_indices - pressure_indices - multiplier_indices))
+        self._velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
+
+    def _scatter_global_to_fields(self, gvec):
+        """Scatter the global iterate into the field MeshVariables, correctly on
+        driven (non-zero Dirichlet) boundaries.
+
+        The base-class scatter (per-field ``subdm.globalToLocal``) fills a field's
+        interior and *zero*-Dirichlet DOFs, but NOT its non-zero Dirichlet (driven)
+        boundary DOFs: those are not stored in the global vector — they are imposed
+        on the *local* vector by ``DMPlexSNESComputeBoundaryFEM``. A callback that
+        reads, e.g., the velocity on a lid would otherwise see stale values there
+        (measured ~35% error in the Helmholtz smoother test).
+
+        This override mirrors the post-solve copy-back: ``globalToLocal`` into a
+        parent-DM local vec, apply the boundary FEM, then split per-field via the
+        cached local index sets. Cache-invalidation tail matches the base method.
+        """
+        cdef DM dm = self.dm
+        cdef Vec clvec = self.dm.getLocalVec()
+        self.dm.globalToLocal(gvec, clvec)
+        ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
+
+        local_section = self.dm.getLocalSection()
+        self._ensure_local_field_index_sets(clvec, local_section)
+
+        for name, var in self.fields.items():
+            if name == 'velocity':
+                subvec = clvec.getSubVector(self._velocity_is)
+                var.vec.array[:] = subvec.array[:]
+                clvec.restoreSubVector(self._velocity_is, subvec)
+            elif name == 'pressure':
+                subvec = clvec.getSubVector(self._pressure_is)
+                var.vec.array[:] = subvec.array[:]
+                clvec.restoreSubVector(self._pressure_is, subvec)
+            elif name in self._multiplier_is:
+                mis = self._multiplier_is[name]
+                subvec = clvec.getSubVector(mis)
+                var.vec.array[:] = subvec.array[:]
+                clvec.restoreSubVector(mis, subvec)
+
+        self.dm.restoreLocalVec(clvec)
+
+        # Cache invalidation (identical to the base-class scatter)
+        self.mesh._stale_lvec = True
+        for name, var in self.fields.items():
+            base = getattr(var, "_base_var", var)
+            if hasattr(base, "_sync_lvec_to_gvec"):
+                base._sync_lvec_to_gvec()
+            if hasattr(base, "_canonical_data"):
+                base._canonical_data = None
+
+    def _gather_fields_to_global(self, gvec):
+        """Gather velocity / pressure / multiplier fields back into the global
+        iterate via the per-field sub-DMs (the multi-field counterpart of the
+        single-field base-class gather)."""
+        for name, var in self.fields.items():
+            if name not in self._subdict:
+                continue
+            gis, subdm = self._subdict[name]
+            sgvec = gvec.getSubVector(gis)
+            subdm.localToGlobal(var.vec, sgvec)
+            gvec.restoreSubVector(gis, sgvec)
+
     @timing.routine_timer_decorator
     def solve(self,
               zero_init_guess: bool = True,
@@ -7021,6 +7245,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._attach_stokes_nullspace()
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
+        # SNESSetUpdate fires only at the START of each iteration, so the final
+        # converged iterate is otherwise un-hooked. Apply the callbacks once more
+        # to it (e.g. so a pressure gauge pins the FINAL pressure, and an
+        # auxiliary field is consistent with the converged solution).
+        if self._snes_update_callbacks:
+            self._dispatch_snes_update(self.snes, -1)
+
         cdef DM dm = self.dm
         cdef Vec clvec = self.dm.getLocalVec()
         self.dm.globalToLocal(gvec, clvec)
@@ -7032,59 +7263,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # get local section
         local_section = self.dm.getLocalSection()
 
-        # Get index sets for solution decomposition (velocity and pressure)
-        # We cache these to avoid expensive per-solve Python list allocations and IS creation
-        if not hasattr(self, "_pressure_is") or self._pressure_is is None:
-
-            # Function to get index set for a field
-            def get_local_field_is(section, field, unconstrained=False):
-                """
-                This function returns the index set of unconstrained points if True, or all points if False.
-                """
-                pStart, pEnd = section.getChart()
-                indices = []
-                for p in range(pStart, pEnd):
-                    dof = section.getFieldDof(p, field)
-                    if dof > 0:
-                        offset = section.getFieldOffset(p, field)
-                        if not unconstrained and self.Unknowns.p.continuous:
-                            indices.append(offset)
-                        else:
-                            cind = section.getFieldConstraintIndices(p, field)
-                            constrained = set(cind) if cind is not None else set()
-                            for i in range(dof):
-                                if i not in constrained:
-                                    index = offset + i
-                                    indices.append(index)
-                is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-                return is_field
-
-            # Field numbers (adjust based on your setup)
-            velocity_field_num = 0
-            pressure_field_num = 1
-
-            self._pressure_is = get_local_field_is(local_section, pressure_field_num)
-
-            # Multiplier fields (block-constrained Stokes). Build a local IS per
-            # multiplier so its DOFs can be (a) excluded from the velocity
-            # complement and (b) copied back into the multiplier MeshVariable.
-            # Guarded: empty dict for ordinary Stokes.
-            self._multiplier_is = {}
-            multiplier_indices = set()
-            for mvar in self._multipliers:
-                # unconstrained=False -> include ALL multiplier DOFs (the pinned
-                # interior ones are present in the LOCAL vec at 0), so the copy
-                # back into the full-domain MeshVariable is size-correct.
-                mis = get_local_field_is(local_section, mvar._solver_field_id, unconstrained=False)
-                self._multiplier_is[mvar._solver_field_name] = mis
-                multiplier_indices |= set(mis.getIndices())
-
-            # Get indices for velocity (complement of pressure and multipliers)
-            size = clvec.getLocalSize()
-            all_indices = set(range(size))
-            pressure_indices = set(self._pressure_is.getIndices())
-            velocity_indices = sorted(list(all_indices - pressure_indices - multiplier_indices))
-            self._velocity_is = PETSc.IS().createGeneral(velocity_indices, comm=PETSc.COMM_SELF)
+        # Get index sets for solution decomposition (velocity, pressure, multipliers).
+        # Built once and cached (shared with the mid-solve callback scatter).
+        self._ensure_local_field_index_sets(clvec, local_section)
 
         # Copy solution back into pressure and velocity variables
         # with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
