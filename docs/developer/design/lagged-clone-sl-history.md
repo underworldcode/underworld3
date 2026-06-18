@@ -169,3 +169,156 @@ meshes.
 - The **big question** this unblocks: SL height field vs full node movement +
   mmpde. The lagged-clone approach makes SL correct at a moving boundary; the
   comparison is then about cost/robustness, not correctness.
+
+## Stage 0 — landed (2026-06-18): old-frame reach-back, cost/benefit
+
+Stage 0 (a) — *ephemeral old-geometry restore on the working mesh* — is
+implemented and validated as the production cure for the high-Ra free-surface
+SL blow-up. It is the minimal subset of this design: no clone, no mixed-mesh
+evaluator. This section records what it costs, what it leaves on the table, and
+the recommendation on whether to proceed to the rolling clone (Stage 1 (c)) now.
+
+### What landed
+
+`SemiLagrangian.old_frame_traceback` (opt-in, default `False`; forwarded through
+`AdvDiffusionSLCN(..., old_frame_traceback=True)` to the **advective `DuDt`
+only** — the diffusive `DFDt` keeps stock ALE, validated sufficient at Ra=1e5).
+Three hooks in `systems/ddt.py`:
+
+1. `on_remesh` stashes the pre-move geometry (`_oldframe_X = ctx.old_X`, earliest
+   since the last solve) **instead of** a `v_mesh` displacement, and leaves
+   `psi_star` `CARRY`'d.
+2. `update_pre_solve` computes the departure foot from the **physical** velocity
+   (no `v_mesh`; `_ale_active` is `False`), records `psi_star[0]` by **direct
+   nodal carry** (not a re-evaluate on the deformed mesh — see below), skips the
+   new-mesh bounds clamp, and samples `psi_star` inside
+   `with mesh.ephemeral_coords(): mesh._deform_mesh(_oldframe_X); global_evaluate(...)`.
+3. The one-step stash is consumed at the end of `update_pre_solve`.
+
+**De-risked:** a variable's `.data` is bit-identical through a
+`_deform_mesh(old) → _deform_mesh(new)` round-trip (`nuke_coords_and_rebuild`
+rebuilds the DS / DM / DOF-coordinate caches but never touches the solution
+`Vec`), and `_deform_mesh` invalidates `_dminterpolation_cache` + the evaluation
+cache — so the ephemeral sample is correct and not stale. The clone (Stage 1) is
+therefore **not required** for correctness; it is an efficiency / capability
+play.
+
+**Load-bearing detail:** the first real-API run blew up *like the baseline*
+despite old-frame being active, because the standard `store_result` path
+**re-records** `psi_star[0]` by evaluating `psi_fn` on the *deformed* mesh at
+centroid-shifted nodes — injecting boundary-layer interpolation error that grows
+with `h_max` and then rides the old-geometry sample. Recording the history by a
+**direct nodal carry** (reusing the parallel `_record_psi_star_from_field_data`
+path) restores the prototype's exact behaviour. This is the "store primitives,
+not re-derived values" principle of invariant 3, in miniature.
+
+### Validation (Ra=1e5 annulus, res 20, free surface, CN)
+
+| run | worst T over 30 steps |
+|-----|-----------------------|
+| baseline (stock ALE) | `[-311, +333]` — blow-up by ~step 20 |
+| old-frame, **SLCN** (BDF1 + CN flux, θ=0.5) | `[0.000, 1.000]` |
+| old-frame, **SL-BDF2** (BDF2 + flux at n+1, θ=1) | `[0.000, 1.000]` |
+
+`h_max` reaches ~0.067 (surface deformed ~2.3 cells), Nu climbs 12→55 — vigorous,
+not over-diffused. Old-frame is **order-agnostic** — it changes only *where* the
+history is sampled, so both the canonical SLCN and SL-BDF2 schemes hold T∈[0,1].
+(The two scheme knobs must be paired: SLCN = BDF1 time-difference + Crank-Nicolson
+flux; SL-BDF2 = BDF2 time-difference + flux implicit at n+1 — a BDF2 stencil with a
+CN flux is *not* a consistent 2nd-order scheme. See
+[`docs/advanced/semi-lagrangian-time-integration.md`](../../advanced/semi-lagrangian-time-integration.md)
+and Bonaventura et al., 2021.) Unit regression: `tests/test_0855_oldframe_sl_traceback.py`
+(no-op on static mesh bit-identical; geometry restored + stash consumed; samples
+on old geometry not new; bounded on a moving mesh; BDF2) — passes serial and
+np=2; the existing `ddt` suite is unchanged (opt-in, default off).
+
+### Cost of Stage 0 (a)
+
+Measured on the Ra=1e5 res-20 free-surface loop (`oldframe_overhead_bench.py`):
+
+- **`adv_diff.solve`: +166 ms/step (+8 %)** over baseline (2033 → 2199 ms/step),
+  from **+2 `nuke_coords_and_rebuild` per solve** (deform-to-old + restore) for an
+  order-1 `DuDt`. Order *N* wraps the sample per history level → `2N` rebuilds /
+  step (a hoist to one ephemeral block per step is an obvious Stage-0
+  optimisation, deferred).
+- **Hidden churn not in that 8 %:** `_deform_mesh` unconditionally sets
+  `is_setup = False` on *every* registered solver, so each ephemeral round-trip
+  also forces the **Stokes** DM/assembly to rebuild on its next solve — even
+  though the working mesh returns to bit-identical coordinates. This is the real
+  Stage-0 tax at scale (Stokes assembly ≫ a `nuke`), and it is **entirely
+  avoidable**: a guard that skips the `is_setup` invalidation when
+  `ephemeral_coords` restores identical coordinates would remove it without the
+  clone. Recommended as the first Stage-0 follow-up if the tax bites.
+
+### What Stage 0 leaves on the table (the Stage-1 (c) clone)
+
+The rolling clone (DMClone, shared partition, independent coords, refreshed by
+local memcpy; sampled via the **mixed-mesh evaluator**, Phase 1) would:
+
+- **Eliminate both costs above** — the working mesh never moves, so no per-step
+  `nuke` and no solver-rebuild churn; the clone refresh is a local coord memcpy.
+- **Enable old `V` on the clone** → second-order *temporal* reach-back (the
+  current foot uses only the current velocity).
+- **Recompute fluxes / gradients at full FE accuracy** on the clone, retiring the
+  lossy projected histories (`DFDt`, `psi_star_flat`, VE stress projection).
+
+Its build cost is the large piece deliberately excluded from Stage 0: the
+mixed-mesh `global_evaluate` (per-mesh point location + pointwise combine,
+shared-partition fast path) and **verifying derivative/vector `global_evaluate`
+on a non-current DM** (the `scalar_component` wrinkle, invariant 5 / Phase-1 task
+1).
+
+### Recommendation
+
+**Ship Stage 0 (a) now; defer the clone (Stage 1 (c)).** Stage 0 delivers the
+correctness cure with ~8 % on the advection solve and zero new infrastructure,
+and (Task 2 below) is mesh-agnostic — it covers interior-node adaptation on the
+same code path. The clone's payoff is *efficiency and second-order/flux
+capability*, not correctness, and it costs the whole mixed-mesh evaluator. Build
+it when one of these triggers fires, not before:
+
+1. The Stokes-rebuild churn is shown to dominate a production run **and** the
+   cheap `is_setup` guard above does not remove it; or
+2. a feature needs old `V` (second-order temporal reach-back) or full-accuracy
+   flux/stress recompute on a moving mesh (VE on a free surface / adapting mesh);
+   or
+3. the per-step `nuke` cost becomes material at higher order or resolution.
+
+Until then the v_mesh/`CARRY`/i=0-gate apparatus stays as the default path; old-
+frame is the opt-in cure. Retiring that apparatus is gated on unifying the
+adaptation path onto old-frame (Task 2) and is tracked separately.
+
+### Task 2 — old-frame through interior-node adaptation
+
+_(see `~/+Simulations/fs_convection_goal4/oldframe_adapt_comparison.py`;
+no-slip Ra=1e5 res-16 annulus convection, periodic interior adaptation, old-frame
+vs the current `v_mesh` path; gentle `refinement=1.3` — aggressive refinement
+destabilises the **base** convection regardless of transfer mode, so it is not a
+fair test)._
+
+Old-frame is mesh-agnostic: `on_remesh` stashes the old geometry for *any* node
+move (free surface or mmpde/OT interior adaptation), so the same code path
+applies. The comparison (30 steps, 7 adaptation events each):
+
+| mover | v_mesh worst T | old-frame worst T | final Nu (vm / of) | worst q (vm / of) |
+|-------|----------------|-------------------|--------------------|-------------------|
+| `follow_metric` (anisotropic) | **[-6.97, +4.27]** | **[-0.51, +1.07]** | 16.4 / 16.0 | 0.778 / 0.783 |
+| `OT_adapt` | [-0.014, 1.000] | [0.000, 1.000] | 21.8 / 21.7 | 0.762 / 0.762 |
+| `smooth_mesh_interior` | [0, 1] (n_adapts=0) | [0, 1] (n_adapts=0) | 32.3 / 32.1 | 0.826 / 0.826 |
+
+**Conclusion: old-frame MATCHES or BEATS the current `v_mesh` path with no
+regression.** For `follow_metric`'s anisotropic interior motion it is
+*substantially* better bounded — `v_mesh` overshoots to `[-7, +4]` (the same
+new-mesh-frame fold that fails at the free surface), while old-frame holds
+`≈[0, 1]` — at equal Nu and equal-or-better mesh quality. For `OT_adapt` (whose
+internal reset + FE-remap already keeps the history clean) both are bounded, old-
+frame marginally better. `smooth_mesh_interior` on a uniform mesh is a no-op
+(equant cells → no move); the near-identical Nu confirms old-frame does not
+perturb a no-adaptation run.
+
+So old-frame is the **single SL reference for both free surface and adaptation**
+(invariant 6), and is the path to eventually retiring the `v_mesh`/`CARRY`/i=0-
+gate apparatus. That retirement is held back only by sequencing/benchmarking
+discipline (it is the default path today and old-frame is opt-in), not by any
+correctness gap — and is tracked as the unification follow-up.
+
