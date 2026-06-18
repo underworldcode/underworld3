@@ -31,6 +31,13 @@ cdef CHKERRQ(PetscErrorCode ierr):
     cdef int interr = <int>ierr
     if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
 
+cdef extern from "petscdstypes.h":
+    ctypedef struct PetscFormKey:
+        PetscDMLabel label
+        PetscInt value
+        PetscInt field
+        PetscInt part
+
 cdef extern from "petsc_compat.h":
 
     PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, PetscInt *, void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
@@ -52,6 +59,8 @@ cdef extern from "petsc_compat.h":
 cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetConstants(PetscDS, PetscInt, const PetscScalar[])
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
+    PetscErrorCode DMPlexSNESComputeResidualFEM( PetscDM, PetscVec, PetscVec, void *)
+    PetscErrorCode DMPlexComputeResidualByKey( PetscDM, PetscFormKey, PetscIS, PetscReal, PetscVec, PetscVec, PetscReal, PetscVec, void *)
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
