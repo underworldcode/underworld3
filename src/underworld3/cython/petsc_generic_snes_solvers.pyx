@@ -92,10 +92,10 @@ class SolverBaseClass(uw_object):
         self.consistent_jacobian = False
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
-        self._newton_alpha = uw.function.expression(
-            r"\alpha_{N}", sympy.Float(0.0),
-            "Picard->Newton continuation fraction (0=Picard, 1=Newton)",
-        )
+        # Created LAZILY (see _get_newton_alpha) only when continuation is used,
+        # so the default path constructs no extra UWexpression and therefore
+        # cannot perturb global symbol-naming / JIT-cache state.
+        self._newton_alpha = None
         # Switch threshold: ramp alpha toward 1 once the relative residual falls
         # below this (the basin-of-attraction heuristic for Newton).
         self.newton_switch_rtol = 1.0e-2
@@ -173,7 +173,7 @@ class SolverBaseClass(uw_object):
         if newton_expr is None:
             newton_expr = _jacobian_unwrap(expr)
         if mode == "continuation":
-            a = self._newton_alpha
+            a = self._get_newton_alpha()
             if isinstance(expr, sympy.MatrixBase):
                 ne = newton_expr if isinstance(newton_expr, sympy.MatrixBase) \
                     else sympy.Matrix(newton_expr)
@@ -214,6 +214,20 @@ class SolverBaseClass(uw_object):
         except Exception:
             return None
 
+    def _get_newton_alpha(self):
+        """Lazily construct the Picard->Newton continuation parameter.
+
+        Built on first use (continuation mode only) so the default Picard path
+        creates no extra UWexpression and leaves global symbol-naming / JIT-cache
+        state byte-identical to historical behaviour.
+        """
+        if self._newton_alpha is None:
+            self._newton_alpha = uw.function.expression(
+                r"\alpha_{N}", sympy.Float(0.0),
+                "Picard->Newton continuation fraction (0=Picard, 1=Newton)",
+            )
+        return self._newton_alpha
+
     def _set_newton_alpha(self, value):
         """Set the Picard->Newton continuation fraction and push it to the DS.
 
@@ -222,7 +236,7 @@ class SolverBaseClass(uw_object):
         recompile. No-op outside ``consistent_jacobian == "continuation"`` (alpha
         is then absent from the constants manifest).
         """
-        self._newton_alpha.sym = sympy.Float(value)
+        self._get_newton_alpha().sym = sympy.Float(value)
         try:
             self._update_constants()
         except Exception:
