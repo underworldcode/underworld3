@@ -6039,7 +6039,6 @@ def checkpoint_xdmf(
         )
     numCells = cells.shape[0]
     numCorners = cells.shape[1]
-    cellDim = topo["cells"].attrs["cell_dim"]
     topology_precision = cells.dtype.itemsize
 
     if numCorners <= 1:
