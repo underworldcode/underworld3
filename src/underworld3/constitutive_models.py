@@ -2276,15 +2276,21 @@ class DarcyFlowModel(Constitutive_Model):
     r"""
     Darcy flow constitutive model for porous media flow.
 
-    Relates the Darcy flux to pressure gradients and body forces:
+    The ``flux`` property returns the assembly flux
+    :math:`\mathbf{F}` that enters the PDE as :math:`-\nabla\cdot\mathbf{F} = f`:
 
     .. math::
 
-        q_{i} = \kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
+        F_{i} = \kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
 
     where :math:`\kappa` is the permeability (or hydraulic conductivity),
     :math:`p` is the pressure (or hydraulic head), and :math:`s` is the
-    body force term (e.g., gravity: :math:`s = \rho g`).
+    body force term (e.g., gravity: :math:`s = \rho g`). The **physical Darcy
+    velocity** is minus this (flow runs *down* the head gradient):
+
+    .. math::
+
+        q_{i} = -F_{i} = -\kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
 
     Parameters
     ----------
