@@ -1710,38 +1710,14 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         else:
             return effective_viscosity
 
-    @property
-    def flux_jacobian(self):
-        r"""Smooth-tangent flux for hard-``Min`` yield (exact residual, smooth Jacobian).
-
-        For ``_yield_mode == "min"`` the flux carries a ``Min(η_ve, η_pl)`` yield
-        kink whose exact tangent has a ``Heaviside`` jump that can stall the SNES
-        line search (the well-known hard-yield convergence problem). This returns
-        the flux with that kink replaced by the model's own harmonic blend
-        ``1/(1/η_ve + 1/η_pl)`` (and the viscosity-floor ``Max`` smoothed dually),
-        for use as the Jacobian source ONLY. The residual keeps the exact ``Min``
-        so the converged solution still satisfies the true yield surface — only
-        the Newton search direction is smoothed.
-
-        No model state is mutated (a pure symbolic substitution on the live
-        flux). Returns ``None`` for the already-smooth yield modes (and when no
-        ``Min``/``Max`` is present), so the solver then differentiates the exact
-        flux unchanged.
-
-        Consumed by the solver via ``consistent_jacobian`` (see
-        ``petsc_generic_snes_solvers``); the unwrap fix differentiates the
-        returned smooth flux correctly.
-        """
-        if not self.is_viscoplastic or self._yield_mode != "min":
-            return None
-        f = self.flux
-        if not f.has(sympy.Min, sympy.Max):
-            return None
-        harmonic = lambda *args: 1 / sum(1 / x for x in args)
-        smooth_max = lambda *args: sum(args) - harmonic(*args)
-        return f.applyfunc(
-            lambda e: e.replace(sympy.Min, harmonic).replace(sympy.Max, smooth_max)
-        )
+    # NOTE: a hard-Min smooth-tangent override (flux_jacobian = harmonic) was
+    # prototyped here but deferred to the yield-law / δ-homotopy follow-up. The
+    # smooth-Jacobian-with-Min-residual tangent is inconsistent (it is the
+    # consistent tangent of the *harmonic* problem) and converges WORSE than
+    # Picard on hard-yield VEP; the robust route is problem-space homotopy
+    # (ramp the softmin softness δ→0), not a smooth tangent. See the design doc
+    # docs/developer/design/jacobian-unwrap-constants-bug.md. The generic
+    # Constitutive_Model.flux_jacobian hook (default None) remains available.
 
     @property
     def _plastic_effective_viscosity(self):
