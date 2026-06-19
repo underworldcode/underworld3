@@ -204,6 +204,11 @@ class SolverBaseClass(uw_object):
         model whose flux has a non-smooth yield kink provide a physically
         motivated smooth tangent without changing the residual.
         """
+        # Default (Picard) path never needs the Newton flux — short-circuit so
+        # the (potentially expensive) model.flux_jacobian is not even evaluated,
+        # keeping the default assembly allocation-free and bit-identical.
+        if not self.consistent_jacobian:
+            return None
         cm = getattr(self, "constitutive_model", None)
         smooth = getattr(cm, "flux_jacobian", None) if cm is not None else None
         if smooth is None:
