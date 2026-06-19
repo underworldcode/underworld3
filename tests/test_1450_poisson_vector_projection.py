@@ -64,6 +64,11 @@ def test_vector_projection_after_poisson():
 
 
 def test_vector_projection_after_poisson_with_units():
+    """
+    Test that Vector_Projection works with unit-aware meshes after Poisson solve.
+
+    This is the exact sequence from the tutorial notebook that was failing.
+    """
     # Strict units mode requires reference quantities to be set before
     # creating meshes or MeshVariables with units.
     uw.reset_default_model()
@@ -75,11 +80,6 @@ def test_vector_projection_after_poisson_with_units():
         temperature_difference=uw.quantity(1.0, "K"),
     )
 
-    """
-    Test that Vector_Projection works with unit-aware meshes after Poisson solve.
-
-    This is the exact sequence from the tutorial notebook that was failing.
-    """
     # Create mesh with units (like in tutorial)
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(16, 16), minCoords=(0.0, 0.0), maxCoords=(1000.0, 500.0), units="meter"
