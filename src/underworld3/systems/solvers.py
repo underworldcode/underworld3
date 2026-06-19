@@ -164,7 +164,7 @@ class SNES_Poisson(SNES_Scalar):
 
     .. math::
 
-        \nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
+        - \nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
 
     where :math:`\mathbf{F} = \boldsymbol{\kappa} \nabla u` relates the flux to
     gradients in the unknown :math:`u`.
@@ -257,7 +257,7 @@ class SNES_Poisson(SNES_Scalar):
         The source term :math:`f` appears on the right-hand side:
 
         .. math::
-            \nabla \cdot (\kappa \nabla u) = f
+            - \nabla \cdot (\kappa \nabla u) = f
 
         Returns
         -------
@@ -347,16 +347,17 @@ class SNES_Darcy(SNES_Scalar):
     .. math::
 
         \underbrace{S_s \frac{\partial h}{\partial t}}_{\dot{u}}
-        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \nabla h
-        - \boldsymbol{s} \right]}_{\mathbf{F}}
+        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \left(
+        \nabla h - \boldsymbol{s} \right) \right]}_{\mathbf{F}}
         = \underbrace{W}_{h}
 
-    The flux term :math:`\mathbf{F}` relates the effective velocity to
-    pressure gradients:
+    The physical Darcy velocity is minus the assembly flux
+    :math:`\mathbf{F} = \boldsymbol{\kappa}(\nabla h - \boldsymbol{s})`
+    (flow runs *down* the head gradient):
 
     .. math::
 
-        \boldsymbol{v} = \boldsymbol{\kappa} \nabla h - \boldsymbol{s}
+        \boldsymbol{v} = - \boldsymbol{\kappa} \left( \nabla h - \boldsymbol{s} \right)
 
     Parameters
     ----------
@@ -824,8 +825,12 @@ class SNES_TransientDarcy(SNES_Darcy):
         self.DuDt.update_post_solve(timestep, verbose=verbose)
         self.DFDt.update_post_solve(timestep, verbose=verbose)
 
-        # Velocity projection (inherited from Darcy)
-        self._v_projector.uw_function = self.darcy_flux
+        # Velocity projection (inherited from Darcy). The physical Darcy
+        # velocity is v = -flux = -kappa(grad(h) - s); the assembly flux F1 =
+        # darcy_flux = +kappa(grad(h) - s), so project the NEGATED flux to match
+        # the steady SNES_Darcy.solve sign (UW3 issue #214: transient previously
+        # projected +darcy_flux, giving a sign-flipped velocity field).
+        self._v_projector.uw_function = -self.darcy_flux
         self._v_projector.solve(zero_init_guess)
 
         self.is_setup = True
