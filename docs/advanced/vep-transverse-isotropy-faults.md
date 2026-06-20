@@ -152,14 +152,7 @@ $$
 \eta_{1,\text{eff}} = \min\!\left(\eta_{1,\text{ve}},\;\eta_{1,\text{pl}}\right)
 $$
 
-In practice, a smooth approximation replaces the $\min$ to aid solver convergence. The default "smooth" yield mode uses:
-
-$$
-\eta_{1,\text{eff}} = \eta_{1,\text{ve}}\,\frac{1 + f}{1 + f + f^2},
-\quad f = \frac{\eta_{1,\text{ve}}}{\eta_{1,\text{pl}}}
-$$
-
-which transitions smoothly from $\eta_{1,\text{ve}}$ (when $f \ll 1$, below yield) to $\eta_{1,\text{pl}}$ (when $f \gg 1$, above yield).
+The yield law is a single $\delta$-parameterised soft-min (see [Smooth Yield Approximations](#smooth-yield-approximations) below). At its default $\delta = 0$ it is **identically** the $\min$ above (exact yield surface); $\delta > 0$ gives a controlled smooth-min that aids solver convergence at the kink, at the cost of relaxing the stress slightly below $\tau_y$ near onset.
 
 ### The Full Stress Formula
 
@@ -213,29 +206,39 @@ The director can also be a spatially varying field (e.g., from a `Surface` objec
 
 ## Smooth Yield Approximations
 
-The `"softmin"` yield mode (default) uses a smooth approximation to $\min(\eta_{\text{ve}}, \eta_{\text{pl}})$ to avoid the non-differentiable kink that causes problems for the SNES solver. The approximation is:
+The yield law is a single $\delta$-parameterised soft-min, controlled by `yield_mode` and `yield_softness` ($\delta$):
 
-$$g(f) = 1 + \text{softplus}(f-1) - \text{softplus}(-1), \qquad \eta_{\text{eff}} = \eta_{\text{ve}} / g(f)$$
+$$g(f, \delta) = 1 + \tfrac{1}{2}\!\left(f - 1 + \sqrt{(f-1)^2 + \delta^2}\right) - \text{offset}, \qquad \eta_{\text{eff}} = \eta_{\text{ve}} / g(f, \delta)$$
 
-where $\text{softplus}(x) = (x + \sqrt{x^2 + \delta^2})/2$ and $f = \eta_{\text{ve}}/\eta_{\text{pl}}$. The offset correction ensures $g(0) = 1$ exactly, so there is no spurious yield correction when the material is below yield.
+where $f = \eta_{\text{ve}}/\eta_{\text{pl}}$ and $\text{offset} = (-1 + \sqrt{1 + \delta^2})/2$ ensures $g(0) = 1$ exactly (no spurious yield below onset).
 
-The sharpness parameter $\delta$ (default 0.1) controls the width of the smooth transition around the yield point. Smaller $\delta$ gives a sharper cap (closer to the true $\min$) but a stiffer nonlinearity for the solver.
+- **`yield_mode="min"` (default)** with **$\delta = 0$ (default)**: $g = \max(1, f)$ exactly, so $\eta_{\text{eff}} = \min(\eta_{\text{ve}}, \eta_{\text{pl}})$ — the **exact** yield surface, no approximation.
+- **$\delta > 0$**: a controlled smooth-min approaching $\min$ as $\delta \to 0$. The smooth derivative avoids the non-differentiable kink that can stall the SNES solver, at the cost of relaxing the stress below $\tau_y$ near yield onset.
+- **`yield_mode="harmonic"`**: the parallel blend $1/(1/\eta_{\text{ve}} + 1/\eta_{\text{pl}})$ — a distinct physical model, not an approximation to $\min$.
 
-### Choosing $\delta$
+(The earlier `"smooth"` mode was retired, and `"softmin"` is now a deprecated alias for `"min"` with $\delta > 0$.)
 
-The accuracy of the smooth approximation depends on the ratio $f_{ss} = \eta_{\text{ve}} / \eta_{\text{pl}}$ at steady state. For a simple shear problem, this simplifies to:
+### Choosing $\delta$, and the yield homotopy
 
-$$f_{ss} = \frac{\sigma_{\text{viscous}}}{\tau_y} = \frac{\eta\,\dot\gamma}{\tau_y}$$
+For an exact yield surface, keep the default $\delta = 0$. The hard ($\delta = 0$) kink can, from a cold start, stall the SNES line search at yield onset. Two remedies:
 
-The softmin is accurate when $\delta \ll f_{ss}$, i.e., when the viscous stress substantially exceeds the yield stress. Practical guidance:
+1. **Raise $\delta$** as a static relaxation. Accuracy depends on the ratio $f_{ss} = \eta_{\text{ve}} / \eta_{\text{pl}}$ at steady state ($f_{ss} = \eta\,\dot\gamma / \tau_y$ for simple shear); the soft-min is accurate when $\delta \ll f_{ss}$:
 
-| $\delta$ | Accuracy at $f_{ss} = 1.5$ | Accuracy at $f_{ss} = 3$ | Solver cost |
-|----------|---------------------------|--------------------------|-------------|
-| 0.5 | ~85% of $\tau_y$ | ~99% | lowest |
-| 0.1 | ~99% of $\tau_y$ | ~100% | low |
-| 0.01 | ~100% | ~100% | moderate |
+   | $\delta$ | Accuracy at $f_{ss} = 1.5$ | Accuracy at $f_{ss} = 3$ | Solver cost |
+   |----------|---------------------------|--------------------------|-------------|
+   | 0.5 | ~85% of $\tau_y$ | ~99% | lowest |
+   | 0.1 | ~99% of $\tau_y$ | ~100% | low |
+   | 0.0 | exact $\min$ | exact $\min$ | highest (kink) |
 
-The default $\delta = 0.1$ is accurate for all cases where the viscous stress exceeds the yield stress by at least 50% ($f_{ss} > 1.5$). For problems where SNES convergence is difficult at yield onset, increase $\delta$ toward 0.3--0.5 as a relaxation parameter. Set it via `cm.yield_softness = 0.1`.
+   Set it via `cm.yield_softness = 0.1`.
+
+2. **Yield homotopy** (recommended for hard cases) — keep $\delta = 0$ for an exact yield surface, but ramp $\delta$ from a large value down to 0 *within each solve* so the smooth problem warm-starts the sharp one:
+
+   ```python
+   cm.enable_yield_homotopy()   # δ: large → 0, self-paced by the residual
+   ```
+
+   $\delta$ rides in `constants[]` and is updated each nonlinear iteration via a PETSc `SNESSetUpdate` callback (no JIT recompile, one stress-history update per step). Because $\delta$ ends at 0, the converged stress sits on the **exact** yield surface — zero physics change.
 
 ## Benchmark Results
 
@@ -244,7 +247,7 @@ The figure below shows the TI-VEP model validated against the analytical Maxwell
 ```{figure} figures/ti_vep_benchmark_final.png
 :name: fig-tivep-benchmark
 
-TI-VEP shear box benchmark. **Left**: horizontal fault ($\theta = 0°$), where resolved shear equals $\sigma_{xy}$. **Right**: angled fault ($\theta = 15°$), showing resolved fault-plane shear (circles) capping at $\tau_y$ while the global $\sigma_{xy}$ (crosses) continues to build as the bulk VE component grows. With the corrected softmin ($\delta = 0.1$), all cases reach within 1--2% of the analytical yield cap.
+TI-VEP shear box benchmark. **Left**: horizontal fault ($\theta = 0°$), where resolved shear equals $\sigma_{xy}$. **Right**: angled fault ($\theta = 15°$), showing resolved fault-plane shear (circles) capping at $\tau_y$ while the global $\sigma_{xy}$ (crosses) continues to build as the bulk VE component grows. With a soft-min $\delta = 0.1$, all cases reach within 1--2% of the analytical yield cap; the default $\delta = 0$ (exact $\min$) lands on the cap.
 ```
 
 At 0 degrees, the resolved shear is simply $\sigma_{xy}$ and the yield cap is exact. At 15 degrees, the anisotropic tensor creates a mechanical coupling between normal and shear components on the fault plane: the resolved shear caps at $\tau_y$ while the global stress tensor reflects contributions from both the yielded fault-plane component (governed by $\eta_{1,\text{eff}}$) and the non-yielding bulk component (governed by $\eta_{0,\text{ve}}$).

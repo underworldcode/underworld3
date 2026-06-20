@@ -954,30 +954,47 @@ class ViscousFlowModel(Constitutive_Model):
         g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta**2)) / 2 - offset
         return eta_ve / g
 
-    def enable_yield_homotopy(self, delta_start=0.5, n_ramp=4):
+    def enable_yield_homotopy(
+        self, delta_start=0.5, schedule="residual", n_ramp=4, linesearch="basic"
+    ):
         r"""Opt-in problem-space regularisation homotopy for hard-Min yield.
 
-        The exact ``Min`` yield law has a non-differentiable kink that can stall
-        the SNES line search from a cold start.  This ramps the soft-min δ from
-        ``delta_start`` down to ``0`` across the first ``n_ramp`` nonlinear
-        (SNES) iterations of every solve, then holds ``δ = 0`` (exact Min) for
-        the remaining iterations.  The smooth (δ>0) problem converges easily;
-        warm-starting the progressively sharper problem walks the iterate into
-        the basin of the exact-Min solution, while the converged answer still
-        sits on the exact yield surface (δ ends at 0 — zero physics change).
+        The exact ``Min`` yield law (δ=0) has a non-differentiable kink that can
+        stall the SNES line search from a cold start.  This ramps the soft-min δ
+        from ``delta_start`` down to ``0`` *within a single solve*, so the smooth
+        (δ>0) problem — easy to converge from anywhere — warm-starts the
+        progressively sharper problem and walks the iterate into the basin of
+        the exact-Min solution.  Because δ ends at 0, the converged answer sits
+        on the **exact** yield surface (zero physics change at convergence).
 
-        Implemented as a per-iteration ``SNESSetUpdate`` callback, so there is a
-        single BDF stress-history update per step (unlike a two-solve scheme)
-        and δ rides in ``constants[]`` (no JIT recompile between iterations).
+        Implemented as a per-iteration ``SNESSetUpdate`` callback (PR #250), so
+        there is a single BDF stress-history update per step (unlike a two-solve
+        scheme) and δ rides in ``constants[]`` — no JIT recompile between
+        iterations.
+
+        Schedules:
+
+        - ``"residual"`` (default): δ tracks the relative nonlinear residual,
+          ``δ = δ_start · ‖F(xₖ)‖/‖F(x₀)‖`` (clamped to ``[0, δ_start]``).  This
+          is self-pacing — δ → 0 exactly as the solve converges, so the yield
+          lock is recovered automatically with no iteration-count tuning.
+        - ``"linear"``: δ ramps linearly to 0 over the first ``n_ramp``
+          iterations, then holds 0.
+
+        The kink-tolerant ``linesearch="basic"`` (full Newton step, no
+        sufficient-decrease test) is selected by default — the default ``bt``
+        search trips when δ steps down and the residual of the sharper problem
+        rises.  Pass ``linesearch=None`` to leave the solver's choice untouched.
 
         Off by default.  Requires the model to be attached to a solver first
-        (``solver.constitutive_model = model``).  Not applicable to the
-        ``"harmonic"`` mode.
+        (``solver.constitutive_model = model``).  Not applicable to ``"harmonic"``.
         """
         if self._yield_mode == "harmonic":
             raise ValueError(
                 "yield homotopy applies to the 'min' yield law, not 'harmonic'"
             )
+        if schedule not in ("residual", "linear"):
+            raise ValueError("schedule must be 'residual' or 'linear'")
         solver = self.Parameters._solver
         if solver is None:
             raise RuntimeError(
@@ -986,24 +1003,74 @@ class ViscousFlowModel(Constitutive_Model):
                 "before enabling the homotopy."
             )
         self._homotopy_delta_start = float(delta_start)
+        self._homotopy_schedule = schedule
         self._homotopy_n_ramp = max(1, int(n_ramp))
+        self._homotopy_r0 = None
+        self._homotopy_rmin = 1.0
+        # Auto-calibrated absolute-residual reference. Smoothing is scaled by the
+        # absolute residual against this reference, so a step that starts from a
+        # good warm start (small residual) is barely perturbed, while a hard step
+        # (large residual) gets the full δ_start smoothing. Calibrated to the
+        # largest start-of-solve residual seen so far.
+        if not hasattr(self, "_homotopy_rref") or self._homotopy_rref is None:
+            self._homotopy_rref = 0.0
+        if linesearch is not None:
+            solver.petsc_options["snes_linesearch_type"] = linesearch
+        # The homotopy spends early iterations on the smooth problem, so it needs
+        # a larger nonlinear-iteration budget than a single sharp solve. Raise the
+        # floor (never lower a user's larger choice).
+        try:
+            cur_maxit = int(solver.petsc_options.getInt("snes_max_it", 0))
+        except Exception:
+            cur_maxit = 0
+        if cur_maxit < 100:
+            solver.petsc_options["snes_max_it"] = 100
         self._get_yield_softness()  # ensure the δ/offset constant atoms exist
         if self._yield_homotopy_step not in solver._snes_update_callbacks:
             solver.add_update_callback(self._yield_homotopy_step)
         return self
 
     def _yield_homotopy_step(self, solver, iteration):
-        """SNESSetUpdate callback: set δ from the ramp schedule, repack constants.
+        """SNESSetUpdate callback: set δ from the schedule, repack constants.
 
-        Linear ramp ``δ = δ_start·(1 - k/n)`` for iteration ``k < n``, then
-        ``δ = 0`` (held) so the converged iterate is on the exact-Min surface.
-        Setting the δ constant atom and repacking is recompile-free.
+        ``"residual"`` schedule: δ tracks the *running-minimum absolute*
+        residual against an auto-calibrated reference ``r_ref`` (the largest
+        start-of-solve residual seen):
+        ``δ = δ_start · minⱼ≤ₖ ‖F(xⱼ)‖ / r_ref`` (clamped to ``[0, δ_start]``).
+        This is monotone non-increasing within a solve (no feedback
+        oscillation), barely perturbs a step that starts from a good warm start
+        (small ‖F(x₀)‖ ⇒ small δ), gives the full δ_start smoothing to a hard
+        step, and → 0 as the solve converges, so the converged iterate is on
+        the exact-Min surface.
+        ``"linear"`` schedule: ``δ = δ_start·(1 - k/n)`` for ``k < n`` else 0.
+        Setting the δ atom and repacking constants is recompile-free.
         """
-        n = self._homotopy_n_ramp
-        if iteration < n:
-            delta = self._homotopy_delta_start * (1.0 - float(iteration) / n)
-        else:
-            delta = 0.0
+        if self._homotopy_schedule == "residual":
+            try:
+                rnorm = float(solver.snes.getFunctionNorm())
+            except Exception:
+                rnorm = None
+            if iteration == 0:
+                # (Re)start of a solve: reset the running minimum and grow the
+                # auto-calibrated absolute reference toward the worst start seen.
+                self._homotopy_rmin = rnorm if rnorm else 0.0
+                if rnorm and rnorm > self._homotopy_rref:
+                    self._homotopy_rref = rnorm
+            elif rnorm:
+                self._homotopy_rmin = min(self._homotopy_rmin, rnorm)
+            rref = self._homotopy_rref
+            if rref and rref > 0.0:
+                scale = min(1.0, max(0.0, self._homotopy_rmin / rref))
+            else:
+                scale = 1.0 if iteration == 0 else 0.0
+            delta = self._homotopy_delta_start * scale
+        else:  # "linear"
+            n = self._homotopy_n_ramp
+            delta = (
+                self._homotopy_delta_start * (1.0 - float(iteration) / n)
+                if iteration < n
+                else 0.0
+            )
         self._yield_softness_expr.sym = sympy.Float(delta)
         solver._update_constants()
 
