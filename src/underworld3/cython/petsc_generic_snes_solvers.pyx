@@ -2928,10 +2928,11 @@ class SNES_Vector(SolverBaseClass):
         # in the embedding space with an implicit tangency constraint.
         dim = mesh.cdim
 
-        # Surface normal components — use projected P1 normals by default.
-        # These are smooth, consistently oriented, and converge in 3D.
-        Gamma_P1 = mesh.Gamma_P1
-        n = [Gamma_P1[i] for i in range(dim)]
+        # Surface normal components — use this boundary's own deformation-
+        # tracking facet normal (see Mesh.boundary_normal); the legacy global
+        # mesh.Gamma_P1 stays radial on a deformed surface.
+        bnorm = mesh.boundary_normal(boundary)
+        n = [bnorm[i] for i in range(dim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
@@ -4771,16 +4772,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         mesh = self.mesh
         dim = mesh.dim
 
-        # Surface normal components. By default use projected P1 normals
-        # (smooth, consistently oriented, converges in 3D).
+        # Surface normal components. By default use this boundary's OWN
+        # deformation-tracking facet normal (assembled from only this
+        # boundary's faces, so a corner shared with another boundary is not
+        # averaged across the discontinuity, and a deformed surface is
+        # followed correctly). The legacy global mesh.Gamma_P1 point-evaluates
+        # petsc_n and stays radial on a deformed surface — see
+        # Mesh.boundary_normal.
         if normal is not None:
             if isinstance(normal, sympy.MatrixBase):
                 n = [normal[i] for i in range(dim)]
             else:
                 n = list(normal)
         else:
-            Gamma_P1 = mesh.Gamma_P1
-            n = [Gamma_P1[i] for i in range(dim)]
+            bnorm = mesh.boundary_normal(boundary)
+            n = [bnorm[i] for i in range(dim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
