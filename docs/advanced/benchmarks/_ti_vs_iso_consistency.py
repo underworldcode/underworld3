@@ -54,7 +54,8 @@ def build(label, *, ti_model):
         cm.Parameters.yield_stress = 1e8
         cm.Parameters.shear_viscosity_min = ETA * 1.0e-3
     cm.Parameters.strainrate_inv_II_min = 1.0e-6
-    cm.yield_mode = "softmin"
+    cm.yield_mode = "min"
+    cm.yield_softness = 0.1  # smooth-min (was yield_mode="softmin")
     stokes.constitutive_model = cm
     stokes.saddle_preconditioner = 1.0 / cm.K
     stokes.tolerance = 1.0e-6

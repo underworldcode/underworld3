@@ -133,7 +133,8 @@ def build_ti_stokes(label, theta_deg, tau_y, bdf_order):
     cm.Parameters.director = director
     cm.Parameters.shear_viscosity_min = ETA_0 * 1.0e-3
     cm.Parameters.strainrate_inv_II_min = 1.0e-6
-    cm.yield_mode = "softmin"  # default; smooth and robust
+    cm.yield_mode = "min"        # unified soft-min law
+    cm.yield_softness = 0.1      # smooth-min, robust (δ=0 would be exact Min)
 
     stokes.saddle_preconditioner = 1.0 / cm.K
     stokes.tolerance = 1.0e-4
