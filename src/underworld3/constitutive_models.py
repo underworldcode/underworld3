@@ -974,12 +974,18 @@ class ViscousFlowModel(Constitutive_Model):
 
         Schedules:
 
-        - ``"residual"`` (default): δ tracks the relative nonlinear residual,
-          ``δ = δ_start · ‖F(xₖ)‖/‖F(x₀)‖`` (clamped to ``[0, δ_start]``).  This
-          is self-pacing — δ → 0 exactly as the solve converges, so the yield
-          lock is recovered automatically with no iteration-count tuning.
+        - ``"residual"`` (default): δ tracks the *running-minimum absolute*
+          residual against an auto-calibrated reference ``r_ref`` (the largest
+          start-of-solve residual seen), ``δ = δ_start · minⱼ≤ₖ‖F(xⱼ)‖ / r_ref``
+          (clamped to ``[0, δ_start]``).  Self-pacing and monotone: it barely
+          perturbs a step that starts from a good warm start (small residual),
+          gives a hard step the full ``δ_start`` smoothing, and drives δ → 0 as
+          the solve converges — so the yield lock is recovered automatically
+          with no iteration-count tuning.
         - ``"linear"``: δ ramps linearly to 0 over the first ``n_ramp``
-          iterations, then holds 0.
+          iterations, then holds 0 (needs the solve to still be iterating at
+          ``n_ramp`` or it converges on a smoothed problem — prefer
+          ``"residual"``).
 
         The kink-tolerant ``linesearch="basic"`` (full Newton step, no
         sufficient-decrease test) is selected by default — the default ``bt``
