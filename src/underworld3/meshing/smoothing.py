@@ -3164,6 +3164,48 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     else:
         _eval_M = _eval_M_analytic
 
+    # --- SPD sanitiser on the evaluated metric -------------------------
+    # The MMPDE functional G uses fractional powers that are defined ONLY
+    # for an SPD metric: sqrt(detM), detM**((1-p)/2), and S**q with
+    # S = tr(J M⁻¹ Jᵀ). The metric is a guide field FE-evaluated at the
+    # FIXED reference cloud; once the interior has deformed, a reference
+    # point can fall OUTSIDE the current mesh and the P1 metric field is
+    # then evaluated by FE EXTRAPOLATION (out-of-cell basis functions go
+    # negative), yielding a non-SPD tensor — e.g. a scalar density ρ·I
+    # with ρ<0. Its determinant ρ² stays positive (so a detM>0 test
+    # passes) but M is negative-definite, so S<0 and S**q = NaN → the
+    # energy is non-finite and the mover bails with zero displacement
+    # (no adaptation). Project every evaluated tensor onto SPD with a
+    # small RELATIVE eigenvalue floor: a genuine SPD metric is returned
+    # unchanged (no-op), while extrapolation garbage becomes a benign
+    # "coarsen here" (tiny positive eigenvalues) instead of a NaN.
+    _eval_M_raw = _eval_M
+
+    def _spd_sanitise(M):
+        # Symmetrise: the metric is symmetric by construction, so for a valid
+        # tensor this is an exact no-op (M_ij == M_ji bit-for-bit).
+        Ms = 0.5 * (M + np.swapaxes(M, -1, -2))
+        if Ms.shape[0] == 0:
+            return Ms                                   # rank owns no cells
+        w, Vc = np.linalg.eigh(Ms)
+        wmax = float(np.nanmax(w))
+        floor = max(wmax, 1.0) * 1.0e-8
+        # Per-tensor SPD test: a cell is "bad" only if one of its OWN
+        # eigenvalues is non-finite or below the floor. Project just those
+        # cells; every already-SPD tensor is returned untouched (bit-identical
+        # to the symmetrised input), so one bad point cannot perturb the rest.
+        bad = ~np.isfinite(w).all(axis=1) | (w.min(axis=1) < floor)
+        if not bad.any():
+            return Ms
+        out = Ms.copy()
+        wf = np.clip(np.nan_to_num(w[bad], nan=floor, posinf=wmax, neginf=floor),
+                     floor, None)
+        out[bad] = np.einsum('nij,nj,nkj->nik', Vc[bad], wf, Vc[bad])
+        return out
+
+    def _eval_M(pts):
+        return _spd_sanitise(_eval_M_raw(pts))
+
     # Mesh-owned boundary slip is applied per outer iter via mesh.boundary_slip
     # (below). Pre-touch Gamma_P1 here so the projected-normal MeshVariable
     # exists before any DM snapshot (footgun-safe; redundant with the central
