@@ -2168,6 +2168,18 @@ class SNES_Scalar(SolverBaseClass):
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
 
+        # TODO(BUG): natural BC on an INTERNAL surface is partition-dependent.
+        # An interior facet has two support cells; the FE-assembly DM is kept
+        # non-overlapped on purpose (overlap double-counts volume assembly via
+        # LocalToGlobal+ADD — see discretisation_mesh.py ~L760), so at a partition
+        # seam ~few interior facets have only one local support cell and PETSc's
+        # per-support-cell boundary integral picks an inconsistent side. The
+        # assembled load then differs ~0.027% serial vs parallel (the force
+        # *function* integral / RMS is identical to machine precision) and, in an
+        # ill-conditioned solve (e.g. augmented Stokes_Constrained), amplifies to
+        # ~0.1% velocity. Fix: integrate each internal facet once from a
+        # deterministic (partition-independent) support cell. See planning file
+        # (underworld.md, Bugs) and project_stokes_constrained_parallel_session.
         for index,bc in enumerate(self.natural_bcs):
 
             components = bc.components
@@ -4532,7 +4544,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # interior h DOFs directly in the fine local PetscSection
         # (_constrain_interior_multipliers_in_section) — lossless (correct
         # constraint-boundary closure) and refined/FMG-safe (no DMAddBoundary
-        # ordering restriction). Default ON.
+        # ordering restriction). Default ON: it is both a correctness-neutral DOF
+        # reduction AND a conditioning win — leaving the interior h DOFs in place
+        # keeps the near-singular ε-screened interior block in the solved system,
+        # which an iterative ([p,h] Schur) solve handles poorly. See that method's
+        # docstring for why disabling it is ill-conditioned, not "more accurate".
         self._reduce_interior_multiplier = True
 
         self._degree = degree
@@ -6224,6 +6240,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         appends the local offset of every h-bearing point regardless of
         constraint, so the copy back into the full-domain ``h`` MeshVariable is
         size-correct without change.
+
+        Why this is lossless (and why disabling it is NOT a "more accurate"
+        reference). The interior ``h`` rows are the screening block alone,
+        ``ε M_ii h_i + ε M_ib h_b = 0`` (no constraint or buoyancy source reaches
+        the interior), so the interior multiplier is fully determined by the
+        boundary trace, ``h_i = -M_ii^{-1} M_ib h_b`` — a *bounded* O(h_b)
+        quantity that feeds back into the boundary row only at O(ε). At ε=1e-6 its
+        effect on the physical solution is negligible: pinning ``h_i = 0`` instead
+        moves a converged solve by ~1e-8 in velocity and ~1e-5 in topography
+        (measured, 2-D annulus). So the pinned DOFs carry no physical signal.
+
+        Disabling the reduction (``_reduce_interior_multiplier = False``) does NOT
+        recover lost physics; it re-admits ~ndof/3 interior DOFs whose only
+        coupling is the near-singular ``ε M_ii`` block, enlarging and
+        ill-conditioning the ``[p,h]`` Schur complement. On a direct/well-converged
+        solve the answer is essentially unchanged (lossless, as above); on an
+        iterative grouped-Schur solve (e.g. ``snes_type=ksponly`` on the 3-D shell)
+        the extra ill-conditioned DOFs degrade convergence and the solve can land
+        on a different representative — which is the origin of the "answer moves a
+        few percent / parallel spread worsens when off" behaviour. That is a
+        conditioning effect, not evidence the knockout drops information. Keep it
+        ON; it is the recommended, validated path.
         """
         from petsc4py import PETSc
         import numpy as np
