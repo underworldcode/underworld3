@@ -3164,6 +3164,40 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     else:
         _eval_M = _eval_M_analytic
 
+    # --- SPD sanitiser on the evaluated metric -------------------------
+    # The MMPDE functional G uses fractional powers that are defined ONLY
+    # for an SPD metric: sqrt(detM), detM**((1-p)/2), and S**q with
+    # S = tr(J M⁻¹ Jᵀ). The metric is a guide field FE-evaluated at the
+    # FIXED reference cloud; once the interior has deformed, a reference
+    # point can fall OUTSIDE the current mesh and the P1 metric field is
+    # then evaluated by FE EXTRAPOLATION (out-of-cell basis functions go
+    # negative), yielding a non-SPD tensor — e.g. a scalar density ρ·I
+    # with ρ<0. Its determinant ρ² stays positive (so a detM>0 test
+    # passes) but M is negative-definite, so S<0 and S**q = NaN → the
+    # energy is non-finite and the mover bails with zero displacement
+    # (no adaptation). Project every evaluated tensor onto SPD with a
+    # small RELATIVE eigenvalue floor: a genuine SPD metric is returned
+    # unchanged (no-op), while extrapolation garbage becomes a benign
+    # "coarsen here" (tiny positive eigenvalues) instead of a NaN.
+    _eval_M_raw = _eval_M
+
+    def _spd_sanitise(M):
+        Ms = 0.5 * (M + np.swapaxes(M, -1, -2))
+        w, Vc = np.linalg.eigh(Ms)
+        if w.size:
+            wmax = float(np.nanmax(w))
+        else:
+            wmax = 1.0
+        floor = max(wmax, 1.0) * 1.0e-8
+        if np.all(np.isfinite(w)) and float(w.min()) >= floor:
+            return Ms                                   # already SPD → no-op
+        w = np.clip(np.nan_to_num(w, nan=floor, posinf=wmax, neginf=floor),
+                    floor, None)
+        return np.einsum('nij,nj,nkj->nik', Vc, w, Vc)
+
+    def _eval_M(pts):
+        return _spd_sanitise(_eval_M_raw(pts))
+
     # Mesh-owned boundary slip is applied per outer iter via mesh.boundary_slip
     # (below). Pre-touch Gamma_P1 here so the projected-normal MeshVariable
     # exists before any DM snapshot (footgun-safe; redundant with the central
