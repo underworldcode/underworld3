@@ -879,6 +879,134 @@ class ViscousFlowModel(Constitutive_Model):
             )
         )
 
+    # ------------------------------------------------------------------
+    # Unified yield law (shared by VEP and TI-VEP subclasses)
+    #
+    # One δ-parameterised soft-min law replaces the historical zoo of
+    # smooth surrogates.  ``δ`` (and the onset offset that keeps g(0)=1)
+    # are ``constants[]`` UWexpression atoms, so δ can be ramped at
+    # runtime — the "yield homotopy" — with no JIT recompile.
+    # ------------------------------------------------------------------
+
+    def _get_yield_softness(self):
+        r"""The soft-min regularisation δ as a ``constants[]`` UWexpression atom.
+
+        Created lazily and kept in sync with ``self._yield_softness`` (the
+        configured numeric value).  Storing δ as a UWexpression — rather than
+        baking the float into the compiled flux — lets the yield homotopy ramp
+        δ at runtime via ``PetscDSSetConstants`` with no JIT recompile.
+        ``δ = 0`` (the default) makes the law identically ``Min``.
+        """
+        delta_value = getattr(self, "_yield_softness", 0.0)
+        if getattr(self, "_yield_softness_expr", None) is None:
+            self._yield_softness_expr = expression(
+                R"{\updelta_{y}}",
+                sympy.Float(delta_value),
+                "Yield soft-min regularisation δ (rampable constant; δ=0 ⇒ exact Min)",
+            )
+            # Onset offset (-1+√(1+δ²))/2 keeps g(0)=1 (no spurious yield below
+            # onset).  Held as its OWN constant atom — a single symbol in the
+            # stress tensor — so it does not blow the tensor up, while still
+            # tracking δ symbolically (one δ update repacks both constants).
+            self._yield_offset_expr = expression(
+                R"{\updelta_{y,0}}",
+                (-1 + sympy.sqrt(1 + self._yield_softness_expr**2)) / 2,
+                "Yield soft-min onset offset; tracks δ so g(0)=1 exactly",
+            )
+        else:
+            self._yield_softness_expr.sym = sympy.Float(delta_value)
+        return self._yield_softness_expr
+
+    def _get_yield_offset(self):
+        """The onset-offset constant atom (lazily created alongside δ)."""
+        if getattr(self, "_yield_offset_expr", None) is None:
+            self._get_yield_softness()
+        return self._yield_offset_expr
+
+    def _combine_yield(self, eta_ve, eta_pl):
+        r"""Combine the visco-elastic and plastic viscosities per ``yield_mode``.
+
+        - ``"min"`` (and the deprecated alias ``"softmin"``): the unified
+          δ-parameterised soft-min law
+
+          .. math::
+
+              \eta_\mathrm{eff} = \frac{\eta_\mathrm{ve}}{g(f,\delta)},\qquad
+              g = 1 + \tfrac{1}{2}\!\left(f - 1 + \sqrt{(f-1)^2 + \delta^2}\right)
+                    - \mathrm{offset},\qquad f = \frac{\eta_\mathrm{ve}}{\eta_\mathrm{pl}}.
+
+          At ``δ = 0`` (default) ``g = max(1, f)`` exactly, so this is
+          **identically** ``Min(η_ve, η_pl)``; ``δ > 0`` gives a controlled
+          smooth-min that approaches ``Min`` as ``δ → 0``.  δ and the offset
+          are runtime-rampable constant atoms (see :meth:`enable_yield_homotopy`).
+
+        - ``"harmonic"``: the parallel blend ``1/(1/η_ve + 1/η_pl)`` — a
+          genuinely distinct (Maxwell-parallel) physical model, not an
+          approximation to ``Min``.
+        """
+        if self._yield_mode == "harmonic":
+            return 1 / (1 / eta_ve + 1 / eta_pl)
+
+        # "min" / "softmin" (and any other value) -> unified soft-min law.
+        delta = self._get_yield_softness()
+        offset = self._get_yield_offset()
+        f = eta_ve / eta_pl
+        g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta**2)) / 2 - offset
+        return eta_ve / g
+
+    def enable_yield_homotopy(self, delta_start=0.5, n_ramp=4):
+        r"""Opt-in problem-space regularisation homotopy for hard-Min yield.
+
+        The exact ``Min`` yield law has a non-differentiable kink that can stall
+        the SNES line search from a cold start.  This ramps the soft-min δ from
+        ``delta_start`` down to ``0`` across the first ``n_ramp`` nonlinear
+        (SNES) iterations of every solve, then holds ``δ = 0`` (exact Min) for
+        the remaining iterations.  The smooth (δ>0) problem converges easily;
+        warm-starting the progressively sharper problem walks the iterate into
+        the basin of the exact-Min solution, while the converged answer still
+        sits on the exact yield surface (δ ends at 0 — zero physics change).
+
+        Implemented as a per-iteration ``SNESSetUpdate`` callback, so there is a
+        single BDF stress-history update per step (unlike a two-solve scheme)
+        and δ rides in ``constants[]`` (no JIT recompile between iterations).
+
+        Off by default.  Requires the model to be attached to a solver first
+        (``solver.constitutive_model = model``).  Not applicable to the
+        ``"harmonic"`` mode.
+        """
+        if self._yield_mode == "harmonic":
+            raise ValueError(
+                "yield homotopy applies to the 'min' yield law, not 'harmonic'"
+            )
+        solver = self.Parameters._solver
+        if solver is None:
+            raise RuntimeError(
+                "enable_yield_homotopy: the constitutive model is not attached "
+                "to a solver yet — assign it (solver.constitutive_model = model) "
+                "before enabling the homotopy."
+            )
+        self._homotopy_delta_start = float(delta_start)
+        self._homotopy_n_ramp = max(1, int(n_ramp))
+        self._get_yield_softness()  # ensure the δ/offset constant atoms exist
+        if self._yield_homotopy_step not in solver._snes_update_callbacks:
+            solver.add_update_callback(self._yield_homotopy_step)
+        return self
+
+    def _yield_homotopy_step(self, solver, iteration):
+        """SNESSetUpdate callback: set δ from the ramp schedule, repack constants.
+
+        Linear ramp ``δ = δ_start·(1 - k/n)`` for iteration ``k < n``, then
+        ``δ = 0`` (held) so the converged iterate is on the exact-Min surface.
+        Setting the δ constant atom and repacking is recompile-free.
+        """
+        n = self._homotopy_n_ramp
+        if iteration < n:
+            delta = self._homotopy_delta_start * (1.0 - float(iteration) / n)
+        else:
+            delta = 0.0
+        self._yield_softness_expr.sym = sympy.Float(delta)
+        solver._update_constants()
+
 
 ## NOTE - retrofit VEP into here
 
@@ -1195,8 +1323,14 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         )
 
         self._order = order
-        self._yield_mode = "softmin"  # "min", "harmonic", "smooth", or "softmin"
-        self._yield_softness = 0.1  # δ parameter for "softmin" mode
+        # Unified δ-parameterised soft-min yield law. "min" (default) with
+        # δ=0 is exact Min; δ>0 is a controlled smooth-min; "harmonic" is a
+        # distinct parallel-viscosity model. δ and the onset offset are lazily
+        # created constants[] atoms (see _get_yield_softness / yield homotopy).
+        self._yield_mode = "min"
+        self._yield_softness = 0.0  # δ; 0 ⇒ exact Min
+        self._yield_softness_expr = None
+        self._yield_offset_expr = None
 
         # Timestep — set by the solver before each solve(). Not a user parameter.
         # Initialised to oo (viscous limit). The solver overwrites this with the
@@ -1656,30 +1790,16 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         if self.is_viscoplastic:
             vp_effective_viscosity = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                effective_viscosity = 1 / (1 / effective_viscosity + 1 / vp_effective_viscosity)
-            elif self._yield_mode == "softmin":
-                # Smooth approximation to Min(η_ve, η_pl):
-                #   η_eff = η_ve / g(f)
-                #   g(f) = 1 + softplus(f-1) - softplus(-1)  ≈ max(1, f)
-                # where softplus(x) = (x + √(x² + δ²))/2 and f = η_ve/η_pl.
-                # Corrected so g(0) = 1 exactly (no spurious yield below onset).
-                # Approaches exact Min as δ→0. No Min/Max in expression.
-                delta = self._yield_softness
-                f = effective_viscosity / vp_effective_viscosity
-                import math  # float offset avoids sympy expression blowup in tensor
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                effective_viscosity = effective_viscosity / g
-            else:
-                effective_viscosity = sympy.Min(effective_viscosity, vp_effective_viscosity)
+            effective_viscosity = self._combine_yield(
+                effective_viscosity, vp_effective_viscosity
+            )
 
-        # Apply viscosity floor — but skip for smooth-blend yield modes
-        # where the outer Max creates a nested Min/Max that breaks the
-        # BDF-2 Jacobian. Those modes are already smooth and bounded.
+        # Apply viscosity floor — but skip for the (now uniformly smooth-blend)
+        # viscoplastic yield modes, where an outer Max creates a nested Min/Max
+        # that breaks the BDF-2 Jacobian. Those modes are already bounded.
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
-            if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
+            if self.is_viscoplastic:
                 return effective_viscosity
             else:
                 return sympy.Max(
@@ -1903,25 +2023,25 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
     @property
     def yield_mode(self):
-        r"""How to combine VE and plastic viscosities.
+        r"""How to combine the VE and plastic viscosities.
 
-        ``"softmin"`` (default): smooth approximation to Min —
-            ``η_ve / g(f)`` where ``g(f) ≈ max(1, f)`` with smoothing
-            parameter δ (``yield_softness``, default 0.1).  Approaches
-            exact Min as δ → 0; smooth derivatives at the kink.
-            Recommended default: gets within ~2 % of the true yield
-            surface while avoiding the SNES kink penalties of ``"min"``.
-        ``"harmonic"``: parallel blending — ``1/(1/η_ve + 1/η_pl)``.
-            Smooth but undershoots τ_y for soft materials.
-        ``"min"``: sharp cutoff — ``Min(η_ve, η_pl)``.
-            Exact yield but can cause SNES divergence with BDF-2 and
-            BDF-2 phase-lag at BC discontinuities (see benchmarks).
+        ``"min"`` (default): the unified δ-parameterised soft-min law
+            ``η_ve / g(f, δ)`` with ``g(0)=1`` and ``g ≈ max(1, f)``.  At
+            ``δ = 0`` (``yield_softness``, default) it is **identically**
+            ``Min(η_ve, η_pl)`` — exact yield surface; ``δ > 0`` is a
+            controlled smooth-min approaching ``Min`` as ``δ → 0``.  The
+            hard (δ=0) kink can stall the SNES from a cold start; use
+            :meth:`enable_yield_homotopy` (ramps δ→0 within one solve) or
+            raise ``yield_softness`` for robustness.
+        ``"harmonic"``: parallel blending — ``1/(1/η_ve + 1/η_pl)``.  A
+            genuinely distinct (Maxwell-parallel) physical model, not an
+            approximation to ``Min``; smooth but undershoots τ_y for soft
+            materials.
 
-        Note: the previous ``"smooth"`` mode (corrected harmonic
-        ``η_ve·(1+f)/(1+f+f²)``) was retired — it under-clipped the
-        yield surface by ~50 % under realistic forcing, with no
-        compensating benefit over ``softmin``.  Recover from git
-        history if needed (commit message keyword: ``smooth_yield``).
+        Retired modes: ``"smooth"`` (under-clipped the yield surface by
+        ~50%) and ``"softmin"`` (subsumed into ``"min"`` with ``δ>0`` —
+        ``yield_mode='softmin'`` is accepted as a deprecated alias for
+        ``"min"`` and emits a ``DeprecationWarning``).
         """
         return self._yield_mode
 
@@ -1930,32 +2050,47 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         if value == "smooth":
             raise ValueError(
                 "yield_mode='smooth' has been retired — it under-clipped "
-                "the yield surface by ~50%. Use 'softmin' instead "
-                "(default; close to exact Min with smooth derivatives)."
+                "the yield surface by ~50%. Use 'min' (with yield_softness>0 "
+                "for a smooth approximation) instead."
             )
-        if value not in ("min", "harmonic", "softmin"):
+        if value == "softmin":
+            import warnings
+            warnings.warn(
+                "yield_mode='softmin' is deprecated and now maps to 'min' "
+                "(the unified δ-parameterised soft-min law). Set yield_mode='min' "
+                "and choose yield_softness (δ) explicitly — δ=0 is exact Min, "
+                "δ>0 is a controlled smooth-min.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            value = "min"
+        if value not in ("min", "harmonic"):
             raise ValueError(
-                f"yield_mode must be 'min', 'harmonic', or 'softmin', got '{value}'"
+                f"yield_mode must be 'min' or 'harmonic', got '{value}'"
             )
         self._yield_mode = value
         self._reset()
 
     @property
     def yield_softness(self):
-        r"""Regularisation parameter δ for ``"softmin"`` yield mode.
+        r"""Regularisation parameter δ for the soft-min (``"min"``) yield law.
 
         Controls how closely the soft minimum approximates the sharp Min.
-        Smaller values → sharper yield (closer to Min, less robust).
-        Larger values → smoother transition (more robust, lower stress).
+        ``δ = 0`` (default) is **exact** Min; larger δ → smoother transition
+        (more robust, but stress relaxes below τ_y near onset).  Only used
+        when ``yield_mode == "min"``.  Held internally as a ``constants[]``
+        UWexpression atom so it can be ramped at runtime
+        (see :meth:`enable_yield_homotopy`) with no JIT recompile.
 
-        Default 0.1. Only used when ``yield_mode == "softmin"``.
-        Increase toward 0.5 if SNES convergence is difficult at yield onset.
+        Raise toward 0.3–0.5 if SNES convergence is difficult at yield onset.
         """
         return self._yield_softness
 
     @yield_softness.setter
     def yield_softness(self, value):
-        self._yield_softness = value
+        self._yield_softness = float(value)
+        if getattr(self, "_yield_softness_expr", None) is not None:
+            self._yield_softness_expr.sym = sympy.Float(self._yield_softness)
         self._reset()
 
     @property
@@ -2746,8 +2881,12 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         )
 
         self._order = order
-        self._yield_mode = "softmin"
-        self._yield_softness = 0.1
+        # Unified δ-parameterised soft-min yield law (see ViscousFlowModel
+        # ._combine_yield). "min" + δ=0 is exact Min; δ>0 controlled smooth-min.
+        self._yield_mode = "min"
+        self._yield_softness = 0.0  # δ; 0 ⇒ exact Min
+        self._yield_softness_expr = None
+        self._yield_offset_expr = None
         # BDF order-blending α ∈ [0, 1].  α=1 → pure BDF-2 (default);
         # α=0 → pure BDF-1 coefficients; intermediate → linear blend.
         #
@@ -3147,17 +3286,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         if self.is_viscoplastic:
             vp_eff = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
-            elif self._yield_mode == "softmin":
-                delta = self._yield_softness
-                f = eta_1_eff / vp_eff
-                import math  # float offset avoids sympy expression blowup in tensor
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                eta_1_eff = eta_1_eff / g
-            else:
-                eta_1_eff = sympy.Min(eta_1_eff, vp_eff)
+            eta_1_eff = self._combine_yield(eta_1_eff, vp_eff)
 
         return inner_self.shear_viscosity_0
 
@@ -3240,17 +3369,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         if apply_yield and self.is_viscoplastic:
             vp_eff = self._plastic_effective_viscosity
-            if self._yield_mode == "harmonic":
-                eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
-            elif self._yield_mode == "softmin":
-                delta = self._yield_softness
-                f = eta_1_eff / vp_eff
-                import math
-                offset = (-1 + math.sqrt(1 + delta**2)) / 2
-                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
-                eta_1_eff = eta_1_eff / g
-            else:
-                eta_1_eff = sympy.Min(eta_1_eff, vp_eff)
+            eta_1_eff = self._combine_yield(eta_1_eff, vp_eff)
         return eta_0, eta_1_eff
 
     def _assemble_c_tensor(self, eta_0, eta_1_eff):
@@ -3425,10 +3544,10 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     def yield_mode(self):
         r"""How to apply yield limiting to the fault-plane viscosity.
 
-        Same options as :class:`ViscoElasticPlasticFlowModel`:
-        ``"softmin"`` (default), ``"harmonic"``, ``"min"``.  The
-        ``"smooth"`` option was retired (under-clipped by ~50 %); see
-        the parent class's :attr:`yield_mode` docstring for details.
+        Same options as :class:`ViscoElasticPlasticFlowModel`: ``"min"``
+        (default; unified δ-parameterised soft-min, δ=0 ⇒ exact Min) and
+        ``"harmonic"``.  ``"softmin"`` is a deprecated alias for ``"min"``;
+        ``"smooth"`` was retired.  See the parent class's :attr:`yield_mode`.
         """
         return self._yield_mode
 
@@ -3437,24 +3556,41 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         if value == "smooth":
             raise ValueError(
                 "yield_mode='smooth' has been retired — it under-clipped "
-                "the yield surface by ~50%. Use 'softmin' instead "
-                "(default; close to exact Min with smooth derivatives)."
+                "the yield surface by ~50%. Use 'min' (with yield_softness>0 "
+                "for a smooth approximation) instead."
             )
-        if value not in ("min", "harmonic", "softmin"):
+        if value == "softmin":
+            import warnings
+            warnings.warn(
+                "yield_mode='softmin' is deprecated and now maps to 'min' "
+                "(the unified δ-parameterised soft-min law). Set yield_mode='min' "
+                "and choose yield_softness (δ) explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            value = "min"
+        if value not in ("min", "harmonic"):
             raise ValueError(
-                f"yield_mode must be 'min', 'harmonic', or 'softmin', got '{value}'"
+                f"yield_mode must be 'min' or 'harmonic', got '{value}'"
             )
         self._yield_mode = value
         self._reset()
 
     @property
     def yield_softness(self):
-        """Regularisation parameter δ for softmin mode."""
+        """Regularisation parameter δ for the ``"min"`` soft-min yield law.
+
+        δ=0 (default) is exact Min; δ>0 is a controlled smooth-min. Held as
+        a ``constants[]`` atom so it can be ramped (see
+        :meth:`enable_yield_homotopy`) with no JIT recompile.
+        """
         return self._yield_softness
 
     @yield_softness.setter
     def yield_softness(self, value):
-        self._yield_softness = value
+        self._yield_softness = float(value)
+        if getattr(self, "_yield_softness_expr", None) is not None:
+            self._yield_softness_expr.sym = sympy.Float(self._yield_softness)
         self._reset()
 
     @property
@@ -3636,17 +3772,7 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             return eta_par
 
         vp_eff = self._plastic_effective_viscosity
-        if self._yield_mode == "harmonic":
-            return 1 / (1 / eta_par + 1 / vp_eff)
-        elif self._yield_mode == "softmin":
-            delta = self._yield_softness
-            f = eta_par / vp_eff
-            import math
-            offset = (-1 + math.sqrt(1 + delta**2)) / 2
-            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
-            return eta_par / g
-        else:
-            return sympy.Min(eta_par, vp_eff)
+        return self._combine_yield(eta_par, vp_eff)
 
     def _eta_par_eff_lagged(self):
         """Yield-clipped ``η_∥_eff`` using the **lagged** strain rate
@@ -3699,17 +3825,7 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             2 * (gamma_dot_abs_lag + sympy.Float(edot_min_val))
         )
 
-        if self._yield_mode == "harmonic":
-            return 1 / (1 / eta_par + 1 / vp_eff_lag)
-        elif self._yield_mode == "softmin":
-            delta = self._yield_softness
-            f = eta_par / vp_eff_lag
-            import math
-            offset = (-1 + math.sqrt(1 + delta ** 2)) / 2
-            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
-            return eta_par / g
-        else:
-            return sympy.Min(eta_par, vp_eff_lag)
+        return self._combine_yield(eta_par, vp_eff_lag)
 
     def _build_split_c_tensors(self, eta_perp, eta_par):
         r"""Build ``C_⊥ = 2·η_⊥·P_⊥`` and ``C_∥ = 2·η_∥·P_∥``.
