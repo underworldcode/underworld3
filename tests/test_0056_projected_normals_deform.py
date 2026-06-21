@@ -148,10 +148,9 @@ def test_boundary_normal_cartesian_free_surface_corner():
 
     # CORNER CHECK: the top-corner vertices (x=0, x=1) must carry the TOP
     # normal, NOT a 45° average with the vertical walls. ∂h/∂x at x=0,1 is
-    # ±0.1π, so the true top normal there is tilted ~17° from vertical — and
-    # crucially has a SMALL... no: it must equal the one-sided top facet normal
-    # (the reference), i.e. err already bounds it. Assert the corner normal is
-    # not the 45° wall-average:
+    # ±0.1π, so the true top normal there is tilted ~17° from vertical; it must
+    # equal the one-sided top facet normal (the reference), which `err` already
+    # bounds. Assert the corner normal is not the 45° wall-average:
     xc = Xn[t_idx, 0]
     corner = (np.abs(xc) < 1e-9) | (np.abs(xc - 1.0) < 1e-9)
     if corner.any():

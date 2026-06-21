@@ -4723,8 +4723,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             a fault orientation field).
         normal : sympy.Matrix or list, optional
             Boundary unit normal used in the Nitsche consistency, symmetry,
-            and pressure-coupling terms. Default ``None`` uses the PETSc
-            boundary facet normal ``mesh.Gamma_N``.
+            and pressure-coupling terms. Default ``None`` uses the per-boundary,
+            deformation-tracking ``mesh.boundary_normal(boundary)``.
         gamma : float, default=10.0
             Dimensionless stabilisation parameter. Typical values 5--20
             for P2 elements.

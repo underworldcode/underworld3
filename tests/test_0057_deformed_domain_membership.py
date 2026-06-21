@@ -49,7 +49,6 @@ def test_membership_and_eval_track_bulged_surface():
     mesh.deform(Xd, dt=1.0)
 
     Rn = np.sqrt((np.asarray(mesh.X.coords) ** 2).sum(1))
-    surf_now = np.abs(np.asarray(mesh.X.coords)[:, 1]) < 0.05  # near theta=0
     crest_r = Rn[surf & (np.abs(TH) < 0.2)].max() if (surf & (np.abs(TH) < 0.2)).any() else Rn.max()
     assert crest_r > r_o + 0.05, "test setup: surface should bulge past r_o"
 

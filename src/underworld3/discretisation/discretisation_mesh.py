@@ -2507,7 +2507,6 @@ class Mesh(Stateful, uw_object):
             Boundary label name (or a ``mesh.boundaries`` enum member).
         """
         import underworld3 as uw
-        from scipy.spatial import cKDTree
 
         name = getattr(boundary, "name", str(boundary))
         if not hasattr(self, "_boundary_normal_vars") or self._boundary_normal_vars is None:
@@ -2524,7 +2523,6 @@ class Mesh(Stateful, uw_object):
     def _assemble_boundary_normal(self, var, name):
         """Fill ``var`` with the area-weighted outward facet normal assembled
         from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
-        import underworld3 as uw
         from scipy.spatial import cKDTree
         cdim = self.cdim
         dm = self.dm
@@ -2558,7 +2556,9 @@ class Mesh(Stateful, uw_object):
                             face_pts.append(int(p))
 
         tree = cKDTree(coords)
-        nverts = cdim                                  # P1 vertices per facet (2D edge=2, 3D tri=3)
+        # P1 vertices per facet, counted from the facet's own closure so this
+        # works for non-simplex facets too (2D edge=2, 3D tri=3, 3D quad=4).
+        vStart, vEnd = dm.getDepthStratum(0)
         for f in face_pts:
             if dm.getSupportSize(f) != 1:
                 continue
@@ -2569,6 +2569,8 @@ class Mesh(Stateful, uw_object):
             if numpy.dot(nrm, numpy.asarray(cent)[:cdim]
                          - numpy.asarray(ccent)[:cdim]) < 0:
                 nrm = -nrm
+            _clo = dm.getTransitiveClosure(f)[0]
+            nverts = int(numpy.count_nonzero((_clo >= vStart) & (_clo < vEnd))) or cdim
             # Accumulate to the facet's P1 DOFs (its vertices) — found as the
             # nearest DOFs to the facet centroid. This avoids indexing the local
             # coordinate array by (vertex_point - vStart), which is only valid
