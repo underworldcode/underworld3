@@ -1144,6 +1144,14 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
             "Effective viscosity (plastic)",
         )
 
+        # Unified δ-parameterised soft-min yield law (see
+        # ViscousFlowModel._combine_yield). δ=0 (default) is exact Min;
+        # δ>0 is a controlled smooth-min rampable via enable_yield_homotopy().
+        self._yield_mode = "min"
+        self._yield_softness = 0.0
+        self._yield_softness_expr = None
+        self._yield_offset_expr = None
+
     class _Parameters(_ParameterBase, _ViscousParameterAlias):
         """Any material properties that are defined by a constitutive relationship are
         collected in the parameters which can then be defined/accessed by name in
@@ -1225,15 +1233,14 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         viscosity_yield = yield_stress / (2 * self._strainrate_inv_II)
 
-        ## Question is, will sympy reliably differentiate something
-        ## with so many Max / Min statements. The smooth version would
-        ## be a reasonable alternative:
-
-        # effective_viscosity = sympy.sympify(
-        #     1 / (1 / inner_self.shear_viscosity_0 + 1 / viscosity_yield),
-        # )
-
-        effective_viscosity = sympy.Min(inner_self.shear_viscosity_0, viscosity_yield)
+        # Unified δ-parameterised soft-min yield law (shared with VEP/TI-VEP).
+        # δ=0 (default) is identically Min(η_0, η_yield); δ>0 is a controlled
+        # smooth-min that the yield homotopy ramps to 0 within a solve to get
+        # past the Min kink (see ViscousFlowModel._combine_yield /
+        # enable_yield_homotopy).
+        effective_viscosity = self._combine_yield(
+            inner_self.shear_viscosity_0, viscosity_yield
+        )
 
         # If we want to apply limits to the viscosity but see caveat above
         # Keep this as an sub-expression for clarity
