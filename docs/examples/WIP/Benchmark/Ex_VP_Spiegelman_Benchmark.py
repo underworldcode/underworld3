@@ -87,6 +87,8 @@ SMOOTHING        = 3e-5   # regularisation parameter
 N_ITER           = 10     # DD→DP continuation steps
 USE_HOMOTOPY     = True   # yield homotopy (ramp soft-min δ→0) in place of Picard
 DELTA_START      = 1.0    # initial soft-min δ for the homotopy ramp
+REFINEMENT       = 0      # geometric-MG refinement levels on the gmsh base (0 = none)
+PRECONDITIONER   = "auto" # "auto"|"fmg"|"gamg" velocity-block preconditioner
 
 params = uw.Params(
     # Physical parameters (unit-aware)
@@ -101,6 +103,8 @@ params = uw.Params(
     uw_p_deg            = 1,       # pressure polynomial degree
     uw_v_deg            = 2,       # velocity polynomial degree
     uw_niter            = N_ITER,  # nonlinear iterations for DD→DP transition
+    uw_refinement       = REFINEMENT,      # geometric-MG hierarchy levels on the gmsh base
+    uw_preconditioner   = PRECONDITIONER,  # "auto"|"fmg"|"gamg"
 )
 
 # Convenience aliases for plain-type parameters used throughout
@@ -110,6 +114,8 @@ p_cont       = params.uw_p_cont
 p_deg        = params.uw_p_deg
 v_deg        = params.uw_v_deg
 niter        = params.uw_niter
+refinement   = params.uw_refinement
+preconditioner = params.uw_preconditioner
 
 d_eta = np.log10(params.uw_eta_background.magnitude) - np.log10(params.uw_eta_base.magnitude)
 
@@ -347,7 +353,13 @@ class boundaries(Enum):
 
 
 
-mesh1 = uw.discretisation.Mesh(plex[1], boundaries=boundaries, useMultipleTags=True, useRegions=True, coordinate_system_type=uw.coordinates.CoordinateSystemType.CARTESIAN, qdegree=3,)
+# refinement > 0 builds a geometric-MG hierarchy by uniformly refining the gmsh
+# base (the coarse level). The new boundary vertices are NOT snapped back onto
+# the constructive (gmsh CAD) geometry — the resulting chord-arc error on the
+# tiny rounded notch corners is benign (cf. the annulus FMG study) and the
+# straight notch flanks / interior interface refine exactly. The hierarchy lets
+# the velocity block use geometric Full Multigrid (preconditioner="fmg"/"auto").
+mesh1 = uw.discretisation.Mesh(plex[1], boundaries=boundaries, useMultipleTags=True, useRegions=True, coordinate_system_type=uw.coordinates.CoordinateSystemType.CARTESIAN, qdegree=3, refinement=refinement,)
 
 ### view mesh to make sure boundaries are labeled correctly
 if uw.is_notebook():
@@ -389,9 +401,26 @@ indexSetS = mesh1.dm.getStratumIS("Strong", 101)
 
 
 # %%
-# Direct array access (no context manager needed)
-mat.data[indexSetW] = 0
-mat.data[indexSetS] = 1
+# Direct array access. The "Weak"/"Strong" region labels propagate through the
+# refinement hierarchy, but refine() spreads them onto the cell *closure* too
+# (vertices/edges), so getStratumIS returns more than just cells. Keep only the
+# cell points (height-0 stratum [cStart,cEnd)) and index the DG0 `mat` data by
+# cell. On the unrefined gmsh mesh the label was cells-only with cStart==0, so
+# the original raw indexing happened to work.
+cStart, cEnd = mesh1.dm.getHeightStratum(0)
+
+
+def _cells_only(indexSet):
+    if indexSet is None:
+        return np.empty(0, dtype=np.int32)
+    pts = indexSet.getIndices()
+    return pts[(pts >= cStart) & (pts < cEnd)] - cStart
+
+
+mat.data[...] = 1  # default: Strong
+mat.data[_cells_only(indexSetW)] = 0
+mat.data[_cells_only(indexSetS)] = 1
+uw.pprint(0, f"material: {int((mat.data < 0.5).sum())} weak / {int((mat.data > 0.5).sum())} strong cells")
 
 # %% [markdown]
 # ### Create Stokes object
@@ -404,6 +433,12 @@ stokes = uw.systems.Stokes(
 )
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+
+# Velocity-block preconditioner. "auto"/"fmg" lights up geometric Full Multigrid
+# when the mesh carries a refinement hierarchy (refinement>0) — anisotropy- and
+# contrast-robust where the default algebraic multigrid (GAMG) cliffs as the
+# plastic viscosity gradient sharpens. Falls back to GAMG with no hierarchy.
+stokes.preconditioner = preconditioner
 
 
 # %% [markdown]
