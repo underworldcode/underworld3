@@ -92,7 +92,7 @@ transition — is comparable to BDF-1's.
 ```{figure} ../figures/bench_vep_square_vardt_softmin.png
 :width: 100%
 
-Same problem with `yield_mode="softmin"` — replacing
+Same problem with `yield_mode="min"`, `yield_softness=0.1` — replacing
 $\min(\eta_{ve},\eta_{pl})$ with the smooth approximation
 $\eta_{ve}/g(f)$, $g(f) = 1 + (f-1+\sqrt{(f-1)^2+\delta^2})/2$.
 At δ = 0.1 the kink is differentiable but the plateau still tracks

@@ -167,7 +167,7 @@ def vep_square_wave(t, eta, mu, gamma_dot_0, tau_y, half_period):
 # Stokes problem builder
 # ---------------------------------------------------------------------------
 
-def build_stokes(label, params, yield_stress=None, yield_mode="min"):
+def build_stokes(label, params, yield_stress=None, yield_mode="min", yield_softness=0.0):
     """Construct a VE_Stokes problem with the standard mesh / BCs.
 
     Parameters
@@ -181,9 +181,12 @@ def build_stokes(label, params, yield_stress=None, yield_mode="min"):
         If ``None``, pure VE (yield_stress is set to a large finite value).
         Otherwise enables VEP with the given yield stress.
     yield_mode : str
-        Passed to ``constitutive_model._yield_mode``. ``"min"`` for
-        Min-mode plasticity (sharp yield), other options are smooth
-        approximations.
+        Passed to ``constitutive_model._yield_mode``. ``"min"`` (the unified
+        δ-parameterised soft-min) or ``"harmonic"``. ``"softmin"`` is accepted
+        as a legacy alias for ``"min"``.
+    yield_softness : float
+        The soft-min δ (``constitutive_model._yield_softness``). ``0.0`` (default)
+        is exact Min; ``> 0`` is a controlled smooth-min.
 
     Returns
     -------
@@ -208,7 +211,8 @@ def build_stokes(label, params, yield_stress=None, yield_mode="min"):
         yield_stress if yield_stress is not None else 1.0e6
     )
     stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-6
-    stokes.constitutive_model._yield_mode = yield_mode
+    stokes.constitutive_model._yield_mode = "min" if yield_mode == "softmin" else yield_mode
+    stokes.constitutive_model._yield_softness = yield_softness
 
     V_top = expression(rf"V_{{top,{label}}}", sympy.Float(0.0), "Top V")
     stokes.add_dirichlet_bc((V_top, 0.0), "Top")

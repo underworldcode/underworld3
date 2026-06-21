@@ -87,7 +87,7 @@ stokes.constitutive_model = cm
 cm.Parameters.shear_viscosity_0 = ETA
 cm.Parameters.shear_modulus = MU
 cm.Parameters.yield_stress = tau_y_field
-# yield_mode="softmin" is the default (smooth approximation to Min)
+# yield_mode="min" (default); yield_softness=0 is exact Min, >0 is a smooth-min
 cm.Parameters.shear_viscosity_min = ETA * 1.0e-2
 cm.Parameters.strainrate_inv_II_min = 1.0e-5
 

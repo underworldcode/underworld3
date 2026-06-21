@@ -2,7 +2,7 @@
 
 Counterpart to bench_vep_square_vardt (Min) and
 bench_vep_square_vardt_smooth (smooth blend).  Same dt schedule and
-forcing; the only change is ``yield_mode = "softmin"`` with the
+forcing; the only change is ``yield_mode = "min"`` with ``yield_softness = 0.1`` (the
 default softness δ = 0.1.
 
 Softmin replaces ``Min(η_ve, η_pl)`` with the smooth approximation
@@ -49,7 +49,7 @@ def _run_one(bdf_order):
     params["bdf_order"] = bdf_order
     mesh, stokes, V_top, params = build_stokes(
         f"{LABEL}_o{bdf_order}", params,
-        yield_stress=TAU_Y, yield_mode="softmin",
+        yield_stress=TAU_Y, yield_mode="min", yield_softness=0.1,
     )
     times, dts, sigmas, gammas, reasons = [], [], [], [], []
     t_cur = 0.0
@@ -86,7 +86,7 @@ def main():
     peak1 = float(np.abs(sig1).max()); peak2 = float(np.abs(sig2).max())
     print(f"[{LABEL}]  steps={len(times1)}  τ_y={TAU_Y}  η·γ̇₀={params['eta']*gamma_dot_0:.4f}")
     print(f"  schedule: plateau dt={DT_PLATEAU}, fine dt={DT_FINE} (×{DT_FINE_RATIO}), window=±{WINDOW}")
-    print(f"  yield_mode = softmin (default δ = 0.1)")
+    print(f"  yield_mode = min, yield_softness = 0.1 (smooth-min)")
     print(f"  BDF-1 wall={wall1:.1f}s peak|σ|={peak1:.4f}  ({100*peak1/TAU_Y:.1f}% of τ_y)  max|err vs Min-clip|={err1['max_abs']:.4e}  rms={err1['rms']:.4e}")
     print(f"  BDF-2 wall={wall2:.1f}s peak|σ|={peak2:.4f}  ({100*peak2/TAU_Y:.1f}% of τ_y)  max|err vs Min-clip|={err2['max_abs']:.4e}  rms={err2['rms']:.4e}")
 
@@ -97,7 +97,7 @@ def main():
             V0=V0, half_period=HALF_PERIOD, n_periods=N_PERIODS,
             tau_y=TAU_Y, gamma_dot_0=gamma_dot_0, t_end=T_END,
             dt_plateau=DT_PLATEAU, dt_fine=DT_FINE, dt_fine_ratio=DT_FINE_RATIO,
-            window=WINDOW, yield_mode="softmin", yield_softness=0.1,
+            window=WINDOW, yield_mode="min", yield_softness=0.1,
             peak_bdf1=peak1, peak_bdf2=peak2,
             err_max_bdf1=err1["max_abs"], err_rms_bdf1=err1["rms"],
             err_max_bdf2=err2["max_abs"], err_rms_bdf2=err2["rms"],

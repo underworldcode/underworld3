@@ -168,7 +168,8 @@ cm.Parameters.yield_stress = tau_y_field
 cm.Parameters.director = director
 cm.Parameters.shear_viscosity_min = ETA_0 * 1.0e-3
 cm.Parameters.strainrate_inv_II_min = 1.0e-6
-cm.yield_mode = "softmin"  # smooth approximation to min (default delta=0.1)
+cm.yield_mode = "min"        # unified soft-min law (yield_softness=delta)
+cm.yield_softness = 0.1     # delta>0: smooth approximation to Min (delta=0 = exact Min)
 
 # Solver settings
 stokes.saddle_preconditioner = 1 / cm.K
