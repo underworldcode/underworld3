@@ -85,8 +85,6 @@ CONVERGENCE_RATE = 2.5    # mm/yr – convergence velocity
 PROBLEM_SIZE     = 2      # mesh resolution level (1=ultra-low, 4=benchmark)
 SMOOTHING        = 3e-5   # regularisation parameter
 N_ITER           = 10     # DD→DP continuation steps
-USE_HOMOTOPY     = True   # yield homotopy (ramp soft-min δ→0) in place of Picard
-DELTA_START      = 1.0    # initial soft-min δ for the homotopy ramp
 
 params = uw.Params(
     # Physical parameters (unit-aware)
@@ -489,69 +487,6 @@ def eta_geometric_mean(*etas):
 
 
 # %% [markdown]
-# #### Yield homotopy (problem-space regularisation)
-#
-# The plastic viscosity cap $\min(\eta_p, \eta_{bg})$ has a non-differentiable
-# kink that stalls the SNES line search from a cold start — which is why the
-# original benchmark leans on a Picard pre-step and the DD→DP $\alpha$
-# continuation.  Instead we replace the sharp $\min$ with the unified
-# $\delta$-parameterised soft-min (identical to UW3's
-# ``ViscousFlowModel._combine_yield``) and ramp $\delta$ from ``DELTA_START``
-# down to 0 *within each solve* via a per-iteration ``SNESSetUpdate`` callback.
-# $\delta$ rides in ``constants[]`` (no JIT recompile), and because it ends at
-# 0 the converged stress sits on the **exact** yield surface.
-#
-# This mirrors ``constitutive_model.enable_yield_homotopy()``; it is written
-# inline here because the benchmark builds its piecewise viscosity by hand on a
-# plain ``ViscousFlowModel`` rather than through a yield-aware constitutive model.
-
-# %%
-# δ and its onset offset as runtime-rampable constant expressions.
-delta_y = uw.expression(r"\delta_y", sympy.Float(0.0), "yield soft-min regularisation")
-offset_y = uw.expression(
-    r"\delta_{y,0}", (-1 + sympy.sqrt(1 + delta_y**2)) / 2, "soft-min onset offset"
-)
-
-
-def eta_softmin(eta_pl, eta_bg):
-    """δ-parameterised soft-min of (plastic, background) viscosity.
-
-    g(f,δ)=1+(f-1+√((f-1)²+δ²))/2-offset, f=η_pl/η_bg; δ=0 ⇒ exact min."""
-    f = eta_pl / eta_bg
-    g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta_y**2)) / 2 - offset_y
-    return eta_pl / g
-
-
-class YieldHomotopy:
-    """Residual-paced δ ramp, mirroring enable_yield_homotopy (absolute schedule)."""
-
-    def __init__(self, solver, delta_start):
-        self.delta_start = float(delta_start)
-        self.r_ref = 0.0
-        self.r_min = 0.0
-        solver.petsc_options["snes_linesearch_type"] = "basic"
-        if solver.petsc_options.getInt("snes_max_it", 0) < 100:
-            solver.petsc_options["snes_max_it"] = 100
-
-    def __call__(self, solver, iteration):
-        try:
-            rnorm = float(solver.snes.getFunctionNorm())
-        except Exception:
-            rnorm = None
-        if iteration == 0:
-            self.r_min = rnorm if rnorm else 0.0
-            if rnorm and rnorm > self.r_ref:
-                self.r_ref = rnorm
-        elif rnorm:
-            self.r_min = min(self.r_min, rnorm)
-        scale = min(1.0, max(0.0, self.r_min / self.r_ref)) if self.r_ref > 0 else (
-            1.0 if iteration == 0 else 0.0
-        )
-        delta_y.sym = sympy.Float(self.delta_start * scale)
-        solver._update_constants()
-
-
-# %% [markdown]
 # #### Drucker-Prager plasticity
 #
 # The yield stress is $\sigma_y = C \cos\varphi + \sin\varphi\, P$ where $C$ is
@@ -655,22 +590,13 @@ uw.pause("Linear solve — waiting before starting non-linear solve")
 # $\eta_{\text{bg}}$ caps the plastic viscosity at the background value.
 
 # %%
-# Continuation schedule.
-#   - Yield homotopy ON: jump straight to full Drucker-Prager (α = 1) and let
-#     the δ-ramp carry the hard solve from the linear guess — no DD→DP
-#     continuation, no Picard pre-step.
-#   - Yield homotopy OFF: the original DD→DP α-continuation + Picard pre-step.
-alpha_steps = [1.0] if USE_HOMOTOPY else [0.0, 0.25, 0.5, 0.75, 1.0]
-
-# Register the residual-paced δ ramp once (fires every SNES iteration).
-if USE_HOMOTOPY:
-    stokes.add_update_callback(YieldHomotopy(stokes, DELTA_START))
+# Continuation schedule: α values from DD (0) to full DP (1)
+alpha_steps = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 for step_i, alpha in enumerate(alpha_steps):
 
     uw.pprint(0, "\n" + "=" * 60)
-    uw.pprint(0, f"STAGE 2.{step_i}: Plasticity with α = {alpha}"
-                 f"{'  [yield homotopy]' if USE_HOMOTOPY else ''}")
+    uw.pprint(0, f"STAGE 2.{step_i}: Plasticity with α = {alpha}")
     uw.pprint(0, "=" * 60 + "\n")
 
     # Restore linear solution as initial guess for each step
@@ -682,10 +608,9 @@ for step_i, alpha in enumerate(alpha_steps):
         outputPath, f"2_{step_i}_NL_alpha_{alpha:.2f}.txt"
     )
 
-    # Effective viscosity: (soft-)min of plastic and background, plus floor.
+    # Effective viscosity: harmonic mean of plastic and background, plus floor
     eta_p = plastic_viscosity(alpha)
-    cap = eta_softmin(eta_p, eta_bg) if USE_HOMOTOPY else eta_minimum(eta_p, eta_bg)
-    visc_top = eta_b + cap
+    visc_top = eta_b + eta_minimum(eta_p, eta_bg)
 
     visc_fn_plastic = sympy.Piecewise((visc_top, mat.sym[0] > 0.5),
                                        (eta_b, True))
@@ -693,12 +618,10 @@ for step_i, alpha in enumerate(alpha_steps):
     stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn_plastic
     stokes.saddle_preconditioner = 1 / visc_fn_plastic
 
-    # Homotopy carries the hard solve, so no Picard pre-step. Without it, the
-    # first α-step needs Picard to establish the plastic regime.
-    n_picard = 0 if USE_HOMOTOPY else (5 if step_i == 0 else 0)
+    # First nonlinear step needs Picard to establish plastic regime;
+    # subsequent steps start from a close solution so Newton alone suffices.
+    n_picard = 5 if step_i == 0 else 0
     stokes.solve(zero_init_guess=False, picard=n_picard)
-    uw.pprint(0, f"  SNES reason={int(stokes.snes.getConvergedReason())} "
-                 f"its={stokes.snes.getIterationNumber()}")
 
     update_projections()
     mesh1.petsc_save_checkpoint(
