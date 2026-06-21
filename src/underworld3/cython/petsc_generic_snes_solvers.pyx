@@ -2171,15 +2171,42 @@ class SNES_Scalar(SolverBaseClass):
         # TODO(BUG): natural BC on an INTERNAL surface is partition-dependent.
         # An interior facet has two support cells; the FE-assembly DM is kept
         # non-overlapped on purpose (overlap double-counts volume assembly via
-        # LocalToGlobal+ADD — see discretisation_mesh.py ~L760), so at a partition
-        # seam ~few interior facets have only one local support cell and PETSc's
-        # per-support-cell boundary integral picks an inconsistent side. The
-        # assembled load then differs ~0.027% serial vs parallel (the force
-        # *function* integral / RMS is identical to machine precision) and, in an
-        # ill-conditioned solve (e.g. augmented Stokes_Constrained), amplifies to
-        # ~0.1% velocity. Fix: integrate each internal facet once from a
-        # deterministic (partition-independent) support cell. See planning file
-        # (underworld.md, Bugs) and project_stokes_constrained_parallel_session.
+        # LocalToGlobal+ADD — see discretisation_mesh.py ~L760). At a partition
+        # seam ~few interior facets have only ONE local support cell, and PETSc's
+        # DMPlexComputeBdResidual_Single_Internal attributes the whole per-facet
+        # elemVec to support[0]'s cell closure (plexfem.c ~L4928) with the facet
+        # normal oriented outward from support[0] (dmfieldds.c ~L790). When the
+        # local-only support cell is the OPPOSITE side from the serial support[0],
+        # the integral is the same value but is scattered through a different
+        # cell closure; closure DOFs that are non-owned on this rank are added
+        # locally then dropped at global assembly → the assembled load UNDER-counts
+        # by ~0.027% (the force *function* integral / RMS is identical to machine
+        # precision). In an ill-conditioned solve (augmented Stokes_Constrained)
+        # this amplifies to ~0.1% velocity.
+        #
+        # Three cheap workarounds were TESTED and do NOT work:
+        #   * editing the boundary LABEL (owner-only / ghost-strip): no-op — the
+        #     ghost facet copies already contribute nothing (PETSc integrates each
+        #     facet once), so stripping them is bit-identical;
+        #   * a 1-cell partition OVERLAP on the assembly DM: no-op — verified the
+        #     overlap propagates (+ghost cells) yet F0 is bit-identical, so overlap
+        #     does NOT recover the dropped DOFs (and it double-counts volume anyway);
+        #   * assembling the surface load on a codim-1 SUBMESH (extract_surface):
+        #     blocked — UW3 FE on an embedded surface fails at setup because the
+        #     gradient/flux term has cdim components but is reshaped to dim
+        #     (the manifold vector-FE gap).
+        # A deterministic support[0] cannot be imposed from UW3 (support order
+        # follows the DMPlex point partition). Genuine fixes, all substantial:
+        #   (a) MANUALLY assemble the boundary load (per-facet ∫ f·φ keyed by GLOBAL
+        #       velocity DOF, each facet once) into a partition-independent vector
+        #       and inject it via a guarded SNES function wrap — reimplements the bd
+        #       residual but sidesteps PETSc's support[0] scatter;
+        #   (b) fix UW3 manifold vector-FE, then assemble the load on the surface
+        #       submesh and map to the parent by coincident-node coordinate;
+        #   (c) a PETSc patch making the interior-facet bd residual scatter to the
+        #       OWNED support cell.
+        # See planning file (underworld.md, Bugs) and
+        # project_stokes_constrained_parallel_session.
         for index,bc in enumerate(self.natural_bcs):
 
             components = bc.components
@@ -5531,6 +5558,54 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 flush=True,
             )
 
+    def _build_velocity_rotation_nullspace(self):
+        """Cache a velocity-rotation-only ``MatNullSpace`` (zero in pressure /
+        multiplier blocks). Used to project the rigid-rotation gauge out of the
+        converged solution — see ``_remove_velocity_rotation_gauge``."""
+        if getattr(self, "_velocity_rotation_nullspace", None) is not None:
+            return self._velocity_rotation_nullspace
+        if not self._petsc_velocity_nullspace_basis:
+            return None
+
+        vecs = [self._build_velocity_nullspace_vector(m)
+                for m in self._petsc_velocity_nullspace_basis]
+        orthonormal = []
+        for bvec in vecs:
+            for ovec in orthonormal:
+                bvec.axpy(-ovec.dot(bvec), ovec)
+            bnorm = bvec.norm()
+            if np.isclose(bnorm, 0.0):
+                bvec.destroy()
+                continue
+            bvec.scale(1.0 / bnorm)
+            orthonormal.append(bvec)
+        if not orthonormal:
+            return None
+
+        self._velocity_rotation_nullspace = PETSc.NullSpace().create(
+            constant=False, vectors=tuple(orthonormal), comm=self.dm.comm)
+        return self._velocity_rotation_nullspace
+
+    def _remove_velocity_rotation_gauge(self, gvec):
+        """Project the rigid-body rotation gauge out of the converged solution.
+
+        For a free-slip (non-Dirichlet) velocity, the rigid rotations are a true
+        nullspace of the velocity block (A_uu·rotation = 0). The monolithic
+        nullspace attached for the solve is NOT removed inside a fieldsplit/Schur
+        iteration — the inner velocity KSP has no rotation nullspace, so it leaves
+        an unconstrained rigid rotation in the velocity. Because the operator is
+        blind to it, the true residual still converges to machine precision, but
+        the rotation amplitude is PARTITION-DEPENDENT (the tangential velocity then
+        differs serial-vs-parallel by ~0.1-1% while the physical / radial flow is
+        partition-clean to round-off). Since the rotation is a genuine nullspace,
+        removing it from the converged ``gvec`` does NOT change the residual and
+        yields the same rotation-free solution on any decomposition. This is the
+        velocity analogue of the constant-pressure gauge (see set_pressure_gauge).
+        No-op when there are no velocity rotation modes."""
+        rot_ns = self._build_velocity_rotation_nullspace()
+        if rot_ns is not None:
+            rot_ns.remove(gvec)
+
 
     ## F0, F1 should be f0 and F1, (pf0 for Saddles can be added here)
     ## don't add new ones uf0, uF1 are redundant
@@ -7282,6 +7357,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
+
+        # Project the rigid-body rotation gauge out of the converged solution.
+        # The fieldsplit/Schur inner velocity solve leaves an unconstrained (and
+        # partition-dependent) rigid rotation that the true residual is blind to;
+        # removing this genuine velocity nullspace makes the tangential velocity
+        # partition-independent to round-off without changing the residual.
+        self._remove_velocity_rotation_gauge(gvec)
 
         # SNESSetUpdate fires only at the START of each iteration, so the final
         # converged iterate is otherwise un-hooked. Apply the callbacks once more
