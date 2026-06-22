@@ -89,6 +89,10 @@ USE_HOMOTOPY     = True   # yield homotopy (ramp soft-min δ→0) in place of Pi
 DELTA_START      = 1.0    # initial soft-min δ for the homotopy ramp
 REFINEMENT       = 0      # geometric-MG refinement levels on the gmsh base (0 = none)
 PRECONDITIONER   = "auto" # "auto"|"fmg"|"gamg" velocity-block preconditioner
+# NOTE: a zero-mean surface pressure gauge was tried here and is counter-productive
+# for Drucker-Prager — the yield σ_y = C + sinφ·p makes the pressure physical (not a
+# free gauge), so gauging it moves the yield surface and the solve oscillates
+# (~50 iters vs ~5 without). The free top surface already determines the pressure.
 
 params = uw.Params(
     # Physical parameters (unit-aware)
