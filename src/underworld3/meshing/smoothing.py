@@ -3145,22 +3145,32 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         mesh._mmpde_reference_coords = ref
 
     # --- RBF/Shepard bake of the metric (the production-fast path) ------
-    # Evaluate the analytic metric ONCE on the fixed reference cloud, then
-    # interpolate to the moving centroids each step via k-NN inverse-
-    # distance (Shepard). The reference cloud is fixed in space ⇒ Eulerian.
+    # Bake the metric at the CURRENT mesh NODES (its own DOF locations), then
+    # interpolate to the moving centroids each step via k-NN inverse-distance
+    # (Shepard). Source = nodes, NOT the fixed reference cloud `ref` (`ref` is
+    # kept for the _edge_mats reference frame). Two reasons:
+    #   * MONOTONE: a P1 density is positive by construction; Shepard is a convex
+    #     (positive-weight) average of the sampled node values, so the result is
+    #     GUARANTEED positive — no negative/non-SPD garbage, the SPD floor / NaN
+    #     bail never has to fire.
+    #   * ROBUST + FAST: nodes are always inside the mesh (never out-of-domain),
+    #     and Shepard needs no per-step cell location. RBF doesn't need
+    #     high-precision eval — speed + monotonicity. (Restores the earlier
+    #     "RBF metric eval" design intent: the fixed-`ref` FE bake could
+    #     mis-locate / drift outside a deformed interior and return ρ<0.)
     if metric_eval == "rbf":
         from scipy.spatial import cKDTree
-        M_ref = _eval_M_analytic(ref)                    # one analytic pass
-        _tree = cKDTree(ref)
+        M_src = _eval_M_analytic(coords)                 # nodal values (positive)
+        _tree = cKDTree(coords)
         _kk = int(rbf_k) if rbf_k else (cdim + 2)
 
         def _eval_M(pts):
             dist, idx = _tree.query(pts, k=_kk)
             if _kk == 1:
-                return M_ref[idx]
+                return M_src[idx]
             w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
             w /= w.sum(axis=1, keepdims=True)
-            return np.einsum('nk,nkab->nab', w, M_ref[idx])
+            return np.einsum('nk,nkab->nab', w, M_src[idx])
     else:
         _eval_M = _eval_M_analytic
 
