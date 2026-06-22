@@ -1008,6 +1008,8 @@ class SolverBaseClass(uw_object):
                 self._stokes_nullspace = None
             if hasattr(self, "_stokes_nullspace_basis"):
                 self._stokes_nullspace_basis = ()
+            if hasattr(self, "_velocity_rotation_nullspace"):
+                self._velocity_rotation_nullspace = None
             if hasattr(self, "_constant_nullspace_obj"):
                 self._constant_nullspace_obj = None
 
@@ -4697,6 +4699,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._petsc_velocity_nullspace_basis = ()
         self._stokes_nullspace = None
         self._stokes_nullspace_basis = ()
+        self._velocity_rotation_nullspace = None
 
         # Construct strainrate tensor for future usage.
         # Grab gradients, and let's switch out to sympy.Matrix notation
@@ -5338,6 +5341,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def _reset_stokes_nullspace(self):
         self._stokes_nullspace = None
         self._stokes_nullspace_basis = ()
+        # the cached velocity rotation nullspace is built from node coordinates,
+        # so it must be invalidated whenever the nullspace config / geometry
+        # changes (e.g. mesh deformation) — see _build_velocity_rotation_nullspace.
+        self._velocity_rotation_nullspace = None
 
     def _pressure_dirichlet_bcs(self):
         """Return essential boundary conditions applied to the pressure field."""
@@ -5561,8 +5568,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def _build_velocity_rotation_nullspace(self):
         """Cache a velocity-rotation-only ``MatNullSpace`` (zero in pressure /
         multiplier blocks). Used to project the rigid-rotation gauge out of the
-        converged solution — see ``_remove_velocity_rotation_gauge``."""
-        if getattr(self, "_velocity_rotation_nullspace", None) is not None:
+        converged solution — see ``_remove_velocity_rotation_gauge``. Cached;
+        the cache is invalidated by ``_reset_stokes_nullspace`` / solver rebuild
+        because the modes depend on node coordinates."""
+        if self._velocity_rotation_nullspace is not None:
             return self._velocity_rotation_nullspace
         if not self._petsc_velocity_nullspace_basis:
             return None
@@ -5601,7 +5610,30 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         removing it from the converged ``gvec`` does NOT change the residual and
         yields the same rotation-free solution on any decomposition. This is the
         velocity analogue of the constant-pressure gauge (see set_pressure_gauge).
-        No-op when there are no velocity rotation modes."""
+        No-op when there are no velocity rotation modes.
+
+        Why a post-solve projection rather than attaching the rotation nullspace
+        to the fieldsplit velocity SUB-BLOCK so the inner KSP removes it in-solve:
+        the in-solve route was implemented and MEASURED, and it does not fix the
+        gauge. A ``DMSetNullSpaceConstructor(dm, 0, ...)`` (rotations-only, built
+        with ``DMPlexCreateRigidBody``) DOES attach the rotation nullspace to the
+        fieldsplit velocity block — verified: the velocity sub-block operator
+        carries the 1 (2-D) / 3 (3-D) rotation modes after PC setup — yet the
+        converged GLOBAL velocity still retained the full rotation gauge (rotation
+        coefficient ~0.18, i.e. unchanged). Removing a nullspace gauge is a
+        projection on the converged GLOBAL solution; attaching the nullspace to a
+        sub-block operator only constrains the inner Krylov solves, and with
+        ``fgmres`` + a variable (fieldsplit/Schur) preconditioner that reintroduces
+        rotation, the assembled outer solution is not gauge-free. (PETSc also
+        dispatches ``DMCreateSubDM`` nullspace constructors by SUB-DM-LOCAL field
+        index, so a field-0 constructor needs a block-sniffing guard to avoid
+        leaking onto the ``[p,h]`` Schur block — but even with that, the global
+        gauge persists.) So the explicit post-solve projection is the correct AND
+        necessary mechanism, not a stopgap: it is mathematically exact (the rotation
+        is a true nullspace, so it does not change the residual) and robust to
+        operator rebuild. Building only the rotation modes (zero in the pressure /
+        multiplier blocks) keeps it from touching the pressure/multiplier gauge,
+        which is handled by the monolithic nullspace."""
         rot_ns = self._build_velocity_rotation_nullspace()
         if rot_ns is not None:
             rot_ns.remove(gvec)
