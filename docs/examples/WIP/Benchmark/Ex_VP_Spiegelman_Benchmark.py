@@ -751,6 +751,65 @@ for step_i, alpha in enumerate(alpha_steps):
 uw.pprint(0, "Done.")
 
 # %% [markdown]
+# ### In-process strain-rate render (cell-centred)
+#
+# Renders the converged strain-rate localisation directly from the live ``edot``
+# variable (cell-centred DG0 — no checkpoint round-trip, no point smearing), with
+# the gmsh corner arcs overlaid. Serial only (a parallel render would show one
+# rank's partition). One-sided ``Oranges`` colormap, log scale.
+
+# %%
+if uw.mpi.size == 1:
+    import underworld3.visualisation as vis
+    import pyvista as pv
+    pv.OFF_SCREEN = True
+
+    rc_ = 0.02
+    centres_H = [(-(1/12+rc_), -(3/4-rc_)), (-(1/12-rc_), -(2/3+rc_)),
+                 ((1/12-rc_), -(2/3+rc_)), ((1/12+rc_), -(3/4-rc_))]
+
+    ev = np.asarray(edot.data[:, 0])
+    pos = ev[ev > 0]
+    clo, chi = np.percentile(pos, 5), np.percentile(pos, 99.5)
+    pvm = vis.mesh_to_pv_mesh(mesh1)
+    pvm.cell_data["edot"] = ev   # cell-centred
+
+    # Coordinate frame from the pv mesh points (plain numpy, matches what is
+    # drawn) so the overlaid arcs line up regardless of the coord units.
+    pts = np.asarray(pvm.points)
+    Hc = float(pts[:, 1].max() - pts[:, 1].min())
+    Rc_ = rc_ * Hc
+    centres = [(cx*Hc, cy*Hc) for cx, cy in centres_H]
+
+    def _arcs():
+        out = []
+        for cx, cy in centres:
+            t = np.linspace(0, 2*np.pi, 240)
+            out.append(pv.lines_from_points(np.c_[cx+Rc_*np.cos(t), cy+Rc_*np.sin(t), 0*t]))
+        return out
+
+    def _render(out, title, zoom=None):
+        pl = pv.Plotter(off_screen=True, window_size=(1300, 480))
+        pl.set_background("white")
+        pl.add_mesh(pvm, scalars="edot", cmap="Oranges", clim=(clo, chi), log_scale=True,
+                    show_edges=False, lighting=False,
+                    scalar_bar_args={"title": "strain rate II", "color": "black"})
+        for c in _arcs():
+            pl.add_mesh(c, color="red", line_width=2.0, lighting=False)
+        pl.view_xy()
+        if zoom is not None:
+            zx, zy, zh = zoom
+            pl.camera.parallel_projection = True
+            pl.camera.focal_point = (zx, zy, 0); pl.camera.parallel_scale = zh
+        pl.add_text(title, font_size=11, color="black")
+        pl.screenshot(out); pl.close()
+        uw.pprint(0, f"wrote {out}")
+
+    _render(outputPath + "edot_localization.png", "strain-rate localization (full DP)")
+    _render(outputPath + "edot_localization_notch.png", "strain-rate localization (notch)",
+            zoom=(0.0, -0.72*Hc, 0.30*Hc))
+
+# %% [markdown]
 # ### Visualisation
 #
 # Plot the final strain-rate invariant on the mesh with velocity arrows
