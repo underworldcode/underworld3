@@ -55,10 +55,13 @@ print(f"  p: {p.scaling_coefficient:.0e} Pa")
 # %% [markdown]
 # ## 3. Non-Dimensional Conversion
 #
-# Current strict-units mode stores non-dimensional values in `.data`.
-# Dimensional values can be converted manually using the scaling coefficient:
+# Current strict-units mode separates dimensional and non-dimensional access:
 #
-# `non_dimensional_value = dimensional_value / scaling_coefficient`
+# - `.array` is the dimensional/unit-aware public interface
+# - `.data` is the internal non-dimensional storage
+#
+# Assign dimensional quantities through `.array`; Underworld3 stores the
+# corresponding non-dimensional values internally in `.data`.
 
 # %%
 # Set some dimensional values
@@ -66,21 +69,21 @@ T_dim_value = 1300.0  # K
 v_dim_value = 0.03    # m/s
 p_dim_value = 2e9     # Pa
 
-T_nd_value = T_dim_value / T.scaling_coefficient
-v_nd_value = v_dim_value / v.scaling_coefficient
-p_nd_value = p_dim_value / p.scaling_coefficient
-
 with uw.synchronised_array_update():
-    T.data[...] = T_nd_value
-    v.data[...] = v_nd_value
-    p.data[...] = p_nd_value
+    T.array[...] = uw.quantity(T_dim_value, "kelvin")
+    v.array[...] = uw.quantity(v_dim_value, "meter/second")
+    p.array[...] = uw.quantity(p_dim_value, "pascal")
 
-print(f"Dimensional values:")
+T_nd_value = np.ravel(T.data)[0]
+v_nd_value = np.ravel(v.data)[0]
+p_nd_value = np.ravel(p.data)[0]
+
+print(f"Dimensional values assigned through .array:")
 print(f"  T = {T_dim_value:.1f} K")
 print(f"  v = {v_dim_value:.3f} m/s")
 print(f"  p = {p_dim_value:.2e} Pa")
 print()
-print(f"Non-dimensional stored values:")
+print(f"Non-dimensional values stored internally in .data:")
 print(f"  T* = {T_nd_value:.2f}")
 print(f"  v* = {v_nd_value:.2f}")
 print(f"  p* = {p_nd_value:.2f}")
@@ -150,14 +153,16 @@ print("\nAuto-derived scaling coefficients:")
 print(f"  T2: scale = {T2.scaling_coefficient}")
 print(f"  v2: scale = {v2.scaling_coefficient}")
 
-# Demonstrate conversion
+# Demonstrate dimensional assignment through .array
 T2_dim_value = 1500.0
-T2_nd_value = T2_dim_value / T2.scaling_coefficient
 
 with uw.synchronised_array_update():
-    T2.data[...] = T2_nd_value
+    T2.array[...] = uw.quantity(T2_dim_value, "kelvin")
 
-print(f"\nExample: T = {T2_dim_value:.0f} K → T* = {T2_nd_value:.2f}")
+T2_nd_value = np.ravel(T2.data)[0]
+
+print(f"\nExample: T = {T2_dim_value:.0f} K assigned through .array")
+print(f"Internal storage: T* = {T2_nd_value:.2f} in .data")
 
 # %%
 T2_nd_expr = T2.sym / T2.scaling_coefficient
@@ -169,19 +174,20 @@ T2_nd_expr
 # %% [markdown]
 # ## 6. Round-Trip Conversion
 #
-# Non-dimensional values can be converted back to dimensional values
-# using the scaling coefficient:
+# Dimensional values are assigned through `.array`, while `.data` stores the
+# corresponding non-dimensional values. The dimensional value can be recovered
+# from the non-dimensional storage using the scaling coefficient:
 #
 # `dimensional_value = non_dimensional_value * scaling_coefficient`
 
 # %%
 # Get non-dimensional value
-T_star = T2_nd_value
-print(f"Non-dimensional: T* = {T_star:.2f}")
+T_star = np.ravel(T2.data)[0]
+print(f"Non-dimensional storage: T* = {T_star:.2f}")
 
 # Convert back to dimensional
 T_dim = T_star * T2.scaling_coefficient
-print(f"Dimensional: T = {T_dim:.0f} K")
+print(f"Dimensional value recovered from .data: T = {T_dim:.0f} K")
 
 # Works with arrays too
 nd_values = np.array([0.5, 1.0, 1.5, 2.0])
@@ -197,8 +203,9 @@ print(f"  Dimensional: {dim_values} K")
 #
 # - **Dimensionality as first-class property** - automatically derived from units
 # - **Reference scaling coefficients** - characteristic scales for each variable
+# - **Dimensional assignment** - via `.array` using unit-aware quantities
 # - **Non-dimensional storage** - via `.data`
-# - **Manual dimensional conversion** - using the scaling coefficient
+# - **Manual dimensional recovery** - using the scaling coefficient
 # - **Array-based conversion** - through direct scale multiplication/division
 # - **Automatic scale derivation** - from model reference quantities
 # - **Strict unit safety** - unit-bearing variables reject ambiguous plain assignments
