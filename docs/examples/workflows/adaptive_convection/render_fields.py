@@ -86,35 +86,50 @@ def _eval_fields(D, index, delta_eta, floor):
 
 
 def render(D, index, *, delta_eta, floor, fault_xyz=None, sr_clim=None,
-           eta_clim=None):
+           eta_clim=None, focus=None):
     pv_mesh, sr, ratio, edges, vmax = _eval_fields(D, index, delta_eta, floor)
     log_sr = np.log10(np.clip(sr, 1e-6, None))
-    log_ratio = np.log10(np.clip(ratio, 1e-6, None))   # ≤0; 0 = no fault
+    # weakening as a POSITIVE quantity: log10(η_FK/η_weak) ≥ 0, 0 = no fault,
+    # large = strongly weakened — so "more = darker" on a light sequential map,
+    # consistent with the strain-rate panel.
+    log_weak = -np.log10(np.clip(ratio, 1e-12, None))
     pv_mesh.point_data["log_sr"] = log_sr
-    pv_mesh.point_data["log_ratio"] = log_ratio
+    pv_mesh.point_data["log_weak"] = log_weak
 
     # strain-rate clim focused on the LID band (plumes saturate) so the fault
     # localization is visible rather than washed out by the hot boundary layers.
     sr_clim = sr_clim or (float(np.percentile(log_sr, 45)),
                           float(np.percentile(log_sr, 98)))
-    eta_clim = eta_clim or (float(np.percentile(log_ratio, 0.5)), 0.0)
+    eta_clim = eta_clim or (0.0, float(np.percentile(log_weak, 99.5)))
 
     pl = pv.Plotter(off_screen=True, window_size=(1700, 900), shape=(1, 2))
+    # light-background sequential maps (white at the low end) so black text and
+    # the fault overlay read cleanly; a bright fault line contrasts on both.
     for col, (scal, clim, cmap, title) in enumerate([
-            ("log_sr", sr_clim, "inferno", "log10 strain-rate II (lid-scaled)"),
-            ("log_ratio", eta_clim, "viridis_r", "log10 η_weak/η_FK (fault weakening)")]):
+            ("log_sr", sr_clim, "YlOrRd", "log10 strain-rate II (lid-scaled)"),
+            ("log_weak", eta_clim, "Blues", "log10 η_FK/η_weak (fault weakening)")]):
         pl.subplot(0, col)
         pl.set_background("white")
         pl.add_mesh(pv_mesh.copy(), scalars=scal, cmap=cmap, clim=clim,
                     show_edges=False, lighting=False,
-                    scalar_bar_args={"title": title, "color": "black"})
-        pl.add_mesh(edges, color="grey", line_width=0.3, lighting=False, opacity=0.3)
+                    scalar_bar_args={"title": title, "color": "black",
+                                     "title_font_size": 16, "label_font_size": 13})
+        pl.add_mesh(edges, color="grey", line_width=0.3, lighting=False, opacity=0.25)
         if fault_xyz is not None:
-            _add_fault(pl, fault_xyz)
-        pl.add_text(f"step {index}", font_size=9, color="black")
+            _add_fault(pl, fault_xyz, color="lime", line_width=2.5)
+        pl.add_text(f"step {index}  ({title.split(' ',1)[1]})",
+                    font_size=11, color="black", position="upper_left")
         pl.view_xy()
-        pl.camera.zoom(1.3)
-    out = os.path.join(D, f"FIELDS_{index:05d}.png")
+        if focus is not None:
+            cx, cy, hw = focus
+            pl.camera.parallel_projection = True
+            pl.camera.parallel_scale = hw
+            pl.camera.focal_point = (cx, cy, 0)
+            pl.camera.position = (cx, cy, 1)
+        else:
+            pl.camera.zoom(1.3)
+    tag = "FIELDSfocus" if focus is not None else "FIELDS"
+    out = os.path.join(D, f"{tag}_{index:05d}.png")
     pl.screenshot(out)
     pl.close()
     print("->", out, flush=True)
@@ -127,6 +142,8 @@ def main(argv=None):
     ap.add_argument("--indices", type=int, nargs="+", default=None)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--fault", action="store_true")
+    ap.add_argument("--focus-fault", type=float, default=None, metavar="HALFWIDTH",
+                    help="Crop centred on the fault midpoint at this half-width.")
     ap.add_argument("--sr-clim", type=float, nargs=2, default=None,
                     help="Fixed log10 strain-rate colour limits (else per-frame).")
     ap.add_argument("--eta-clim", type=float, nargs=2, default=None,
@@ -135,7 +152,10 @@ def main(argv=None):
 
     D = os.path.expanduser(args.run)
     delta_eta, floor = _manifest_params(D)
-    fault_xyz, _ = fault_from_manifest(D) if args.fault else (None, None)
+    fault_xyz, fault_mid = (fault_from_manifest(D)
+                            if (args.fault or args.focus_fault) else (None, None))
+    focus = ((fault_mid[0], fault_mid[1], args.focus_fault)
+             if (args.focus_fault and fault_mid is not None) else None)
 
     if args.all:
         xdmfs = sorted(glob.glob(os.path.join(D, f"{RUN_NAME}.mesh.[0-9]*.xdmf")),
@@ -151,7 +171,7 @@ def main(argv=None):
 
     for idx in sel:
         render(D, idx, delta_eta=delta_eta, floor=floor,
-               fault_xyz=fault_xyz,
+               fault_xyz=fault_xyz, focus=focus,
                sr_clim=tuple(args.sr_clim) if args.sr_clim else None,
                eta_clim=tuple(args.eta_clim) if args.eta_clim else None)
 

@@ -61,12 +61,13 @@ def fault_from_manifest(D):
     return poly, (float(mid[0]), float(mid[1]))
 
 
-def _add_fault(pl, fault_xyz):
-    """Overlay the fault trace as a red line on the plotter."""
+def _add_fault(pl, fault_xyz, color="red", line_width=3.0):
+    """Overlay the fault trace as a line on the plotter (default red; pass a
+    contrasting colour for warm/sequential field colourmaps)."""
     n = len(fault_xyz)
     line = pv.PolyData(fault_xyz)
     line.lines = np.hstack([[n], np.arange(n)])
-    pl.add_mesh(line, color="red", line_width=3.0, lighting=False)
+    pl.add_mesh(line, color=color, line_width=line_width, lighting=False)
 
 
 def render(D, index, *, tvar="T", tdeg=3, vvar="v", vdeg=2,
