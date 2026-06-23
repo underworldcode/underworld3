@@ -14,6 +14,14 @@ import numpy as np
 # All variables now track their dimensionality automatically from units.
 
 # %%
+model = uw.get_default_model()
+model.set_reference_quantities(
+    domain_depth=uw.quantity(3000, "km"),
+    plate_velocity=uw.quantity(5, "cm/year"),
+    density=uw.quantity(3.3, "g/cm**3"),
+    temperature_diff=uw.quantity(1000, "kelvin"),
+)
+
 mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(0.0, 0.0),
     maxCoords=(3000.0, 3000.0),
@@ -36,7 +44,7 @@ print(f"Pressure:    {p.dimensionality}")
 # %%
 # Set characteristic scales
 T.set_reference_scale(1000.0)  # 1000 K temperature difference
-v.set_reference_scale(0.05)     # 5 cm/year = 1.58e-9 m/s ≈ 0.05 m/Myr
+v.set_reference_scale(0.05)     # example velocity scale
 p.set_reference_scale(1e9)      # GPa pressure scale
 
 print(f"Scaling coefficients set:")
@@ -47,32 +55,42 @@ print(f"  p: {p.scaling_coefficient:.0e} Pa")
 # %% [markdown]
 # ## 3. Non-Dimensional Conversion
 #
-# Two ways to access non-dimensional values:
-# - `.to_nd()` returns a SymPy expression (for symbolic/JIT use)
-# - `.nd_array` property returns non-dimensional array values
+# Current strict-units mode stores non-dimensional values in `.data`.
+# Dimensional values can be converted manually using the scaling coefficient:
+#
+# `non_dimensional_value = dimensional_value / scaling_coefficient`
 
 # %%
 # Set some dimensional values
+T_dim_value = 1300.0  # K
+v_dim_value = 0.03    # m/s
+p_dim_value = 2e9     # Pa
+
+T_nd_value = T_dim_value / T.scaling_coefficient
+v_nd_value = v_dim_value / v.scaling_coefficient
+p_nd_value = p_dim_value / p.scaling_coefficient
+
 with uw.synchronised_array_update():
-    T.array[...] = 1300.0  # K
-    v.array[...] = 0.03    # m/s
-    p.array[...] = 2e9     # Pa
+    T.data[...] = T_nd_value
+    v.data[...] = v_nd_value
+    p.data[...] = p_nd_value
 
 print(f"Dimensional values:")
-print(f"  T = {T.array[0,0,0]:.1f} K")
-print(f"  v = {v.array[0,0,0]:.3f} m/s")
-print(f"  p = {p.array[0,0,0]:.2e} Pa")
+print(f"  T = {T_dim_value:.1f} K")
+print(f"  v = {v_dim_value:.3f} m/s")
+print(f"  p = {p_dim_value:.2e} Pa")
 print()
-print(f"Non-dimensional array values:")
-print(f"  T* = {T.nd_array[0,0,0]:.2f}")
-print(f"  v* = {v.nd_array[0,0,0]:.2f}")
-print(f"  p* = {p.nd_array[0,0,0]:.2f}")
+print(f"Non-dimensional stored values:")
+print(f"  T* = {T_nd_value:.2f}")
+print(f"  v* = {v_nd_value:.2f}")
+print(f"  p* = {p_nd_value:.2f}")
 
 # %%
-# For symbolic/JIT use, .to_nd() returns a SymPy expression
-T_nd_expr = T.to_nd()
+# For symbolic/JIT use, use the variable symbol together with the scaling coefficient.
+T_nd_expr = T.sym / T.scaling_coefficient
+
 print(f"Symbolic non-dimensional form:")
-print(f"  {T_nd_expr.sym}")
+print(f"  {T_nd_expr}")
 print(f"\nThis preserves the original function symbol for JIT:")
 print(f"  {uw.unwrap(T_nd_expr)}")
 
@@ -86,16 +104,16 @@ velocity = uw.quantity(5, "cm/year")
 print(f"Viscosity dimensionality: {viscosity.dimensionality}")
 print(f"Velocity dimensionality:  {velocity.dimensionality}")
 
-# Set reference and convert
-viscosity.set_reference_scale(1e21)
-velocity.set_reference_scale(5.0)
+# Manual reference scaling for UWQuantity values
+viscosity_reference = 1e21
+velocity_reference = 5.0
 
-visc_nd = viscosity.to_nd()
-vel_nd = velocity.to_nd()
+visc_nd = 1e21 / viscosity_reference
+vel_nd = 5.0 / velocity_reference
 
 print(f"\nNon-dimensional values:")
-print(f"  η* = {visc_nd.value}")
-print(f"  v* = {vel_nd.value}")
+print(f"  η* = {visc_nd}")
+print(f"  v* = {vel_nd}")
 
 # %% [markdown]
 # ## 5. Automatic Scale Derivation from Model
@@ -113,7 +131,7 @@ model = uw.Model()
 model.set_reference_quantities(
     domain_depth=uw.quantity(3000, "km"),
     plate_velocity=uw.quantity(5, "cm/year"),
-    density=uw.quantity(3.3,"g/cm**3"),
+    density=uw.quantity(3.3, "g/cm**3"),
     temperature_diff=uw.quantity(1000, "kelvin"),
     verbose=True
 )
@@ -133,32 +151,41 @@ print(f"  T2: scale = {T2.scaling_coefficient}")
 print(f"  v2: scale = {v2.scaling_coefficient}")
 
 # Demonstrate conversion
-T2.array[...] = 1500.0
-print(f"\nExample: T = {T2.array[0,0,0]:.0f} K → T* = {T2.nd_array[0,0,0]:.2f}")
+T2_dim_value = 1500.0
+T2_nd_value = T2_dim_value / T2.scaling_coefficient
+
+with uw.synchronised_array_update():
+    T2.data[...] = T2_nd_value
+
+print(f"\nExample: T = {T2_dim_value:.0f} K → T* = {T2_nd_value:.2f}")
 
 # %%
-uw.unwrap(T2.to_nd())
+T2_nd_expr = T2.sym / T2.scaling_coefficient
+uw.unwrap(T2_nd_expr)
 
 # %%
-T2.to_nd().sym
+T2_nd_expr
 
 # %% [markdown]
 # ## 6. Round-Trip Conversion
 #
-# The `.from_nd()` method converts non-dimensional values back to dimensional form.
+# Non-dimensional values can be converted back to dimensional values
+# using the scaling coefficient:
+#
+# `dimensional_value = non_dimensional_value * scaling_coefficient`
 
 # %%
 # Get non-dimensional value
-T_star = T2.nd_array[0,0,0]
+T_star = T2_nd_value
 print(f"Non-dimensional: T* = {T_star:.2f}")
 
 # Convert back to dimensional
-T_dim = T2.from_nd(T_star)
+T_dim = T_star * T2.scaling_coefficient
 print(f"Dimensional: T = {T_dim:.0f} K")
 
 # Works with arrays too
 nd_values = np.array([0.5, 1.0, 1.5, 2.0])
-dim_values = T2.from_nd(nd_values)
+dim_values = nd_values * T2.scaling_coefficient
 print(f"\nArray conversion:")
 print(f"  Non-dimensional: {nd_values}")
 print(f"  Dimensional: {dim_values} K")
@@ -170,15 +197,13 @@ print(f"  Dimensional: {dim_values} K")
 #
 # - **Dimensionality as first-class property** - automatically derived from units
 # - **Reference scaling coefficients** - characteristic scales for each variable
-# - **Non-dimensional conversion** - via `.to_nd()` method for symbolic expressions
-# - **Array-based access** - via `.nd_array` property for numerical values
-# - **Round-trip conversion** - via `.from_nd()` method to restore dimensional values
+# - **Non-dimensional storage** - via `.data`
+# - **Manual dimensional conversion** - using the scaling coefficient
+# - **Array-based conversion** - through direct scale multiplication/division
 # - **Automatic scale derivation** - from model reference quantities
-# - **Zero side effects** - all existing code continues to work
+# - **Strict unit safety** - unit-bearing variables reject ambiguous plain assignments
 #
 # This infrastructure enables proper non-dimensionalization for solving
-# stiff systems while maintaining the elegant units system.
-
-# %%
+# stiff systems while maintaining the units system.
 
 # %%

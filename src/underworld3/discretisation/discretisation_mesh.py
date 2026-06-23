@@ -2364,6 +2364,10 @@ class Mesh(Stateful, uw_object):
 
         # Invalidate projected boundary normals (rebuilt lazily on access)
         self._projected_normals = None
+        # Per-boundary deformation-tracking normals are stale now too. The
+        # variables persist (we keep the name->var map); their DATA is refilled
+        # eagerly by Mesh.deform() after the remesh completes, so BCs that
+        # captured boundary_normal(...).sym at setup read the new geometry.
 
         # BUGFIX(#135): invalidate the per-cell face control-point arrays.
         # These are populated lazily by _get_mesh_face_control_points, sized
@@ -2374,6 +2378,39 @@ class Mesh(Stateful, uw_object):
         # new cell count exceeds the old one (and silent corruption otherwise).
         self.faces_outer_control_points = None
         self.faces_inner_control_points = None
+
+        # BUGFIX (deformed-domain membership): also invalidate the boundary-
+        # skeleton kd-tree used by points_in_domain() (and the SL out-of-domain
+        # restore). It is cached from the boundary geometry and was only rebuilt
+        # on adapt. After a DEFORM the surface has moved, so the stale control
+        # points (at the OLD boundary) wrongly flag a bulged-out region (r>r_o
+        # on a free surface) as EXTERIOR — stranding semi-Lagrangian trace-back
+        # feet there and mis-locating evaluations, which injects the cold
+        # boundary value at the topographic highs (upwellings). Rebuilt lazily
+        # from the deformed boundary on next points_in_domain() access.
+        self.boundary_face_control_points_kdtree = None
+        self.boundary_face_control_points_sign = None
+        self._domain_radius_squared = float("inf")
+
+        # The navigation coords (used to build those control points and for
+        # point location) were captured as a reference to the ORIGINAL coords
+        # in __init__ and never refreshed here, so on a volume mesh they stayed
+        # at the undeformed geometry — the real reason a bulged-out region read
+        # as exterior. Re-point them at the current (deformed) DM coordinates.
+        if getattr(self, "_nav_dm", None) is None:
+            self._nav_coords = numpy.asarray(
+                self.dm.getCoordinatesLocal().array
+            ).reshape(-1, self.cdim)
+        else:
+            # manifold mesh: the nav clone carries its own (ghosted) coords;
+            # refresh them from the rebuilt main DM where possible.
+            try:
+                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
+                self._nav_coords = numpy.asarray(
+                    self._nav_dm.getCoordinatesLocal().array
+                ).reshape(-1, self.cdim)
+            except Exception:
+                pass
 
         # BUGFIX(#130): recompute the DOF coordinate cache for every
         # already-registered variable. Variables created before this
@@ -2420,27 +2457,23 @@ class Mesh(Stateful, uw_object):
         thereafter. The result is a smooth, consistently-oriented unit
         normal field that works well for penalty and Nitsche BCs on
         curved boundaries.
+
+        NOTE: this GLOBAL field point-evaluates ``mesh.Gamma`` whose petsc_n
+        only exists in surface-integral kernels, so it falls back to the
+        coordinate (radial for a circle) and does NOT track a deformed
+        surface. For deformation-aware, corner-correct normals use the
+        per-boundary :meth:`boundary_normal` (which ``add_nitsche_bc`` now
+        uses). This global field is retained unchanged for back-compat.
         """
         import underworld3 as uw
 
         Gamma = self.Gamma
 
         if not hasattr(self, '_projected_normals') or self._projected_normals is None:
-            # nuke_coords_and_rebuild() clears this attribute on every deform,
-            # but the underlying MeshVariable persists on the mesh. Recover it
-            # quietly rather than re-creating (which logs a name collision).
             existing = self.vars.get("_n_proj")
             if existing is not None:
                 self._projected_normals = existing
             else:
-                # REINIT policy: _n_proj is a recomputed-on-access work
-                # variable. The values depend on the *current* mesh
-                # geometry (Gamma normals projected onto P1 nodes), so
-                # the Phase-1 remesh helper should NOT REMAP — the value
-                # at old node positions is wrong on the new mesh.
-                # Recomputed below from Gamma; reset on every deform
-                # via the _projected_normals=None clearing in
-                # nuke_coords_and_rebuild.
                 self._projected_normals = uw.discretisation.MeshVariable(
                     "_n_proj", self, self.cdim, degree=1,
                     remesh_policy="reinit",
@@ -2453,6 +2486,114 @@ class Mesh(Stateful, uw_object):
         mag = numpy.sqrt(numpy.sum(n.data ** 2, axis=1))
         nonzero = mag > 1.0e-30
         n.data[nonzero] /= mag[nonzero, numpy.newaxis]
+
+    def boundary_normal(self, boundary):
+        """Outward unit normal of a single boundary, tracking deformation.
+
+        Assembles the EXACT, outward, area-weighted PETSc facet normals
+        (``dm.computeCellGeometryFVM``) from ONLY this boundary's facets onto
+        its P1 vertices. Because each boundary is assembled independently,
+        a vertex shared by two boundaries (a sharp corner) is NOT averaged
+        across the discontinuity — each boundary keeps its own normal. On a
+        smooth boundary (e.g. a free surface) the result is the smooth
+        deformed normal. Cached per boundary; rebuilt lazily after a deform.
+
+        Returns a sympy Matrix (row) of the P1 normal-field components, for
+        use as the constraint direction in Nitsche/penalty BCs.
+
+        Parameters
+        ----------
+        boundary : str or enum
+            Boundary label name (or a ``mesh.boundaries`` enum member).
+        """
+        import underworld3 as uw
+
+        name = getattr(boundary, "name", str(boundary))
+        if not hasattr(self, "_boundary_normal_vars") or self._boundary_normal_vars is None:
+            self._boundary_normal_vars = {}
+        var = self._boundary_normal_vars.get(name)
+        if var is None:
+            existing = self.vars.get(f"_n_bd_{name}")
+            var = existing if existing is not None else uw.discretisation.MeshVariable(
+                f"_n_bd_{name}", self, self.cdim, degree=1, remesh_policy="reinit")
+            self._boundary_normal_vars[name] = var
+        self._assemble_boundary_normal(var, name)
+        return var.sym
+
+    def _assemble_boundary_normal(self, var, name):
+        """Fill ``var`` with the area-weighted outward facet normal assembled
+        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
+        from scipy.spatial import cKDTree
+        cdim = self.cdim
+        dm = self.dm
+        coords = numpy.ascontiguousarray(var.coords)
+        accum = numpy.zeros((coords.shape[0], cdim))
+
+        # faces carrying this boundary label: DM label named after the boundary,
+        # stratum keyed by the boundary's value (same access the BC code uses).
+        bvalue = None
+        for b in (self.boundaries or []):
+            if b.name == name:
+                bvalue = b.value
+                break
+        face_pts = []
+        label = dm.getLabel(name) if dm.hasLabel(name) else None
+        if label is not None and bvalue is not None:
+            # NB: getStratumIS(value) for a value NOT in this rank's live value
+            # set can hard-abort the interpreter (e.g. a rank holding no faces
+            # of this boundary in parallel). Only query a live value.
+            try:
+                vis = label.getValueIS()
+                live = set(int(x) for x in vis.getIndices()) if vis.getSize() else set()
+            except Exception:
+                live = set()
+            if int(bvalue) in live:
+                pis = label.getStratumIS(bvalue)
+                if pis is not None and pis.getSize():
+                    fS, fE = dm.getHeightStratum(1)
+                    for p in pis.getIndices():
+                        if fS <= int(p) < fE:
+                            face_pts.append(int(p))
+
+        tree = cKDTree(coords)
+        # P1 vertices per facet, counted from the facet's own closure so this
+        # works for non-simplex facets too (2D edge=2, 3D tri=3, 3D quad=4).
+        vStart, vEnd = dm.getDepthStratum(0)
+        for f in face_pts:
+            if dm.getSupportSize(f) != 1:
+                continue
+            area, cent, nrm = dm.computeCellGeometryFVM(f)
+            nrm = numpy.asarray(nrm)[:cdim]
+            cell = dm.getSupport(f)[0]
+            _, ccent, _ = dm.computeCellGeometryFVM(cell)
+            if numpy.dot(nrm, numpy.asarray(cent)[:cdim]
+                         - numpy.asarray(ccent)[:cdim]) < 0:
+                nrm = -nrm
+            _clo = dm.getTransitiveClosure(f)[0]
+            nverts = int(numpy.count_nonzero((_clo >= vStart) & (_clo < vEnd))) or cdim
+            # Accumulate to the facet's P1 DOFs (its vertices) — found as the
+            # nearest DOFs to the facet centroid. This avoids indexing the local
+            # coordinate array by (vertex_point - vStart), which is only valid
+            # in serial (the parallel coordinate layout differs → out-of-range).
+            # Normalisation at the end makes the per-DOF weight (full vs share)
+            # irrelevant to the resulting direction.
+            _, idxs = tree.query(numpy.asarray(cent)[:cdim], k=nverts)
+            for idx in numpy.atleast_1d(idxs):
+                accum[idx] += area * nrm
+
+        # TODO(parallel): a boundary vertex on a partition interface should
+        # ADD-reduce the UNnormalised facet contributions from both ranks before
+        # normalising (DMLocalToGlobal ADD_VALUES on the variable's section),
+        # so its normal is the full-stencil average rather than this rank's
+        # partial stencil. This is parallel-SAFE as-is (rank-interior boundary
+        # vertices are exact; only the handful of partition-seam surface
+        # vertices get a slightly-rotated unit normal). A first ADD-reduce
+        # attempt SEGV'd on the lazily-built work variable's global vec; deferred
+        # to a focused follow-up with the right vec/section plumbing.
+        mag = numpy.sqrt(numpy.sum(accum ** 2, axis=1))
+        nonzero = mag > 1.0e-30
+        accum[nonzero] /= mag[nonzero, numpy.newaxis]
+        var.data[...] = accum
 
     @property
     def Gamma_P1(self):
@@ -2897,8 +3038,20 @@ class Mesh(Stateful, uw_object):
         def _do_move():
             self._deform_mesh(_nc)
 
-        return remesh_with_field_transfer(
+        result = remesh_with_field_transfer(
             self, _do_move, dt=dt, extra_zero=zero, verbose=verbose)
+
+        # Refresh deformation-tracking per-boundary normals so Nitsche/penalty
+        # BCs that captured ``boundary_normal(...).sym`` at setup read the new
+        # geometry (the JIT reads the variable's .data, which would otherwise
+        # hold the setup-time normal). Re-assemble each cached boundary normal.
+        if getattr(self, "_boundary_normal_vars", None):
+            for _nm, _var in list(self._boundary_normal_vars.items()):
+                try:
+                    self._assemble_boundary_normal(_var, _nm)
+                except Exception:
+                    pass
+        return result
 
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
