@@ -281,6 +281,10 @@ def Annulus(
     qdegree: int = 2,
     filename=None,
     refinement=None,
+    refine_lines=None,
+    refine_size_min=None,
+    refine_dist_min: float = 0.02,
+    refine_dist_max: float = 0.12,
     gmsh_verbosity=0,
     verbose=False,
 ):
@@ -316,6 +320,20 @@ def Annulus(
     refinement : int, optional
         Number of uniform refinement levels to apply. Each level
         approximately quadruples element count.
+    refine_lines : list of array_like, optional
+        Polylines ``(N, 2)`` in model coordinates along which to refine the
+        gmsh base mesh (e.g. a fault trace). Each is added as gmsh points
+        feeding a Distance + Threshold size field; interior points are
+        embedded so nodes land on the line. ``None`` (default) = no
+        line refinement.
+    refine_size_min : float, optional
+        Target cell size on the refine lines (supports UWQuantity). Cells
+        ramp from this up to ``cellSize`` between ``refine_dist_min`` and
+        ``refine_dist_max``. Required (with ``refine_lines``) to enable
+        line refinement.
+    refine_dist_min, refine_dist_max : float, default 0.02, 0.12
+        Distances from the line over which the cell size ramps from
+        ``refine_size_min`` to ``cellSize``.
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     verbose : bool, default=False
@@ -389,6 +407,8 @@ def Annulus(
         cellSizeOuter = uw.scaling.non_dimensionalise(cellSizeOuter)
     if cellSizeInner is not None:
         cellSizeInner = uw.scaling.non_dimensionalise(cellSizeInner)
+    if refine_size_min is not None:
+        refine_size_min = uw.scaling.non_dimensionalise(refine_size_min)
 
     class boundaries(Enum):
         Lower = 1
@@ -464,6 +484,42 @@ def Annulus(
         gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
 
         gmsh.model.geo.synchronize()
+
+        # --- optional line-following refinement (e.g. a fault trace) -------
+        # Add gmsh points along each supplied polyline and refine the mesh
+        # near them with a Distance + Threshold size field: cells shrink to
+        # ``refine_size_min`` within ``refine_dist_min`` of the line and ramp
+        # back to ``cellSize`` by ``refine_dist_max``.  Interior points are
+        # embedded so mesh nodes land ON the line (helps a feature-aligned
+        # base); points on/outside the domain feed only the distance field.
+        if refine_lines is not None and refine_size_min is not None:
+            dist_pts, embed_pts = [], []
+            r_eps = 1.0e-6
+            for line in refine_lines:
+                line = np.asarray(line, dtype=float)
+                for xy in line:
+                    pt = gmsh.model.geo.add_point(
+                        float(xy[0]), float(xy[1]), 0.0)
+                    dist_pts.append(pt)
+                    rr = float(np.hypot(xy[0], xy[1]))
+                    if (radiusInner + r_eps) < rr < (radiusOuter - r_eps):
+                        embed_pts.append(pt)
+            gmsh.model.geo.synchronize()
+            if embed_pts:
+                gmsh.model.mesh.embed(0, embed_pts, 2, s)
+            dfield = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dfield, "PointsList", dist_pts)
+            tfield = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(tfield, "InField", dfield)
+            gmsh.model.mesh.field.setNumber(tfield, "SizeMin", refine_size_min)
+            gmsh.model.mesh.field.setNumber(tfield, "SizeMax", cellSize)
+            gmsh.model.mesh.field.setNumber(tfield, "DistMin", refine_dist_min)
+            gmsh.model.mesh.field.setNumber(tfield, "DistMax", refine_dist_max)
+            gmsh.model.mesh.field.setAsBackgroundMesh(tfield)
+            # Background field owns sizing — don't let per-point sizes override.
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
 
         gmsh.model.mesh.generate(2)
         gmsh.write(uw_filename)
