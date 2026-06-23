@@ -206,6 +206,7 @@ import underworld3.utilities
 import underworld3.model
 import underworld3.parameters
 import underworld3.materials
+import underworld3.workflows
 import underworld3.discretisation.persistence
 import underworld3.checkpoint
 
@@ -219,6 +220,7 @@ from .model import (
 )
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
+from .workflows import WorkflowConfig
 from .constitutive_models import MultiMaterialConstitutiveModel
 from .function import quantity, expression, with_units, expand, unwrap
 from .coordinates import uwdiff  # Differentiation helper for UWCoordinates
