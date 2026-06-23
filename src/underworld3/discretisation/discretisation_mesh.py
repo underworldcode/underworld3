@@ -2595,6 +2595,91 @@ class Mesh(Stateful, uw_object):
         accum[nonzero] /= mag[nonzero, numpy.newaxis]
         var.data[...] = accum
 
+    def cell_size(self):
+        """Local, per-cell characteristic mesh size as a scalar field symbol.
+
+        Returns the ``.sym`` of a cell-constant (degree-0, discontinuous)
+        scalar MeshVariable holding each cell's characteristic length (the
+        ``volume**(1/dim)`` equivalent radius, i.e. ``self._radii``). Unlike
+        the single *global* scalar from :meth:`get_min_radius` (the smallest
+        cell anywhere), this varies cell to cell, so a stabilisation that
+        scales as :math:`1/h` — e.g. the Nitsche free-slip penalty
+        :math:`\\gamma\\mu/h` — is correctly scaled on every facet of a
+        non-uniform or adaptively-refined mesh rather than using the global
+        minimum (which over-penalises coarse cells and drifts as refinement
+        changes the global min).
+
+        On a boundary integral the kernel sees the value of the cell adjacent
+        to the facet. The field is cached and rebuilt lazily; its data is
+        refreshed when the mesh deforms or is adapted (see :meth:`deform`),
+        so it tracks a moving / re-refined mesh — a stale size on a deformed
+        mesh would re-introduce the mis-scaling.
+
+        On a uniform mesh every cell is the same size, so this reduces to the
+        global ``get_min_radius`` value everywhere and existing behaviour is
+        preserved to tolerance.
+
+        Returns
+        -------
+        sympy scalar
+            The cell-size field symbol, for use in JIT-compiled residuals.
+        """
+        var = self._cell_size_var()
+        return var.sym[0]
+
+    def _cell_size_var(self):
+        """Lazily create / fetch the per-cell size MeshVariable (filled).
+
+        Mirrors the per-boundary normal machinery (:meth:`boundary_normal`):
+        a small ``reinit`` MeshVariable owned by the mesh, refreshed from the
+        current geometry. The reinit callback re-fills it during any remesh
+        transaction (deform / mover sweep), and :meth:`deform` / :meth:`adapt`
+        re-fill it explicitly so BCs that captured ``cell_size()`` at setup
+        read the new geometry at solve time.
+        """
+        import underworld3 as uw
+
+        if getattr(self, "_cell_size_variable", None) is None:
+            existing = self.vars.get("_h_cell")
+            var = existing if existing is not None else uw.discretisation.MeshVariable(
+                "_h_cell", self, 1, degree=0, continuous=False,
+                remesh_policy="reinit")
+            self._cell_size_variable = var
+
+            def _refresh():
+                try:
+                    self._assemble_cell_size(var)
+                except Exception:
+                    pass
+
+            var._remesh_reinit_callback = _refresh
+
+        self._assemble_cell_size(self._cell_size_variable)
+        return self._cell_size_variable
+
+    def _assemble_cell_size(self, var):
+        """Fill ``var`` (degree-0 scalar) with each cell's characteristic size.
+
+        Uses the per-cell characteristic lengths ``self._radii`` computed by
+        :meth:`_get_mesh_sizes` on the *current* geometry. A degree-0
+        discontinuous variable's local DOFs and ``self._radii`` are BOTH
+        indexed by this rank's cell-stratum order, so a direct assignment is
+        correct on every rank.
+
+        This is deliberately a purely RANK-LOCAL operation (no ``var.coords``
+        access, no collective): mixing a rank-local fast path with a
+        collective fallback would diverge across ranks and deadlock, because
+        ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
+        radii = numpy.asarray(self._radii).reshape(-1)
+        # Empty partition (no local cells): nothing to fill on this rank.
+        if radii.size == 0 or var.data.shape[0] == 0:
+            return
+        # Assign over the common length. In practice these match exactly (same
+        # local cell set / ordering); the slice only guards a stray off-by-ghost
+        # mismatch without ever taking a collective path on a subset of ranks.
+        n = min(var.data.shape[0], radii.shape[0])
+        var.data[:n, 0] = radii[:n]
+
     @property
     def Gamma_P1(self):
         """Projected P1 boundary normals as a sympy Matrix.
@@ -3051,6 +3136,13 @@ class Mesh(Stateful, uw_object):
                     self._assemble_boundary_normal(_var, _nm)
                 except Exception:
                     pass
+        # Likewise refresh the local cell-size field (Nitsche penalty scaling)
+        # so its cell-constant data tracks the deformed geometry.
+        if getattr(self, "_cell_size_variable", None) is not None:
+            try:
+                self._assemble_cell_size(self._cell_size_variable)
+            except Exception:
+                pass
         return result
 
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
@@ -6056,6 +6148,17 @@ class Mesh(Stateful, uw_object):
 
         # Note: Surfaces were already notified at the start of adapt()
         # They will lazily recompute distance fields when accessed
+
+        # Refresh the local cell-size field from the adapted geometry. The
+        # generic variable transfer above re-interpolates it (meaningless for
+        # a geometric size); re-fill it from the new mesh's per-cell radii so
+        # the Nitsche penalty scales correctly after re-refinement.
+        if getattr(self, "_cell_size_variable", None) is not None:
+            try:
+                self._assemble_cell_size(self._cell_size_variable)
+            except Exception as e:
+                if verbose:
+                    print(f"[{uw.mpi.rank}] Warning: cell-size refresh failed: {e}", flush=True)
 
         # Mark solvers for rebuild
         for solver in self._equation_systems_register:

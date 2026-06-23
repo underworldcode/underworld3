@@ -2887,7 +2887,7 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1):
+    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         For vector solvers (no pressure field), this constrains
@@ -2906,6 +2906,11 @@ class SNES_Vector(SolverBaseClass):
             Dimensionless stabilisation parameter.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
+        local_h : bool, default=True
+            Scale the penalty by a local per-cell mesh size
+            (:meth:`Mesh.cell_size`) rather than the global minimum
+            (:meth:`Mesh.get_min_radius`). See
+            ``SNES_Stokes_SaddlePt.add_nitsche_bc`` for details.
 
         Warnings
         --------
@@ -2952,12 +2957,18 @@ class SNES_Vector(SolverBaseClass):
             g = sympy.Integer(0)
         constraint = u_dot_d - g
 
-        # Mesh size
-        h = uw.function.expression(
-            r"h_{\mathrm{Nitsche}}",
-            mesh.get_min_radius(),
-            "Nitsche mesh size parameter",
-        )
+        # Mesh size for the penalty term (gamma*mu/h). Default: a LOCAL,
+        # per-cell size (mesh.cell_size()) that tracks deformation/adaptation
+        # so the stabilisation is scaled correctly on a non-uniform mesh. Set
+        # local_h=False for the legacy single global-minimum scalar.
+        if local_h:
+            h_sym = mesh.cell_size()
+        else:
+            h_sym = uw.function.expression(
+                r"h_{\mathrm{Nitsche}}",
+                mesh.get_min_radius(),
+                "Nitsche mesh size parameter (global)",
+            ).sym
 
         # Viscosity from constitutive model
         mu = self.constitutive_model.viscosity
@@ -2974,7 +2985,7 @@ class SNES_Vector(SolverBaseClass):
         # f0_bd: velocity boundary residual (value term)
         f0_components = []
         for c in range(dim):
-            f0_c = (gamma * mu / h.sym) * constraint * d[c]    # penalty
+            f0_c = (gamma * mu / h_sym) * constraint * d[c]    # penalty
             f0_c -= t_d * d[c]                                   # consistency
             f0_components.append(f0_c)
 
@@ -4689,7 +4700,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None):
+    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -4738,6 +4749,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundaries. Use a DG MeshVariable that is 1 on the active
             side and 0 on the inactive side. The mask multiplies all
             Nitsche terms so that only the active-side cell contributes.
+        local_h : bool, default=True
+            Scale the penalty term :math:`\gamma\mu/h` by a **local**,
+            per-cell mesh size (:meth:`Mesh.cell_size`, deformation- and
+            adaptation-tracking) rather than the single **global** minimum
+            cell size (:meth:`Mesh.get_min_radius`). On a non-uniform or
+            adaptive mesh the local size scales the stabilisation correctly
+            on every facet; on a uniform mesh the two coincide. Set ``False``
+            to restore the legacy global-h behaviour exactly.
 
         Examples
         --------
@@ -4815,12 +4834,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # n_dot_d is always positive when n = d (it's |n|²),
         # so sign of PETSc face normal doesn't affect this term
 
-        # Mesh size (global estimate via UWexpression constant)
-        h = uw.function.expression(
-            r"h_{\mathrm{Nitsche}}",
-            mesh.get_min_radius(),
-            "Nitsche mesh size parameter",
-        )
+        # Mesh size for the penalty term (gamma*mu/h). Default: a LOCAL,
+        # per-cell characteristic size (mesh.cell_size()), so the Nitsche
+        # stabilisation is correctly scaled on every facet of a non-uniform
+        # or adaptively-refined mesh — the boundary kernel sees the adjacent
+        # cell's size. The field tracks mesh deformation/adaptation. Set
+        # local_h=False to restore the legacy single global-minimum scalar
+        # (mesh.get_min_radius()); on a uniform mesh the two coincide.
+        if local_h:
+            h_sym = mesh.cell_size()
+        else:
+            h_sym = uw.function.expression(
+                r"h_{\mathrm{Nitsche}}",
+                mesh.get_min_radius(),
+                "Nitsche mesh size parameter (global)",
+            ).sym
 
         # Viscosity from constitutive model
         mu = self.constitutive_model.viscosity
@@ -4839,7 +4867,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # = penalty + consistency + pressure flux
         f0_components = []
         for c in range(dim):
-            f0_c = (gamma * mu / h.sym) * constraint * d[c]    # penalty
+            f0_c = (gamma * mu / h_sym) * constraint * d[c]    # penalty
             f0_c -= t_d * d[c]                                   # consistency
             f0_c += p_sym * n_dot_d * d[c]                       # pressure flux
             f0_components.append(f0_c)
