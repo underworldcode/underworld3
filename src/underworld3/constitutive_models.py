@@ -1984,7 +1984,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     # consistent tangent of the *harmonic* problem) and converges WORSE than
     # Picard on hard-yield VEP; the robust route is problem-space homotopy
     # (ramp the softmin softness δ→0), not a smooth tangent. See the design doc
-    # docs/developer/design/jacobian-unwrap-constants-bug.md. The generic
+    # docs/developer/design/jacobian-consistent-tangent.md. The generic
     # Constitutive_Model.flux_jacobian hook (default None) remains available.
 
     @property

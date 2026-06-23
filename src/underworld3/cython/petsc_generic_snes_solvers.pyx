@@ -37,7 +37,7 @@ def _jacobian_unwrap(expr):
     This is a no-op for constant-viscosity problems (eta has no grad-v
     dependence), so those Jacobians stay bit-identical.
 
-    See ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+    See ``docs/developer/design/jacobian-consistent-tangent.md``.
     """
     f = lambda e: _unwrap_expression(e, mode="symbolic_keep_constants")
     if isinstance(expr, sympy.MatrixBase):
@@ -88,7 +88,7 @@ class SolverBaseClass(uw_object):
         # the model's own smooth law (constitutive_model.flux_jacobian) when it
         # provides one; otherwise the exact unwrapped flux.
         #
-        # See docs/developer/design/jacobian-unwrap-constants-bug.md.
+        # See docs/developer/design/jacobian-consistent-tangent.md.
         self.consistent_jacobian = False
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
@@ -5933,7 +5933,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # The residual fns above (self._u_F0/_u_F1/_p_F0) are left untouched —
         # getext() unwraps those itself. For constant-viscosity problems this
         # is a no-op (eta has no grad-v dependence) so the Jacobian is
-        # bit-identical. See docs/developer/design/jacobian-unwrap-constants-bug.md
+        # bit-identical. See docs/developer/design/jacobian-consistent-tangent.md
         #
         # (see consistent_jacobian / _jacobian_source: default Picard, bit-
         # identical; True -> Newton; "continuation" -> alpha-blended.)
