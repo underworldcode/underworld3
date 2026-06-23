@@ -31,10 +31,20 @@ cdef CHKERRQ(PetscErrorCode ierr):
     cdef int interr = <int>ierr
     if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
 
+cdef extern from "petscdstypes.h":
+    ctypedef void *PetscWeakForm "PetscWeakForm"
+    ctypedef struct PetscFormKey:
+        PetscDMLabel label
+        PetscInt value
+        PetscInt field
+        PetscInt part
+
 cdef extern from "petsc_compat.h":
 
     PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, PetscInt *, void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
     PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
+    PetscErrorCode UW_PetscDSGetBoundaryWeakForm(PetscDS, PetscInt, PetscWeakForm *)
+    PetscErrorCode UW_DMPlexComputeResidualByKeyVolumeOnly( PetscDM, PetscFormKey, PetscIS, PetscReal, PetscVec, PetscVec, PetscReal, PetscVec, void *)
     # PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, PetscInt, void*)
 
     PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*)
@@ -52,6 +62,9 @@ cdef extern from "petsc_compat.h":
 cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetConstants(PetscDS, PetscInt, const PetscScalar[])
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
+    PetscErrorCode DMPlexSNESComputeResidualFEM( PetscDM, PetscVec, PetscVec, void *)
+    PetscErrorCode DMPlexComputeResidualByKey( PetscDM, PetscFormKey, PetscIS, PetscReal, PetscVec, PetscVec, PetscReal, PetscVec, void *)
+    PetscErrorCode DMPlexComputeBdResidualSingle( PetscDM, PetscWeakForm, PetscFormKey, PetscVec, PetscVec, PetscReal, PetscVec )
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, PetscBool, void *)
     PetscErrorCode DMPlexComputeGeometryFVM( PetscDM dm, PetscVec *cellgeom, PetscVec *facegeom)
@@ -62,6 +75,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetJacobian( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn, PetscDSJacobianFn)
     PetscErrorCode PetscDSSetResidual( PetscDS, PetscInt, PetscDSResidualFn, PetscDSResidualFn )
+    PetscErrorCode PetscDSGetWeakForm( PetscDS, PetscWeakForm * )
     
     PetscErrorCode PetscDSSetBdJacobian( PetscDS, PetscInt, PetscInt, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn)
     PetscErrorCode PetscDSSetBdJacobianPreconditioner( PetscDS, PetscInt, PetscInt, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn, PetscDSBdJacobianFn)
@@ -83,6 +97,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMGetRegionDS(PetscDM dm, PetscDMLabel label, PetscIS *fields, PetscDS *ds, PetscDS *dsIn)
     PetscErrorCode DMGetRegionNumDS(PetscDM dm, PetscInt num, PetscDMLabel *label, PetscIS *fields, PetscDS *ds, PetscDS *dsIn)
     PetscErrorCode DMSetRegionNumDS(PetscDM dm, PetscInt num, PetscDMLabel label, PetscIS fields, PetscDS ds, PetscDS dsIn)
+    PetscErrorCode DMGetDS(PetscDM dm, PetscDS *ds)
     PetscErrorCode DMGetNumDS(PetscDM dm, PetscInt *num)
     PetscErrorCode DMGetCellDS(PetscDM dm, PetscInt point, PetscDS *ds, PetscDS *dsIn)
     PetscErrorCode PetscDSSetCoordinateDimension(PetscDS ds, PetscInt dim)

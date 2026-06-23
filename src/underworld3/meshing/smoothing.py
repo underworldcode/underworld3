@@ -3145,24 +3145,76 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         mesh._mmpde_reference_coords = ref
 
     # --- RBF/Shepard bake of the metric (the production-fast path) ------
-    # Evaluate the analytic metric ONCE on the fixed reference cloud, then
-    # interpolate to the moving centroids each step via k-NN inverse-
-    # distance (Shepard). The reference cloud is fixed in space ⇒ Eulerian.
+    # Bake the metric at the CURRENT mesh NODES (its own DOF locations), then
+    # interpolate to the moving centroids each step via k-NN inverse-distance
+    # (Shepard). Source = nodes, NOT the fixed reference cloud `ref` (`ref` is
+    # kept for the _edge_mats reference frame). Two reasons:
+    #   * MONOTONE: a P1 density is positive by construction; Shepard is a convex
+    #     (positive-weight) average of the sampled node values, so the result is
+    #     GUARANTEED positive — no negative/non-SPD garbage, the SPD floor / NaN
+    #     bail never has to fire.
+    #   * ROBUST + FAST: nodes are always inside the mesh (never out-of-domain),
+    #     and Shepard needs no per-step cell location. RBF doesn't need
+    #     high-precision eval — speed + monotonicity. (Restores the earlier
+    #     "RBF metric eval" design intent: the fixed-`ref` FE bake could
+    #     mis-locate / drift outside a deformed interior and return ρ<0.)
     if metric_eval == "rbf":
         from scipy.spatial import cKDTree
-        M_ref = _eval_M_analytic(ref)                    # one analytic pass
-        _tree = cKDTree(ref)
+        M_src = _eval_M_analytic(coords)                 # nodal values (positive)
+        _tree = cKDTree(coords)
         _kk = int(rbf_k) if rbf_k else (cdim + 2)
 
         def _eval_M(pts):
             dist, idx = _tree.query(pts, k=_kk)
             if _kk == 1:
-                return M_ref[idx]
+                return M_src[idx]
             w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
             w /= w.sum(axis=1, keepdims=True)
-            return np.einsum('nk,nkab->nab', w, M_ref[idx])
+            return np.einsum('nk,nkab->nab', w, M_src[idx])
     else:
         _eval_M = _eval_M_analytic
+
+    # --- SPD sanitiser on the evaluated metric -------------------------
+    # The MMPDE functional G uses fractional powers that are defined ONLY
+    # for an SPD metric: sqrt(detM), detM**((1-p)/2), and S**q with
+    # S = tr(J M⁻¹ Jᵀ). The metric is a guide field FE-evaluated at the
+    # FIXED reference cloud; once the interior has deformed, a reference
+    # point can fall OUTSIDE the current mesh and the P1 metric field is
+    # then evaluated by FE EXTRAPOLATION (out-of-cell basis functions go
+    # negative), yielding a non-SPD tensor — e.g. a scalar density ρ·I
+    # with ρ<0. Its determinant ρ² stays positive (so a detM>0 test
+    # passes) but M is negative-definite, so S<0 and S**q = NaN → the
+    # energy is non-finite and the mover bails with zero displacement
+    # (no adaptation). Project every evaluated tensor onto SPD with a
+    # small RELATIVE eigenvalue floor: a genuine SPD metric is returned
+    # unchanged (no-op), while extrapolation garbage becomes a benign
+    # "coarsen here" (tiny positive eigenvalues) instead of a NaN.
+    _eval_M_raw = _eval_M
+
+    def _spd_sanitise(M):
+        # Symmetrise: the metric is symmetric by construction, so for a valid
+        # tensor this is an exact no-op (M_ij == M_ji bit-for-bit).
+        Ms = 0.5 * (M + np.swapaxes(M, -1, -2))
+        if Ms.shape[0] == 0:
+            return Ms                                   # rank owns no cells
+        w, Vc = np.linalg.eigh(Ms)
+        wmax = float(np.nanmax(w))
+        floor = max(wmax, 1.0) * 1.0e-8
+        # Per-tensor SPD test: a cell is "bad" only if one of its OWN
+        # eigenvalues is non-finite or below the floor. Project just those
+        # cells; every already-SPD tensor is returned untouched (bit-identical
+        # to the symmetrised input), so one bad point cannot perturb the rest.
+        bad = ~np.isfinite(w).all(axis=1) | (w.min(axis=1) < floor)
+        if not bad.any():
+            return Ms
+        out = Ms.copy()
+        wf = np.clip(np.nan_to_num(w[bad], nan=floor, posinf=wmax, neginf=floor),
+                     floor, None)
+        out[bad] = np.einsum('nij,nj,nkj->nik', Vc[bad], wf, Vc[bad])
+        return out
+
+    def _eval_M(pts):
+        return _spd_sanitise(_eval_M_raw(pts))
 
     # Mesh-owned boundary slip is applied per outer iter via mesh.boundary_slip
     # (below). Pre-touch Gamma_P1 here so the projected-normal MeshVariable

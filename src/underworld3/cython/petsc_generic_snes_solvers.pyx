@@ -3127,10 +3127,11 @@ class SNES_Vector(SolverBaseClass):
         # in the embedding space with an implicit tangency constraint.
         dim = mesh.cdim
 
-        # Surface normal components — use projected P1 normals by default.
-        # These are smooth, consistently oriented, and converge in 3D.
-        Gamma_P1 = mesh.Gamma_P1
-        n = [Gamma_P1[i] for i in range(dim)]
+        # Surface normal components — use this boundary's own deformation-
+        # tracking facet normal (see Mesh.boundary_normal); the legacy global
+        # mesh.Gamma_P1 stays radial on a deformed surface.
+        bnorm = mesh.boundary_normal(boundary)
+        n = [bnorm[i] for i in range(dim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
@@ -4944,8 +4945,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             a fault orientation field).
         normal : sympy.Matrix or list, optional
             Boundary unit normal used in the Nitsche consistency, symmetry,
-            and pressure-coupling terms. Default ``None`` uses the PETSc
-            boundary facet normal ``mesh.Gamma_N``.
+            and pressure-coupling terms. Default ``None`` uses the per-boundary,
+            deformation-tracking ``mesh.boundary_normal(boundary)``.
         gamma : float, default=10.0
             Dimensionless stabilisation parameter. Typical values 5--20
             for P2 elements.
@@ -4993,16 +4994,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         mesh = self.mesh
         dim = mesh.dim
 
-        # Surface normal components. By default use projected P1 normals
-        # (smooth, consistently oriented, converges in 3D).
+        # Surface normal components. By default use this boundary's OWN
+        # deformation-tracking facet normal (assembled from only this
+        # boundary's faces, so a corner shared with another boundary is not
+        # averaged across the discontinuity, and a deformed surface is
+        # followed correctly). The legacy global mesh.Gamma_P1 point-evaluates
+        # petsc_n and stays radial on a deformed surface — see
+        # Mesh.boundary_normal.
         if normal is not None:
             if isinstance(normal, sympy.MatrixBase):
                 n = [normal[i] for i in range(dim)]
             else:
                 n = list(normal)
         else:
-            Gamma_P1 = mesh.Gamma_P1
-            n = [Gamma_P1[i] for i in range(dim)]
+            bnorm = mesh.boundary_normal(boundary)
+            n = [bnorm[i] for i in range(dim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
@@ -6933,6 +6939,270 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         if uw.mpi.rank == 0 and self.verbose:
             print(f"Region DS: inactive region '{label_name}' gets trivial DS", flush=True)
+
+    def compute_volume_residual_fields(
+        self,
+        time=None,
+        verbose=False,
+        cell_indices=None,
+        residual_field_id=None,
+        include_boundary_terms=False,
+    ):
+        """Return PETSc FEM residual fields in each solver field's local layout.
+
+        This is a low-level diagnostic hook for post-processing derived
+        boundary quantities such as consistent-boundary-flux traction. By
+        default it calls PETSc's ``DMPlexSNESComputeResidualFEM`` directly. If
+        ``cell_indices`` is supplied, it instead calls
+        a UW wrapper around ``DMPlexComputeResidualByKey`` on a cloned DM with
+        a copied ``PetscDS`` that has no registered boundary objects, so the
+        selected-cell path returns volume terms only. Set
+        ``include_boundary_terms=True`` to call PETSc's original keyed
+        residual behavior, which appends registered boundary residuals. The
+        returned arrays are local to each rank and have the same flat layout as
+        the corresponding MeshVariable PETSc vector.
+        """
+        cdef DM _time_dm_residual
+        cdef DM dm
+        cdef Vec xvec
+        cdef Vec fvec
+        cdef PetscFormKey key
+        cdef IS ccell_is
+        cdef PetscReal residual_time = 0.0
+        cdef PetscReal implicit_form_time = <PetscReal>-1.7976931348623157e308
+
+        self._build(verbose, False, None)
+
+        if time is not None:
+            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                t_nd = float(uw.non_dimensionalise(time))
+            else:
+                t_nd = float(time)
+            _time_dm_residual = self.dm
+            UW_DMSetTime(_time_dm_residual.dm, t_nd)
+            residual_time = <PetscReal>t_nd
+
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+
+        gvec = self.dm.getGlobalVec()
+        xlocal = self.dm.getLocalVec()
+        flocal = self.dm.getLocalVec()
+        gvec.setArray(0.0)
+        xlocal.setArray(0.0)
+        flocal.setArray(0.0)
+
+        try:
+            for name, var in self.fields.items():
+                sgvec = gvec.getSubVector(self._subdict[name][0])
+                subdm = self._subdict[name][1]
+                subdm.localToGlobal(var.vec, sgvec)
+                gvec.restoreSubVector(self._subdict[name][0], sgvec)
+
+            self.dm.globalToLocal(gvec, xlocal)
+
+            dm = self.dm
+            xvec = xlocal
+            fvec = flocal
+            if cell_indices is None:
+                CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
+            else:
+                if residual_field_id is None:
+                    residual_field_id = 0
+                cell_is = PETSc.IS().createGeneral(
+                    list(cell_indices), comm=PETSc.COMM_SELF
+                )
+                try:
+                    ccell_is = cell_is
+                    key.label = NULL
+                    key.value = 0
+                    key.field = <PetscInt>residual_field_id
+                    key.part = 0
+                    if include_boundary_terms:
+                        CHKERRQ(DMPlexComputeResidualByKey(
+                            dm.dm, key, ccell_is.iset, implicit_form_time,
+                            xvec.vec, NULL, residual_time, fvec.vec, NULL,
+                        ))
+                    else:
+                        CHKERRQ(UW_DMPlexComputeResidualByKeyVolumeOnly(
+                            dm.dm, key, ccell_is.iset, implicit_form_time,
+                            xvec.vec, NULL, residual_time, fvec.vec, NULL,
+                        ))
+                finally:
+                    cell_is.destroy()
+
+            local_section = self.dm.getLocalSection()
+            pStart, pEnd = local_section.getChart()
+            out = {}
+
+            for name, var in self.fields.items():
+                field_id = getattr(var, "_solver_field_id", None)
+                if field_id is None:
+                    field_id = getattr(var, "field_id", None)
+                if field_id is None:
+                    continue
+
+                is_field = None
+                created_is_field = False
+                if name == "velocity" and getattr(self, "_velocity_is", None) is not None:
+                    is_field = self._velocity_is
+                elif name == "pressure" and getattr(self, "_pressure_is", None) is not None:
+                    is_field = self._pressure_is
+                elif getattr(self, "_multiplier_is", None) is not None and name in self._multiplier_is:
+                    is_field = self._multiplier_is[name]
+                else:
+                    indices = []
+                    for point in range(pStart, pEnd):
+                        dof = local_section.getFieldDof(point, field_id)
+                        if dof > 0:
+                            offset = local_section.getFieldOffset(point, field_id)
+                            for i in range(dof):
+                                indices.append(offset + i)
+
+                    is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+                    created_is_field = True
+
+                try:
+                    subvec = flocal.getSubVector(is_field)
+                    try:
+                        out[name] = np.array(subvec.array, copy=True)
+                    finally:
+                        flocal.restoreSubVector(is_field, subvec)
+                finally:
+                    if created_is_field:
+                        is_field.destroy()
+
+            return out
+        finally:
+            self.dm.restoreLocalVec(flocal)
+            self.dm.restoreLocalVec(xlocal)
+            self.dm.restoreGlobalVec(gvec)
+
+    def compute_boundary_residual_fields(self, boundary, time=None, verbose=False, residual_field_id=0):
+        """Return the registered FEM boundary residual for one named boundary.
+
+        This is a low-level diagnostic hook for weak-boundary-condition
+        debugging. It assembles PETSc's boundary residual terms registered on
+        ``boundary`` through ``DMPlexComputeBdResidualSingle``. For Nitsche
+        free slip, this includes the full registered weak boundary residual,
+        not only the scalar penalty term. The returned arrays are local to each
+        rank and have the same flat layout as the corresponding MeshVariable
+        PETSc vector.
+        """
+        cdef DM _time_dm_boundary_residual
+        cdef DM dm
+        cdef Vec xvec
+        cdef Vec fvec
+        cdef PetscFormKey key
+        cdef PetscDS ds
+        cdef PetscWeakForm wf
+        cdef DMLabel c_label
+
+        self._build(verbose, False, None)
+
+        boundary_bc = None
+        for bc in self.natural_bcs:
+            if bc.boundary == boundary and bc.f_id == residual_field_id:
+                boundary_bc = bc
+                break
+        if boundary_bc is None:
+            raise ValueError(
+                f"No natural/Nitsche boundary residual is registered for "
+                f"boundary '{boundary}' and field {residual_field_id}."
+            )
+
+        if time is not None:
+            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                t_nd = float(uw.non_dimensionalise(time))
+            else:
+                t_nd = float(time)
+            _time_dm_boundary_residual = self.dm
+            UW_DMSetTime(_time_dm_boundary_residual.dm, t_nd)
+
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+
+        gvec = self.dm.getGlobalVec()
+        xlocal = self.dm.getLocalVec()
+        flocal = self.dm.getLocalVec()
+        gvec.setArray(0.0)
+        xlocal.setArray(0.0)
+        flocal.setArray(0.0)
+
+        try:
+            for name, var in self.fields.items():
+                sgvec = gvec.getSubVector(self._subdict[name][0])
+                subdm = self._subdict[name][1]
+                subdm.localToGlobal(var.vec, sgvec)
+                gvec.restoreSubVector(self._subdict[name][0], sgvec)
+
+            self.dm.globalToLocal(gvec, xlocal)
+
+            dm = self.dm
+            xvec = xlocal
+            fvec = flocal
+            CHKERRQ(DMGetDS(dm.dm, &ds))
+            CHKERRQ(UW_PetscDSGetBoundaryWeakForm(
+                ds, <PetscInt>boundary_bc.PETScID, &wf,
+            ))
+
+            c_label = self.dm.getLabel("UW_Boundaries")
+            key.label = c_label.dmlabel
+            key.value = <PetscInt>boundary_bc.boundary_label_val
+            key.field = <PetscInt>residual_field_id
+            key.part = 0
+            CHKERRQ(DMPlexComputeBdResidualSingle(
+                dm.dm, wf, key, xvec.vec, NULL, 0.0, fvec.vec,
+            ))
+
+            local_section = self.dm.getLocalSection()
+            pStart, pEnd = local_section.getChart()
+            out = {}
+
+            for name, var in self.fields.items():
+                field_id = getattr(var, "_solver_field_id", None)
+                if field_id is None:
+                    field_id = getattr(var, "field_id", None)
+                if field_id is None:
+                    continue
+
+                is_field = None
+                created_is_field = False
+                if name == "velocity" and getattr(self, "_velocity_is", None) is not None:
+                    is_field = self._velocity_is
+                elif name == "pressure" and getattr(self, "_pressure_is", None) is not None:
+                    is_field = self._pressure_is
+                elif getattr(self, "_multiplier_is", None) is not None and name in self._multiplier_is:
+                    is_field = self._multiplier_is[name]
+                else:
+                    indices = []
+                    for point in range(pStart, pEnd):
+                        dof = local_section.getFieldDof(point, field_id)
+                        if dof > 0:
+                            offset = local_section.getFieldOffset(point, field_id)
+                            for i in range(dof):
+                                indices.append(offset + i)
+
+                    is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+                    created_is_field = True
+
+                try:
+                    subvec = flocal.getSubVector(is_field)
+                    try:
+                        out[name] = np.array(subvec.array, copy=True)
+                    finally:
+                        flocal.restoreSubVector(is_field, subvec)
+                finally:
+                    if created_is_field:
+                        is_field.destroy()
+
+            return out
+        finally:
+            self.dm.restoreLocalVec(flocal)
+            self.dm.restoreLocalVec(xlocal)
+            self.dm.restoreGlobalVec(gvec)
 
     def _ensure_local_field_index_sets(self, clvec, local_section):
         """Build (once) and cache the LOCAL index sets that decompose a parent-DM
