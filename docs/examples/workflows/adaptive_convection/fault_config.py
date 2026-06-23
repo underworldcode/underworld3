@@ -306,11 +306,18 @@ def _refresh_fault_fields(gfac, dfac, xy, config):
                  * 0.5 * (1.0 + np.tanh(s / edge + 1.5)))       # footwall cut (~1 at s=0)
         else:                                  # symmetric band on both flanks
             g = 0.5 * (1.0 + np.tanh((width - np.abs(d)) / edge))
-    else:                                      # legacy gaussian bump
-        g = np.exp(-(d / width) ** 2)
+    else:                                      # gaussian — PEAKED on the fault
+        # f=1 ON the drawn fault (d=0), so the geometric blend makes η_1 weakest
+        # exactly there and recover away. One-sided = a hanging-wall damage zone:
+        # gaussian taper of half-width `width` INTO the selected side, sharp
+        # `edge` recovery on the other (footwall strong just below the fault).
+        # No gate halving — the peak stays on the fault.
         if m is not None:
-            w_gate = (config.fault_side_width if config.fault_side_width > 0 else width)
-            g = g * 0.5 * (1.0 + np.tanh(m * d / w_gate))
+            s = m * d                          # >0 on the selected (hanging-wall) side
+            g = np.where(s >= 0.0, np.exp(-(s / width) ** 2),
+                         np.exp(-(s / edge) ** 2))
+        else:
+            g = np.exp(-(d / width) ** 2)      # symmetric peak on the fault
     gfac.data[:, 0] = g
     dfac.data[:, 0] = d                        # SIGNED
 
