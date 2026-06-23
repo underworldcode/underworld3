@@ -53,13 +53,15 @@ from underworld3.workflows import (
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diagnostics as diag  # noqa: E402
-# Reuse the no-fault config base + the generic summary step.
-from config import AdaptiveConvectionConfig, _is_steady, summarise_run  # noqa: E402,F401
+# Reuse the no-fault config base + the generic summary step + IC writer.
+from config import (  # noqa: E402,F401
+    AdaptiveConvectionConfig, _is_steady, _write_ic, summarise_run)
 
 
 _FAULT_IDENTITY = (
     "fault_theta_deg", "fault_dip_deg", "fault_depth", "fault_dip_dir",
-    "fault_width", "fault_floor", "fault_anisotropy", "fault_base_smin",
+    "fault_profile", "fault_width", "fault_edge", "fault_floor",
+    "fault_anisotropy", "fault_base_smin",
     "fault_wedge", "metric_combine",
     "fault_metric_side", "fault_rheology_side", "rheology",
 )
@@ -101,13 +103,25 @@ class FaultConvectionConfig(AdaptiveConvectionConfig):
                     "director=fault normal) — the real fault, ~20× costlier "
                     "(intrinsic Picard), needs penalty free slip + GAMG.")
 
-    # Fault strength (isotropic weak zone)
-    fault_width: float = Field(default=0.04, gt=0,
-                               description="Gaussian half-width of the weak "
-                                           "zone (model coords).")
+    # Fault strength (weak zone)
+    fault_profile: Literal["tophat", "gaussian"] = Field(
+        default="tophat",
+        description="Weak-zone influence shape. 'tophat' = a coherent band "
+                    "where f≈1 (so η_1 genuinely reaches the floor); 'gaussian' "
+                    "= the legacy bump (f peaks at 0.5 one-sided — never reaches "
+                    "the floor in a stiff lid).")
+    fault_width: float = Field(default=0.06, gt=0,
+                               description="Weak-zone band thickness into the "
+                                           "hanging wall (tophat) / gaussian "
+                                           "half-width (gaussian), model coords.")
+    fault_edge: float = Field(default=0.02, gt=0,
+                              description="Smoothing width of the tophat band "
+                                          "edges (model coords).")
     fault_floor: float = Field(default=1.0, gt=0,
-                               description="Viscosity floor in the fault zone "
-                                           "(weakens the cold lid to this).")
+                               description="Viscosity floor in the fault zone — "
+                                           "the TI fault-parallel viscosity η_1 "
+                                           "genuinely reaches this where f≈1 "
+                                           "(geometric blend η_1=η_FK^(1−f)·floor^f).")
 
     # Fault-aware refinement
     fault_anisotropy: float = Field(default=8.0, ge=0,
@@ -277,13 +291,26 @@ def _refresh_fault_fields(gfac, dfac, xy, config):
     from underworld3.utilities.geometry_tools import (
         signed_distance_pointcloud_polyline_2d)
     width = config.fault_width
-    w_gate = (config.fault_side_width if config.fault_side_width > 0 else width)
+    edge = config.fault_edge
     coords = np.asarray(gfac.coords)[:, :2]
     d = signed_distance_pointcloud_polyline_2d(coords, xy[:, :2])
-    g = np.exp(-(d / width) ** 2)
     m = _side_multiplier(config.fault_rheology_side, _upper_sign(xy))
-    if m is not None:                          # one-sided weak zone
-        g = g * 0.5 * (1.0 + np.tanh(m * d / w_gate))
+    if config.fault_profile == "tophat":
+        # A coherent band where f≈1 (so the geometric blend drives η_1 to the
+        # floor genuinely), with smooth edges of width `edge`.
+        if m is not None:
+            # one-sided hanging-wall band: f≈1 from the fault plane (s=0) out
+            # to s=width into the selected side, suppressed in the footwall.
+            s = m * d
+            g = (0.5 * (1.0 + np.tanh((width - s) / edge))      # outer falloff
+                 * 0.5 * (1.0 + np.tanh(s / edge + 1.5)))       # footwall cut (~1 at s=0)
+        else:                                  # symmetric band on both flanks
+            g = 0.5 * (1.0 + np.tanh((width - np.abs(d)) / edge))
+    else:                                      # legacy gaussian bump
+        g = np.exp(-(d / width) ** 2)
+        if m is not None:
+            w_gate = (config.fault_side_width if config.fault_side_width > 0 else width)
+            g = g * 0.5 * (1.0 + np.tanh(m * d / w_gate))
     gfac.data[:, 0] = g
     dfac.data[:, 0] = d                        # SIGNED
 
@@ -359,8 +386,11 @@ def create_solvers(mesh, config: FaultConvectionConfig):
     theta_FK = float(np.log(config.delta_eta))
     eta_FK = sympy.exp(theta_FK * (1 - T.sym[0]))
     finf = gfac.sym[0]
-    # Weak zone: floor on the fault, η_FK away (guaranteed-positive blend).
-    eta_weak = eta_FK * (1.0 - finf) + float(config.fault_floor) * finf
+    # Weak zone: GEOMETRIC (log-linear) blend η_1 = η_FK^(1−f)·floor^f. Unlike
+    # the arithmetic blend η_FK·(1−f)+floor·f (which leaves ~η_FK·(1−f) leaking
+    # through in a stiff lid — η_1≈8 at f=0.97, η_FK=250), this drives η_1 to
+    # the floor GENUINELY where f→1 (η_1≈1.2 at f=0.97). Positive for f∈[0,1].
+    eta_weak = eta_FK ** (1.0 - finf) * float(config.fault_floor) ** finf
 
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     if config.rheology == "ti":
@@ -405,18 +435,6 @@ def create_solvers(mesh, config: FaultConvectionConfig):
 
     return {"stokes": stokes, "adv_diff": adv, "T": T, "v": v, "p": p,
             "gfac": gfac, "dfac": dfac}
-
-
-def _write_ic(T, mesh, config):
-    import underworld3 as uw
-    X = mesh.CoordinateSystem.X
-    r_sym = sympy.sqrt(X[0] ** 2 + X[1] ** 2)
-    th_sym = sympy.atan2(X[1], X[0])
-    r_i, r_o = config.r_inner, config.r_outer
-    T_cond = sympy.log(r_sym / r_o) / sympy.log(r_i / r_o)
-    init = (config.pert_amplitude * sympy.sin(config.pert_mode * th_sym)
-            * sympy.sin(np.pi * (r_sym - r_i) / (r_o - r_i)) + T_cond)
-    T.data[...] = np.asarray(uw.function.evaluate(init, T.coords)).reshape(-1, 1)
 
 
 def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, config):

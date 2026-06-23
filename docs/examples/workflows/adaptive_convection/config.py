@@ -74,6 +74,7 @@ _IDENTITY_FIELDS = (
     "rayleigh", "delta_eta", "diffusivity",
     "resolution_ratio", "adapt_every", "adapt_start", "mover_accel",
     "freeslip", "pert_mode", "pert_amplitude",
+    "seed_kind", "seed_theta_deg", "seed_depth", "seed_width",
 )
 
 
@@ -116,10 +117,31 @@ class AdaptiveConvectionConfig(WorkflowConfig):
     diffusivity: float = Field(default=1.0, gt=0)
 
     # Identity — initial condition
+    seed_kind: Literal["mode", "blob"] = Field(
+        default="mode",
+        description="Initial T perturbation shape. 'mode' = global azimuthal "
+                    "sin(pert_mode·θ) (plumes everywhere). 'blob' = a single "
+                    "localized gaussian hot anomaly at (seed_theta_deg, "
+                    "seed_depth) — use to seed convection AWAY from a fault so "
+                    "the rising plume does not sit on it.")
     pert_mode: int = Field(default=5, ge=1,
                            description="Azimuthal wavenumber of the initial "
-                                       "T perturbation.")
-    pert_amplitude: float = Field(default=0.05)
+                                       "T perturbation (seed_kind='mode').")
+    pert_amplitude: float = Field(default=0.05,
+                                  description="Perturbation amplitude (peak ΔT "
+                                              "of the mode or the blob).")
+    seed_theta_deg: float = Field(default=270.0,
+                                  description="Azimuth of the blob seed "
+                                              "(seed_kind='blob'); 90 = the "
+                                              "default fault trace, 270 = "
+                                              "directly opposite.")
+    seed_depth: float = Field(default=0.5, ge=0.0, le=1.0,
+                              description="Fractional radial position of the "
+                                          "blob (0 = inner/hot boundary, 1 = "
+                                          "outer/cold).")
+    seed_width: float = Field(default=0.12, gt=0,
+                              description="Gaussian half-width of the blob "
+                                          "(model coords).")
 
     # Identity — adaptation
     resolution_ratio: float = Field(default=5.0, ge=0,
@@ -310,15 +332,29 @@ def create_solvers(mesh, config: AdaptiveConvectionConfig):
 
 
 def _write_ic(T, mesh, config: AdaptiveConvectionConfig):
-    """Conductive profile + azimuthal-mode perturbation."""
+    """Conductive profile + initial perturbation.
+
+    ``seed_kind='mode'`` (default) adds a global azimuthal-mode perturbation
+    (plumes form everywhere). ``seed_kind='blob'`` adds a single localized
+    gaussian hot anomaly at (``seed_theta_deg``, ``seed_depth``) so convection
+    is seeded AWAY from a fault — the rising plume does not sit on it.
+    """
     import underworld3 as uw
     X = mesh.CoordinateSystem.X
     r_sym = sympy.sqrt(X[0] ** 2 + X[1] ** 2)
     th_sym = sympy.atan2(X[1], X[0])
     r_i, r_o = config.r_inner, config.r_outer
     T_cond = sympy.log(r_sym / r_o) / sympy.log(r_i / r_o)
-    init = (config.pert_amplitude * sympy.sin(config.pert_mode * th_sym)
-            * sympy.sin(np.pi * (r_sym - r_i) / (r_o - r_i)) + T_cond)
+    if config.seed_kind == "blob":
+        th0 = float(np.deg2rad(config.seed_theta_deg))
+        r0 = r_i + config.seed_depth * (r_o - r_i)
+        x0, y0 = r0 * np.cos(th0), r0 * np.sin(th0)
+        blob = sympy.exp(-((X[0] - x0) ** 2 + (X[1] - y0) ** 2)
+                         / config.seed_width ** 2)
+        init = T_cond + config.pert_amplitude * blob
+    else:
+        init = (config.pert_amplitude * sympy.sin(config.pert_mode * th_sym)
+                * sympy.sin(np.pi * (r_sym - r_i) / (r_o - r_i)) + T_cond)
     T.data[...] = np.asarray(uw.function.evaluate(init, T.coords)).reshape(-1, 1)
 
 
