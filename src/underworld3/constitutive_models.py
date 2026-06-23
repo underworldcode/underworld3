@@ -993,17 +993,27 @@ class ViscousFlowModel(Constitutive_Model):
         on the **exact** yield surface (zero physics change at convergence).
 
         **This is the recommended default strategy for hard-Min viscoplastic /
-        VEP solves.**  By default it also switches the attached solver to the
-        *consistent* (true-Newton) tangent (``consistent_jacobian = True``, the
-        PR #258 fix that differentiates ``∂η/∂(grad v)``).  The two combine by
-        design: while δ>0 the residual is smooth, so the consistent tangent is
-        well-posed and line-search-friendly; as δ→0 the residual and its
-        consistent tangent sharpen *together* and the warm start keeps Newton in
-        the basin.  This is what rescues true Newton at the yield kink — cold
-        Newton alone stalls there (cf. Spiegelman et al. 2016).  The frozen-
-        viscosity Picard tangent (``consistent_jacobian = False``) is contractive
-        and converges too, just at a linear rate; pass
-        ``consistent_tangent=False`` to keep it.
+        VEP solves.**  The δ-ramp is the universal part; what it pairs with on
+        the Jacobian side is chosen by ``consistent_tangent`` and, for the
+        default ``"auto"``, depends on the model:
+
+        - **Non-elastic viscoplastic** (``ViscoPlasticFlowModel``): pair the
+          δ-ramp with the *consistent* true-Newton tangent (PR #258's
+          ``consistent_jacobian = True``, which differentiates ``∂η/∂(grad v)``).
+          While δ>0 the residual is smooth, so the consistent tangent is
+          well-posed and line-search-friendly; as δ→0 the residual and its
+          consistent tangent sharpen *together* and the warm start keeps Newton
+          in the basin.  This is what rescues true Newton at the yield kink —
+          cold Newton alone stalls there (cf. Spiegelman et al. 2016).
+        - **Elastic VEP / TI-VEP** (``ViscoElasticPlasticFlowModel``,
+          ``TransverseIsotropicVEPFlowModel``): keep the frozen-viscosity
+          **Picard** tangent.  The consistent yield tangent layered on the
+          elastic stress-history block makes the Jacobian indefinite (the linear
+          solve diverges); Picard is contractive and, with the δ-ramp, converges
+          robustly to the exact yield surface (measured, not assumed).
+
+        Pass ``consistent_tangent=True`` to force the consistent tangent
+        regardless of model, or ``False`` to keep whatever tangent is set.
 
         Implemented as a per-iteration ``SNESSetUpdate`` callback (PR #250), so
         there is a single BDF stress-history update per step (unlike a two-solve
@@ -1032,10 +1042,12 @@ class ViscousFlowModel(Constitutive_Model):
 
         ``consistent_tangent`` controls the Jacobian the homotopy pairs with:
 
-        - ``"auto"`` (default) / ``True``: use the consistent true-Newton tangent
-          (sets ``solver.consistent_jacobian = True``).  This is the headline
-          combination — δ-ramp + consistent Newton.  Silently skipped if the
-          solver predates the consistent-tangent infrastructure (PR #258).
+        - ``"auto"`` (default): model-aware — consistent true-Newton tangent for
+          non-elastic viscoplastic models, Picard for elastic VEP / TI-VEP (see
+          above).  Silently skipped if the solver predates the consistent-tangent
+          infrastructure (PR #258).
+        - ``True``: force the consistent true-Newton tangent regardless of model
+          (sets ``solver.consistent_jacobian = True``).
         - ``"continuation"``: Picard→Newton α-continuation tangent.
         - ``False`` / ``None``: leave ``solver.consistent_jacobian`` untouched
           (pair the δ-ramp with whatever tangent is set — Picard by default).
@@ -1079,11 +1091,24 @@ class ViscousFlowModel(Constitutive_Model):
             cur_maxit = 0
         if cur_maxit < 100:
             solver.petsc_options["snes_max_it"] = 100
-        # Pair the δ-ramp with the consistent (true-Newton) tangent by default —
-        # this is the combined strategy that rescues Newton at the kink. Guarded
-        # so a solver without the PR #258 infrastructure (no consistent_jacobian
-        # attribute) silently keeps its existing tangent.
-        if consistent_tangent in ("auto", True):
+        # Resolve the tangent the δ-ramp pairs with. "auto" is model-aware:
+        #   - non-elastic viscoplastic Stokes -> consistent true-Newton tangent.
+        #     The δ-ramp keeps the residual smooth while Newton finds the basin,
+        #     then both sharpen to the exact Min together (the Spiegelman win).
+        #   - elastic VEP / TI-VEP -> KEEP Picard. The consistent yield tangent
+        #     on top of the elastic stress-history block makes the Jacobian
+        #     indefinite (DIVERGED_LINEAR_SOLVE); Picard + δ-ramp is the
+        #     validated robust pairing there (test_1053: 0 divergences, σ locks
+        #     at τ_y). Measured, not assumed — see the plasticity-solvers notes.
+        elastic_capable = isinstance(
+            self,
+            (ViscoElasticPlasticFlowModel, TransverseIsotropicVEPFlowModel),
+        )
+        if consistent_tangent == "auto":
+            consistent_tangent = not elastic_capable
+        # Guarded so a solver without the PR #258 infrastructure (no
+        # consistent_jacobian attribute) silently keeps its existing tangent.
+        if consistent_tangent is True:
             if hasattr(solver, "consistent_jacobian"):
                 solver.consistent_jacobian = True
         elif consistent_tangent == "continuation":
@@ -1091,7 +1116,7 @@ class ViscousFlowModel(Constitutive_Model):
                 solver.consistent_jacobian = "continuation"
         elif consistent_tangent not in (False, None):
             raise ValueError(
-                "consistent_tangent must be 'auto'/True, 'continuation', or "
+                "consistent_tangent must be 'auto', True, 'continuation', or "
                 f"False/None — got {consistent_tangent!r}"
             )
         self._get_yield_softness()  # ensure the δ/offset constant atoms exist
