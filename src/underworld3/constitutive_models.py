@@ -975,7 +975,12 @@ class ViscousFlowModel(Constitutive_Model):
         return eta_ve / g
 
     def enable_yield_homotopy(
-        self, delta_start=0.5, schedule="residual", n_ramp=4, linesearch="basic"
+        self,
+        delta_start=0.5,
+        schedule="residual",
+        n_ramp=4,
+        linesearch="basic",
+        consistent_tangent="auto",
     ):
         r"""Opt-in problem-space regularisation homotopy for hard-Min yield.
 
@@ -986,6 +991,19 @@ class ViscousFlowModel(Constitutive_Model):
         progressively sharper problem and walks the iterate into the basin of
         the exact-Min solution.  Because δ ends at 0, the converged answer sits
         on the **exact** yield surface (zero physics change at convergence).
+
+        **This is the recommended default strategy for hard-Min viscoplastic /
+        VEP solves.**  By default it also switches the attached solver to the
+        *consistent* (true-Newton) tangent (``consistent_jacobian = True``, the
+        PR #258 fix that differentiates ``∂η/∂(grad v)``).  The two combine by
+        design: while δ>0 the residual is smooth, so the consistent tangent is
+        well-posed and line-search-friendly; as δ→0 the residual and its
+        consistent tangent sharpen *together* and the warm start keeps Newton in
+        the basin.  This is what rescues true Newton at the yield kink — cold
+        Newton alone stalls there (cf. Spiegelman et al. 2016).  The frozen-
+        viscosity Picard tangent (``consistent_jacobian = False``) is contractive
+        and converges too, just at a linear rate; pass
+        ``consistent_tangent=False`` to keep it.
 
         Implemented as a per-iteration ``SNESSetUpdate`` callback (PR #250), so
         there is a single BDF stress-history update per step (unlike a two-solve
@@ -1011,6 +1029,16 @@ class ViscousFlowModel(Constitutive_Model):
         sufficient-decrease test) is selected by default — the default ``bt``
         search trips when δ steps down and the residual of the sharper problem
         rises.  Pass ``linesearch=None`` to leave the solver's choice untouched.
+
+        ``consistent_tangent`` controls the Jacobian the homotopy pairs with:
+
+        - ``"auto"`` (default) / ``True``: use the consistent true-Newton tangent
+          (sets ``solver.consistent_jacobian = True``).  This is the headline
+          combination — δ-ramp + consistent Newton.  Silently skipped if the
+          solver predates the consistent-tangent infrastructure (PR #258).
+        - ``"continuation"``: Picard→Newton α-continuation tangent.
+        - ``False`` / ``None``: leave ``solver.consistent_jacobian`` untouched
+          (pair the δ-ramp with whatever tangent is set — Picard by default).
 
         Off by default.  Requires the model to be attached to a solver first
         (``solver.constitutive_model = model``).  Not applicable to ``"harmonic"``.
@@ -1051,6 +1079,21 @@ class ViscousFlowModel(Constitutive_Model):
             cur_maxit = 0
         if cur_maxit < 100:
             solver.petsc_options["snes_max_it"] = 100
+        # Pair the δ-ramp with the consistent (true-Newton) tangent by default —
+        # this is the combined strategy that rescues Newton at the kink. Guarded
+        # so a solver without the PR #258 infrastructure (no consistent_jacobian
+        # attribute) silently keeps its existing tangent.
+        if consistent_tangent in ("auto", True):
+            if hasattr(solver, "consistent_jacobian"):
+                solver.consistent_jacobian = True
+        elif consistent_tangent == "continuation":
+            if hasattr(solver, "consistent_jacobian"):
+                solver.consistent_jacobian = "continuation"
+        elif consistent_tangent not in (False, None):
+            raise ValueError(
+                "consistent_tangent must be 'auto'/True, 'continuation', or "
+                f"False/None — got {consistent_tangent!r}"
+            )
         self._get_yield_softness()  # ensure the δ/offset constant atoms exist
         if self._yield_homotopy_step not in solver._snes_update_callbacks:
             solver.add_update_callback(self._yield_homotopy_step)
