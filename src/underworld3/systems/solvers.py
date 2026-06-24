@@ -2082,8 +2082,19 @@ class SNES_Stokes_Constrained(SNES_Stokes):
     The constraint is enforced in one coupled solve (no outer iteration). The
     augmented-Lagrangian term conditions the :math:`[p,h]` Schur complement
     without biasing the multiplier, and the interior multiplier DOFs are reduced
-    away so the solved block is boundary-sized. Serial only (the boundary mask is
-    not yet MPI-decomposed). See
+    away so the solved block is boundary-sized.
+
+    Runs in parallel: the interior-multiplier reduction is rank-local section
+    surgery so the global system, velocity solve, and gauge-fixed topography are
+    partition-independent (validated in
+    ``tests/parallel/test_1063_constrained_freeslip_parallel.py``). On an
+    **enclosed** problem (a pressure null space is active) the constant pressure
+    and constant multiplier are gauge-free, and the solver lands on a
+    partition-dependent level for each. To keep the raw **pressure** reproducible
+    across ranks the solver pins the surface-mean pressure automatically (see
+    :attr:`auto_pressure_gauge`); the raw **multiplier** keeps its own gauge level,
+    so read dynamic topography through :meth:`topography` with ``reference="mean"``
+    (gauge-invariant). See
     ``docs/developer/design/CONSTRAINED_FREESLIP_MULTIPLIER.md``.
 
     See Also
@@ -2117,6 +2128,17 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # ordinary Stokes solve, so the base assembly is unaffected.
         self._block_constraint_bcs = []
 
+        # Guarded automatic pressure gauge (see _maybe_install_auto_gauge). On an
+        # enclosed constrained problem the constant pressure and constant
+        # multiplier are gauge-free; the solver lands on a partition-dependent
+        # level for each, so the raw fields are not reproducible across ranks.
+        # When a pressure null space is active we pin the surface-mean pressure,
+        # making the raw PRESSURE reproducible at zero cost to the velocity (the
+        # raw multiplier keeps its own gauge — read topography via reference="mean").
+        # Set to False to opt out.
+        self.auto_pressure_gauge = True
+        self._auto_gauge_callback = None
+
         # Default the grouped [p, lambda] Schur preconditioner to `selfp` (the base
         # Stokes default is `a11`). The constraint Schur complement
         # S_lambda = C A^-1 C^T needs a preconditioner built from the actual operator
@@ -2127,7 +2149,157 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # multiplier (= dynamic topography) clean at small augmentation. Override via
         # `solver.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"` if desired.
         self.petsc_options["pc_fieldsplit_schur_precondition"] = "selfp"
+
+        # Flexible outer Krylov (fgmres) is REQUIRED, not a tuning choice. The
+        # grouped [p, lambda] Schur preconditioner runs inner *iterative* sub-solves
+        # (velocity multigrid + the Schur KSP), so the preconditioner operator
+        # varies from one outer iteration to the next — a variable/nonlinear
+        # preconditioner. A non-flexible Krylov method (the base's gmres) is
+        # invalid for that: the preconditioned residual it minimises false-converges
+        # (it reported CONVERGED_RTOL in ~2 iterations while the TRUE residual
+        # ||r||/||b|| blew up to ~10^3), landing on a wrong, partition-dependent
+        # answer (the ~0.4% serial-vs-parallel velocity spread, and the failure to
+        # reproduce the Zhong response). fgmres handles the variable preconditioner
+        # correctly: the true residual converges and the solve is
+        # partition-independent. Override via petsc_options["ksp_type"] if needed.
+        self.petsc_options["ksp_type"] = "fgmres"
+
+        # Judge outer convergence on the TRUE (unpreconditioned) residual. With a
+        # variable preconditioner the preconditioned-residual norm is not a fixed
+        # inner product and false-converges (it can report convergence while the
+        # true residual is still large), so the default preconditioned-norm test
+        # would stop the solve early even with a tight rtol — re-introducing the
+        # partition-dependent velocity. The unpreconditioned norm costs one extra
+        # matvec per iteration and makes the stopping test honest.
+        self.petsc_options["ksp_norm_type"] = "unpreconditioned"
+
+        # Bound the outer iteration count. The well-set-up solve converges in a
+        # handful of outer iterations (~6 on the 3-D shell at cellSize 1/8); this
+        # generous cap just guarantees a pathological case fails loudly
+        # (DIVERGED_ITS) rather than silently grinding. Raise it for genuinely
+        # hard problems via petsc_options["ksp_max_it"].
+        self.petsc_options["ksp_max_it"] = 100
+
+        # Tighten the Eisenstat-Walker adaptive linear tolerance (the base saddle
+        # point enables snes_ksp_ew with the PETSc default initial/max rtol 0.3).
+        # EW's loose-early heuristic is right for a NONLINEAR Newton solve, but the
+        # constrained solver is normally run linear (snes_type=ksponly), where EW
+        # then caps the single outer solve at rtol 0.3 — one outer iteration, true
+        # residual ~1e-5 relative. The augmented saddle point is ill-conditioned
+        # (augmentation ~1e4), so that loose residual is amplified into a ~0.1%
+        # partition-dependent velocity (GAMG's per-partition aggregation makes the
+        # preconditioner partition-dependent, which only cancels once the TRUE
+        # residual is driven down). Pinning EW's initial = max rtol to the solver
+        # tolerance makes the outer fgmres iterate until genuinely converged, so
+        # the velocity is partition-independent to round-off. Kept in sync by the
+        # `tolerance` setter below.
+        self.petsc_options["snes_ksp_ew_rtol0"] = self._tolerance * 1.0e-1
+        self.petsc_options["snes_ksp_ew_rtolmax"] = self._tolerance * 1.0e-1
         return
+
+    @property
+    def tolerance(self):
+        """Solver tolerance (see :class:`SNES_Stokes_SaddlePt.tolerance`).
+
+        Overridden so that, in addition to ``snes_rtol`` / ``ksp_rtol`` /
+        ``ksp_atol``, the Eisenstat-Walker initial and max relative tolerances are
+        pinned to ``tolerance * 0.1`` — otherwise EW's default (0.3) under-solves
+        the ill-conditioned augmented constrained system on a linear solve and the
+        velocity becomes partition-dependent (see ``__init__``).
+        """
+        return self._tolerance
+
+    @tolerance.setter
+    def tolerance(self, value):
+        self._tolerance = value
+        self.petsc_options["snes_rtol"] = value
+        self.petsc_options["ksp_rtol"] = value * 1.0e-1
+        self.petsc_options["ksp_atol"] = value * 1.0e-6
+        self.petsc_options["snes_ksp_ew_rtol0"] = value * 1.0e-1
+        self.petsc_options["snes_ksp_ew_rtolmax"] = value * 1.0e-1
+
+    def solve(self, *args, **kwargs):
+        """Solve the constrained Stokes system (see :meth:`SNES_Stokes.solve`).
+
+        Installs the guarded automatic pressure gauge (if eligible) before
+        delegating to the base solve, so the raw pressure and multiplier are
+        partition-reproducible by construction on enclosed problems.
+        """
+        self._warn_if_monolithic_direct()
+        self._maybe_install_auto_gauge()
+        return super().solve(*args, **kwargs)
+
+    def _warn_if_monolithic_direct(self):
+        """Warn that a monolithic direct solve of the constrained system is a
+        serial diagnostic only.
+
+        Setting ``pc_type = lu``/``cholesky`` factorises the whole
+        :math:`[\\,u, p, h\\,]` saddle point as one block. On the constrained
+        system this is a KNOWN-BAD path: it does not reproduce the validated
+        grouped-Schur (``selfp``) velocity response (e.g. surface velocity ~4e-3
+        vs the ~1e-2 Zhong reference on the 3-D shell) AND it segfaults in
+        parallel (the indefinite KKT factorisation is not robust here). The
+        grouped :math:`\\mathbf{u}\\,|\\,[p,h]` field-split is the supported path;
+        use ``pc_type = lu`` only as a serial cross-check, knowing the response is
+        not the benchmark reference.
+        """
+        if not self._block_constraint_bcs:
+            return
+        try:
+            pc_type = self.petsc_options["pc_type"]
+        except KeyError:
+            return
+        if pc_type in ("lu", "cholesky"):
+            import warnings
+            warnings.warn(
+                "Stokes_Constrained: a monolithic direct solve "
+                f"(pc_type='{pc_type}') of the constrained saddle point is a "
+                "serial diagnostic only — it does not reproduce the validated "
+                "grouped-Schur velocity response and segfaults in parallel. Use "
+                "the default field-split (u | [p,h]) path for production runs.",
+                stacklevel=2,
+            )
+
+    def _maybe_install_auto_gauge(self):
+        """Pin the (p, h) gauge consistently on an enclosed constrained problem.
+
+        Conservative — installs ``set_pressure_gauge`` on the first constraint
+        boundary (``reference=0``) only when ALL of the following hold, otherwise
+        it is a no-op and the solve path is unchanged:
+
+        * ``auto_pressure_gauge`` is left True (the default),
+        * we have not already installed it (idempotent across re-solves),
+        * at least one multiplier constraint is registered,
+        * a pressure null space is active (``petsc_use_nullspace`` / enclosed) —
+          this is the gauge-freedom flag; with it off the pressure is determined
+          and must not be shifted,
+        * no pressure Dirichlet BC already pins the gauge,
+        * the user has registered no update callback of their own (e.g. an
+          explicit ``set_pressure_gauge`` or a smoother) — we never clobber it.
+
+        Pinning the surface-mean pressure makes the raw **pressure** field
+        partition-reproducible (measured: the enclosed-shell mean pressure goes
+        from a ~10% serial-vs-np8 spread to the assembly floor, ~0.4%). It is
+        physics-neutral: the velocity is bit-identical with and without the pin.
+        It does NOT fix the raw **multiplier** ``h`` — the constant multiplier is
+        an independent gauge freedom the pressure pin does not touch — so dynamic
+        topography must still be read with ``topography(..., reference="mean")``,
+        which is gauge-invariant by construction.
+        """
+        if not self.auto_pressure_gauge:
+            return
+        if self._auto_gauge_callback is not None:
+            return
+        if not self._block_constraint_bcs:
+            return
+        if not self._petsc_use_pressure_nullspace:
+            return
+        if self._pressure_dirichlet_bcs():
+            return
+        if self._snes_update_callbacks:
+            return
+        boundary = self._block_constraint_bcs[0].boundary
+        self._auto_gauge_callback = self.set_pressure_gauge(boundary, 0.0)
 
     @property
     def saddle_preconditioner(self):
@@ -2207,10 +2379,12 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # Validated bit-identical at np=1/2/4 (velocity L2 and mean-stripped
         # boundary topography) in
         # tests/parallel/test_1063_constrained_freeslip_parallel.py.
-        # NOTE: on enclosed problems the raw multiplier h carries the [p,λ] gauge
-        # constant, of which the solver lands on a partition-dependent
-        # representative — strip its boundary mean for a reproducible topography
-        # (`topography(..., reference="mean")`).
+        # NOTE: on enclosed problems the constant pressure and constant multiplier
+        # are gauge-free and land on a partition-dependent level. The automatic
+        # pressure gauge (auto_pressure_gauge, see _maybe_install_auto_gauge) pins
+        # the raw PRESSURE reproducibly, but the raw multiplier h keeps its own
+        # gauge level — read dynamic topography via topography(..., reference="mean"),
+        # which is gauge-invariant and partition-reproducible by construction.
 
         if not hasattr(self.mesh.boundaries, boundary):
             raise ValueError(
@@ -2296,6 +2470,13 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         (``reference=None``) returns the raw multiplier — correct for problems with
         **no** gauge freedom (e.g. an open boundary), where the mean of :math:`h` is
         the physical mean traction and must NOT be removed.
+
+        Note that the automatic pressure gauge (:attr:`auto_pressure_gauge`) fixes
+        the raw *pressure* level but NOT the raw *multiplier* level (the constant
+        multiplier is an independent gauge freedom). So on an enclosed problem the
+        raw multiplier (``reference=None``) is still partition-dependent —
+        ``reference="mean"`` is the gauge-invariant, partition-reproducible read
+        for dynamic topography and is the recommended path.
 
         Parameters
         ----------

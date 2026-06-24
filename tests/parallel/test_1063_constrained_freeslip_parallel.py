@@ -76,6 +76,76 @@ def _solve_diagnostics(kind):
     return L2, topo
 
 
+# Serial (np=1) reference for the gauge-reproducibility test below. The enclosed
+# iso problem with an ACTIVE pressure null space exercises the automatic pressure
+# gauge (auto_pressure_gauge, default on): the constant pressure and constant
+# multiplier are both gauge-free, so without a pin the solver lands on a
+# partition-dependent level for each. The auto gauge pins the raw PRESSURE
+# reproducibly (the raw multiplier keeps its own gauge freedom — topography is
+# read gauge-invariantly via reference="mean"). Velocity is physics-neutral.
+# (velocity L2, raw meanP, MEAN-STRIPPED boundary topography).
+# Recompute with `python <thisfile> gauge`.
+GOLDEN_GAUGE = (6.194547487092e-01, -3.847657609797e-10, 3.781793823254e+01)
+
+
+def _solve_gauge_diagnostics():
+    """Enclosed constrained annulus with an active pressure null space (so the
+    automatic pressure gauge fires); return the gauge-relevant diagnostics."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+                              cellSize=0.12, qdegree=4)
+    v = uw.discretisation.MeshVariable("Ug", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("Pg", mesh, 1, degree=1)
+    X = mesh.CoordinateSystem.X
+    unit_r = mesh.CoordinateSystem.unit_e_0
+
+    st = uw.systems.Stokes_Constrained(mesh, velocityField=v, pressureField=p)
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    st.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    st.tolerance = 1.0e-10
+    st.petsc_use_nullspace = True            # enclosed -> pressure null space active
+    st.add_essential_bc((0.0, 0.0), "Lower")  # kill the velocity rotation null space
+    st.add_constraint_bc("Upper", g=0.0, normal=unit_r)
+    st.bodyforce = 1.0e2 * sympy.sin(3 * sympy.atan2(X[1], X[0])) * unit_r
+    st.solve(zero_init_guess=True)
+    assert st._auto_gauge_callback is not None, "auto pressure gauge should have fired"
+
+    L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
+    vol = float(uw.maths.Integral(mesh, sympy.Integer(1)).evaluate())
+    # RAW mean pressure — pinned to ~0 by the auto gauge, partition-reproducible.
+    meanP = float(uw.maths.Integral(mesh, p.sym[0]).evaluate()) / vol
+    # MEAN-STRIPPED topography (reference="mean") — gauge-invariant, the supported
+    # partition-reproducible read of the multiplier.
+    topo_fn = st.topography("Upper", reference="mean")
+    topoL2 = float(np.sqrt(uw.maths.BdIntegral(
+        mesh=mesh, fn=topo_fn ** 2, boundary="Upper").evaluate()))
+    return L2, meanP, topoL2
+
+
+def test_constrained_raw_gauge_partition_independent():
+    """With the automatic pressure gauge on (default), the RAW mean pressure is
+    partition-independent (pinned to ~0), the velocity stays bit-identical (the
+    gauge is physics-neutral), and the mean-stripped topography is reproducible.
+    The raw multiplier level is NOT asserted reproducible — it keeps an
+    independent gauge freedom the pressure pin does not touch (use
+    reference="mean")."""
+    L2, meanP, topo = _solve_gauge_diagnostics()
+    L2_ref, meanP_ref, topo_ref = GOLDEN_GAUGE
+    # Velocity is physics-neutral under the gauge; the residual ~1e-9 spread is
+    # parallel round-off in the pressure-null-space projection (this enclosed
+    # config carries the null space, unlike the half-pinned case above), well
+    # below any real partition effect.
+    assert np.isclose(L2, L2_ref, rtol=1e-8, atol=0), (
+        f"velocity L2 differs serial vs np={uw.mpi.size}: {L2_ref} vs {L2}")
+    # meanP is pinned to ~0 on the gauge boundary; compare on an absolute scale
+    # (a relative tolerance is meaningless near machine zero).
+    assert np.isclose(meanP, meanP_ref, rtol=0, atol=1e-6), (
+        f"raw mean pressure differs serial vs np={uw.mpi.size}: "
+        f"{meanP_ref} vs {meanP}")
+    assert np.isclose(topo, topo_ref, rtol=1e-6, atol=0), (
+        f"mean-stripped topography differs serial vs np={uw.mpi.size}: "
+        f"{topo_ref} vs {topo}")
+
+
 @pytest.mark.parametrize("kind", ["iso", "ti"])
 def test_constrained_freeslip_partition_independent(kind):
     """The parallel solve must reproduce the serial reference: velocity bit-
@@ -91,9 +161,14 @@ def test_constrained_freeslip_partition_independent(kind):
 
 
 if __name__ == "__main__":
-    # Recompute the serial GOLDEN reference: `python <thisfile> {iso,ti}`.
+    # Recompute the serial GOLDEN reference: `python <thisfile> {iso,ti,gauge}`.
     import sys
     _kind = sys.argv[1] if len(sys.argv) > 1 else "iso"
-    _L2, _topo = _solve_diagnostics(_kind)
-    if uw.mpi.rank == 0:
-        print(f"DIAG {_L2:.12e} {_topo:.12e}")
+    if _kind == "gauge":
+        _L2, _meanP, _topo = _solve_gauge_diagnostics()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_GAUGE {_L2:.12e} {_meanP:.12e} {_topo:.12e}")
+    else:
+        _L2, _topo = _solve_diagnostics(_kind)
+        if uw.mpi.rank == 0:
+            print(f"DIAG {_L2:.12e} {_topo:.12e}")
