@@ -69,6 +69,19 @@ nest_asyncio.apply()
 import numpy as np
 import sympy
 
+
+def in_notebook():
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+
+    shell = get_ipython()
+    if shell is None:
+        return False
+
+    return shell.__class__.__name__ == "ZMQInteractiveShell"
+
 # %% [markdown]
 """
 ## Configurable Parameters
@@ -265,6 +278,7 @@ pipemesh = uw.discretisation.Mesh(
     refinement_callback=None,
     return_coords_to_bounds=pipemesh_return_coords_to_bounds,
     boundaries=boundaries,
+    coordinate_system_type=uw.coordinates.CoordinateSystemType.CARTESIAN,
     qdegree=3,
 )
 
@@ -279,7 +293,7 @@ y = pipemesh.N.y
 """
 
 # %%
-if uw.mpi.size == 1:
+if uw.mpi.size == 1 and in_notebook():
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -489,7 +503,7 @@ with open(f"{expt_name}/Particle_numbers.txt", mode="w") as fp:
 """
 
 # %%
-if uw.mpi.size == 1:
+if uw.mpi.size == 1 and in_notebook():
     import pyvista as pv
     import underworld3.visualisation as vis
 
