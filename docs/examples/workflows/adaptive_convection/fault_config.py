@@ -525,6 +525,33 @@ def create_solvers(mesh, config: FaultConvectionConfig):
             "gfac": gfac, "dfac": dfac}
 
 
+def _seed_from_run(T, seed_run_dir, config):
+    """Seed the initial T by interpolating another run's LAST checkpoint onto
+    this (fresh) mesh. Cross-mesh interpolation via uw.function.evaluate (the
+    seed mesh is deformed/adapted; point-location tracks the deformation on the
+    fixed mover base). Use to continue a developed state at a different Ra."""
+    import glob
+    import re
+    import underworld3 as uw
+    sd = Path(seed_run_dir).expanduser()
+    idxs = sorted(int(re.search(r"mesh\.(\d+)\.h5", os.path.basename(c)).group(1))
+                  for c in glob.glob(str(sd / f"{RUN_NAME}.mesh.[0-9]*.h5")))
+    if not idxs:
+        raise RuntimeError(f"seed_run {sd}: no checkpoints found")
+    last = idxs[-1]
+    old_mesh = uw.discretisation.Mesh(str(sd / f"{RUN_NAME}.mesh.{last:05d}.h5"),
+                                      qdegree=config.qdegree)
+    old_T = uw.discretisation.MeshVariable("Tseed", old_mesh, 1,
+                                           degree=config.T_degree, continuous=True)
+    old_T.read_timestep(data_filename=RUN_NAME, data_name="T", index=last,
+                        outputPath=str(sd))
+    T.data[...] = np.asarray(
+        uw.function.evaluate(old_T.sym[0], np.asarray(T.coords))).reshape(-1, 1)
+    uw.pprint(f"[evolve] seeded T from {sd} step {last} "
+              f"(range {float(T.data.min()):.3f}..{float(T.data.max()):.3f})",
+              flush=True)
+
+
 def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, config):
     """Anisotropic-tensor fault adapt closure. Returns (moved, misalign)."""
     import underworld3 as uw
@@ -641,7 +668,10 @@ def evolve(mesh, stokes, adv_diff, T, v, p, gfac, dfac, config: FaultConvectionC
                     n_fault=nn.get("n_fault", 0))
 
     if not saved_steps:
-        _write_ic(T, mesh, config)
+        if config.seed_run:
+            _seed_from_run(T, config.seed_run, config)
+        else:
+            _write_ic(T, mesh, config)
         stokes.solve(zero_init_guess=True)
         run.write_manifest({
             "workflow": "fault_convection",

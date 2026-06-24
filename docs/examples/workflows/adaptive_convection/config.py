@@ -188,6 +188,12 @@ class AdaptiveConvectionConfig(WorkflowConfig):
     # Output
     output_dir: str = "output/adaptive_convection/run"
     restart_policy: Literal["error", "fresh", "seed_from_old"] = "error"
+    seed_run: str = Field(default="",
+                          description="Path to another run directory to seed the "
+                                      "initial T from (its last checkpoint, "
+                                      "interpolated onto this mesh) instead of the "
+                                      "analytic IC — e.g. continue a developed "
+                                      "state at a different Rayleigh number.")
 
 
 # ---------------------------------------------------------------------------
