@@ -2508,31 +2508,26 @@ class SemiLagrangian(uw_object):
         coords_template = self.psi_star[0].coords
         has_units = hasattr(coords_template, "magnitude") or hasattr(coords_template, "_magnitude")
 
-        # Maintain unit system consistency: either keep everything with units or convert to non-dimensional
-        if has_units:
-            # Physical coordinate system with units
-            # dt must be converted to base SI seconds so that dt * velocity(m/s) = distance(m)
-            if hasattr(dt, "to"):  # It's a Pint quantity
-                dt_for_calc = dt.to("second")  # Convert to seconds (still a quantity)
+        # The semi-Lagrangian trace-back is performed ENTIRELY in the mesh's
+        # NON-DIMENSIONAL (DM) coordinate space: evaluate()/global_evaluate treat
+        # plain arrays as DM coords and the DM point-location uses DM values
+        # (0..L_model, NOT dimensional metres). So coords, velocity AND dt are all
+        # reduced to non-dimensional values here, whether or not the model carries
+        # units. (Previously the has_units branch kept dimensional coords/velocity
+        # and left dt unitless -> a 'meter' vs 'meter/second' subtraction crash and
+        # mislocation against the ND DM; UW3 issue #267.)
+        if hasattr(dt, "magnitude") or hasattr(dt, "value"):
+            # dt carries units -> non-dimensionalise it
+            dt_nondim = uw.non_dimensionalise(dt, model)
+            if hasattr(dt_nondim, "magnitude"):
+                dt_for_calc = float(dt_nondim.magnitude)
+            elif hasattr(dt_nondim, "value"):
+                dt_for_calc = float(dt_nondim.value)
             else:
-                # If dt is already a dimensionless number, treat it as seconds
-                dt_for_calc = dt
+                dt_for_calc = float(dt_nondim)
         else:
-            # Non-dimensional coordinate system - convert dt to non-dimensional
-            # CRITICAL: Actually non-dimensionalize the timestep!
-            if hasattr(dt, "magnitude") or hasattr(dt, "value"):
-                # dt has units - non-dimensionalize it
-                dt_nondim = uw.non_dimensionalise(dt, model)
-                # Extract the dimensionless value
-                if hasattr(dt_nondim, "magnitude"):
-                    dt_for_calc = float(dt_nondim.magnitude)
-                elif hasattr(dt_nondim, "value"):
-                    dt_for_calc = float(dt_nondim.value)
-                else:
-                    dt_for_calc = float(dt_nondim)
-            else:
-                # Already dimensionless
-                dt_for_calc = dt
+            # already non-dimensional model-time
+            dt_for_calc = dt
 
         # Phase-2 ALE: if an adapt stashed Δx, build v_mesh = Δx / dt as
         # a per-DDt MeshVariable now so the trace-back below can use
@@ -2592,59 +2587,37 @@ class SemiLagrangian(uw_object):
             # Non-dimensionalize velocities when working with dimensionless coordinates
             # This prevents dimensional mismatch: velocities in m/s mixed with coords in [0,1]
             # CRITICAL: evaluate now returns UnitAwareArray with units attached
-            # Check if velocities already have units before trying to add them manually
-            if not has_units:
-                # Coordinates are dimensionless - need to non-dimensionalize velocities too
-                if isinstance(v_at_node_pts, UnitAwareArray):
-                    # Velocities already have units from evaluate - just non-dimensionalize
-                    v_nondim = uw.non_dimensionalise(v_at_node_pts, model)
-                    # Extract numpy array for dimensionless calculation
+            # Non-dimensionalise velocities to the DM/ND space (see the dt note
+            # above): the trace-back arithmetic and the subsequent point-location
+            # both work in the mesh's ND coordinates, so velocity must be ND too.
+            if isinstance(v_at_node_pts, UnitAwareArray):
+                # Velocities already carry units from evaluate - non-dimensionalise
+                v_nondim = uw.non_dimensionalise(v_at_node_pts, model)
+                if isinstance(v_nondim, UnitAwareArray):
+                    v_at_node_pts = np.array(v_nondim)
+                elif hasattr(v_nondim, "value"):
+                    v_at_node_pts = v_nondim.value
+                else:
+                    v_at_node_pts = v_nondim
+            else:
+                # Plain array from evaluate - attach the field's units then ND it
+                v_units = uw.get_units(self.V_fn)
+                if v_units and v_units != "dimensionless":
+                    v_with_units = UnitAwareArray(v_at_node_pts, units=v_units)
+                    v_nondim = uw.non_dimensionalise(v_with_units, model)
                     if isinstance(v_nondim, UnitAwareArray):
                         v_at_node_pts = np.array(v_nondim)
                     elif hasattr(v_nondim, "value"):
                         v_at_node_pts = v_nondim.value
                     else:
                         v_at_node_pts = v_nondim
-                else:
-                    # Velocities don't have units - try to add them manually (legacy path)
-                    v_units = uw.get_units(self.V_fn)
-                    if v_units and v_units != "dimensionless":
-                        v_with_units = UnitAwareArray(v_at_node_pts, units=v_units)
-                        v_nondim = uw.non_dimensionalise(v_with_units, model)
-                        if isinstance(v_nondim, UnitAwareArray):
-                            v_at_node_pts = np.array(v_nondim)
-                        elif hasattr(v_nondim, "value"):
-                            v_at_node_pts = v_nondim.value
-                        else:
-                            v_at_node_pts = v_nondim
-            else:
-                # Dimensional mode - ensure velocities have units
-                # CRITICAL FIX (2025-11-27): Variable data is stored NON-DIMENSIONALLY.
-                # We must DIMENSIONALIZE (not just wrap) the values before dimensional arithmetic.
-                # Previous bug: wrapping 0.01 (ND) with cm/yr gave 0.01 cm/yr instead of 1 cm/yr.
-                if not isinstance(v_at_node_pts, UnitAwareArray):
-                    v_units = uw.get_units(self.V_fn)
-                    if v_units and v_units != "dimensionless":
-                        # Re-dimensionalize using the scaling system
-                        if uw.is_nondimensional_scaling_active():
-                            from underworld3.scaling import dimensionalise
-                            # dimensionalise(nd_value, units) -> value * scale in those units
-                            v_dimensional = dimensionalise(v_at_node_pts, v_units)
-                            v_at_node_pts = UnitAwareArray(v_dimensional.magnitude, units=v_dimensional.units)
-                        else:
-                            # No scaling active - assume values are already dimensional
-                            v_at_node_pts = UnitAwareArray(v_at_node_pts, units=v_units)
 
-            # Get coordinates
-            coords = self.psi_star[i].coords
-
-            # CRITICAL: When working in dimensionless mode, extract coords to plain arrays
-            # to match the dimensionless velocities (otherwise unit mismatch occurs)
-            from underworld3.utilities.unit_aware_array import UnitAwareArray
-
-            if not has_units and isinstance(coords, UnitAwareArray):
-                # Extract to plain numpy for dimensionless arithmetic
-                coords = np.array(coords)
+            # Departure point in the mesh's ND (DM) coordinate space. coords_nd is
+            # the ND reduction of the (possibly dimensional) node coordinates —
+            # identical to .coords for a non-units model, and the DM-space values
+            # (0..L_model) when units are active, matching what global_evaluate /
+            # the DM point-location expect. See #267.
+            coords = np.asarray(self.psi_star[i].coords_nd)
 
             # CRITICAL (2025-11-27): Multiply velocity FIRST so UnitAwareArray.__mul__ handles it.
             # If we do `dt_for_calc * v_at_node_pts`, Pint handles it and loses UnitAwareArray units.
@@ -2679,44 +2652,30 @@ class SemiLagrangian(uw_object):
             else:
                 v_at_mid_pts = v_mid_result[:, 0, :]
 
-            # Non-dimensionalize mid-point velocities when working with dimensionless coordinates
-            # CRITICAL: global_evaluate now returns UnitAwareArray with units attached
-            # Check if velocities already have units before trying to add them manually
-            if not has_units:
-                # Coordinates are dimensionless - need to non-dimensionalize velocities too
-                if isinstance(v_at_mid_pts, UnitAwareArray):
-                    # Velocities already have units from global_evaluate - just non-dimensionalize
-                    v_nondim = uw.non_dimensionalise(v_at_mid_pts, model)
-                    # Extract numpy array for dimensionless calculation
+            # Non-dimensionalise mid-point velocities to the DM/ND space, same as
+            # the node velocities above (the trace-back works in ND coords). See #267.
+            if isinstance(v_at_mid_pts, UnitAwareArray):
+                v_nondim = uw.non_dimensionalise(v_at_mid_pts, model)
+                if isinstance(v_nondim, UnitAwareArray):
+                    v_at_mid_pts = np.array(v_nondim)
+                elif hasattr(v_nondim, "value"):
+                    v_at_mid_pts = v_nondim.value
+                else:
+                    v_at_mid_pts = v_nondim
+            else:
+                v_units = uw.get_units(self.V_fn)
+                if v_units and v_units != "dimensionless":
+                    v_with_units = UnitAwareArray(v_at_mid_pts, units=v_units)
+                    v_nondim = uw.non_dimensionalise(v_with_units, model)
                     if isinstance(v_nondim, UnitAwareArray):
                         v_at_mid_pts = np.array(v_nondim)
                     elif hasattr(v_nondim, "value"):
                         v_at_mid_pts = v_nondim.value
                     else:
                         v_at_mid_pts = v_nondim
-                else:
-                    # Velocities don't have units - try to add them manually (legacy path)
-                    v_units = uw.get_units(self.V_fn)
-                    if v_units and v_units != "dimensionless":
-                        v_with_units = UnitAwareArray(v_at_mid_pts, units=v_units)
-                        v_nondim = uw.non_dimensionalise(v_with_units, model)
-                        if isinstance(v_nondim, UnitAwareArray):
-                            v_at_mid_pts = np.array(v_nondim)
-                        elif hasattr(v_nondim, "value"):
-                            v_at_mid_pts = v_nondim.value
-                        else:
-                            v_at_mid_pts = v_nondim
-            else:
-                # Dimensional mode - ensure velocities have units
-                # CRITICAL: If V_fn doesn't have unit metadata, evaluate() returns plain numpy
-                # We need to manually wrap it with units for dimensional arithmetic to work
-                if not isinstance(v_at_mid_pts, UnitAwareArray):
-                    v_units = uw.get_units(self.V_fn)
-                    if v_units and v_units != "dimensionless":
-                        # Wrap velocities with their proper units
-                        v_at_mid_pts = UnitAwareArray(v_at_mid_pts, units=v_units)
 
             # Calculate upstream coordinates: current position - velocity * timestep
+            # (all in the mesh's ND coordinate space)
             end_pt_coords = coords - v_at_mid_pts * dt_for_calc
 
             # Clamp upstream coordinates to the domain boundary.
