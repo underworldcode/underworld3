@@ -156,6 +156,14 @@ class Params:
         object.__setattr__(self, '_values', {})
         object.__setattr__(self, '_sources', {})
 
+        # Ensure command-line options (-uw_*) are loaded into the PETSc options
+        # database BEFORE we read overrides. petsc4py populates this DB from
+        # sys.argv automatically on some platforms but NOT others (e.g. Gadi),
+        # where Params previously fell back silently to the defaults even though
+        # the CLI args were present (issue #111). parse_cmd_line_options() is
+        # idempotent, so this is safe to call on every Params construction.
+        uw.parse_cmd_line_options()
+
         # Use the module-level options object
         opts = uw.options
 
