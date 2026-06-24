@@ -158,6 +158,7 @@ CHANGELOG
 subsystems/meshing
 subsystems/discretisation
 subsystems/solvers
+subsystems/boundary-stress-and-projection-postprocessing
 subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory

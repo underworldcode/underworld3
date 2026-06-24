@@ -2476,6 +2476,53 @@ class SNES_Projection(SNES_Scalar):
     # Use SymbolicProperty for automatic unwrapping
     uw_function = SymbolicProperty(matrix_wrap=True, doc="Function to project onto mesh")
 
+    def linear_solver(self, pc="jacobi", rtol=1.0e-10):
+        """Switch this projector to a lightweight *linear* (SPD) solve.
+
+        An L2 projection (and the screened-Poisson smoother) is a **linear,
+        symmetric-positive-definite** problem, so the inherited
+        ``newtonls / gmres / gamg`` default is unnecessarily heavy — GAMG
+        setup/repartition dominates cost and memory at MPI scale, which is the
+        bottleneck for repeated post-processing projections (UW3 issue #156).
+        This replaces it with ``ksponly + CG + a cheap preconditioner`` — the
+        right tool for the mass/Helmholtz matrix — and removes the now-unused
+        GAMG options.
+
+        Opt-in: the default ``SNES_Scalar`` solver stack is unchanged for code
+        that relies on it. Call this on a projector used purely for output /
+        post-processing.
+
+        Parameters
+        ----------
+        pc : str, default "jacobi"
+            Preconditioner. ``"jacobi"`` is fine for a well-conditioned mass
+            matrix; use ``"bjacobi"`` or ``"icc"`` if CG iteration counts climb
+            on distorted or high-degree meshes.
+        rtol : float, default 1e-10
+            KSP relative tolerance.
+
+        Returns
+        -------
+        self (so the call can be chained).
+        """
+        self.petsc_options["snes_type"] = "ksponly"
+        self.petsc_options["ksp_type"] = "cg"
+        self.petsc_options["pc_type"] = pc
+        self.petsc_options["ksp_rtol"] = rtol
+        # GAMG-specific options are now unused; remove them to avoid PETSc
+        # "unused option" warnings (and any stale AMG configuration).
+        for _k in (
+            "pc_gamg_type",
+            "pc_gamg_repartition",
+            "pc_gamg_agg_nsmooths",
+            "pc_mg_type",
+        ):
+            try:
+                self.petsc_options.delValue(_k)
+            except Exception:
+                pass
+        return self
+
     @property
     def smoothing(self):
         r"""Smoothing coefficient :math:`\alpha` of the screened-Poisson form.
