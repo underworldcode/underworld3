@@ -1693,13 +1693,21 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         if isinstance(value, uw.function.expressions.UWexpression):
             self._bodyforce.sym = value.sym
         else:
-            # Convert UWQuantity objects to SymPy expressions before Matrix creation
+            # Convert UWQuantity components to their NON-DIMENSIONAL value before
+            # Matrix creation — the body force feeds the non-dimensional solver
+            # (see the ND<->units boundary contract / #282). The component may be
+            # symbolic (e.g. a buoyancy ρα g (T − T_ref) carries the T field), so
+            # non_dimensionalise yields a (1×1) array/Matrix whose element we
+            # extract. (The previous code called item._sympify_(), which does not
+            # exist on UWQuantity; _sympy_ raises on a dimensional quantity.)
             converted_value = []
             for item in value:
                 if isinstance(item, uw.function.quantities.UWQuantity):
-                    sympified = item._sympify_()
-                    # If UWQuantity contains a Matrix, extract the scalar element
-                    if hasattr(sympified, "shape") and sympified.shape == (1, 1):
+                    nd = uw.non_dimensionalise(item)
+                    sympified = nd.magnitude if hasattr(nd, "magnitude") else nd
+                    # If the non-dimensional value is a 1x1 array/Matrix, extract
+                    # the scalar element.
+                    if hasattr(sympified, "shape") and tuple(sympified.shape) == (1, 1):
                         converted_value.append(sympified[0, 0])
                     else:
                         converted_value.append(sympified)
