@@ -70,9 +70,35 @@ def _add_fault(pl, fault_xyz, color="red", line_width=3.0):
     pl.add_mesh(line, color=color, line_width=line_width, lighting=False)
 
 
+def ridge_from_manifest(D):
+    """Surface azimuth (deg) of the lid-mobility blob ('ridge') from the run
+    manifest, or None if there is no blob."""
+    import yaml
+    p = os.path.join(D, "manifest.yaml")
+    if not os.path.exists(p):
+        return None
+    snap = (yaml.safe_load(open(p)) or {}).get("config_snapshot", {})
+    if not snap.get("blob_enable"):
+        return None
+    return float(snap.get("blob_theta_deg", 0.0)), float(snap.get("r_outer", 1.0))
+
+
+def _add_ridge_marker(pl, theta_deg, r_outer=1.0, color="magenta"):
+    """Mark the ridge (lid blob) at the SURFACE: an outward radial tick + a
+    point glyph at (r_outer, θ), so the spreading-centre location is obvious."""
+    th = np.deg2rad(theta_deg)
+    rad = np.array([np.cos(th), np.sin(th), 0.0])
+    surf = r_outer * rad
+    tick = pv.PolyData(np.vstack([surf, surf + 0.10 * rad]))
+    tick.lines = np.array([2, 0, 1])
+    pl.add_mesh(tick, color=color, line_width=5.0, lighting=False)
+    pl.add_mesh(pv.PolyData(surf[None, :]), color=color, point_size=18,
+                render_points_as_spheres=True, lighting=False)
+
+
 def render(D, index, *, tvar="T", tdeg=3, vvar="v", vdeg=2,
            clim=(0.0, 1.0), r_in=0.5, r_out=1.0, focus=None, mesh_only=False,
-           fault_xyz=None):
+           fault_xyz=None, ridge=None):
     """Render the frame at *index*. ``focus=(cx, cy, half_width)`` crops to
     a feature region with a parallel-projection camera and bolder edges —
     the full-annulus view washes out mesh grading (viz skill).
@@ -89,6 +115,8 @@ def render(D, index, *, tvar="T", tdeg=3, vvar="v", vdeg=2,
         pl.add_mesh(edges, color="black", line_width=ew, lighting=False)
         if fault_xyz is not None:
             _add_fault(pl, fault_xyz)
+        if ridge is not None:
+            _add_ridge_marker(pl, ridge[0], ridge[1])
         pl.add_text(f"step {index}  ({mesh.X.coords.shape[0]} vertices)",
                     font_size=10, color="black")
         pl.view_xy()
@@ -145,6 +173,8 @@ def render(D, index, *, tvar="T", tdeg=3, vvar="v", vdeg=2,
         pl.add_mesh(strm, color="black", line_width=1.4, lighting=False)
     if fault_xyz is not None:
         _add_fault(pl, fault_xyz)
+    if ridge is not None:
+        _add_ridge_marker(pl, ridge[0], ridge[1])
     pl.add_text(f"step {index}  |v|max={vmax:.2f}", font_size=10, color="black")
     pl.view_xy()
     if focus is not None:
@@ -189,6 +219,7 @@ def main(argv=None):
     D = os.path.expanduser(args.run)
     fault_xyz, fault_mid = (fault_from_manifest(D)
                             if (args.fault or args.focus_fault) else (None, None))
+    ridge = ridge_from_manifest(D) if (args.fault or args.focus_fault) else None
     xdmfs = sorted(glob.glob(os.path.join(D, f"{RUN_NAME}.mesh.[0-9]*.xdmf")),
                    key=lambda c: int(re.search(r"mesh\.(\d+)\.xdmf", c).group(1)))
     idxs = [int(re.search(r"mesh\.(\d+)\.xdmf", os.path.basename(c)).group(1))
@@ -213,7 +244,7 @@ def main(argv=None):
                vdeg=args.vdeg, clim=tuple(args.clim),
                r_in=args.rin, r_out=args.rout, focus=focus,
                mesh_only=args.mesh_only,
-               fault_xyz=(fault_xyz if args.fault else None))
+               fault_xyz=(fault_xyz if args.fault else None), ridge=ridge)
 
 
 if __name__ == "__main__":

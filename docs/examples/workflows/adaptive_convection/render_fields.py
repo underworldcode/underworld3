@@ -30,7 +30,8 @@ import underworld3 as uw
 import underworld3.visualisation as vis
 import pyvista as pv
 
-from render import fault_from_manifest, _add_fault  # reuse the trace overlay
+from render import (  # reuse the overlays
+    fault_from_manifest, _add_fault, ridge_from_manifest, _add_ridge_marker)
 
 pv.OFF_SCREEN = True
 RUN_NAME = "run"
@@ -111,8 +112,8 @@ def _eval_fields(D, index, delta_eta, floor, blob=None):
     return pv_mesh, sr, ratio, edges, vmax
 
 
-def render(D, index, *, delta_eta, floor, blob=None, fault_xyz=None, sr_clim=None,
-           eta_clim=None, focus=None):
+def render(D, index, *, delta_eta, floor, blob=None, fault_xyz=None, ridge=None,
+           sr_clim=None, eta_clim=None, focus=None):
     pv_mesh, sr, ratio, edges, vmax = _eval_fields(D, index, delta_eta, floor, blob)
     log_sr = np.log10(np.clip(sr, 1e-6, None))
     # weakening as a POSITIVE quantity: log10(η_FK/η_weak) ≥ 0, 0 = no fault,
@@ -143,6 +144,8 @@ def render(D, index, *, delta_eta, floor, blob=None, fault_xyz=None, sr_clim=Non
         pl.add_mesh(edges, color="grey", line_width=0.3, lighting=False, opacity=0.25)
         if fault_xyz is not None:
             _add_fault(pl, fault_xyz, color="lime", line_width=2.5)
+        if ridge is not None:
+            _add_ridge_marker(pl, ridge[0], ridge[1], color="magenta")
         pl.add_text(f"step {index}  ({title.split(' ',1)[1]})",
                     font_size=11, color="black", position="upper_left")
         pl.view_xy()
@@ -180,6 +183,7 @@ def main(argv=None):
 
     D = os.path.expanduser(args.run)
     delta_eta, floor, blob = _manifest_params(D)
+    ridge = ridge_from_manifest(D)
     fault_xyz, fault_mid = (fault_from_manifest(D)
                             if (args.fault or args.focus_fault) else (None, None))
     focus = ((fault_mid[0], fault_mid[1], args.focus_fault)
@@ -200,7 +204,7 @@ def main(argv=None):
 
     for idx in sel:
         render(D, idx, delta_eta=delta_eta, floor=floor, blob=blob,
-               fault_xyz=fault_xyz, focus=focus,
+               fault_xyz=fault_xyz, ridge=ridge, focus=focus,
                sr_clim=tuple(args.sr_clim) if args.sr_clim else None,
                eta_clim=tuple(args.eta_clim) if args.eta_clim else None)
 

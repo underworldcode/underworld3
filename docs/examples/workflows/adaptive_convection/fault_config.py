@@ -192,9 +192,12 @@ class FaultConvectionConfig(AdaptiveConvectionConfig):
     blob_theta_deg: float = Field(default=0.0,
                                   description="Azimuth of the blob centre "
                                               "(0 = 3 o'clock).")
-    blob_radius: float = Field(default=0.92, gt=0,
-                               description="Radial centre of the blob (in the "
-                                           "cold lid / TBL; r_outer=1).")
+    blob_radius: float = Field(default=0.97, gt=0,
+                               description="Radial centre of the blob. A mid-"
+                                           "ocean ridge sits AT the surface, so "
+                                           "the default (0.97, with size 0.05) "
+                                           "reaches r_outer=1; the out-of-domain "
+                                           "part is clipped.")
     blob_size: float = Field(default=0.05, gt=0,
                              description="Half-width of the (x,y) square "
                                          "(model coords).")
@@ -249,12 +252,16 @@ def _blob_center(config):
 
 def _blob_points(config, spacing):
     """Grid point cloud filling the blob square — embedded for gmsh base
-    refinement so the small weak square is actually resolved."""
+    refinement so the small weak square is actually resolved. Points outside
+    the annulus (r ≥ r_outer) are dropped so a surface-reaching ridge does not
+    embed points beyond the domain boundary."""
     x0, y0 = _blob_center(config)
     hw = config.blob_size
     g = np.arange(-hw, hw + 1e-9, spacing)
     xs, ys = np.meshgrid(x0 + g, y0 + g)
-    return np.column_stack([xs.ravel(), ys.ravel()])
+    pts = np.column_stack([xs.ravel(), ys.ravel()])
+    r = np.hypot(pts[:, 0], pts[:, 1])
+    return pts[r < config.r_outer - 0.5 * spacing]
 
 
 def _blob_influence_sym(X, config):
