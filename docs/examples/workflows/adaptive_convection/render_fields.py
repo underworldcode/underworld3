@@ -37,7 +37,7 @@ RUN_NAME = "run"
 
 
 def _manifest_params(D):
-    """Read Δη and the fault floor from the run manifest (defaults if absent)."""
+    """Read Δη, the fault floor and the lid-blob params from the run manifest."""
     import yaml
     p = os.path.join(D, "manifest.yaml")
     snap = {}
@@ -45,10 +45,30 @@ def _manifest_params(D):
         snap = (yaml.safe_load(open(p)) or {}).get("config_snapshot", {})
     delta_eta = float(snap.get("delta_eta", 1.0e3))
     floor = float(snap.get("fault_floor", 1.0))
-    return delta_eta, floor
+    blob = None
+    if snap.get("blob_enable"):
+        blob = dict(theta=float(snap.get("blob_theta_deg", 0.0)),
+                    radius=float(snap.get("blob_radius", 0.92)),
+                    size=float(snap.get("blob_size", 0.05)),
+                    edge=float(snap.get("blob_edge", 0.012)),
+                    floor=float(snap.get("blob_floor", 1.0)))
+    return delta_eta, floor, blob
 
 
-def _eval_fields(D, index, delta_eta, floor):
+def _blob_sym(X, blob):
+    """Smooth analytic (x,y) box ≈1 inside the blob — mirrors fault_config."""
+    th0 = float(np.deg2rad(blob["theta"]))
+    x0, y0 = blob["radius"] * np.cos(th0), blob["radius"] * np.sin(th0)
+    hw, e = blob["size"], blob["edge"]
+    half = sympy.Rational(1, 2)
+    bx = (half * (1 + sympy.tanh((X[0] - (x0 - hw)) / e))
+          * half * (1 + sympy.tanh(((x0 + hw) - X[0]) / e)))
+    by = (half * (1 + sympy.tanh((X[1] - (y0 - hw)) / e))
+          * half * (1 + sympy.tanh(((y0 + hw) - X[1]) / e)))
+    return bx * by
+
+
+def _eval_fields(D, index, delta_eta, floor, blob=None):
     """Load a checkpoint and evaluate (ε̇_II, η) on a P1 field's nodes.
 
     Returns (pv_mesh, sr, eta, edges, vmax) ready for plotting."""
@@ -69,8 +89,14 @@ def _eval_fields(D, index, delta_eta, floor):
     eta_FK = sympy.exp(float(np.log(delta_eta)) * (1 - T.sym[0]))
     # geometric blend — matches fault_config.create_solvers (η_1=η_FK^(1−f)·floor^f)
     eta_weak = eta_FK ** (1.0 - gfac.sym[0]) * floor ** gfac.sym[0]
+    # isotropic lid blob (if present): weaken eta_weak only (NOT the eta_FK
+    # background denominator, else the ratio cancels it) so the blob shows up
+    # in the weakening panel alongside the fault.
+    if blob is not None:
+        b = _blob_sym(X, blob)
+        eta_weak = eta_weak ** (1.0 - b) * float(blob["floor"]) ** b
     # background-removed: the multiplicative weakening (=1 off-fault, dips in
-    # the band) — isolates the fault from the radial T-viscosity gradient.
+    # the band) — isolates the weak zones from the radial T-viscosity gradient.
     eta_ratio = eta_weak / eta_FK
 
     # evaluate onto a P1 carrier so we get a clean DOF-faithful pv mesh
@@ -85,9 +111,9 @@ def _eval_fields(D, index, delta_eta, floor):
     return pv_mesh, sr, ratio, edges, vmax
 
 
-def render(D, index, *, delta_eta, floor, fault_xyz=None, sr_clim=None,
+def render(D, index, *, delta_eta, floor, blob=None, fault_xyz=None, sr_clim=None,
            eta_clim=None, focus=None):
-    pv_mesh, sr, ratio, edges, vmax = _eval_fields(D, index, delta_eta, floor)
+    pv_mesh, sr, ratio, edges, vmax = _eval_fields(D, index, delta_eta, floor, blob)
     log_sr = np.log10(np.clip(sr, 1e-6, None))
     # weakening as a POSITIVE quantity: log10(η_FK/η_weak) ≥ 0, 0 = no fault,
     # large = strongly weakened — so "more = darker" on a light sequential map,
@@ -144,6 +170,8 @@ def main(argv=None):
     ap.add_argument("--fault", action="store_true")
     ap.add_argument("--focus-fault", type=float, default=None, metavar="HALFWIDTH",
                     help="Crop centred on the fault midpoint at this half-width.")
+    ap.add_argument("--focus", type=float, nargs=3, default=None,
+                    metavar=("CX", "CY", "HALFWIDTH"), help="Crop on a point.")
     ap.add_argument("--sr-clim", type=float, nargs=2, default=None,
                     help="Fixed log10 strain-rate colour limits (else per-frame).")
     ap.add_argument("--eta-clim", type=float, nargs=2, default=None,
@@ -151,11 +179,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     D = os.path.expanduser(args.run)
-    delta_eta, floor = _manifest_params(D)
+    delta_eta, floor, blob = _manifest_params(D)
     fault_xyz, fault_mid = (fault_from_manifest(D)
                             if (args.fault or args.focus_fault) else (None, None))
     focus = ((fault_mid[0], fault_mid[1], args.focus_fault)
-             if (args.focus_fault and fault_mid is not None) else None)
+             if (args.focus_fault and fault_mid is not None)
+             else (tuple(args.focus) if args.focus else None))
 
     if args.all:
         xdmfs = sorted(glob.glob(os.path.join(D, f"{RUN_NAME}.mesh.[0-9]*.xdmf")),
@@ -170,7 +199,7 @@ def main(argv=None):
         sel = []
 
     for idx in sel:
-        render(D, idx, delta_eta=delta_eta, floor=floor,
+        render(D, idx, delta_eta=delta_eta, floor=floor, blob=blob,
                fault_xyz=fault_xyz, focus=focus,
                sr_clim=tuple(args.sr_clim) if args.sr_clim else None,
                eta_clim=tuple(args.eta_clim) if args.eta_clim else None)
