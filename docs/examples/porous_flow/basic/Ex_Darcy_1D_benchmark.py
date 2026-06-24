@@ -32,7 +32,7 @@ permeabilities. This example:
 For 1D flow through two layers with permeabilities k1 and k2:
 - Pressure is linear within each layer
 - Flux is continuous across the interface
-- Pressure gradient is discontinuous (inversely proportional to k)
+- Pressure gradient is discontinuous, inversely proportional to k
 
 ## Parameters
 
@@ -60,18 +60,17 @@ from sympy import Piecewise
 ## Configurable Parameters
 
 Override from command line:
-```bash
+
 python Ex_Darcy_1D_benchmark.py -uw_cell_size 0.02
 python Ex_Darcy_1D_benchmark.py -uw_permeability_ratio 1e-5
-```
 """
 
 # %%
 params = uw.Params(
-    uw_cell_size = 1 / 25,          # Mesh cell size
-    uw_permeability_ratio = 1.0e-4, # k2/k1 ratio (k1=1, k2=this value)
-    uw_max_pressure = 0.5,          # Pressure at bottom boundary
-    uw_interface_y = -0.26,         # Y-coordinate of interface
+    uw_cell_size=1 / 25,           # Mesh cell size
+    uw_permeability_ratio=1.0e-4,  # k2/k1 ratio (k1=1, k2=this value)
+    uw_max_pressure=0.5,           # Pressure at bottom boundary
+    uw_interface_y=-0.26,          # Y-coordinate of interface
 )
 
 # %% [markdown]
@@ -107,11 +106,6 @@ v_soln = darcy.v
 darcy.petsc_options["snes_rtol"] = 1.0e-6
 darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
 
-# %%
-# Clone for comparison (no gravity case)
-p_soln_0 = p_soln.clone("P_no_g", r"{p_\textrm{(no g)}}")
-v_soln_0 = v_soln.clone("V_no_g", r"{v_\textrm{(no g)}}")
-
 # %% [markdown]
 """
 ## Material Properties
@@ -130,7 +124,6 @@ k2 = params.uw_permeability_ratio
 kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 
 darcy.constitutive_model.Parameters.permeability = kFunc
-darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T  # No gravity initially
 darcy.f = 0.0
 
 # Boundary conditions
@@ -139,15 +132,30 @@ darcy.add_dirichlet_bc(-1.0 * minY * max_pressure, "Bottom")
 
 # %% [markdown]
 """
+## Interpolation Coordinates
+"""
+
+# %%
+ycoords = np.linspace(
+    minY + 0.001 * (maxY - minY),
+    maxY - 0.001 * (maxY - minY),
+    100,
+)
+xcoords = np.full_like(ycoords, -0.5)
+xy_coords = np.column_stack([xcoords, ycoords])
+
+# %% [markdown]
+"""
 ## Solve Without Gravity
 """
 
 # %%
+darcy.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
 darcy.solve()
 
-# TODO: Consider uw.synchronised_array_update() for multi-variable assignment
-p_soln_0.data[...] = p_soln.data[...]
-v_soln_0.data[...] = v_soln.data[...]
+pressure_interp_0 = np.asarray(
+    uw.function.evaluate(p_soln.sym[0], xy_coords)
+).reshape(-1)
 
 # %% [markdown]
 """
@@ -158,6 +166,10 @@ v_soln_0.data[...] = v_soln.data[...]
 darcy.constitutive_model.Parameters.s = sympy.Matrix([0, -1]).T
 darcy.solve()
 
+pressure_interp = np.asarray(
+    uw.function.evaluate(p_soln.sym[0], xy_coords)
+).reshape(-1)
+
 # %% [markdown]
 """
 ## Visualization
@@ -165,66 +177,62 @@ darcy.solve()
 
 # %%
 if uw.mpi.size == 1:
-    import pyvista as pv
-    import underworld3.visualisation as vis
+    try:
+        import pyvista as pv
+        import underworld3.visualisation as vis
 
-    pvmesh = vis.mesh_to_pv_mesh(mesh)
-    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
-    pvmesh.point_data["K"] = vis.scalar_fn_to_pv_points(pvmesh, kFunc)
-    pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
+        pvmesh = vis.mesh_to_pv_mesh(mesh)
+        pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
+        pvmesh.point_data["K"] = vis.scalar_fn_to_pv_points(pvmesh, kFunc)
+        pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
 
-    velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
+        velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
+        velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
 
-    # Point sources for streamlines
-    points = np.zeros((mesh._centroids.shape[0], 3))
-    points[:, 0] = mesh._centroids[:, 0]
-    points[:, 1] = mesh._centroids[:, 1]
-    point_cloud = pv.PolyData(points[::3])
+        # Point sources for streamlines
+        points = np.zeros((mesh._centroids.shape[0], 3))
+        points[:, 0] = mesh._centroids[:, 0]
+        points[:, 1] = mesh._centroids[:, 1]
+        point_cloud = pv.PolyData(points[::3])
 
-    pvstream = pvmesh.streamlines_from_source(
-        point_cloud,
-        vectors="V",
-        integrator_type=45,
-        integration_direction="both",
-        max_steps=1000,
-        max_time=0.1,
-        initial_step_length=0.001,
-        max_step_length=0.01,
-    )
+        pvstream = pvmesh.streamlines_from_source(
+            point_cloud,
+            vectors="V",
+            integrator_type=45,
+            integration_direction="both",
+            max_steps=1000,
+            max_time=0.1,
+            initial_step_length=0.001,
+            max_step_length=0.01,
+        )
 
-    pl = pv.Plotter(window_size=(750, 750))
+        pl = pv.Plotter(window_size=(750, 750))
 
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        scalars="P",
-        use_transparency=False,
-        opacity=1.0,
-    )
+        pl.add_mesh(
+            pvmesh,
+            cmap="coolwarm",
+            edge_color="Black",
+            show_edges=True,
+            scalars="P",
+            use_transparency=False,
+            opacity=1.0,
+        )
 
-    pl.add_mesh(pvstream, line_width=1.0)
+        pl.add_mesh(pvstream, line_width=1.0)
 
-    pl.show(cpos="xy")
+        pl.show(cpos="xy")
+
+    except ImportError as err:
+        print(f"Skipping PyVista visualisation because an optional dependency is missing: {err}")
 
 # %% [markdown]
 """
 ## Analytical Comparison
 """
 
-# %%
-# Set up interpolation coordinates
-ycoords = np.linspace(minY + 0.001 * (maxY - minY), maxY - 0.001 * (maxY - minY), 100)
-xcoords = np.full_like(ycoords, -0.5)
-xy_coords = np.column_stack([xcoords, ycoords])
 
-pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
-pressure_interp_0 = uw.function.evaluate(p_soln_0.sym[0], xy_coords)
 
 # %%
-# Analytical solution
 La = -1.0 * interfaceY
 Lb = 1.0 + interfaceY
 dP = max_pressure
@@ -266,7 +274,11 @@ ax1 = fig.add_subplot(111, xlabel="Pressure", ylabel="Depth")
 ax1.plot(pressure_interp, ycoords, linewidth=3, label="Numerical solution")
 ax1.plot(pressure_interp_0, ycoords, linewidth=3, label="Numerical solution (no G)")
 ax1.plot(
-    pressure_analytic, ycoords, linewidth=3, linestyle="--", label="Analytic solution"
+    pressure_analytic,
+    ycoords,
+    linewidth=3,
+    linestyle="--",
+    label="Analytic solution",
 )
 ax1.plot(
     pressure_analytic_noG,
