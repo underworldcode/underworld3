@@ -64,6 +64,8 @@ _FAULT_IDENTITY = (
     "fault_anisotropy", "fault_base_smin",
     "fault_wedge", "metric_combine",
     "fault_metric_side", "fault_rheology_side", "rheology",
+    "blob_enable", "blob_theta_deg", "blob_radius", "blob_size",
+    "blob_edge", "blob_floor",
 )
 
 
@@ -180,6 +182,28 @@ class FaultConvectionConfig(AdaptiveConvectionConfig):
                     "thermal-BL pull each their own node budget so they don't "
                     "collide in the hanging-wall sliver. Needs fault_base_smin>0.")
 
+    # Lid-mobility weak blob — a small ISOTROPIC low-viscosity square in the
+    # cold thermal boundary layer (a "ridge"): weakens the rigid lid locally so
+    # it can yield/mobilise above an upwelling. Separate from the TI fault;
+    # applied to BOTH viscosity components (isotropic) via the same geometric
+    # blend, expressed analytically in the coordinates (crisp square, no field).
+    blob_enable: bool = Field(default=False,
+                              description="Add the isotropic lid-mobility blob.")
+    blob_theta_deg: float = Field(default=0.0,
+                                  description="Azimuth of the blob centre "
+                                              "(0 = 3 o'clock).")
+    blob_radius: float = Field(default=0.92, gt=0,
+                               description="Radial centre of the blob (in the "
+                                           "cold lid / TBL; r_outer=1).")
+    blob_size: float = Field(default=0.05, gt=0,
+                             description="Half-width of the (x,y) square "
+                                         "(model coords).")
+    blob_edge: float = Field(default=0.012, gt=0,
+                             description="Edge smoothing of the square.")
+    blob_floor: float = Field(default=1.0, gt=0,
+                              description="Isotropic viscosity inside the blob "
+                                          "(geometric blend, ~1 = fully weak).")
+
     output_dir: str = "output/fault_convection/run"
 
 
@@ -218,6 +242,35 @@ _TS_FIELDS = ("step", "t", "dt", "wall", "Nu", "vrms", "Tmin", "Tmax",
 # ---------------------------------------------------------------------------
 # Fault geometry
 # ---------------------------------------------------------------------------
+def _blob_center(config):
+    th0 = float(np.deg2rad(config.blob_theta_deg))
+    return config.blob_radius * np.cos(th0), config.blob_radius * np.sin(th0)
+
+
+def _blob_points(config, spacing):
+    """Grid point cloud filling the blob square — embedded for gmsh base
+    refinement so the small weak square is actually resolved."""
+    x0, y0 = _blob_center(config)
+    hw = config.blob_size
+    g = np.arange(-hw, hw + 1e-9, spacing)
+    xs, ys = np.meshgrid(x0 + g, y0 + g)
+    return np.column_stack([xs.ravel(), ys.ravel()])
+
+
+def _blob_influence_sym(X, config):
+    """Smooth analytic (x,y) box ≈1 inside the blob square, 0 outside (two
+    sigmoids per axis — no Abs, so JIT-safe). Shared by the rheology and the
+    refinement metric."""
+    x0, y0 = _blob_center(config)
+    hw, e = config.blob_size, config.blob_edge
+    half = sympy.Rational(1, 2)
+    bx = (half * (1 + sympy.tanh((X[0] - (x0 - hw)) / e))
+          * half * (1 + sympy.tanh(((x0 + hw) - X[0]) / e)))
+    by = (half * (1 + sympy.tanh((X[1] - (y0 - hw)) / e))
+          * half * (1 + sympy.tanh(((y0 + hw) - X[1]) / e)))
+    return bx * by
+
+
 def _fault_geometry(config: FaultConvectionConfig):
     """Return (polyline xy (N,2), normal unit vector n, n nᵀ matrix)."""
     delta = np.deg2rad(config.fault_dip_deg)
@@ -345,14 +398,20 @@ def create_mesh(config: FaultConvectionConfig):
         # uniform base). The trace point sits on r_outer; sample a few
         # extra points just inside so nodes embed cleanly.
         rl = {}
+        smin = (config.fault_base_smin if config.fault_base_smin > 0
+                else config.cellsize / 3.0)
+        lines = []
         if config.fault_base_smin > 0:
             xy, _, _ = _fault_geometry(config)
-            lines = [xy]
+            lines.append(xy)
             if config.fault_wedge:
                 wedge = _wedge_points(xy, config.r_outer, config.fault_base_smin)
                 if len(wedge):
                     lines.append(wedge)
-            rl = dict(refine_lines=lines, refine_size_min=config.fault_base_smin,
+        if config.blob_enable:                        # resolve the lid blob
+            lines.append(_blob_points(config, smin))
+        if lines:
+            rl = dict(refine_lines=lines, refine_size_min=smin,
                       refine_dist_min=0.02, refine_dist_max=0.12)
         mesh = uw.meshing.Annulus(
             radiusOuter=config.r_outer, radiusInner=config.r_inner,
@@ -398,6 +457,21 @@ def create_solvers(mesh, config: FaultConvectionConfig):
     # through in a stiff lid — η_1≈8 at f=0.97, η_FK=250), this drives η_1 to
     # the floor GENUINELY where f→1 (η_1≈1.2 at f=0.97). Positive for f∈[0,1].
     eta_weak = eta_FK ** (1.0 - finf) * float(config.fault_floor) ** finf
+
+    # Isotropic lid-mobility blob: a smooth (x,y) square in the cold lid that
+    # pulls the viscosity to blob_floor inside it (same geometric blend, applied
+    # to BOTH components so it is isotropic). Expressed analytically in the
+    # coordinates — evaluated exactly at quadrature points, so a crisp square
+    # with no P1 smoothing and no per-adapt refresh. Two sigmoids per axis (no
+    # Abs → JIT-safe).
+    def _blob_apply(eta):
+        if not config.blob_enable:
+            return eta
+        b = _blob_influence_sym(X, config)            # ≈1 inside the square
+        return eta ** (1 - b) * float(config.blob_floor) ** b
+
+    eta_FK = _blob_apply(eta_FK)
+    eta_weak = _blob_apply(eta_weak)
 
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     if config.rheology == "ti":
@@ -487,6 +561,10 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, config):
             rho = rho_T * fault_rho
         else:
             rho = sympy.Max(rho_T, fault_rho)         # isotropic size density
+        if config.blob_enable:                        # keep the lid blob refined
+            blob_rho = 1.0 + config.fault_refine_amp * _blob_influence_sym(
+                mesh.CoordinateSystem.X, config)
+            rho = sympy.Max(rho, blob_rho)
         if Rf > 0:
             metric = rho * sympy.eye(2) + (Rf ** 2 - 1.0) * gauss_sharp * nnT
         else:
