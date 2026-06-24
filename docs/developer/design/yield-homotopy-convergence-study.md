@@ -72,11 +72,21 @@ regularisation.
    δ); the action is all near δ→0. March in **s = 1/δ** (the power-mean exponent — the
    natural measure) or in the physical overshoot/undershoot fraction, rather than
    geometric-in-δ. Compare against the convergence-adaptive `run_continuation`.
-4. **Regime map.** Sweep the Fig-5 plane (η_bg × V): where each {family × sequence ×
+4. **Probe→refine continuation (two difficulty metrics).** Instead of guessing a high
+   δ_start and marching down, auto-discover the entry:
+   - **Probe (cold, hard→easy):** from the viscous guess, start sharp (large s / small δ)
+     and relax smoothing until the FIRST cold solve converges → **δ_entry / s_entry**, the
+     "smoothest starting solve required" — an intrinsic problem-difficulty scalar.
+   - **Refine (warm, easy→hard):** from that solution, warm-start (v,p) back toward
+     hard-Min, settling at **δ_settle / s_settle**.
+   The **gap** δ_entry→δ_settle measures how much the warm-starting buys (at (3e25,V10):
+   cold threshold δ≈2, warm rides to 0.5). Map (δ_entry, δ_settle) across the Fig-5 plane.
+   Small extension of `run_continuation` (add a cold probe-up loop before the warm march).
+5. **Regime map.** Sweep the Fig-5 plane (η_bg × V): where each {family × sequence ×
    solver} converges. Reproduce the vM-converges / DP-fails / homotopy-rescues figure.
-5. **Metrics.** Total Newton iterations, settled δ (closeness to hard-Min), yield
+6. **Metrics.** Total Newton iterations, δ_entry/δ_settle, closeness to hard-Min, yield
    overshoot/undershoot, robustness across regimes.
-6. **Write-up** + figures (convergence histories, yield-law curves, regime map).
+7. **Write-up** + figures (convergence histories, yield-law curves, regime map).
 
 ## Pointers
 
