@@ -111,7 +111,7 @@ new_coords[:, 1] = np.asarray(
     uw.function.evaluate(h_fn * y, mesh.X.coords, mesh.N)
 ).reshape(-1)
 
-mesh._deform_mesh(new_coords=new_coords)
+mesh.deform(new_coords)
 
 # %% [markdown]
 """
