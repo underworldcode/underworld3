@@ -231,6 +231,12 @@ class FaultConvectionConfig(AdaptiveConvectionConfig):
         description="Multiplier on the kinematic drift rate. 1 = the true "
                     "material (co-moving) rate; <1 slows the drift; >1 "
                     "exaggerates it to make migration visible in fewer steps.")
+    fault_ridge_stop_deg: float = Field(
+        default=0.0, ge=0,
+        description="Stop the run if the migrating fault's surface pin comes "
+                    "within this many degrees of the (fixed) ridge azimuth — the "
+                    "two surface features would otherwise overlap and the 1-DOF "
+                    "geometry breaks down. 0 = disabled. Needs blob_enable.")
 
     output_dir: str = "output/fault_convection/run"
 
@@ -512,6 +518,11 @@ def _advance_blob(v, config, theta_MOR_deg, dt):
     th = np.deg2rad(theta_MOR_deg)
     t_hat = np.array([-np.sin(th), np.cos(th)])          # surface tangent
     return float(np.rad2deg(np.arctan2(newC[1], newC[0]))), float(mean_v @ t_hat)
+
+
+def _angular_gap_deg(a_deg, b_deg):
+    """Smallest angular separation between two azimuths, in [0, 180]."""
+    return abs((a_deg - b_deg + 180.0) % 360.0 - 180.0)
 
 
 def _update_fault_director(stokes, config, theta_f_deg):
@@ -943,6 +954,19 @@ def evolve(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
         if not np.isfinite(T_arr).all() or T_arr.max() > 1.1 or T_arr.min() < -0.1:
             uw.pprint(f"[evolve] step {timestep}: T out of range — ABORT", flush=True)
             break
+        # Stop if the migrating fault has reached the (fixed) ridge — the two
+        # surface features would overlap and the 1-DOF geometry breaks down.
+        if (config.fault_ridge_stop_deg > 0 and config.blob_enable):
+            gap = _angular_gap_deg(state.theta_f_deg, state.theta_MOR_deg)
+            if gap <= config.fault_ridge_stop_deg:
+                uw.pprint(f"[evolve] step {timestep}: fault pin θ_f="
+                          f"{state.theta_f_deg:.2f}° reached the ridge θ_MOR="
+                          f"{state.theta_MOR_deg:.2f}° (gap {gap:.2f}° ≤ "
+                          f"{config.fault_ridge_stop_deg}°) — STOP.", flush=True)
+                mesh.write_timestep(filename=RUN_NAME, index=timestep,
+                                    outputPath=str(output_dir),
+                                    meshVars=[v, T, p, gfac], meshUpdates=True)
+                break
         if timestep % config.save_every == 0:
             mesh.write_timestep(filename=RUN_NAME, index=timestep,
                                 outputPath=str(output_dir), meshVars=[v, T, p, gfac], meshUpdates=True)
