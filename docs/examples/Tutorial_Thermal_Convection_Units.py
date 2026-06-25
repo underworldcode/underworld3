@@ -112,6 +112,12 @@ T_surface = 300 * uw.units.K
 T_bottom = 1600 * uw.units.K
 temperature_drop = T_bottom - T_surface
 
+
+def kelvin_to_celsius(temp):
+    """Return Celsius magnitude from an absolute temperature quantity."""
+    return temp.to("K").magnitude - 273.15
+
+
 print("\nTemperature conditions:")
 print(f"Surface: {T_surface} ({T_surface.to('degC')})")
 print(f"Bottom: {T_bottom} ({T_bottom.to('degC')})")
@@ -341,7 +347,18 @@ for step in range(max_steps):
     stokes.solve(zero_init_guess=(step == 0))
 
     dt_estimate = thermal.estimate_dt()
-    dt = 0.1 * dt_estimate
+
+    # Keep the timestep unit-aware. The semi-Lagrangian trace-back
+    # uses dimensional coordinates and velocities, so dt must retain
+    # time units rather than being converted to a plain float.
+    dt = 1.0e-4 * dt_estimate
+    dt_cap = 1.0e9 * uw.units.s
+
+    if hasattr(dt, "to"):
+        if dt.to("s").magnitude > dt_cap.to("s").magnitude:
+            dt = dt_cap
+    else:
+        dt = min(dt, 1.0e9)
 
     thermal.solve(timestep=dt, zero_init_guess=False)
 
