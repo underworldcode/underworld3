@@ -7451,6 +7451,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             self.petsc_options.setValue("snes_max_it", 0)
             self.snes.setType("nrichardson")
+            # This solve path calls setFromOptions() repeatedly (to switch the
+            # SNES type between the nrichardson pre-solve and the Newton solve).
+            # Each setFromOptions() re-registers an option-configured monitor
+            # (e.g. snes_monitor) on the PERSISTENT SNES, so across many solves
+            # (continuation / time-stepping) they accumulate until PETSc throws
+            # ARG_OUTOFRANGE "Too many monitors set" (MAXSNESMONITORS). Cancel
+            # first so each setFromOptions re-applies exactly one monitor.
+            self.snes.monitorCancel()
             self.snes.setFromOptions()
             # PETSc may rebuild operator state after setFromOptions(), so reattach
             # the configured Stokes nullspace before each solve path.
@@ -7479,6 +7487,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.tolerance = tolerance
             self.snes.atol = self.atol
             self.snes.setType("nrichardson")
+            self.snes.monitorCancel()   # see note above: avoid monitor leak
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
             self.snes.solve(None, gvec)
@@ -7489,6 +7498,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.tolerance = tolerance
             self.snes.atol = self.atol
             self.petsc_options.setValue("snes_max_it", snes_max_it)
+            self.snes.monitorCancel()   # see note above: avoid monitor leak
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
@@ -7499,6 +7509,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.tolerance = tolerance
             self.snes.atol = self.atol
             self.petsc_options.setValue("snes_max_it", snes_max_it)
+            self.snes.monitorCancel()   # see note above: avoid monitor leak
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)

@@ -967,12 +967,81 @@ class ViscousFlowModel(Constitutive_Model):
         if self._yield_mode == "harmonic":
             return 1 / (1 / eta_ve + 1 / eta_pl)
 
-        # "min" / "softmin" (and any other value) -> unified soft-min law.
+        # "min" / "softmin": one of two smooth-min FAMILIES, selected by
+        # ``yield_smoother`` (both → exact Min as δ → 0):
+        smoother = getattr(self, "_yield_smoother", "sqrt")
         delta = self._get_yield_softness()
-        offset = self._get_yield_offset()
         f = eta_ve / eta_pl
+
+        if smoother == "powermean":
+            # Power-mean (p-norm) smooth-min:
+            #     η_eff = (η_ve^(−s) + η_pl^(−s))^(−1/s),   s = 1/δ
+            # s = 1 ⇒ harmonic mean (parameter-free); s → ∞ (δ → 0) ⇒ exact
+            # Min. It UNDERSHOOTS the yield surface (η_eff ≤ Min always — it
+            # approaches τ_y strictly from below, never over-yields), unlike
+            # the sqrt soft-min which overshoots τ_y in the transition.
+            #
+            # Evaluated in a HARMONIC-NORMALISED factored form that is
+            # overflow-safe on geodynamic viscosity ranges (η ~ 1e21–1e26):
+            # with N = η_ve·η_pl/(η_ve+η_pl) (the harmonic combine, ≤ Min),
+            # a = η_ve/N = 1+f and b = η_pl/N = 1+1/f are BOTH ≥ 1 and at
+            # least one is ≈ 1, so a^(−s), b^(−s) ∈ (0,1] never overflow and
+            # their sum never underflows to 0 (which would send (·)^(−1/s) to
+            # ∞). The naive η^(−s) form overflows above s≈40 on these ranges.
+            # δ is floored SMOOTHLY (s = 1/(δ+ε)) rather than with a Max() —
+            # a Max() on the UWexpression δ atom triggers a symbolic numeric
+            # comparison it does not support, and a hard branch is unnecessary.
+            # The +ε both keeps the compiled 1/δ finite as the homotopy drives
+            # δ→0 (s saturates near 1/ε ≈ exact Min) and is negligible for the
+            # δ≳0.01 values used in practice.
+            s = 1 / (delta + sympy.Float(0.001))
+            a = 1 + f
+            b = 1 + 1 / f
+            N = eta_ve * eta_pl / (eta_ve + eta_pl)
+            return N * (a ** (-s) + b ** (-s)) ** (-1 / s)
+
+        # default "sqrt" soft-min: η_ve / g(f, δ), g(0)=1, g ≈ max(1,f).
+        offset = self._get_yield_offset()
         g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta**2)) / 2 - offset
         return eta_ve / g
+
+    @property
+    def yield_smoother(self):
+        r"""Which smooth-min FAMILY regularises the ``"min"`` yield law.
+
+        Both families use the same softness parameter ``δ`` (``yield_softness``)
+        and approach exact ``Min`` as ``δ → 0``, but differ in how they round
+        the kink:
+
+        - ``"sqrt"`` (default): ``η_ve / g(f, δ)`` with
+          ``g = 1 + ½(f−1+√((f−1)²+δ²)) − offset``.  Exact ``Min`` at ``δ=0``;
+          **overshoots** the yield surface in the transition (carries stress a
+          few–60 % above ``τ_y`` before asymptoting).
+        - ``"powermean"``: the p-norm soft-min
+          ``η_eff = (η_ve^(−s) + η_pl^(−s))^(−1/s)`` with ``s = 1/δ``
+          (``s=1`` ⇒ harmonic mean; ``s→∞`` ⇒ ``Min``).  **Undershoots** the
+          yield surface (``η_eff ≤ Min`` always — approaches ``τ_y`` strictly
+          from below, never over-yields).  Computed in an overflow-safe
+          harmonic-normalised form for geodynamic viscosity ranges.
+
+        Selecting ``"powermean"`` bumps a zero ``yield_softness`` to ``1.0``
+        (``s=1``, the parameter-free harmonic mean) since ``δ=0`` (``s=∞``) is
+        the singular hard-``Min`` limit it only *approaches*.
+        """
+        return getattr(self, "_yield_smoother", "sqrt")
+
+    @yield_smoother.setter
+    def yield_smoother(self, value):
+        if value not in ("sqrt", "powermean"):
+            raise ValueError(
+                f"yield_smoother must be 'sqrt' or 'powermean', got '{value}'"
+            )
+        self._yield_smoother = value
+        if value == "powermean" and getattr(self, "_yield_softness", 0.0) == 0.0:
+            # δ=0 ⇒ s=1/δ=∞ is the singular Min limit; default to the
+            # parameter-free harmonic mean (s=1) instead.
+            self.yield_softness = 1.0
+        self._reset()
 
     def enable_yield_homotopy(
         self,
@@ -1237,6 +1306,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # δ>0 is a controlled smooth-min rampable via enable_yield_homotopy().
         self._yield_mode = "min"
         self._yield_softness = 0.0
+        self._yield_smoother = "sqrt"   # smooth-min family: "sqrt" | "powermean"
         self._yield_softness_expr = None
         self._yield_offset_expr = None
 
@@ -1497,6 +1567,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # created constants[] atoms (see _get_yield_softness / yield homotopy).
         self._yield_mode = "min"
         self._yield_softness = 0.0  # δ; 0 ⇒ exact Min
+        self._yield_smoother = "sqrt"   # smooth-min family: "sqrt" | "powermean"
         self._yield_softness_expr = None
         self._yield_offset_expr = None
 
@@ -3062,6 +3133,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         # ._combine_yield). "min" + δ=0 is exact Min; δ>0 controlled smooth-min.
         self._yield_mode = "min"
         self._yield_softness = 0.0  # δ; 0 ⇒ exact Min
+        self._yield_smoother = "sqrt"   # smooth-min family: "sqrt" | "powermean"
         self._yield_softness_expr = None
         self._yield_offset_expr = None
         # BDF order-blending α ∈ [0, 1].  α=1 → pure BDF-2 (default);

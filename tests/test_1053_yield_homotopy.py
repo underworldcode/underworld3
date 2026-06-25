@@ -134,3 +134,56 @@ def test_yield_homotopy_loading_converges():
     # δ ends at 0 each step → exact yield surface: σ locks at τ_y.
     assert plateau.max() <= TAU_Y * 1.02, f"yield over-shoot: {plateau.max():.4f}"
     assert plateau.min() >= TAU_Y * 0.97, f"yield under-clip: {plateau.min():.4f}"
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_powermean_smoother_undershoots_min():
+    """Power-mean smooth-min: ≤ Min everywhere (no over-yield), overflow-safe on
+    geodynamic ranges, and → Min as δ→0 (s=1/δ→∞)."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("Upm", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Ppm", mesh, 1, degree=1)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    cm = uw.constitutive_models.ViscoElasticPlasticFlowModel(s.Unknowns, order=2)
+    s.constitutive_model = cm
+
+    cm.yield_mode = "min"
+    cm.yield_smoother = "powermean"        # bumps δ 0 → 1 (s=1, harmonic mean)
+    assert cm.yield_smoother == "powermean"
+    assert cm.yield_softness == 1.0
+
+    # Includes a geodynamic-range pair (1e25, 1e21) that overflows the naive
+    # η^(−s) form above s≈40 but is finite in the harmonic-normalised form.
+    pairs = [(1.0, 2.0), (2.0, 1.0), (1.0, 1.0), (0.3, 5.0), (5.0, 0.3), (1e25, 1e21)]
+    for delta in (1.0, 0.5, 0.1, 0.02):
+        cm.yield_softness = delta
+        for eta_ve, eta_pl in pairs:
+            comb = cm._combine_yield(sympy.Float(eta_ve), sympy.Float(eta_pl))
+            val = float(unwrap_expression(comb, mode="nondimensional"))
+            assert np.isfinite(val), f"overflow δ={delta} ({eta_ve},{eta_pl})"
+            assert val <= min(eta_ve, eta_pl) * (1 + 1e-9), \
+                f"power-mean over-yields δ={delta}: {val} > {min(eta_ve, eta_pl)}"
+
+    # smallest δ (largest s) is close to exact Min.
+    cm.yield_softness = 0.02
+    for eta_ve, eta_pl in pairs:
+        comb = cm._combine_yield(sympy.Float(eta_ve), sympy.Float(eta_pl))
+        val = float(unwrap_expression(comb, mode="nondimensional"))
+        m = min(eta_ve, eta_pl)
+        assert abs(val - m) <= 0.05 * m, f"not near Min at δ=0.02: {val} vs {m}"
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_yield_smoother_validation():
+    """yield_smoother only accepts the two known families."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("Usm", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Psm", mesh, 1, degree=1)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    cm = uw.constitutive_models.ViscoElasticPlasticFlowModel(s.Unknowns, order=2)
+    s.constitutive_model = cm
+    assert cm.yield_smoother == "sqrt"           # default family unchanged
+    with pytest.raises(ValueError):
+        cm.yield_smoother = "not_a_family"
