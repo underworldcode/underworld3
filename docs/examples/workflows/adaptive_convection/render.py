@@ -42,18 +42,52 @@ def fault_polyline(theta_deg=90.0, dip_deg=30.0, depth=0.225, dip_dir="east",
     return np.column_stack([xy, np.zeros(len(xy))])
 
 
-def fault_from_manifest(D):
-    """Read the fault geometry from a run's manifest config_snapshot.
-    Returns the (N,3) polyline, its midpoint (cx,cy), or (None, None)."""
+def _manifest_snapshot(D):
     import yaml
     p = os.path.join(D, "manifest.yaml")
     if not os.path.exists(p):
-        return None, None
-    snap = (yaml.safe_load(open(p)) or {}).get("config_snapshot", {})
+        return {}
+    return (yaml.safe_load(open(p)) or {}).get("config_snapshot", {})
+
+
+def _per_step_theta(D):
+    """Map step index -> (theta_f, theta_MOR) from timeseries.csv (the moving-
+    feature columns). Empty if the run has no such columns (static features)."""
+    import csv
+    p = os.path.join(D, "timeseries.csv")
+    out = {}
+    if not os.path.exists(p):
+        return out
+    with open(p) as f:
+        for row in csv.DictReader(f):
+            try:
+                step = int(float(row["step"]))
+            except (KeyError, ValueError):
+                continue
+            tf = row.get("theta_f")
+            tm = row.get("theta_MOR")
+            try:
+                tf = float(tf) if tf not in (None, "", "---") else None
+            except ValueError:
+                tf = None
+            try:
+                tm = float(tm) if tm not in (None, "", "---") else None
+            except ValueError:
+                tm = None
+            out[step] = (tf, tm)
+    return out
+
+
+def fault_from_manifest(D, theta_deg=None):
+    """Read the fault geometry from a run's manifest config_snapshot. ``theta_deg``
+    overrides the surface azimuth (per-step, for a moving fault). Returns the
+    (N,3) polyline, its midpoint (cx,cy), or (None, None)."""
+    snap = _manifest_snapshot(D)
     if "fault_dip_deg" not in snap:
         return None, None
     poly = fault_polyline(
-        theta_deg=snap.get("fault_theta_deg", 90.0),
+        theta_deg=(snap.get("fault_theta_deg", 90.0) if theta_deg is None
+                   else theta_deg),
         dip_deg=snap.get("fault_dip_deg", 30.0),
         depth=snap.get("fault_depth", 0.225),
         dip_dir=snap.get("fault_dip_dir", "east"))
@@ -70,17 +104,15 @@ def _add_fault(pl, fault_xyz, color="red", line_width=3.0):
     pl.add_mesh(line, color=color, line_width=line_width, lighting=False)
 
 
-def ridge_from_manifest(D):
+def ridge_from_manifest(D, theta_deg=None):
     """Surface azimuth (deg) of the lid-mobility blob ('ridge') from the run
-    manifest, or None if there is no blob."""
-    import yaml
-    p = os.path.join(D, "manifest.yaml")
-    if not os.path.exists(p):
-        return None
-    snap = (yaml.safe_load(open(p)) or {}).get("config_snapshot", {})
+    manifest, or None if there is no blob. ``theta_deg`` overrides the azimuth
+    (per-step, for a moving ridge)."""
+    snap = _manifest_snapshot(D)
     if not snap.get("blob_enable"):
         return None
-    return float(snap.get("blob_theta_deg", 0.0)), float(snap.get("r_outer", 1.0))
+    th = snap.get("blob_theta_deg", 0.0) if theta_deg is None else theta_deg
+    return float(th), float(snap.get("r_outer", 1.0))
 
 
 def _add_ridge_marker(pl, theta_deg, r_outer=1.0, color="magenta"):
@@ -217,9 +249,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     D = os.path.expanduser(args.run)
-    fault_xyz, fault_mid = (fault_from_manifest(D)
-                            if (args.fault or args.focus_fault) else (None, None))
-    ridge = ridge_from_manifest(D) if (args.fault or args.focus_fault) else None
+    want_overlay = bool(args.fault or args.focus_fault)
+    per_step = _per_step_theta(D) if want_overlay else {}
     xdmfs = sorted(glob.glob(os.path.join(D, f"{RUN_NAME}.mesh.[0-9]*.xdmf")),
                    key=lambda c: int(re.search(r"mesh\.(\d+)\.xdmf", c).group(1)))
     idxs = [int(re.search(r"mesh\.(\d+)\.xdmf", os.path.basename(c)).group(1))
@@ -233,13 +264,19 @@ def main(argv=None):
     else:
         sel = []
 
-    if args.focus_fault and fault_mid is not None:
-        focus = (fault_mid[0], fault_mid[1], args.focus_fault)
-    elif args.focus:
-        focus = tuple(args.focus)
-    else:
-        focus = None
     for idx in sel:
+        # Per-step feature azimuths (moving features); fall back to the manifest
+        # initial values when the run has no timeseries theta columns.
+        tf, tm = per_step.get(idx, (None, None)) if want_overlay else (None, None)
+        fault_xyz, fault_mid = (fault_from_manifest(D, theta_deg=tf)
+                                if want_overlay else (None, None))
+        ridge = ridge_from_manifest(D, theta_deg=tm) if want_overlay else None
+        if args.focus_fault and fault_mid is not None:
+            focus = (fault_mid[0], fault_mid[1], args.focus_fault)
+        elif args.focus:
+            focus = tuple(args.focus)
+        else:
+            focus = None
         render(D, idx, tvar=args.tvar, tdeg=args.tdeg, vvar=args.vvar,
                vdeg=args.vdeg, clim=tuple(args.clim),
                r_in=args.rin, r_out=args.rout, focus=focus,

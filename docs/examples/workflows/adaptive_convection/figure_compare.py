@@ -23,7 +23,7 @@ import underworld3.visualisation as vis
 import pyvista as pv
 
 from render import (fault_from_manifest, _add_fault,
-                    ridge_from_manifest, _add_ridge_marker)
+                    ridge_from_manifest, _add_ridge_marker, _per_step_theta)
 
 pv.OFF_SCREEN = True
 RUN_NAME = "run"
@@ -63,8 +63,10 @@ def main(argv=None):
     T.read_timestep(data_filename=RUN_NAME, data_name="T", index=idx, outputPath=D)
     v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2, continuous=True)
     v.read_timestep(data_filename=RUN_NAME, data_name="v", index=idx, outputPath=D)
-    fault_xyz, _ = fault_from_manifest(D)
-    ridge = ridge_from_manifest(D)
+    # Per-step feature azimuths (moving features) — fall back to manifest initial.
+    tf, tm = _per_step_theta(D).get(idx, (None, None))
+    fault_xyz, _ = fault_from_manifest(D, theta_deg=tf)
+    ridge = ridge_from_manifest(D, theta_deg=tm)
     edges = vis.mesh_to_pv_mesh(mesh).extract_all_edges()
 
     # left: T + streamlines
