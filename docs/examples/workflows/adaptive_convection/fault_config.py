@@ -569,8 +569,11 @@ def create_mesh(config: FaultConvectionConfig):
                 wedge = _wedge_points(xy, config.r_outer, config.fault_base_smin)
                 if len(wedge):
                     lines.append(wedge)
-        if config.blob_enable:                        # resolve the lid blob
-            lines.append(_blob_points(config, smin))
+            if config.blob_enable:                    # resolve the lid blob
+                lines.append(_blob_points(config, smin))
+        # fault_base_smin == 0 ⇒ a FULLY uniform base (no gmsh embedding at all);
+        # the fault and ridge are then refined purely from the node budget by the
+        # mover, which can FOLLOW them (a baked gmsh cluster cannot move).
         if lines:
             rl = dict(refine_lines=lines, refine_size_min=smin,
                       refine_dist_min=0.02, refine_dist_max=0.12)
@@ -766,6 +769,12 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
             blob_rho = 1.0 + config.fault_refine_amp * _blob_influence_sym(
                 mesh.CoordinateSystem.X, config, state.theta_MOR_deg)
             rho = sympy.Max(rho, blob_rho)
+        if config.surface_refine_amp > 0:             # outer-boundary highway
+            Xc = mesh.CoordinateSystem.X
+            r_c = sympy.sqrt(Xc[0] ** 2 + Xc[1] ** 2)
+            surf_rho = 1.0 + config.surface_refine_amp * sympy.exp(
+                -((config.r_outer - r_c) / config.surface_refine_width) ** 2)
+            rho = sympy.Max(rho, surf_rho)
         if Rf > 0:
             metric = rho * sympy.eye(2) + (Rf ** 2 - 1.0) * gauss_sharp * nnT
         else:
@@ -780,11 +789,15 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
         if is_tensor and sk is not None and misalign < sk:
             return False, misalign
 
+        if config.mover_verbose:
+            uw.pprint(f"  [mover] θ_f={state.theta_f_deg:.2f} misalign={misalign:.3f} "
+                      f"tensor={is_tensor}", flush=True)
         uw.meshing.smooth_mesh_interior(
             mesh, metric=metric, method="mmpde",
             method_kwargs=dict(step_frac=0.2, accel=accel, momentum=0.0),
             slip_surfaces=True,
-            skip_threshold=(None if is_tensor else sk), verbose=False)
+            skip_threshold=(None if is_tensor else sk),
+            verbose=config.mover_verbose)
 
         if np.allclose(np.asarray(mesh.X.coords), old_X):
             return False, misalign

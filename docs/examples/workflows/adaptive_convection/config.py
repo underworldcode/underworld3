@@ -154,6 +154,20 @@ class AdaptiveConvectionConfig(WorkflowConfig):
                                          "mesh test).")
     adapt_start: int = Field(default=0, ge=0)
     mover_accel: Literal["cg", "heavy", "none"] = "cg"
+    # Explicit refinement band along the OUTER boundary. Independent of the
+    # thermal |∇T| metric: it refines the surface layer where the fault pin, the
+    # ridge, and the cold thermal BL all live, so a migrating fault always has a
+    # pre-refined surface "highway" to slide along (only its DEEPER end has to be
+    # re-created as it moves) and the fixed node budget is concentrated where the
+    # physics is, rather than spent over-resolving a deep anisotropic sliver.
+    surface_refine_amp: float = Field(
+        default=0.0, ge=0,
+        description="Density amplitude of the outer-boundary refinement band "
+                    "(0 = off). ~8 gives roughly 3x finer cells in the band.")
+    surface_refine_width: float = Field(
+        default=0.1, gt=0,
+        description="Radial width of the outer-boundary refinement band "
+                    "(model coords).")
 
     # Operational — free slip
     freeslip: Literal["penalty", "nitsche"] = "penalty"
@@ -171,6 +185,10 @@ class AdaptiveConvectionConfig(WorkflowConfig):
     dt_mult: float = Field(default=4.0, gt=0,
                            description="Multiplier on estimate_dt(p50).")
     cold_stokes: bool = False
+    mover_verbose: bool = Field(
+        default=False,
+        description="Print the mmpde mover's per-iteration diagnostics "
+                    "(energy, scale, max|Δx|) — for debugging mover stalls.")
 
     # Operational — run control / cadence
     max_steps: int = Field(default=80, gt=0)
