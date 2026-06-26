@@ -161,6 +161,32 @@ class FaultConvectionConfig(AdaptiveConvectionConfig):
         description="Which side of the fault PLANE the refinement metric acts "
                     "on. 'lower' biases refinement to the footwall (counter the "
                     "upward pull); 'upper' to the hanging wall.")
+
+    # Two-stage adapt: a SECOND mover pass with a strong, NARROW anisotropic pull
+    # toward the fault, applied AFTER the (isotropic) primary pass has gathered
+    # nodes into the fault region. The primary pass crosses no energy barrier
+    # (shallow isotropic well, tracks the moving fault); the tightening pass then
+    # only has to squeeze already-present nodes onto the line (short local moves),
+    # so it should not hit the sliver fold-trap that freezes a from-scratch
+    # anisotropic metric. Tightens the fault-zone resolution beyond the isotropic
+    # budget cap while still following the migrating fault.
+    fault_tighten: bool = Field(
+        default=False,
+        description="Run a second anisotropic mover pass to tighten resolution "
+                    "into the fault zone (after the primary pass).")
+    fault_tighten_aniso: float = Field(
+        default=6.0, ge=1,
+        description="Anisotropy ratio Rf of the tightening pass (thin across the "
+                    "fault normal).")
+    fault_tighten_width: float = Field(
+        default=0.012, gt=0,
+        description="Half-width of the NARROW across-fault gaussian for the "
+                    "tightening pass (model coords; narrower = sharper pull).")
+    fault_tighten_amp: float = Field(
+        default=0.0, ge=0,
+        description="Extra isotropic density amplitude added along the fault in "
+                    "the tightening pass (0 = anisotropy only — reshape without "
+                    "pulling in more nodes).")
     fault_rheology_side: Literal["both", "upper", "lower"] = Field(
         default="both",
         description="Which side of the fault PLANE the weak zone acts on. "
@@ -804,6 +830,31 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
         _refresh_fault_fields(gfac, dfac, xy, config)
         if config.blob_enable:
             _refresh_blob_field(bfac, config, state.theta_MOR_deg)
+
+        # Second pass: strong, NARROW anisotropic tightening into the fault zone.
+        # The primary (isotropic) pass already gathered nodes here, so this only
+        # has to reshape/squeeze them onto the line — short local moves that do
+        # not have to cross the fold-bounded energy barrier that traps a
+        # from-scratch anisotropic metric. dfac was just refreshed at the moved
+        # nodes, so the narrow gaussian is centred on the current fault.
+        if config.fault_tighten:
+            tighten_w = config.fault_tighten_width
+            Rf2 = float(config.fault_tighten_aniso)
+            g_tight = sympy.exp(-(dfac.sym[0] / tighten_w) ** 2)
+            rho2 = (rho + config.fault_tighten_amp * g_tight
+                    if config.fault_tighten_amp > 0 else rho)
+            metric2 = rho2 * sympy.eye(2) + (Rf2 ** 2 - 1.0) * g_tight * nnT
+            if config.mover_verbose:
+                uw.pprint(f"  [tighten] Rf2={Rf2} w={tighten_w}", flush=True)
+            uw.meshing.smooth_mesh_interior(
+                mesh, metric=metric2, method="mmpde",
+                method_kwargs=dict(step_frac=0.2, accel=accel, momentum=0.0),
+                slip_surfaces=True, skip_threshold=None,
+                verbose=config.mover_verbose)
+            _refresh_fault_fields(gfac, dfac, xy, config)
+            if config.blob_enable:
+                _refresh_blob_field(bfac, config, state.theta_MOR_deg)
+
         v.data[...] = 0.0
         p.data[...] = 0.0
         return True, misalign
