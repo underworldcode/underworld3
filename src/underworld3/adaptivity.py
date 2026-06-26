@@ -575,7 +575,7 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
         if label is None:
             continue
         label_is = label.getStratumIS(b.value)
-        if label_is is not None and label_is.getSize() > 0:
+        if label_is:
             uw_boundaries.setStratumIS(b.value, label_is)
     uw.mpi.barrier()
 
