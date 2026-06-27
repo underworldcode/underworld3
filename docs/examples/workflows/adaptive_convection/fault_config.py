@@ -67,6 +67,8 @@ _FAULT_IDENTITY = (
     "blob_enable", "blob_theta_deg", "blob_radius", "blob_size",
     "blob_edge", "blob_floor",
     "fault_motion", "blob_motion", "feature_mobility",
+    "fault_metric_profile", "fault_metric_tail",
+    "budget_floor", "budget_conv", "budget_loc", "loc_threshold", "loc_power",
 )
 
 
@@ -156,13 +158,43 @@ class FaultConvectionConfig(AdaptiveConvectionConfig):
     fault_draw_width: float = Field(default=-1.0,
                                     description="Wide isotropic draw half-width "
                                                 "(<0 ⇒ 4·refine_width).")
-    metric_combine: Literal["product", "max"] = Field(
+    metric_combine: Literal["product", "max", "budget"] = Field(
         default="max",
         description="How the fault density fuses with the |∇T| density. "
                     "'product' lets the thermal BL out-compete the fault "
                     "along its length (pulls nodes ABOVE the fault); 'max' "
                     "keeps the fault refined uniformly along its whole "
-                    "length (default).")
+                    "length (default); 'budget' = the multi-monitor budgeted "
+                    "sum (each monitor normalised to unit mean, then weighted "
+                    "by a prescribed cell-budget fraction — GUARANTEES the thin "
+                    "fault its share of cells regardless of being a short "
+                    "feature, which max/product cannot).")
+    # Budgeted multi-monitor (metric_combine='budget'). The mover equidistributes
+    # ∫ρ dV, so cells-in-a-region ∝ ∫_region ρ dV. Normalising each monitor by its
+    # integral and weighting by a fixed fraction B allocates a PRESCRIBED share of
+    # the cell budget to each — the thin fault then gets B_loc of the cells even
+    # though it is spatially tiny (the reason max/product cap it: ∫ρ_fault is small).
+    budget_floor: float = Field(default=0.15, ge=0,
+                                description="Cell-budget fraction B₀ for the "
+                                            "uniform floor (background mesh).")
+    budget_conv: float = Field(default=0.60, ge=0,
+                               description="Cell-budget fraction B_conv for the "
+                                           "smooth convection monitor (|∇T|).")
+    budget_loc: float = Field(default=0.25, ge=0,
+                              description="Cell-budget fraction B_loc for the "
+                                          "localised fault monitor. Raise to pull "
+                                          "MORE cells onto the fault.")
+    loc_threshold: float = Field(default=0.0, ge=0, le=1,
+                                 description="Cutoff q_c for the localisation "
+                                             "indicator (smoothed Heaviside gate): "
+                                             "0 = no threshold; >0 refines only "
+                                             "where the fault indicator exceeds q_c "
+                                             "(concentrates the budget on the core).")
+    loc_power: float = Field(default=1.0, ge=1,
+                             description="Sharpening power p on the localisation "
+                                         "indicator q_loc^p before normalisation. "
+                                         "Higher p concentrates the budget harder "
+                                         "onto the fault core.")
     # One-sided fault influence. The symmetric (both-sides) metric demands
     # refinement on both flanks, but the thermal-BL + wedge pulls bias the
     # realized nodes to the UPPER (hanging-wall) side and starve the footwall.
@@ -309,7 +341,8 @@ def _check_compatibility(config: FaultConvectionConfig, output_dir: Path):
 _TS_FIELDS = ("step", "t", "dt", "wall", "Nu", "vrms", "Tmin", "Tmax",
               "adapted", "misalign", "folded", "area_ratio", "aspect",
               "min_area", "bl_ratio", "fault_ratio", "n_fault",
-              "theta_f", "theta_MOR", "v_n_fault", "v_t_MOR")
+              "theta_f", "theta_MOR", "v_n_fault", "v_t_MOR",
+              "loc_target", "loc_cell_frac", "equidist_cv", "ksp_its")
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +596,59 @@ def _angular_gap_deg(a_deg, b_deg):
     return abs((a_deg - b_deg + 180.0) % 360.0 - 180.0)
 
 
+def _mesh_cells_areas(mesh):
+    """Triangle connectivity, |area| per cell, and centroids of the CURRENT mesh
+    (reuses the mover's own helpers so the quadrature matches the mover's view)."""
+    import numpy as np
+    from underworld3.meshing.smoothing import _tri_cells, _signed_areas
+    coords = np.asarray(mesh.X.coords)[:, :2]
+    tris = _tri_cells(mesh.dm)
+    A = np.abs(_signed_areas(coords, tris))
+    cen = coords[tris].mean(axis=1)
+    return tris, A, cen
+
+
+def _budget_metric(mesh, rho_conv_sym, q_loc_sym, config, areas, cen):
+    """Budgeted multi-monitor density (metric_combine='budget').
+
+    ρ = B₀·1 + B_conv·(ρ̃_conv/⟨ρ̃_conv⟩) + B_loc·(ρ̃_loc/⟨ρ̃_loc⟩),
+
+    where each monitor is normalised to unit MEAN over the domain (∫·dV = V) via
+    centroid quadrature, so it contributes a prescribed share of ∫ρ dV — and the
+    mover equidistributes ∫ρ dV, allocating that share of the CELL budget. The thin
+    fault thus gets B_loc of the cells regardless of its tiny area (the exact thing
+    max/product cannot do). ρ̃_loc is the thresholded/sharpened fault indicator
+    H_δ(q−q_c)·q^p. Returns (rho_sym, diag) with the realised loc mass fraction."""
+    import numpy as np
+    import sympy
+    import underworld3 as uw
+
+    V = float(areas.sum())
+
+    def _quad(expr):
+        vals = np.asarray(uw.function.evaluate(expr, cen)).reshape(-1)
+        return float(np.sum(np.clip(vals, 0.0, None) * areas))
+
+    # localisation monitor: threshold (smoothed Heaviside) then sharpen (power p)
+    q = q_loc_sym
+    if config.loc_threshold > 0.0:
+        delta = 0.05
+        q = q * sympy.Rational(1, 2) * (
+            1 + sympy.tanh((q_loc_sym - config.loc_threshold) / delta))
+    rho_loc_sym = q ** config.loc_power if config.loc_power != 1.0 else q
+
+    I_conv = max(_quad(rho_conv_sym), 1.0e-30)
+    I_loc = max(_quad(rho_loc_sym), 1.0e-30)
+    B0, Bc, Bl = config.budget_floor, config.budget_conv, config.budget_loc
+    # each monitor scaled to unit mean (× V/I), weighted by its budget fraction
+    rho = (B0
+           + Bc * rho_conv_sym * (V / I_conv)
+           + Bl * rho_loc_sym * (V / I_loc))
+    # realised TARGET loc mass fraction (what we asked the mover for)
+    loc_target = Bl / max(B0 + Bc + Bl, 1.0e-30)
+    return rho, dict(V=V, I_conv=I_conv, I_loc=I_loc, loc_target=loc_target)
+
+
 def _update_fault_director(stokes, config, theta_f_deg):
     """Re-point the TI director to the current fault normal. The fault re-orients
     as its pin slides around the curved surface (intrinsic to the fixed-dip 1-DOF
@@ -814,11 +900,20 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
             gauss_sharp = gauss_sharp * gate
             gauss_wide = gauss_wide * gate
         fault_rho = 1.0 + config.fault_refine_amp * gauss_wide
+        mdiag = {}
         # MAX (default): the fault keeps its refinement along its WHOLE length,
         # independent of the |∇T| thermal-BL density. PRODUCT lets the thermal
         # BL out-compete the fault near the surface, pulling the cluster ABOVE
-        # the fault and stripping the deep fault of nodes.
-        if config.metric_combine == "product":
+        # the fault and stripping the deep fault of nodes. BUDGET: separately-
+        # normalised multi-monitor sum that ALLOCATES a prescribed cell fraction
+        # to the (thin) fault — the only mode that beats the ∫ρ_fault-is-small cap.
+        if config.metric_combine == "budget":
+            _, areas, cen = _mesh_cells_areas(mesh)
+            # loc indicator = the NARROW (one-sided-gated) fault profile in [0,1]
+            # (sharp core so the normalisation peak is high and the budget lands
+            # ON the fault, not a soft halo); loc_power sharpens it further.
+            rho, mdiag = _budget_metric(mesh, rho_T, gauss_sharp, config, areas, cen)
+        elif config.metric_combine == "product":
             rho = rho_T * fault_rho
         else:
             rho = sympy.Max(rho_T, fault_rho)         # isotropic size density
@@ -844,7 +939,8 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
         misalign = float(mm["misalignment"])
         is_tensor = isinstance(metric, sympy.MatrixBase)
         if is_tensor and sk is not None and misalign < sk:
-            return False, misalign
+            return False, misalign, mdiag
+        rho_scalar = rho                              # keep the scalar for diag
 
         if config.mover_verbose:
             uw.pprint(f"  [mover] θ_f={state.theta_f_deg:.2f} misalign={misalign:.3f} "
@@ -857,7 +953,7 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
             verbose=config.mover_verbose)
 
         if np.allclose(np.asarray(mesh.X.coords), old_X):
-            return False, misalign
+            return False, misalign, mdiag
         _refresh_fault_fields(gfac, dfac, xy, config)
         if config.blob_enable:
             _refresh_blob_field(bfac, config, state.theta_MOR_deg)
@@ -886,9 +982,27 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
             if config.blob_enable:
                 _refresh_blob_field(bfac, config, state.theta_MOR_deg)
 
+        # Realised metric diagnostics on the MOVED mesh (any combine mode): the
+        # equidistribution residual CV(∫_cell ρ) — how uniformly the mover spread
+        # the demanded density (0 = perfect) — and the loc cell fraction actually
+        # delivered to the fault band (compare to the budget target).
+        try:
+            from underworld3.utilities.geometry_tools import (
+                signed_distance_pointcloud_polyline_2d)
+            _, areas2, cen2 = _mesh_cells_areas(mesh)
+            rv = np.asarray(uw.function.evaluate(rho_scalar, cen2)).reshape(-1)
+            m = np.clip(rv, 0.0, None) * areas2
+            mean_m = float(m.mean()) or 1.0
+            mdiag["equidist_cv"] = float(m.std() / mean_m)
+            dcell = np.abs(signed_distance_pointcloud_polyline_2d(cen2, xy[:, :2]))
+            mdiag["loc_cell_frac"] = float((dcell < config.fault_width).mean())
+        except Exception as _e:
+            mdiag.setdefault("equidist_cv", float("nan"))
+            mdiag.setdefault("loc_cell_frac", float("nan"))
+
         v.data[...] = 0.0
         p.data[...] = 0.0
-        return True, misalign
+        return True, misalign, mdiag
 
     return adapt
 
@@ -938,7 +1052,7 @@ def evolve(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
             state.theta_f_director = state.theta_f_deg
 
     def _row(step, t, dt, wall, did_adapt, misalign, v_n=float("nan"),
-             v_t=float("nan")):
+             v_t=float("nan"), mdiag=None, ksp_its=float("nan")):
         T_arr = T.data[:, 0]
         q = diag.mesh_quality(mesh)
         xy_now, _, _ = _fault_geometry(config, state.theta_f_deg)
@@ -946,6 +1060,7 @@ def evolve(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
                                     r_outer=config.r_outer,
                                     fault_polyline=xy_now,
                                     fault_width=config.fault_width)
+        md = mdiag or {}
         return dict(step=step, t=t, dt=dt, wall=wall, Nu=nusselt(),
                     vrms=diag.vrms(mesh, v), Tmin=float(T_arr.min()),
                     Tmax=float(T_arr.max()), adapted=int(did_adapt),
@@ -955,7 +1070,11 @@ def evolve(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
                     fault_ratio=nn.get("fault_ratio", float("nan")),
                     n_fault=nn.get("n_fault", 0),
                     theta_f=state.theta_f_deg, theta_MOR=state.theta_MOR_deg,
-                    v_n_fault=v_n, v_t_MOR=v_t)
+                    v_n_fault=v_n, v_t_MOR=v_t,
+                    loc_target=md.get("loc_target", float("nan")),
+                    loc_cell_frac=md.get("loc_cell_frac", float("nan")),
+                    equidist_cv=md.get("equidist_cv", float("nan")),
+                    ksp_its=ksp_its)
 
     if not saved_steps:
         if config.seed_run:
@@ -1003,11 +1122,17 @@ def evolve(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
 
     while timestep < config.max_steps:
         t_step = time.perf_counter()
-        did_adapt, misalign = False, float("nan")
+        did_adapt, misalign, mdiag = False, float("nan"), {}
         if (do_adapt and (timestep + 1) >= config.adapt_start
                 and ((timestep + 1) % config.adapt_every == 0)):
-            did_adapt, misalign = adapt()
+            did_adapt, misalign, mdiag = adapt()
         stokes.solve(zero_init_guess=(did_adapt or config.cold_stokes))
+        # Multigrid-convergence diagnostic: KSP iterations of the Stokes solve
+        # (cost of the velocity solve on the adapted mesh).
+        try:
+            ksp_its = int(stokes.snes.getKSP().getIterationNumber())
+        except Exception:
+            ksp_its = float("nan")
         dt = adv_diff.estimate_dt(direction_aware=True, percentile=50.0) \
             * float(config.dt_mult)
         adv_diff.solve(timestep=dt, zero_init_guess=False)
@@ -1022,7 +1147,8 @@ def evolve(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
         if config.blob_enable:
             new_tm, v_t = _advance_blob(v, config, state.theta_MOR_deg, float(dt))
         row = _row(timestep, elapsed, float(dt), wall=time.perf_counter() - t_step,
-                   did_adapt=did_adapt, misalign=misalign, v_n=v_n, v_t=v_t)
+                   did_adapt=did_adapt, misalign=misalign, v_n=v_n, v_t=v_t,
+                   mdiag=mdiag, ksp_its=ksp_its)
         moved = False
         if config.fault_motion:
             state.theta_f_deg = new_tf
