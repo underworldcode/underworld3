@@ -141,6 +141,18 @@ class FaultConvectionConfig(AdaptiveConvectionConfig):
     fault_refine_width: float = Field(default=-1.0,
                                       description="Sharp across-fault band "
                                                   "half-width (<0 ⇒ 1.5·width).")
+    fault_metric_profile: Literal["hyperbolic", "gaussian"] = Field(
+        default="hyperbolic",
+        description="Across-fault SHAPE of the refinement density. 'hyperbolic' "
+                    "= a Lorentzian 1/(1+(d/w)²): sharply PEAKED at the fault with "
+                    "a long, smooth algebraic tail (refinement decays gently far "
+                    "from the fault — no abrupt shoulder). 'gaussian' = the legacy "
+                    "exp(−(d/w)²): rounded peak, fast-decaying 'stepped' shoulder.")
+    fault_metric_tail: float = Field(
+        default=1.0, ge=0,
+        description="Hyperbolic far-field decay exponent k in 1/(1+(d/w)²)^k. "
+                    "1 = Lorentzian (gentle ~1/d² tail); >1 sharpens the peak and "
+                    "shortens the tail toward the gaussian limit.")
     fault_draw_width: float = Field(default=-1.0,
                                     description="Wide isotropic draw half-width "
                                                 "(<0 ⇒ 4·refine_width).")
@@ -767,12 +779,31 @@ def _make_fault_adapt(mesh, stokes, adv_diff, T, v, p, gfac, dfac, bfac,
         rho_T = uw.meshing.metric_density_from_gradient(
             mesh, T, refinement=float(config.resolution_ratio),
             coarsening="auto", metric_choice="front-following", name="loop")
-        gauss_sharp = sympy.exp(-(dfac.sym[0] / refine_w) ** 2)
-        gauss_wide = sympy.exp(-(dfac.sym[0] / draw_w) ** 2)
-        # One-sided metric: gate the fault gaussians to the chosen side of the
+        # Across-fault profile of the refinement density. 'hyperbolic' (default,
+        # Louis's directive): a Lorentzian 1/(1+(d/w)²)^k — sharply PEAKED on the
+        # fault (value 1 at d=0) with a long, smooth algebraic tail, so refinement
+        # decays GENTLY at distance rather than the gaussian's abrupt 'stepped'
+        # shoulder. 'gaussian' = the legacy exp(−(d/w)²). Both are even in d (the
+        # one-sided gate below supplies any asymmetry) and C∞.
+        def _profile(w):
+            if config.fault_metric_profile == "gaussian":
+                return sympy.exp(-(dfac.sym[0] / w) ** 2)
+            k = config.fault_metric_tail
+            base = 1.0 / (1.0 + (dfac.sym[0] / w) ** 2)
+            return base if k == 1.0 else base ** k
+        gauss_sharp = _profile(refine_w)
+        # The isotropic node-concentration density. Gaussian needs the WIDE
+        # draw_w to reach beyond its fast-decaying shoulder; the hyperbolic is
+        # sharply peaked on a NARROW core (refine_w) and reaches far on its own
+        # long algebraic tail — so it uses the narrow width and stays highly
+        # peaked AT the fault while remaining smooth at distance.
+        gauss_wide = (_profile(refine_w)
+                      if config.fault_metric_profile == "hyperbolic"
+                      else _profile(draw_w))
+        # One-sided metric: gate the fault profile to the chosen side of the
         # fault PLANE (dfac is signed). 'lower' biases refinement to the
         # footwall to counter the upward thermal-BL/wedge pull; 'both' = the
-        # symmetric default. The gaussians square dfac, so the sign only enters
+        # symmetric default. The profile is even in dfac, so the sign only enters
         # through this gate.
         m_metric = _side_multiplier(config.fault_metric_side, _upper_sign(xy))
         if m_metric is not None:
