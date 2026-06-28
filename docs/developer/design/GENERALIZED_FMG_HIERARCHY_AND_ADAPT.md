@@ -114,6 +114,31 @@ Later (not this pass; do not block): dynamic per-step reallocation loop; efficie
 (transfer caching, exact-nested combinatorial P, operator reuse); load-balancing adapters;
 non-nested parallel transfers; knockout-as-coarsening as an alternative Layer-2 strategy.
 
+## Status (2026-06-29)
+
+**Layer 1 is an independent, working capability** — arbitrary coarse grids
+(nested *or* non-nested, uniform *or* SBR-refined) → geometric FMG via custom-P
+with BC-per-level reduction. It does not depend on Layer 2.
+
+Landed (committed, tested — `test_1014/1015/1016`, 18 pass):
+- `CustomMGHierarchy`, `set_custom_fmg`, `sbr_refine`/`sbr_refine_where`;
+- automatic BC-per-level reduction + zero-column guard;
+- validated: scalar jump-coeff Poisson, 5-level (3 uniform + 2 SBR), 3 FMG iters
+  vs GAMG 46.
+
+**Current scope = experimental:** scalar / single-field-vector (top-level PC),
+**serial**, and `set_custom_fmg` takes a `level_solver_factory`.
+
+Remaining hardening **before** this is a merge-ready general feature (the
+relaunch's first task, in order):
+1. **Stokes / saddle-point** (velocity-block injection; `_install_transfers`
+   rejects `fieldsplit_velocity_`). Blocker: velocity sub-PC unreachable pre-solve
+   → use Galerkin-off + `MatPtAP` coarse ops after first solve. + nullspace re-attach.
+2. **Drop the factory** — derive per-level constrained DOFs from boundary labels +
+   BC components (no throwaway solver) for a clean API.
+3. **Parallel (np>1)** — `_reduced_map` is serial; validate co-located rank-local
+   transfers (fast-follow).
+
 ## Explicit non-goals for this pass
 - Knockout (shown to pay full-fine assembly; structural value only) — not pursued now.
 - Non-nested custom-P in parallel — serial/experimental only.
