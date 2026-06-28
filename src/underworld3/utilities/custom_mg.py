@@ -41,7 +41,8 @@ Notes
 import numpy as np
 from petsc4py import PETSc
 
-__all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg"]
+__all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
+           "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where"]
 
 
 # --------------------------------------------------------------------------- #
@@ -103,6 +104,57 @@ _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
 
 
 # --------------------------------------------------------------------------- #
+#  Local Skeleton-Based Refinement (no MMG; on-rank; conforming)
+# --------------------------------------------------------------------------- #
+_DM_ADAPT_REFINE = 1   # PETSc DM_ADAPT_REFINE
+
+
+def _sbr_apply(dm, mark):
+    """Clone ``dm``, let ``mark(clone, adapt_label)`` flag cells, and SBR-refine.
+    Conforming (edge bisection + propagation, no hanging nodes), on-rank (no
+    redistribution), no external mesh libraries. Cell geometry / marking is done
+    on the CLONE (the un-cloned mesh DM raises err73 from computeCellGeometryFVM).
+
+    IMPORTANT: ``dm_plex_transform_type`` is a *global* PETSc option; leaving it as
+    ``refine_sbr`` breaks UW3's uniform ``dm.refine()`` (FMG hierarchy build) with
+    PETSc error 73. It is set only for the duration of the call and restored."""
+    opts = PETSc.Options()
+    had = opts.hasName("dm_plex_transform_type")
+    prev = opts.getString("dm_plex_transform_type") if had else None
+    opts.setValue("dm_plex_transform_type", "refine_sbr")
+    try:
+        d = dm.clone()
+        d.createLabel("adapt")
+        lab = d.getLabel("adapt")
+        lab.setDefaultValue(0)
+        mark(d, lab)
+        return d.adaptLabel("adapt")
+    finally:
+        if had:
+            opts.setValue("dm_plex_transform_type", prev)
+        else:
+            opts.delValue("dm_plex_transform_type")
+
+
+def sbr_refine(dm, cells):
+    """SBR-refine an explicit list of ``cells``."""
+    def mark(d, lab):
+        for c in cells:
+            lab.setValue(int(c), _DM_ADAPT_REFINE)
+    return _sbr_apply(dm, mark)
+
+
+def sbr_refine_where(dm, predicate):
+    """SBR-refine cells whose centroid satisfies ``predicate(centroid)``."""
+    def mark(d, lab):
+        cs, ce = d.getHeightStratum(0)
+        for c in range(cs, ce):
+            if predicate(d.computeCellGeometryFVM(c)[1]):
+                lab.setValue(c, _DM_ADAPT_REFINE)
+    return _sbr_apply(dm, mark)
+
+
+# --------------------------------------------------------------------------- #
 #  Coordinate helpers
 # --------------------------------------------------------------------------- #
 def _to_petsc_aij(csr):
@@ -138,50 +190,75 @@ def _reduce_to_global(dm, full_coords):
 
 
 # --------------------------------------------------------------------------- #
-#  Injection
+#  Layer 1 — generalized FMG hierarchy (BC-reduced, adapter-agnostic)
+#
+#  INVARIANT (load-bearing): essential BCs are applied at EVERY level, so every
+#  transfer maps reduced->reduced. PETSc native FMG does this automatically via
+#  each level's constrained PetscSection; custom-P built from raw coordinates must
+#  replicate it. Omitting it is fatal on an EXACTLY-nested hierarchy: a coarse
+#  boundary DOF coincides with a BC-removed fine DOF -> zero column -> singular
+#  Galerkin coarse operator. (See docs/developer/design/
+#  GENERALIZED_FMG_HIERARCHY_AND_ADAPT.md.)
 # --------------------------------------------------------------------------- #
-def inject_custom_mg(solver):
-    """Configure ``solver``'s PCMG to use our custom prolongation hierarchy.
+def _field_subdm(dm, field_id):
+    """Return the sub-DM for ``field_id`` (whole dm if single-field / None)."""
+    if field_id is None:
+        return dm
+    try:
+        if dm.getNumFields() <= 1:
+            return dm
+    except Exception:
+        return dm
+    _iset, sub = dm.createSubDM(field_id)
+    return sub
 
-    Called from the solver's ``solve()`` (after ``_build``, before the SNES
-    solve) when ``solver._custom_mg`` is set via ``set_custom_mg``. Scalar /
-    single-field solvers only for now (the Stokes velocity-block path is a
-    separate increment).
-    """
-    cfg = solver._custom_mg
-    coarse_meshes = cfg["coarse_meshes"]
-    kind = cfg["kind"]
-    builder = _BUILDERS[kind]
 
-    var = solver.Unknowns.u
-    degree = var.degree
-    continuous = getattr(var, "continuous", True)
+def _reduced_map(dm, field_id=None):
+    """Reduced->full DOF map for a field on a BUILT DM (serial). Index ``k`` of
+    the returned array is the local DOF that maps to global/MG index ``k`` —
+    i.e. the BC-eliminated, MG-ordered layout the operator lives on.
 
-    if solver._pc_option_prefix not in ("", None):
-        raise NotImplementedError(
-            "custom_mg currently supports single-field (scalar/vector) solvers; "
-            f"solver uses PC prefix '{solver._pc_option_prefix}' (e.g. Stokes "
-            "velocity block) which is a separate increment.")
+    NOTE: serial-correct (uses local indices). Parallel correctness — mapping to
+    *global* numbering across ranks — is a Phase-3 item (the supported parallel
+    path keeps levels co-partitioned so this stays rank-local)."""
+    sub = _field_subdm(dm, field_id)
+    lv = sub.getLocalVec()
+    n_full = lv.getLocalSize()
+    lv.array[:] = np.arange(n_full)
+    gv = sub.getGlobalVec()
+    sub.localToGlobal(lv, gv, addv=False)
+    r2f = gv.array.astype(int).copy()
+    sub.restoreLocalVec(lv)
+    sub.restoreGlobalVec(gv)
+    return r2f, n_full
 
-    # --- per-level DOF coordinates --------------------------------------- #
-    fine = _reduce_to_global(solver.dm,
-                             solver.mesh._get_coords_for_basis(degree, continuous))
-    levels = [m._get_coords_for_basis(degree, continuous) for m in coarse_meshes]
-    levels.append(fine)
-    nlev = len(levels)
-    if nlev < 2:
-        raise ValueError("custom_mg needs at least one coarse mesh")
 
-    # --- build prolongations P[l]: level l-1 -> level l ------------------ #
-    Ps = [None] + [_to_petsc_aij(builder(levels[l - 1], levels[l]))
-                   for l in range(1, nlev)]
+def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
+    """Build one prolongation reduced(coarse) -> reduced(fine):
+    node-level scalar P -> interleave ``ncomp`` components -> drop BC rows/cols."""
+    import scipy.sparse as sp
+    Pn = builder(coarse_coords, fine_coords)               # (n_f_nodes, n_c_nodes)
+    Pv = sp.kron(Pn, sp.eye(ncomp), format="csr")          # interleaved full vector
+    Pr = Pv.tocsr()[r2f_f, :][:, r2f_c]                    # reduced -> reduced
+    return Pr
 
-    # --- configure the geometric MG bundle on the managed block ---------- #
+
+def _install_transfers(solver, Ps, verbose=False):
+    """Configure the managed PCMG block to use the supplied prolongations.
+    Build-time injection (before first PCSetUp): set DMActive(OPERATOR,False) so
+    PETSc does not re-derive interpolation from the DM, Galerkin RAP for coarse
+    operators. Scalar / single-field-vector (top-level PC: ``_pc_option_prefix``
+    is ``""``); the Stokes velocity-block path is Phase 2."""
+    nlev = len(Ps) + 1
     opts = solver.petsc_options
     pfx = solver._pc_option_prefix or ""
+    if pfx not in ("",):
+        raise NotImplementedError(
+            "Layer-1 install supports top-level PC (scalar / single-field vector). "
+            f"PC prefix '{pfx}' (e.g. Stokes velocity block) is Phase 2.")
     opts[pfx + "pc_type"] = "mg"
     opts[pfx + "pc_mg_type"] = "full"
-    opts[pfx + "pc_mg_galerkin"] = "both"          # coarse operators = PᵀAP
+    opts[pfx + "pc_mg_galerkin"] = "both"
     opts[pfx + "mg_levels_ksp_type"] = "richardson"
     opts[pfx + "mg_levels_pc_type"] = "sor"
     opts[pfx + "mg_coarse_pc_type"] = "redundant"
@@ -189,20 +266,146 @@ def inject_custom_mg(solver):
     for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
         opts.delValue(pfx + key)
 
-    # --- inject before the first PCSetUp --------------------------------- #
     solver.snes.setUp()
     ksp = solver.snes.getKSP()
-    # Stop PETSc re-deriving interpolation/operators from the DM hierarchy.
     ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
     pc = ksp.getPC()
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
     for l in range(1, nlev):
-        pc.setMGInterpolation(l, Ps[l])
+        pc.setMGInterpolation(l, Ps[l - 1])
     pc.setFromOptions()
-
-    if cfg.get("verbose"):
+    if verbose:
         from underworld3 import mpi
-        mpi.pprint(f"[{solver.name}] custom_mg ({kind}): levels "
-                   f"{[lv.shape[0] for lv in levels]}")
+        mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
+                   f"P sizes {[tuple(P.getSize()) for P in Ps]}")
+
+
+class CustomMGHierarchy:
+    """A generalized FMG hierarchy: a sequence of level meshes (coarsest..finest)
+    whose transfers are built by a pluggable builder, with BCs applied at every
+    level. Adapter-agnostic — it consumes meshes + a way to get each level's
+    BC-reduced DOF map; it does not know how the levels were produced.
+
+    Parameters
+    ----------
+    level_meshes : list of Mesh
+        Coarsest-first; the LAST entry must be the solver's own mesh.
+    builder : {"barycentric", "rbf"}
+        Per-level node prolongation builder.
+    field_id : int or None
+        Field index for multi-field solvers (e.g. 0 = velocity); None = single field.
+    """
+
+    def __init__(self, level_meshes, builder="barycentric", field_id=None):
+        if builder not in _BUILDERS:
+            raise ValueError("builder must be 'barycentric' or 'rbf'")
+        if len(level_meshes) < 2:
+            raise ValueError("need at least 2 levels (>=1 coarse + finest)")
+        self.level_meshes = list(level_meshes)
+        self.builder = _BUILDERS[builder]
+        self.builder_name = builder
+        self.field_id = field_id
+        self.transfers = None
+
+    def build(self, solver, level_solver_factory):
+        """Build the BC-reduced prolongations. ``solver`` is the (built) finest
+        solver; ``level_solver_factory(mesh) -> built solver`` provides a
+        same-discretisation solver on each COARSE level so its constrained
+        section gives that level's reduced map. The finest level uses ``solver``."""
+        var = solver.Unknowns.u
+        degree = var.degree
+        continuous = getattr(var, "continuous", True)
+        nlev = len(self.level_meshes)
+
+        coords, r2f, ncomp = [], [], []
+        for k, mesh in enumerate(self.level_meshes):
+            c = np.asarray(mesh._get_coords_for_basis(degree, continuous))
+            if k == nlev - 1:
+                rmap, nfull = _reduced_map(solver.dm, self.field_id)
+            else:
+                tmp = level_solver_factory(mesh)
+                tmp._build(False, False, None)
+                tmp.snes.setUp()
+                rmap, nfull = _reduced_map(tmp.dm, self.field_id)
+            nc = nfull // c.shape[0]
+            if nfull % c.shape[0] != 0:
+                raise RuntimeError(
+                    f"level {k}: full DOFs {nfull} not divisible by nodes {c.shape[0]}")
+            coords.append(c); r2f.append(rmap); ncomp.append(nc)
+
+        if len(set(ncomp)) != 1:
+            raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
+        nc = ncomp[0]
+
+        Ps = []
+        for l in range(1, nlev):
+            Pr = _reduced_transfer(coords[l - 1], coords[l], r2f[l - 1], r2f[l],
+                                   nc, self.builder)
+            zc = int((np.asarray((Pr != 0).sum(axis=0)).ravel() == 0).sum())
+            if zc:
+                raise RuntimeError(
+                    f"transfer {l-1}->{l} has {zc} zero columns (coarse DOFs with no "
+                    f"fine image) — BC-per-level reduction failed; coarse operator "
+                    f"would be singular.")
+            Ps.append(_to_petsc_aij(Pr))
+        self.transfers = Ps
+        return Ps
+
+    def install(self, solver, verbose=False):
+        if self.transfers is None:
+            raise RuntimeError("call build() before install()")
+        _install_transfers(solver, self.transfers, verbose=verbose)
+
+
+# --------------------------------------------------------------------------- #
+#  Entry points
+# --------------------------------------------------------------------------- #
+def set_custom_fmg(solver, coarse_meshes, *, level_solver_factory,
+                   builder="barycentric", field_id=None, verbose=False):
+    """Generalized custom-P FMG with BC-per-level reduction (the correct path).
+
+    Registers a :class:`CustomMGHierarchy` on the solver so that the next
+    ``solve()`` builds and installs it (build-time injection). The hierarchy is
+    ``[*coarse_meshes, solver.mesh]``; ``level_solver_factory(mesh)`` must return
+    a same-discretisation solver on a coarse level (used only to read its
+    BC-constrained section)."""
+    solver._custom_mg = {
+        "mode": "hierarchy",
+        "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
+                                       builder=builder, field_id=field_id),
+        "factory": level_solver_factory,
+        "verbose": verbose,
+    }
+    solver.is_setup = False
+
+
+def inject_custom_mg(solver):
+    """Build + install the custom-P FMG. Called from ``solve()`` (after ``_build``,
+    before the SNES solve) when ``solver._custom_mg`` is set. Dispatches:
+    - ``mode == "hierarchy"`` -> BC-per-level reduced path (correct, general);
+    - legacy dict ``{coarse_meshes, kind}`` -> finest-only reduction (kept for
+      back-compat; valid only when coarse levels are non-nested / unconstrained)."""
+    cfg = solver._custom_mg
+
+    if isinstance(cfg, dict) and cfg.get("mode") == "hierarchy":
+        h = cfg["hierarchy"]
+        h.build(solver, cfg["factory"])
+        h.install(solver, verbose=cfg.get("verbose", False))
+        return
+
+    # ---- legacy finest-only path (back-compat) ------------------------------
+    coarse_meshes = cfg["coarse_meshes"]
+    builder = _BUILDERS[cfg["kind"]]
+    var = solver.Unknowns.u
+    degree = var.degree
+    continuous = getattr(var, "continuous", True)
+    if solver._pc_option_prefix not in ("", None):
+        raise NotImplementedError("legacy custom_mg path is scalar/single-field only")
+    fine = _reduce_to_global(solver.dm,
+                             solver.mesh._get_coords_for_basis(degree, continuous))
+    levels = [m._get_coords_for_basis(degree, continuous) for m in coarse_meshes]
+    levels.append(fine)
+    Ps = [_to_petsc_aij(builder(levels[l - 1], levels[l])) for l in range(1, len(levels))]
+    _install_transfers(solver, Ps, verbose=cfg.get("verbose", False))
