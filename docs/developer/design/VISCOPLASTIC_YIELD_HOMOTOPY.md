@@ -189,12 +189,33 @@ Two findings. **(i) Solver:** a *1 %* regularising floor (ξ = 0.01) **rescues t
 FMG solve** where the δ-homotopy failed and AL + FMG could not converge — it is the
 **MG-friendly fix** for the extreme-contrast corner. **(ii) Pattern selection:**
 unlike the δ axis (where the solution is δ-*insensitive*, stress-pinned), the
-**solution genuinely changes with ξ** (vrms 0.747 → 0.682, yielding 87 % → 79 %).
-The rate dependence is doing real *physical selection* of the localisation pattern,
-not just conditioning — see `figures/strainrate_*_xi*.png`.
+**solution genuinely changes with ξ**. The converged field is the classic DP
+localisation — conjugate shear bands (an X) from the notch plus a horizontal band
+along the weak layer (`figures/strainrate_*_xi*.png`) — and its *sharpness* tracks
+ξ: smaller ξ → wider strain-rate range → more concentrated bands. So the rate
+dependence performs real *physical selection* of the localisation pattern, not just
+conditioning.
 
-<!-- TODO fill from runs in flight: strain-rate band figure across ξ; ξ→0
-continuation (does the pattern converge to a unique limit or fan out?). -->
+#### ξ → 0 continuation (does the selected pattern converge?)
+
+Starting cold at ξ = 0.1 and **warm-stepping ξ downward** toward the
+rate-independent limit (each step warm-starts the δ-sequencer from the previous ξ;
+common-colour band render at each ξ — `figures/ximarch_bands_*.png`,
+`figures/ximarch_vrms_*.png`):
+
+| ξ | 0.1 | 0.05 | 0.025 | 0.0125 | 0.006 | 0.003 | 0.0015 |
+|---|-----|------|-------|--------|-------|-------|--------|
+| vrms | 0.682 | 0.698 | 0.718 | 0.740 | 0.762 | 0.776 | floor (grinds) |
+
+The two-axis homotopy (δ *and* ξ both small) **walks the (1e26, V10) corner — which
+was `TOO-HARD` for the δ-homotopy + FMG — down to ξ = 0.003 under FMG**, i.e. to
+within a 0.3 % regularising floor of rate-independent DP. Below that (ξ = 0.0015)
+the unregularised extreme-contrast problem returns and the iterative linear solve
+grinds — the practical ξ-floor. As ξ → 0 the pattern **converges toward a unique
+limit**: vrms rises monotonically but with *shrinking* increments (…0.022, 0.021,
+**0.014**), plateauing near ≈ 0.78. The bands sharpen to a definite configuration
+(same X-geometry) rather than fanning out or jumping — at this regime the
+ξ-selection lands on a single, well-defined localisation pattern.
 
 ## Honest limitations
 
@@ -213,15 +234,18 @@ continuation (does the pattern converge to a unique limit or fan out?). -->
   small *nonlinear* basin, it is *linear-solve* fragile at extreme contrast
   (non-symmetric `A` → divergent Schur Krylov). Picard is robust but slow; the
   homotopy should pair with Picard (or a Picard→Newton continuation) there.
-- **Rate-independent DP is non-unique.** Perfect plasticity admits multiple
-  shear-band patterns. The ξ-regularisation *selects* one; the `ξ → 0` limit is
-  where the non-uniqueness lives (Phase-2 continuation, in progress).
+- **Rate-independent DP is non-unique** in general (perfect plasticity admits
+  multiple shear-band patterns). The ξ-regularisation *selects* one. At the regime
+  tested here the `ξ → 0` continuation converges to a *single* well-defined pattern
+  (no fan-out), but whether this holds across regimes — and whether different
+  ξ-paths select different limits — is open.
 
 ## Next steps
 
-1. **ξ → 0 continuation** at the extreme corner: does the selected pattern converge
-   to a unique limit, or fan out / become sensitive as the regularisation is
-   removed? (Probes the non-uniqueness directly.)
+1. **ξ → 0 continuation across regimes.** At (1e26, V10) it converges to a single
+   pattern down to ξ = 0.003 (done). Repeat across the Fig. 5 plane and test whether
+   different ξ-paths (or δ/ξ orderings) select different limits — the direct probe
+   of non-uniqueness.
 2. **Pattern-selection study** as a deliberate physics investigation (damage-rate
    selection of localisation), framed as *uniqueness/selection*, not convergence.
 3. **Two-axis interaction** (δ for the corner, ξ for the branch) — when is each
