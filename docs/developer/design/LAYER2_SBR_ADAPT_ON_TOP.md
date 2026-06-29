@@ -171,3 +171,27 @@ produced the current mesh.
 
 Non-goals this pass: cumulative refinement / node movement (explicitly out — that's
 MMPDE's domain); load-balancing the adapted layers; MMG-path changes.
+
+## Prototype validation (2026-06-29, before touching mesh.adapt)
+
+The full mechanic is de-risked in a study script
+(`~/+Simulations/layer2_adapt_on_top_study/proto_sbr_adapt_on_top.py`) using **only
+Layer-1 code** (`sbr_refine_where` + `set_custom_fmg`), serial **and** np=2:
+
+- **A. SBR adapt-on-top + custom-P** — static base (refinement=2, finest 512 cells)
+  → SBR-refine near a feature (→1023) → wrap → custom-P hierarchy
+  `[L0,L1,base-finest,SBR-finest]` → Poisson solve: **pc=mg, 4 levels, 4 iters**,
+  matches GAMG to 2.4e-8.
+- **B. REMAP field transfer** base-finest → SBR-finest via `global_evaluate`: rel err
+  vs analytic 3.9e-4 (P2 interpolation floor).
+- **C. Re-adapt (non-cumulative)** — feature moves 0.7→0.5→0.35; each step discards the
+  SBR top, re-marks from the **same static base finest**, re-solves (4 iters, pc=mg),
+  carries the field (~5e-4). Base finest stays 512 cells (unchanged) throughout.
+- **np=2 (no-redistribute correctness)** — each rank SBR-refines its OWN cells
+  (rank0 256→502, rank1 256→521; on-rank imbalance accepted), the refined finest stays
+  **co-partitioned with the base coarse levels**, so parallel custom-P works (pc=mg,
+  4 iters, matches GAMG). REMAP + re-adapt loop parallel-safe.
+
+Conclusion: the design holds end-to-end. Remaining work is wiring it into
+`mesh.adapt(adapter="sbr")` with the mesh-owned hierarchy + solver auto-pickup
+(no per-solver `set_custom_fmg`), then transfer caching, then checkpointing.
