@@ -103,6 +103,20 @@ def rbf_prolongation(coarse_coords, fine_coords, smooth=0.0):
 _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
 
 
+def _require_serial(where):
+    """Custom-P transfers are serial-only (experimental). The reduced maps use
+    rank-local DOF indices and the prolongations assemble as serial AIJ; at np>1
+    they would silently build wrong P / mis-numbered transfers. Parallel support
+    (nested co-partitioned, rank-local P + MPIAIJ, global-section reduction) is a
+    designed fast-follow — until then, fail loudly rather than wrong."""
+    from underworld3 import mpi
+    if mpi.size > 1:
+        raise NotImplementedError(
+            f"custom_mg ({where}): custom-P geometric MG is serial-only "
+            f"(running on {mpi.size} ranks). Parallel (np>1) support is not yet "
+            f"implemented; use preconditioner='fmg' (nested) or 'gamg' in parallel.")
+
+
 # --------------------------------------------------------------------------- #
 #  Local Skeleton-Based Refinement (no MMG; on-rank; conforming)
 # --------------------------------------------------------------------------- #
@@ -478,6 +492,7 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     (``_coarse_reduced_map``), so ``coarse_meshes`` need only carry the same
     boundary labels as the solver's mesh. For a saddle-point (Stokes) solver pass
     ``field_id=0`` to target the velocity sub-block."""
+    _require_serial("set_custom_fmg")
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
@@ -493,6 +508,7 @@ def inject_custom_mg(solver):
     - ``mode == "hierarchy"`` -> BC-per-level reduced path (correct, general);
     - legacy dict ``{coarse_meshes, kind}`` -> finest-only reduction (kept for
       back-compat; valid only when coarse levels are non-nested / unconstrained)."""
+    _require_serial("inject_custom_mg")
     cfg = solver._custom_mg
 
     if isinstance(cfg, dict) and cfg.get("mode") == "hierarchy":
