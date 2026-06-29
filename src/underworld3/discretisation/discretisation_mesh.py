@@ -6040,8 +6040,17 @@ class Mesh(Stateful, uw_object):
             Maximum SBR depth applied on top of the base finest (bounds the
             on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
-            Optional cap on the number of cells refined **per level** (highest-
-            metric cells first). Approximate DOF control; ``None`` ⇒ uncapped.
+            Optional cap on the number of *seed* cells marked per level (highest-
+            metric first). **Caveat:** this caps the marked seeds, *not* the
+            resulting DOFs — SBR's conforming closure re-refines the whole
+            connected patch from any seed in it, so a seed cap does not bound the
+            added DOFs and cannot, on its own, concentrate the finest level near a
+            feature. To make the **finest level hug a feature** (a funnel) with
+            bounded per-level growth, shape the **metric** so element size grows
+            with distance (e.g. ``Surface.refinement_metric(..., profile="linear")``,
+            a wedge), not this budget. A *flat-core* metric (e.g. a Gaussian)
+            refines the whole core uniformly at every level (no funnel).
+            ``None`` ⇒ uncapped.
         builder : {"barycentric", "rbf"}
             Per-level node-prolongation builder for the child's custom-P hierarchy.
         adapter : {"sbr", "mmg"}
@@ -6053,6 +6062,23 @@ class Mesh(Stateful, uw_object):
         -------
         Mesh
             The refined child (or ``self`` when ``adapter='mmg'``).
+
+        Notes
+        -----
+        **Controlling the grading (funnel toward a feature).** Each SBR pass
+        refines every cell that is still coarser than the metric target, so the
+        final grading *is* whatever the metric specifies. To make the **finest**
+        level hug a feature (a funnel), use a metric whose target size grows with
+        distance from the feature — a *wedge*, e.g.
+        ``Surface.refinement_metric(h_near, h_far, width, profile="linear")`` with
+        a small ``width``. A flat-core metric (Gaussian) instead refines the whole
+        core uniformly at every level, so every level has the same width.
+
+        SBR's conforming closure re-refines the whole connected patch from any
+        marked seed, so the funnel must come from the metric shape, not from
+        capping seed counts (see ``node_budget``). For a 1-D feature in 2-D the
+        per-level DOFs still grow (the along-feature resolution doubles each
+        level); the wedge keeps the total finite and feature-concentrated.
         """
         import warnings
 

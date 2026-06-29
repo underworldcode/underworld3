@@ -219,6 +219,40 @@ def test_each_sbr_level_is_its_own_mg_level():
     assert s.snes.getConvergedReason() > 0
 
 
+def test_wedge_metric_funnels_finest_level_to_feature():
+    """A wedge metric (size ~ distance, profile='linear') concentrates the FINEST
+    SBR level near the feature with bounded per-level growth — whereas a flat-core
+    (gaussian) metric refines the whole core uniformly at every level. We assert
+    the wedge's per-level marked-cell growth is much milder than the gaussian's.
+    """
+    base = _base()
+    fxy = np.column_stack([0.25 + np.linspace(0, 0.85, 41) * np.cos(np.deg2rad(35)),
+                           0.92 - np.linspace(0, 0.85, 41) * np.sin(np.deg2rad(35))])
+    fault = uw.meshing.Surface("fault_funnel", base,
+                               np.column_stack([fxy, np.zeros(41)]), symbol="Ff")
+    fault.discretize()
+
+    wedge = fault.refinement_metric(h_near=0.0625 / 8, h_far=0.07, width=0.05,
+                                    profile="linear", name="wedge_m")
+    gauss = fault.refinement_metric(h_near=0.0625 / 8, h_far=0.07, width=0.05,
+                                    profile="gaussian", name="gauss_m")
+
+    cw = base.adapt(wedge, max_levels=3)
+    cg = base.adapt(gauss, max_levels=3)
+    # per-level marked counts are stashed for checkpoint-by-marker
+    nw = [len(m) for m in cw._adapt_markers]
+    ng = [len(m) for m in cg._adapt_markers]
+    assert len(nw) == 3 and len(ng) == 3
+
+    # growth = finest-level marked / coarsest-level marked. The wedge funnels
+    # (finest band narrower -> mild growth); the flat gaussian keeps the wide
+    # core at every level (finest level marks far more) -> steeper growth. This
+    # bounded per-level growth IS the funnel signature.
+    growth_wedge = nw[-1] / max(nw[0], 1)
+    growth_gauss = ng[-1] / max(ng[0], 1)
+    assert growth_wedge < growth_gauss
+
+
 def test_adapt_requires_base_hierarchy():
     # a mesh without a refinement hierarchy cannot supply the MG coarse tail
     flat = uw.meshing.UnstructuredSimplexBox(
