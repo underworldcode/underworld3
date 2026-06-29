@@ -224,16 +224,33 @@ mode**: tightening a thin shear band barely changes the far-field flow or the
 integrated residual, so the equations constrain that mode only weakly — a
 **near-singular direction** along which ξ selects.
 
-**Physically, ξ is the localisation length-scale regulariser** (a damage
-time/length). The shear bands **tighten** monotonically as ξ → 0
-(`figures/ximarch_bands_*.png`): the rate-dependence sets a finite band width, and
-removing it collapses the bands toward zero width — the singular rate-independent
-limit (infinitely-thin slip lines, mesh-limited). This is exactly the classic
-rate-regularisation of strain localisation: a finite ξ gives a *physical,
-mesh-independent* band width, and the homotopy is what makes that solvable under
-FMG. The variants share the same conjugate-X band *geometry* and tighten toward the
-limit rather than switching to a rival pattern — so at this regime it is a graded
+As ξ → 0 the shear bands **tighten** monotonically (`figures/ximarch_bands_*.png`),
+toward the singular rate-independent limit (infinitely-thin slip lines, mesh-limited).
+The variants share the same conjugate-X band *geometry* and tighten toward the limit
+rather than switching to a rival pattern — so at this regime it is a graded
 one-parameter family, not discretely-distinct slip-line fields.
+
+**What ξ is — and is not.** ξ is a *rate* (Perzyna / viscoplastic) regulariser, and
+its dual role must be kept separate:
+- **As a solver conditioner it is genuinely useful** — it bounds the contrast,
+  keeps the velocity block MG-friendly, and is what rescues the FMG solve at the
+  extreme corner (the headline above).
+- **As a physical regulariser it is the *wrong* tool.** It sets a band width only
+  *indirectly* (emergent from the rate-strengthening vs. the local dynamics), and
+  that width is **mesh-sensitive** — there is **no directly-settable physical length
+  scale**. A genuine shear-band-limiting length (gradient / nonlocal plasticity) is
+  the physically-correct regulariser; ξ does not replace it.
+
+The physically-correct, *settable*-length regularisation is an **implicit-gradient
+(nonlocal) term solved *inside* the SNES**: a Helmholtz-filtered strain rate
+`ε̇̄ = (1 − ℓ²∇²)⁻¹ ε̇` used in the yield, with ℓ the band-width length, coupled as
+an auxiliary field in the residual/Jacobian. An **outside-SNES** strain-rate
+smoothing / block-ε̇ term (an operator split: ε̇̄ built from the previous iterate)
+is **weak under strong viscosity contrast** — the regularisation lags the
+localisation, which moves between iterates, so it decouples exactly where it is
+needed (observed). The clean division of labour is **δ/ξ for the solver path
+(homotope → 0), ℓ for the physics (kept finite, in-SNES)** — orthogonal roles, the
+same rampable-`constants[]` machinery applies to all three.
 
 ## Honest limitations
 
