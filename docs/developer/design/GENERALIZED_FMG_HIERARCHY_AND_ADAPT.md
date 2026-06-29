@@ -154,7 +154,13 @@ Remaining hardening **before** this is a merge-ready general feature (in order):
    leak-free (no SNES / JIT). `set_custom_fmg` / `build` no longer take a
    `level_solver_factory`.
 3. **Parallel (np>1)** — `_reduced_map` / `_coarse_reduced_map` are serial (local
-   indices); validate co-located rank-local transfers (fast-follow).
+   indices) and `P` assembles as serial AIJ. **Guarded** (2026-06-29):
+   `set_custom_fmg` / `inject_custom_mg` raise a clear `NotImplementedError` at
+   np>1 (`_require_serial`) so parallel cannot silently mis-build — test
+   `tests/parallel/test_1017_custom_mg_serial_guard_mpi.py`. The full
+   parallel-correct implementation (nested co-partitioned, rank-local point
+   location + ghost layer, MPIAIJ assembly with global-section reduction) remains
+   the designed fast-follow.
 
 ## Explicit non-goals for this pass
 - Knockout (shown to pay full-fine assembly; structural value only) — not pursued now.
