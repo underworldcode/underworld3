@@ -120,16 +120,21 @@ non-nested parallel transfers; knockout-as-coarsening as an alternative Layer-2 
 (nested *or* non-nested, uniform *or* SBR-refined) → geometric FMG via custom-P
 with BC-per-level reduction. It does not depend on Layer 2.
 
-Landed (committed, tested — `test_1014/1015/1016`, 18 pass):
+Landed (committed, tested — `test_1014/1015/1016/1017` serial 20 +
+`tests/parallel/test_1017_custom_mg_parallel_mpi.py` np2):
 - `CustomMGHierarchy`, `set_custom_fmg`, `sbr_refine`/`sbr_refine_where`;
 - automatic BC-per-level reduction + zero-column guard;
-- validated: scalar jump-coeff Poisson, 5-level (3 uniform + 2 SBR), 3 FMG iters
-  vs GAMG 46.
+- Stokes velocity-block injection; leak-free per-level reduction (copyDS, no
+  factory); parallel (np>1) nested co-partitioned transfers;
+- validated: scalar jump-coeff Poisson 5-level (3 uniform + 2 SBR) 3 FMG iters
+  vs GAMG 46; SolCx velocity block 6 iters vs GAMG ~198, np=1/2/4.
 
-**Current scope = experimental:** **serial**. Scalar / single-field-vector **and**
-Stokes velocity-block are supported; the throwaway-solver factory has been removed.
+**Current scope:** scalar / single-field-vector **and** Stokes velocity-block;
+**serial and parallel** (nested co-partitioned). Non-nested custom-P is serial-only
+(experimental). Hardening steps 1–3 are complete; what remains is test
+tier-classification + undrafting PR #290.
 
-Remaining hardening **before** this is a merge-ready general feature (in order):
+Hardening steps (all complete as of 2026-06-29):
 1. ~~**Stokes / saddle-point** (velocity-block injection).~~ **DONE** (2026-06-29).
    `set_custom_fmg(..., field_id=0)` drives custom-P geometric MG on the velocity
    sub-block. The sub-PC is unreachable until the monolithic Jacobian is assembled,
@@ -153,14 +158,21 @@ Remaining hardening **before** this is a merge-ready general feature (in order):
    solver's boundary labels — validated byte-identical to the old factory path,
    leak-free (no SNES / JIT). `set_custom_fmg` / `build` no longer take a
    `level_solver_factory`.
-3. **Parallel (np>1)** — `_reduced_map` / `_coarse_reduced_map` are serial (local
-   indices) and `P` assembles as serial AIJ. **Guarded** (2026-06-29):
-   `set_custom_fmg` / `inject_custom_mg` raise a clear `NotImplementedError` at
-   np>1 (`_require_serial`) so parallel cannot silently mis-build — test
-   `tests/parallel/test_1017_custom_mg_serial_guard_mpi.py`. The full
-   parallel-correct implementation (nested co-partitioned, rank-local point
-   location + ghost layer, MPIAIJ assembly with global-section reduction) remains
-   the designed fast-follow.
+3. ~~**Parallel (np>1)**.~~ **DONE** (2026-06-29). The hierarchy path builds
+   parallel-correct transfers on the nested co-partitioned hierarchy: each rank
+   builds its block of `P` rank-locally (ghost-inclusive coarse coords → every
+   owned fine node lands in a local coarse simplex, verified 0 misses np=2/4),
+   the reduced global numbering rides the DM global section
+   (`_level_dof_layout` scatters owned global indices out via `globalToLocal` —
+   constrained DOFs `-1`, ghosts resolve to the owner's global), and transfers
+   assemble as MPIAIJ (owned fine rows, global coarse cols incl. off-rank;
+   constrained coarse DOFs drop → reduced→reduced). Parallel zero-column guard
+   via `Pᵀ·1` + allreduce. Validated np=1/2/4: scalar Poisson 4 iters + Stokes
+   SolCx velocity block 6 iters, matching the GAMG reference and each other
+   across rank counts (`tests/parallel/test_1017_custom_mg_parallel_mpi.py`). The
+   **legacy** finest-only path (`set_custom_mg` / `_reduce_to_global`) stays
+   serial-only and raises loudly at np>1. Non-nested custom-P in parallel remains
+   out of scope (cross-rank point location).
 
 ## Explicit non-goals for this pass
 - Knockout (shown to pay full-fine assembly; structural value only) — not pursued now.
