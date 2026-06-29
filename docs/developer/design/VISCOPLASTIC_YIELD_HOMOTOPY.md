@@ -296,6 +296,17 @@ same rampable-`constants[]` machinery applies to all three.
    needed, and does a joint schedule cover the whole Fig. 5 plane.
 4. **Pair the homotopy with Picard** (or Picard→Newton continuation) at extreme
    contrast, where the consistent tangent's linear-solve fragility dominates.
+5. **Rate-WEAKENING (m) axis — parked, exploratory.** The mirror of ξ: a smooth δ
+   for solvability + rate-weakening `τ_y → σ_y·(1 − m·ε̇/(ε̇+ε̇_ref))` to *restore*
+   the fine bands δ washes out (L.M.). Observations so far: weakening is genuinely
+   **anti-coercive** (cold-solving with it on grinds — it fights the solver, the
+   opposite of ξ), so it needs a *warm* m-homotopy from m=0. **Flagged JIT bug**: a
+   `constants[]` atom in an *exponent* did not ramp (residual byte-identical across
+   m); it must be a linear/multiplicative coefficient to be repackable — a constant
+   should be usable in exponent position, so this is a JIT/constants-handling bug,
+   not a modelling constraint. Open question (the actual physics): does a δ↔m
+   *balance* set a finite, mesh-independent band width, or do the bands go
+   mesh-limited as with pure rate-weakening?
 
 ## References
 
