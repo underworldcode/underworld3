@@ -243,42 +243,128 @@ def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
     return Pr
 
 
-def _install_transfers(solver, Ps, verbose=False):
-    """Configure the managed PCMG block to use the supplied prolongations.
-    Build-time injection (before first PCSetUp): set DMActive(OPERATOR,False) so
-    PETSc does not re-derive interpolation from the DM, Galerkin RAP for coarse
-    operators. Scalar / single-field-vector (top-level PC: ``_pc_option_prefix``
-    is ``""``); the Stokes velocity-block path is Phase 2."""
-    nlev = len(Ps) + 1
-    opts = solver.petsc_options
-    pfx = solver._pc_option_prefix or ""
-    if pfx not in ("",):
-        raise NotImplementedError(
-            "Layer-1 install supports top-level PC (scalar / single-field vector). "
-            f"PC prefix '{pfx}' (e.g. Stokes velocity block) is Phase 2.")
-    opts[pfx + "pc_type"] = "mg"
-    opts[pfx + "pc_mg_type"] = "full"
-    opts[pfx + "pc_mg_galerkin"] = "both"
-    opts[pfx + "mg_levels_ksp_type"] = "richardson"
-    opts[pfx + "mg_levels_pc_type"] = "sor"
-    opts[pfx + "mg_coarse_pc_type"] = "redundant"
-    opts[pfx + "mg_coarse_redundant_pc_type"] = "lu"
-    for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
-        opts.delValue(pfx + key)
+def _configure_pcmg(pc, Ps):
+    """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
+    reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
-    solver.snes.setUp()
-    ksp = solver.snes.getKSP()
-    ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
-    pc = ksp.getPC()
+    Writes the MG bundle into the options DB under the PC's OWN options prefix
+    (``pc.getOptionsPrefix()`` — e.g. ``Solver_N_`` for the scalar top-level PC,
+    ``Solver_N_fieldsplit_velocity_`` for the Stokes velocity sub-PC) and removes
+    any gamg keys BEFORE ``setFromOptions`` — otherwise ``setFromOptions`` re-reads
+    a lingering ``pc_type=gamg`` and reverts ``setType("mg")``. ``setMGInterpolation``
+    persists through ``setFromOptions``; the first ``PCSetUp`` builds the coarse
+    operators from our P (no ``MatProductReplaceMats`` shape bug, since the PCMG is
+    fresh and P's size is fixed)."""
+    nlev = len(Ps) + 1
+    prefix = pc.getOptionsPrefix() or ""
+    opts = PETSc.Options()
+    opts.setValue(prefix + "pc_type", "mg")
+    opts.setValue(prefix + "pc_mg_type", "full")
+    opts.setValue(prefix + "pc_mg_galerkin", "both")
+    opts.setValue(prefix + "mg_levels_ksp_type", "richardson")
+    opts.setValue(prefix + "mg_levels_pc_type", "sor")
+    opts.setValue(prefix + "mg_coarse_pc_type", "redundant")
+    opts.setValue(prefix + "mg_coarse_redundant_pc_type", "lu")
+    for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
+        opts.delValue(prefix + key)
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
     for l in range(1, nlev):
         pc.setMGInterpolation(l, Ps[l - 1])
     pc.setFromOptions()
+
+
+def _install_transfers(solver, Ps, verbose=False):
+    """Configure the managed PCMG block to use the supplied prolongations.
+
+    Two paths, keyed by ``solver._pc_option_prefix``:
+
+    * **scalar / single-field vector** (top-level PC, prefix ``""``): build-time
+      injection *before* the first ``PCSetUp`` — the first Galerkin assembly is
+      built from our P directly.
+    * **Stokes velocity block** (prefix ``"fieldsplit_velocity_"``): the velocity
+      sub-PC is unreachable until the monolithic Jacobian is assembled
+      (``PCFieldSplit`` forms ``A_vv`` via ``MatCreateSubMatrix``; ``snes.setUp``
+      builds structure only -> err73). So force a Jacobian assembly, reach the
+      velocity sub-PC, ``reset`` it and rebuild a fresh PCMG from our P, then
+      re-attach the coupled Stokes nullspace.
+
+    Either way ``KSPSetDMActive(OPERATOR, False)`` stops PETSc re-deriving the
+    interpolation from the DM hierarchy."""
+    nlev = len(Ps) + 1
+    pfx = solver._pc_option_prefix or ""
+
+    if pfx == "":
+        ksp = solver.snes.getKSP()
+        solver.snes.setUp()
+        ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
+        _configure_pcmg(ksp.getPC(), Ps)
+        if verbose:
+            from underworld3 import mpi
+            mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
+                       f"P sizes {[tuple(P.getSize()) for P in Ps]}")
+        return
+
+    if pfx != "fieldsplit_velocity_":
+        raise NotImplementedError(
+            f"custom_mg install: unsupported PC prefix '{pfx}'.")
+
+    _install_velocity_block_transfers(solver, Ps, verbose=verbose)
+
+
+def _install_velocity_block_transfers(solver, Ps, verbose=False):
+    """Stokes velocity-block install (mechanism A: reset + fresh PCMG).
+
+    Preconditions: ``solver._build`` + ``setFromOptions`` + ``_attach_stokes_nullspace``
+    have run (the call site in ``SNES_Stokes_SaddlePt.solve`` guarantees this), so
+    the SNES / DM exist but the Jacobian VALUES are not yet assembled."""
+    snes = solver.snes
+    snes.setUp()
+
+    # 1. force monolithic Jacobian assembly so the fieldsplit can form A_vv
+    x0 = solver.dm.getGlobalVec()
+    x0.set(0.0)
+    J = snes.getJacobian()[0]
+    Pmat = snes.getJacobian()[1]
+    try:
+        f = J.createVecLeft()
+        snes.computeFunction(x0, f)
+        snes.computeJacobian(x0, J, Pmat)
+    except PETSc.Error:
+        # fallback: throwaway max_it=0 solve assembles + splits the operator
+        saved = (solver.petsc_options.getString("snes_max_it")
+                 if solver.petsc_options.hasName("snes_max_it") else None)
+        solver.petsc_options["snes_max_it"] = 0
+        snes.setFromOptions()
+        snes.solve(None, x0)
+        if saved is not None:
+            solver.petsc_options["snes_max_it"] = saved
+        snes.setFromOptions()
+    solver.dm.restoreGlobalVec(x0)
+
+    # 2. split -> reach the velocity sub-KSP / sub-PC (field 0)
+    outer_pc = snes.getKSP().getPC()
+    outer_pc.setUp()
+    vel_ksp = outer_pc.getFieldSplitSubKSP()[0]
+    vel_pc = vel_ksp.getPC()
+    sub = vel_pc.getOptionsPrefix() or "fieldsplit_velocity_"
+    A_vv, P_vv = vel_pc.getOperators()        # capture before reset (reset drops them)
+
+    # 3. fresh PCMG on the velocity sub-block from our Ps
+    vel_ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
+    vel_pc.reset()
+    vel_pc.setOperators(A_vv, P_vv)
+    _configure_pcmg(vel_pc, Ps)
+    vel_pc.setUp()
+
+    # 4. re-attach the coupled Stokes nullspace (operator state was touched)
+    solver._attach_stokes_nullspace()
+
     if verbose:
         from underworld3 import mpi
-        mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
+        mpi.pprint(f"[{solver.name}] custom FMG installed on velocity block: "
+                   f"{len(Ps) + 1} levels, sub-prefix {sub!r}, "
                    f"P sizes {[tuple(P.getSize()) for P in Ps]}")
 
 

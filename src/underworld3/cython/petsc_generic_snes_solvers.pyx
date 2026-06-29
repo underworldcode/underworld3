@@ -7458,6 +7458,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
+            # Custom geometric-MG prolongation on the velocity block (if registered
+            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+            # before the real solve — because the velocity sub-PC is only reachable
+            # once the monolithic Jacobian is assembled (see custom_mg).
+            if self._custom_mg is not None:
+                from underworld3.utilities.custom_mg import inject_custom_mg
+                inject_custom_mg(self)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         else:
@@ -7468,6 +7475,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
+            # Custom geometric-MG prolongation on the velocity block (if registered
+            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+            # before the real solve — because the velocity sub-PC is only reachable
+            # once the monolithic Jacobian is assembled (see custom_mg).
+            if self._custom_mg is not None:
+                from underworld3.utilities.custom_mg import inject_custom_mg
+                inject_custom_mg(self)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         # Project the rigid-body rotation gauge out of the converged solution.
