@@ -206,16 +206,34 @@ common-colour band render at each ξ — `figures/ximarch_bands_*.png`,
 | ξ | 0.1 | 0.05 | 0.025 | 0.0125 | 0.006 | 0.003 | 0.0015 |
 |---|-----|------|-------|--------|-------|-------|--------|
 | vrms | 0.682 | 0.698 | 0.718 | 0.740 | 0.762 | 0.776 | floor (grinds) |
+| `‖F(δ=0,ξ=0)‖` | 5.0e-8 | 3.4e-8 | 1.2e-8 | 2.7e-8 | 1.8e-8 | 2.4e-8 | — |
 
 The two-axis homotopy (δ *and* ξ both small) **walks the (1e26, V10) corner — which
 was `TOO-HARD` for the δ-homotopy + FMG — down to ξ = 0.003 under FMG**, i.e. to
 within a 0.3 % regularising floor of rate-independent DP. Below that (ξ = 0.0015)
 the unregularised extreme-contrast problem returns and the iterative linear solve
-grinds — the practical ξ-floor. As ξ → 0 the pattern **converges toward a unique
-limit**: vrms rises monotonically but with *shrinking* increments (…0.022, 0.021,
-**0.014**), plateauing near ≈ 0.78. The bands sharpen to a definite configuration
-(same X-geometry) rather than fanning out or jumping — at this regime the
-ξ-selection lands on a single, well-defined localisation pattern.
+grinds — the practical ξ-floor.
+
+The decisive diagnostic is the **true sharp-corner residual** `‖F(x_ξ, δ=0, ξ=0)‖`
+— the residual of the *exact* unsmoothed, rate-independent DP problem at each
+regularised solution. It sits at the **solver tolerance floor (1–5e-8) for every
+ξ, with no trend**, while vrms changes **+14 %**. So *every* ξ-variant genuinely
+satisfies the exact yield-surface problem to tolerance — they are **equivalent in
+residual** — yet localise differently. The residual is **blind to the band-width
+mode**: tightening a thin shear band barely changes the far-field flow or the
+integrated residual, so the equations constrain that mode only weakly — a
+**near-singular direction** along which ξ selects.
+
+**Physically, ξ is the localisation length-scale regulariser** (a damage
+time/length). The shear bands **tighten** monotonically as ξ → 0
+(`figures/ximarch_bands_*.png`): the rate-dependence sets a finite band width, and
+removing it collapses the bands toward zero width — the singular rate-independent
+limit (infinitely-thin slip lines, mesh-limited). This is exactly the classic
+rate-regularisation of strain localisation: a finite ξ gives a *physical,
+mesh-independent* band width, and the homotopy is what makes that solvable under
+FMG. The variants share the same conjugate-X band *geometry* and tighten toward the
+limit rather than switching to a rival pattern — so at this regime it is a graded
+one-parameter family, not discretely-distinct slip-line fields.
 
 ## Honest limitations
 
@@ -236,9 +254,16 @@ limit**: vrms rises monotonically but with *shrinking* increments (…0.022, 0.0
   homotopy should pair with Picard (or a Picard→Newton continuation) there.
 - **Rate-independent DP is non-unique** in general (perfect plasticity admits
   multiple shear-band patterns). The ξ-regularisation *selects* one. At the regime
-  tested here the `ξ → 0` continuation converges to a *single* well-defined pattern
-  (no fan-out), but whether this holds across regimes — and whether different
-  ξ-paths select different limits — is open.
+  tested here the `ξ → 0` variants are equivalent in residual (all at tolerance) and
+  form a graded one-parameter family (tightening bands, same geometry) rather than
+  rival patterns; whether different regimes / ξ-paths select genuinely distinct
+  limits is open.
+- **Band-width vs mesh resolution.** As ξ → 0 the bands tighten toward the element
+  scale (the rate-independent localisation limit is mesh-limited). At the tightest ξ
+  reached (0.003) part of the 14 % vrms swing may be the bands becoming
+  *under-resolved* rather than purely physical selection. A ξ-march on a finer notch
+  mesh is needed to separate physical band-width selection from mesh-limited
+  tightening.
 
 ## Next steps
 
@@ -248,6 +273,8 @@ limit**: vrms rises monotonically but with *shrinking* increments (…0.022, 0.0
    of non-uniqueness.
 2. **Pattern-selection study** as a deliberate physics investigation (damage-rate
    selection of localisation), framed as *uniqueness/selection*, not convergence.
+   Include a **mesh-resolution ξ-march** to separate the physical band-width scale
+   from mesh-limited tightening (the bands tighten toward the element size as ξ→0).
 3. **Two-axis interaction** (δ for the corner, ξ for the branch) — when is each
    needed, and does a joint schedule cover the whole Fig. 5 plane.
 4. **Pair the homotopy with Picard** (or Picard→Newton continuation) at extreme
