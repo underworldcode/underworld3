@@ -471,6 +471,12 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
         snes.setFromOptions()
     solver.dm.restoreGlobalVec(x0)
 
+    # Wire the freshly-assembled Jacobian into the KSP/outer-PC. SNESSolve does
+    # this lazily, but we reach the fieldsplit BEFORE the solve — without it the
+    # outer PC can carry an unassembled operator and PCSetUp fails with
+    # "Matrix must be set first" (err73) for some configurations.
+    snes.getKSP().setOperators(J, Pmat)
+
     # 2. split -> reach the velocity sub-KSP / sub-PC (field 0)
     outer_pc = snes.getKSP().getPC()
     outer_pc.setUp()

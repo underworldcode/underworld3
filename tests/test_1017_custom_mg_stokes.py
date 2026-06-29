@@ -156,3 +156,37 @@ def test_custom_fmg_stokes_constrained():
     assert vksp.getPC().getMGLevels() == len(coarse) + 1
     assert vksp.getIterationNumber() <= 15
     assert sol.velocity_error(s.u) < 5.0e-3
+
+
+def test_custom_fmg_stokes_on_sbr_child():
+    """Stokes velocity-block custom-P on an SBR-refined CHILD mesh whose bodyforce
+    depends on a mesh variable (the Layer-2 adapt-on-top scenario). Regression for
+    the operator-not-wired bug: forcing the Jacobian before the fieldsplit left the
+    KSP carrying an unassembled operator -> PCSetUp 'Matrix must be set first'
+    (err73). Fixed by wiring the assembled Jacobian into the KSP before reaching
+    the velocity sub-PC."""
+    import sympy
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25, regular=True,
+        refinement=2, qdegree=3)
+    child = _wrap(custom_mg.sbr_refine_where(
+        base.dm_hierarchy[-1], lambda c: abs(c[0] - 0.5) < 0.15), base)
+    coarse = [_wrap(d, base) for d in base.dm_hierarchy]   # static base levels
+
+    Tp = uw.discretisation.MeshVariable("Tp", child, 1, degree=2)   # proxy field
+    Tp.data[:, 0] = 1.0
+    s = uw.systems.Stokes(child)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    s.saddle_preconditioner = 1.0
+    s.bodyforce = sympy.Matrix([[0.0], [1.0e4 * Tp.sym[0]]])   # mesh-variable bodyforce
+    s.add_dirichlet_bc((0.0, 0.0), "Bottom"); s.add_dirichlet_bc((0.0, 0.0), "Top")
+    s.add_dirichlet_bc((0.0, None), "Left"); s.add_dirichlet_bc((0.0, None), "Right")
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
+    s.solve()
+    vksp = _vel_ksp(s)
+    assert s.snes.getConvergedReason() > 0
+    assert vksp.getPC().getType() == "mg"
+    assert vksp.getPC().getMGLevels() == len(coarse) + 1
