@@ -147,9 +147,11 @@ delegate to a hooked base `solve()`; the `inject_custom_mg` hook lives in
 | `SNES_Stokes_Constrained` (in-saddle multipliers) | velocity block (`0`) | ✓ | **skip** ¹ |
 
 ¹ The constrained solver is **not parallel-safe today** — it segfaults at np>1
-*independently of custom-P* (the canonical `test_1062_constrained_solcx` also
-segfaults at np=2 under plain GAMG). custom-P on the constrained velocity block
-works in serial; the parallel test auto-enables once the solver is parallel-ready.
+*independently of custom-P*, in the interior-multiplier section reduction
+(`_constrain_interior_multipliers_in_section`; **issue #291**; the canonical
+`test_1062_constrained_solcx` also segfaults at np=2 under plain GAMG; workaround
+`_reduce_interior_multiplier = False`). custom-P on the constrained velocity block
+works in serial; the parallel test auto-enables once #291 is fixed.
 
 Hardening steps (all complete as of 2026-06-29):
 1. ~~**Stokes / saddle-point** (velocity-block injection).~~ **DONE** (2026-06-29).

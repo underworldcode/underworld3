@@ -127,11 +127,12 @@ def test_parallel_custom_fmg_vector():
 
 
 @pytest.mark.skip(reason="Stokes_Constrained is not parallel-safe yet — it "
-                  "segfaults at np>1 independently of custom-P (the canonical "
+                  "segfaults at np>1 independently of custom-P, in the "
+                  "interior-multiplier section reduction (issue #291; canonical "
                   "test_1062_constrained_solcx also segfaults at np=2, plain GAMG). "
                   "custom-P on the constrained velocity block works in SERIAL "
                   "(see test_1017_custom_mg_stokes.test_custom_fmg_stokes_constrained); "
-                  "this auto-enables once the constrained solver is parallel-ready.")
+                  "this auto-enables once #291 is fixed.")
 @pytest.mark.mpi(min_size=2)
 def test_parallel_custom_fmg_stokes_constrained():
     """Stokes_Constrained (free-slip multipliers, grouped [p,h] split) custom-P on
