@@ -126,9 +126,8 @@ Landed (committed, tested — `test_1014/1015/1016`, 18 pass):
 - validated: scalar jump-coeff Poisson, 5-level (3 uniform + 2 SBR), 3 FMG iters
   vs GAMG 46.
 
-**Current scope = experimental:** **serial**, and `set_custom_fmg` takes a
-`level_solver_factory`. Scalar / single-field-vector **and** Stokes velocity-block
-are now supported.
+**Current scope = experimental:** **serial**. Scalar / single-field-vector **and**
+Stokes velocity-block are supported; the throwaway-solver factory has been removed.
 
 Remaining hardening **before** this is a merge-ready general feature (in order):
 1. ~~**Stokes / saddle-point** (velocity-block injection).~~ **DONE** (2026-06-29).
@@ -146,10 +145,16 @@ Remaining hardening **before** this is a merge-ready general feature (in order):
    rigid-body modes on `A_vv` + coarse ops are **not yet** handled (reusing
    `_attach_stokes_nullspace` covers the SolCx pressure-nullspace case only) — a
    Phase-2.5 follow-up.
-2. **Drop the factory** — derive per-level constrained DOFs from boundary labels +
-   BC components (no throwaway solver) for a clean API.
-3. **Parallel (np>1)** — `_reduced_map` is serial; validate co-located rank-local
-   transfers (fast-follow).
+2. ~~**Drop the factory**.~~ **DONE** (2026-06-29). Each coarse level's
+   BC-constrained reduced map is derived directly from its DM via
+   `_coarse_reduced_map`: clone the coarse DM, `copyFields` + `copyDS` from the
+   finest solver, `createDS`. The DS carries UW's exact essential-BC definitions
+   and is topology-independent, so it constrains any coarse mesh sharing the
+   solver's boundary labels — validated byte-identical to the old factory path,
+   leak-free (no SNES / JIT). `set_custom_fmg` / `build` no longer take a
+   `level_solver_factory`.
+3. **Parallel (np>1)** — `_reduced_map` / `_coarse_reduced_map` are serial (local
+   indices); validate co-located rank-local transfers (fast-follow).
 
 ## Explicit non-goals for this pass
 - Knockout (shown to pay full-fine assembly; structural value only) — not pursued now.
