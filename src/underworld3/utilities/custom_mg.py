@@ -278,6 +278,99 @@ def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
     return Pr
 
 
+# --------------------------------------------------------------------------- #
+#  Parallel (np>1) — nested co-partitioned, rank-local P + MPIAIJ
+#
+#  Supported path: the levels are co-partitioned (uniform refine() / on-rank SBR
+#  keep a fine cell's parent coarse cell on the same rank), so each rank builds
+#  its block of P from its LOCAL (ghost-inclusive) coarse coords — point-location
+#  is rank-local. The reduced global numbering rides the DM global section.
+# --------------------------------------------------------------------------- #
+def _level_dof_layout(dm, field_id=None):
+    """Parallel DOF layout for one level: ``(l2g, rstart, rend, n_full)``.
+
+    ``l2g[i]`` is the GLOBAL reduced index of local DOF ``i`` — ghost-resolved to
+    the owner's global index, and ``-1`` for a BC-constrained DOF. Built by
+    scattering each owned global index out to the local (incl. ghost) layout via
+    ``globalToLocal`` (constrained local DOFs have no global source, so they keep
+    the pre-set ``-1``). ``[rstart, rend)`` is this rank's owned global range."""
+    sub = _field_subdm(dm, field_id)
+    gv = sub.getGlobalVec()
+    lv = sub.getLocalVec()
+    rstart, rend = gv.getOwnershipRange()
+    gv.array[:] = np.arange(rstart, rend, dtype=float)
+    lv.set(-1.0)
+    sub.globalToLocal(gv, lv, addv=PETSc.InsertMode.INSERT_VALUES)
+    l2g = np.rint(lv.array).astype(np.int64).copy()
+    n_full = lv.getLocalSize()
+    sub.restoreGlobalVec(gv)
+    sub.restoreLocalVec(lv)
+    return l2g, rstart, rend, n_full
+
+
+def _coarse_dof_layout(solver, coarse_mesh, field_id=None):
+    """Parallel coarse-level DOF layout, no throwaway solver — same copyDS trick
+    as :func:`_coarse_reduced_map` but returning the parallel ``l2g`` layout."""
+    cdm = coarse_mesh.dm.clone()
+    solver.dm.copyFields(cdm)
+    solver.dm.copyDS(cdm)
+    cdm.createDS()
+    return _level_dof_layout(cdm, field_id)
+
+
+def _build_parallel_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
+    """One reduced->reduced prolongation as an MPIAIJ matrix.
+
+    Node-level barycentric/RBF weights are built rank-locally (coarse LOCAL coords
+    incl. ghosts -> every owned fine node lands in a local coarse simplex). Each
+    fine OWNED DOF becomes a global row; its coarse contributions map through the
+    coarse ``l2g`` to global columns (off-rank columns are fine for MPIAIJ).
+    Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
+    l2g_c, cstart, cend, _ = lay_c
+    l2g_f, fstart, fend, _ = lay_f
+    Pn = builder(cc, fc).tocsr()                 # (n_f_nodes, n_c_nodes), local
+    nloc_f = fend - fstart
+    nloc_c = cend - cstart
+
+    P = PETSc.Mat().create(comm=comm)
+    P.setSizes(((nloc_f, None), (nloc_c, None)))
+    P.setType("aij")
+    P.setUp()
+    for i in range(Pn.shape[0]):                 # fine local node
+        js = Pn.indices[Pn.indptr[i]:Pn.indptr[i + 1]]
+        ws = Pn.data[Pn.indptr[i]:Pn.indptr[i + 1]]
+        for c in range(ncomp):
+            grow = int(l2g_f[i * ncomp + c])
+            if grow < fstart or grow >= fend:    # set OWNED rows only
+                continue
+            gcols, vals = [], []
+            for jj, w in zip(js.tolist(), ws.tolist()):
+                gcol = int(l2g_c[jj * ncomp + c])
+                if gcol >= 0:                    # skip constrained coarse DOFs
+                    gcols.append(gcol)
+                    vals.append(w)
+            if gcols:
+                P.setValues([grow], gcols, vals, addv=PETSc.InsertMode.INSERT_VALUES)
+    P.assemble()
+    return P
+
+
+def _assert_no_zero_columns_parallel(P, comm):
+    """Parallel zero-column guard: a coarse DOF with no fine image -> singular
+    Galerkin coarse operator. Column sums via P^T·1 (weights are positive, so a
+    zero sum means an empty column)."""
+    ones_f = P.createVecLeft(); ones_f.set(1.0)
+    colsum = P.createVecRight()
+    P.multTranspose(ones_f, colsum)
+    nzero_local = int((colsum.array == 0.0).sum())
+    nzero = comm.tompi4py().allreduce(nzero_local)
+    ones_f.destroy(); colsum.destroy()
+    if nzero:
+        raise RuntimeError(
+            f"parallel transfer has {nzero} zero columns (coarse DOFs with no fine "
+            f"image) — BC-per-level reduction failed; coarse operator would be singular.")
+
+
 def _configure_pcmg(pc, Ps):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
@@ -434,25 +527,36 @@ class CustomMGHierarchy:
         """Build the BC-reduced prolongations. ``solver`` is the (built) finest
         solver. Each COARSE level's BC-constrained reduced map is derived directly
         from the coarse mesh DM by copying the finest solver's fields + DS onto it
-        (``_coarse_reduced_map``) — no throwaway solver. The finest level reads its
-        map from ``solver.dm``."""
+        (no throwaway solver); the finest level reads its map from ``solver.dm``.
+
+        Serial: scipy reduced->reduced CSR. Parallel (np>1): rank-local node-level
+        weights assembled into MPIAIJ transfers with global-section reduced
+        numbering (nested co-partitioned path)."""
+        from underworld3 import mpi
         var = solver.Unknowns.u
         degree = var.degree
         continuous = getattr(var, "continuous", True)
         nlev = len(self.level_meshes)
+        parallel = mpi.size > 1
 
-        coords, r2f, ncomp = [], [], []
+        coords, maps, ncomp = [], [], []
         for k, mesh in enumerate(self.level_meshes):
             c = np.asarray(mesh._get_coords_for_basis(degree, continuous))
-            if k == nlev - 1:
-                rmap, nfull = _reduced_map(solver.dm, self.field_id)
+            finest = (k == nlev - 1)
+            if parallel:
+                lay = (_level_dof_layout(solver.dm, self.field_id) if finest
+                       else _coarse_dof_layout(solver, mesh, self.field_id))
+                nfull = lay[3]
+                maps.append(lay)
             else:
-                rmap, nfull = _coarse_reduced_map(solver, mesh, self.field_id)
+                rmap, nfull = (_reduced_map(solver.dm, self.field_id) if finest
+                               else _coarse_reduced_map(solver, mesh, self.field_id))
+                maps.append(rmap)
             nc = nfull // c.shape[0]
             if nfull % c.shape[0] != 0:
                 raise RuntimeError(
                     f"level {k}: full DOFs {nfull} not divisible by nodes {c.shape[0]}")
-            coords.append(c); r2f.append(rmap); ncomp.append(nc)
+            coords.append(c); ncomp.append(nc)
 
         if len(set(ncomp)) != 1:
             raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
@@ -460,15 +564,22 @@ class CustomMGHierarchy:
 
         Ps = []
         for l in range(1, nlev):
-            Pr = _reduced_transfer(coords[l - 1], coords[l], r2f[l - 1], r2f[l],
-                                   nc, self.builder)
-            zc = int((np.asarray((Pr != 0).sum(axis=0)).ravel() == 0).sum())
-            if zc:
-                raise RuntimeError(
-                    f"transfer {l-1}->{l} has {zc} zero columns (coarse DOFs with no "
-                    f"fine image) — BC-per-level reduction failed; coarse operator "
-                    f"would be singular.")
-            Ps.append(_to_petsc_aij(Pr))
+            if parallel:
+                P = _build_parallel_transfer(coords[l - 1], coords[l],
+                                             maps[l - 1], maps[l], nc,
+                                             self.builder, solver.dm.comm)
+                _assert_no_zero_columns_parallel(P, solver.dm.comm)
+                Ps.append(P)
+            else:
+                Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
+                                       maps[l], nc, self.builder)
+                zc = int((np.asarray((Pr != 0).sum(axis=0)).ravel() == 0).sum())
+                if zc:
+                    raise RuntimeError(
+                        f"transfer {l-1}->{l} has {zc} zero columns (coarse DOFs with "
+                        f"no fine image) — BC-per-level reduction failed; coarse "
+                        f"operator would be singular.")
+                Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         return Ps
 
@@ -492,7 +603,6 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     (``_coarse_reduced_map``), so ``coarse_meshes`` need only carry the same
     boundary labels as the solver's mesh. For a saddle-point (Stokes) solver pass
     ``field_id=0`` to target the velocity sub-block."""
-    _require_serial("set_custom_fmg")
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
@@ -508,16 +618,16 @@ def inject_custom_mg(solver):
     - ``mode == "hierarchy"`` -> BC-per-level reduced path (correct, general);
     - legacy dict ``{coarse_meshes, kind}`` -> finest-only reduction (kept for
       back-compat; valid only when coarse levels are non-nested / unconstrained)."""
-    _require_serial("inject_custom_mg")
     cfg = solver._custom_mg
 
     if isinstance(cfg, dict) and cfg.get("mode") == "hierarchy":
         h = cfg["hierarchy"]
-        h.build(solver)
+        h.build(solver)              # parallel-capable (nested co-partitioned)
         h.install(solver, verbose=cfg.get("verbose", False))
         return
 
-    # ---- legacy finest-only path (back-compat) ------------------------------
+    # ---- legacy finest-only path (back-compat, serial only) -----------------
+    _require_serial("legacy custom_mg (set_custom_mg)")
     coarse_meshes = cfg["coarse_meshes"]
     builder = _BUILDERS[cfg["kind"]]
     var = solver.Unknowns.u
