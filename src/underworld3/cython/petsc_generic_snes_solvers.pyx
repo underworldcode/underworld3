@@ -3724,6 +3724,12 @@ class SNES_Vector(SolverBaseClass):
         # Update constants (e.g. changed material params) before solve
         self._update_constants()
 
+        # Custom geometric-MG prolongation on the (top-level vector) PC, if
+        # registered via set_custom_fmg. Mirrors the SNES_Scalar hook.
+        if self._custom_mg is not None:
+            from underworld3.utilities.custom_mg import inject_custom_mg
+            inject_custom_mg(self)
+
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 

@@ -103,6 +103,65 @@ def test_parallel_custom_fmg_stokes_velocity_block():
 
 
 @pytest.mark.mpi(min_size=2)
+def test_parallel_custom_fmg_vector():
+    """SNES_Vector (Vector_Projection) custom-P drives a top-level vector PCMG in
+    parallel (field_id=None, ncomp=dim). Fine mesh has NO native hierarchy, so the
+    'mg' PC can only come from our custom-P."""
+    import sympy
+    assert uw.mpi.size > 1
+    m0 = _box(0.25); dm2 = m0.dm.refine().refine()
+    coarse = [_wrap(m0.dm, m0), _wrap(m0.dm.refine(), m0)]
+    fine = _wrap(dm2, m0)
+    x, y = fine.X
+    v = uw.discretisation.MeshVariable("Ucpp", fine, fine.dim, degree=2)
+    proj = uw.systems.Vector_Projection(fine, v)
+    proj.uw_function = sympy.Matrix([[sympy.sin(sympy.pi * x) * sympy.cos(sympy.pi * y),
+                                      sympy.cos(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
+    proj.smoothing = 1.0e-3
+    proj.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    proj.add_dirichlet_bc((0.0, 0.0), "Top")
+    custom_mg.set_custom_fmg(proj, coarse, builder="barycentric")
+    proj.solve()
+    assert proj.snes.getKSP().getPC().getType() == "mg"
+    assert proj.snes.getConvergedReason() > 0
+
+
+@pytest.mark.skip(reason="Stokes_Constrained is not parallel-safe yet — it "
+                  "segfaults at np>1 independently of custom-P (the canonical "
+                  "test_1062_constrained_solcx also segfaults at np=2, plain GAMG). "
+                  "custom-P on the constrained velocity block works in SERIAL "
+                  "(see test_1017_custom_mg_stokes.test_custom_fmg_stokes_constrained); "
+                  "this auto-enables once the constrained solver is parallel-ready.")
+@pytest.mark.mpi(min_size=2)
+def test_parallel_custom_fmg_stokes_constrained():
+    """Stokes_Constrained (free-slip multipliers, grouped [p,h] split) custom-P on
+    the velocity block in parallel — velocity must match the analytic SolCx."""
+    import sympy
+    assert uw.mpi.size > 1
+    m0 = _box(0.25, q=3); dm2 = m0.dm.refine().refine()
+    coarse = [_wrap(m0.dm, m0, q=3), _wrap(m0.dm.refine(), m0, q=3)]
+    fine = _wrap(dm2, m0, q=3)
+    sol = A.SolCx(fine, eta_A=1.0, eta_B=1.0e6, x_c=0.5, n=1)
+    s = uw.systems.Stokes_Constrained(fine)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.add_constraint_bc("Left",   g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))
+    s.add_constraint_bc("Right",  g=0.0, normal=sympy.Matrix([[1.0, 0.0]]))
+    s.add_constraint_bc("Bottom", g=0.0, normal=sympy.Matrix([[0.0, -1.0]]))
+    s.add_constraint_bc("Top",    g=0.0, normal=sympy.Matrix([[0.0, 1.0]]))
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1.0e-9
+    s.petsc_options["snes_type"] = "ksponly"
+    custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
+    s.solve()
+    vksp = s.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
+    assert s.snes.getConvergedReason() > 0
+    assert vksp.getPC().getType() == "mg"
+    assert sol.velocity_error(s.u) < 5.0e-3
+
+
+@pytest.mark.mpi(min_size=2)
 def test_legacy_path_serial_guard():
     """The legacy finest-only set_custom_mg path is serial-only and must raise
     loudly in parallel (it has no parallel reduced map)."""

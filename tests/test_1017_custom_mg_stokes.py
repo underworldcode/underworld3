@@ -1,9 +1,12 @@
-"""Layer-1 generalized FMG hierarchy on the STOKES velocity block (Phase-1 Step 1).
+"""Layer-1 generalized FMG hierarchy across the solver families that consume a mesh.
 
-Custom-built prolongations (barycentric / RBF) drive geometric multigrid on the
-velocity sub-block of the saddle-point solver, via set_custom_fmg(field_id=0).
-Validated on SolCx (eta_B=1e6): the velocity block converges in a handful of MG
-iterations (vs ~200 for GAMG) and the solution matches a GAMG reference.
+Custom-built prolongations (barycentric / RBF) drive geometric multigrid via
+set_custom_fmg, validated here on each solver-PC topology so the same adapted-mesh
+hierarchy works for every solver running on it:
+  - STOKES velocity sub-block (set_custom_fmg field_id=0) — SolCx eta_B=1e6;
+  - SNES_Vector (Vector_Projection) — top-level vector PC (field_id=None);
+  - Stokes_Constrained (free-slip via in-saddle multipliers) — velocity block under
+    the grouped [p, h] fieldsplit.
 
 The hard part (see custom_mg._install_velocity_block_transfers): the velocity
 sub-PC is unreachable until the monolithic Jacobian is assembled, so the install
@@ -105,3 +108,51 @@ def test_custom_fmg_velocity_block_rbf():
     assert vksp.getPC().getMGLevels() == len(coarse) + 1
     assert vksp.getIterationNumber() <= 25
     assert sol.velocity_error(s.u) < 1e-2
+
+
+def test_custom_fmg_vector_solver():
+    """SNES_Vector (Vector_Projection): custom-P on the top-level vector PC
+    (field_id=None) — the same scalar/single-field-vector path, ncomp=dim."""
+    import sympy
+    coarse, fine = _hierarchy()
+    x, y = fine.X
+    v = uw.discretisation.MeshVariable("Ucp", fine, fine.dim, degree=2)
+    proj = uw.systems.Vector_Projection(fine, v)
+    proj.uw_function = sympy.Matrix([[sympy.sin(sympy.pi * x) * sympy.cos(sympy.pi * y),
+                                      sympy.cos(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
+    proj.smoothing = 1.0e-3
+    proj.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    proj.add_dirichlet_bc((0.0, 0.0), "Top")
+    custom_mg.set_custom_fmg(proj, coarse, builder="barycentric")   # field_id=None
+    proj.solve()
+    assert proj.snes.getKSP().getPC().getType() == "mg"
+    assert proj.snes.getKSP().getPC().getMGLevels() == len(coarse) + 1
+    assert proj.snes.getConvergedReason() > 0
+
+
+def test_custom_fmg_stokes_constrained():
+    """Stokes_Constrained (free-slip via in-saddle multipliers): custom-P on the
+    velocity block under the grouped [p, h] fieldsplit. Velocity must still match
+    the analytic SolCx free-slip solution."""
+    import sympy
+    coarse, fine = _hierarchy()
+    sol = A.SolCx(fine, eta_A=1.0, eta_B=1.0e6, x_c=0.5, n=1)
+    s = uw.systems.Stokes_Constrained(fine)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.add_constraint_bc("Left",   g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))
+    s.add_constraint_bc("Right",  g=0.0, normal=sympy.Matrix([[1.0, 0.0]]))
+    s.add_constraint_bc("Bottom", g=0.0, normal=sympy.Matrix([[0.0, -1.0]]))
+    s.add_constraint_bc("Top",    g=0.0, normal=sympy.Matrix([[0.0, 1.0]]))
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1.0e-9
+    s.petsc_options["snes_type"] = "ksponly"
+    custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
+    s.solve()
+    vksp = _vel_ksp(s)
+    assert s.snes.getConvergedReason() > 0
+    assert vksp.getPC().getType() == "mg"
+    assert vksp.getPC().getMGLevels() == len(coarse) + 1
+    assert vksp.getIterationNumber() <= 15
+    assert sol.velocity_error(s.u) < 5.0e-3
