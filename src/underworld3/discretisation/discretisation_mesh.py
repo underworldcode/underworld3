@@ -6024,10 +6024,12 @@ class Mesh(Stateful, uw_object):
         non-cumulative (cf. :meth:`remesh`, which regenerates the mesh in place
         via MMG and may redistribute).
 
-        The child owns a custom-P geometric-MG hierarchy
-        (``[base coarse levels … base finest] + child``) so every solver built on
-        it drives geometric multigrid on the refined operator with no per-solver
-        setup.
+        The child owns a custom-P geometric-MG hierarchy with **one level per SBR
+        refinement step** — ``[base L0 … base finest, SBR-1, …, SBR-n(child)]`` —
+        so every solver built on it drives geometric multigrid on the refined
+        operator with no per-solver setup. (Each ``max_levels`` SBR pass adds its
+        own MG level; the transfers between consecutive levels each span a single
+        refinement.)
 
         Parameters
         ----------
@@ -6093,6 +6095,7 @@ class Mesh(Stateful, uw_object):
 
         current_dm = self.dm_hierarchy[-1]   # static base finest
         markers_per_level = []
+        sbr_level_dms = []                    # one DM per SBR level (level 1 … n)
 
         for level in range(max_levels):
             cs, ce = current_dm.getHeightStratum(0)
@@ -6137,6 +6140,7 @@ class Mesh(Stateful, uw_object):
                 uw.pprint(0, f"[adapt] level {level}: refining {len(cell_ids)} "
                              f"of {ncells} cells")
             current_dm = custom_mg.sbr_refine(current_dm, cell_ids)
+            sbr_level_dms.append(current_dm)
 
         if verbose:
             base_n = self.dm_hierarchy[-1].getHeightStratum(0)
@@ -6163,9 +6167,17 @@ class Mesh(Stateful, uw_object):
         # Markers per SBR level (in each level's cell numbering) — the
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
-        # Static coarse tail (incl. base finest); the child appends itself when a
-        # solver builds the hierarchy. Reuses the parent's cached wrapped levels.
-        child._custom_mg_coarse_meshes = self._coarse_level_meshes()
+        # Mesh-owned custom-P geometric-MG tail. EVERY SBR level is its own MG
+        # level (one custom-P transfer per refinement step), not a single
+        # base-finest -> child jump: the tail is
+        #   [base L0 … base finest]  +  [SBR level 1 … SBR level n-1]
+        # and the solver appends its own mesh (the finest SBR level = child).
+        # Each intermediate SBR level is wrapped here (transient, lives on the
+        # child); the static base levels reuse the parent's cached wraps.
+        intermediate_sbr = [
+            self._wrap_coarse_level(d) for d in sbr_level_dms[:-1]
+        ]
+        child._custom_mg_coarse_meshes = self._coarse_level_meshes() + intermediate_sbr
         child._custom_mg_builder = builder
 
         self._registered_children.add(child)

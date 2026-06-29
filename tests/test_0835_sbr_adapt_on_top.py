@@ -199,6 +199,26 @@ def test_stokes_velocity_block_auto_picks_up_fmg():
     assert sol.velocity_error(s.u) < 2.0 * solg.velocity_error(sg.u) + 1e-6
 
 
+def test_each_sbr_level_is_its_own_mg_level():
+    """Every SBR refinement step must add its OWN custom-P MG level (not collapse
+    into a single base-finest -> child jump): MG levels = base levels + n_sbr."""
+    base = _base()                       # refinement=2 -> 3 base hierarchy levels
+    n_base = len(base.dm_hierarchy)
+    sharp = _metric(base, 0.5, h_fine=1.0 / 150, width=0.06)
+    for ml, want_levels in [(1, n_base + 1), (2, n_base + 2)]:
+        child = base.adapt(sharp, max_levels=ml)
+        # coarse tail + the child itself
+        assert len(child._custom_mg_coarse_meshes) + 1 == want_levels
+
+    # a Poisson solve on a 2-level child must actually drive all n_base+2 levels
+    child2 = base.adapt(sharp, max_levels=2)
+    s = _poisson(child2)
+    s.solve()
+    assert s.snes.getKSP().getPC().getType() == "mg"
+    assert s.snes.getKSP().getPC().getMGLevels() == n_base + 2
+    assert s.snes.getConvergedReason() > 0
+
+
 def test_adapt_requires_base_hierarchy():
     # a mesh without a refinement hierarchy cannot supply the MG coarse tail
     flat = uw.meshing.UnstructuredSimplexBox(
