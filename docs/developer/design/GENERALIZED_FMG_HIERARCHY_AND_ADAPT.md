@@ -126,14 +126,26 @@ Landed (committed, tested — `test_1014/1015/1016`, 18 pass):
 - validated: scalar jump-coeff Poisson, 5-level (3 uniform + 2 SBR), 3 FMG iters
   vs GAMG 46.
 
-**Current scope = experimental:** scalar / single-field-vector (top-level PC),
-**serial**, and `set_custom_fmg` takes a `level_solver_factory`.
+**Current scope = experimental:** **serial**, and `set_custom_fmg` takes a
+`level_solver_factory`. Scalar / single-field-vector **and** Stokes velocity-block
+are now supported.
 
-Remaining hardening **before** this is a merge-ready general feature (the
-relaunch's first task, in order):
-1. **Stokes / saddle-point** (velocity-block injection; `_install_transfers`
-   rejects `fieldsplit_velocity_`). Blocker: velocity sub-PC unreachable pre-solve
-   → use Galerkin-off + `MatPtAP` coarse ops after first solve. + nullspace re-attach.
+Remaining hardening **before** this is a merge-ready general feature (in order):
+1. ~~**Stokes / saddle-point** (velocity-block injection).~~ **DONE** (2026-06-29).
+   `set_custom_fmg(..., field_id=0)` drives custom-P geometric MG on the velocity
+   sub-block. The sub-PC is unreachable until the monolithic Jacobian is assembled,
+   so `_install_velocity_block_transfers` forces a Jacobian assembly
+   (`computeFunction`+`computeJacobian` at the zero guess; `max_it=0` fallback),
+   reaches the velocity sub-PC, `reset`s it and rebuilds a **fresh PCMG** from our P
+   (mechanism A — mirrors the proven standalone recipe and sidesteps the
+   `MatProductReplaceMats` live-swap bug; the Galerkin-off + `MatPtAP` path remains
+   the documented fallback), then re-attaches the coupled Stokes nullspace. Wired
+   into `SNES_Stokes_SaddlePt.solve` as a guarded no-op. Validated on SolCx
+   (η-jump 1e6, 3-level nested, in-solver): velocity block 6 MG iters vs GAMG 198,
+   solution matches GAMG to 1.5e-9 (`test_1017`). NOTE: free-slip velocity
+   rigid-body modes on `A_vv` + coarse ops are **not yet** handled (reusing
+   `_attach_stokes_nullspace` covers the SolCx pressure-nullspace case only) — a
+   Phase-2.5 follow-up.
 2. **Drop the factory** — derive per-level constrained DOFs from boundary labels +
    BC components (no throwaway solver) for a clean API.
 3. **Parallel (np>1)** — `_reduced_map` is serial; validate co-located rank-local
