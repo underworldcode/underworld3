@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
+from underworld3.function import analytic as A
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -142,6 +143,60 @@ def test_adapt_mmg_shim_warns():
         except Exception:
             pass                                # MMG backend may be absent
         assert any(issubclass(x.category, DeprecationWarning) for x in w)
+
+
+def test_stokes_velocity_block_auto_picks_up_fmg():
+    """Canonical case: SolCx Stokes (eta jump 1e6) on an adapt() child, refined
+    near the viscosity jump. The velocity block must auto-pick-up the mesh-owned
+    custom-P FMG (field_id=0, fgmres outer, full cycle) with NO set_custom_fmg,
+    converge, and match a GAMG reference. The refinement must be genuinely local."""
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25, regular=True,
+        refinement=2, qdegree=3)
+    n_uniform = _ncell(base) * 4          # one global SBR level = x4
+
+    # metric: refine only near the x=0.5 jump (h_coarse just above the base size)
+    M = uw.discretisation.MeshVariable("Mjump", base, 1, degree=1)
+    band = sympy.exp(-(((base.N.x - 0.5) / 0.08) ** 2))
+    M.data[:, 0] = _ev(1.0 / (0.07 + (1.0 / 80 - 0.07) * band) ** 2, M.coords)
+    child = base.adapt(M, max_levels=1)
+    assert _ncell(child) < n_uniform      # local, not a uniform refine
+
+    def _solcx(mesh):
+        sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e6, x_c=0.5, n=1)
+        s = uw.systems.Stokes(mesh)
+        s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+        s.saddle_preconditioner = 1.0 / sol.fn_viscosity
+        s.bodyforce = sol.fn_bodyforce
+        s.add_dirichlet_bc((0.0, None), "Left")
+        s.add_dirichlet_bc((0.0, None), "Right")
+        s.add_dirichlet_bc((None, 0.0), "Bottom")
+        s.add_dirichlet_bc((None, 0.0), "Top")
+        s.petsc_use_pressure_nullspace = True
+        s.petsc_options["snes_type"] = "ksponly"
+        s.tolerance = 1e-8
+        return s, sol
+
+    sg, solg = _solcx(child)
+    sg.preconditioner = "gamg"
+    sg.solve()
+    it_g = sg.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getIterationNumber()
+
+    s, sol = _solcx(child)
+    assert s._custom_mg is None           # nothing registered on the solver
+    s.solve()                             # velocity block auto-picks-up FMG
+    vksp = s.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
+
+    assert s.snes.getConvergedReason() > 0
+    assert vksp.getPC().getType() == "mg"
+    assert vksp.getPC().getMGType() == 2          # PETSc PC.MGType.FULL == FMG
+    assert vksp.getPC().getMGLevels() == len(base.dm_hierarchy) + 1
+    assert vksp.getType() == "fgmres"
+    assert vksp.getIterationNumber() <= it_g      # FMG matches/beats GAMG
+    rel = np.linalg.norm(s.u.data - sg.u.data) / (np.linalg.norm(sg.u.data) + 1e-30)
+    assert rel < 1e-4
+    assert sol.velocity_error(s.u) < 2.0 * solg.velocity_error(sg.u) + 1e-6
 
 
 def test_adapt_requires_base_hierarchy():
