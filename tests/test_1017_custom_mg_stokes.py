@@ -46,16 +46,6 @@ def _walls(s):
     s.petsc_options["snes_type"] = "ksponly"
 
 
-def _coarse_factory(mesh):
-    """Same-discretisation coarse-level Stokes (only its constrained section is
-    read by CustomMGHierarchy.build to derive the BC-reduced DOF map)."""
-    s = uw.systems.Stokes(mesh)
-    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    _walls(s)
-    return s
-
-
 def _solcx(mesh, eta_B=1e6):
     sol = A.SolCx(mesh, eta_A=1.0, eta_B=eta_B, x_c=0.5, n=1)
     s = uw.systems.Stokes(mesh)
@@ -86,8 +76,7 @@ def test_custom_fmg_velocity_block_barycentric():
 
     # custom-P geometric MG on the velocity block
     s, sol = _solcx(fine)
-    custom_mg.set_custom_fmg(s, coarse, level_solver_factory=_coarse_factory,
-                             builder="barycentric", field_id=0)
+    custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
     s.solve()
     vksp = _vel_ksp(s)
 
@@ -108,8 +97,7 @@ def test_custom_fmg_velocity_block_rbf():
     """The RBF builder must also drive a converging velocity-block MG solve."""
     coarse, fine = _hierarchy()
     s, sol = _solcx(fine)
-    custom_mg.set_custom_fmg(s, coarse, level_solver_factory=_coarse_factory,
-                             builder="rbf", field_id=0)
+    custom_mg.set_custom_fmg(s, coarse, builder="rbf", field_id=0)
     s.solve()
     vksp = _vel_ksp(s)
     assert s.snes.getConvergedReason() > 0

@@ -233,6 +233,27 @@ def _reduced_map(dm, field_id=None):
     return r2f, n_full
 
 
+def _coarse_reduced_map(solver, coarse_mesh, field_id=None):
+    """A COARSE level's BC-constrained reduced map, with NO throwaway solver.
+
+    Clone the coarse mesh DM and copy the (built) finest ``solver``'s fields + DS
+    onto it. The DS carries UW's exact essential-BC definitions (the custom
+    essential-field boundaries), and is a topology-independent discretisation spec,
+    so ``createDS`` constrains the matching boundary DOFs on ANY coarse mesh that
+    carries the same boundary labels (nested or not). The resulting global section
+    gives the same reduced map a full same-discretisation solver would — validated
+    identical to the old ``level_solver_factory`` path. Leak-free: DM ops only, no
+    SNES / JIT.
+
+    NOTE: serial, like ``_reduced_map`` (uses local indices); parallel correctness
+    is a Phase-3 item."""
+    cdm = coarse_mesh.dm.clone()
+    solver.dm.copyFields(cdm)
+    solver.dm.copyDS(cdm)
+    cdm.createDS()
+    return _reduced_map(cdm, field_id)
+
+
 def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
     """Build one prolongation reduced(coarse) -> reduced(fine):
     node-level scalar P -> interleave ``ncomp`` components -> drop BC rows/cols."""
@@ -395,11 +416,12 @@ class CustomMGHierarchy:
         self.field_id = field_id
         self.transfers = None
 
-    def build(self, solver, level_solver_factory):
+    def build(self, solver):
         """Build the BC-reduced prolongations. ``solver`` is the (built) finest
-        solver; ``level_solver_factory(mesh) -> built solver`` provides a
-        same-discretisation solver on each COARSE level so its constrained
-        section gives that level's reduced map. The finest level uses ``solver``."""
+        solver. Each COARSE level's BC-constrained reduced map is derived directly
+        from the coarse mesh DM by copying the finest solver's fields + DS onto it
+        (``_coarse_reduced_map``) — no throwaway solver. The finest level reads its
+        map from ``solver.dm``."""
         var = solver.Unknowns.u
         degree = var.degree
         continuous = getattr(var, "continuous", True)
@@ -411,10 +433,7 @@ class CustomMGHierarchy:
             if k == nlev - 1:
                 rmap, nfull = _reduced_map(solver.dm, self.field_id)
             else:
-                tmp = level_solver_factory(mesh)
-                tmp._build(False, False, None)
-                tmp.snes.setUp()
-                rmap, nfull = _reduced_map(tmp.dm, self.field_id)
+                rmap, nfull = _coarse_reduced_map(solver, mesh, self.field_id)
             nc = nfull // c.shape[0]
             if nfull % c.shape[0] != 0:
                 raise RuntimeError(
@@ -448,20 +467,21 @@ class CustomMGHierarchy:
 # --------------------------------------------------------------------------- #
 #  Entry points
 # --------------------------------------------------------------------------- #
-def set_custom_fmg(solver, coarse_meshes, *, level_solver_factory,
-                   builder="barycentric", field_id=None, verbose=False):
+def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
+                   field_id=None, verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
     Registers a :class:`CustomMGHierarchy` on the solver so that the next
     ``solve()`` builds and installs it (build-time injection). The hierarchy is
-    ``[*coarse_meshes, solver.mesh]``; ``level_solver_factory(mesh)`` must return
-    a same-discretisation solver on a coarse level (used only to read its
-    BC-constrained section)."""
+    ``[*coarse_meshes, solver.mesh]``; each coarse level's BC-constrained reduced
+    map is derived directly from its DM by copying the solver's fields + DS
+    (``_coarse_reduced_map``), so ``coarse_meshes`` need only carry the same
+    boundary labels as the solver's mesh. For a saddle-point (Stokes) solver pass
+    ``field_id=0`` to target the velocity sub-block."""
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
                                        builder=builder, field_id=field_id),
-        "factory": level_solver_factory,
         "verbose": verbose,
     }
     solver.is_setup = False
@@ -477,7 +497,7 @@ def inject_custom_mg(solver):
 
     if isinstance(cfg, dict) and cfg.get("mode") == "hierarchy":
         h = cfg["hierarchy"]
-        h.build(solver, cfg["factory"])
+        h.build(solver)
         h.install(solver, verbose=cfg.get("verbose", False))
         return
 

@@ -29,7 +29,7 @@ def _hierarchy():
 def test_custom_fmg_hierarchy_converges():
     m0, coarse, fine = _hierarchy()
     s=_poisson(fine)
-    custom_mg.set_custom_fmg(s, coarse, level_solver_factory=_poisson, builder="barycentric")
+    custom_mg.set_custom_fmg(s, coarse, builder="barycentric")
     s.solve()
     assert s.snes.getKSP().getPC().getType()=="mg"
     assert s.snes.getKSP().getPC().getMGLevels()==3
@@ -44,7 +44,7 @@ def test_bc_per_level_reduction_no_zero_columns():
     m0, coarse, fine = _hierarchy()
     s=_poisson(fine); s._build(False,False,None); s.snes.setUp()
     h=custom_mg.CustomMGHierarchy(coarse+[fine], builder="barycentric")
-    Ps=h.build(s, _poisson)                # raises if any transfer has zero columns
+    Ps=h.build(s)                          # raises if any transfer has zero columns
     assert len(Ps)==2
     for P in Ps:
         Pc=P.getValuesCSR(); import scipy.sparse as sp
@@ -54,7 +54,7 @@ def test_bc_per_level_reduction_no_zero_columns():
 def test_rbf_builder_also_works():
     m0, coarse, fine = _hierarchy()
     s=_poisson(fine)
-    custom_mg.set_custom_fmg(s, coarse, level_solver_factory=_poisson, builder="rbf")
+    custom_mg.set_custom_fmg(s, coarse, builder="rbf")
     s.solve()
     assert s.snes.getKSP().getPC().getType()=="mg"
     assert s.snes.getConvergedReason()>0
