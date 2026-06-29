@@ -41,6 +41,13 @@ small strain-rate dependence of the yield stress (a Perzyna overstress, physical
 a damage/viscoplastic regularisation) — rescues those cases **under FMG**, where
 the augmented-Lagrangian pressure penalty does not.
 
+The warm-started progression solves DP problems well past the regime where cold
+Newton fails — and in doing so it doubles as a **probe of the problem's
+conditioning**: the sharp-residual diagnostic reveals a **flat-residual /
+near-singular direction** (the shear-band-width mode the equations barely
+constrain), which is *why* the cold problem is hard and why the homotopy's
+incremental warm-starting is the right tool for it.
+
 ## The problem this solves
 
 The DP effective viscosity is `η_eff = Min(η_ve, η_pl)` with the plastic branch
@@ -296,7 +303,20 @@ same rampable-`constants[]` machinery applies to all three.
    needed, and does a joint schedule cover the whole Fig. 5 plane.
 4. **Pair the homotopy with Picard** (or Picard→Newton continuation) at extreme
    contrast, where the consistent tangent's linear-solve fragility dominates.
-5. **Rate-WEAKENING (m) axis — parked, exploratory.** The mirror of ξ: a smooth δ
+5. **Lagged / Picard gradient plasticity *inside* the homotopy harness.** The
+   physically-correct nonlocal length-scale term (implicit-gradient
+   `ε̇̄ = (1−ℓ²∇²)⁻¹ε̇`) is coupling that currently drops *outside* the MG loop;
+   doing it MG-robustly needs SNES-FAS (a separate effort). But a **lagged/Picard**
+   version may be usable *now* by hosting it in this harness: a lagged nonlocal
+   coupling is binding only when the solution changes a lot between iterates (the
+   strong-contrast regime where it goes weak), whereas each homotopy step is a small
+   increment warm-started from the previous *lag-consistent* solution — so the
+   carried-in ε̇̄ is already nearly correct and the fixed point has little to fix.
+   The homotopy **amortizes the lag over small steps**; the ε̇̄ refresh rides as
+   another `SNESSetUpdate`/`constants[]` callback, with ℓ a genuine physical
+   band-width length. Not a substitute for SNES-FAS, but a credible way to make the
+   lagged scheme work in the hard regimes without new solver machinery.
+6. **Rate-WEAKENING (m) axis — parked, exploratory.** The mirror of ξ: a smooth δ
    for solvability + rate-weakening `τ_y → σ_y·(1 − m·ε̇/(ε̇+ε̇_ref))` to *restore*
    the fine bands δ washes out (L.M.). Observations so far: weakening is genuinely
    **anti-coercive** (cold-solving with it on grinds — it fights the solver, the
