@@ -134,6 +134,23 @@ Landed (committed, tested — `test_1014/1015/1016/1017` serial 20 +
 (experimental). Hardening steps 1–3 are complete; what remains is test
 tier-classification + undrafting PR #290.
 
+**Solver-family coverage** — the install keys off the PC topology, so one of two
+branches covers every solver that consumes the mesh (all `solve()` overrides
+delegate to a hooked base `solve()`; the `inject_custom_mg` hook lives in
+`SNES_Scalar.solve`, `SNES_Vector.solve`, `SNES_Stokes_SaddlePt.solve`):
+
+| Solver family | Branch (`field_id`) | Serial | Parallel |
+|---|---|---|---|
+| `SNES_Scalar` (Poisson, Darcy, Projection, AdvDiff, Diffusion) | top-level (`None`) | ✓ | ✓ |
+| `SNES_Vector` (Vector_Projection, displacement) | top-level (`None`) | ✓ | ✓ |
+| `SNES_Stokes` / VE / NavierStokes | velocity block (`0`) | ✓ | ✓ |
+| `SNES_Stokes_Constrained` (in-saddle multipliers) | velocity block (`0`) | ✓ | **skip** ¹ |
+
+¹ The constrained solver is **not parallel-safe today** — it segfaults at np>1
+*independently of custom-P* (the canonical `test_1062_constrained_solcx` also
+segfaults at np=2 under plain GAMG). custom-P on the constrained velocity block
+works in serial; the parallel test auto-enables once the solver is parallel-ready.
+
 Hardening steps (all complete as of 2026-06-29):
 1. ~~**Stokes / saddle-point** (velocity-block injection).~~ **DONE** (2026-06-29).
    `set_custom_fmg(..., field_id=0)` drives custom-P geometric MG on the velocity
