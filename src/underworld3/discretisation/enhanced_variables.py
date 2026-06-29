@@ -514,38 +514,33 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         return self._base_var.read_timestep(*args, **kwargs)
 
     def copy_into(self, target):
-        """Copy this variable's data into a variable on a related mesh.
+        """Copy this variable's data into a variable on a related (child/parent) mesh.
 
-        Detects the parent/submesh relationship and calls restrict or
-        prolongate as appropriate. Both meshes must be related via
-        ``extract_region``.
+        Detects the parent/child relationship and dispatches restrict or
+        prolongate as appropriate. The two meshes must be related via
+        ``extract_region`` (submesh child) or ``adapt`` (SBR refinement child).
+
+        The operation depends on the **kind** of child:
+
+        - **submesh** (``extract_region``): the child is a *subset*, DOFs
+          coincide. parent → child is restrict; child → parent is prolongate.
+        - **refinement** (``adapt``): the child is *finer*, DOFs differ. parent →
+          child is prolongate (FE-exact custom-P); child → parent is restrict
+          (injection at shared nodes).
 
         Parameters
         ----------
         target : MeshVariable
-            Destination variable. Must be on the parent or a submesh
-            of this variable's mesh.
+            Destination variable, on the parent or a child of this variable's mesh.
 
         Examples
         --------
-        >>> v_full.copy_into(v_rock)   # restrict: parent → submesh
-        >>> v_rock.copy_into(v_full)   # prolongate: submesh → parent
+        >>> v_full.copy_into(v_rock)   # submesh:    restrict parent → child
+        >>> v_rock.copy_into(v_full)   # submesh:    prolongate child → parent
+        >>> v_base.copy_into(v_child)  # refinement: prolongate parent → child
+        >>> v_child.copy_into(v_base)  # refinement: restrict   child → parent
         """
-        src_mesh = self._base_var.mesh
-        tgt_mesh = target._base_var.mesh if hasattr(target, '_base_var') else target.mesh
-
-        if hasattr(tgt_mesh, 'parent') and tgt_mesh.parent is src_mesh:
-            # target is submesh of source → restrict
-            tgt_mesh.restrict(self, target, mode="replace")
-        elif hasattr(src_mesh, 'parent') and src_mesh.parent is tgt_mesh:
-            # source is submesh of target → prolongate
-            src_mesh.prolongate(self, target, mode="replace")
-        else:
-            raise ValueError(
-                "copy_into requires a parent/submesh relationship between "
-                "the two variables' meshes. Use uw.function.evaluate() "
-                "for unrelated meshes."
-            )
+        self._copy_into(target, mode="replace")
 
     def add_into(self, target):
         """Add this variable's data into a variable on a related mesh.
@@ -553,28 +548,43 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         Like ``copy_into`` but uses ADD_VALUES — adds to existing
         values in the target rather than replacing them.
 
-        Parameters
-        ----------
-        target : MeshVariable
-            Destination variable. Must be on the parent or a submesh
-            of this variable's mesh.
-
         Examples
         --------
         >>> v_rock.add_into(v_full)    # prolongate with ADD
         """
-        src_mesh = self._base_var.mesh
-        tgt_mesh = target._base_var.mesh if hasattr(target, '_base_var') else target.mesh
+        self._copy_into(target, mode="add")
 
-        if hasattr(tgt_mesh, 'parent') and tgt_mesh.parent is src_mesh:
-            tgt_mesh.restrict(self, target, mode="add")
-        elif hasattr(src_mesh, 'parent') and src_mesh.parent is tgt_mesh:
-            src_mesh.prolongate(self, target, mode="add")
+    def _copy_into(self, target, mode):
+        """Shared parent/child dispatch for copy_into / add_into."""
+        src_var = self
+        tgt_var = target
+        src_mesh = src_var._base_var.mesh
+        tgt_mesh = tgt_var._base_var.mesh if hasattr(tgt_var, '_base_var') else tgt_var.mesh
+
+        # Identify which mesh is the child (its .parent is the other).
+        if getattr(tgt_mesh, 'parent', None) is src_mesh:
+            child, parent_is_src = tgt_mesh, True          # src=parent, tgt=child
+        elif getattr(src_mesh, 'parent', None) is tgt_mesh:
+            child, parent_is_src = src_mesh, False         # src=child, tgt=parent
         else:
             raise ValueError(
-                "add_into requires a parent/submesh relationship between "
-                "the two variables' meshes."
+                "copy_into requires a parent/child relationship between the two "
+                "variables' meshes (extract_region or adapt). Use "
+                "uw.function.evaluate() for unrelated meshes."
             )
+
+        kind = getattr(child, "_relationship_kind", "submesh")
+
+        if kind == "refinement":
+            if parent_is_src:                              # parent → child
+                child._refine_prolongate(src_var, tgt_var, mode=mode)
+            else:                                          # child → parent
+                child._refine_restrict(src_var, tgt_var, mode=mode)
+        else:                                              # submesh (DOFs coincide)
+            if parent_is_src:                              # parent → child: restrict
+                child.restrict(src_var, tgt_var, mode=mode)
+            else:                                          # child → parent: prolongate
+                child.prolongate(src_var, tgt_var, mode=mode)
 
     def stats(self, *args, **kwargs):
         """Get statistics for the variable."""

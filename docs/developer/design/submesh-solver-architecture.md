@@ -21,14 +21,33 @@ Underworld3 needs to support solving different equations on different subsets of
 
 5. **Normalised `Gamma_N`** (merged) — `mesh.Gamma_N` now returns a unit normal. Penalty and Nitsche BCs are mesh-independent.
 
-## Three Submesh Flavours: Subdomain, Resolution Level, Surface
+## The parent/child model: submeshes and adapted meshes are both *children*
+
+```{note}
+**Unified terminology (parent/child DAG).** Every mesh derived from another
+carries a `parent` link and a `_relationship_kind`, forming a directed
+derivation graph. A *child* comes in two **kinds**:
+
+- **submesh** (`_relationship_kind == "submesh"`) — a *subset* of the parent
+  produced by `extract_region` / `extract_surface`. DOFs **coincide** with the
+  parent (`subpoint_is`); transfer is exact injection.
+- **refinement** (`_relationship_kind == "refinement"`) — a *finer* mesh
+  produced by `mesh.adapt(metric, …)` (SBR adapt-on-top). The child is
+  **bigger** than the parent; DOFs do **not** coincide, so transfer is FE-exact
+  custom-P prolongation (parent→child) and injection restriction (child→parent).
+  See [`LAYER2_SBR_ADAPT_ON_TOP.md`](LAYER2_SBR_ADAPT_ON_TOP.md).
+
+`copy_into` / `add_into` dispatch on the kind, so the same call works for both:
+`parent_var.copy_into(child_var)` and `child_var.copy_into(parent_var)`.
+The "submesh flavours" below are all the **submesh kind** of child.
+```
 
 A *submesh* in UW3 is any mesh pulled out of a parent mesh that retains a
 lineage link (`parent`, registration in `parent._registered_submeshes`)
 and supports explicit field transfer back and forth. There are three
 flavours, and they share one usage pattern:
 
-> **get a submesh → build a solver on it → map fields back and forth**
+> **get a child → build a solver on it → map fields back and forth**
 
 | | Subdomain | Resolution level | Surface |
 |---|---|---|---|

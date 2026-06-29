@@ -1,6 +1,7 @@
 # Layer 2 — SBR adapt-on-top (mesh-owned custom-P hierarchy)
 
-Status: design (2026-06-29). Builds on Layer 1
+Status: **Phase 1 implemented (2026-06-29)** — design below; see "Implementation"
+at the end for the as-built API and what landed. Builds on Layer 1
 (`docs/developer/design/GENERALIZED_FMG_HIERARCHY_AND_ADAPT.md`,
 `utilities/custom_mg.py`, PR #290). Branch `feature/adapt-on-top`.
 
@@ -195,3 +196,54 @@ Layer-1 code** (`sbr_refine_where` + `set_custom_fmg`), serial **and** np=2:
 Conclusion: the design holds end-to-end. Remaining work is wiring it into
 `mesh.adapt(adapter="sbr")` with the mesh-owned hierarchy + solver auto-pickup
 (no per-solver `set_custom_fmg`), then transfer caching, then checkpointing.
+
+## Implementation (Phase 1, 2026-06-29)
+
+The live-adapt path is wired into the mesh API. The naming settled differently
+from the early `adapter=` sketch above: `adapt` now **returns a child**, and the
+old in-place MMG `adapt` was **renamed `remesh`**.
+
+**`mesh.adapt(metric, max_levels=2, node_budget=None, builder="barycentric",
+adapter="sbr", verbose=False) -> child`** (`discretisation_mesh.py`,
+`_adapt_sbr`):
+- Marks base-finest cells whose characteristic size `h ≈ (dim!·vol)^(1/dim)`
+  exceeds the metric target `1/√M` at the centroid; up to `max_levels` SBR passes;
+  `node_budget` keeps the highest-metric cells first (approximate DOF cap).
+- Metric sampled by `uw.function.evaluate` (serial) / `global_evaluate` (np>1,
+  partition-agnostic). SBR via `custom_mg.sbr_refine` (`distribute=False`, on-rank).
+- Wraps the refined finest as a child: `child.parent = self`,
+  `child._relationship_kind = "refinement"`, registered in
+  `parent._registered_children`. The base mesh is untouched (re-adapt is
+  non-cumulative).
+- The child owns the static coarse tail `child._custom_mg_coarse_meshes`
+  (`= parent._coarse_level_meshes()`, built once and cached) + `_custom_mg_builder`.
+
+**Solver auto-pickup** (`custom_mg.maybe_inject_custom_mg`, called from the four
+solve hooks in `petsc_generic_snes_solvers.pyx`): when a solver's `_custom_mg` is
+unset but its mesh carries `_custom_mg_coarse_meshes`, it lazily builds
+`CustomMGHierarchy([*coarse, solver.mesh], field_id=…)` (0 for the Stokes
+velocity block, None for scalar/vector) — so *every* solver on an adapted mesh
+drives geometric MG with no per-solver `set_custom_fmg`. A solver-set hierarchy
+still wins.
+
+**`copy_into` / `add_into`** (`enhanced_variables.py`) dispatch on the child kind
+via `mesh._refine_prolongate` / `_refine_restrict`: parent→child is FE-exact
+barycentric custom-P (serial) or `global_evaluate` REMAP (np>1); child→parent is
+nearest-node injection (serial) / `global_evaluate` (np>1). Submesh children keep
+the existing `subpoint_is` restrict/prolongate.
+
+**`mesh.remesh(metric)`** is the renamed in-place MMG path (byte-identical body).
+`mesh.adapt(adapter="mmg")` is a deprecation shim → `DeprecationWarning` + forwards
+to `remesh`. The MMG regression tests (`test_0810/0830`, `ptest_0763`) were
+migrated to `remesh`.
+
+**Validation**: `tests/test_0835_sbr_adapt_on_top.py` (7 tests, tier_b) + the study
+script `~/+Simulations/layer2_adapt_on_top_study/validate_mesh_adapt_integration.py`
+(serial + np=2, ALL OK): child link + finer; solver auto-pickup pc=mg 4 iters ==
+GAMG; copy_into both directions; non-cumulative re-adapt; node_budget localises;
+shim warns. SBR needs no MMG/pragmatic PETSc build (unlike `remesh`).
+
+**Not yet** (follow-ups, unchanged from the phased plan): transfer caching
+(reuse cached coarse-level transfers; rebuild only the SBR top); marker-sidecar
+checkpointing (`child._adapt_markers` already stashes the per-level markers);
+chaining `adapt` on an already-adapted child; load-balancing the adapted layers.

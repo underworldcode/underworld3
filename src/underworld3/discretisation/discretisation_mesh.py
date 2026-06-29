@@ -347,6 +347,7 @@ class Mesh(Stateful, uw_object):
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
+        self._registered_children = weakref.WeakSet()    # SBR refinement children from adapt()
 
         # _mesh_update_lock: Re-entrant lock to coordinate mesh deformation.
         # Held by mesh_update_callback during _deform_mesh(). Checked by
@@ -510,8 +511,20 @@ class Mesh(Stateful, uw_object):
         self._bounding_surfaces = {}
         self.boundary_normals = boundary_normals
         self.regions = regions
-        self.parent = None       # Set by extract_region() for submeshes
+        self.parent = None       # Set by extract_region()/adapt() for children
         self.subpoint_is = None  # IS mapping submesh points -> parent points
+        # How this mesh was derived from ``self.parent`` (the parent/child DAG):
+        #   None        -- a base mesh (no parent)
+        #   "submesh"   -- a subset extracted via extract_region (DOFs coincide)
+        #   "refinement"-- an SBR adapt-on-top child (parent ⊂ child, DOFs differ)
+        # copy_into/restrict/prolongate dispatch on this kind.
+        self._relationship_kind = None
+        # Mesh-owned custom-P geometric-MG hierarchy (set on refinement children
+        # by adapt()): the static coarse-mesh tail every solver on this mesh
+        # consumes. ``None`` => no mesh-owned hierarchy (solvers fall back to
+        # their own preconditioner / an explicit set_custom_fmg).
+        self._custom_mg_coarse_meshes = None
+        self._custom_mg_builder = "barycentric"
 
         # Wrapped imported DMPlex meshes may only expose generic Gmsh labels
         # such as "Face Sets". Rebuild named boundary labels from those sets so
@@ -1703,6 +1716,7 @@ class Mesh(Stateful, uw_object):
 
         # Store lineage
         sub_mesh.parent = self
+        sub_mesh._relationship_kind = "submesh"
         sub_mesh.subpoint_is = subpoint_is
         sub_mesh._parent_mesh_version = self._mesh_version
         sub_mesh._extract_label_name = label_name
@@ -1877,6 +1891,7 @@ class Mesh(Stateful, uw_object):
 
         # Submesh lineage — same shape as extract_region
         surf_mesh.parent = self
+        surf_mesh._relationship_kind = "submesh"
         surf_mesh.subpoint_is = subpoint_is
         surf_mesh._parent_mesh_version = self._mesh_version
         surf_mesh._extract_label_name = label_name
@@ -2223,6 +2238,75 @@ class Mesh(Stateful, uw_object):
         parent_var.pack_raw_data_to_petsc(new_data, sync=True)
 
         parent_var._data_is_dirty = True
+
+    # ------------------------------------------------------------------ #
+    #  Refinement-child transfers (SBR adapt-on-top; self is the CHILD)
+    #
+    #  Unlike the submesh restrict/prolongate above (DOFs coincide via
+    #  ``subpoint_is``), an adapt() child is *bigger* than its parent and the
+    #  DOFs do not coincide. Direction therefore flips:
+    #    parent (coarse) -> child (fine)  = PROLONGATE  (FE-exact custom-P)
+    #    child  (fine)   -> parent (coarse) = RESTRICT  (injection at shared nodes)
+    #  Serial uses the structured barycentric custom-P / nearest-node injection
+    #  (FE-exact, the quality path); parallel (np>1) falls back to the
+    #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
+    # ------------------------------------------------------------------ #
+    def _refine_prolongate(self, parent_var, child_var, mode="replace"):
+        """Coarse parent -> fine child interpolation (this mesh is the child)."""
+        if self._relationship_kind != "refinement":
+            raise ValueError("_refine_prolongate requires an adapt() refinement child")
+        pv = getattr(parent_var, "_base_var", parent_var)
+        cv = getattr(child_var, "_base_var", child_var)
+
+        if uw.mpi.size > 1:
+            out = numpy.asarray(
+                uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords))
+            ).reshape(cv.data.shape)
+        else:
+            from underworld3.utilities import custom_mg
+            cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
+            fc = numpy.asarray(self._get_coords_for_basis(cv.degree, cv.continuous))
+            P = custom_mg.barycentric_prolongation(cc, fc)
+            out = (P @ numpy.asarray(pv.data)).reshape(cv.data.shape)
+
+        new = numpy.array(cv.data)
+        if mode == "replace":
+            new[:] = out
+        elif mode == "add":
+            new[:] += out
+        else:
+            raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
+        cv.pack_raw_data_to_petsc(new, sync=True)
+
+    def _refine_restrict(self, child_var, parent_var, mode="replace"):
+        """Fine child -> coarse parent injection (this mesh is the child)."""
+        if self._relationship_kind != "refinement":
+            raise ValueError("_refine_restrict requires an adapt() refinement child")
+        pv = getattr(parent_var, "_base_var", parent_var)
+        cv = getattr(child_var, "_base_var", child_var)
+
+        if uw.mpi.size > 1:
+            out = numpy.asarray(
+                uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords))
+            ).reshape(pv.data.shape)
+        else:
+            from scipy.spatial import cKDTree
+            cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
+            fc = numpy.asarray(self._get_coords_for_basis(cv.degree, cv.continuous))
+            # nested SBR: every coarse DOF coincides with a fine DOF (P1) or sits
+            # on a fine element edge (P2) -> nearest fine node is exact / near-exact.
+            _, idx = cKDTree(fc).query(cc)
+            out = numpy.asarray(cv.data)[idx].reshape(pv.data.shape)
+
+        new = numpy.array(pv.data)
+        if mode == "replace":
+            new[:] = out
+        elif mode == "add":
+            new[:] += out
+        else:
+            raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
+        pv.pack_raw_data_to_petsc(new, sync=True)
+        pv._data_is_dirty = True
 
     def nuke_coords_and_rebuild(
         self,
@@ -5905,13 +5989,204 @@ class Mesh(Stateful, uw_object):
             self._ot_adapt_reference_coords = numpy.asarray(coords).copy()
 
     @timing.routine_timer_decorator
-    def adapt(self, metric_field, verbose=False):
-        r"""
-        Adapt the mesh discretization based on a metric field.
+    def _wrap_coarse_level(self, dm):
+        """Wrap a (static) coarse-hierarchy DM as a UW Mesh carrying this mesh's
+        boundary labels — a coarse level for the custom-P geometric-MG hierarchy."""
+        return Mesh(
+            dm.clone(),
+            simplex=self.dm.isSimplex(),
+            coordinate_system_type=self.CoordinateSystem.coordinate_type,
+            qdegree=self.qdegree,
+            boundaries=self.boundaries,
+            verbose=False,
+        )
 
-        This method refines or coarsens the mesh in place, automatically
-        transferring all attached MeshVariables, updating Surfaces, and
-        marking Solvers for rebuild on their next solve() call.
+    def _coarse_level_meshes(self):
+        """The static coarse-mesh tail (one Mesh per base hierarchy level,
+        coarsest..base-finest), built once and cached — they never change
+        because the base hierarchy is static across adapts."""
+        cached = getattr(self, "_coarse_level_meshes_cache", None)
+        if cached is None:
+            cached = [self._wrap_coarse_level(d) for d in self.dm_hierarchy]
+            self._coarse_level_meshes_cache = cached
+        return cached
+
+    def adapt(self, metric_field, max_levels=2, node_budget=None,
+              builder="barycentric", adapter="sbr", verbose=False):
+        r"""
+        Nested **SBR adapt-on-top**: return a refined **child** mesh.
+
+        Skeleton-based-refinement (SBR) the static base finest where the metric
+        demands resolution, **on top of** the existing uniform hierarchy, and
+        return a new child mesh (``child.parent is self``). The base mesh is
+        **not modified** — this is *adapt / re-adapt*, not node movement: each
+        call re-marks from the static base finest, so successive adapts are
+        non-cumulative (cf. :meth:`remesh`, which regenerates the mesh in place
+        via MMG and may redistribute).
+
+        The child owns a custom-P geometric-MG hierarchy
+        (``[base coarse levels … base finest] + child``) so every solver built on
+        it drives geometric multigrid on the refined operator with no per-solver
+        setup.
+
+        Parameters
+        ----------
+        metric_field : MeshVariable
+            Scalar metric ``M = 1/h²`` (target edge length ``h``); larger ⇒ finer.
+            Same interface as :meth:`remesh` / ``adaptivity.create_metric``.
+        max_levels : int
+            Maximum SBR depth applied on top of the base finest (bounds the
+            on-rank imbalance). Each level re-marks against the metric.
+        node_budget : int or None
+            Optional cap on the number of cells refined **per level** (highest-
+            metric cells first). Approximate DOF control; ``None`` ⇒ uncapped.
+        builder : {"barycentric", "rbf"}
+            Per-level node-prolongation builder for the child's custom-P hierarchy.
+        adapter : {"sbr", "mmg"}
+            ``"sbr"`` (default) is this nested path. ``"mmg"`` is a **deprecated
+            shim** that forwards to :meth:`remesh` (in-place, returns ``self``).
+        verbose : bool
+
+        Returns
+        -------
+        Mesh
+            The refined child (or ``self`` when ``adapter='mmg'``).
+        """
+        import warnings
+
+        if adapter == "mmg":
+            warnings.warn(
+                "mesh.adapt(adapter='mmg') is deprecated; the in-place MMG "
+                "remesher is now mesh.remesh(). Call mesh.remesh(metric) instead.",
+                DeprecationWarning, stacklevel=2,
+            )
+            self.remesh(metric_field, verbose=verbose)
+            return self
+        if adapter != "sbr":
+            raise ValueError(f"adapter must be 'sbr' or 'mmg', got {adapter!r}")
+
+        return self._adapt_sbr(
+            metric_field, max_levels=max_levels, node_budget=node_budget,
+            builder=builder, verbose=verbose,
+        )
+
+    def _adapt_sbr(self, metric_field, max_levels=2, node_budget=None,
+                   builder="barycentric", verbose=False):
+        """Core SBR adapt-on-top. See :meth:`adapt`."""
+        import math
+        from underworld3.utilities import custom_mg
+
+        if self.parent is not None:
+            raise NotImplementedError(
+                "adapt(adapter='sbr') refines a BASE mesh; chaining adapt on an "
+                "already-adapted child is not yet supported."
+            )
+        if getattr(self, "dm_hierarchy", None) is None or len(self.dm_hierarchy) < 2:
+            raise RuntimeError(
+                "SBR adapt-on-top needs a base mesh built with refinement>=1 (a "
+                "dm_hierarchy of coarse levels supplies the geometric-MG tail). "
+                "Build the mesh with e.g. refinement=2."
+            )
+
+        dim = self.dim
+        edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
+
+        current_dm = self.dm_hierarchy[-1]   # static base finest
+        markers_per_level = []
+
+        for level in range(max_levels):
+            cs, ce = current_dm.getHeightStratum(0)
+            ncells = ce - cs
+            if ncells == 0:
+                break
+            centroids = numpy.empty((ncells, self.cdim))
+            cur_h = numpy.empty(ncells)
+            for i, c in enumerate(range(cs, ce)):
+                vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
+                centroids[i] = numpy.asarray(cen)[: self.cdim]
+                cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
+
+            # Metric M = 1/h_target² evaluated at the cell centroids (parent field).
+            # Parallel: use the swarm-migration-based global_evaluate (partition-
+            # agnostic, collective-safe); serial: the cheaper local evaluate.
+            if uw.mpi.size > 1:
+                M = numpy.asarray(
+                    uw.function.global_evaluate(metric_field.sym, centroids)
+                ).reshape(-1)
+            else:
+                M = numpy.asarray(
+                    uw.function.evaluate(metric_field.sym, centroids)
+                ).reshape(-1)
+            M = numpy.clip(M, 1e-30, None)
+            h_target = 1.0 / numpy.sqrt(M)
+
+            refine = numpy.where(cur_h > h_target)[0]
+            if refine.size == 0:
+                if verbose:
+                    uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
+                break
+
+            if node_budget is not None and refine.size > node_budget:
+                # keep the highest-metric (finest-demand) cells first
+                order = numpy.argsort(M[refine])[::-1]
+                refine = refine[order[:node_budget]]
+
+            cell_ids = [int(cs + j) for j in refine]
+            markers_per_level.append(cell_ids)
+            if verbose:
+                uw.pprint(0, f"[adapt] level {level}: refining {len(cell_ids)} "
+                             f"of {ncells} cells")
+            current_dm = custom_mg.sbr_refine(current_dm, cell_ids)
+
+        if verbose:
+            base_n = self.dm_hierarchy[-1].getHeightStratum(0)
+            fin_n = current_dm.getHeightStratum(0)
+            uw.pprint(0, f"[adapt] base finest {base_n[1]-base_n[0]} -> "
+                         f"child {fin_n[1]-fin_n[0]} cells "
+                         f"({len(markers_per_level)} SBR level(s))")
+
+        # Wrap the refined finest as the child mesh (on-rank; no redistribute).
+        child = Mesh(
+            current_dm.clone(),
+            simplex=self.dm.isSimplex(),
+            coordinate_system_type=self.CoordinateSystem.coordinate_type,
+            qdegree=self.qdegree,
+            boundaries=self.boundaries,
+            verbose=False,
+        )
+
+        # Lineage (parent/child DAG) and mesh-owned custom-P hierarchy.
+        child.parent = self
+        child._relationship_kind = "refinement"
+        child.regions = self.regions
+        child._parent_mesh_version = self._mesh_version
+        # Markers per SBR level (in each level's cell numbering) — the
+        # checkpoint-by-marker payload (design only; storage is a follow-up).
+        child._adapt_markers = markers_per_level
+        # Static coarse tail (incl. base finest); the child appends itself when a
+        # solver builds the hierarchy. Reuses the parent's cached wrapped levels.
+        child._custom_mg_coarse_meshes = self._coarse_level_meshes()
+        child._custom_mg_builder = builder
+
+        self._registered_children.add(child)
+        return child
+
+    def remesh(self, metric_field, verbose=False):
+        r"""
+        Re-mesh (regenerate) the discretization in place from a metric field.
+
+        This is the **MMG / topology-changing** remesher: it regenerates the
+        mesh in place (cells are created/destroyed and the partition may change),
+        automatically transferring all attached MeshVariables, updating Surfaces,
+        and marking Solvers for rebuild on their next solve() call.
+
+        Contrast :meth:`adapt`, which performs *nested* skeleton-based refinement
+        on top of the static base and **returns a refined child** (the mesh is
+        not modified in place). ``remesh`` is the in-place, redistributing path;
+        prefer ``adapt`` when you want a parent/child geometric-MG hierarchy.
+
+        This method was formerly called ``adapt``; ``adapt`` now performs the
+        nested SBR adapt-on-top.
 
         Parameters
         ----------
@@ -5940,7 +6215,7 @@ class Mesh(Stateful, uw_object):
         >>> with mesh.access(metric):
         ...     # Smaller H near fault, larger far away
         ...     metric.data[:, 0] = 0.01 + 0.09 * fault.distance_from(mesh.data)
-        >>> mesh.adapt(metric, verbose=True)
+        >>> mesh.remesh(metric, verbose=True)
         >>> stokes.solve()  # Solver rebuilds automatically
         """
         import underworld3 as uw
@@ -6173,8 +6448,12 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, '_dminterpolation_cache'):
             self._dminterpolation_cache.invalidate_all(reason="mesh_adaptation")
 
-        # Re-extract registered submeshes from the adapted parent
+        # Re-extract registered submeshes from the re-meshed parent. Only true
+        # subset submeshes (extract_region) can be re-filtered; SBR refinement
+        # children (adapt) have a different lineage and are skipped.
         for submesh in list(self._registered_submeshes):
+            if getattr(submesh, "_relationship_kind", "submesh") != "submesh":
+                continue
             try:
                 submesh._re_extract_from_parent(verbose=verbose)
             except Exception as e:

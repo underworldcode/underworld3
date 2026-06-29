@@ -2703,10 +2703,10 @@ class SNES_Scalar(SolverBaseClass):
 
         # Custom multigrid prolongation: inject our P hierarchy before the
         # first PCSetUp (so the Galerkin coarse operators are built from it).
-        # No-op unless set_custom_mg() was called.
-        if self._custom_mg is not None:
-            from underworld3.utilities.custom_mg import inject_custom_mg
-            inject_custom_mg(self)
+        # Picks up a solver-set (set_custom_mg) OR a mesh-owned (adapt child)
+        # hierarchy. No-op unless one is present.
+        from underworld3.utilities.custom_mg import maybe_inject_custom_mg
+        maybe_inject_custom_mg(self, field_id=None)
 
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
@@ -3725,10 +3725,10 @@ class SNES_Vector(SolverBaseClass):
         self._update_constants()
 
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
-        # registered via set_custom_fmg. Mirrors the SNES_Scalar hook.
-        if self._custom_mg is not None:
-            from underworld3.utilities.custom_mg import inject_custom_mg
-            inject_custom_mg(self)
+        # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
+        # SNES_Scalar hook.
+        from underworld3.utilities.custom_mg import maybe_inject_custom_mg
+        maybe_inject_custom_mg(self, field_id=None)
 
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
@@ -7467,10 +7467,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # Custom geometric-MG prolongation on the velocity block (if registered
             # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
             # before the real solve — because the velocity sub-PC is only reachable
-            # once the monolithic Jacobian is assembled (see custom_mg).
-            if self._custom_mg is not None:
-                from underworld3.utilities.custom_mg import inject_custom_mg
-                inject_custom_mg(self)
+            # once the monolithic Jacobian is assembled (see custom_mg). Picks up
+            # a solver-set (set_custom_fmg field_id=0) or mesh-owned (adapt child)
+            # hierarchy on the velocity block.
+            from underworld3.utilities.custom_mg import maybe_inject_custom_mg
+            maybe_inject_custom_mg(self, field_id=0)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         else:
@@ -7484,10 +7485,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # Custom geometric-MG prolongation on the velocity block (if registered
             # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
             # before the real solve — because the velocity sub-PC is only reachable
-            # once the monolithic Jacobian is assembled (see custom_mg).
-            if self._custom_mg is not None:
-                from underworld3.utilities.custom_mg import inject_custom_mg
-                inject_custom_mg(self)
+            # once the monolithic Jacobian is assembled (see custom_mg). Picks up
+            # a solver-set (set_custom_fmg field_id=0) or mesh-owned (adapt child)
+            # hierarchy on the velocity block.
+            from underworld3.utilities.custom_mg import maybe_inject_custom_mg
+            maybe_inject_custom_mg(self, field_id=0)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         # Project the rigid-body rotation gauge out of the converged solution.

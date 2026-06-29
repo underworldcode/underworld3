@@ -618,6 +618,31 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     solver.is_setup = False
 
 
+def maybe_inject_custom_mg(solver, field_id=None):
+    """Solve-hook entry: inject custom-P FMG from either a solver-set hierarchy
+    (``set_custom_fmg``) or a **mesh-owned** one (``mesh.adapt`` refinement child).
+
+    A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
+    coarse tail). The first time a solver on such a mesh solves, we lazily build a
+    :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]`` targeting ``field_id``
+    (0 for the Stokes velocity block, None for scalar/vector) and register it on
+    the solver — so every solver on an adapted mesh drives geometric MG with no
+    per-solver call. A solver-set hierarchy (if present) always wins.
+    """
+    if solver._custom_mg is None:
+        coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
+        if coarse is None:
+            return                          # nothing to inject
+        builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
+        solver._custom_mg = {
+            "mode": "hierarchy",
+            "hierarchy": CustomMGHierarchy(list(coarse) + [solver.mesh],
+                                           builder=builder, field_id=field_id),
+            "verbose": False,
+        }
+    inject_custom_mg(solver)
+
+
 def inject_custom_mg(solver):
     """Build + install the custom-P FMG. Called from ``solve()`` (after ``_build``,
     before the SNES solve) when ``solver._custom_mg`` is set. Dispatches:
