@@ -41,12 +41,15 @@ small strain-rate dependence of the yield stress (a Perzyna overstress, physical
 a damage/viscoplastic regularisation) — rescues those cases **under FMG**, where
 the augmented-Lagrangian pressure penalty does not.
 
-The warm-started progression solves DP problems well past the regime where cold
-Newton fails — and in doing so it doubles as a **probe of the problem's
-conditioning**: the sharp-residual diagnostic reveals a **flat-residual /
-near-singular direction** (the shear-band-width mode the equations barely
-constrain), which is *why* the cold problem is hard and why the homotopy's
-incremental warm-starting is the right tool for it.
+The two axes have **distinct jobs**: a held **ξ conditions the solve** (it removes
+the *linear* wall — a cold `δ=0` solve converges in ~5 iterations at driving
+stresses from 3e26 up to **1e30**, regime-independent and contrast-invariant), and
+the **δ-sequence develops the localisation** (the shear bands). That is the recipe:
+*hold ξ to make it solvable, sequence δ to grow the bands.* The progression also
+doubles as a **probe of the problem's conditioning** — the sharp-residual
+diagnostic reveals a **flat-residual / near-singular direction** (the shear-band
+width the equations barely constrain), which is *why* the cold problem is hard and
+why incremental warm-starting is the right tool.
 
 ## The problem this solves
 
@@ -258,6 +261,47 @@ localisation, which moves between iterates, so it decouples exactly where it is
 needed (observed). The clean division of labour is **δ/ξ for the solver path
 (homotope → 0), ℓ for the physics (kept finite, in-SNES)** — orthogonal roles, the
 same rampable-`constants[]` machinery applies to all three.
+
+## The recipe — ξ conditions, the δ-sequence develops the bands
+
+The two axes do **distinct, complementary jobs**, and the clean procedure for hard
+viscoplastic DP at extreme contrast falls out of that split:
+
+1. **Hold a rate-strengthening floor ξ.** It conditions the *linear* solve (bounds
+   the contrast; the floor `ξ·η_bg` scales with the regime, so it works at *any*
+   driving stress; MG-friendly where AL is not). This is what makes the solve
+   *possible* — it lets even a cold `δ=0` solve converge, and it is held throughout.
+2. **Run the δ-sequence (corner-smoothing 64→0)** at that held ξ. *This* develops
+   the localisation — the shear bands — and lands on exact hard-`Min`. Neither axis
+   does the other's job: δ alone cannot start at the corner where the contrast is
+   the obstacle; ξ alone (`δ=0`, march ξ) **freezes** on the entry solution and
+   never develops the bands (verified — a δ=0-fixed ξ-march is iteration-frozen).
+
+**ξ removes the linear wall entirely.** A cold `δ=0` solve with ξ=0.3 converges in
+~5 iterations across `η_bg·V` from 3e26 to **1e30** (a ~3000× span), every regime
+the same cost, and the non-dim band pattern is **identical** (range ≈ [−1.9, −1.05])
+— the rigid-plastic limit where the notch geometry, not the viscosity, sets the
+flow (`figures/regime_bands_contrast_invariance.png`). The old "impossible"
+(1e26/V25 = 2.5e27) is solved in 5 iterations.
+
+**The held ξ sets band tightness, traded against cost, down to a floor.** An
+independent cold δ-sequence at the corner (1e26/V10) for a range of held ξ
+(`figures/held_xi_recipe_*.png`):
+
+| held ξ | reaches hard-Min? | iters | strain-rate range (band tightness) |
+|--------|-------------------|-------|------------------------------------|
+| 0.1   | ✓ | 6  | [−1.99, −0.96] |
+| 0.03  | ✓ | 8  | [−2.10, −0.85] |
+| 0.01  | ✓ | 10 | [−2.29, −0.75] |
+| 0.003 | ✓ | 19 | [−2.45, −0.67] (tightest) |
+| 0.001 | ✗ — entry `δ=64` diverges | — | below the floor |
+
+Lower held ξ → **tighter bands but more iterations**; the cost climbs steeply
+(6→8→10→**19**) and then the entry fails outright — so there is a **conditioning
+floor** (≈ 0.003 here) below which the cold δ-sequence cannot complete. The
+band-tightness-vs-ξ family matches the warm ξ-march (§ Phase 2), confirming that
+**the δ-sequence is what develops the bands** (both schemes have it) and the held ξ
+merely sets where in the family — and at what iteration cost — you land.
 
 ## Honest limitations
 
