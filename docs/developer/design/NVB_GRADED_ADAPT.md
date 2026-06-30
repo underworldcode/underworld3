@@ -1,6 +1,10 @@
 # Newest-Vertex Bisection (NVB) for graded adapt-on-top
 
-Status: design (2026-06-30). Follows the Layer-2 investigation in
+Status: **implemented (serial Route A), 2026-06-30**. Engine in
+`src/underworld3/utilities/nvb.py` + `custom_mg.nvb_refine`; wired into
+`Mesh.adapt(engine="nvb")`; validated in `tests/test_0836_nvb_graded_adapt.py`.
+Parallel (Route B, native transform) is the next step. Follows the Layer-2
+investigation in
 [`LAYER2_SBR_ADAPT_ON_TOP.md`](LAYER2_SBR_ADAPT_ON_TOP.md). Goal: replace the
 refinement *engine* under `mesh.adapt(adapter="sbr")` so that successive levels
 produce a **graded** mesh (a level+1 ring, a level+2 sub-ring dividing *some*
@@ -289,15 +293,36 @@ is the DMPlex wrap + label transfer (engineering, not algorithm risk). NVB bisec
 1. **Serial NVB core** (numpy) — **DONE** (`nvb_prototype_2d.py`): marked-edge
    model, `refine`, recursive compatible-closure; conformity (no hanging nodes,
    0 over-shared edges) and bounded-closure (1 cell → +2, local) verified; graded
-   bullseye rendered. TODO before src: similarity-class/shape-regularity assertion
-   and a #added ≤ C·#marked stress test.
-2. **DMPlex wrap**: build-from-cells + label transfer; `nvb_refine` mirroring
-   `sbr_refine`; render the graded bullseye + fault funnel coloured by level
-   (the acceptance picture: distributed rings, *not* a uniform core).
-3. **Layer-2 wiring**: `engine="nvb"` in `_adapt_nested`; custom-P FMG on the
-   graded child (Poisson + SolCx Stokes), serial.
-4. **Decide on Route B** (native transform) for parallel + incremental, informed
-   by 1–3.
+   bullseye rendered.
+2. **DMPlex wrap** — **DONE** (`src/underworld3/utilities/nvb.py`,
+   `custom_mg.nvb_refine`): `NVBMesh.from_dm` / `to_dm` build the interpolated
+   DMPlex from the cell list and transfer boundary-edge + region-cell labels.
+   Gotchas resolved: `createFromCellList` needs consistent **CCW winding** (the
+   `(peak,b0,b1)` refinement-edge order is geometry-agnostic, so reorient the
+   *exported* cell list only); labels matched by **vertex pair** (vertex identified
+   by coordinate — midpoints are exact float averages, so the match is exact —
+   never by array index); each boundary edge also labels its two vertices so
+   `Mesh()` derives `UW_Boundaries`/`Null_Boundary`, and `All_Boundaries` is the
+   geometric outer boundary. De-risk: a Dirichlet Poisson on the injected DM solves
+   to 4e-10. Graded bullseye / fault funnel coloured by generation rendered
+   (`~/+Simulations/layer2_adapt_on_top_study/nvb_src_{bullseye,fault_funnel}.png`,
+   `nvb_vs_sbr.png` — concentric rings, **not** a uniform core; 1800 vs 3616 cells).
+3. **Layer-2 wiring** — **DONE**: `Mesh._adapt_sbr` renamed `_adapt_nested` with
+   `engine="sbr"|"nvb"` (default sbr, unchanged); the NVB path drives a *persistent*
+   `NVBMesh` across `2·max_levels` generations (1→2 area halving) so the
+   refinement-edge labelling — hence the similarity-class bound — propagates
+   parent→child, snapshotting one DM per generation into the engine-agnostic
+   coordinate-based custom-P FMG tail. Validated serial (`tests/test_0836`,
+   tier_b): conformity, bounded closure (single-cell local + ≤C·#marked),
+   shape-regularity (similarity classes bounded; =1 on a right-isoceles structured
+   base — the ideal), graded bullseye + fault funnel, **Poisson FMG** (5 levels)
+   matches GAMG bit-identically, **SolCx Stokes** (η jump 1e6) velocity-block FMG
+   matches GAMG iter-for-iter (8). `engine="nvb"` raises `NotImplementedError` at
+   np>1 (verified clean under `mpirun -n 2`; SBR unaffected) and for dim≠2.
+4. **Decide on Route B** (native transform) for parallel + incremental — **NEXT**,
+   informed by 1–3. The seam is ready: `engine="nvb"` would dispatch to a native
+   `DMPlexTransform` at np>1, and the custom-P tail is already coordinate-based
+   (engine-agnostic), so Route B needs no change to the hierarchy or the wiring.
 
 ## Alternatives considered
 
