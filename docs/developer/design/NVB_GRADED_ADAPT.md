@@ -242,11 +242,32 @@ dimension-agnostic.
 A serial Route-A prototype that produces a graded fault funnel + drives the
 custom-P FMG is the milestone that tells us whether to invest in Route B.
 
+## Prototype result (Phase 1 core — DONE, 2026-06-30)
+
+The serial NVB core is implemented and validated in ~135 lines of numpy:
+[`nvb_prototype_2d.py`](nvb_prototype_2d.py) (`NVBMesh`: newest-vertex data model,
+recursive compatible-bisection `bisect`, `refine`, conformity check). Measured
+against the SBR pathology, same nested-disk bullseye:
+
+| | NVB | SBR (`refine_sbr`) |
+|---|---|---|
+| one cell deep in a uniform patch | **+2 cells, local** (r 0.016–0.030) | +3592, drained to r=0.28 |
+| finest band (gen 6) | confined **r < 0.126** | refilled to r=0.337 |
+| conformity (hanging nodes / over-shared edges) | **0 / 0** every step | — |
+| total cells (same bullseye target) | **3024** | 7968 |
+
+The bullseye renders as clean concentric generation rings (not a uniform core).
+So the core algorithm — the genuinely hard part — works. Remaining Phase-1 work
+is the DMPlex wrap + label transfer (engineering, not algorithm risk). NVB bisects
+1→2 (area halves); a full isotropic SBR "level" (1→4) = two generations.
+
 ## Phasing
 
-1. **Serial NVB core** (numpy): marked-edge model, `refine`, closure; unit-test
-   conformity (no hanging nodes), 2:1 balance, bounded closure (#added ≤ C·#marked),
-   shape regularity (similarity-class count bounded) on stress cases.
+1. **Serial NVB core** (numpy) — **DONE** (`nvb_prototype_2d.py`): marked-edge
+   model, `refine`, recursive compatible-closure; conformity (no hanging nodes,
+   0 over-shared edges) and bounded-closure (1 cell → +2, local) verified; graded
+   bullseye rendered. TODO before src: similarity-class/shape-regularity assertion
+   and a #added ≤ C·#marked stress test.
 2. **DMPlex wrap**: build-from-cells + label transfer; `nvb_refine` mirroring
    `sbr_refine`; render the graded bullseye + fault funnel coloured by level
    (the acceptance picture: distributed rings, *not* a uniform core).
