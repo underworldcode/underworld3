@@ -34,6 +34,33 @@ chains across a quasi-uniform mesh. We measured this directly (study scripts in
 Conclusion: the uniform-patch behaviour is a property of the **engine**, not of
 the metric, mesh type, or marking. No tuning fixes it.
 
+### The interior-interface intuition (why creating a patch works but grading inside it doesn't)
+
+A revealing experiment: build an embedded uniformly-refined patch (refine the
+whole disk r<0.25), then refine **one** cell at its centre. That single cell
+drains the entire patch — +3592 cells, refined out to r=0.28 ≈ the patch edge —
+on *both* structured and unstructured bases (whereas one cell on the *pristine*
+base is local, +10).
+
+The resolution of the apparent paradox:
+
+- The **graded mesh you want is valid and constructible** (a level+1 ring around a
+  level+2 sub-ring around a level+3 core is a fine 2:1-conforming mesh — gmsh
+  could build it directly from a size field). Graded meshes are not impossible.
+- **Creating the patch works because you refine the *whole* region at once** —
+  every cell steps up together, so the *only* coarse/fine interface created is at
+  the patch's *outer* edge, closed locally in one clean step. No interior cell
+  ever neighbours a different resolution.
+- **Grading needs a *new* interface in the *interior*** (the finer core must sit
+  inside the coarser ring). Longest-edge bisection has **no local termination in a
+  uniform bisected patch** — all edges are ~equal, so the closure's propagation
+  path chains until it meets an edge-length contrast, i.e. the patch's *existing*
+  outer interface. It can only push an interface outward, never carve one inside.
+- **NVB's combinatorial marked edge restores local termination**: refine one cell
+  deep in a patch → O(1) cells added with a small local transition, *which is*
+  an interior interface. Same mesh space; only NVB can reach the graded states
+  with bounded local moves.
+
 Important scope note: this is purely a **DOF-efficiency / grading** problem. The
 uniform-patch SBR meshes are perfectly valid for the *MG hierarchy* — the
 custom-P FMG converges on them (4–6 iters). NVB is about spending DOFs where they
@@ -173,6 +200,32 @@ level**. Store those (tiny) — replay reconstructs every level bit-identically,
 consistent with the marker-sidecar scheme already designed for SBR. The
 coordinate-built custom-P sidesteps the canonical-numbering fragility (same as
 SBR).
+
+## 3D (tetrahedra)
+
+NVB is the right engine in 3D too, and the design generalises with no change of
+approach:
+
+- Each **tetrahedron** carries a *refinement edge*; bisecting adds its midpoint
+  and splits the tet into two children, with the marked-edge propagation rule
+  carried over (Bänsch 1991; Maubach 1995; Arnold–Mukherjee–Pouly). Stevenson
+  (2008) proved **bounded closure + termination in n dimensions** given a
+  compatible initial labelling, with a finite number of similarity classes (no
+  sliver degeneration) — the same guarantees we rely on in 2D.
+- **Longest-edge bisection is worse in 3D** (each refinement edge is shared by
+  more tets, so the drain-to-interface chaining is more severe) — additional
+  motivation to switch rather than patch `refine_sbr`.
+- **Route A carries over directly**: cells become `(N,4)` vertex indices, the
+  refinement edge is encoded by vertex ordering, bisection splits one edge into
+  two children, and the bounded-closure completion is the same loop. DMPlex
+  build-from-cells works for tets unchanged.
+- Octree (DMForest/p4est) in 3D is **hexes** — ruled out (UW3 design change),
+  same as 2D.
+
+The marked-edge labelling and similarity-class bookkeeping are the only parts
+that carry extra 3D subtlety (the compatible initial labelling is more involved);
+the integration seam, custom-P hierarchy, and DM construction are
+dimension-agnostic.
 
 ## Complexity assessment
 
