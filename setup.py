@@ -249,6 +249,18 @@ extensions = [
         extra_compile_args=extra_compile_args,
         **conf,
     ),
+    # Native NVB DMPlexTransform (Route B parallel graded refinement). Registers
+    # the "uwnvb" transform type into PETSc on import; uses PETSc private transform
+    # headers (in $PETSC_DIR/include) and links libpetsc — no PETSc rebuild.
+    Extension(
+        "underworld3.utilities._nvb_transform",
+        sources=[
+            "src/underworld3/utilities/_nvb_transform.pyx",
+            "src/underworld3/utilities/nvb_transform.c",
+        ],
+        extra_compile_args=extra_compile_args,
+        **conf,
+    ),
 ]
 
 
