@@ -309,6 +309,83 @@ construction**, which Route B's native `DMPlexTransform` inherits from PETSc (an
 which option 1's manual-SF path could now be built, the algorithm being proven).
 This is the milestone that says Route B is worth the C investment.
 
+## Route B implementation plan (native transform) — feasibility established 2026-06-30
+
+A symbol/feasibility audit against the installed custom PETSc (`petsc-3.25`,
+`libpetsc.3.25.0.dylib`) shows Route B is a **self-contained UW extension — no PETSc
+rebuild, no PETSc fork** — and is a *small delta* from the shipped SBR transform.
+
+**The key insight (NVB ≈ SBR + a different edge pick).** Reading PETSc's SBR
+transform (`src/dm/impls/plex/transform/impls/refine/sbr/plexrefsbr.c`): the
+topological surgery (`CellTransform`, `GetSubcellOrientation`, the `RT_*` refinement
+types, `SBRGetTriangleSplit{Single,Double}`, barycentre coordinate placement) is
+**pure simplex-bisection geometry — identical for NVB**. The parallel conforming
+closure is **already generic and SF-correct**: `DMLabelPropagate{Begin,Push,End}`
+over the point-SF (the loop that exchanges the `splitPoints` edge label between
+ranks) *is* the cross-rank closure fixpoint the Python prototype validated. The
+**only** NVB-specific change is the *edge selected to split* in `SetUp`: SBR picks
+the geometric **longest** edge; NVB picks the **newest-vertex refinement edge**.
+
+**The newest-vertex rule with no stored bisection tree.** The newest vertex of a
+triangle is identifiable by a per-vertex **age** label (base vertices = 0; each
+midpoint = its creation generation). The refinement edge is the edge *opposite* the
+unique highest-age vertex; when all three tie (a base cell) fall back to the
+longest-edge seed. This is local, label-only, and **cross-rank-consistent for free**
+(age = generation count is deterministic, so a shared midpoint gets the same age on
+both ranks). The transform updates the age label on the midpoints it creates; the
+Python driver carries it across generations. This reproduces the serial `NVBMesh`
+exactly (longest-edge seed on base cells, newest-vertex thereafter).
+
+**Symbol audit — what an external extension can link (no rebuild).** Checked with
+`dyld_info -exports` on the installed `libpetsc`:
+
+| needed | exported? |
+|---|---|
+| `DMPlexTransformRegister` | **yes** |
+| `DMPlexPointQueue{Create,Enqueue,Dequeue,Empty,EmptyCollective,Destroy}` | **yes** |
+| `DMLabelPropagate{Begin,Push,End}` (the parallel closure) | **yes** |
+| `DMPlexTransformCellTransformIdentity`, `…GetSubcellOrientationIdentity` | **yes** |
+| all generic plex/label API (`DMPlexGetCone/Support/TransitiveClosure`, `DMLabel*`, `DMGetPointSF`, `DMPlexTransformGet{DM,Active}`, …) | **yes** |
+| `DMPlexTransformCellRefine_Regular` | hidden |
+| `DMPlexTransformGetSubcellOrientation_Regular` | hidden |
+| `DMPlexTransformMapCoordinatesBarycenter_Internal` (~12 lines) | hidden |
+| `DMPlexTransformSetDimensions_Internal` (~20 lines) | hidden |
+| `DMPolytopeTypeGetArrangement` (triangle: a fixed 6-orientation table) | hidden |
+
+So **the entire parallel-hard machinery (closure + SF + registration) is linkable**;
+the only hidden symbols are five small **2D geometry/orientation** helpers, all
+short and reimplementable locally (the `SBRGetTriangleSplit{Single,Double}` cone
+tables are *static functions in the SBR `.c`* — copy them; the regular triangle
+(1→4) / segment (1→2) cone tables are small fixed arrays; barycentre placement and
+set-dimensions are a few lines each).
+
+**Build wiring.** UW already compiles Cython+C extensions against PETSc with a
+shared `conf` (PETSc + petsc4py includes, `libpetsc` link) — e.g. the
+`underworld3.function._function` extension pairs a `.pyx` with a hand-written
+`petsc_tools.c`. Add `underworld3.utilities._nvb_transform` the same way:
+`_nvb_transform.pyx` (imports register the `nvb` transform via
+`DMPlexTransformRegister` and exposes a thin `nvb_refine`) + `nvb_transform.c` (the
+`SetUp`/`CellTransform`/helpers, including `#include <petsc/private/dmplextransformimpl.h>`).
+`$PETSC_DIR/include` carries the private headers, so the compile needs no rebuilt
+PETSc.
+
+**Plan of record (validation-gated):**
+1. *Infra gate* — scaffold `_nvb_transform` that registers `nvb` and reproduces SBR
+   serially (copy SBR's `SetUp`/`CellTransform` + reimplement the 5 helpers), built
+   into UW with no PETSc rebuild; confirm `setType("nvb")` + `apply` works and
+   preserves the SF in parallel (np=2). Proves the whole build/registration/private-
+   header/parallel-SF stack.
+2. *NVB rule* — replace the longest-edge pick in `SetUp` with the age-based
+   newest-vertex refinement edge (seed cells split their ref edge, closure
+   propagates ref edges); maintain the vertex-age label. Validate against the serial
+   `NVBMesh` (confluence: identical mesh) serially and at np>1.
+3. *Integration* — `_adapt_nested(engine="nvb")` at np>1 dispatches to the transform
+   (via `adaptLabel` with `dm_plex_transform_type=nvb`, the same in-place path SBR
+   uses) instead of raising; the child stays co-partitioned (in-place transform), so
+   the existing parallel custom-P tail consumes it unchanged.
+4. *Acceptance* — np>1 graded child: Poisson + SolCx FMG match GAMG; co-partitioning
+   invariant holds; result matches the serial NVB mesh.
+
 ## Checkpointing
 
 NVB is deterministic given the **initial labelling + the marked-cell set per
