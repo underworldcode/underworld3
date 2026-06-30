@@ -6012,17 +6012,32 @@ class Mesh(Stateful, uw_object):
         return cached
 
     def adapt(self, metric_field, max_levels=2, node_budget=None,
-              builder="barycentric", adapter="sbr", verbose=False):
+              builder="barycentric", adapter="sbr", engine="sbr", verbose=False):
         r"""
-        Nested **SBR adapt-on-top**: return a refined **child** mesh.
+        Nested **adapt-on-top**: return a refined **child** mesh.
 
-        Skeleton-based-refinement (SBR) the static base finest where the metric
-        demands resolution, **on top of** the existing uniform hierarchy, and
-        return a new child mesh (``child.parent is self``). The base mesh is
-        **not modified** — this is *adapt / re-adapt*, not node movement: each
-        call re-marks from the static base finest, so successive adapts are
-        non-cumulative (cf. :meth:`remesh`, which regenerates the mesh in place
-        via MMG and may redistribute).
+        Locally refine the static base finest where the metric demands resolution,
+        **on top of** the existing uniform hierarchy, and return a new child mesh
+        (``child.parent is self``). The base mesh is **not modified** — this is
+        *adapt / re-adapt*, not node movement: each call re-marks from the static
+        base finest, so successive adapts are non-cumulative (cf. :meth:`remesh`,
+        which regenerates the mesh in place via MMG and may redistribute).
+
+        Two refinement **engines** (``engine=``):
+
+        * ``"sbr"`` (default) — PETSc skeleton-based (longest-edge) bisection. Each
+          pass refines marked cells isotropically (1→4). Its conforming closure is
+          *unbounded for region marking*, so it produces a **uniform-finest patch**,
+          not a graded mesh (a marked cell drains the longest-edge path to the patch
+          edge). Robust and fine for the MG hierarchy.
+        * ``"nvb"`` — newest-vertex bisection (:mod:`underworld3.utilities.nvb`),
+          a **graded** engine with a *bounded* conforming closure: a marked cell
+          adds O(1) cells locally, so successive levels grade (a level+1 ring around
+          a finer core) and DOFs concentrate near the feature. Serial only this pass
+          (``NotImplementedError`` at np>1 — the parallel decomposition cannot be
+          preserved through the cell-list DM rebuild; a native transform is the
+          parallel path). Bisects 1→2, so one isotropic-equivalent ``max_levels`` is
+          run as **two** NVB generations.
 
         The child owns a custom-P geometric-MG hierarchy with **one level per SBR
         refinement step** — ``[base L0 … base finest, SBR-1, …, SBR-n(child)]`` —
@@ -6054,8 +6069,13 @@ class Mesh(Stateful, uw_object):
         builder : {"barycentric", "rbf"}
             Per-level node-prolongation builder for the child's custom-P hierarchy.
         adapter : {"sbr", "mmg"}
-            ``"sbr"`` (default) is this nested path. ``"mmg"`` is a **deprecated
-            shim** that forwards to :meth:`remesh` (in-place, returns ``self``).
+            ``"sbr"`` (default) is the nested adapt-on-top path (the refinement
+            engine is then chosen by ``engine``). ``"mmg"`` is a **deprecated shim**
+            that forwards to :meth:`remesh` (in-place, returns ``self``).
+        engine : {"sbr", "nvb"}
+            The nested refinement engine (ignored when ``adapter="mmg"``). ``"sbr"``
+            (default) is longest-edge bisection (uniform patch); ``"nvb"`` is
+            newest-vertex bisection (graded, serial only). See above.
         verbose : bool
 
         Returns
@@ -6092,88 +6112,141 @@ class Mesh(Stateful, uw_object):
             return self
         if adapter != "sbr":
             raise ValueError(f"adapter must be 'sbr' or 'mmg', got {adapter!r}")
+        if engine not in ("sbr", "nvb"):
+            raise ValueError(f"engine must be 'sbr' or 'nvb', got {engine!r}")
 
-        return self._adapt_sbr(
+        return self._adapt_nested(
             metric_field, max_levels=max_levels, node_budget=node_budget,
-            builder=builder, verbose=verbose,
+            builder=builder, engine=engine, verbose=verbose,
         )
 
-    def _adapt_sbr(self, metric_field, max_levels=2, node_budget=None,
-                   builder="barycentric", verbose=False):
-        """Core SBR adapt-on-top. See :meth:`adapt`."""
+    def _adapt_nested(self, metric_field, max_levels=2, node_budget=None,
+                      builder="barycentric", engine="sbr", verbose=False):
+        """Core nested adapt-on-top (SBR or NVB engine). See :meth:`adapt`."""
         import math
         from underworld3.utilities import custom_mg
 
         if self.parent is not None:
             raise NotImplementedError(
-                "adapt(adapter='sbr') refines a BASE mesh; chaining adapt on an "
-                "already-adapted child is not yet supported."
+                "adapt() refines a BASE mesh; chaining adapt on an already-adapted "
+                "child is not yet supported."
             )
         if getattr(self, "dm_hierarchy", None) is None or len(self.dm_hierarchy) < 2:
             raise RuntimeError(
-                "SBR adapt-on-top needs a base mesh built with refinement>=1 (a "
+                "Nested adapt-on-top needs a base mesh built with refinement>=1 (a "
                 "dm_hierarchy of coarse levels supplies the geometric-MG tail). "
                 "Build the mesh with e.g. refinement=2."
             )
+        if engine == "nvb":
+            if uw.mpi.size > 1:
+                raise NotImplementedError(
+                    "adapt(engine='nvb') is serial-only: the cell-list DMPlex "
+                    "rebuild does not preserve the parent's parallel decomposition "
+                    "(required by the custom-P parallel path). Use engine='sbr' at "
+                    "np>1, or the native-transform (Route B) NVB when available."
+                )
+            if self.dim != 2:
+                raise NotImplementedError(
+                    "adapt(engine='nvb') is 2D only this pass (tets are a follow-up)."
+                )
 
         dim = self.dim
         edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
 
-        current_dm = self.dm_hierarchy[-1]   # static base finest
         markers_per_level = []
-        sbr_level_dms = []                    # one DM per SBR level (level 1 … n)
+        level_dms = []                       # one DM per refinement level
 
-        for level in range(max_levels):
-            cs, ce = current_dm.getHeightStratum(0)
-            ncells = ce - cs
-            if ncells == 0:
-                break
-            centroids = numpy.empty((ncells, self.cdim))
-            cur_h = numpy.empty(ncells)
-            for i, c in enumerate(range(cs, ce)):
-                vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
-                centroids[i] = numpy.asarray(cen)[: self.cdim]
-                cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
-
-            # Metric M = 1/h_target² evaluated at the cell centroids (parent field).
-            # Parallel: use the swarm-migration-based global_evaluate (partition-
-            # agnostic, collective-safe); serial: the cheaper local evaluate.
-            if uw.mpi.size > 1:
-                M = numpy.asarray(
-                    uw.function.global_evaluate(metric_field.sym, centroids)
-                ).reshape(-1)
-            else:
-                M = numpy.asarray(
-                    uw.function.evaluate(metric_field.sym, centroids)
-                ).reshape(-1)
-            M = numpy.clip(M, 1e-30, None)
-            h_target = 1.0 / numpy.sqrt(M)
-
-            refine = numpy.where(cur_h > h_target)[0]
-            if refine.size == 0:
+        if engine == "nvb":
+            # Persistent NVBMesh: the refinement-edge labelling propagates
+            # parent→child across generations, which preserves the similarity-class
+            # (shape-regularity) bound. Each generation bisects 1→2 (h /√2), so we
+            # run up to 2·max_levels generations to reach the same isotropic-
+            # equivalent target as the SBR path's max_levels passes (1→4 each).
+            from underworld3.utilities.nvb import NVBMesh
+            carry = [(b.name, b.value) for b in self.boundaries
+                     if b.name not in ("Null_Boundary", "All_Boundaries")]
+            rcarry = ([(r.name, r.value) for r in self.regions]
+                      if self.regions is not None else [])
+            nvb = NVBMesh.from_dm(self.dm_hierarchy[-1], boundaries=carry,
+                                  regions=rcarry)
+            n_gen = 2 * max_levels
+            for level in range(n_gen):
+                centroids, cur_h, cids = nvb.centroids_h()
+                M = numpy.clip(
+                    numpy.asarray(
+                        uw.function.evaluate(metric_field.sym, centroids)
+                    ).reshape(-1), 1e-30, None)
+                h_target = 1.0 / numpy.sqrt(M)
+                sel = numpy.where(cur_h > h_target)[0]
+                if sel.size == 0:
+                    if verbose:
+                        uw.pprint(0, f"[adapt] nvb gen {level}: nothing to refine")
+                    break
+                if node_budget is not None and sel.size > node_budget:
+                    order = numpy.argsort(M[sel])[::-1]
+                    sel = sel[order[:node_budget]]
+                marked = [int(cids[j]) for j in sel]
+                markers_per_level.append(marked)
+                nvb.refine(set(marked))
+                level_dms.append(nvb.to_dm(boundaries=carry, regions=rcarry,
+                                           comm=self.dm.comm))
                 if verbose:
-                    uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
-                break
+                    uw.pprint(0, f"[adapt] nvb gen {level}: marked {len(marked)} "
+                                 f"-> {len(nvb.cells)} cells")
+            current_dm = level_dms[-1] if level_dms else self.dm_hierarchy[-1].clone()
+        else:
+            current_dm = self.dm_hierarchy[-1]   # static base finest
+            for level in range(max_levels):
+                cs, ce = current_dm.getHeightStratum(0)
+                ncells = ce - cs
+                if ncells == 0:
+                    break
+                centroids = numpy.empty((ncells, self.cdim))
+                cur_h = numpy.empty(ncells)
+                for i, c in enumerate(range(cs, ce)):
+                    vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
+                    centroids[i] = numpy.asarray(cen)[: self.cdim]
+                    cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
 
-            if node_budget is not None and refine.size > node_budget:
-                # keep the highest-metric (finest-demand) cells first
-                order = numpy.argsort(M[refine])[::-1]
-                refine = refine[order[:node_budget]]
+                # Metric M = 1/h_target² at the cell centroids (parent field).
+                # Parallel: swarm-migration global_evaluate (partition-agnostic);
+                # serial: the cheaper local evaluate.
+                if uw.mpi.size > 1:
+                    M = numpy.asarray(
+                        uw.function.global_evaluate(metric_field.sym, centroids)
+                    ).reshape(-1)
+                else:
+                    M = numpy.asarray(
+                        uw.function.evaluate(metric_field.sym, centroids)
+                    ).reshape(-1)
+                M = numpy.clip(M, 1e-30, None)
+                h_target = 1.0 / numpy.sqrt(M)
 
-            cell_ids = [int(cs + j) for j in refine]
-            markers_per_level.append(cell_ids)
-            if verbose:
-                uw.pprint(0, f"[adapt] level {level}: refining {len(cell_ids)} "
-                             f"of {ncells} cells")
-            current_dm = custom_mg.sbr_refine(current_dm, cell_ids)
-            sbr_level_dms.append(current_dm)
+                refine = numpy.where(cur_h > h_target)[0]
+                if refine.size == 0:
+                    if verbose:
+                        uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
+                    break
+
+                if node_budget is not None and refine.size > node_budget:
+                    # keep the highest-metric (finest-demand) cells first
+                    order = numpy.argsort(M[refine])[::-1]
+                    refine = refine[order[:node_budget]]
+
+                cell_ids = [int(cs + j) for j in refine]
+                markers_per_level.append(cell_ids)
+                if verbose:
+                    uw.pprint(0, f"[adapt] level {level}: refining {len(cell_ids)} "
+                                 f"of {ncells} cells")
+                current_dm = custom_mg.sbr_refine(current_dm, cell_ids)
+                level_dms.append(current_dm)
 
         if verbose:
             base_n = self.dm_hierarchy[-1].getHeightStratum(0)
             fin_n = current_dm.getHeightStratum(0)
             uw.pprint(0, f"[adapt] base finest {base_n[1]-base_n[0]} -> "
                          f"child {fin_n[1]-fin_n[0]} cells "
-                         f"({len(markers_per_level)} SBR level(s))")
+                         f"({len(markers_per_level)} {engine} level(s))")
 
         # Wrap the refined finest as the child mesh (on-rank; no redistribute).
         child = Mesh(
@@ -6190,20 +6263,23 @@ class Mesh(Stateful, uw_object):
         child._relationship_kind = "refinement"
         child.regions = self.regions
         child._parent_mesh_version = self._mesh_version
-        # Markers per SBR level (in each level's cell numbering) — the
+        # Markers per refinement level (in each level's cell numbering) — the
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
-        # Mesh-owned custom-P geometric-MG tail. EVERY SBR level is its own MG
-        # level (one custom-P transfer per refinement step), not a single
+        child._adapt_engine = engine
+        # Mesh-owned custom-P geometric-MG tail. EVERY refinement level is its own
+        # MG level (one custom-P transfer per refinement step), not a single
         # base-finest -> child jump: the tail is
-        #   [base L0 … base finest]  +  [SBR level 1 … SBR level n-1]
-        # and the solver appends its own mesh (the finest SBR level = child).
-        # Each intermediate SBR level is wrapped here (transient, lives on the
-        # child); the static base levels reuse the parent's cached wraps.
-        intermediate_sbr = [
-            self._wrap_coarse_level(d) for d in sbr_level_dms[:-1]
+        #   [base L0 … base finest]  +  [refine level 1 … refine level n-1]
+        # and the solver appends its own mesh (the finest level = child). Each
+        # intermediate level is wrapped here (transient, lives on the child); the
+        # static base levels reuse the parent's cached wraps. (NVB snapshots and
+        # SBR levels are both just coordinate sets — the custom-P transfers are
+        # coordinate-based, so the hierarchy is engine-agnostic.)
+        intermediate = [
+            self._wrap_coarse_level(d) for d in level_dms[:-1]
         ]
-        child._custom_mg_coarse_meshes = self._coarse_level_meshes() + intermediate_sbr
+        child._custom_mg_coarse_meshes = self._coarse_level_meshes() + intermediate
         child._custom_mg_builder = builder
 
         self._registered_children.add(child)

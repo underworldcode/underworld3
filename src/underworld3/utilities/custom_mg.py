@@ -42,7 +42,8 @@ import numpy as np
 from petsc4py import PETSc
 
 __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
-           "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where"]
+           "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where",
+           "nvb_refine"]
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +167,32 @@ def sbr_refine_where(dm, predicate):
             if predicate(d.computeCellGeometryFVM(c)[1]):
                 lab.setValue(c, _DM_ADAPT_REFINE)
     return _sbr_apply(dm, mark)
+
+
+# --------------------------------------------------------------------------- #
+#  Newest-vertex bisection (NVB) — GRADED refinement (serial Route A)
+# --------------------------------------------------------------------------- #
+def nvb_refine(dm, cells, boundaries=(), regions=()):
+    """NVB-refine an explicit list of ``cells`` (serial, single level), returning a
+    fresh interpolated ``DMPlex`` with boundary/region labels transferred.
+
+    Counterpart to :func:`sbr_refine` but with a **bounded conforming closure**, so
+    a marked cell deep in a uniform patch adds O(1) cells locally instead of
+    draining the longest-edge path to the patch edge — the property that lets
+    successive levels *grade* (see :mod:`underworld3.utilities.nvb`).
+
+    Single-shot: builds an :class:`~underworld3.utilities.nvb.NVBMesh` from ``dm``
+    (longest-edge seed), refines, and emits the DM. For a **multi-level** graded
+    adapt, drive a *persistent* ``NVBMesh`` across levels instead (so the
+    refinement-edge labelling — hence the similarity-class / shape-regularity bound
+    — propagates parent→child); ``Mesh._adapt_nested(engine="nvb")`` does this.
+
+    ``boundaries`` / ``regions`` are ``(name, value)`` iterables of labels to carry.
+    """
+    from underworld3.utilities.nvb import NVBMesh
+    nvb = NVBMesh.from_dm(dm, boundaries=boundaries, regions=regions)
+    nvb.refine(set(int(c) for c in cells))
+    return nvb.to_dm(boundaries=boundaries, regions=regions, comm=dm.comm)
 
 
 # --------------------------------------------------------------------------- #
