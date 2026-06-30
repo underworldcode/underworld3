@@ -369,6 +369,41 @@ shared `conf` (PETSc + petsc4py includes, `libpetsc` link) — e.g. the
 `$PETSC_DIR/include` carries the private headers, so the compile needs no rebuilt
 PETSc.
 
+### Build model (settled + proven) — headers + binary, no PETSc rebuild
+
+The extension **compiles against PETSc headers and links the PETSc binary**; it does
+not compile/rebuild any PETSc `.c` and does not fork PETSc. Three tiers:
+
+1. **Exported symbols → linked from `libpetsc`.** All parallel-critical API is
+   exported (verified `dyld_info -exports`): `DMPlexTransformRegister`,
+   `DMPlexPointQueue*`, `DMLabelPropagate{Begin,Push,End}` (the cross-rank closure),
+   `DMPlexTransformCellTransformIdentity`, `…GetSubcellOrientationIdentity`, and all
+   generic plex/label API.
+2. **Private headers → `#include <petsc/private/dmplextransformimpl.h>`** for the
+   `_p_DMPlexTransform` struct (`tr->ops->…`, `tr->data`, `tr->trType`). Ships in
+   `$PETSC_DIR/include`. This is how PETSc's own in-tree transforms are written — the
+   supported internal API, used from outside the tree.
+3. **Non-exported helpers → reimplemented locally** (short, 2D): `SetDimensions`
+   (~4 lines), `MapCoordinatesBarycenter` (~6 lines) — both already in the Stage-1
+   file — plus the regular **triangle 1→4** and **segment 1→2** cone/orientation
+   tables (from `plexrefregular.c`'s `DMPlexTransformCellRefine_Regular` /
+   `…GetSubcellOrientation_Regular`). NOTE: `DMPolytopeTypeGetArrangement` is a
+   **`static inline` in the public `petscdm.h`** — usable by inclusion, *not* a
+   reimplement (so the copied `SBRGetTriangleSplit{Single,Double}` work as-is).
+
+**Proven:** the Stage-1 infra gate did exactly this (private header + reimplemented
+helpers + linked `libpetsc`) and compiled, registered `uwnvb`, and applied on a
+distributed DM at np=2 with a valid point-SF. **Caveat to record + assert at build:**
+tiers 2/3 couple us to PETSc's internal struct/cone ABI for the pinned build
+(3.25); re-verify on any PETSc upgrade.
+
+**Source to copy/reimplement (exact locations):**
+- `SetUp` + `CellTransform` + `GetSubcellOrientation` + `SBRGetTriangleSplit{Single,Double}`
+  + the `RT_*` enum: `…/transform/impls/refine/sbr/plexrefsbr.c` (already read in full).
+- `CellRefine_Regular` tri(1→4)/seg(1→2) cone tables + `GetSubcellOrientation_Regular`:
+  `…/transform/impls/refine/regular/plexrefregular.c` (`DMPlexTransformCellRefine_Regular`, ~line 645+).
+- `DMPolytopeTypeGetArrangement`: inline in `include/petscdm.h:609` (include, don't copy).
+
 **Plan of record (validation-gated):**
 1. *Infra gate* — scaffold `_nvb_transform` that registers `nvb` and reproduces SBR
    serially (copy SBR's `SetUp`/`CellTransform` + reimplement the 5 helpers), built
