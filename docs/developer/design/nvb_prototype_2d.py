@@ -25,6 +25,7 @@ class NVBMesh:
     def __init__(self, coords, tris):
         self.coords = [np.asarray(p, float) for p in coords]
         self.cells = {}                 # cid -> (peak, b0, b1)
+        self.depth = {}                 # cid -> bisection depth from its base cell
         self.edge2cells = {}            # (a,b) sorted -> set(cid)
         self.edge2mid = {}              # (a,b) sorted -> midpoint vertex id
         self._next = 0
@@ -45,10 +46,11 @@ class NVBMesh:
         peak = ({a, b, c} - {b0, b1}).pop()
         return (peak, b0, b1)
 
-    def _add_cell(self, pbr):
+    def _add_cell(self, pbr, depth=0):
         cid = self._next
         self._next += 1
         self.cells[cid] = pbr
+        self.depth[cid] = depth
         p, b0, b1 = pbr
         for e in (fs(p, b0), fs(b0, b1), fs(b1, p)):
             self.edge2cells.setdefault(e, set()).add(cid)
@@ -56,6 +58,7 @@ class NVBMesh:
 
     def _del_cell(self, cid):
         p, b0, b1 = self.cells.pop(cid)
+        self.depth.pop(cid, None)
         for e in (fs(p, b0), fs(b0, b1), fs(b1, p)):
             self.edge2cells[e].discard(cid)
             if not self.edge2cells[e]:
@@ -79,9 +82,10 @@ class NVBMesh:
     # ---- the bisection -----------------------------------------------------
     def _split(self, cid, m):
         p, b0, b1 = self.cells[cid]
+        d = self.depth[cid] + 1
         self._del_cell(cid)
-        self._add_cell((m, p, b0))     # newest vertex m, ref edge {p,b0}
-        self._add_cell((m, p, b1))     # newest vertex m, ref edge {p,b1}
+        self._add_cell((m, p, b0), d)  # newest vertex m, ref edge {p,b0}
+        self._add_cell((m, p, b1), d)  # newest vertex m, ref edge {p,b1}
 
     def bisect(self, cid, _depth=0):
         if _depth > 100000:
@@ -108,6 +112,11 @@ class NVBMesh:
         coords = np.array(self.coords)
         tris = np.array([(p, b0, b1) for (p, b0, b1) in self.cells.values()])
         return coords, tris
+
+    def depths(self):
+        """Per-cell bisection depth from its base ancestor, in cells order
+        (clean refinement colouring on a non-uniform base, unlike area-derived)."""
+        return np.array([self.depth[cid] for cid in self.cells])
 
     def check_conforming(self):
         """No hanging nodes: no live cell may carry an edge that has been
