@@ -220,6 +220,78 @@ Conclusion — the serial/parallel split is therefore:
 in a *locally-owned* base cell, and the coarse-tail partition is bit-identical
 before/after — the same invariant the SBR path checks.
 
+### Parallel-readiness review (2026-06-30) — serial Route A is non-blocking
+
+A deliberate audit of the shipped serial engine against the parallel path, with
+the requirement that *the serial implementation must not block parallel*.
+
+**Is the co-partitioning invariant real, and does NVB preserve it?** Yes, and the
+custom-P parallel transfer (`custom_mg._build_parallel_transfer` /
+`_level_dof_layout`) is what *consumes* it: a fine **owned** DOF's coarse
+contributions must come from coarse coords that are **local (incl. ghosts) on the
+same rank** — i.e. the fine node must fall in a coarse simplex owned/ghosted by its
+rank. That holds iff rank *r*'s fine cells are refinements of rank *r*'s base
+cells. NVB preserves this *structurally*: bisecting a cell replaces it with two
+children **of the same owner**, and the conforming closure only ever triggers more
+*same-owner* bisections on a neighbour's rank — so any **in-place** NVB transform
+on the distributed DM keeps the child co-partitioned with the coarse tail, exactly
+as `dm.refine()` and `refine_sbr`'s `adaptLabel` do. The *only* thing that breaks
+it is Route A's rank-0 `createFromCellList` rebuild — a property of the
+*construction route*, not of NVB. **Measured bar:** the custom-P FMG already solves
+on a locally-refined SBR adapt-on-top child at np=2 (pc=mg, 4 levels, converged,
+exact err 2e-11) — the exact behaviour the NVB parallel path must reproduce, with
+the parallel transfer machinery already built and proven.
+
+**Does anything in the serial code block Route B?** No. The integration is a
+parallel-alongside layer:
+- `engine="nvb"` dispatch in `_adapt_nested` — Route B slots in here (at np>1,
+  dispatch to the native transform instead of raising `NotImplementedError`).
+- the custom-P tail is **coordinate-based and engine-agnostic**, and its parallel
+  path (`_build_parallel_transfer`) already exists and is proven — a Route-B child
+  feeds it unchanged.
+- parent/child lineage, `copy_into`, the per-generation intermediate-DM snapshots,
+  and the tail assembly (`_wrap_coarse_level`) are all identical for A and B.
+- the only Route-A-specific pieces — `NVBMesh`'s cell-list `to_dm` and the
+  coordinate/vertex-pair label transfer — are simply *not on* the parallel path
+  (an in-place transform preserves numbering + SF, so neither is needed). `NVBMesh`
+  remains useful as the serial engine and as a per-rank/oracle reference.
+
+**The irreducible hard kernel** (what Route B must actually build) is the
+**parallel conforming-closure fixpoint**: computing, consistently across ranks, the
+final set of edges to bisect so the result is conforming with bounded closure, then
+bisecting those edges in-place with correct SF. PETSc already does this for
+*longest-edge* (`refine_sbr` `adaptLabel`); NVB needs the same closure machinery
+with the **newest-vertex rule + marked-edge labelling**. Reassuringly, NVB's
+labelling is **cross-rank-consistent for free**: the initial longest-edge seed is
+geometric (both ranks compute the same edge for any shared cell — and each cell is
+owned by exactly one rank), and the propagation rule (newest vertex = the geometric
+midpoint) is deterministic and local, so no labelling-reconciliation protocol is
+needed — only the closure *exchange*.
+
+**No free PETSc transform.** petsc4py exposes `DMPlexTransform` generically but no
+Python hook for a custom cell-subdivision rule, and PETSc ships only
+`refine_regular` / `refine_alfeld` / `refine_boundary_layer` / `refine_tobox`
+(plus `refine_sbr`) — **none** bisects a *labelled/specified* edge. So the
+attractive "Python computes the closure, an existing PETSc transform does the
+SF-preserving surgery" split is **not** available out of the box: Route B requires
+registering a new transform type in C (ideally reusing PETSc's bisection-closure
+infrastructure, swapping the longest-edge pick for the newest-vertex rule).
+
+**Options for Route B**, in increasing cost / decreasing fragility:
+1. *Manual-SF Route A-parallel* (pure Python): per-rank `NVBMesh` on local cells +
+   a ghost layer, cross-rank closure by iterative halo exchange to a fixpoint, then
+   per-rank `createFromCellList(comm=SELF)` + a **hand-built point-SF** matching
+   shared points by coordinate. No PETSc rebuild, but the manual SF + parallel
+   fixpoint are the "fragile" parts the original note flagged.
+2. *Native C transform* (`DMPLEXTRANSFORMNVB`): the robust path — reuses PETSc's
+   tested SF propagation and parallel closure; the cost is PETSc-C and a build.
+
+**Recommended de-risk before committing to C:** prototype the parallel
+closure-fixpoint algorithm (option 1's hard kernel) in Python on a partitioned
+mesh — prove the cross-rank closure converges and stays bounded — *separately* from
+the SF construction. That validates the genuinely novel part cheaply and tells us
+whether option 1 is viable or we go straight to option 2.
+
 ## Checkpointing
 
 NVB is deterministic given the **initial labelling + the marked-cell set per
