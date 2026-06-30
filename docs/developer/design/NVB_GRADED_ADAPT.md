@@ -183,15 +183,38 @@ Minimal surface change — NVB slots in where SBR is today:
   copy_into prolong/restrict, no-redistribute guard — **all unchanged** (they are
   engine-agnostic; transfers come from coordinates).
 
-## Parallel
+## Parallel — preserving the inherited decomposition (decides Route A vs B)
 
-Route A is serial (rebuild-from-cell-list, on-rank). The no-redistribute
-correctness requirement (custom-P needs the finest co-partitioned with the coarse
-tail) is satisfied if NVB runs on each rank's owned cells with a halo for closure
-across rank boundaries — the same on-rank story as SBR, but closure that crosses a
-partition boundary needs a parallel completion step (exchange marked edges on
-shared faces until no new marks). This is the main parallel risk and argues for
-Route B (a transform handles it natively) once the serial design is proven.
+The hard parallel requirement is **not** load balance — it is preserving the
+parent's decomposition: custom-P's parallel path needs the finest co-partitioned
+with the coarse tail (rank *r* owns the refinements of rank *r*'s base cells) so
+rank-local point location holds. A re-partition *breaks* it, it does not merely
+slow it. This is the same no-redistribute invariant the SBR adapt-on-top path
+already satisfies.
+
+**This requirement disqualifies Route A for parallel.** `createFromCellList`
+builds a serial DM (rank 0) or, after `DMPlexDistribute`, a *freshly* partitioned
+one — the parent's **point-SF** (shared/owned-vertex star-forest) is lost.
+Preserving the decomposition via Route A would require manually rebuilding the SF
+(ownership of every new rank-boundary midpoint), guaranteeing both ranks bisect
+each shared edge *identically* (consistent marked-edge → consistent midpoint), and
+a cross-rank closure-completion exchange. Fragile.
+
+**How SBR preserves it today (the model to match):** `sbr_refine` calls
+`adaptLabel` on the *already-distributed* DM — an in-place transform, so the
+partition and SF are preserved by construction (why the SBR np=2 path works). The
+transform framework propagates the SF.
+
+Conclusion — the serial/parallel split is therefore:
+- **Route A is serial-only**: a stepping stone to prove the NVB logic, label
+  transfer, and custom-P integration (no decomposition to preserve at np=1).
+- **Route B (native `DMPlexTransform`) is the real parallel implementation**,
+  justified specifically by decomposition preservation — it inherits the same
+  SF-propagation machinery as `refine_sbr`, not just speed.
+
+**Acceptance test (np>1):** after an NVB adapt, every child cell's centroid lies
+in a *locally-owned* base cell, and the coarse-tail partition is bit-identical
+before/after — the same invariant the SBR path checks.
 
 ## Checkpointing
 
