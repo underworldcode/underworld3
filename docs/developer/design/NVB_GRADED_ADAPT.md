@@ -426,8 +426,19 @@ tiers 2/3 couple us to PETSc's internal struct/cone ABI for the pinned build
    the serial one at any communicator size — uniform refine 159/352/760 and graded
    bullseye 215 cells agree exactly at np=1/2/3/4, 0 hanging nodes.
    `tests/test_0838_nvb_graded_native.py` (`test_parallel_confluence`).
-4. *Integration + acceptance* — `_adapt_nested(engine="nvb")` at np>1 via the
-   driver; Poisson + SolCx FMG match GAMG; result matches the serial NVB mesh.
+4. *Integration + acceptance (Stage 2c)* — **DONE (2026-07-01).**
+   `_adapt_nested` dispatches `engine="nvb"` to the native `uwnvb` transform when
+   the compiled extension is present (serial `NVBMesh` is the fallback, raising at
+   np>1 only if the extension is absent). Each pass marks cells whose size exceeds
+   the metric target and refines once (`_nvb_transform.refine`), up to
+   `2·max_levels` passes, with a collective `allreduce` stop so a rank with no local
+   marks still joins the closure bisection; the metric is `global_evaluate`d at
+   np>1. Verified: `mesh.adapt(engine="nvb")` is bit-confluent (child = 366 cells at
+   np=1/2/4), carries boundary labels + the `[base … child]` custom-P MG tail, and a
+   Poisson solve on the graded child drives custom-P FMG converging in **3 iters ==
+   GAMG** at np=1/2/4. `tests/test_0839_nvb_parallel_adapt.py`. Still open: SolCx
+   Stokes FMG on the parallel child (serial covered in `test_0836`), and the
+   marker-replay checkpoint.
 
 ### Stage 2b as built — single-bisection multi-pass driver (WORKS)
 
@@ -483,8 +494,8 @@ is **bit-identical to the serial mesh** at any communicator size (uniform
 159/352/760, graded bullseye 215, deep 5-level nesting 96/180/288/390/472 — all
 equal at np=1/2/3/4; 0 hanging nodes; the output point SF is stratum-consistent).
 The root cause of the earlier non-confluence *and* the nested-distributed segfault
-was the single missing `uwnvb_sf_lor` — one bug, both symptoms. Next: Stage 2c —
-wire `_adapt_nested(engine="nvb")` at np>1 to the driver.
+was the single missing `uwnvb_sf_lor` — one bug, both symptoms. **Stage 2c (wiring
+`_adapt_nested(engine="nvb")` to this transform) is now done — see item 4 above.**
 
 ### Stage 2b finding (2026-07-01): grading needs single-bisection, multi-pass
 
