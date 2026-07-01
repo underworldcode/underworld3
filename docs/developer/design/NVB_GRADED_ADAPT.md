@@ -414,11 +414,49 @@ tiers 2/3 couple us to PETSc's internal struct/cone ABI for the pinned build
    triangulation for every marking pattern incl. full uniform refine. `tests/
    test_0837_nvb_native_transform.py` (tier_b). Longest-edge edge pick; the newest-
    vertex choice layers on top.
-3. *Newest-vertex grading (Stage 2b)* — **IN PROGRESS; redesign required.** See
-   "Stage 2b finding" below.
-4. *Integration + acceptance* — `_adapt_nested(engine="nvb")` at np>1 via
-   `adaptLabel(dm_plex_transform_type=uwnvb)` (in-place, co-partitioned); Poisson +
-   SolCx FMG match GAMG; result matches the serial NVB mesh (properties).
+3. *Newest-vertex grading (Stage 2b)* — **DONE serially (2026-07-01)** via the
+   single-bisection multi-pass driver (see below). Matches serial `NVBMesh`
+   refinement edges exactly over repeated uniform refine; a deep mark is bounded
+   (+2 vs SBR's +4824); conforming, deterministic, graded bullseye (805 vs SBR's
+   102 868 cells). `tests/test_0838_nvb_graded_native.py`. Runs conforming at
+   np=1/2/3; full parallel *confluence* needs the cross-rank closure (below).
+4. *Integration + acceptance* — `_adapt_nested(engine="nvb")` at np>1 via the
+   driver; Poisson + SolCx FMG match GAMG; result matches the serial NVB mesh.
+
+### Stage 2b as built — single-bisection multi-pass driver (WORKS)
+
+`_nvb_transform.refine(dm, want_label)` → C entry `UWNVBRefine`:
+- each triangle carries a **`uwnvb_refedge`** cone-slot (0/1/2) label; `refedge =
+  cone[slot]`, longest-edge seed on the base. No generation label is needed —
+  single bisection makes each child's peak the new midpoint, so its refinement
+  edge is just the edge opposite that midpoint (purely geometric).
+- **closure**: grow the set `C` of cells that must bisect by adding, for each
+  `C`-cell whose refinement edge is blocked by a neighbour with a different
+  refinement edge, that neighbour (LEPP).
+- **drain**: repeat — mark the *compatible* refinement edges (an edge that is the
+  refinement edge of **all** its incident cells; reconciled across ranks by an
+  `MPI_LAND` `PetscSFReduce`), single-split exactly those via a dumb
+  **`uwnvb_bisect`** transform (reuses the Stage-2a cell-transform/orientation/
+  coordinate ops), then rebuild the slot label (split child → edge opposite the
+  midpoint; unsplit cell → map the parent refinement *edge* to its child edge —
+  copying the slot *index* is wrong because the identity transform may renumber
+  the cone) and the `C` set (bisected cells leave; blocked cells stay). Loop until
+  `C` is globally empty. Every sub-pass touches each cell at most once ⇒ pure
+  single-splits, always conforming, child slots trivial.
+
+Gotchas fixed: the transform copies the *adaptation* label onto its output, so it
+accumulates stale marks across calls (filter `want` to triangle cells + strip the
+label from the output); and the drain loop condition must use the **global** `|C|`
+(`MPIU_Allreduce`) or a rank with no local marks skips the collective loop and
+deadlocks.
+
+**Remaining for full parallel confluence:** the closure is currently on-rank only,
+so a closure that would cross a partition under-refines slightly there (np=2 gives
+161 cells where serial gives 163 — still conforming, since the `SF`-reconciled
+compatibility test prevents cross-partition hanging nodes). The fix is the
+SF-reconciled cross-rank closure: propagate *requested* refinement edges across
+the point SF with `DMLabelPropagate` (exactly as SBR's `SetUp` does), so a
+`C`-cell blocked by an off-rank neighbour marks that neighbour on its owning rank.
 
 ### Stage 2b finding (2026-07-01): grading needs single-bisection, multi-pass
 
@@ -462,18 +500,32 @@ consistent with the marker-sidecar scheme already designed for SBR. The
 coordinate-built custom-P sidesteps the canonical-numbering fragility (same as
 SBR).
 
-**FMG-hierarchy-index label — reuse for checkpointing (L.M., 2026-07-01, TODO next
-phase).** The custom-P / FMG round-trip through checkpoints already carries a
-**mesh-hierarchy-index label** (which coarse level each point belongs to) to
-reconstruct the transfer hierarchy on reload. When implementing the single-
-bisection multi-pass Stage 2b, investigate: **(a)** whether that existing hierarchy
-label can be *reused* to encode the NVB level/marker replay (one label serving both
-FMG-transfer reconstruction and adapt replay), and **(b)** whether the *new* NVB
-structures (per-vertex generation + the compatible-ref-edge state, or the
-per-pass marked-edge sets) are the natural thing to *checkpoint the FMG itself*
-against — i.e. store the NVB replay data and rebuild the whole FMG tail from it,
-rather than storing meshes. Decide before finalising the checkpoint format so the
-two mechanisms share one label rather than duplicating.
+**FMG-hierarchy checkpoint — reuse vs new structures (L.M. question, investigated
+2026-07-01).** Finding: the *existing* FMG-hierarchy checkpoint
+(`fmg-checkpoint-hierarchy.md`) does **not** carry a reusable per-node level label.
+It stores the **coarsest** level as a one-DM sidecar (`mymesh.hierarchy.L0.h5`) plus
+a refine count (`hierarchy_coarse_levels`) and `setCoarseDM`-links on reload; the
+per-node "level" label reconstruction was **explicitly rejected** there because a
+`createFromCellList` coarse DM loses the canonical `refine()` numbering PETSc's
+*nested* interpolator requires (err 77). So there is no shared label to reuse for
+option (a).
+
+**That err-77 objection does not apply to NVB/adapt-on-top:** the Layer-2 custom-P
+transfers are built from **coordinates**, not parent-child numbering — so
+label-/replay-based reconstruction *is* viable here (the same reason SBR
+adapt-on-top uses a marker-sidecar). ⇒ **Option (b) is the clean path:** checkpoint
+the NVB portion of the FMG tail by persisting its **replay data** — the
+per-generation marked-cell sets (deterministic ⇒ replay reproduces every level
+bit-identically) — and carry the `uwnvb_refedge` slot + per-vertex generation as
+labels so a reload can resume/extend adaptation without recomputing. The base
+uniform hierarchy keeps its existing coarsest-sidecar mechanism; the NVB top levels
+add a marker-sidecar. **Implication for this implementation:** keep the slot +
+generation as ordinary DMLabels (they already survive `DMClone`/label-transfer and
+checkpoint via the normal label I/O), and have the driver accept/emit the
+per-generation marked-cell set as the replay record. No new bespoke label format;
+the two mechanisms stay decoupled (base = sidecar+count, NVB top = marker replay),
+which is correct since they reconstruct fundamentally differently (nested-numbering
+vs coordinate-built).
 
 ## 3D (tetrahedra)
 
