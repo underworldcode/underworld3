@@ -6030,14 +6030,14 @@ class Mesh(Stateful, uw_object):
           *unbounded for region marking*, so it produces a **uniform-finest patch**,
           not a graded mesh (a marked cell drains the longest-edge path to the patch
           edge). Robust and fine for the MG hierarchy.
-        * ``"nvb"`` — newest-vertex bisection (:mod:`underworld3.utilities.nvb`),
-          a **graded** engine with a *bounded* conforming closure: a marked cell
-          adds O(1) cells locally, so successive levels grade (a level+1 ring around
-          a finer core) and DOFs concentrate near the feature. Serial only this pass
-          (``NotImplementedError`` at np>1 — the parallel decomposition cannot be
-          preserved through the cell-list DM rebuild; a native transform is the
-          parallel path). Bisects 1→2, so one isotropic-equivalent ``max_levels`` is
-          run as **two** NVB generations.
+        * ``"nvb"`` — newest-vertex bisection, a **graded** engine with a *bounded*
+          conforming closure: a marked cell adds O(1) cells locally, so successive
+          levels grade (a level+1 ring around a finer core) and DOFs concentrate near
+          the feature. Runs **in parallel** via the native ``uwnvb`` ``DMPlexTransform``
+          (in-place, co-partitioned with the parent, bit-confluent serial↔parallel);
+          when that compiled extension is absent it falls back to the serial
+          ``NVBMesh`` cell-list engine (``NotImplementedError`` at np>1). Bisects 1→2,
+          so one isotropic-equivalent ``max_levels`` is run as **two** NVB passes.
 
         The child owns a custom-P geometric-MG hierarchy with **one level per SBR
         refinement step** — ``[base L0 … base finest, SBR-1, …, SBR-n(child)]`` —
@@ -6137,31 +6137,101 @@ class Mesh(Stateful, uw_object):
                 "dm_hierarchy of coarse levels supplies the geometric-MG tail). "
                 "Build the mesh with e.g. refinement=2."
             )
+        # The native uwnvb DMPlexTransform (Route B) is the parallel NVB engine:
+        # in-place (co-partitioned with the parent), graded, and bit-confluent
+        # serial<->parallel. Prefer it whenever the compiled extension is present;
+        # fall back to the serial NVBMesh cell-list engine only when it is not
+        # (which then restricts engine='nvb' to np=1).
+        _nvbx = None
         if engine == "nvb":
-            if uw.mpi.size > 1:
-                raise NotImplementedError(
-                    "adapt(engine='nvb') is serial-only: the cell-list DMPlex "
-                    "rebuild does not preserve the parent's parallel decomposition "
-                    "(required by the custom-P parallel path). Use engine='sbr' at "
-                    "np>1, or the native-transform (Route B) NVB when available."
-                )
             if self.dim != 2:
                 raise NotImplementedError(
                     "adapt(engine='nvb') is 2D only this pass (tets are a follow-up)."
                 )
+            try:
+                from underworld3.utilities import _nvb_transform as _nvbx
+            except ImportError:
+                _nvbx = None
+            if _nvbx is None and uw.mpi.size > 1:
+                raise NotImplementedError(
+                    "adapt(engine='nvb') at np>1 needs the native uwnvb transform "
+                    "(underworld3.utilities._nvb_transform), which is not built in "
+                    "this environment. Build the custom-PETSc/amr env, or use "
+                    "engine='sbr' at np>1."
+                )
 
         dim = self.dim
         edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
+        DM_ADAPT_REFINE = 1                  # PETSc DMAdaptFlag: refine this cell
 
         markers_per_level = []
         level_dms = []                       # one DM per refinement level
 
-        if engine == "nvb":
-            # Persistent NVBMesh: the refinement-edge labelling propagates
-            # parent→child across generations, which preserves the similarity-class
-            # (shape-regularity) bound. Each generation bisects 1→2 (h /√2), so we
-            # run up to 2·max_levels generations to reach the same isotropic-
-            # equivalent target as the SBR path's max_levels passes (1→4 each).
+        if engine == "nvb" and _nvbx is not None:
+            # Native uwnvb DMPlexTransform. Each pass marks the cells whose current
+            # size still exceeds the metric target and bisects them once (with the
+            # bounded newest-vertex conforming closure); the transform is in-place so
+            # the output stays co-partitioned with the parent and carries the
+            # boundary/region labels forward automatically. A single bisection halves
+            # the area (h → h/√2), so we allow up to 2·max_levels passes to reach the
+            # same isotropic target as the SBR path's max_levels quad-splits.
+            current_dm = self.dm_hierarchy[-1]   # static base finest (distributed)
+            n_gen = 2 * max_levels
+            for level in range(n_gen):
+                cs, ce = current_dm.getHeightStratum(0)
+                ncells = ce - cs
+                if ncells:
+                    centroids = numpy.empty((ncells, self.cdim))
+                    cur_h = numpy.empty(ncells)
+                    for i, c in enumerate(range(cs, ce)):
+                        vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
+                        centroids[i] = numpy.asarray(cen)[: self.cdim]
+                        cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
+                    if uw.mpi.size > 1:
+                        M = numpy.asarray(
+                            uw.function.global_evaluate(metric_field.sym, centroids)
+                        ).reshape(-1)
+                    else:
+                        M = numpy.asarray(
+                            uw.function.evaluate(metric_field.sym, centroids)
+                        ).reshape(-1)
+                    M = numpy.clip(M, 1e-30, None)
+                    h_target = 1.0 / numpy.sqrt(M)
+                    sel = numpy.where(cur_h > h_target)[0]
+                    if node_budget is not None and sel.size > node_budget:
+                        order = numpy.argsort(M[sel])[::-1]
+                        sel = sel[order[:node_budget]]
+                else:
+                    sel = numpy.empty(0, dtype=int)   # rank owns no cells this level
+
+                # Collective stop: refine while ANY rank still has cells to split
+                # (a rank with none may still bisect via the cross-rank closure).
+                # mpi4py allreduce defaults to MPI.SUM.
+                if uw.mpi.comm.allreduce(int(sel.size)) == 0:
+                    if verbose:
+                        uw.pprint(0, f"[adapt] nvb pass {level}: nothing to refine")
+                    break
+
+                marked = [int(cs + j) for j in sel]
+                markers_per_level.append(marked)
+                d = current_dm.clone()
+                d.createLabel("adapt")
+                lab = d.getLabel("adapt")
+                lab.setDefaultValue(0)
+                for cidx in marked:
+                    lab.setValue(cidx, DM_ADAPT_REFINE)
+                current_dm = _nvbx.refine(d, "adapt")
+                level_dms.append(current_dm)
+                if verbose:
+                    fs, fe = current_dm.getHeightStratum(0)
+                    uw.pprint(0, f"[adapt] nvb pass {level}: marked {len(marked)} "
+                                 f"-> {fe - fs} cells (rank-local)")
+            if not level_dms:
+                current_dm = self.dm_hierarchy[-1].clone()
+        elif engine == "nvb":
+            # Serial fallback (no native transform): persistent NVBMesh cell-list
+            # engine. The refinement-edge labelling propagates parent→child across
+            # generations, preserving the similarity-class (shape-regularity) bound.
             from underworld3.utilities.nvb import NVBMesh
             carry = [(b.name, b.value) for b in self.boundaries
                      if b.name not in ("Null_Boundary", "All_Boundaries")]

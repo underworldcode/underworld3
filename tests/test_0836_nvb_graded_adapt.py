@@ -16,7 +16,10 @@ lacks (it can only build a uniform-finest patch). These tests pin both the engin
   - the graded NVB child drives the custom-P geometric-MG FMG: Poisson and SolCx
     Stokes (η jump 1e6) match a GAMG reference.
 
-Serial only (NVB Route A); the np>1 / 3D guards are asserted to raise.
+These tests exercise the serial NVBMesh reference engine (Route A) and the
+integrated path; the 3D guard is asserted to raise. Parallel NVB (the native
+uwnvb transform, Route B) and its confluence + FMG acceptance live in
+``test_0839_nvb_parallel_adapt.py``.
 """
 import numpy as np
 import pytest
