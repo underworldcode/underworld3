@@ -8,7 +8,6 @@ Increment 1: box-flat (Q=identity on axis-aligned walls) must reproduce the nati
 essential free-slip solve bit-for-bit. Direct LU here; FMG wiring is a later step.
 """
 import numpy as np
-import scipy.sparse as sp
 from petsc4py import PETSc
 
 
@@ -52,23 +51,32 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     VEL = _velocity_field_id(solver)
     interior_ref = cvec.mean(axis=0)
     bval = [b.value for b in solver.mesh.boundaries if b.name == boundary][0]
-    facets = [int(z) for z in dm.getStratumIS(boundary, bval).getIndices()]
+    # In parallel a rank may own NO part of this boundary → getStratumIS returns a
+    # null IS; calling getIndices() on it segfaults. Guard and return no local nodes.
+    sis = dm.getStratumIS(boundary, bval)
+    if sis is None or sis.handle == 0:
+        return []
+    facets = [int(z) for z in sis.getIndices()]
     fS, fE = dm.getHeightStratum(1)              # facets (edges in 2D, faces in 3D)
 
     def coord(q):
         return _point_coord(dm, dim, cvec, csec, v0, v1, q)
 
-    # analytic / constant normal specs → per-node evaluation
-    sym_normal = None
+    # analytic / constant normal specs. An analytic (sympy) normal is LAMBDIFIED
+    # once into a fast numpy callable — per-node sympy .subs() is orders of magnitude
+    # slower and, in parallel, serialises on the rank that owns the boundary (the
+    # others idle), which looked like a hang.
+    sym_fn = None
     const_normal = None
     if normal is not None:
         try:
             import sympy
             if isinstance(normal, sympy.Matrix):
-                sym_normal = normal
+                sym_fn = sympy.lambdify(list(solver.mesh.X),
+                                        [normal[0, k] for k in range(dim)], "numpy")
         except Exception:
-            pass
-        if sym_normal is None:
+            sym_fn = None
+        if sym_fn is None:
             const_normal = np.asarray(normal, dtype=float).ravel()
 
     nacc = {}
@@ -89,10 +97,9 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
             if lsec.getFieldDof(q, VEL) <= 0:
                 continue
             if normal is not None:
-                cq = coord(q)
-                if sym_normal is not None:
-                    ne = np.array([float(sym_normal[0, k].subs(
-                        dict(zip(solver.mesh.X, cq)))) for k in range(dim)])
+                if sym_fn is not None:
+                    cq = coord(q)
+                    ne = np.asarray(sym_fn(*cq), dtype=float).ravel()
                 else:
                     ne = const_normal.copy()
                 ne = ne / (np.linalg.norm(ne) + 1e-30)
@@ -112,11 +119,10 @@ def build_rotation(solver, boundaries):
     the rotated NORMAL velocity component (v_n = n̂·v), to be strongly constrained.
     """
     dm = solver.dm
-    N = dm.getGlobalVec().getSize()
-    gsec = dm.getGlobalSection()
     lsec = dm.getLocalSection()
     l2g = dm.getLGMap()
     VEL = _velocity_field_id(solver)
+    dim = solver.mesh.dim
 
     # gather all normals per velocity node across the boundaries. Each entry of
     # `boundaries` is a name (geometric normal) or a (name, normal) pair.
@@ -126,35 +132,44 @@ def build_rotation(solver, boundaries):
         for q, nrm in _boundary_velocity_nodes(solver, name, normal=normal):
             node_normals.setdefault(q, []).append(nrm)
 
-    dim = solver.mesh.dim
-    Qd = sp.lil_matrix((N, N))
-    Qd.setdiag(1.0)
+    # Distributed Q with the assembled operator's ROW layout. Q is identity except a
+    # per-node dim×dim orthonormal block; because a node's dim velocity components
+    # live on a SINGLE DMPlex point owned by ONE rank, each block is entirely within
+    # that rank's diagonal portion — no off-rank columns. Each rank sets ONLY its
+    # owned rows (ghost copies of a shared boundary node are skipped: their global
+    # rows fall outside [rstart, rend)).
+    A = solver.snes.getJacobian()[0]
+    rstart, rend = A.getOwnershipRange()
+    nloc = rend - rstart
+    N = A.getSize()[0]
+    Q = PETSc.Mat().create(comm=dm.comm)
+    Q.setSizes(((nloc, N), (nloc, N)))
+    Q.setType("aij")
+    Q.setPreallocationNNZ((dim, 0))
+    Q.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    for i in range(rstart, rend):
+        Q.setValue(i, i, 1.0)                    # identity default (owned rows)
+
     normal_rows = []
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, VEL)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
         if any(g < 0 for g in grows):
             continue
-        # DIMENSION-GENERAL constraint frame. The accumulated normals span a
-        # subspace S (rank r) that the velocity must be orthogonal to:
-        #   r=1  → a face  : constrain v_n, (dim-1) tangential free
-        #   r=2  → an edge : constrain 2 normal dirs, (dim-2) free (3D edge tangent)
-        #   r=dim→ a corner: v = 0 (fully pinned)
-        # Build an orthonormal frame E (dim×dim) whose first r rows span S and whose
-        # last (dim-r) rows are the free tangential complement (SVD right vectors are
-        # a complete orthonormal basis). Q's node block rows = E (rotated component
-        # i = E[i]·v); constrain the first r rotated rows.
+        if not (rstart <= grows[0] < rend):      # not owned by this rank → skip
+            continue
+        # DIMENSION-GENERAL constraint frame: the accumulated normals span a rank-r
+        # subspace the velocity must be orthogonal to (r=1 face → constrain v_n;
+        # r=2 edge → constrain 2, free the edge tangent; r=dim corner → v=0). The SVD
+        # right vectors are a complete orthonormal frame E; Q's node block rows = E
+        # (rotated component i = E[i]·v); constrain the first r rotated rows.
         M = np.array(nrms, dtype=float)
-        # SVD → Vt rows are an orthonormal basis; the first r span the normals.
         _, sv, Vt = np.linalg.svd(M)
         r = int((sv > 1e-8 * (sv[0] if sv.size else 1.0)).sum())
-        E = Vt                                   # (dim, dim) orthonormal frame
         for i in range(dim):
             for j in range(dim):
-                Qd[grows[i], grows[j]] = E[i, j]
+                Q.setValue(grows[i], grows[j], float(Vt[i, j]))
         normal_rows.extend(grows[:r])            # constrain the r normal-space rows
-    Qc = Qd.tocsr()
-    Q = PETSc.Mat().createAIJ(size=(N, N), csr=(Qc.indptr, Qc.indices, Qc.data))
     Q.assemble()
     Qt = Q.transpose(PETSc.Mat())
     return Q, Qt, sorted(set(normal_rows))
@@ -177,14 +192,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     dm = solver.dm
     snes = solver.snes
 
-    Q, Qt, normal_rows = build_rotation(solver, boundaries)
-
-    # A = exact Jacobian at 0 (linear), b = -F(0)
+    # Assemble the operator FIRST so its parallel row layout is final before we build
+    # Q against it (A = exact Jacobian at 0 — linear; b = -F(0)).
+    snes.setUp()
     U0 = dm.getGlobalVec(); U0.set(0.0)
     J = snes.getJacobian()[0]; snes.computeJacobian(U0, J)
     Aorig = J.copy()
     F0 = dm.getGlobalVec(); snes.computeFunction(U0, F0)
     b = F0.copy(); b.scale(-1.0)
+
+    Q, Qt, normal_rows = build_rotation(solver, boundaries)
 
     # rotate: Â = Q A Qᵀ, b̂ = Q b
     Ahat = Aorig.ptap(Qt)
@@ -219,22 +236,26 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         Uhat, ksp_reason = _solve_rotated_iterative(
             solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose)
 
-    # rotate back u = Qᵀ û → fields
+    # rotate back u = Qᵀ û
     U = dm.getGlobalVec(); Qt.mult(Uhat, U)
+
+    # Remove the rigid-rotation gauge ONLY when it is a genuine null space of the
+    # constrained problem (closed circular/spherical free-slip); on straight walls
+    # the constraint pins the rotation, and projecting would corrupt the solution.
+    # Done on the GLOBAL vector U with PETSc dots (parallel-correct ownership — a
+    # local nodal sum would double-count shared nodes at rank boundaries).
+    removed = False
+    if remove_rotation_gauge and _rotation_is_nullspace(solver, Q, normal_rows):
+        tg = _rigid_rotation_global(solver)
+        coef = U.dot(tg) / (tg.dot(tg) + 1e-30)
+        U.axpy(-coef, tg)
+        removed = True
+
+    # scatter U → velocity/pressure fields
     for name, var in solver.fields.items():
         sg = U.getSubVector(solver._subdict[name][0])
         solver._subdict[name][1].globalToLocal(sg, var.vec)
         U.restoreSubVector(solver._subdict[name][0], sg)
-
-    # Remove the rigid-rotation gauge ONLY when it is a genuine null space of the
-    # constrained problem — i.e. when a rigid rotation satisfies every rotated
-    # v_n=0 constraint (true on closed circular/spherical free-slip boundaries;
-    # FALSE on straight walls, where rotation violates v_n=0 and the constraint
-    # itself pins it — projecting there would corrupt the solution).
-    removed = False
-    if remove_rotation_gauge and _rotation_is_nullspace(solver, Q, normal_rows):
-        _remove_rotation_gauge(solver)
-        removed = True
 
     return {"Q": Q, "Qt": Qt, "A": Aorig, "b": b, "U": U, "Uhat": Uhat,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
@@ -306,8 +327,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
     # equation → setting them to exactly 0 here makes the strong v_n=0 BC exact
     # independent of the iterative tolerance, without perturbing the rest.
-    ua = Uhat.getArray(); ua[np.asarray(normal_rows, dtype=np.int64)] = 0.0
-    Uhat.setArray(ua)
+    rs, re = Uhat.getOwnershipRange()
+    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
+    ua = Uhat.getArray(); ua[loc] = 0.0; Uhat.setArray(ua)
     if verbose:
         from underworld3 import mpi
         kind = "custom-FMG" if custom_Pl is not None else "GAMG"
@@ -330,7 +352,6 @@ def _rotated_nullspace(solver, Q, normal_rows):
     """
     dm = solver.dm
     vecs = []
-    nrows = np.asarray(normal_rows, dtype=np.int32)
     # constant pressure (Q = identity on pressure → unchanged)
     if getattr(solver, "_petsc_use_pressure_nullspace", False):
         pv = dm.getGlobalVec(); pv.set(0.0)
@@ -339,15 +360,7 @@ def _rotated_nullspace(solver, Q, normal_rows):
         pv.normalize(); vecs.append(pv)
     # rigid rotation (rotated), only if it satisfies the constraints
     if solver.mesh.dim == 2 and _rotation_is_nullspace(solver, Q, normal_rows):
-        v = solver.Unknowns.u
-        c = v.coords
-        saved = v.data.copy()
-        v.data[...] = np.column_stack([-c[:, 1], c[:, 0]])
-        tg = dm.getGlobalVec(); tg.set(0.0)
-        vis = solver._subdict["velocity"][0]
-        sg = tg.getSubVector(vis); solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
-        tg.restoreSubVector(vis, sg)
-        v.data[...] = saved
+        tg = _rigid_rotation_global(solver)
         tr = tg.duplicate(); Q.mult(tg, tr)
         vecs.append(tr)
     if not vecs:
@@ -355,8 +368,10 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
     # constraint (zero at the constrained rows), then orthonormalise. This is what
     # keeps the wall-normal velocity exact under an iterative solve.
+    rs, re = vecs[0].getOwnershipRange()
+    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
     for w in vecs:
-        wa = w.getArray(); wa[nrows] = 0.0; w.setArray(wa)
+        wa = w.getArray(); wa[loc] = 0.0; w.setArray(wa)
     ortho = []
     for w in vecs:
         for u in ortho:
@@ -369,26 +384,24 @@ def _rotated_nullspace(solver, Q, normal_rows):
 
 def _rotation_is_nullspace(solver, Q, normal_rows, tol=1e-8):
     """True iff the rigid-body rotation t=(-y,x) satisfies all rotated v_n=0
-    constraints — i.e. Q·t is ~0 on every constrained normal row."""
-    if solver.mesh.dim != 2 or not normal_rows:
+    constraints — i.e. Q·t is ~0 on every constrained normal row.
+
+    COLLECTIVE: every rank runs the same global-vector ops. Do NOT early-return on
+    a per-rank ``not normal_rows`` — in parallel a rank may own no boundary node
+    (empty normal_rows) while others do, and an early return there would desync the
+    collective norms below and deadlock."""
+    if solver.mesh.dim != 2:
         return False
-    v = solver.Unknowns.u
-    c = v.coords
-    tloc = np.column_stack([-c[:, 1], c[:, 0]])
-    # scatter t into a composite global vector, rotate, check the normal rows
-    dm = solver.dm
-    tg = dm.getGlobalVec(); tg.set(0.0)
-    vname = "velocity"
-    sg = tg.getSubVector(solver._subdict[vname][0])
-    # write t into the velocity meshvar, push to the sub global vec
-    saved = v.data.copy()
-    v.data[...] = tloc
-    solver._subdict[vname][1].localToGlobal(v.vec, sg)
-    tg.restoreSubVector(solver._subdict[vname][0], sg)
-    v.data[...] = saved
+    tg = _rigid_rotation_global(solver)
     tr = tg.duplicate(); Q.mult(tg, tr)
-    tra = tr.getArray()
-    viol = np.linalg.norm(tra[normal_rows]) / (np.linalg.norm(tra) + 1e-30)
+    full = tr.norm()                              # parallel norm
+    # norm of tr restricted to the constrained rows: zero everything else, then .norm()
+    rs, re = tr.getOwnershipRange()
+    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
+    trc = tr.duplicate(); trc.set(0.0)
+    tra = trc.getArray(); tga = tr.getArray()
+    tra[loc] = tga[loc]; trc.setArray(tra)
+    viol = trc.norm() / (full + 1e-30)            # parallel (collective on all ranks)
     return viol < tol
 
 
@@ -442,8 +455,9 @@ def _consistent_mass_2d(solver, boundary, normal, pts, Rn):
     v0, v1 = dm.getDepthStratum(0); e0, e1 = dm.getDepthStratum(1)
     def vcoord(q): return cvec[csec.getOffset(q) // dim]
     bval = [b.value for b in solver.mesh.boundaries if b.name == boundary][0]
-    edges = [q for q in (int(z) for z in dm.getStratumIS(boundary, bval).getIndices())
-             if e0 <= q < e1]
+    sis = dm.getStratumIS(boundary, bval)
+    strat = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
+    edges = [q for q in strat if e0 <= q < e1]
     idx = {p: k for k, p in enumerate(pts)}
     n = len(pts); M = np.zeros((n, n))
     for e in edges:
@@ -460,12 +474,19 @@ def _consistent_mass_2d(solver, boundary, normal, pts, Rn):
     return sig - sig.mean()
 
 
-def _remove_rotation_gauge(solver):
-    """Project the rigid-body rotation t=(-y,x) out of the converged velocity
-    (Cartesian). Purely tangential → cannot introduce wall throughflow."""
+def _rigid_rotation_global(solver):
+    """The Cartesian rigid-body rotation t=(-y,x) as a composite GLOBAL vector
+    (velocity DOFs only, zero pressure). Parallel-safe: built via localToGlobal on
+    the velocity sub-DM, so shared nodes are handled by PETSc, not double-counted."""
+    dm = solver.dm
     v = solver.Unknowns.u
     c = v.coords
-    t = np.column_stack([-c[:, 1], c[:, 0]])
-    coef = np.sum(v.data * t) / np.sum(t * t)
-    v.data[...] = v.data - coef * t
-    return coef
+    saved = v.data.copy()
+    v.data[...] = np.column_stack([-c[:, 1], c[:, 0]])
+    tg = dm.getGlobalVec(); tg.set(0.0)
+    vis = solver._subdict["velocity"][0]
+    sg = tg.getSubVector(vis)
+    solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
+    tg.restoreSubVector(vis, sg)
+    v.data[...] = saved
+    return tg
