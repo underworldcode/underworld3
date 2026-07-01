@@ -9,6 +9,7 @@ essential free-slip solve bit-for-bit. Direct LU here; FMG wiring is a later ste
 """
 import numpy as np
 from petsc4py import PETSc
+from mpi4py import MPI
 
 # Monotonic counter so each rotated solve gets a UNIQUE PETSc options prefix. With a
 # fixed prefix, sequential rotated solves (e.g. two solvers in one script, or one
@@ -449,71 +450,117 @@ def _rotation_is_nullspace(solver, Q, normal_rows, tol=1e-8):
 
 def boundary_normal_traction(solver, boundary, info, consistent_mass=True):
     """Consistent boundary normal traction σ_nn on `boundary` from the constraint
-    reaction of the last rotated-free-slip solve.
+    reaction of the last rotated-free-slip solve. Returned mean-removed (the ρg·h
+    gauge), as ``(xs, sigma)`` with one entry per boundary velocity node on this rank.
 
-    The reaction is r = Q(A·u − b): in the rotated frame its value at each node's
-    NORMAL row is the integrated nodal traction ∫_Γ(σ·n̂)φ_i. Map those rows to the
-    boundary P2 nodes and (optionally) solve the consistent P2 boundary mass to get
-    a pointwise σ_nn. Returned mean-removed (the ρg·h gauge).
+    σ_nn is recovered from the CARTESIAN nodal reaction r_c = A·u − b: the nodal load
+    is R_i = n̂_i · r_c(node_i), where n̂_i is THIS boundary's outward normal at node i.
+    Projecting the Cartesian reaction onto the boundary normal (rather than reading the
+    rotated frame's normal row) is corner-correct — at a node shared with another
+    rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
+    normals, but n̂·r_c is the true normal traction for this boundary. The pointwise
+    σ_nn is then the consistent P2 line-mass de-smear of R (2D).
+
+    Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by
+    LOCAL section offset; the consistent-mass system is assembled globally by a
+    coordinate-keyed allgather of the boundary elements so every rank solves the same
+    system and the mean-removal gauge is global.
     """
     dm = solver.dm
     dim = solver.mesh.dim
-    Q = info["Q"]; A = info["A"]; b = info["b"]; U = info["U"]
-    # Cartesian residual r_c = A u − b, rotated: r = Q r_c
+    A = info["A"]; b = info["b"]; U = info["U"]
+    # Cartesian nodal reaction r_c = A u − b (global), scattered to local incl. ghosts
     rc = A.createVecLeft(); A.mult(U, rc); rc.axpy(-1.0, b)
-    r = rc.duplicate(); Q.mult(rc, r)
-    ra = r.getArray()
+    rcl = dm.getLocalVec(); dm.globalToLocal(rc, rcl); rca = np.asarray(rcl.getArray())
 
-    lsec = dm.getLocalSection(); l2g = dm.getLGMap(); VEL = _velocity_field_id(solver)
+    lsec = dm.getLocalSection(); VEL = _velocity_field_id(solver)
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
     normal = dict((nm, nrm) for nm, nrm in
                   [(s if isinstance(s, tuple) else (s, None)) for s in info["boundaries"]]).get(boundary)
     nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-    # each face node: normal row = the frame row spanning its (single) normal = grows[0]
     xs = []; Rn = []; pts = []
     for q, nrm in nodes:
         lo = lsec.getFieldOffset(q, VEL)
-        row = int(l2g.apply([lo])[0])            # frame row 0 = normal (single-boundary face)
-        if row < 0:
-            continue
+        rcv = rca[lo:lo + dim]                    # Cartesian reaction at this node (local)
         xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
-        Rn.append(ra[row]); pts.append(q)
+        Rn.append(float(np.dot(nrm, rcv)))        # R_i = n̂·r_c  (corner-correct)
+        pts.append(q)
+    dm.restoreLocalVec(rcl)
     xs = np.array(xs); Rn = np.array(Rn)
     if not consistent_mass or dim != 2:
-        sig = -Rn
-        return xs, sig - sig.mean()
-    # 2D consistent P2 boundary mass from DMPlex top-edge connectivity
-    sig = _consistent_mass_2d(solver, boundary, normal, pts, Rn)
+        # lumped fallback; mean removed with the GLOBAL mean for partition-independence
+        comm = dm.comm.tompi4py()
+        tot = comm.allreduce(float(Rn.sum()), op=MPI.SUM)
+        cnt = comm.allreduce(int(Rn.size), op=MPI.SUM)
+        sig = -Rn - (-tot / max(cnt, 1))
+        return xs, sig
+    # 2D consistent P2 boundary mass, assembled globally (parallel-safe)
+    sig = _consistent_mass_2d(solver, boundary, pts, Rn, xs)
     return xs, sig
 
 
-def _consistent_mass_2d(solver, boundary, normal, pts, Rn):
-    """Solve M_Γ σ = −R with the consistent P2 line mass on `boundary` (2D)."""
-    dm = solver.dm; dim = 2
+def _consistent_mass_2d(solver, boundary, pts, Rn, xs):
+    """Solve M_Γ σ = −R with the consistent P2 line mass on `boundary` (2D).
+
+    Parallel-safe by construction: each rank emits its local boundary ELEMENTS as
+    self-contained coordinate-keyed records (the three P2 node keys + their reaction
+    loads + the element length); an allgather assembles the SAME global 1D system on
+    every rank (elements de-duplicated by key, so a facet shared across a partition cut
+    is counted once). Every rank solves it and returns σ at its own local nodes, so the
+    result — and the mean-removal gauge — is partition-independent."""
+    dm = solver.dm; dim = 2; comm = dm.comm.tompi4py()
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0); e0, e1 = dm.getDepthStratum(1)
     def vcoord(q): return cvec[csec.getOffset(q) // dim]
-    bval = [b.value for b in solver.mesh.boundaries if b.name == boundary][0]
+    def key(c): return (round(float(c[0]), 9), round(float(c[1]), 9))
+
+    # local node -> reaction load, keyed by coordinate (ghosts included via pts/Rn)
+    nodeR = {key(x): float(R) for x, R in zip(xs, Rn)}
+
+    # local boundary elements as coordinate-keyed records: (ka, kmid, kb, h)
+    bval = [bb.value for bb in solver.mesh.boundaries if bb.name == boundary][0]
     sis = dm.getStratumIS(boundary, bval)
     strat = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
     edges = [q for q in strat if e0 <= q < e1]
-    idx = {p: k for k, p in enumerate(pts)}
-    n = len(pts); M = np.zeros((n, n))
+    local_elems = []
     for e in edges:
-        a, b = (int(c) for c in dm.getCone(e))
-        if a not in idx or b not in idx or e not in idx:
-            continue
-        h = float(np.hypot(*(vcoord(b) - vcoord(a))))
-        Me = (h / 30.0) * np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
-        tri = [idx[a], idx[e], idx[b]]
+        a, bb = (int(c) for c in dm.getCone(e))
+        ca, cb = vcoord(a), vcoord(bb)
+        cmid = _point_coord(dm, dim, cvec, csec, v0, v1, e)
+        h = float(np.hypot(*(cb - ca)))
+        local_elems.append((key(ca), key(cmid), key(cb), h))
+
+    # gather elements + node loads across ranks (1D boundary → cheap)
+    all_elems = comm.allgather(local_elems)
+    all_nodeR = comm.allgather(nodeR)
+    R_by_key = {}
+    for d in all_nodeR:
+        R_by_key.update(d)                       # same key → same value on every rank
+    # de-duplicate elements (a shared facet appears on >1 rank)
+    uniq = {}
+    for lst in all_elems:
+        for (ka, km, kb, h) in lst:
+            uniq[(ka, km, kb)] = h
+    # global node numbering + assembly
+    keys = sorted(R_by_key.keys())
+    gidx = {k: i for i, k in enumerate(keys)}
+    n = len(keys); M = np.zeros((n, n)); R = np.zeros(n)
+    for k, i in gidx.items():
+        R[i] = R_by_key[k]
+    Me = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
+    for (ka, km, kb), h in uniq.items():
+        tri = [gidx[ka], gidx[km], gidx[kb]]
+        Mh = (h / 30.0) * Me
         for ii in range(3):
             for jj in range(3):
-                M[tri[ii], tri[jj]] += Me[ii, jj]
-    sig = np.linalg.solve(M, -np.asarray(Rn))
-    return sig - sig.mean()
+                M[tri[ii], tri[jj]] += Mh[ii, jj]
+    sig_g = np.linalg.solve(M, -R)
+    sig_g = sig_g - sig_g.mean()                 # global gauge → partition-independent
+    # return σ at THIS rank's local nodes, in the input (xs/pts) order
+    return np.array([sig_g[gidx[key(x)]] for x in xs])
 
 
 def _rigid_rotation_global(solver):
