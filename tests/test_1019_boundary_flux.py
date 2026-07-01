@@ -3,11 +3,9 @@
 The essential-BC reaction of a diffusion solve, de-smeared by the boundary mass, is the
 consistent surface flux -k dT/dn (Gresho et al.); its boundary mean is the Nusselt
 number. Validated against a harmonic manufactured solution with a known analytic flux.
-
-Serial (and np=2, where the flux boundary is not cut). NOTE: a partition that CUTS the
-flux boundary (e.g. np=4 on this box) currently has a localized error in the parallel
-assembly of the volume FEM residual at the cut node — tracked as a follow-up; the solve
-itself is partition-independent. So the parallel test is gated to np=2.
+The nodal reaction is PETSc's (rock-solid) volume FEM residual; its complete value at a
+partition-cut boundary node is assembled by summing each rank's partial contribution by
+coordinate, so the flux is partition-independent (see the parallel test).
 """
 import numpy as np
 import sympy

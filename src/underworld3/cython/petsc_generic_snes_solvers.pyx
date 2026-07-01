@@ -1836,6 +1836,10 @@ class SolverBaseClass(uw_object):
         cdef Vec xvec
         cdef Vec fvec
         cdef DM _time_dm_reaction
+        cdef PetscFormKey key
+        cdef IS ccell_is
+        cdef PetscReal residual_time = 0.0
+        cdef PetscReal implicit_form_time = <PetscReal>-1.7976931348623157e308
 
         self._build(verbose, False, None)
 
@@ -1878,17 +1882,12 @@ class SolverBaseClass(uw_object):
             fvec = flocal
             CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
 
-            # assemble globally (sum shared-node contributions) then scatter back so
-            # every rank's boundary nodes — including ghosts — hold the complete reaction
-            # TODO(BUG): a partition that CUTS a flux boundary (e.g. np=4 on a box, bottom
-            # split across ranks) leaves a ~few-% localized error at the cut node — the
-            # localToGlobal(ADD) of the DMPlexSNESComputeResidualFEM output is not exact
-            # there (overlap / owned-cell interaction). Serial + boundary-uncut partitions
-            # (np<=2 here) are machine-exact; the SOLVE is partition-independent. Fix the
-            # parallel volume-residual assembly at cut boundary nodes.
-            gvec.setArray(0.0)
-            self.dm.localToGlobal(flocal, gvec, addv=PETSc.InsertMode.ADD_VALUES)
-            self.dm.globalToLocal(gvec, flocal)
+            # Return the RAW local residual: each rank has computed its OWNED cells'
+            # contribution to its local nodes (the DM has overlap=0, so a boundary node
+            # shared across a partition cut holds only this rank's PARTIAL contribution).
+            # The caller assembles the complete reaction by summing these partials across
+            # ranks by coordinate (boundary_flux._desmear), consistent with the boundary-
+            # mass gather — this reproduces the rock-solid volume integral at cut nodes.
             return np.array(flocal.array, copy=True)
         finally:
             self.dm.restoreLocalVec(flocal)

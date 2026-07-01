@@ -137,9 +137,13 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean):
         h = float(np.hypot(*(vcoord(b) - vcoord(a))))
         local_elems.append((_key(vcoord(a), dim), _key(cmid, dim), _key(vcoord(b), dim), h))
 
+    # SUM the nodal reaction across ranks by coordinate: with overlap=0 a boundary node
+    # shared across a partition cut holds only each rank's partial cell contribution, so
+    # summing them assembles the complete reaction (matches the rock-solid volume integral).
     R_by = {}
     for d in comm.allgather(nodeR):
-        R_by.update(d)
+        for k, v in d.items():
+            R_by[k] = R_by.get(k, 0.0) + v
     uniq = {}
     for lst in comm.allgather(local_elems):
         for (ka, km, kb, h) in lst:
