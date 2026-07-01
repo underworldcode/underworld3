@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
+from underworld3.function import analytic as A
 from petsc4py import PETSc
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
@@ -113,3 +114,60 @@ def test_poisson_fmg_on_nvb_child_matches_gamg():
     # FMG must not need materially more iterations than the AMG reference.
     assert fmg_its <= gamg_its + 2, f"fmg {fmg_its} vs gamg {gamg_its}"
     assert fmg_its <= 10
+
+
+def _solcx_metric(base):
+    """A viscosity-jump band metric around x=0.5 (the SolCx interface)."""
+    M = uw.discretisation.MeshVariable("Mjump", base, 1, degree=1)
+    with base.access(M):
+        c = M.coords
+        band = np.exp(-(((c[:, 0] - 0.5) / 0.08) ** 2))
+        M.data[:, 0] = 1.0 / (0.07 + (1.0 / 80 - 0.07) * band) ** 2
+    return M
+
+
+def test_solcx_stokes_velocity_fmg_on_nvb_child():
+    """SolCx Stokes (η jump 1e6) on a graded NVB child, in parallel: the velocity
+    block auto-picks-up the mesh-owned custom-P FMG and matches a GAMG reference
+    iteration-for-iteration, with a partition-independent solution."""
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25, regular=True,
+        refinement=2, qdegree=3,
+    )
+    child = base.adapt(_solcx_metric(base), max_levels=1, engine="nvb")
+    assert _global_owned_cells(child.dm) == 800   # confluent at any np
+
+    def solcx(pc):
+        sol = A.SolCx(child, eta_A=1.0, eta_B=1.0e6, x_c=0.5, n=1)
+        s = uw.systems.Stokes(child)
+        s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+        s.saddle_preconditioner = 1.0 / sol.fn_viscosity
+        s.bodyforce = sol.fn_bodyforce
+        s.add_dirichlet_bc((0.0, None), "Left")
+        s.add_dirichlet_bc((0.0, None), "Right")
+        s.add_dirichlet_bc((None, 0.0), "Bottom")
+        s.add_dirichlet_bc((None, 0.0), "Top")
+        s.petsc_use_pressure_nullspace = True
+        s.petsc_options["snes_type"] = "ksponly"
+        s.tolerance = 1e-8
+        if pc == "gamg":
+            s.preconditioner = "gamg"
+        s.solve()
+        vksp = s.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
+        return s, vksp
+
+    sg, vg = solcx("gamg")
+    it_g = vg.getIterationNumber()
+
+    s, vksp = solcx("fmg")
+    assert s.snes.getConvergedReason() > 0
+    assert vksp.getPC().getType() == "mg"            # geometric MG (from the mesh tail), not AMG
+    assert vksp.getPC().getMGType() == 2             # PC.MGType.FULL == FMG
+    assert vksp.getIterationNumber() <= it_g + 1     # FMG matches the AMG reference
+
+    from mpi4py import MPI
+    comm = child.dm.comm.tompi4py()
+    num = comm.allreduce(float(np.sum((s.u.data - sg.u.data) ** 2)), op=MPI.SUM)
+    den = comm.allreduce(float(np.sum(sg.u.data ** 2)), op=MPI.SUM)
+    assert np.sqrt(num / (den + 1e-30)) < 1e-4       # same solution as GAMG
