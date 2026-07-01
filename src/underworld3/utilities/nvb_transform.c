@@ -887,6 +887,26 @@ static PetscErrorCode uwnvb_sf_land(DM dm, PetscInt *val)
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+/* Point-indexed 0/1 array made globally consistent under logical-OR across the
+   point SF (serial: no-op). After this, a shared point's value is 1 if ANY rank
+   marked it — used so a shared edge chosen for bisection on one rank is split on
+   every rank that owns a copy, keeping the child point SF conforming. */
+static PetscErrorCode uwnvb_sf_lor(DM dm, PetscInt *val)
+{
+  PetscSF  sf;
+  PetscInt nroots;
+
+  PetscFunctionBegin;
+  PetscCall(DMGetPointSF(dm, &sf));
+  PetscCall(PetscSFGetGraph(sf, &nroots, NULL, NULL, NULL));
+  if (nroots < 0) PetscFunctionReturn(PETSC_SUCCESS); /* no SF (serial) */
+  PetscCall(PetscSFReduceBegin(sf, MPIU_INT, val, val, MPI_LOR));
+  PetscCall(PetscSFReduceEnd(sf, MPIU_INT, val, val, MPI_LOR));
+  PetscCall(PetscSFBcastBegin(sf, MPIU_INT, val, val, MPI_REPLACE));
+  PetscCall(PetscSFBcastEnd(sf, MPIU_INT, val, val, MPI_REPLACE));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 /* ---- driver: graded NVB refinement of `dm` ----------------------------- */
 /*
   Refine `dm` so that every cell flagged in the `wantName` adaptation label
@@ -1035,27 +1055,37 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
     }
     PetscCall(uwnvb_sf_land(work, agree));
 
-    /* ready edges = refedge of a C cell that is agreed; mark them for bisection */
-    PetscCall(DMLabelCreate(PETSC_COMM_SELF, UWNVB_BISECT_LABEL, &bisect));
+    /* ready edges = refedge of a C cell that is agreed. Collect them in a
+       point-indexed mark array, then OR-reconcile across the point SF so a shared
+       edge chosen on any rank is split on every rank owning a copy — otherwise the
+       child point SF crosses strata (a split-edge child on one rank maps to an
+       unsplit vertex on its neighbour) and DMLabelPropagate corrupts. */
     {
+      PetscInt       *bmark;
       IS              cis;
       const PetscInt *ccells;
       PetscInt        n, i;
+      PetscCall(PetscCalloc1(pEnd - pStart, &bmark));
       PetscCall(DMLabelGetStratumIS(C, 1, &cis));
       PetscCall(DMLabelGetStratumSize(C, 1, &n));
       if (cis) {
         PetscCall(ISGetIndices(cis, &ccells));
         for (i = 0; i < n; ++i) {
-          PetscInt refedge, refslot, bv;
+          PetscInt refedge, refslot;
           PetscCall(uwnvb_refedge(work, slot, ccells[i], &refedge, &refslot));
-          if (agree[refedge - pStart]) {
-            PetscCall(DMLabelGetValue(bisect, refedge, &bv));
-            if (bv != 1) { PetscCall(DMLabelSetValue(bisect, refedge, 1)); ++nready; }
-          }
+          if (agree[refedge - pStart]) bmark[refedge - pStart] = 1;
         }
         PetscCall(ISRestoreIndices(cis, &ccells));
       }
       PetscCall(ISDestroy(&cis));
+      PetscCall(uwnvb_sf_lor(work, bmark));
+
+      PetscCall(DMPlexGetDepthStratum(work, 1, &eStart, &eEnd));
+      PetscCall(DMLabelCreate(PETSC_COMM_SELF, UWNVB_BISECT_LABEL, &bisect));
+      for (e = eStart; e < eEnd; ++e) {
+        if (bmark[e - pStart]) { PetscCall(DMLabelSetValue(bisect, e, 1)); ++nready; }
+      }
+      PetscCall(PetscFree(bmark));
     }
     PetscCall(PetscFree(agree));
     {

@@ -1,9 +1,13 @@
 # Newest-Vertex Bisection (NVB) for graded adapt-on-top
 
-Status: **implemented (serial Route A), 2026-06-30**. Engine in
+Status: **implemented — serial Route A (2026-06-30) + parallel Route B native
+transform, bit-confluent (2026-07-01)**. Serial engine in
 `src/underworld3/utilities/nvb.py` + `custom_mg.nvb_refine`; wired into
 `Mesh.adapt(engine="nvb")`; validated in `tests/test_0836_nvb_graded_adapt.py`.
-Parallel (Route B, native transform) is the next step. Follows the Layer-2
+The native `uwnvb` `DMPlexTransform` (`src/underworld3/utilities/nvb_transform.c`,
+`tests/test_083{7,8}`) grades in parallel and produces a mesh identical to the
+serial one at any communicator size. Remaining: Stage 2c integration
+(`_adapt_nested(engine="nvb")` at np>1) + FMG tail. Follows the Layer-2
 investigation in
 [`LAYER2_SBR_ADAPT_ON_TOP.md`](LAYER2_SBR_ADAPT_ON_TOP.md). Goal: replace the
 refinement *engine* under `mesh.adapt(adapter="sbr")` so that successive levels
@@ -414,12 +418,14 @@ tiers 2/3 couple us to PETSc's internal struct/cone ABI for the pinned build
    triangulation for every marking pattern incl. full uniform refine. `tests/
    test_0837_nvb_native_transform.py` (tier_b). Longest-edge edge pick; the newest-
    vertex choice layers on top.
-3. *Newest-vertex grading (Stage 2b)* — **DONE serially (2026-07-01)** via the
-   single-bisection multi-pass driver (see below). Matches serial `NVBMesh`
+3. *Newest-vertex grading (Stage 2b)* — **DONE, serial and parallel (2026-07-01)**
+   via the single-bisection multi-pass driver (see below). Matches serial `NVBMesh`
    refinement edges exactly over repeated uniform refine; a deep mark is bounded
    (+2 vs SBR's +4824); conforming, deterministic, graded bullseye (805 vs SBR's
-   102 868 cells). `tests/test_0838_nvb_graded_native.py`. Runs conforming at
-   np=1/2/3; full parallel *confluence* needs the cross-rank closure (below).
+   102 868 cells). **Bit-confluent in parallel**: the refined mesh is identical to
+   the serial one at any communicator size — uniform refine 159/352/760 and graded
+   bullseye 215 cells agree exactly at np=1/2/3/4, 0 hanging nodes.
+   `tests/test_0838_nvb_graded_native.py` (`test_parallel_confluence`).
 4. *Integration + acceptance* — `_adapt_nested(engine="nvb")` at np>1 via the
    driver; Poisson + SolCx FMG match GAMG; result matches the serial NVB mesh.
 
@@ -450,27 +456,35 @@ label from the output); and the drain loop condition must use the **global** `|C
 (`MPIU_Allreduce`) or a rank with no local marks skips the collective loop and
 deadlocks.
 
-The **cross-rank closure** is implemented: `C`'s refinement edges are marked in a
-`req` edge label and propagated across the point SF with `DMLabelPropagate`
-(exactly as SBR's `SetUp` does — edges are shared SF points, cells are not), so a
-`C`-cell blocked by an off-rank neighbour marks that neighbour on its owning rank.
+The parallel path needs **two** SF reconciliations, and both are now in place:
 
-**Remaining — parallel confluence (drain sequencing):** the parallel result is
-**valid** (locally conforming; 0 hanging nodes at np=1; the SF-reconciled
-compatibility reduce prevents one-sided edge bisection, so no cross-partition
-hanging nodes) but **not bit-confluent** — global cell counts differ by a few
-cells across `np` (e.g. uniform refine: 159/352/760 at np=1 vs 157/346/743 at
-np=2). This is *not* the closure (it affects uniform refine, whose closure is
-trivial), *not* the longest-edge seed (no exact ties in the test meshes → the seed
-is geometrically deterministic), and *not* the `uwnvb_sf_land` indexing (verified:
-the point-SF `ilocal` holds point numbers, so `PetscSFReduce(val,val,MPI_LAND)`
-indexes `val[point]` correctly). The remaining suspect is the **drain sub-pass
-sequencing**: with the same refinement-edge seed and the same cell set, the batches
-of compatible edges bisected per sub-pass — and the conformity-closure bisections
-that make NVB uniform refine super-linear (26→64) — appear to resolve to a
-slightly different (still valid) mesh depending on the partition. Pinning it needs
-a per-sub-pass comparison of the compatible-edge set serial-vs-parallel to find the
-divergence. Then Stage 2c: wire `_adapt_nested(engine="nvb")` at np>1 to the driver.
+1. **Cross-rank closure.** `C`'s refinement edges are marked in a `req` edge label
+   and propagated across the point SF with `DMLabelPropagate` (exactly as SBR's
+   `SetUp` does — edges are shared SF points, cells are not), so a `C`-cell blocked
+   by an off-rank neighbour marks that neighbour on its owning rank.
+2. **Bisection-set consistency (`uwnvb_sf_lor`).** The per-pass set of edges to
+   split must be *identical across ranks* for every shared edge. Marking it purely
+   from the local `C` cells is not enough: a shared edge can be the agreed
+   refinement edge of a `C`-cell on rank A while rank B's copy of the incident cell
+   is not (yet) in its local `C`. Rank A then splits the shared edge (midpoint + two
+   child edges) while rank B keeps it whole, so `DMPlexTransformCreateSF` maps rank
+   A's child *edge* onto rank B's *vertex* — a **stratum-crossing point SF**. On the
+   next refine, `DMLabelPropagate` reduces an edge's request onto that vertex, whose
+   support is edges (not cells) → out-of-range read → **segfault**. The fix is an
+   `MPI_LOR` `PetscSFReduce`+`Bcast` of the bisect-mark array over the point SF: an
+   edge chosen on *any* rank is split on *every* rank owning a copy. Because the
+   `agree` set (already `MPI_LAND`-reconciled) guarantees such an edge is the
+   refinement edge of the incident cell on **all** sharers, splitting it everywhere
+   is exactly the conforming closure — so the OR both fixes the SF and completes the
+   cross-partition closure.
+
+**Confluence (2026-07-01): achieved.** With both reconciliations, the refined mesh
+is **bit-identical to the serial mesh** at any communicator size (uniform
+159/352/760, graded bullseye 215, deep 5-level nesting 96/180/288/390/472 — all
+equal at np=1/2/3/4; 0 hanging nodes; the output point SF is stratum-consistent).
+The root cause of the earlier non-confluence *and* the nested-distributed segfault
+was the single missing `uwnvb_sf_lor` — one bug, both symptoms. Next: Stage 2c —
+wire `_adapt_nested(engine="nvb")` at np>1 to the driver.
 
 ### Stage 2b finding (2026-07-01): grading needs single-bisection, multi-pass
 

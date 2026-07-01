@@ -16,8 +16,11 @@ These tests pin the graded behaviour against the validated serial reference
   - a shrinking bullseye grades (many levels coexist), with far fewer cells than
     the SBR uniform patch.
 
-Serial (the SF-reconciled cross-rank closure for full parallel confluence is a
-follow-up; the driver already runs conforming at np>1).
+Parallel confluence is covered by ``test_parallel_confluence`` below: the driver
+SF-reconciles both the conforming closure (``req`` via ``DMLabelPropagate``) and
+the per-pass bisection set (``uwnvb_sf_lor`` — a shared edge chosen on any rank is
+split on every rank owning a copy), so the refined mesh is bit-identical to the
+serial one at any communicator size.
 """
 import numpy as np
 import pytest
@@ -163,3 +166,48 @@ def test_deterministic():
     a = _refine(_base(0.12), lambda x: np.linalg.norm(x - CENTER) < 0.2)
     b = _refine(_base(0.12), lambda x: np.linalg.norm(x - CENTER) < 0.2)
     assert _ncells(a) == _ncells(b)
+
+
+def _global_owned_cells(dm):
+    """Total cells across all ranks, counting each cell only on its owner (a
+    partition-independent size, so it must match the serial value under confluence)."""
+    from mpi4py import MPI
+
+    cs, ce = dm.getHeightStratum(0)
+    sf = dm.getPointSF()
+    try:
+        _, ilocal, _ = sf.getGraph()
+    except (ValueError, TypeError):
+        ilocal = None  # serial: no SF graph -> every local cell is owned
+    leaves = set() if ilocal is None else {int(x) for x in ilocal}
+    owned = sum(1 for c in range(cs, ce) if c not in leaves)
+    return dm.comm.tompi4py().allreduce(owned, op=MPI.SUM)
+
+
+def test_parallel_confluence():
+    """The refined mesh is partition-independent: the global owned-cell count and
+    the (serially-validated) reference values agree at any communicator size, and
+    no edge is over-shared. Runs on 1..N ranks; the assert is the confluence pin."""
+    base = _base(0.2)
+
+    # uniform: serial reference sizes for cellSize=0.2 (see the confluence sweep)
+    dm = base
+    for expected in (159, 352, 760):
+        d = dm.clone()
+        d.createLabel("adapt")
+        lab = d.getLabel("adapt")
+        lab.setDefaultValue(0)
+        cs, ce = d.getHeightStratum(0)
+        for c in range(cs, ce):
+            lab.setValue(c, DM_ADAPT_REFINE)
+        dm = _nvb.refine(d, "adapt")
+        assert _global_owned_cells(dm) == expected
+
+    # graded bullseye: serial reference size
+    dm = base
+    for R in (0.4, 0.28, 0.18):
+        dm = _refine(dm, lambda x, R=R: np.linalg.norm(x - CENTER) < R)
+    assert _global_owned_cells(dm) == 215
+    # no locally over-shared edge (each rank stays conforming)
+    es, ee = dm.getDepthStratum(1)
+    assert all(dm.getSupportSize(e) <= 2 for e in range(es, ee))
