@@ -10,6 +10,13 @@ essential free-slip solve bit-for-bit. Direct LU here; FMG wiring is a later ste
 import numpy as np
 from petsc4py import PETSc
 
+# Monotonic counter so each rotated solve gets a UNIQUE PETSc options prefix. With a
+# fixed prefix, sequential rotated solves (e.g. two solvers in one script, or one
+# solver in a time-stepping loop) share and re-set the same global-options keys; the
+# per-solve prefix plus the delValue cleanup below keeps each solve's options local
+# and stops the global database growing / emitting "unused option" warnings.
+_ROT_SOLVE_COUNT = 0
+
 
 # --------------------------------------------------------------------------- #
 #  Rotation construction
@@ -218,16 +225,26 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     # diagonal) AND the RHS at those rows — zeroRowsColumns does NOT touch the RHS,
     # so a nonzero b there would leak straight into the solution (û_i = b_i / 1),
     # independent of the solver/tolerance.
+    # zeroRowsColumns takes GLOBAL row indices (correct); the RHS write must use
+    # OWNERSHIP-RELATIVE local indices (bhat.getArray() is this rank's local slice,
+    # so indexing it with global rows overflows on any rank whose ownership does not
+    # start at 0 — the np>1 crash that masqueraded as a hang).
     Ahat.zeroRowsColumns(normal_rows, diag=1.0)
-    ba = bhat.getArray(); ba[normal_rows] = 0.0; bhat.setArray(ba)
+    brs, bre = bhat.getOwnershipRange()
+    bloc = np.asarray([g - brs for g in normal_rows if brs <= g < bre], dtype=np.int64)
+    ba = bhat.getArray(); ba[bloc] = 0.0; bhat.setArray(ba)
 
     # ITERATIVE by default (LU is almost never right): a self-contained fieldsplit-
     # Schur solve whose velocity block is geometric FMG on the custom prolongation
     # when a hierarchy is registered (set_custom_fmg), else GAMG. Direct LU only when
     # explicitly opted in via solver._rotated_use_lu.
     if getattr(solver, "_rotated_use_lu", False):
+        # NOTE: the pressure `pin` is a naive per-rank global search (parallel-unsafe;
+        # LU is opt-in only — see the follow-up in rotated_bc). The RHS write below
+        # still uses ownership-relative indexing so it does not overflow the local slice.
         Ahat.zeroRows([pin], diag=1.0)
-        ba = bhat.getArray(); ba[pin] = 0.0; bhat.setArray(ba)
+        if pin is not None and brs <= pin < bre:
+            ba = bhat.getArray(); ba[pin - brs] = 0.0; bhat.setArray(ba)
         ksp = PETSc.KSP().create(); ksp.setOperators(Ahat); ksp.setType("preonly")
         pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
         Uhat = dm.getGlobalVec(); ksp.solve(bhat, Uhat)
@@ -256,6 +273,18 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         sg = U.getSubVector(solver._subdict[name][0])
         solver._subdict[name][1].globalToLocal(sg, var.vec)
         U.restoreSubVector(solver._subdict[name][0], sg)
+
+    # Parity with the normal solve's post-scatter sync (pyx: after the field copy-back):
+    # refresh the enhanced-variable gvec cache and drop the canonical-data cache so
+    # downstream consumers (var.data / var.array / checkpoint / stats) don't read a
+    # stale value; and mark the mesh local vector stale.
+    solver.mesh._stale_lvec = True
+    for name, var in solver.fields.items():
+        target_var = getattr(var, "_base_var", var)
+        if hasattr(target_var, "_sync_lvec_to_gvec"):
+            target_var._sync_lvec_to_gvec()
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
 
     return {"Q": Q, "Qt": Qt, "A": Aorig, "b": b, "U": U, "Uhat": Uhat,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
@@ -293,7 +322,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     if nsp is not None:
         Ahat.setNullSpace(nsp); Ahat.setTransposeNullSpace(nsp); nsp.remove(bhat)
 
-    pfx = "rotfs_"
+    # UNIQUE prefix per solve (see _ROT_SOLVE_COUNT) so sequential rotated solves
+    # do not share global-options state; the keys are removed after the solve.
+    global _ROT_SOLVE_COUNT
+    _ROT_SOLVE_COUNT += 1
+    pfx = f"rotfs{_ROT_SOLVE_COUNT}_"
     opts = PETSc.Options()
     cfg = {
         "ksp_type": "fgmres", "ksp_rtol": str(float(solver.tolerance)), "ksp_max_it": "300",
@@ -307,21 +340,30 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         cfg["fieldsplit_vel_pc_type"] = "gamg"
     for k, v in cfg.items():
         opts[pfx + k] = v
-    ksp = PETSc.KSP().create(comm=dm.comm); ksp.setOptionsPrefix(pfx)
-    ksp.setOperators(Ahat)
-    pc = ksp.getPC(); pc.setType("fieldsplit")
-    pc.setFieldSplitIS(("vel", vel_is), ("pres", pres_is))
-    ksp.setFromOptions()
-    pc.setUp()
-    if custom_Pl is not None:                         # geometric FMG via custom P
-        vel_pc = pc.getFieldSplitSubKSP()[0].getPC()
-        A_vv, P_vv = vel_pc.getOperators()
-        vel_pc.reset(); vel_pc.setOperators(A_vv, P_vv)
-        custom_mg._configure_pcmg(vel_pc, custom_Pl)
-        vel_pc.setUp()
+    try:
+        ksp = PETSc.KSP().create(comm=dm.comm); ksp.setOptionsPrefix(pfx)
+        ksp.setOperators(Ahat)
+        pc = ksp.getPC(); pc.setType("fieldsplit")
+        pc.setFieldSplitIS(("vel", vel_is), ("pres", pres_is))
+        ksp.setFromOptions()
+        pc.setUp()
+        if custom_Pl is not None:                     # geometric FMG via custom P
+            vel_pc = pc.getFieldSplitSubKSP()[0].getPC()
+            A_vv, P_vv = vel_pc.getOperators()
+            vel_pc.reset(); vel_pc.setOperators(A_vv, P_vv)
+            custom_mg._configure_pcmg(vel_pc, custom_Pl)
+            vel_pc.setUp()
 
-    Uhat = Ahat.createVecRight(); Uhat.set(0.0)
-    ksp.solve(bhat, Uhat)
+        Uhat = Ahat.createVecRight(); Uhat.set(0.0)
+        ksp.solve(bhat, Uhat)
+    finally:
+        # all options consumed by setFromOptions/setUp/solve — drop them so the
+        # global database stays clean (and bounded under time-stepping).
+        for k in cfg:
+            try:
+                opts.delValue(pfx + k)
+            except Exception:
+                pass
     # An identity constraint row in an ITERATIVE solve only drives its residual
     # (= û_i) below tolerance, so û_i ~ tol, not exactly 0. Because zeroRowsColumns
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
