@@ -6048,8 +6048,15 @@ class Mesh(Stateful, uw_object):
 
         Parameters
         ----------
-        metric_field : MeshVariable
+        metric_field : MeshVariable, sympy expression, or callable
             Scalar metric ``M = 1/h²`` (target edge length ``h``); larger ⇒ finer.
+            A **MeshVariable** or **sympy/UWexpression** is sampled through
+            ``uw.function.evaluate`` (so anything it references is interpolated
+            from the *base* mesh). A **callable** ``metric(centroids) -> M`` is
+            evaluated directly at each refined level's centroids — use this for a
+            metric built from exact geometry (e.g.
+            :meth:`Surface.refinement_metric_function`) so a thin feature refines
+            to a clean, uniform-width band instead of a P1-aliased *patchy* one.
             Same interface as :meth:`remesh` / ``adaptivity.create_metric``.
         max_levels : int
             Maximum SBR depth applied on top of the base finest (bounds the
@@ -6164,13 +6171,41 @@ class Mesh(Stateful, uw_object):
         edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
         DM_ADAPT_REFINE = 1                  # PETSc DMAdaptFlag: refine this cell
 
-        # The metric may be a MeshVariable (use its .sym) OR any evaluatable
-        # expression (sympy / UWexpression). Passing the analytic metric avoids
-        # baking a sharply-peaked M = 1/h² into a P1 field on the coarse base —
-        # that P1 interpolation aliases badly (a width-w feature ≈ one base cell),
-        # giving *patchy* refinement levels along a thin feature even though the
-        # metric is smooth. An analytic metric is sampled exactly at each centroid.
+        # The metric may be one of three kinds, in increasing "self-resolving"
+        # order:
+        #   1. a MeshVariable (use its .sym) — a P1 field on the base nodes;
+        #   2. any evaluatable expression (sympy / UWexpression);
+        #   3. a plain CALLABLE metric(centroids) -> M array.
+        # (1) and (2) are sampled through uw.function.evaluate, so anything they
+        # reference (e.g. a Surface.distance P1 field) is interpolated from the
+        # *base* mesh — a sharply-peaked M = 1/h² aliases across a base cell and
+        # gives *patchy* refinement levels along a thin feature. A callable is
+        # evaluated directly at each refined level's centroids, so a metric built
+        # from EXACT geometry (Surface.refinement_metric_function) resolves itself
+        # at the new resolution — a clean, uniform-width band. A callable driven
+        # purely by coordinates is also partition-independent, so it needs no
+        # swarm-migration global_evaluate in parallel (each rank evaluates its
+        # own centroids).
+        import sympy as _sympy
+        metric_is_callable = (
+            callable(metric_field)
+            and not hasattr(metric_field, "sym")
+            and not isinstance(metric_field, _sympy.Basic)
+        )
         metric_sym = getattr(metric_field, "sym", metric_field)
+
+        def _eval_metric(centroids):
+            if metric_is_callable:
+                return numpy.asarray(
+                    metric_field(centroids), dtype=float
+                ).reshape(-1)
+            if uw.mpi.size > 1:
+                return numpy.asarray(
+                    uw.function.global_evaluate(metric_sym, centroids)
+                ).reshape(-1)
+            return numpy.asarray(
+                uw.function.evaluate(metric_sym, centroids)
+            ).reshape(-1)
 
         markers_per_level = []
         level_dms = []                       # one DM per refinement level
@@ -6195,15 +6230,7 @@ class Mesh(Stateful, uw_object):
                         vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
                         centroids[i] = numpy.asarray(cen)[: self.cdim]
                         cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
-                    if uw.mpi.size > 1:
-                        M = numpy.asarray(
-                            uw.function.global_evaluate(metric_sym, centroids)
-                        ).reshape(-1)
-                    else:
-                        M = numpy.asarray(
-                            uw.function.evaluate(metric_sym, centroids)
-                        ).reshape(-1)
-                    M = numpy.clip(M, 1e-30, None)
+                    M = numpy.clip(_eval_metric(centroids), 1e-30, None)
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
@@ -6250,10 +6277,7 @@ class Mesh(Stateful, uw_object):
             n_gen = 2 * max_levels
             for level in range(n_gen):
                 centroids, cur_h, cids = nvb.centroids_h()
-                M = numpy.clip(
-                    numpy.asarray(
-                        uw.function.evaluate(metric_sym, centroids)
-                    ).reshape(-1), 1e-30, None)
+                M = numpy.clip(_eval_metric(centroids), 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)
                 sel = numpy.where(cur_h > h_target)[0]
                 if sel.size == 0:
@@ -6287,17 +6311,9 @@ class Mesh(Stateful, uw_object):
                     cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
 
                 # Metric M = 1/h_target² at the cell centroids (parent field).
-                # Parallel: swarm-migration global_evaluate (partition-agnostic);
-                # serial: the cheaper local evaluate.
-                if uw.mpi.size > 1:
-                    M = numpy.asarray(
-                        uw.function.global_evaluate(metric_sym, centroids)
-                    ).reshape(-1)
-                else:
-                    M = numpy.asarray(
-                        uw.function.evaluate(metric_sym, centroids)
-                    ).reshape(-1)
-                M = numpy.clip(M, 1e-30, None)
+                # A callable is evaluated directly on the centroids; a field/expr
+                # goes through global_evaluate (parallel) or evaluate (serial).
+                M = numpy.clip(_eval_metric(centroids), 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)
 
                 refine = numpy.where(cur_h > h_target)[0]

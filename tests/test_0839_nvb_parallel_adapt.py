@@ -141,6 +141,43 @@ def test_adapt_accepts_analytic_metric():
     assert all(child.dm.getSupportSize(e) <= 2 for e in range(es, ee))
 
 
+def test_adapt_accepts_callable_metric_exact_surface_distance():
+    """adapt(engine="nvb") accepts a CALLABLE metric evaluated at each refined
+    level's centroids. A callable built from a Surface's EXACT signed distance
+    (``Surface.refinement_metric_function``) resolves itself at the new
+    resolution — no P1 field is interpolated — so a thin feature refines to a
+    clean band. Because it is coordinate-driven it is partition-independent
+    (needs no global_evaluate) and the child stays confluent."""
+    mesh = _base()
+    # a thin diagonal "fault" polyline
+    s = np.linspace(0.0, 1.0, 21)
+    trace = np.column_stack([0.2 + 0.6 * s, 0.15 + 0.7 * s, np.zeros_like(s)])
+    fault = uw.meshing.Surface("f839", mesh, trace, symbol="F")
+    fault.discretize()
+
+    # exact distance is a real geometric primitive at arbitrary points
+    d_on = fault.unsigned_distance(trace[:, :2])
+    assert float(np.max(d_on)) < 1e-6            # exactly zero on the trace
+    # step exactly perpendicular to the trace direction (0.6, 0.7)
+    perp = np.array([0.7, -0.6]) / np.hypot(0.6, 0.7)
+    # use interior points only (endpoints clamp to the finite edge)
+    off = trace[5:-5, :2] + 0.1 * perp
+    assert abs(float(np.mean(fault.unsigned_distance(off))) - 0.1) < 1e-6
+
+    metric = fault.refinement_metric_function(h_near=0.03, h_far=0.4, width=0.08)
+    assert callable(metric)
+
+    child = mesh.adapt(metric, max_levels=2, engine="nvb")
+    assert child.parent is mesh
+    base_finest = mesh.dm_hierarchy[-1]
+    bs, be = base_finest.getHeightStratum(0)
+    assert _global_owned_cells(child.dm) > (be - bs)   # refined
+    # conforming (no over-shared edge) and confluent at any communicator size
+    es, ee = child.dm.getDepthStratum(1)
+    assert all(child.dm.getSupportSize(e) <= 2 for e in range(es, ee))
+    assert _global_owned_cells(child.dm) == 206        # confluent (same at any np)
+
+
 def _solcx_metric(base):
     """A viscosity-jump band metric around x=0.5 (the SolCx interface)."""
     M = uw.discretisation.MeshVariable("Mjump", base, 1, degree=1)

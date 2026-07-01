@@ -436,9 +436,39 @@ tiers 2/3 couple us to PETSc's internal struct/cone ABI for the pinned build
    np>1. Verified: `mesh.adapt(engine="nvb")` is bit-confluent (child = 366 cells at
    np=1/2/4), carries boundary labels + the `[base … child]` custom-P MG tail, and a
    Poisson solve on the graded child drives custom-P FMG converging in **3 iters ==
-   GAMG** at np=1/2/4. `tests/test_0839_nvb_parallel_adapt.py`. Still open: SolCx
-   Stokes FMG on the parallel child (serial covered in `test_0836`), and the
-   marker-replay checkpoint.
+   GAMG** at np=1/2/4. SolCx Stokes FMG on the parallel child is also covered (the
+   velocity block picks up the mesh-owned custom-P FMG and matches GAMG
+   iteration-for-iteration; child = 800 cells at np=1/2/4).
+   `tests/test_0839_nvb_parallel_adapt.py`. Still open: the marker-replay checkpoint.
+
+### Metric resolution on the refined levels — callable, exact-distance metric
+
+The metric is re-evaluated on the centroids of **each refined level** (not once on
+the base). Three metric kinds, in increasing "self-resolving" order:
+
+1. a **MeshVariable** (`.sym`) — a P1 field on the *base* nodes;
+2. any **sympy / UWexpression**;
+3. a plain **callable** `metric(centroids) -> M`.
+
+(1) and (2) go through `uw.function.evaluate`, so anything they reference is
+interpolated from the base mesh. For a distance-driven fault metric this aliases
+twice: baking `M = 1/h²` into a P1 field swings ~80× across one base cell (→ *patchy*
+levels, 3.9× along-fault `h_target` variation where it should be uniform `h_near`);
+and even an analytic wedge built from `Surface.distance.sym` still interpolates the
+P1 *distance* field (residual 1.3×).
+
+A **callable** is evaluated directly at each level's centroids.
+`Surface.refinement_metric_function(h_near, h_far, width, profile)` returns one built
+on the surface's **exact** signed distance — `Surface.signed_distance(coords)` /
+`unsigned_distance(coords)` run the exact point-to-polyline (2D) / implicit-distance
+(3D) primitive at *arbitrary* query points (the same primitive that backs the P1
+`distance` field, factored out as `_signed_distance_at`). The distance therefore
+resolves itself at the new resolution as levels appear — on-fault `h_target` uniform
+to ~1e-9 (1.0×). Because it is coordinate-driven it is **partition-independent** (each
+rank evaluates its own centroids; no `global_evaluate` / swarm migration) and the
+child stays bit-confluent. `test_adapt_accepts_callable_metric_exact_surface_distance`
+(child = 206 cells at any np); weak-fault demo in
+`~/+Simulations/nvb_parallel_fault_study` (1590 cells, 4.1× graded band, np=1/2/4).
 
 ### Stage 2b as built — single-bisection multi-pass driver (WORKS)
 
