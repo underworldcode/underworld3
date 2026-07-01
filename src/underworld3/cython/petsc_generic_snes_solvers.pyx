@@ -1819,6 +1819,111 @@ class SolverBaseClass(uw_object):
 
         return
 
+    def _assemble_volume_reaction(self, time=None, verbose=False):
+        """Globally-assembled FEM VOLUME residual (no boundary terms) in the DM-local
+        layout, as a numpy array.
+
+        At an essential-BC (Dirichlet) node this residual IS the consistent boundary
+        reaction — the integrated nodal flux :math:`\\int_\\Gamma (F\\cdot\\hat n)\\phi_i`
+        (heat flux for a scalar diffusion solve, traction for Stokes). Interior nodes are
+        ~0. General across scalar / vector / Stokes solvers: the current solution is
+        gathered from ``self.fields`` when present (Stokes) else the single
+        ``Unknowns.u`` field, and the per-rank cell residual is summed across ranks
+        (``localToGlobal`` ADD) so boundary nodes shared across a partition cut carry the
+        complete flux.
+        """
+        cdef DM dm
+        cdef Vec xvec
+        cdef Vec fvec
+        cdef DM _time_dm_reaction
+
+        self._build(verbose, False, None)
+
+        if time is not None:
+            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                t_nd = float(uw.non_dimensionalise(time))
+            else:
+                t_nd = float(time)
+            _time_dm_reaction = self.dm
+            UW_DMSetTime(_time_dm_reaction.dm, <PetscReal>t_nd)
+
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+
+        gvec = self.dm.getGlobalVec()
+        xlocal = self.dm.getLocalVec()
+        flocal = self.dm.getLocalVec()
+        gvec.setArray(0.0)
+        xlocal.setArray(0.0)
+        flocal.setArray(0.0)
+
+        try:
+            # gather the current solution into the global vector (field-structure agnostic)
+            if getattr(self, "fields", None):
+                for name, var in self.fields.items():
+                    sgvec = gvec.getSubVector(self._subdict[name][0])
+                    self._subdict[name][1].localToGlobal(var.vec, sgvec)
+                    gvec.restoreSubVector(self._subdict[name][0], sgvec)
+            else:
+                _names, _iss, _subdms = self.dm.createFieldDecomposition()
+                sgvec = gvec.getSubVector(_iss[0])
+                _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                gvec.restoreSubVector(_iss[0], sgvec)
+
+            self.dm.globalToLocal(gvec, xlocal)
+
+            dm = self.dm
+            xvec = xlocal
+            fvec = flocal
+            CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
+
+            # assemble globally (sum shared-node contributions) then scatter back so
+            # every rank's boundary nodes — including ghosts — hold the complete reaction
+            # TODO(BUG): a partition that CUTS a flux boundary (e.g. np=4 on a box, bottom
+            # split across ranks) leaves a ~few-% localized error at the cut node — the
+            # localToGlobal(ADD) of the DMPlexSNESComputeResidualFEM output is not exact
+            # there (overlap / owned-cell interaction). Serial + boundary-uncut partitions
+            # (np<=2 here) are machine-exact; the SOLVE is partition-independent. Fix the
+            # parallel volume-residual assembly at cut boundary nodes.
+            gvec.setArray(0.0)
+            self.dm.localToGlobal(flocal, gvec, addv=PETSc.InsertMode.ADD_VALUES)
+            self.dm.globalToLocal(gvec, flocal)
+            return np.array(flocal.array, copy=True)
+        finally:
+            self.dm.restoreLocalVec(flocal)
+            self.dm.restoreLocalVec(xlocal)
+            self.dm.restoreGlobalVec(gvec)
+
+    def boundary_flux(self, boundary, mass="lumped", remove_mean=False, normal=None):
+        r"""Consistent boundary flux on ``boundary``, recovered from the essential-BC
+        reaction of the last solve (the Consistent Boundary Flux method).
+
+        Returns ``(xs, flux)`` with one entry per boundary node on this rank: for a
+        **scalar** solver the outward normal flux :math:`F\cdot\hat n` (e.g. surface heat
+        flux :math:`-k\,\partial T/\partial n`, whose boundary mean is the Nusselt
+        number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
+        ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
+
+        ``mass`` de-smears the nodal reaction with the ``"lumped"`` (diagonal, monotone —
+        no overshoot at a flux jump) or ``"consistent"`` boundary mass. ``remove_mean``
+        subtracts the boundary mean — leave ``False`` for a physical flux (the mean is
+        the Nusselt number); ``True`` gives a gauge-free field (e.g. dynamic topography).
+        Parallel-safe and partition-independent."""
+        from underworld3.utilities.boundary_flux import boundary_flux as _bf
+        return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
+
+    def boundary_flux_field(self, boundary, field, mass="lumped",
+                            remove_mean=False, scale=1.0, normal=None):
+        r"""Write the consistent boundary flux (see :meth:`boundary_flux`) onto a scalar
+        MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
+        ``scale``. This is the field hand-off for downstream machinery (surface heat
+        flux for coupling, or — with ``remove_mean=True`` and ``scale=-1/(\Delta\rho g)``
+        — dynamic topography). Returns ``field``."""
+        from underworld3.utilities.boundary_flux import boundary_flux_to_field as _bff
+        return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
+                    scale=scale, normal=normal)
+
 ## Specific to dimensionality
 
 
