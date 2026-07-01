@@ -924,57 +924,81 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
   PetscCall(PetscObjectReference((PetscObject)work));
   PetscCall(DMGetLabel(work, UWNVB_SLOT_LABEL, &slot)); /* NULL on the base */
 
-  /* --- 1. closure: C = want, grown by blocking neighbours (on-rank) --- */
+  /* --- 1. closure: C = want, grown by blocking neighbours across refinement
+     edges. Blockers are discovered by propagating REQUESTED refinement edges over
+     the point SF (edges are shared SF points; cells are not) — the same
+     DMLabelPropagate mechanism SBR uses, so the closure is cross-rank complete and
+     bounded (LEPP; Rivara/Stevenson). Each rank derives its own C cells locally
+     from the requested edges incident to them. --- */
   PetscCall(DMLabelCreate(PETSC_COMM_SELF, "uwnvb_C", &C));
   {
-    IS              wantIS;
-    const PetscInt *wantCells;
-    PetscInt        nWant, i, *stack, top = 0, cap;
+    IS               wantIS;
+    const PetscInt  *wantCells;
+    DMLabel          req;
+    DMPlexPointQueue queue;
+    PetscSF          pointSF;
+    PetscInt         nWant, i;
+    PetscBool        empty;
 
+    PetscCall(DMPlexGetHeightStratum(work, 0, &cStart, &cEnd));
+    PetscCall(DMGetPointSF(work, &pointSF));
+    PetscCall(DMLabelCreate(PETSC_COMM_SELF, "uwnvb_req", &req));
+    PetscCall(DMPlexPointQueueCreate(1024, &queue));
+    /* seed: each want triangle joins C and requests its refinement edge */
     PetscCall(DMLabelGetStratumIS(want, DM_ADAPT_REFINE, &wantIS));
     PetscCall(DMLabelGetStratumSize(want, DM_ADAPT_REFINE, &nWant));
-    PetscCall(DMPlexGetHeightStratum(work, 0, &cStart, &cEnd));
-    cap = cEnd - cStart; /* every C member is a triangle; ≤ #cells, never overflows */
-    PetscCall(PetscMalloc1(cap > 0 ? cap : 1, &stack));
     if (wantIS) {
       PetscCall(ISGetIndices(wantIS, &wantCells));
       for (i = 0; i < nWant; ++i) {
         DMPolytopeType ct;
-        PetscInt       v;
-        /* Ignore any non-triangle marks — the adaptation label can carry stale
+        PetscInt       refedge, refslot, rv;
+        /* Ignore non-triangle marks — the adaptation label can carry stale
            entries transferred from a previous refine onto non-cell points. */
         if (wantCells[i] < cStart || wantCells[i] >= cEnd) continue;
         PetscCall(DMPlexGetCellType(work, wantCells[i], &ct));
         if (ct != DM_POLYTOPE_TRIANGLE) continue;
-        PetscCall(DMLabelGetValue(C, wantCells[i], &v));
-        if (v != 1) {
-          PetscCall(DMLabelSetValue(C, wantCells[i], 1));
-          stack[top++] = wantCells[i];
+        PetscCall(DMLabelSetValue(C, wantCells[i], 1));
+        PetscCall(uwnvb_refedge(work, slot, wantCells[i], &refedge, &refslot));
+        PetscCall(DMLabelGetValue(req, refedge, &rv));
+        if (rv != 1) {
+          PetscCall(DMLabelSetValue(req, refedge, 1));
+          PetscCall(DMPlexPointQueueEnqueue(queue, refedge));
         }
       }
       PetscCall(ISRestoreIndices(wantIS, &wantCells));
     }
     PetscCall(ISDestroy(&wantIS));
-    while (top > 0) {
-      PetscInt        cell = stack[--top], refedge, refslot, ss, s;
-      const PetscInt *supp;
-      PetscCall(uwnvb_refedge(work, slot, cell, &refedge, &refslot));
-      PetscCall(DMPlexGetSupport(work, refedge, &supp));
-      PetscCall(DMPlexGetSupportSize(work, refedge, &ss));
-      for (s = 0; s < ss; ++s) {
-        PetscInt d = supp[s], de, ds, v;
-        if (d == cell) continue;
-        PetscCall(uwnvb_refedge(work, slot, d, &de, &ds));
-        if (de != refedge) { /* d blocks cell: d must refine its own refedge first */
-          PetscCall(DMLabelGetValue(C, d, &v));
-          if (v != 1) {
-            PetscCall(DMLabelSetValue(C, d, 1));
-            if (top < cap) stack[top++] = d;
+    PetscCall(DMLabelPropagateBegin(req, pointSF));
+    PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
+    while (!empty) {
+      while (!DMPlexPointQueueEmpty(queue)) {
+        PetscInt        e = -1, ss, s;
+        const PetscInt *supp;
+        PetscCall(DMPlexPointQueueDequeue(queue, &e));
+        PetscCall(DMPlexGetSupport(work, e, &supp));
+        PetscCall(DMPlexGetSupportSize(work, e, &ss));
+        for (s = 0; s < ss; ++s) {
+          PetscInt d = supp[s], de, ds, cv, rv;
+          PetscCall(uwnvb_refedge(work, slot, d, &de, &ds));
+          if (de != e) { /* d blocks a request on e: it must bisect its own refedge first */
+            PetscCall(DMLabelGetValue(C, d, &cv));
+            if (cv != 1) PetscCall(DMLabelSetValue(C, d, 1));
+            PetscCall(DMLabelGetValue(req, de, &rv));
+            if (rv != 1) {
+              PetscCall(DMLabelSetValue(req, de, 1));
+              PetscCall(DMPlexPointQueueEnqueue(queue, de));
+            }
           }
         }
       }
+      /* exchange newly-requested edges across ranks; the callback enqueues any
+         that arrive here so their incident cells are processed next round */
+      PetscCall(DMLabelPropagatePush(req, pointSF, UWNVBSplitPoint, queue));
+      PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
     }
-    PetscCall(PetscFree(stack));
+    PetscCall(DMLabelPropagateEnd(req, pointSF));
+    PetscCall(DMLabelDestroy(&req));
+    PetscCall(DMPlexPointQueueDestroy(&queue));
   }
 
   /* --- 2. drain: single-split compatible refedges of C until C empty --- */

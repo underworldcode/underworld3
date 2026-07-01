@@ -450,13 +450,27 @@ label from the output); and the drain loop condition must use the **global** `|C
 (`MPIU_Allreduce`) or a rank with no local marks skips the collective loop and
 deadlocks.
 
-**Remaining for full parallel confluence:** the closure is currently on-rank only,
-so a closure that would cross a partition under-refines slightly there (np=2 gives
-161 cells where serial gives 163 — still conforming, since the `SF`-reconciled
-compatibility test prevents cross-partition hanging nodes). The fix is the
-SF-reconciled cross-rank closure: propagate *requested* refinement edges across
-the point SF with `DMLabelPropagate` (exactly as SBR's `SetUp` does), so a
+The **cross-rank closure** is implemented: `C`'s refinement edges are marked in a
+`req` edge label and propagated across the point SF with `DMLabelPropagate`
+(exactly as SBR's `SetUp` does — edges are shared SF points, cells are not), so a
 `C`-cell blocked by an off-rank neighbour marks that neighbour on its owning rank.
+
+**Remaining — parallel confluence (drain sequencing):** the parallel result is
+**valid** (locally conforming; 0 hanging nodes at np=1; the SF-reconciled
+compatibility reduce prevents one-sided edge bisection, so no cross-partition
+hanging nodes) but **not bit-confluent** — global cell counts differ by a few
+cells across `np` (e.g. uniform refine: 159/352/760 at np=1 vs 157/346/743 at
+np=2). This is *not* the closure (it affects uniform refine, whose closure is
+trivial), *not* the longest-edge seed (no exact ties in the test meshes → the seed
+is geometrically deterministic), and *not* the `uwnvb_sf_land` indexing (verified:
+the point-SF `ilocal` holds point numbers, so `PetscSFReduce(val,val,MPI_LAND)`
+indexes `val[point]` correctly). The remaining suspect is the **drain sub-pass
+sequencing**: with the same refinement-edge seed and the same cell set, the batches
+of compatible edges bisected per sub-pass — and the conformity-closure bisections
+that make NVB uniform refine super-linear (26→64) — appear to resolve to a
+slightly different (still valid) mesh depending on the partition. Pinning it needs
+a per-sub-pass comparison of the compatible-edge set serial-vs-parallel to find the
+divergence. Then Stage 2c: wire `_adapt_nested(engine="nvb")` at np>1 to the driver.
 
 ### Stage 2b finding (2026-07-01): grading needs single-bisection, multi-pass
 
