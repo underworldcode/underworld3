@@ -6171,41 +6171,44 @@ class Mesh(Stateful, uw_object):
         edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
         DM_ADAPT_REFINE = 1                  # PETSc DMAdaptFlag: refine this cell
 
-        # The metric may be one of three kinds, in increasing "self-resolving"
-        # order:
-        #   1. a MeshVariable (use its .sym) — a P1 field on the base nodes;
-        #   2. any evaluatable expression (sympy / UWexpression);
-        #   3. a plain CALLABLE metric(centroids) -> M array.
-        # (1) and (2) are sampled through uw.function.evaluate, so anything they
-        # reference (e.g. a Surface.distance P1 field) is interpolated from the
-        # *base* mesh — a sharply-peaked M = 1/h² aliases across a base cell and
-        # gives *patchy* refinement levels along a thin feature. A callable is
-        # evaluated directly at each refined level's centroids, so a metric built
-        # from EXACT geometry (Surface.refinement_metric_function) resolves itself
-        # at the new resolution — a clean, uniform-width band. A callable driven
-        # purely by coordinates is also partition-independent, so it needs no
-        # swarm-migration global_evaluate in parallel (each rank evaluates its
-        # own centroids).
+        # The metric is normalised to a single callable `eval_metric(centroids)
+        # -> M`, re-evaluated at each refined level's centroids. There is only one
+        # code path; the metric *kind* just decides which callable we build:
+        #
+        #   * a plain CALLABLE metric(centroids) -> M is used as-is;
+        #   * a MeshVariable (.sym) or sympy/UWexpression is wrapped in an
+        #     `uw.function.(global_)evaluate` adapter — i.e. fn.evaluate IS a
+        #     callable in this framework, just the default one for a field/expr.
+        #
+        # The distinction is about *where the metric resolves*. The evaluate
+        # adapter samples the base-mesh interpolant, so anything the field/expr
+        # references (e.g. a Surface.distance P1 field, or a peaked M = 1/h²)
+        # aliases across a base cell → *patchy* levels along a thin feature. A
+        # callable built from EXACT geometry (Surface.refinement_metric_function)
+        # instead resolves itself at the refined resolution — a clean band — and,
+        # being coordinate-driven, is partition-independent (no swarm-migration
+        # global_evaluate). A user callable is free to call global_evaluate itself
+        # when the metric genuinely depends on a base field (e.g. |∇T| for
+        # convection); use global_evaluate, not evaluate, at np>1.
         import sympy as _sympy
         metric_is_callable = (
             callable(metric_field)
             and not hasattr(metric_field, "sym")
             and not isinstance(metric_field, _sympy.Basic)
         )
-        metric_sym = getattr(metric_field, "sym", metric_field)
 
-        def _eval_metric(centroids):
-            if metric_is_callable:
-                return numpy.asarray(
-                    metric_field(centroids), dtype=float
-                ).reshape(-1)
-            if uw.mpi.size > 1:
-                return numpy.asarray(
-                    uw.function.global_evaluate(metric_sym, centroids)
-                ).reshape(-1)
-            return numpy.asarray(
-                uw.function.evaluate(metric_sym, centroids)
-            ).reshape(-1)
+        if metric_is_callable:
+            def eval_metric(centroids):
+                return numpy.asarray(metric_field(centroids), dtype=float).reshape(-1)
+        else:
+            # Wrap the field/expression as a callable over the (global_)evaluate
+            # sampler — the same framework, with fn.evaluate as the adapter.
+            metric_sym = getattr(metric_field, "sym", metric_field)
+            _sampler = (uw.function.global_evaluate if uw.mpi.size > 1
+                        else uw.function.evaluate)
+
+            def eval_metric(centroids):
+                return numpy.asarray(_sampler(metric_sym, centroids)).reshape(-1)
 
         markers_per_level = []
         level_dms = []                       # one DM per refinement level
@@ -6230,7 +6233,7 @@ class Mesh(Stateful, uw_object):
                         vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
                         centroids[i] = numpy.asarray(cen)[: self.cdim]
                         cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
-                    M = numpy.clip(_eval_metric(centroids), 1e-30, None)
+                    M = numpy.clip(eval_metric(centroids), 1e-30, None)
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
@@ -6277,7 +6280,7 @@ class Mesh(Stateful, uw_object):
             n_gen = 2 * max_levels
             for level in range(n_gen):
                 centroids, cur_h, cids = nvb.centroids_h()
-                M = numpy.clip(_eval_metric(centroids), 1e-30, None)
+                M = numpy.clip(eval_metric(centroids), 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)
                 sel = numpy.where(cur_h > h_target)[0]
                 if sel.size == 0:
@@ -6313,7 +6316,7 @@ class Mesh(Stateful, uw_object):
                 # Metric M = 1/h_target² at the cell centroids (parent field).
                 # A callable is evaluated directly on the centroids; a field/expr
                 # goes through global_evaluate (parallel) or evaluate (serial).
-                M = numpy.clip(_eval_metric(centroids), 1e-30, None)
+                M = numpy.clip(eval_metric(centroids), 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)
 
                 refine = numpy.where(cur_h > h_target)[0]
