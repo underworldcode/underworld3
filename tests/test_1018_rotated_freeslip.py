@@ -9,8 +9,16 @@ import pytest
 import sympy
 import underworld3 as uw
 from underworld3.function import analytic as A
+from underworld3.utilities import custom_mg
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+
+
+def _wrap(dm, m0):
+    return uw.discretisation.Mesh(
+        dm.clone(), simplex=True,
+        coordinate_system_type=m0.CoordinateSystem.coordinate_type,
+        qdegree=3, boundaries=m0.boundaries)
 
 
 def _solcx_essential(mesh, sol):
@@ -93,3 +101,39 @@ def test_rotated_freeslip_annulus_zero_leakage():
     t = np.column_stack([-vc[:, 1], vc[:, 0]])
     rotfrac = abs(np.sum(v.data * t) / np.sum(t * t)) * np.sqrt(np.sum(t * t)) / (np.linalg.norm(v.data) + 1e-30)
     assert rotfrac < 1e-8, f"rotation gauge {rotfrac:.2e} not removed"
+
+
+def test_rotated_freeslip_geometric_fmg_velocity_block():
+    """The rotated free-slip velocity block is driven by GEOMETRIC FMG on a custom
+    prolongation (set_custom_fmg) — no direct solve — and still reproduces the
+    essential free-slip solution, with the wall-normal velocity exact."""
+    m0 = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.2, regular=True, qdegree=3)
+    dm0 = m0.dm
+    dm1 = dm0.refine()
+    dm2 = dm1.refine()
+    coarse = [_wrap(dm0, m0), _wrap(dm1, m0)]
+    fine = _wrap(dm2, m0)
+    sol = A.SolCx(fine, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+
+    vE = _solcx_essential(fine, sol)
+
+    v = uw.discretisation.MeshVariable("vF", fine, fine.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pF", fine, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(fine, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.saddle_preconditioner = 1.0 / sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
+    s.solve()
+
+    # geometric MG on the velocity block converged, and matches essential
+    assert s._rotated_freeslip_info["ksp_reason"] > 0
+    rel = np.linalg.norm(v.data - vE.data) / np.linalg.norm(vE.data)
+    assert rel < 5e-3, f"FMG rotated free-slip differs from essential by {rel:.2e}"

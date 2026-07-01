@@ -197,15 +197,27 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         if gsec.getFieldDof(q, PRE) > 0 and gsec.getFieldOffset(q, PRE) >= 0:
             pin = gsec.getFieldOffset(q, PRE); break
 
-    # constrain rotated normal rows (v_n=0) + pin
+    # constrain rotated normal rows (v_n=0): zero the matrix rows/cols (identity
+    # diagonal) AND the RHS at those rows — zeroRowsColumns does NOT touch the RHS,
+    # so a nonzero b there would leak straight into the solution (û_i = b_i / 1),
+    # independent of the solver/tolerance.
     Ahat.zeroRowsColumns(normal_rows, diag=1.0)
-    Ahat.zeroRows([pin], diag=1.0)
-    ba = bhat.getArray(); ba[normal_rows] = 0.0; ba[pin] = 0.0; bhat.setArray(ba)
+    ba = bhat.getArray(); ba[normal_rows] = 0.0; bhat.setArray(ba)
 
-    # direct LU (FMG wiring later)
-    ksp = PETSc.KSP().create(); ksp.setOperators(Ahat); ksp.setType("preonly")
-    pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
-    Uhat = dm.getGlobalVec(); ksp.solve(bhat, Uhat)
+    # ITERATIVE by default (LU is almost never right): a self-contained fieldsplit-
+    # Schur solve whose velocity block is geometric FMG on the custom prolongation
+    # when a hierarchy is registered (set_custom_fmg), else GAMG. Direct LU only when
+    # explicitly opted in via solver._rotated_use_lu.
+    if getattr(solver, "_rotated_use_lu", False):
+        Ahat.zeroRows([pin], diag=1.0)
+        ba = bhat.getArray(); ba[pin] = 0.0; bhat.setArray(ba)
+        ksp = PETSc.KSP().create(); ksp.setOperators(Ahat); ksp.setType("preonly")
+        pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
+        Uhat = dm.getGlobalVec(); ksp.solve(bhat, Uhat)
+        ksp_reason = ksp.getConvergedReason()
+    else:
+        Uhat, ksp_reason = _solve_rotated_iterative(
+            solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose)
 
     # rotate back u = Qᵀ û → fields
     U = dm.getGlobalVec(); Qt.mult(Uhat, U)
@@ -226,7 +238,133 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
 
     return {"Q": Q, "Qt": Qt, "A": Aorig, "b": b, "U": U, "Uhat": Uhat,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
-            "rotation_gauge_removed": removed, "ksp_reason": ksp.getConvergedReason()}
+            "rotation_gauge_removed": removed, "ksp_reason": ksp_reason}
+
+
+def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False):
+    """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
+    rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
+    (PR#290, rotated) when a hierarchy is registered (``set_custom_fmg``), else GAMG.
+
+    A plain rotated Mat has no DM field info, so UW3's DM-coupled fieldsplit cannot
+    split it — we build the split from EXPLICIT velocity/pressure index sets. For the
+    custom-FMG case the velocity sub-PC gets our prolongation via ``setMGInterpolation``
+    (needs no DM); the rotated block A_vv = Q_v A_vv Q_vᵀ is formed from Âhat
+    automatically and only the FINE prolongation is rotated (Galerkin coarse ops
+    auto-correct). NO direct solve of the fine system."""
+    from underworld3.utilities import custom_mg
+    dm = solver.dm
+    vel_is = solver._subdict["velocity"][0]
+    pres_is = solver._subdict["pressure"][0]
+
+    custom_Pl = None
+    if getattr(solver, "_custom_mg", None) is not None:
+        vis = np.asarray(vel_is.getIndices())
+        g2blk = {int(g): k for k, g in enumerate(vis)}
+        Qv = Q.createSubMatrix(vel_is, vel_is)
+        nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
+        Ps = solver._custom_mg["hierarchy"].build(solver)
+        Pfine = Qv.matMult(Ps[-1]); Pfine.zeroRows(nrows_blk, diag=0.0)
+        custom_Pl = list(Ps[:-1]) + [Pfine]
+
+    # rotated coupled null space (pressure-const ⊕ Q·rotation) on the operator
+    nsp = _rotated_nullspace(solver, Q, normal_rows)
+    if nsp is not None:
+        Ahat.setNullSpace(nsp); Ahat.setTransposeNullSpace(nsp); nsp.remove(bhat)
+
+    pfx = "rotfs_"
+    opts = PETSc.Options()
+    cfg = {
+        "ksp_type": "fgmres", "ksp_rtol": str(float(solver.tolerance)), "ksp_max_it": "300",
+        "pc_type": "fieldsplit", "pc_fieldsplit_type": "schur",
+        "pc_fieldsplit_schur_fact_type": "full", "pc_fieldsplit_schur_precondition": "selfp",
+        "fieldsplit_vel_ksp_type": "preonly",
+        "fieldsplit_pres_ksp_type": "fgmres", "fieldsplit_pres_ksp_rtol": "1e-6",
+        "fieldsplit_pres_ksp_max_it": "200", "fieldsplit_pres_pc_type": "jacobi",
+    }
+    if custom_Pl is None:                             # GAMG velocity block
+        cfg["fieldsplit_vel_pc_type"] = "gamg"
+    for k, v in cfg.items():
+        opts[pfx + k] = v
+    ksp = PETSc.KSP().create(comm=dm.comm); ksp.setOptionsPrefix(pfx)
+    ksp.setOperators(Ahat)
+    pc = ksp.getPC(); pc.setType("fieldsplit")
+    pc.setFieldSplitIS(("vel", vel_is), ("pres", pres_is))
+    ksp.setFromOptions()
+    pc.setUp()
+    if custom_Pl is not None:                         # geometric FMG via custom P
+        vel_pc = pc.getFieldSplitSubKSP()[0].getPC()
+        A_vv, P_vv = vel_pc.getOperators()
+        vel_pc.reset(); vel_pc.setOperators(A_vv, P_vv)
+        custom_mg._configure_pcmg(vel_pc, custom_Pl)
+        vel_pc.setUp()
+
+    Uhat = Ahat.createVecRight(); Uhat.set(0.0)
+    ksp.solve(bhat, Uhat)
+    # An identity constraint row in an ITERATIVE solve only drives its residual
+    # (= û_i) below tolerance, so û_i ~ tol, not exactly 0. Because zeroRowsColumns
+    # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
+    # equation → setting them to exactly 0 here makes the strong v_n=0 BC exact
+    # independent of the iterative tolerance, without perturbing the rest.
+    ua = Uhat.getArray(); ua[np.asarray(normal_rows, dtype=np.int64)] = 0.0
+    Uhat.setArray(ua)
+    if verbose:
+        from underworld3 import mpi
+        kind = "custom-FMG" if custom_Pl is not None else "GAMG"
+        mpi.pprint(f"[rotated_bc] velocity block = {kind}; outer KSP "
+                   f"{ksp.getConvergedReason()} in {ksp.getIterationNumber()} its")
+    return Uhat, ksp.getConvergedReason()
+
+
+def _rotated_nullspace(solver, Q, normal_rows):
+    """Coupled Stokes null space in the rotated frame: constant pressure, plus the
+    rigid rotation Q·(-y,x) when it is a genuine null space of the constraints.
+    Returns a PETSc.NullSpace on the composite vector, or None.
+
+    Each vector is ZEROED at the constrained normal rows so it is exactly compatible
+    with the strong v_n=0 constraint. Without this, a rotation-mode vector that is
+    only ~O(h²)-small at the constrained rows (curved boundary: the normal in Q is
+    sampled at the chord midpoint, the rotation at the true P2 node) would, when
+    PETSc projects the solution onto the null space, inject a spurious wall-normal
+    component — a strong BC must be exact, independent of the iterative solve.
+    """
+    dm = solver.dm
+    vecs = []
+    nrows = np.asarray(normal_rows, dtype=np.int32)
+    # constant pressure (Q = identity on pressure → unchanged)
+    if getattr(solver, "_petsc_use_pressure_nullspace", False):
+        pv = dm.getGlobalVec(); pv.set(0.0)
+        pis = solver._subdict["pressure"][0]
+        sp = pv.getSubVector(pis); sp.set(1.0); pv.restoreSubVector(pis, sp)
+        pv.normalize(); vecs.append(pv)
+    # rigid rotation (rotated), only if it satisfies the constraints
+    if solver.mesh.dim == 2 and _rotation_is_nullspace(solver, Q, normal_rows):
+        v = solver.Unknowns.u
+        c = v.coords
+        saved = v.data.copy()
+        v.data[...] = np.column_stack([-c[:, 1], c[:, 0]])
+        tg = dm.getGlobalVec(); tg.set(0.0)
+        vis = solver._subdict["velocity"][0]
+        sg = tg.getSubVector(vis); solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
+        tg.restoreSubVector(vis, sg)
+        v.data[...] = saved
+        tr = tg.duplicate(); Q.mult(tg, tr)
+        vecs.append(tr)
+    if not vecs:
+        return None
+    # Make every null-space vector EXACTLY compatible with the strong v_n=0
+    # constraint (zero at the constrained rows), then orthonormalise. This is what
+    # keeps the wall-normal velocity exact under an iterative solve.
+    for w in vecs:
+        wa = w.getArray(); wa[nrows] = 0.0; w.setArray(wa)
+    ortho = []
+    for w in vecs:
+        for u in ortho:
+            w.axpy(-w.dot(u), u)
+        nrm = w.norm()
+        if nrm > 1e-14:
+            w.scale(1.0 / nrm); ortho.append(w)
+    return PETSc.NullSpace().create(constant=False, vectors=ortho, comm=dm.comm)
 
 
 def _rotation_is_nullspace(solver, Q, normal_rows, tol=1e-8):
