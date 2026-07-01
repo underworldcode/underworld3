@@ -6164,6 +6164,14 @@ class Mesh(Stateful, uw_object):
         edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
         DM_ADAPT_REFINE = 1                  # PETSc DMAdaptFlag: refine this cell
 
+        # The metric may be a MeshVariable (use its .sym) OR any evaluatable
+        # expression (sympy / UWexpression). Passing the analytic metric avoids
+        # baking a sharply-peaked M = 1/h² into a P1 field on the coarse base —
+        # that P1 interpolation aliases badly (a width-w feature ≈ one base cell),
+        # giving *patchy* refinement levels along a thin feature even though the
+        # metric is smooth. An analytic metric is sampled exactly at each centroid.
+        metric_sym = getattr(metric_field, "sym", metric_field)
+
         markers_per_level = []
         level_dms = []                       # one DM per refinement level
 
@@ -6189,11 +6197,11 @@ class Mesh(Stateful, uw_object):
                         cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
                     if uw.mpi.size > 1:
                         M = numpy.asarray(
-                            uw.function.global_evaluate(metric_field.sym, centroids)
+                            uw.function.global_evaluate(metric_sym, centroids)
                         ).reshape(-1)
                     else:
                         M = numpy.asarray(
-                            uw.function.evaluate(metric_field.sym, centroids)
+                            uw.function.evaluate(metric_sym, centroids)
                         ).reshape(-1)
                     M = numpy.clip(M, 1e-30, None)
                     h_target = 1.0 / numpy.sqrt(M)
@@ -6244,7 +6252,7 @@ class Mesh(Stateful, uw_object):
                 centroids, cur_h, cids = nvb.centroids_h()
                 M = numpy.clip(
                     numpy.asarray(
-                        uw.function.evaluate(metric_field.sym, centroids)
+                        uw.function.evaluate(metric_sym, centroids)
                     ).reshape(-1), 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)
                 sel = numpy.where(cur_h > h_target)[0]
@@ -6283,11 +6291,11 @@ class Mesh(Stateful, uw_object):
                 # serial: the cheaper local evaluate.
                 if uw.mpi.size > 1:
                     M = numpy.asarray(
-                        uw.function.global_evaluate(metric_field.sym, centroids)
+                        uw.function.global_evaluate(metric_sym, centroids)
                     ).reshape(-1)
                 else:
                     M = numpy.asarray(
-                        uw.function.evaluate(metric_field.sym, centroids)
+                        uw.function.evaluate(metric_sym, centroids)
                     ).reshape(-1)
                 M = numpy.clip(M, 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)

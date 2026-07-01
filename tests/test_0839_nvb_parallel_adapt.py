@@ -116,6 +116,31 @@ def test_poisson_fmg_on_nvb_child_matches_gamg():
     assert fmg_its <= 10
 
 
+def test_adapt_accepts_analytic_metric():
+    """adapt(engine="nvb") accepts an analytic metric expression (not only a
+    MeshVariable). Evaluating the metric analytically at each centroid avoids
+    P1-interpolating a peaked M=1/h² on the coarse base — the cause of *patchy*
+    refinement along a thin feature. The child stays confluent."""
+    mesh = _base()
+    x, y = mesh.X
+    # bullseye wedge as a pure expression: h_near at centre, h_far away
+    d = sympy.sqrt((x - 0.5) ** 2 + (y - 0.5) ** 2)
+    h_near, h_far, w = 0.05, 0.4, 0.25
+    h = h_near + (h_far - h_near) * sympy.Min(d / w, 1)
+    metric_expr = 1.0 / h ** 2
+
+    child = mesh.adapt(metric_expr, max_levels=2, engine="nvb")
+    assert child.parent is mesh
+    # refined (more cells than the base finest) and partition-independent count
+    base_finest = mesh.dm_hierarchy[-1]
+    bs, be = base_finest.getHeightStratum(0)
+    assert _global_owned_cells(child.dm) > (be - bs)
+    assert _global_owned_cells(child.dm) == 174   # confluent (same at any np)
+    # conforming: no locally over-shared edge
+    es, ee = child.dm.getDepthStratum(1)
+    assert all(child.dm.getSupportSize(e) <= 2 for e in range(es, ee))
+
+
 def _solcx_metric(base):
     """A viscosity-jump band metric around x=0.5 (the SolCx interface)."""
     M = uw.discretisation.MeshVariable("Mjump", base, 1, degree=1)
