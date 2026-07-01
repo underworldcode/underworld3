@@ -38,6 +38,14 @@ from underworld3.utilities.nvb import NVBMesh  # noqa: E402
 DM_ADAPT_REFINE = 1
 CENTER = np.array([0.5, 0.5])
 
+# The NVBMesh cross-checks below use the serial reference engine and compare
+# per-rank local cells; they are meaningful only serially. Parallel behaviour is
+# pinned by test_parallel_confluence (partition-independent global counts).
+serial_only = pytest.mark.skipif(
+    PETSc.COMM_WORLD.getSize() > 1,
+    reason="serial NVBMesh reference; parallel confluence covered by test_parallel_confluence",
+)
+
 
 def _base(cellSize=0.2):
     return uw.meshing.UnstructuredSimplexBox(
@@ -111,6 +119,7 @@ def _refmap_nvbmesh(m):
     return ref
 
 
+@serial_only
 def test_refedges_match_nvbmesh_under_uniform_refine():
     """The native driver reproduces NVBMesh's refinement-edge structure exactly
     over repeated uniform refinement (the invariant that makes closure bounded)."""
@@ -133,6 +142,7 @@ def test_refedges_match_nvbmesh_under_uniform_refine():
         assert all(cen in rn and rn[cen] == rd[cen] for cen in rd)
 
 
+@serial_only
 def test_deep_mark_is_bounded_not_a_drain():
     """A single cell marked deep in a 2x-refined patch adds O(1) cells (NVB), not
     the whole patch (the SBR longest-edge drain)."""
@@ -148,6 +158,7 @@ def test_deep_mark_is_bounded_not_a_drain():
     assert _conforming(dm2) == (0, 0)
 
 
+@serial_only
 def test_bullseye_grades_and_is_conforming():
     """A shrinking bullseye keeps many refinement levels (grades) and stays
     conforming — far fewer cells than an SBR uniform patch would give."""
@@ -162,6 +173,7 @@ def test_bullseye_grades_and_is_conforming():
     assert len(levels) >= 4, f"expected a graded spread of levels, got {levels}"
 
 
+@serial_only
 def test_deterministic():
     a = _refine(_base(0.12), lambda x: np.linalg.norm(x - CENTER) < 0.2)
     b = _refine(_base(0.12), lambda x: np.linalg.norm(x - CENTER) < 0.2)
