@@ -4973,6 +4973,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
         return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
 
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="lumped"):
+        r"""Write the dynamic topography
+        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
+        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
+        constraint reaction of the last solve. This is the hand-off to the free-surface
+        machinery — the 3-number topography integrator drives node motion from a surface
+        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
+        pass it here after each :meth:`solve`; its boundary nodes are filled and the
+        interior left untouched.
+
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length). ``mass`` selects
+        the recovery de-smear (``"lumped"`` default is monotone — no overshoot at a
+        stress jump — and is the safe choice for a free surface). Requires a prior
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "dynamic_topography requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
+        return _dtf(self, boundary, self._rotated_freeslip_info, field,
+                    buoyancy_scale=buoyancy_scale, mass=mass)
+
     def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 

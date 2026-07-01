@@ -51,6 +51,8 @@ GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
 # box sigma_nn (boundary_normal_traction on Top, default lumped mass) vs analytic SolCx
 # sigma_yy, whole boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
 GOLDEN_BOX_SIGMA = (3.985444e-02, 0.999208)
+# dynamic_topography field: BdIntegral L2 of h over Top. Recompute `python <thisfile> topo`.
+GOLDEN_TOPO_BDL2 = 2.560593173e-01
 
 
 def _wrap(dm, m0):
@@ -205,6 +207,32 @@ def _box_sigma_diagnostics():
     return comm.bcast(result, root=0)
 
 
+def _box_topography_bdl2():
+    """dynamic_topography onto a P1 surface field; return the (collective) BdIntegral L2
+    of h over Top — a partition-independent scalar functional of the topography field."""
+    res = 48
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+    v = uw.discretisation.MeshVariable("vTf", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pTf", mesh, 1, degree=1, continuous=False)
+    hf = uw.discretisation.MeshVariable("hTf", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.penalty = 0.0
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.solve()
+    s.dynamic_topography("Top", hf, buoyancy_scale=1.0)
+    return float(np.sqrt(uw.maths.BdIntegral(
+        mesh=mesh, fn=hf.sym[0] ** 2, boundary="Top").evaluate()))
+
+
 def test_rotated_freeslip_box_partition_independent():
     """Box: the parallel rotated free-slip solve reproduces the serial velocity L2 and
     keeps the analytic velocity error small."""
@@ -265,12 +293,27 @@ def test_rotated_freeslip_box_sigma_nn_partition_independent():
     assert relL2 < 0.08, f"sigma_nn relL2 vs analytic {relL2:.3f} too large"
 
 
+def test_rotated_freeslip_dynamic_topography_partition_independent():
+    """The dynamic_topography surface field is partition-independent: the collective
+    BdIntegral L2 of h over Top matches the serial reference at np=2/4. Guards the
+    field write (a per-node write would deadlock when a rank owns none of the boundary)
+    and the parallel reaction recovery underneath."""
+    bdl2 = _box_topography_bdl2()
+    assert np.isclose(bdl2, GOLDEN_TOPO_BDL2, rtol=1e-6, atol=0), (
+        f"topography BdIntegral L2 differs serial vs np={uw.mpi.size}: "
+        f"{GOLDEN_TOPO_BDL2} vs {bdl2}")
+
+
 if __name__ == "__main__":
     # Recompute the serial GOLDEN references:
-    #   `python <thisfile> {box,annulus,annulus_fmg,sigma}`.
+    #   `python <thisfile> {box,annulus,annulus_fmg,sigma,topo}`.
     import sys
     _kind = sys.argv[1] if len(sys.argv) > 1 else "box"
-    if _kind == "sigma":
+    if _kind == "topo":
+        _b = _box_topography_bdl2()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_TOPO bdl2={_b:.9e}")
+    elif _kind == "sigma":
         _r = _box_sigma_diagnostics()
         if uw.mpi.rank == 0:
             print(f"DIAG_SIGMA relL2={_r[0]:.6e} corr={_r[1]:.6f} nodes={_r[2]}")

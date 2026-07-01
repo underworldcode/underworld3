@@ -509,6 +509,48 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     return xs, sig
 
 
+def dynamic_topography_field(solver, boundary, info, field, buoyancy_scale=1.0, mass="lumped"):
+    """Populate a scalar MeshVariable ``field`` with the dynamic topography
+    :math:`h = -(\\sigma_{nn}-\\overline{\\sigma_{nn}})/(\\Delta\\rho\\,g)` on ``boundary``,
+    recovered from the rotated-free-slip constraint reaction (lumped by default —
+    monotone, no Gibbs overshoot at a stress jump). Interior nodes are left untouched.
+    Returns ``field``.
+
+    This is the hand-off to the free-surface machinery: the 3-number topography
+    integrator drives node motion from a surface field, so σ_nn is written onto the
+    boundary nodes of a P1 (or higher) scalar field it can read / BdIntegral. Parallel-
+    safe: the recovery is partition-independent and the write is local (each rank fills
+    its own boundary nodes, matched by coordinate to the recovery output).
+    """
+    dim = solver.mesh.dim
+    xs, sig = boundary_normal_traction(solver, boundary, info, mass=mass)
+
+    def key(c):
+        return tuple(round(float(t), 9) for t in np.asarray(c).ravel()[:dim])
+
+    # σ_nn is already mean-removed (the ρg·h gauge); topography h = -σ_nn / (Δρ g)
+    hmap = {key(x): -float(s) / buoyancy_scale for x, s in zip(np.asarray(xs), np.asarray(sig))}
+    fc = np.asarray(field.coords)
+    # Build the new nodal values in a LOCAL numpy copy, then assign the field ONCE.
+    # A per-element write to var.data fires the variable's write-callback each time; the
+    # number of boundary nodes differs per rank (a rank may own none of the boundary),
+    # so per-element writes would desync any collective in the callback and deadlock.
+    newdata = np.asarray(field.data).copy()
+    for i in range(fc.shape[0]):
+        h = hmap.get(key(fc[i]))
+        if h is not None:
+            newdata[i, 0] = h
+    field.data[...] = newdata
+    # refresh the field's gvec cache so symbolic/BdIntegral reads see the update
+    base = getattr(field, "_base_var", field)
+    if hasattr(base, "_sync_lvec_to_gvec"):
+        base._sync_lvec_to_gvec()
+    if hasattr(base, "_canonical_data"):
+        base._canonical_data = None
+    solver.mesh._stale_lvec = True
+    return field
+
+
 def _recover_sigma_nn_2d(solver, boundary, pts, Rn, xs, mass="lumped"):
     """De-smear the nodal reaction loads R into a pointwise σ_nn on `boundary` (2D) with
     either the LUMPED (diagonal, monotone) or the CONSISTENT P2 line mass.

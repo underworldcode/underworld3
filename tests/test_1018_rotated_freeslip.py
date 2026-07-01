@@ -209,3 +209,44 @@ def test_rotated_freeslip_sigma_nn_lumped_no_overshoot():
     # lumped adds essentially no spurious variation over the analytic; consistent does
     assert tv_l < 1.05 * tv_ref, f"lumped TV {tv_l:.3f} exceeds analytic {tv_ref:.3f}"
     assert tv_l < tv_c, f"lumped TV {tv_l:.3f} not smoother than consistent {tv_c:.3f}"
+
+
+def test_rotated_freeslip_dynamic_topography_field():
+    """dynamic_topography writes h = -(sigma_nn - mean)/(rho g) onto a scalar surface
+    MeshVariable (the free-surface hand-off): the field at the top vertices reproduces
+    the analytic SolCx topography, and the field is usable symbolically (BdIntegral)."""
+    res = 48
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+    v = uw.discretisation.MeshVariable("vD", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pD", mesh, 1, degree=1, continuous=False)
+    hf = uw.discretisation.MeshVariable("hD", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.penalty = 0.0
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.solve()
+
+    ret = s.dynamic_topography("Top", hf, buoyancy_scale=1.0)
+    assert ret is hf
+    # field at the top vertices reproduces the analytic topography (mean-removed)
+    hc = hf.coords
+    top = np.abs(hc[:, 1] - 1.0) < 1e-6
+    tt = np.asarray(sol.topography_top(hc[top])); tt = tt - tt.mean()
+    hv = hf.data[top, 0]
+    corr = np.dot(hv, tt) / (np.linalg.norm(hv) * np.linalg.norm(tt))
+    hv = hv if corr >= 0 else -hv
+    relL2 = np.linalg.norm(hv - tt) / np.linalg.norm(tt)
+    assert abs(corr) > 0.99, f"topography field corr {corr:.3f} too low"
+    assert relL2 < 0.09, f"topography field relL2 {relL2:.3f} too large"
+    # symbolically usable (the free-surface integrator reads it via BdIntegral)
+    bdl2 = float(np.sqrt(uw.maths.BdIntegral(
+        mesh=mesh, fn=hf.sym[0] ** 2, boundary="Top").evaluate()))
+    assert bdl2 > 0.0
