@@ -120,8 +120,15 @@ class SolverBaseClass(uw_object):
 
         Notes
         -----
-        Single-field (scalar/vector) solvers only for now; the Stokes
-        velocity-block path is a separate increment. See
+        Supported both on single-field (scalar / vector) solvers — where the
+        prolongation is installed directly on the solver's ``PCMG`` — and on the
+        **Stokes velocity block** (the ``fieldsplit_velocity_`` sub-PC), where the
+        velocity sub-PC is only reachable once the monolithic Jacobian has been
+        assembled; the install there assembles the Jacobian, descends the
+        fieldsplit to the velocity sub-PC, and rebuilds it as a fresh ``PCMG``
+        driven by our ``P``. Injection happens at solve time (after
+        ``setFromOptions`` / nullspace attach) via
+        :func:`underworld3.utilities.custom_mg.inject_custom_mg`. See
         :mod:`underworld3.utilities.custom_mg`.
         """
         if kind not in ("barycentric", "rbf"):
@@ -4721,6 +4728,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
+        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
+        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n=0 +
+        # reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_info = None
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -4905,6 +4918,54 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     from collections import namedtuple
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
+
+    def add_rotated_freeslip_bc(self, boundary, normal=None):
+        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
+        the boundary velocity DOFs into a per-node (normal, tangential) frame and
+        imposing the rotated normal component as an exact Dirichlet constraint.
+
+        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
+        this enforces zero wall-normal flow to machine precision, and the constraint
+        **reaction** is the consistent boundary normal traction
+        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
+        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
+        boundaries because the normal is taken per node.
+
+        Parameters
+        ----------
+        boundary : str
+            Boundary label to constrain.
+        normal : None or sympy 1×dim Matrix or array, optional
+            Per-node outward normal source. ``None`` uses the geometric facet
+            normal (PETSc ``computeCellGeometryFVM``; works in 2D and 3D). A
+            sympy ``1×dim`` matrix supplies an analytic normal (exact
+            ``X/|X|`` on a spherical cap, a constant on a planar face) — preferred
+            on curved boundaries. A constant array is also accepted.
+
+        Notes
+        -----
+        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
+        edge) is constrained on the whole span of its accumulated normals: a 3D
+        face frees two tangential directions, a 3D edge frees one (the edge
+        tangent), a corner is fully pinned. Registering delegates the solve to
+        :mod:`underworld3.utilities.rotated_bc`.
+        """
+        self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def boundary_normal_traction(self, boundary):
+        r"""Return the consistent boundary normal traction :math:`\sigma_{nn}` on a
+        rotated-free-slip ``boundary`` as the constraint reaction from the last
+        solve — the smooth, bounded quantity used for dynamic topography
+        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
+        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
+        :meth:`solve`."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
+        return _bnt(self, boundary, self._rotated_freeslip_info)
 
     def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
@@ -7498,6 +7559,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._needs_function_rewire = True
 
         self._build(verbose, debug, debug_name)
+
+        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
+        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
+        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
+        if self._rotated_freeslip_bcs:
+            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+            self._rotated_freeslip_info = solve_rotated_freeslip(
+                self, self._rotated_freeslip_bcs, verbose=verbose)
+            return
 
         # Set time on the DM so petsc_t is available in pointwise functions.
         # Non-dimensionalise if the scaling system is active.
