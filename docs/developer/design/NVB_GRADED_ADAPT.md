@@ -405,21 +405,54 @@ tiers 2/3 couple us to PETSc's internal struct/cone ABI for the pinned build
 - `DMPolytopeTypeGetArrangement`: inline in `include/petscdm.h:609` (include, don't copy).
 
 **Plan of record (validation-gated):**
-1. *Infra gate* — scaffold `_nvb_transform` that registers `nvb` and reproduces SBR
-   serially (copy SBR's `SetUp`/`CellTransform` + reimplement the 5 helpers), built
-   into UW with no PETSc rebuild; confirm `setType("nvb")` + `apply` works and
-   preserves the SF in parallel (np=2). Proves the whole build/registration/private-
-   header/parallel-SF stack.
-2. *NVB rule* — replace the longest-edge pick in `SetUp` with the age-based
-   newest-vertex refinement edge (seed cells split their ref edge, closure
-   propagates ref edges); maintain the vertex-age label. Validate against the serial
-   `NVBMesh` (confluence: identical mesh) serially and at np>1.
-3. *Integration* — `_adapt_nested(engine="nvb")` at np>1 dispatches to the transform
-   (via `adaptLabel` with `dm_plex_transform_type=nvb`, the same in-place path SBR
-   uses) instead of raising; the child stays co-partitioned (in-place transform), so
-   the existing parallel custom-P tail consumes it unchanged.
-4. *Acceptance* — np>1 graded child: Poisson + SolCx FMG match GAMG; co-partitioning
-   invariant holds; result matches the serial NVB mesh.
+1. *Infra gate* — **DONE (2026-06-30).** scaffold `_nvb_transform` that registers
+   `uwnvb`; identity transform; proved build/registration/private-header/parallel-SF
+   stack (np=2, valid point-SF).
+2. *SBR-equivalent base (Stage 2a)* — **DONE (2026-07-01).** self-contained clone of
+   SBR (SBR's `SetUp`/`CellTransform`/`GetSubcellOrientation`/`SBRGetTriangleSplit{,}`
+   + the 4 reimplemented helpers) reproduces `refine_sbr` **byte-for-byte** — identical
+   triangulation for every marking pattern incl. full uniform refine. `tests/
+   test_0837_nvb_native_transform.py` (tier_b). Longest-edge edge pick; the newest-
+   vertex choice layers on top.
+3. *Newest-vertex grading (Stage 2b)* — **IN PROGRESS; redesign required.** See
+   "Stage 2b finding" below.
+4. *Integration + acceptance* — `_adapt_nested(engine="nvb")` at np>1 via
+   `adaptLabel(dm_plex_transform_type=uwnvb)` (in-place, co-partitioned); Poisson +
+   SolCx FMG match GAMG; result matches the serial NVB mesh (properties).
+
+### Stage 2b finding (2026-07-01): grading needs single-bisection, multi-pass
+
+Two attempts to add the newest-vertex edge choice on top of the Stage-2a base both
+**failed to grade** (a mark deep in a refined patch drained the whole patch, exactly
+like SBR):
+
+- **Age-derived edge (opposite highest-age vertex).** `age = max(endpoint ages)+1`
+  produces **ties** — every vertex born in the same pass shares an age — so after any
+  uniform refinement "the newest vertex" is ambiguous and the longest-edge tie-break
+  silently reverts to longest-edge bisection. Pure vertex-age cannot reconstruct the
+  true NVB refinement edge; this is why the serial `NVBMesh` tracks `(peak,b0,b1)`
+  **explicitly** per cell.
+- **Explicit per-cell refinement-edge slot** (a cone-slot 0/1/2 label, stored at child
+  creation, read verbatim thereafter). Mechanically sound (slot populated, survives
+  clone, read by `SetUp`; Stage 2a still exact) but **still drains.** The deeper
+  obstacle: a single `DMPlexTransform` pass must stay **conforming**, so a cell caught
+  in the closure across a *non*-refinement edge is forced into a **double/triple
+  (green/blue) split** in the same pass. These one-pass multi-edge splits do **not**
+  reproduce the compatible refinement-edge structure that `NVBMesh` builds via
+  **sequential single bisections** (bisect the ref edge, *replace* the cell, recurse) —
+  so the ref edges come out incompatible and the closure cascades.
+
+**Redesign (the sound path): single-bisection-only, multi-pass.** Each transform pass
+splits **only compatible refinement edges** — an edge that is the refinement edge of
+*every* cell in its support. That is always a clean conforming bisection (both cells
+single-split, share the midpoint), with a **trivial** child slot (each child's peak is
+the new midpoint, so its ref edge is the edge opposite the midpoint). A driver loop
+iterates passes, pulling in the neighbour across an incompatible ref edge (it must
+refine its own ref edge first), until the marked set is satisfied — exactly
+`NVBMesh`'s recursion, batched over the DM. This keeps every intermediate mesh
+conforming, needs no green/blue child tables, and preserves co-partitioning (each pass
+is an in-place transform). The Stage-2a clone stays the base; Stage 2b changes the
+`SetUp` to mark only compatible ref edges + adds the driver loop.
 
 ## Checkpointing
 
@@ -428,6 +461,19 @@ level**. Store those (tiny) — replay reconstructs every level bit-identically,
 consistent with the marker-sidecar scheme already designed for SBR. The
 coordinate-built custom-P sidesteps the canonical-numbering fragility (same as
 SBR).
+
+**FMG-hierarchy-index label — reuse for checkpointing (L.M., 2026-07-01, TODO next
+phase).** The custom-P / FMG round-trip through checkpoints already carries a
+**mesh-hierarchy-index label** (which coarse level each point belongs to) to
+reconstruct the transfer hierarchy on reload. When implementing the single-
+bisection multi-pass Stage 2b, investigate: **(a)** whether that existing hierarchy
+label can be *reused* to encode the NVB level/marker replay (one label serving both
+FMG-transfer reconstruction and adapt replay), and **(b)** whether the *new* NVB
+structures (per-vertex generation + the compatible-ref-edge state, or the
+per-pass marked-edge sets) are the natural thing to *checkpoint the FMG itself*
+against — i.e. store the NVB replay data and rebuild the whole FMG tail from it,
+rather than storing meshes. Decide before finalising the checkpoint format so the
+two mechanisms share one label rather than duplicating.
 
 ## 3D (tetrahedra)
 
