@@ -48,6 +48,9 @@ GOLDEN_ANNULUS = (1.897011154231e-02, 4.563841e-05, 9.341699e-06)
 # annulus driven by CUSTOM GEOMETRIC FMG on the velocity block (nested hierarchy):
 # (velocity L2, radial-leakage L2 on Lower arc, radial-leakage L2 on Upper arc)
 GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
+# box sigma_nn (boundary_normal_traction on Top) vs analytic SolCx sigma_yy, whole
+# boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
+GOLDEN_BOX_SIGMA = (4.194316e-02, 0.999122)
 
 
 def _wrap(dm, m0):
@@ -157,6 +160,51 @@ def _annulus_fmg_diagnostics():
     return L2, leak_lo, leak_up
 
 
+def _box_sigma_diagnostics():
+    """Recover sigma_nn on Top via boundary_normal_traction and compare to the exact
+    SolCx sigma_yy over the WHOLE boundary. The per-rank local (xs, sigma) are gathered
+    + de-duplicated on rank 0, the metric is computed there and broadcast, so every rank
+    returns the same (relL2, |corr|) — a direct partition-independence check."""
+    res = 48
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+    v = uw.discretisation.MeshVariable("vS", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pS", mesh, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.penalty = 0.0
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.solve()
+
+    xs, sig = s.boundary_normal_traction("Top")
+    comm = uw.mpi.comm
+    gx = comm.gather(np.asarray(xs).reshape(-1, 2), root=0)
+    gs = comm.gather(np.asarray(sig).reshape(-1), root=0)
+    result = None
+    if uw.mpi.rank == 0:
+        allx = np.concatenate(gx) if len(gx) else np.zeros((0, 2))
+        alls = np.concatenate(gs) if len(gs) else np.zeros(0)
+        seen = {}
+        for xc, sc in zip(allx, alls):
+            seen[(round(float(xc[0]), 9), round(float(xc[1]), 9))] = (xc, sc)
+        X = np.array([u[0] for u in seen.values()])
+        S = np.array([u[1] for u in seen.values()])
+        syy = np.asarray(sol.evaluate_stress(X))[:, 1]
+        syy = syy - syy.mean()
+        corr = float(np.dot(S, syy) / (np.linalg.norm(S) * np.linalg.norm(syy)))
+        S = S if corr >= 0 else -S
+        relL2 = float(np.linalg.norm(S - syy) / np.linalg.norm(syy))
+        result = (relL2, abs(corr), len(X))
+    return comm.bcast(result, root=0)
+
+
 def test_rotated_freeslip_box_partition_independent():
     """Box: the parallel rotated free-slip solve reproduces the serial velocity L2 and
     keeps the analytic velocity error small."""
@@ -202,11 +250,31 @@ def test_rotated_freeslip_annulus_fmg_partition_independent():
         f"{leak_up_ref} vs {leak_up}")
 
 
+def test_rotated_freeslip_box_sigma_nn_partition_independent():
+    """sigma_nn (boundary_normal_traction) recovery is partition-independent: the whole-
+    boundary relL2 / |corr| vs analytic SolCx sigma_yy match the serial reference (and
+    stay accurate) in parallel — the reaction read + consistent-mass de-smear are
+    parallel-safe."""
+    relL2, corr, nnodes = _box_sigma_diagnostics()
+    relL2_ref, corr_ref = GOLDEN_BOX_SIGMA
+    assert nnodes == 97, f"expected 97 top nodes, gathered {nnodes} at np={uw.mpi.size}"
+    assert np.isclose(relL2, relL2_ref, rtol=1e-4, atol=0), (
+        f"sigma_nn relL2 differs serial vs np={uw.mpi.size}: {relL2_ref} vs {relL2}")
+    assert np.isclose(corr, corr_ref, rtol=1e-4, atol=0), (
+        f"sigma_nn corr differs serial vs np={uw.mpi.size}: {corr_ref} vs {corr}")
+    assert relL2 < 0.08, f"sigma_nn relL2 vs analytic {relL2:.3f} too large"
+
+
 if __name__ == "__main__":
-    # Recompute the serial GOLDEN references: `python <thisfile> {box,annulus,annulus_fmg}`.
+    # Recompute the serial GOLDEN references:
+    #   `python <thisfile> {box,annulus,annulus_fmg,sigma}`.
     import sys
     _kind = sys.argv[1] if len(sys.argv) > 1 else "box"
-    if _kind == "annulus":
+    if _kind == "sigma":
+        _r = _box_sigma_diagnostics()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_SIGMA relL2={_r[0]:.6e} corr={_r[1]:.6f} nodes={_r[2]}")
+    elif _kind == "annulus":
         _L2, _lo, _up = _annulus_diagnostics()
         if uw.mpi.rank == 0:
             print(f"DIAG_ANNULUS {_L2:.12e} {_lo:.6e} {_up:.6e}")

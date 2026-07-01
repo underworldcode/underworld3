@@ -137,3 +137,37 @@ def test_rotated_freeslip_geometric_fmg_velocity_block():
     assert s._rotated_freeslip_info["ksp_reason"] > 0
     rel = np.linalg.norm(v.data - vE.data) / np.linalg.norm(vE.data)
     assert rel < 5e-3, f"FMG rotated free-slip differs from essential by {rel:.2e}"
+
+
+def test_rotated_freeslip_boundary_normal_traction_solcx():
+    """sigma_nn recovered by boundary_normal_traction on the top boundary reproduces
+    the exact SolCx analytic sigma_yy (mean-removed) to a few percent. Exercises the
+    Cartesian-reaction + n_hat projection (corner-correct) + consistent P2 line mass."""
+    res = 48
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+    v = uw.discretisation.MeshVariable("vT", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pT", mesh, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.penalty = 0.0
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.solve()
+
+    xs, sig = s.boundary_normal_traction("Top")
+    top = np.asarray(xs)
+    syy = np.asarray(sol.evaluate_stress(top))[:, 1]
+    syy = syy - syy.mean()
+    sig = np.asarray(sig)
+    corr = np.dot(sig, syy) / (np.linalg.norm(sig) * np.linalg.norm(syy))
+    sig = sig if corr >= 0 else -sig                      # sigma = -R sign convention
+    relL2 = np.linalg.norm(sig - syy) / np.linalg.norm(syy)
+    assert abs(corr) > 0.99, f"sigma_nn shape corr {corr:.3f} too low"
+    assert relL2 < 0.08, f"sigma_nn relL2 vs analytic sigma_yy {relL2:.3f} too large"
