@@ -448,10 +448,10 @@ def _rotation_is_nullspace(solver, Q, normal_rows, tol=1e-8):
     return viol < tol
 
 
-def boundary_normal_traction(solver, boundary, info, consistent_mass=True):
-    """Consistent boundary normal traction σ_nn on `boundary` from the constraint
-    reaction of the last rotated-free-slip solve. Returned mean-removed (the ρg·h
-    gauge), as ``(xs, sigma)`` with one entry per boundary velocity node on this rank.
+def boundary_normal_traction(solver, boundary, info, mass="lumped"):
+    """Boundary normal traction σ_nn on `boundary` from the constraint reaction of the
+    last rotated-free-slip solve. Returned mean-removed (the ρg·h gauge), as
+    ``(xs, sigma)`` with one entry per boundary velocity node on this rank.
 
     σ_nn is recovered from the CARTESIAN nodal reaction r_c = A·u − b: the nodal load
     is R_i = n̂_i · r_c(node_i), where n̂_i is THIS boundary's outward normal at node i.
@@ -459,12 +459,22 @@ def boundary_normal_traction(solver, boundary, info, consistent_mass=True):
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
     normals, but n̂·r_c is the true normal traction for this boundary. The pointwise
-    σ_nn is then the consistent P2 line-mass de-smear of R (2D).
+    σ_nn is the boundary-mass de-smear of R (2D).
 
-    Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by
-    LOCAL section offset; the consistent-mass system is assembled globally by a
-    coordinate-keyed allgather of the boundary elements so every rank solves the same
-    system and the mean-removal gauge is global.
+    ``mass`` selects the de-smear:
+      * ``"lumped"`` (default) — the diagonal (row-sum) boundary mass. Being an M-matrix
+        it CANNOT overshoot at a stress discontinuity (no Gibbs wiggle where the traction
+        jumps, e.g. across a viscosity contrast), it is a purely local division (no global
+        mass solve → trivially parallel), and it is marginally more accurate than the
+        consistent mass on SolCx. Recommended for driving a free surface, where an
+        overshoot at a sharp feature injects a spurious surface-velocity pulse.
+      * ``"consistent"`` — the full consistent P2 line mass. Marginally sharper on smooth
+        tractions but overshoots at discontinuities.
+
+    Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
+    section offset; the boundary mass is assembled globally by a coordinate-keyed
+    allgather of the boundary elements, so every rank produces the same de-smear and the
+    mean-removal gauge is global.
     """
     dm = solver.dm
     dim = solver.mesh.dim
@@ -489,27 +499,26 @@ def boundary_normal_traction(solver, boundary, info, consistent_mass=True):
         pts.append(q)
     dm.restoreLocalVec(rcl)
     xs = np.array(xs); Rn = np.array(Rn)
-    if not consistent_mass or dim != 2:
-        # lumped fallback; mean removed with the GLOBAL mean for partition-independence
+    if dim != 2:
+        # no line-mass geometry in 3D yet → crude global-mean-removed load
         comm = dm.comm.tompi4py()
         tot = comm.allreduce(float(Rn.sum()), op=MPI.SUM)
         cnt = comm.allreduce(int(Rn.size), op=MPI.SUM)
-        sig = -Rn - (-tot / max(cnt, 1))
-        return xs, sig
-    # 2D consistent P2 boundary mass, assembled globally (parallel-safe)
-    sig = _consistent_mass_2d(solver, boundary, pts, Rn, xs)
+        return xs, (-Rn) - (-tot / max(cnt, 1))
+    sig = _recover_sigma_nn_2d(solver, boundary, pts, Rn, xs, mass=mass)
     return xs, sig
 
 
-def _consistent_mass_2d(solver, boundary, pts, Rn, xs):
-    """Solve M_Γ σ = −R with the consistent P2 line mass on `boundary` (2D).
+def _recover_sigma_nn_2d(solver, boundary, pts, Rn, xs, mass="lumped"):
+    """De-smear the nodal reaction loads R into a pointwise σ_nn on `boundary` (2D) with
+    either the LUMPED (diagonal, monotone) or the CONSISTENT P2 line mass.
 
     Parallel-safe by construction: each rank emits its local boundary ELEMENTS as
-    self-contained coordinate-keyed records (the three P2 node keys + their reaction
-    loads + the element length); an allgather assembles the SAME global 1D system on
-    every rank (elements de-duplicated by key, so a facet shared across a partition cut
-    is counted once). Every rank solves it and returns σ at its own local nodes, so the
-    result — and the mean-removal gauge — is partition-independent."""
+    self-contained coordinate-keyed records (the three P2 node keys + the element length);
+    an allgather assembles the SAME global boundary mass on every rank (elements
+    de-duplicated by key, so a facet shared across a partition cut is counted once). Every
+    rank forms the identical de-smear and returns σ at its own local nodes, so the result
+    — and the mean-removal gauge — is partition-independent."""
     dm = solver.dm; dim = 2; comm = dm.comm.tompi4py()
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
@@ -544,20 +553,33 @@ def _consistent_mass_2d(solver, boundary, pts, Rn, xs):
     for lst in all_elems:
         for (ka, km, kb, h) in lst:
             uniq[(ka, km, kb)] = h
-    # global node numbering + assembly
+    # global node numbering
     keys = sorted(R_by_key.keys())
     gidx = {k: i for i, k in enumerate(keys)}
-    n = len(keys); M = np.zeros((n, n)); R = np.zeros(n)
+    n = len(keys); R = np.zeros(n)
     for k, i in gidx.items():
         R[i] = R_by_key[k]
-    Me = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
-    for (ka, km, kb), h in uniq.items():
-        tri = [gidx[ka], gidx[km], gidx[kb]]
-        Mh = (h / 30.0) * Me
-        for ii in range(3):
-            for jj in range(3):
-                M[tri[ii], tri[jj]] += Mh[ii, jj]
-    sig_g = np.linalg.solve(M, -R)
+
+    if mass == "lumped":
+        # diagonal P2 line mass (row sums of the consistent mass): h*[1/6, 2/3, 1/6] for
+        # (vertexA, mid-edge, vertexB). Monotone → no overshoot at a stress jump.
+        mL = np.zeros(n)
+        for (ka, km, kb), h in uniq.items():
+            mL[gidx[ka]] += h / 6.0
+            mL[gidx[km]] += 2.0 * h / 3.0
+            mL[gidx[kb]] += h / 6.0
+        sig_g = -R / mL
+    else:
+        # consistent P2 line mass M σ = −R
+        M = np.zeros((n, n))
+        Me = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
+        for (ka, km, kb), h in uniq.items():
+            tri = [gidx[ka], gidx[km], gidx[kb]]
+            Mh = (h / 30.0) * Me
+            for ii in range(3):
+                for jj in range(3):
+                    M[tri[ii], tri[jj]] += Mh[ii, jj]
+        sig_g = np.linalg.solve(M, -R)
     sig_g = sig_g - sig_g.mean()                 # global gauge → partition-independent
     # return σ at THIS rank's local nodes, in the input (xs/pts) order
     return np.array([sig_g[gidx[key(x)]] for x in xs])

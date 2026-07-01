@@ -171,3 +171,41 @@ def test_rotated_freeslip_boundary_normal_traction_solcx():
     relL2 = np.linalg.norm(sig - syy) / np.linalg.norm(syy)
     assert abs(corr) > 0.99, f"sigma_nn shape corr {corr:.3f} too low"
     assert relL2 < 0.08, f"sigma_nn relL2 vs analytic sigma_yy {relL2:.3f} too large"
+
+
+def test_rotated_freeslip_sigma_nn_lumped_no_overshoot():
+    """The default (lumped) sigma_nn de-smear is MONOTONE at the SolCx viscosity jump:
+    its total variation matches the analytic (no Gibbs overshoot), whereas the
+    consistent-mass de-smear adds spurious variation. This is the property that matters
+    for driving a free surface (an overshoot injects a spurious surface-velocity pulse)."""
+    res = 48
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+    v = uw.discretisation.MeshVariable("vL", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pL", mesh, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.penalty = 0.0
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.solve()
+
+    def total_variation(xs, sig):
+        o = np.argsort(np.asarray(xs)[:, 0])
+        return float(np.sum(np.abs(np.diff(np.asarray(sig)[o]))))
+
+    xs, sig_l = s.boundary_normal_traction("Top", mass="lumped")     # default
+    _, sig_c = s.boundary_normal_traction("Top", mass="consistent")
+    syy = np.asarray(sol.evaluate_stress(np.asarray(xs)))[:, 1]
+    tv_ref = total_variation(xs, syy - syy.mean())
+    tv_l = total_variation(xs, sig_l)
+    tv_c = total_variation(xs, sig_c)
+    # lumped adds essentially no spurious variation over the analytic; consistent does
+    assert tv_l < 1.05 * tv_ref, f"lumped TV {tv_l:.3f} exceeds analytic {tv_ref:.3f}"
+    assert tv_l < tv_c, f"lumped TV {tv_l:.3f} not smoother than consistent {tv_c:.3f}"

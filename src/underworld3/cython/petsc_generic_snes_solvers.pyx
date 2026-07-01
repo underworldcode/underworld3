@@ -4954,18 +4954,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.is_setup = False
         return
 
-    def boundary_normal_traction(self, boundary):
-        r"""Return the consistent boundary normal traction :math:`\sigma_{nn}` on a
+    def boundary_normal_traction(self, boundary, mass="lumped"):
+        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
         rotated-free-slip ``boundary`` as the constraint reaction from the last
         solve — the smooth, bounded quantity used for dynamic topography
         (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
         prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
-        :meth:`solve`."""
+        :meth:`solve`.
+
+        ``mass`` chooses the boundary-mass de-smear of the nodal reaction:
+        ``"lumped"`` (default) is monotone — it cannot overshoot where the traction
+        jumps (e.g. across a viscosity contrast), so it is the safe choice for driving
+        a free surface; ``"consistent"`` uses the full P2 line mass (marginally sharper
+        on smooth tractions, but overshoots at discontinuities)."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
                 "boundary_normal_traction requires a completed rotated-free-slip solve.")
         from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
-        return _bnt(self, boundary, self._rotated_freeslip_info)
+        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
 
     def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.

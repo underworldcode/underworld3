@@ -48,9 +48,9 @@ GOLDEN_ANNULUS = (1.897011154231e-02, 4.563841e-05, 9.341699e-06)
 # annulus driven by CUSTOM GEOMETRIC FMG on the velocity block (nested hierarchy):
 # (velocity L2, radial-leakage L2 on Lower arc, radial-leakage L2 on Upper arc)
 GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
-# box sigma_nn (boundary_normal_traction on Top) vs analytic SolCx sigma_yy, whole
-# boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
-GOLDEN_BOX_SIGMA = (4.194316e-02, 0.999122)
+# box sigma_nn (boundary_normal_traction on Top, default lumped mass) vs analytic SolCx
+# sigma_yy, whole boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
+GOLDEN_BOX_SIGMA = (3.985444e-02, 0.999208)
 
 
 def _wrap(dm, m0):
