@@ -4,8 +4,11 @@ build a per-node rotation Q from boundary normals, rotate the assembled saddle
 Â=Q A Qᵀ / b̂=Q b, impose v_n=0 on the rotated normal rows, solve, rotate back
 u=Qᵀû, remove the rigid-rotation gauge, and expose σ_nn as the constraint reaction.
 
-Increment 1: box-flat (Q=identity on axis-aligned walls) must reproduce the native
-essential free-slip solve bit-for-bit. Direct LU here; FMG wiring is a later step.
+The rotated saddle is solved by a self-contained fieldsplit-Schur KSP by default: the
+velocity block is geometric FMG on the custom prolongation (``set_custom_fmg``) when a
+hierarchy is registered, else GAMG; direct MUMPS LU is opt-in via ``solver._rotated_use_lu``.
+σ_nn / dynamic topography reuse the shared Consistent-Boundary-Flux de-smear in
+``underworld3.utilities.boundary_flux``.
 """
 import numpy as np
 from petsc4py import PETSc
@@ -214,6 +217,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     Aorig = J.copy()
     F0 = dm.getGlobalVec(); snes.computeFunction(U0, F0)
     b = F0.copy(); b.scale(-1.0)
+    dm.restoreGlobalVec(U0); dm.restoreGlobalVec(F0)   # borrowed temporaries → return to pool
 
     Q, Qt, normal_rows = build_rotation(solver, boundaries)
 
@@ -254,14 +258,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
             ba = bhat.getArray(); ba[pin - brs] = 0.0; bhat.setArray(ba)
         ksp = PETSc.KSP().create(); ksp.setOperators(Ahat); ksp.setType("preonly")
         pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
-        Uhat = dm.getGlobalVec(); ksp.solve(bhat, Uhat)
+        Uhat = dm.createGlobalVec(); ksp.solve(bhat, Uhat)   # returned in info → own it
         ksp_reason = ksp.getConvergedReason()
     else:
         Uhat, ksp_reason = _solve_rotated_iterative(
             solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose)
 
-    # rotate back u = Qᵀ û
-    U = dm.getGlobalVec(); Qt.mult(Uhat, U)
+    # rotate back u = Qᵀ û  (U is returned in info → create, don't borrow from the pool)
+    U = dm.createGlobalVec(); Qt.mult(Uhat, U)
 
     # Remove the rigid-rotation gauge ONLY when it is a genuine null space of the
     # constrained problem (closed circular/spherical free-slip); on straight walls
@@ -273,6 +277,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         tg = _rigid_rotation_global(solver)
         coef = U.dot(tg) / (tg.dot(tg) + 1e-30)
         U.axpy(-coef, tg)
+        dm.restoreGlobalVec(tg)                 # transient → return to pool
         removed = True
 
     # scatter U → velocity/pressure fields
@@ -403,14 +408,15 @@ def _rotated_nullspace(solver, Q, normal_rows):
     vecs = []
     # constant pressure (Q = identity on pressure → unchanged)
     if getattr(solver, "_petsc_use_pressure_nullspace", False):
-        pv = dm.getGlobalVec(); pv.set(0.0)
+        pv = dm.createGlobalVec(); pv.set(0.0)     # persists inside the returned NullSpace
         pis = solver._subdict["pressure"][0]
         sp = pv.getSubVector(pis); sp.set(1.0); pv.restoreSubVector(pis, sp)
         pv.normalize(); vecs.append(pv)
     # rigid rotation (rotated), only if it satisfies the constraints
     if solver.mesh.dim == 2 and _rotation_is_nullspace(solver, Q, normal_rows):
         tg = _rigid_rotation_global(solver)
-        tr = tg.duplicate(); Q.mult(tg, tr)
+        tr = tg.duplicate(); Q.mult(tg, tr)        # tr persists in the NullSpace
+        dm.restoreGlobalVec(tg)                    # tg transient → return to pool
         vecs.append(tr)
     if not vecs:
         return None
@@ -441,8 +447,10 @@ def _rotation_is_nullspace(solver, Q, normal_rows, tol=1e-8):
     collective norms below and deadlock."""
     if solver.mesh.dim != 2:
         return False
+    dm = solver.dm
     tg = _rigid_rotation_global(solver)
     tr = tg.duplicate(); Q.mult(tg, tr)
+    dm.restoreGlobalVec(tg)                       # tg transient → return to pool
     full = tr.norm()                              # parallel norm
     # norm of tr restricted to the constrained rows: zero everything else, then .norm()
     rs, re = tr.getOwnershipRange()
@@ -451,6 +459,7 @@ def _rotation_is_nullspace(solver, Q, normal_rows, tol=1e-8):
     tra = trc.getArray(); tga = tr.getArray()
     tra[loc] = tga[loc]; trc.setArray(tra)
     viol = trc.norm() / (full + 1e-30)            # parallel (collective on all ranks)
+    tr.destroy(); trc.destroy()                   # transient duplicates
     return viol < tol
 
 
