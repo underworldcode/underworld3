@@ -1253,6 +1253,40 @@ class Surface:
         """
         return np.abs(self._signed_distance_at(coords))
 
+    @property
+    def director(self) -> sympy.Matrix:
+        r"""Unit surface-normal as a symbolic column vector — the TI director n̂.
+
+        The gradient of a signed-distance field is its unit normal, so this is
+        ``∇d / |∇d|`` built from the :attr:`distance` field. It is the natural
+        **director** for :class:`~underworld3.constitutive_models.TransverseIsotropicFlowModel`
+        (the weak-plane orientation): the same fault object that drives the
+        refinement metric and the weak-zone viscosity also supplies the normal::
+
+            ti = uw.constitutive_models.TransverseIsotropicFlowModel
+            stokes.constitutive_model = ti
+            stokes.constitutive_model.Parameters.director = fault.director
+
+        For a **planar** surface the signed distance is linear, so ``∇d`` is the
+        exact constant unit normal everywhere. Near a curved surface or a finite
+        edge it is the local unit normal wherever the field is smooth. The
+        normalisation makes it robust where ``|∇d|`` drifts from 1 (interpolated
+        distance, edge clamping).
+
+        Returns
+        -------
+        sympy.Matrix
+            ``(dim, 1)`` unit normal expression, evaluatable on this surface's
+            mesh (call :meth:`remap_to` first if the surface was built on a
+            different mesh, e.g. an ``adapt`` parent).
+        """
+        d = self.distance.sym[0]
+        X = self.mesh.X
+        dim = self.mesh.dim
+        grad = [sympy.diff(d, X[i]) for i in range(dim)]
+        norm = sympy.sqrt(sum(g ** 2 for g in grad)) + sympy.sympify(1e-30)
+        return sympy.Matrix([g / norm for g in grad])
+
     def _compute_distance_field(self) -> None:
         """Compute signed distance field from mesh nodes to surface.
 
@@ -1509,6 +1543,62 @@ class Surface:
 
         # Mark all variable proxies as stale (they project to mesh nodes)
         self._mark_all_proxies_stale()
+
+    def remap_to(self, new_mesh: "Mesh") -> "Surface":
+        """Re-home this surface onto a different mesh and return ``self``.
+
+        The surface **geometry** (control points, polyline/polydata vertices) is
+        unchanged — only the mesh its *fields* are computed against changes.
+        Cached distance fields (which were bound to the old mesh) are dropped so
+        they recompute, at **exact** distance, on the new mesh's nodes on next
+        access.
+
+        This is the companion to :meth:`Mesh.adapt` for the nested (child-
+        returning) engines (``engine="sbr"``/``"nvb"``): ``adapt`` leaves the
+        base mesh untouched and returns a refined *child*, so — unlike the
+        in-place :meth:`Mesh.remesh` — registered surfaces are not auto-notified.
+        Re-homing lets **one** fault object drive both the geometry-only
+        refinement metric (:meth:`refinement_metric_function`, evaluated before
+        the child exists) and the child-side constitutive model (its
+        ``distance`` / normal live on the child)::
+
+            fault  = uw.meshing.Surface("fault", base, trace)
+            metric = fault.refinement_metric_function(h_near, h_far, width)
+            child  = base.adapt(metric, engine="nvb")
+            fault.remap_to(child)                 # distance now on the child
+            eta = fault.influence_function(width, value_near=1e-3, value_far=1.0)
+
+        Parameters
+        ----------
+        new_mesh : Mesh
+            The mesh to re-home onto (e.g. an ``adapt`` child).
+
+        Returns
+        -------
+        Surface
+            ``self`` (for chaining).
+        """
+        if new_mesh is self.mesh:
+            return self
+
+        old_mesh = self.mesh
+        if old_mesh is not None and hasattr(old_mesh, "unregister_surface"):
+            old_mesh.unregister_surface(self)
+
+        self.mesh = new_mesh
+        self._dim = None  # re-detect from the new mesh
+        if new_mesh is not None and hasattr(new_mesh, "register_surface"):
+            new_mesh.register_surface(self)
+
+        # Drop cached fields bound to the OLD mesh; the geometry (pyvista mesh /
+        # 2D vertices) is mesh-independent and stays as-is. .distance / .abs_distance
+        # rebuild lazily on the new mesh's nodes (exact) on next access.
+        self._distance_var = None
+        self._abs_distance_var = None
+        self._distance_stale = True
+        self._mark_all_proxies_stale()
+
+        return self
 
     def refinement_metric(
         self,
