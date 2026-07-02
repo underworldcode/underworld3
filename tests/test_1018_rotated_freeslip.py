@@ -211,45 +211,151 @@ def test_rotated_freeslip_sigma_nn_lumped_no_overshoot():
     assert tv_l < tv_c, f"lumped TV {tv_l:.3f} not smoother than consistent {tv_c:.3f}"
 
 
-def test_rotated_freeslip_nonlinear_guard_raises():
-    """Step-0 safety guard: the rotated free-slip path is a single LINEAR solve
-    (it assembles J,F once at u=0). A nonlinear constitutive model would be
-    silently linearised, so solve() must fail fast with a clear NotImplementedError
-    rather than return a single-linearisation answer. A linear model must NOT trip
-    the guard (covered by the other tests, checked directly here too)."""
+def _powerlaw_stokes(mesh, prefix, amp=3.0, nexp=3.0):
+    """A genuinely NONLINEAR Stokes: power-law viscosity eta = eps_II^(1/n - 1)
+    (smooth, so Newton/Picard iterates robustly), driven by a horizontally-varying
+    vertical body force so there is real shear."""
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable(prefix + "v", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable(prefix + "p", mesh, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    g = sympy.Matrix([[v.sym[0].diff(x), v.sym[0].diff(y)],
+                      [v.sym[1].diff(x), v.sym[1].diff(y)]])
+    e = 0.5 * (g + g.T)
+    eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
+    s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / nexp - 1.0)
+    s.bodyforce = sympy.Matrix([[0.0, -amp * sympy.cos(sympy.pi * x)]])
+    s.penalty = 0.0
+    s.tolerance = 1e-8
+    s.petsc_use_pressure_nullspace = True
+    return s, v, p
+
+
+def _powerlaw_essential(mesh, prefix):
+    s, v, p = _powerlaw_stokes(mesh, prefix)
+    s.add_essential_bc((sympy.oo, 0.0), "Top")
+    s.add_essential_bc((sympy.oo, 0.0), "Bottom")
+    s.add_essential_bc((0.0, sympy.oo), "Left")
+    s.add_essential_bc((0.0, sympy.oo), "Right")
+    s.solve()
+    return v
+
+
+def test_rotated_freeslip_nonlinear_matches_essential():
+    """A NONLINEAR (power-law) rotated free-slip solve genuinely iterates and
+    converges to the SAME answer as the native essential nonlinear free-slip solve
+    on the axis-aligned box (both impose v_n=0 — identical discrete problem), with
+    machine-zero wall-normal velocity. This exercises the rotated constraint INSIDE
+    the nonlinear iteration (rotate F(u), J(u), v_n=0 every step)."""
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    vE = _powerlaw_essential(mesh, "nlE")
 
-    # nonlinear (viscoplastic yield) -> guard must raise
-    vN = uw.discretisation.MeshVariable("vNg", mesh, mesh.dim, degree=2, continuous=True)
-    pN = uw.discretisation.MeshVariable("pNg", mesh, 1, degree=1, continuous=False)
-    sN = uw.systems.Stokes(mesh, velocityField=vN, pressureField=pN)
-    sN.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
-    sN.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    sN.constitutive_model.Parameters.yield_stress = 1.0
-    sN.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-10
-    sN.bodyforce = sympy.Matrix([[0.0, -1.0]])
-    sN.tolerance = 1e-6
+    s, vR, pR = _powerlaw_stokes(mesh, "nlR")
     for wall in ("Top", "Bottom", "Left", "Right"):
-        sN.add_rotated_freeslip_bc(wall)
-    sN.petsc_use_pressure_nullspace = True
-    with pytest.raises(NotImplementedError, match="LINEAR"):
-        sN.solve()
+        s.add_rotated_freeslip_bc(wall)
+    s.solve()  # routes to the nonlinear rotated driver
 
-    # linear (constant viscosity) -> guard must NOT raise
-    vL = uw.discretisation.MeshVariable("vLg", mesh, mesh.dim, degree=2, continuous=True)
-    pL = uw.discretisation.MeshVariable("pLg", mesh, 1, degree=1, continuous=False)
-    sL = uw.systems.Stokes(mesh, velocityField=vL, pressureField=pL)
-    sL.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    sL.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    sL.bodyforce = sympy.Matrix([[0.0, -1.0]])
-    sL.tolerance = 1e-9
+    info = s._rotated_freeslip_info
+    assert info["nonlinear_iterations"] > 1, "rotated solve did not genuinely iterate"
+    rel = np.linalg.norm(vR.data - vE.data) / np.linalg.norm(vE.data)
+    assert rel < 1e-3, f"nonlinear rotated free-slip differs from essential by {rel:.2e}"
+    # zero wall-normal flow on every wall
+    vc = vR.coords
+    for lab, msk, comp in [("Top", np.abs(vc[:, 1] - 1) < 1e-6, 1),
+                           ("Bottom", np.abs(vc[:, 1]) < 1e-6, 1),
+                           ("Left", np.abs(vc[:, 0]) < 1e-6, 0),
+                           ("Right", np.abs(vc[:, 0] - 1) < 1e-6, 0)]:
+        leak = np.abs(vR.data[msk, comp]).max() if msk.any() else 0.0
+        assert leak < 1e-10, f"{lab} wall-normal velocity {leak:.2e} not machine-zero"
+
+
+def test_rotated_freeslip_nonlinear_warm_start():
+    """Warm-start (zero_init_guess=False) through the nonlinear rotated path: a
+    2-step 'time loop' re-solving from the previous converged state stays correct
+    and converges (the step-norm exit avoids chasing machine noise)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    vE = _powerlaw_essential(mesh, "wsE")
+
+    s, vR, pR = _powerlaw_stokes(mesh, "wsR")
     for wall in ("Top", "Bottom", "Left", "Right"):
-        sL.add_rotated_freeslip_bc(wall)
-    sL.petsc_use_pressure_nullspace = True
-    sL.petsc_options["snes_type"] = "ksponly"
-    sL.solve()  # must not raise
-    assert sL._rotated_freeslip_info is not None
+        s.add_rotated_freeslip_bc(wall)
+    s.solve()                              # cold
+    s.solve(zero_init_guess=False)         # warm (step 2)
+
+    rel = np.linalg.norm(vR.data - vE.data) / np.linalg.norm(vE.data)
+    assert rel < 1e-3, f"warm-start rotated free-slip differs from essential by {rel:.2e}"
+    # warm-start from an already-converged state converges in few iterations
+    assert s._rotated_freeslip_info["nonlinear_iterations"] <= 3
+
+
+def test_rotated_freeslip_nonlinear_geometric_fmg():
+    """The NONLINEAR rotated free-slip velocity block is driven by geometric FMG on
+    the custom prolongation (set_custom_fmg) — the rotated prolongation is built once
+    and reused across Newton iterations — and still converges to the essential
+    nonlinear free-slip solution."""
+    m0 = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25, regular=True, qdegree=3)
+    dm0 = m0.dm
+    dm1 = dm0.refine()
+    dm2 = dm1.refine()
+    coarse = [_wrap(dm0, m0), _wrap(dm1, m0)]
+    fine = _wrap(dm2, m0)
+    vE = _powerlaw_essential(fine, "nlfE")
+
+    s, vR, pR = _powerlaw_stokes(fine, "nlfR")
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
+    s.solve()
+
+    info = s._rotated_freeslip_info
+    assert info["nonlinear_iterations"] > 1
+    assert info["ksp_reason"] > 0                # geometric MG increment converged
+    rel = np.linalg.norm(vR.data - vE.data) / np.linalg.norm(vE.data)
+    assert rel < 5e-3, f"nonlinear FMG rotated free-slip differs from essential by {rel:.2e}"
+
+
+def test_rotated_freeslip_nonlinear_annulus_zero_leakage():
+    """Genuinely-rotated frame under nonlinear iteration: a power-law annulus with
+    per-node radial free-slip on both arcs genuinely iterates, gives machine-zero
+    radial leakage, and the rigid-rotation gauge is removed."""
+    RI, RO = 0.5, 1.0
+    mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.15, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    th = sympy.atan2(y, x)
+    v = uw.discretisation.MeshVariable("Vnla", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("Pnla", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    g = sympy.Matrix([[v.sym[0].diff(x), v.sym[0].diff(y)],
+                      [v.sym[1].diff(x), v.sym[1].diff(y)]])
+    e = 0.5 * (g + g.T)
+    eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
+    s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / 3.0 - 1.0)
+    s.bodyforce = sympy.Matrix([[x / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0,
+                                 y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
+    nhat = sympy.Matrix([[x / r, y / r]])
+    s.add_rotated_freeslip_bc("Lower", normal=nhat)
+    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1e-7
+    s.solve()
+
+    info = s._rotated_freeslip_info
+    assert info["nonlinear_iterations"] > 1, "annulus rotated solve did not genuinely iterate"
+    assert info["rotation_gauge_removed"]
+    vc = v.coords
+    rr = np.hypot(vc[:, 0], vc[:, 1])
+    rhat = vc / rr[:, None]
+    vr = np.einsum("ij,ij->i", v.data, rhat)
+    vmax = np.linalg.norm(v.data, axis=1).max() + 1e-30
+    for lab, mask in [("inner", np.abs(rr - RI) < 1e-4), ("outer", np.abs(rr - RO) < 1e-4)]:
+        leak = np.abs(vr[mask]).max() / vmax
+        assert leak < 1e-10, f"{lab} radial leakage {leak:.2e} not machine-zero"
 
 
 def test_rotated_freeslip_dynamic_topography_field():

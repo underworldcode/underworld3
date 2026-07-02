@@ -7892,18 +7892,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
         if self._rotated_freeslip_bcs:
-            # This is a LINEAR solve path: it assembles the Jacobian and residual once at
-            # U=0 and solves the rotated saddle directly, so it does NOT run the SNES
-            # nonlinear iteration. Nonlinear rheology / Picard / warm-start are therefore
-            # unsupported through this path — guard the explicit cases (and, below, a
-            # nonlinear constitutive model) rather than silently returning a
-            # single-linearisation answer.
-            if picard != 0 or not zero_init_guess:
-                raise NotImplementedError(
-                    "rotated free-slip BCs support only a single linear solve "
-                    "(zero_init_guess=True, picard=0). Nonlinear rheology or warm-start "
-                    "would require integrating the rotated constraint into the SNES "
-                    "iteration; not yet implemented.")
             # Run the same pre-solve preamble as the standard path so the pointwise
             # functions see the DM time, the auxiliary vector, and updated constants
             # (needed for problems whose coefficients live in auxiliary fields). This
@@ -7920,23 +7908,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
             self._update_constants()
 
-            # A nonlinear constitutive model would be silently linearised at u=0 by
-            # this one-shot path (the guard above only catches the EXPLICIT nonlinear
-            # signals). Probe the assembled Jacobian for solution-dependence and fail
-            # fast rather than return a single-linearisation answer.
-            if self._residual_is_nonlinear():
-                raise NotImplementedError(
-                    "rotated free-slip BCs currently support only LINEAR Stokes "
-                    "(constant or temperature-dependent viscosity). The registered "
-                    "constitutive model is nonlinear in the unknowns (the effective "
-                    "viscosity depends on velocity, its gradient, or pressure), which "
-                    "through the rotated free-slip path would silently return a single "
-                    "Newton linearisation from u=0. Integrating the rotated constraint "
-                    "into the SNES nonlinear iteration is not yet implemented.")
-
-            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
-            self._rotated_freeslip_info = solve_rotated_freeslip(
-                self, self._rotated_freeslip_bcs, verbose=verbose)
+            # Two paths:
+            #  * LINEAR model, zero initial guess, no Picard warmup → the validated
+            #    one-shot solve (assemble J(0),F(0); rotate; single self-contained
+            #    fieldsplit KSP). Fast, and the linear solution is exact so warm-start
+            #    / Picard would add nothing — hence the extra guards on this branch.
+            #  * otherwise (nonlinear rheology, or an explicitly-requested warm-start
+            #    / Picard) → the manual outer Newton/Picard loop that rotates F(u),
+            #    J(u) and the v_n=0 constraint every iteration. A nonlinear model is
+            #    detected by probing the assembled Jacobian for solution-dependence
+            #    (a symbolic test cannot see the JIT-substituted strain-rate term).
+            from underworld3.utilities.rotated_bc import (
+                solve_rotated_freeslip, solve_rotated_freeslip_nonlinear)
+            if zero_init_guess and picard == 0 and not self._residual_is_nonlinear():
+                self._rotated_freeslip_info = solve_rotated_freeslip(
+                    self, self._rotated_freeslip_bcs, verbose=verbose)
+            else:
+                self._rotated_freeslip_info = solve_rotated_freeslip_nonlinear(
+                    self, self._rotated_freeslip_bcs, verbose=verbose,
+                    zero_init_guess=zero_init_guess)
             return
 
         if time is not None:
