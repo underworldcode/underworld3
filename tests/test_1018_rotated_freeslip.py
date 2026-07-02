@@ -271,6 +271,42 @@ def test_rotated_freeslip_nonlinear_matches_essential():
         assert leak < 1e-10, f"{lab} wall-normal velocity {leak:.2e} not machine-zero"
 
 
+def test_rotated_freeslip_newton_tangent_matches_essential():
+    """The CONSISTENT NEWTON tangent (consistent_jacobian=True) works through the
+    rotated path: on a power-law box it converges in the SAME small number of Newton
+    iterations as the native essential Newton solve, and to the same answer at
+    (near) machine precision — i.e. the rotated constraint does not degrade the
+    Newton tangent, it is genuine Newton, not defect-correction. Contrast the frozen
+    (Picard) tangent, which converges only at a linear rate (many more iterations)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+
+    sE, vE, _ = _powerlaw_stokes(mesh, "ntE")
+    sE.consistent_jacobian = True
+    sE.add_essential_bc((sympy.oo, 0.0), "Top")
+    sE.add_essential_bc((sympy.oo, 0.0), "Bottom")
+    sE.add_essential_bc((0.0, sympy.oo), "Left")
+    sE.add_essential_bc((0.0, sympy.oo), "Right")
+    sE.solve()
+    essential_newton_its = sE.snes.getIterationNumber()
+
+    s, vR, pR = _powerlaw_stokes(mesh, "ntR")
+    s.consistent_jacobian = True
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.solve()
+
+    its = s._rotated_freeslip_info["nonlinear_iterations"]
+    # genuine Newton: a small iteration count, comparable to the essential Newton
+    # solve (NOT the ~4-5x larger Picard/frozen-tangent count on the same problem).
+    assert its <= 2 * essential_newton_its + 2, (
+        f"rotated Newton took {its} iters vs essential Newton {essential_newton_its} "
+        f"— tangent likely not the consistent one")
+    assert its < 20, f"rotated Newton not converging at Newton rate ({its} iters)"
+    rel = np.linalg.norm(vR.data - vE.data) / np.linalg.norm(vE.data)
+    assert rel < 1e-6, f"rotated Newton differs from essential Newton by {rel:.2e}"
+
+
 def test_rotated_freeslip_nonlinear_warm_start():
     """Warm-start (zero_init_guess=False) through the nonlinear rotated path: a
     2-step 'time loop' re-solving from the previous converged state stays correct
