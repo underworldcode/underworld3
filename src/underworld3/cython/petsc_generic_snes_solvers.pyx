@@ -120,8 +120,15 @@ class SolverBaseClass(uw_object):
 
         Notes
         -----
-        Single-field (scalar/vector) solvers only for now; the Stokes
-        velocity-block path is a separate increment. See
+        Supported both on single-field (scalar / vector) solvers — where the
+        prolongation is installed directly on the solver's ``PCMG`` — and on the
+        **Stokes velocity block** (the ``fieldsplit_velocity_`` sub-PC), where the
+        velocity sub-PC is only reachable once the monolithic Jacobian has been
+        assembled; the install there assembles the Jacobian, descends the
+        fieldsplit to the velocity sub-PC, and rebuilds it as a fresh ``PCMG``
+        driven by our ``P``. Injection happens at solve time (after
+        ``setFromOptions`` / nullspace attach) via
+        :func:`underworld3.utilities.custom_mg.inject_custom_mg`. See
         :mod:`underworld3.utilities.custom_mg`.
         """
         if kind not in ("barycentric", "rbf"):
@@ -1857,6 +1864,114 @@ class SolverBaseClass(uw_object):
                     f.create_dataset("dof", data = gath_dof_data[:, 2])
 
         return
+
+    def _assemble_volume_reaction(self, time=None, verbose=False):
+        """RAW per-rank FEM VOLUME residual (no boundary terms) in the DM-local layout,
+        as a numpy array.
+
+        At an essential-BC (Dirichlet) node this residual IS the consistent boundary
+        reaction — the integrated nodal flux :math:`\\int_\\Gamma (F\\cdot\\hat n)\\phi_i`
+        (heat flux for a scalar diffusion solve, traction for Stokes). Interior nodes are
+        ~0. General across scalar / vector / Stokes solvers: the current solution is
+        gathered from ``self.fields`` when present (Stokes) else the single
+        ``Unknowns.u`` field.
+
+        NOTE: the returned array is NOT globally assembled. The DM has overlap=0, so each
+        rank computes only its OWNED cells' contribution; a boundary node shared across a
+        partition cut therefore holds only this rank's PARTIAL reaction. The complete
+        reaction is assembled by the caller (``utilities.boundary_flux._desmear``) by
+        SUMMING each rank's partial by coordinate — not by a hand-rolled localToGlobal.
+        """
+        cdef DM dm
+        cdef Vec xvec
+        cdef Vec fvec
+        cdef DM _time_dm_reaction
+        cdef PetscFormKey key
+        cdef IS ccell_is
+        cdef PetscReal residual_time = 0.0
+        cdef PetscReal implicit_form_time = <PetscReal>-1.7976931348623157e308
+
+        self._build(verbose, False, None)
+
+        if time is not None:
+            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                t_nd = float(uw.non_dimensionalise(time))
+            else:
+                t_nd = float(time)
+            _time_dm_reaction = self.dm
+            UW_DMSetTime(_time_dm_reaction.dm, <PetscReal>t_nd)
+
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+
+        gvec = self.dm.getGlobalVec()
+        xlocal = self.dm.getLocalVec()
+        flocal = self.dm.getLocalVec()
+        gvec.setArray(0.0)
+        xlocal.setArray(0.0)
+        flocal.setArray(0.0)
+
+        try:
+            # gather the current solution into the global vector (field-structure agnostic)
+            if getattr(self, "fields", None):
+                for name, var in self.fields.items():
+                    sgvec = gvec.getSubVector(self._subdict[name][0])
+                    self._subdict[name][1].localToGlobal(var.vec, sgvec)
+                    gvec.restoreSubVector(self._subdict[name][0], sgvec)
+            else:
+                _names, _iss, _subdms = self.dm.createFieldDecomposition()
+                sgvec = gvec.getSubVector(_iss[0])
+                _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                gvec.restoreSubVector(_iss[0], sgvec)
+
+            self.dm.globalToLocal(gvec, xlocal)
+
+            dm = self.dm
+            xvec = xlocal
+            fvec = flocal
+            CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
+
+            # Return the RAW local residual: each rank has computed its OWNED cells'
+            # contribution to its local nodes (the DM has overlap=0, so a boundary node
+            # shared across a partition cut holds only this rank's PARTIAL contribution).
+            # The caller assembles the complete reaction by summing these partials across
+            # ranks by coordinate (boundary_flux._desmear), consistent with the boundary-
+            # mass gather — this reproduces the rock-solid volume integral at cut nodes.
+            return np.array(flocal.array, copy=True)
+        finally:
+            self.dm.restoreLocalVec(flocal)
+            self.dm.restoreLocalVec(xlocal)
+            self.dm.restoreGlobalVec(gvec)
+
+    def boundary_flux(self, boundary, mass="lumped", remove_mean=False, normal=None):
+        r"""Consistent boundary flux on ``boundary``, recovered from the essential-BC
+        reaction of the last solve (the Consistent Boundary Flux method).
+
+        Returns ``(xs, flux)`` with one entry per boundary node on this rank: for a
+        **scalar** solver the outward normal flux :math:`F\cdot\hat n` (e.g. surface heat
+        flux :math:`-k\,\partial T/\partial n`, whose boundary mean is the Nusselt
+        number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
+        ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
+
+        ``mass`` de-smears the nodal reaction with the ``"lumped"`` (diagonal, monotone —
+        no overshoot at a flux jump) or ``"consistent"`` boundary mass. ``remove_mean``
+        subtracts the boundary mean — leave ``False`` for a physical flux (the mean is
+        the Nusselt number); ``True`` gives a gauge-free field (e.g. dynamic topography).
+        Parallel-safe and partition-independent."""
+        from underworld3.utilities.boundary_flux import boundary_flux as _bf
+        return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
+
+    def boundary_flux_field(self, boundary, field, mass="lumped",
+                            remove_mean=False, scale=1.0, normal=None):
+        r"""Write the consistent boundary flux (see :meth:`boundary_flux`) onto a scalar
+        MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
+        ``scale``. This is the field hand-off for downstream machinery (surface heat
+        flux for coupling, or — with ``remove_mean=True`` and ``scale=-1/(\Delta\rho g)``
+        — dynamic topography). Returns ``field``."""
+        from underworld3.utilities.boundary_flux import boundary_flux_to_field as _bff
+        return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
+                    scale=scale, normal=normal)
 
 ## Specific to dimensionality
 
@@ -4613,6 +4728,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
+        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
+        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n=0 +
+        # reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_info = None
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -4797,6 +4918,81 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     from collections import namedtuple
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
+
+    def add_rotated_freeslip_bc(self, boundary, normal=None):
+        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
+        the boundary velocity DOFs into a per-node (normal, tangential) frame and
+        imposing the rotated normal component as an exact Dirichlet constraint.
+
+        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
+        this enforces zero wall-normal flow to machine precision, and the constraint
+        **reaction** is the consistent boundary normal traction
+        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
+        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
+        boundaries because the normal is taken per node.
+
+        Parameters
+        ----------
+        boundary : str
+            Boundary label to constrain.
+        normal : None or sympy 1×dim Matrix or array, optional
+            Per-node outward normal source. ``None`` uses the geometric facet
+            normal (PETSc ``computeCellGeometryFVM``; works in 2D and 3D). A
+            sympy ``1×dim`` matrix supplies an analytic normal (exact
+            ``X/|X|`` on a spherical cap, a constant on a planar face) — preferred
+            on curved boundaries. A constant array is also accepted.
+
+        Notes
+        -----
+        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
+        edge) is constrained on the whole span of its accumulated normals: a 3D
+        face frees two tangential directions, a 3D edge frees one (the edge
+        tangent), a corner is fully pinned. Registering delegates the solve to
+        :mod:`underworld3.utilities.rotated_bc`.
+        """
+        self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def boundary_normal_traction(self, boundary, mass="lumped"):
+        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
+        rotated-free-slip ``boundary`` as the constraint reaction from the last
+        solve — the smooth, bounded quantity used for dynamic topography
+        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
+        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
+        :meth:`solve`.
+
+        ``mass`` chooses the boundary-mass de-smear of the nodal reaction:
+        ``"lumped"`` (default) is monotone — it cannot overshoot where the traction
+        jumps (e.g. across a viscosity contrast), so it is the safe choice for driving
+        a free surface; ``"consistent"`` uses the full P2 line mass (marginally sharper
+        on smooth tractions, but overshoots at discontinuities)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
+        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
+
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="lumped"):
+        r"""Write the dynamic topography
+        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
+        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
+        constraint reaction of the last solve. This is the hand-off to the free-surface
+        machinery — the 3-number topography integrator drives node motion from a surface
+        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
+        pass it here after each :meth:`solve`; its boundary nodes are filled and the
+        interior left untouched.
+
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length). ``mass`` selects
+        the recovery de-smear (``"lumped"`` default is monotone — no overshoot at a
+        stress jump — and is the safe choice for a free surface). Requires a prior
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "dynamic_topography requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
+        return _dtf(self, boundary, self._rotated_freeslip_info, field,
+                    buoyancy_scale=buoyancy_scale, mass=mass)
 
     def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
@@ -7394,6 +7590,41 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Set time on the DM so petsc_t is available in pointwise functions.
         # Non-dimensionalise if the scaling system is active.
         cdef DM _time_dm_stokes
+
+        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
+        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
+        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
+        if self._rotated_freeslip_bcs:
+            # This is a LINEAR solve path: it assembles the Jacobian and residual once at
+            # U=0 and solves the rotated saddle directly, so it does NOT run the SNES
+            # nonlinear iteration. Nonlinear rheology / Picard / warm-start are therefore
+            # unsupported through this path — guard the explicit cases rather than
+            # silently returning a single-linearisation answer.
+            if picard != 0 or not zero_init_guess:
+                raise NotImplementedError(
+                    "rotated free-slip BCs support only a single linear solve "
+                    "(zero_init_guess=True, picard=0). Nonlinear rheology or warm-start "
+                    "would require integrating the rotated constraint into the SNES "
+                    "iteration; not yet implemented.")
+            # Run the same pre-solve preamble as the standard path so the pointwise
+            # functions see the DM time, the auxiliary vector, and updated constants
+            # (needed for problems whose coefficients live in auxiliary fields).
+            if time is not None:
+                if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                    t_nd = float(uw.non_dimensionalise(time))
+                else:
+                    t_nd = float(time)
+                _time_dm_stokes = self.dm
+                UW_DMSetTime(_time_dm_stokes.dm, t_nd)
+            self.mesh.update_lvec()
+            self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+            self._update_constants()
+
+            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+            self._rotated_freeslip_info = solve_rotated_freeslip(
+                self, self._rotated_freeslip_bcs, verbose=verbose)
+            return
+
         if time is not None:
             if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
                 t_nd = float(uw.non_dimensionalise(time))
