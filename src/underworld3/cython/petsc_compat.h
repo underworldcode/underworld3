@@ -45,6 +45,39 @@ PetscErrorCode DMSetAuxiliaryVec_UW(DM dm, DMLabel label, PetscInt value, PetscI
     return DMSetAuxiliaryVec(dm, label, value, part, aux);
 }
 
+PetscErrorCode UW_PetscDSGetBoundaryWeakForm(PetscDS ds, PetscInt bd, PetscWeakForm *wf)
+{
+    PetscCall(PetscDSGetBoundary(ds, bd, wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
+    return PETSC_SUCCESS;
+}
+
+PetscErrorCode UW_DMPlexComputeResidualByKeyVolumeOnly(DM dm, PetscFormKey key, IS cellIS, PetscReal time, Vec locX, Vec locX_t, PetscReal t, Vec locF, void *ctx)
+{
+    DM vdm = NULL;
+    PetscSection section = NULL;
+    PetscSection global_section = NULL;
+    PetscDS ds = NULL;
+    PetscDS vds = NULL;
+    Vec aux = NULL;
+
+    PetscCall(DMClone(dm, &vdm));
+    PetscCall(DMGetLocalSection(dm, &section));
+    PetscCall(DMSetLocalSection(vdm, section));
+    PetscCall(DMGetGlobalSection(dm, &global_section));
+    PetscCall(DMSetGlobalSection(vdm, global_section));
+    PetscCall(DMCopyFields(dm, PETSC_DETERMINE, PETSC_DETERMINE, vdm));
+    PetscCall(DMCreateDS(vdm));
+    PetscCall(DMGetDS(dm, &ds));
+    PetscCall(DMGetDS(vdm, &vds));
+    PetscCall(PetscDSCopyConstants(ds, vds));
+    PetscCall(PetscDSCopyEquations(ds, vds));
+    PetscCall(DMGetAuxiliaryVec(dm, key.label, key.value, key.part, &aux));
+    if (aux) PetscCall(DMSetAuxiliaryVec(vdm, key.label, key.value, key.part, aux));
+    PetscCall(DMPlexComputeResidualByKey(vdm, key, cellIS, time, locX, locX_t, t, locF, ctx));
+    PetscCall(DMDestroy(&vdm));
+    return PETSC_SUCCESS;
+}
+
 // copy paste function signitures from $PETSC_DIR/include/petscds.h - would be nice to automate this.
 #define UW_SIG_F0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]
 #define UW_SIG_G0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]

@@ -81,22 +81,6 @@ def _auto_grad_smoothing_length(mesh):
     return h0 if units is None else h0 * units
 
 
-def _boundary_centre(mesh, boundary_coords: np.ndarray) -> np.ndarray:
-    """Parallel-safe centroid of the boundary node coordinates (the centre
-    used for the radial snap-back)."""
-    n_loc = int(boundary_coords.shape[0])
-    s_loc = (boundary_coords.sum(axis=0)
-             if n_loc else np.zeros(mesh.cdim))
-    if uw.mpi.size > 1:
-        from mpi4py import MPI as _MPI
-
-        s = uw.mpi.comm.allreduce(s_loc, op=_MPI.SUM)
-        n = uw.mpi.comm.allreduce(n_loc, op=_MPI.SUM)
-    else:
-        s, n = s_loc, n_loc
-    return s / max(n, 1)
-
-
 def _slip_normals(mesh, boundary_coords: np.ndarray):
     """Unit outward normals at ``boundary_coords`` from the projected
     boundary-normal field.
@@ -178,15 +162,6 @@ def _ot_adapt_step(
     else:
         ref_X = np.asarray(mesh._ot_adapt_reference_coords)
 
-    old_X = np.asarray(mesh.X.coords).copy()
-
-    # Fields to FE-remap: `field` is always remapped; append extras (deduped).
-    remap = [field]
-    for f in (fields_to_remap or []):
-        if f is not field and f not in remap:
-            remap.append(f)
-    old_data = {f: np.asarray(f.data).copy() for f in remap}
-
     # For radial coordinate systems (where boundary slip is used), create the
     # projected-normal field up front — before the metric builder / OT mover
     # set up any solver DM. Creating that MeshVariable mid-mover would stale
@@ -214,48 +189,234 @@ def _ot_adapt_step(
                     f"{mm['misalignment']:.3f} < {float(skip_threshold):.3f}")
             return False
 
-    # --- step 1: capture `field` at the reference-mesh DOF positions -----
-    mesh._deform_mesh(ref_X)
-    ref_field_coords = np.asarray(field.coords).copy()
-    mesh._deform_mesh(old_X)
-    field.data[...] = old_data[field]
-    field_at_ref = np.asarray(
-        uw.function.evaluate(field.sym[0], ref_field_coords)).reshape(-1)
+    # Phase-1 remesh redesign: the snapshot/move/transfer dance is now
+    # owned by the adapt op via remesh_with_field_transfer. The closure
+    # below performs the reset-to-reference + metric-canvas write +
+    # OT-mover steps. The helper snapshots `field` (and every other
+    # REMAP variable on the mesh — including hidden solver history) at
+    # entry, runs the closure (which may clobber `field` for the metric
+    # canvas — that write is INTENDED to be discarded by the helper's
+    # post-move transfer), then performs ONE deform-back /
+    # global_evaluate / deform-forward pair to bring every REMAP var
+    # onto the adapted positions. Fields the user previously listed in
+    # ``fields_to_remap`` are now transferred automatically; the kwarg
+    # is preserved for API compatibility (vars must be REMAP-policy,
+    # which is the default — so listing them is a no-op).
+    from underworld3.discretisation.remesh import (
+        remesh_with_field_transfer)
 
-    # --- step 2: load the reference (clean) mesh with the remapped field -
-    mesh._deform_mesh(ref_X)
-    field.data[:, 0] = field_at_ref
+    def _do_move():
+        # Phase-2 ALE opt-out: the OT reset-to-reference step is a
+        # discrete jump in node positions, not a smooth displacement,
+        # so the linear ``v_mesh = Δx / dt`` interpretation that
+        # SemiLagrangian.on_remesh uses for ALE is meaningless here.
+        # Publish a flag so DDt hooks fall back to Phase-1 REMAP for
+        # this adapt; the mesh's _remesh_pending_scratch dict is the
+        # pre-fire channel into ctx.scratch.
+        if hasattr(mesh, "_remesh_pending_scratch"):
+            scratch = getattr(mesh, "_remesh_pending_scratch", None)
+            if scratch is not None:
+                scratch["ale_opt_out"] = True
 
-    # --- step 3: build the gradient metric + run the OT mover ------------
-    rho = uw.meshing.metric_density_from_gradient(
-        mesh, field, refinement=ref_R, coarsening=coar,
-        metric_choice=metric_choice,
-        gradient_smoothing_length=grad_smoothing_length,
-        degree=1, name="ot_adapt")
-    uw.meshing.smooth_mesh_interior(
-        mesh, metric=rho, method="ot", boundary_slip=True,
-        method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
-                           step_frac=_OT_STEP_FRAC),
-        verbose=verbose)
-    new_X = np.asarray(mesh.X.coords).copy()
+        old_X_local = np.asarray(mesh.X.coords).copy()
+        # --- step 1: capture `field` at the reference-mesh DOF positions
+        mesh._deform_mesh(ref_X)
+        ref_field_coords = np.asarray(field.coords).copy()
+        mesh._deform_mesh(old_X_local)
+        field_at_ref = np.asarray(
+            uw.function.global_evaluate(
+                field.sym[0], ref_field_coords)).reshape(-1)
+        # --- step 2: load the reference (clean) mesh with the remapped field
+        mesh._deform_mesh(ref_X)
+        field.data[:, 0] = field_at_ref
+        # --- step 3: build the gradient metric + run the OT mover
+        rho = uw.meshing.metric_density_from_gradient(
+            mesh, field, refinement=ref_R, coarsening=coar,
+            metric_choice=metric_choice,
+            gradient_smoothing_length=grad_smoothing_length,
+            degree=1, name="ot_adapt")
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=rho, method="ot", boundary_slip=True,
+            method_kwargs=dict(n_outer=_OT_N_OUTER, relax=_OT_RELAX,
+                               step_frac=_OT_STEP_FRAC),
+            verbose=verbose)
 
-    # --- step 4: FE-remap all fields from old_X onto the adapted mesh ----
-    # The metric-canvas write to `field` (step 2) is discarded here by
-    # design: every remapped field is re-derived from its *original*
-    # (old_X) data, so the final field is the true physical field carried
-    # onto the new positions.
-    new_coords = {f: np.asarray(f.coords).copy() for f in remap}
-    mesh._deform_mesh(old_X)
-    for f in remap:
-        f.data[...] = old_data[f]
-    remapped = {}
-    for f in remap:
-        val = np.asarray(uw.function.evaluate(f.sym, new_coords[f]))
-        remapped[f] = val.reshape(np.asarray(f.data).shape)
-    mesh._deform_mesh(new_X)
-    for f in remap:
-        f.data[...] = remapped[f]
-    for f in (fields_to_zero or []):
-        f.data[...] = 0.0
+    return remesh_with_field_transfer(
+        mesh, _do_move,
+        extra_zero=fields_to_zero,
+        verbose=verbose,
+    )
 
-    return True
+# ===== grafted from feature/elliptic-ma: slip helpers for mmpde mover =====
+def _boundary_facets(mesh, cdim):
+    """Boundary facets + opposite cell-vertex, found from the cell topology.
+
+    For each cell, every facet (edge in 2D, triangle in 3D) is a candidate
+    boundary facet; one that occurs in **exactly one** cell is on the
+    boundary. Returns ``(facets, opp)`` where ``facets`` is ``(n_bnd, k)``
+    (``k=2`` for 2D edges, ``k=3`` for 3D triangles) and ``opp`` is the
+    cell vertex opposite each facet — used to orient the facet normal
+    outward. Returns ``(None, None)`` for non-simplicial meshes.
+    """
+    from underworld3.meshing.smoothing import _tri_cells, _tet_cells
+    if cdim == 2:
+        cells = _tri_cells(mesh.dm)
+        if cells is None:
+            return None, None
+        rows = []
+        for k in range(3):
+            v0 = cells[:, k]; v1 = cells[:, (k + 1) % 3]
+            vopp = cells[:, (k + 2) % 3]
+            vmin = np.minimum(v0, v1); vmax = np.maximum(v0, v1)
+            rows.append(np.column_stack([vmin, vmax, vopp]))
+        e = np.vstack(rows)
+        idx = np.lexsort((e[:, 1], e[:, 0]))
+        e = e[idx]
+        same_prev = np.zeros(len(e), dtype=bool)
+        same_prev[1:] = ((e[1:, 0] == e[:-1, 0])
+                         & (e[1:, 1] == e[:-1, 1]))
+        same_next = np.zeros(len(e), dtype=bool)
+        same_next[:-1] = same_prev[1:]
+        bnd_mask = (~same_prev) & (~same_next)
+        bnd = e[bnd_mask]
+        return bnd[:, :2], bnd[:, 2]
+    if cdim == 3:
+        cells = _tet_cells(mesh.dm)
+        if cells is None:
+            return None, None
+        rows = []
+        for k in range(4):
+            others = [(k + 1) % 4, (k + 2) % 4, (k + 3) % 4]
+            tri = np.sort(np.column_stack(
+                [cells[:, others[0]], cells[:, others[1]],
+                 cells[:, others[2]]]), axis=1)
+            rows.append(np.column_stack([tri, cells[:, k]]))
+        f = np.vstack(rows)
+        idx = np.lexsort((f[:, 2], f[:, 1], f[:, 0]))
+        f = f[idx]
+        same_prev = np.zeros(len(f), dtype=bool)
+        same_prev[1:] = ((f[1:, 0] == f[:-1, 0])
+                         & (f[1:, 1] == f[:-1, 1])
+                         & (f[1:, 2] == f[:-1, 2]))
+        same_next = np.zeros(len(f), dtype=bool)
+        same_next[:-1] = same_prev[1:]
+        bnd_mask = (~same_prev) & (~same_next)
+        bnd = f[bnd_mask]
+        return bnd[:, :3], bnd[:, 3]
+    return None, None
+
+
+def _all_boundary_labels(mesh):
+    """Named codim-1 boundary labels of the mesh, skipping the synthetic /
+    non-geometric ones (``All_Boundaries``, ``Null_Boundary``, and the
+    Annulus single-point ``Centre`` pseudo-label that hard-aborts PETSc)."""
+    skip = {"All_Boundaries", "Null_Boundary", "Centre"}
+    out = []
+    try:
+        names = [b.name for b in mesh.boundaries]
+    except Exception:
+        names = []
+    for nm in names:
+        if nm in skip:
+            continue
+        out.append(nm)
+    return tuple(out)
+
+
+def _resolve_slip(mesh, slip_spec):
+    """Resolve the ``slip_spec`` (the value passed as ``boundary_slip`` /
+    ``slip_surfaces``) into a tuple of named slip-surface labels, and
+    pre-touch ``mesh.Gamma_P1`` so the projected-normal field ``_n_proj``
+    exists BEFORE any mover builds its solver DM (creating that MeshVariable
+    mid-mover would stale the DM handle — see project_uw3_smoother_footguns;
+    the matrix-free ``mmpde`` mover has no such DM but the elliptic /
+    anisotropic movers do).
+
+    Accepted forms (back-compatible):
+      * ``True`` / truthy / legacy ``'ring'``,``'box'`` strings → ALL named
+        codim-1 boundary surfaces slip.
+      * ``False`` / ``None`` / ``[]`` → no slip (pin all boundaries).
+      * a label name, or a list of label names → only those surfaces slip.
+      * a ``dict`` ``{label: snap_bool}`` → those labels slip; ``snap_bool``
+        is the per-surface return-to-bounds flag (``False`` = FREE surface,
+        slip but do not snap back). The dict keys are the slip labels.
+
+    Returns the tuple of slip-surface label names (possibly empty).
+    """
+    if slip_spec is None or slip_spec is False:
+        return ()
+    if slip_spec is True:
+        labels = _all_boundary_labels(mesh)
+    elif isinstance(slip_spec, dict):
+        labels = tuple(slip_spec.keys())
+    elif isinstance(slip_spec, str):
+        s = slip_spec.strip().lower()
+        if s in ("ring", "box", "axes", "axis", "true", "on", "1", "all"):
+            labels = _all_boundary_labels(mesh)
+        elif s in ("false", "off", "0", "none", ""):
+            return ()
+        else:
+            labels = (slip_spec,)            # a single explicit label name
+    else:
+        # an iterable of label names
+        labels = tuple(slip_spec)
+    if labels:
+        # Pre-create the projected-normal field (footgun-safe; see docstring).
+        try:
+            _ = mesh.Gamma_P1
+        except Exception:
+            pass
+    return labels
+
+
+def _nearest_on_facets_2d(pts, seg):
+    """Closest point on a set of 2D line segments. ``pts`` (m,2),
+    ``seg`` (nf,2,2). Returns (m,2) closest points (over all segments)."""
+    a = seg[:, 0]; b = seg[:, 1]            # (nf,2)
+    ab = b - a
+    ab2 = np.einsum('fi,fi->f', ab, ab)
+    ab2 = np.where(ab2 > 1.0e-30, ab2, 1.0)
+    out = np.empty_like(pts)
+    for i, p in enumerate(pts):
+        t = np.clip(((p - a) * ab).sum(axis=1) / ab2, 0.0, 1.0)
+        proj = a + t[:, None] * ab           # (nf,2)
+        d2 = ((proj - p) ** 2).sum(axis=1)
+        out[i] = proj[d2.argmin()]
+    return out
+
+
+def _nearest_on_facets_3d(pts, tri):
+    """Closest point on a set of 3D triangles. ``pts`` (m,3),
+    ``tri`` (nf,3,3). Returns (m,3). Per-point loop, vectorised over
+    triangles via the standard region-based closest-point algorithm."""
+    A = tri[:, 0]; B = tri[:, 1]; C = tri[:, 2]
+    AB = B - A; AC = C - A
+    out = np.empty_like(pts)
+    for i, p in enumerate(pts):
+        AP = p - A
+        d1 = np.einsum('fi,fi->f', AB, AP)
+        d2 = np.einsum('fi,fi->f', AC, AP)
+        BP = p - B
+        d3 = np.einsum('fi,fi->f', AB, BP)
+        d4 = np.einsum('fi,fi->f', AC, BP)
+        CP = p - C
+        d5 = np.einsum('fi,fi->f', AB, CP)
+        d6 = np.einsum('fi,fi->f', AC, CP)
+        va = d3 * d6 - d5 * d4
+        vb = d5 * d2 - d1 * d6
+        vc = d1 * d4 - d3 * d2
+        denom = va + vb + vc
+        denom = np.where(np.abs(denom) > 1.0e-30, denom, 1.0)
+        v = vb / denom
+        w = vc / denom
+        # interior barycentric point; clamp handles edge/vertex regions well
+        # enough for a small return-to-bounds correction on convex surfaces.
+        v = np.clip(v, 0.0, 1.0); w = np.clip(w, 0.0, 1.0)
+        s = v + w
+        over = s > 1.0
+        v = np.where(over, v / np.where(s > 0, s, 1.0), v)
+        w = np.where(over, w / np.where(s > 0, s, 1.0), w)
+        proj = A + v[:, None] * AB + w[:, None] * AC
+        dd = ((proj - p) ** 2).sum(axis=1)
+        out[i] = proj[dd.argmin()]
+    return out

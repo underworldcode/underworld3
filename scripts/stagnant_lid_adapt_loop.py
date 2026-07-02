@@ -73,6 +73,24 @@ p.add_argument('--dt-mult', type=float, default=1.0,
                     '> 1 (e.g. 3-5) give larger physical-time '
                     'steps at modest accuracy cost. 1.0 is the '
                     'historic default.')
+p.add_argument('--dt-cell-percentile', type=float, default=50.0,
+               help='Percentile of per-cell sizes used for the dt '
+                    'estimate (50 = median, the long-standing choice). '
+                    'adv.estimate_dt() keys off the MINIMUM cell, so a '
+                    'single anisotropic sliver from the mover collapses '
+                    'dt and freezes the run; SLCN is unconditionally '
+                    'stable so a robust (median) cell size is correct. '
+                    'Set 0 to fall back to the strict min-cell estimate_dt.')
+p.add_argument('--res', type=int, default=16,
+               help='Background resolution (1/cellSize of the FINEST '
+                    'level). With REFINE>0 the coarse base is this '
+                    'coarsened by 2^REFINE so the finest level keeps '
+                    'this resolution. Default 16.')
+p.add_argument('--resolution-ratio', type=float, default=0.0,
+               help='Override the strategy resolution_ratio R (finest/coarsest '
+                    'cell-size ratio) of the metric, keeping the MMPDE mover. '
+                    'R>0 builds the metric with refinement=R + front-following '
+                    '(R=3 is well beyond strategy extreme=2.0). 0 = use --strategy.')
 p.add_argument('--Ra', type=float, default=1.0e7,
                help='Rayleigh number (default 1e7).')
 p.add_argument('--delta-eta', type=float, default=1.0e4,
@@ -133,10 +151,17 @@ if resume_info is not None:
 elif args.from_perturbation:
     resume_step = 0
     resume_label = None
-    # Fresh Annulus matching the uniform-res16 setup.
+    # Fresh Annulus matching the uniform-res16 setup. REFINE>0 builds a
+    # boundary-snapped dm_hierarchy (coarse base = fine target coarsened by
+    # 2^REFINE, so the FINEST level keeps res16) so the velocity block can use
+    # geometric MG / FMG (PCVEL=gmg). Hierarchy survives the mover. See
+    # fault_stagnant.py + memory project_stokes_gmg_velocity_block.
+    _REFINE = int(os.environ.get("REFINE", 0))
+    _fac = 2 ** _REFINE
     mesh = uw.meshing.Annulus(
         radiusOuter=1.0, radiusInner=0.5,
-        cellSize=1.0/16, qdegree=3)
+        cellSize=_fac * (1.0/args.res), qdegree=3,
+        refinement=_REFINE)
 else:
     resume_step = 0
     resume_label = None
@@ -205,6 +230,35 @@ fs = (KFS * V.sym.dot(unit_r) * unit_r)
 stokes.add_natural_bc(fs, mesh.boundaries.Upper.name)
 T_cond = sympy.log(r_sym / 1.0) / sympy.log(0.5 / 1.0)
 stokes.bodyforce = Ra * (T.sym[0] - T_cond) * unit_r
+
+# --- Velocity-block preconditioner (geometric MG / FMG) -----------------
+# Only when a dm_hierarchy exists (REFINE>0, from-perturbation mesh). Recipe
+# lifted from fault_stagnant.py (memory project_stokes_gmg_velocity_block):
+# PCVEL=gmg -> pc_type=mg on fieldsplit_velocity; MG_TYPE=full = FMG (F-cycle);
+# galerkin coarse ops; richardson+sor smoother; redundant-LU coarse. PCVEL=amg
+# (or REFINE=0) keeps the default GAMG. Coarse solve is a small REDUNDANT LU
+# (scalable), NOT a global direct solve.
+_REFINE = int(os.environ.get("REFINE", 0))
+_PCVEL = os.environ.get("PCVEL", "gmg" if _REFINE > 0 else "amg")
+if _REFINE > 0 and _PCVEL == "gmg":
+    _vp = "fieldsplit_velocity_"
+    stokes.petsc_options[_vp + "pc_type"] = "mg"
+    stokes.petsc_options[_vp + "pc_mg_galerkin"] = None
+    stokes.petsc_options[_vp + "pc_mg_levels"] = _REFINE + 1
+    # MG_TYPE=full -> linear FMG (coarse-first + prolong + V at each level);
+    # multiplicative -> V/W-cycle per pc_mg_cycle_type.
+    stokes.petsc_options[_vp + "pc_mg_type"] = os.environ.get("MG_TYPE", "full")
+    stokes.petsc_options[_vp + "pc_mg_cycle_type"] = os.environ.get("MG_CYCLE", "v")
+    stokes.petsc_options[_vp + "mg_levels_ksp_type"] = os.environ.get("MG_KSP", "richardson")
+    stokes.petsc_options[_vp + "mg_levels_pc_type"] = os.environ.get("MG_SMOOTH", "sor")
+    stokes.petsc_options[_vp + "mg_levels_ksp_max_it"] = int(os.environ.get("MG_SWEEPS", 2))
+    stokes.petsc_options[_vp + "mg_coarse_pc_type"] = "redundant"
+    stokes.petsc_options[_vp + "mg_coarse_redundant_pc_type"] = "lu"
+    stokes.petsc_options[_vp + "ksp_max_it"] = 300
+    uw.pprint(f"  velocity PC = geometric {'FMG' if stokes.petsc_options[_vp+'pc_mg_type']=='full' else 'GMG'} "
+              f"({_REFINE+1} levels, {os.environ.get('MG_TYPE','full')}/{os.environ.get('MG_CYCLE','v')}-cycle)")
+else:
+    uw.pprint(f"  velocity PC = default GAMG (REFINE={_REFINE}, PCVEL={_PCVEL})")
 
 adv = uw.systems.AdvDiffusionSLCN(
     mesh, u_Field=T, V_fn=V.sym, verbose=False,
@@ -281,13 +335,14 @@ def snapshot(step):
 
 
 def _adapt_step():
-    """Build metric + invoke mover with skip_threshold; FE-remap
-    T (V,P zeroed) if the mover actually moved nodes.
+    """Build metric + invoke mover with skip_threshold; the mover owns
+    field transfer (Phase-1 remesh redesign — see
+    docs/developer/design/REMESH_FIELD_TRANSFER_DESIGN.md). The harness
+    only zeros V, P for a cold-restart of the flow solve.
     Returns (moved, misalignment) tuple — misalignment is the
     current-mesh alignment score against the target metric BEFORE
     the adapt fires."""
     old_X = np.asarray(mesh.X.coords).copy()
-    old_T = np.asarray(T.data).copy()
     h0 = float(mesh._radii.mean())
     grad_L = (args.grad_smooth_h0 * h0
               if args.grad_smooth_h0 > 0 else None)
@@ -301,7 +356,17 @@ def _adapt_step():
     # log it whether or not the adapt fires.
     coar_val = float(args.refinement) ** 0.5 if args.refinement > 0 else 1.0
     R = max(float(args.refinement), coar_val) if args.refinement > 0 else 1.0
-    if args.refinement > 0:
+    # --resolution-ratio R>0 overrides the strategy's resolution_ratio so the
+    # metric grades to a finest/coarsest cell-size ratio of R (R=3 is well beyond
+    # strategy 'extreme'=2.0), keeping the MMPDE mover.
+    _Rmet = float(args.resolution_ratio)
+    if _Rmet > 0:
+        R = _Rmet
+        rho_diag = uw.meshing.metric_density_from_gradient(
+            mesh, T, refinement=_Rmet, coarsening="auto",
+            metric_choice="front-following",
+            gradient_smoothing_length=grad_L, name="diag")
+    elif args.refinement > 0:
         rho_diag = uw.meshing.metric_density_from_gradient(
             mesh, T, refinement=float(args.refinement),
             coarsening="auto", metric_choice="front-following",
@@ -315,6 +380,17 @@ def _adapt_step():
     misalign = float(mm["misalignment"])
     print(f"  mismatch before adapt: misalignment={misalign:.3f} "
           f"(skip threshold {sk})", flush=True)
+    if os.environ.get("MOVER", "anisotropic") == "ot":
+        # Reset-based OT adaptation: re-meshes FRESH to the current ∇T every
+        # cycle (so it cannot lag), sliver-free over long runs, with radial
+        # ring-slip built in (mesh.Gamma_P1). Owns its own field transfer:
+        # remaps T, zeros V,P (re-solved next Stokes; post-adapt-vp-zero).
+        moved = mesh.OT_adapt(
+            T, refinement=float(os.environ.get("OT_R", 3.0)),
+            coarsening="auto", metric_choice="front-following",
+            grad_smoothing_length=grad_L if grad_L else "auto",
+            fields_to_zero=[V, P], skip_threshold=sk, verbose=True)
+        return bool(moved), misalign
     if args.refinement > 0:
         moved = uw.meshing.follow_metric(
             mesh, T,
@@ -329,25 +405,62 @@ def _adapt_step():
         if not moved:
             return False, misalign
     else:
-        rho = uw.meshing.metric_density_from_gradient(
-            mesh, T, strategy=args.strategy, name="loop",
-            gradient_smoothing_length=grad_L)
-        uw.meshing.smooth_mesh_interior(
-            mesh, metric=rho, method="anisotropic",
-            strategy=args.strategy,
-            method_kwargs=dict(relax=0.2, n_outer=12),
-            verbose=True)
+        if _Rmet > 0:
+            rho = uw.meshing.metric_density_from_gradient(
+                mesh, T, refinement=_Rmet, coarsening="auto",
+                metric_choice="front-following",
+                gradient_smoothing_length=grad_L, name="loop")
+        else:
+            rho = uw.meshing.metric_density_from_gradient(
+                mesh, T, strategy=args.strategy, name="loop",
+                gradient_smoothing_length=grad_L)
+        # MOVER selects the mesh mover. 'ring' boundary slip (NOT 'box') lets
+        # boundary nodes slide tangentially along the annulus arcs so the mesh
+        # can refine the thermal boundary layers.
+        _slip = os.environ.get("MOVER_SLIP", "ring")
+        _slip = (False if _slip.lower() in ("0", "off", "false", "none") else _slip)
+        _mover = os.environ.get("MOVER", "mmpde")
+        if _mover == "ma":
+            uw.meshing.smooth_mesh_interior(
+                mesh, metric=rho, method="ma",
+                skip_threshold=sk, boundary_slip=_slip,
+                method_kwargs=dict(n_outer=1), verbose=True)
+        elif _mover in ("mmpde", "variational"):
+            # Huang–Kamenski MMPDE (method="mmpde"): variational, non-folding
+            # (G→∞ as detJ→0), genuinely clusters + ALIGNS cells to the metric
+            # (a thin strip on a feature, not a centre-of-gravity blob), with
+            # built-in boundary slip. Uses its OWN iteration to outer_tol
+            # (n_outer~150) — do NOT inject the anisotropic mover's n_outer/relax.
+            # accel/momentum are now real _winslow_mmpde kwargs (no longer env
+            # reads in the library); the harness still reads env for script-level
+            # convenience and forwards them through method_kwargs. Default
+            # accel="cg" (parameter-free nonlinear CG — the production choice).
+            uw.meshing.smooth_mesh_interior(
+                mesh, metric=rho, method="mmpde",
+                skip_threshold=sk, boundary_slip=_slip,
+                method_kwargs=dict(
+                    step_frac=float(os.environ.get("MMPDE_STEP", 0.2)),
+                    accel=os.environ.get("MMPDE_ACCEL", "cg"),
+                    momentum=float(os.environ.get("MMPDE_MOMENTUM", 0.0))),
+                verbose=True)
+        else:  # 'anisotropic' (_winslow_anisotropic, approach-3 — shreds/backtracks)
+            uw.meshing.smooth_mesh_interior(
+                mesh, metric=rho, method="anisotropic",
+                strategy=args.strategy,
+                skip_threshold=sk, boundary_slip=_slip,
+                method_kwargs=dict(
+                    relax=float(os.environ.get("MOVER_RELAX", 1.0)),
+                    n_outer=int(os.environ.get("MOVER_NOUTER", 1))),
+                verbose=True)
         new_X = np.asarray(mesh.X.coords).copy()
         if np.allclose(new_X, old_X):
             return False, misalign
-    # FE-remap T; explicitly zero V,P post-adapt
-    new_Tx = np.asarray(T.coords).copy()
-    mesh._deform_mesh(old_X)
-    T.data[...] = old_T
-    rT = np.asarray(uw.function.evaluate(
-        T.sym[0], new_Tx)).reshape(-1)
-    mesh._deform_mesh(new_X)
-    T.data[:, 0] = rT
+    # Phase-1 remesh redesign: the mover (smooth_mesh_interior /
+    # follow_metric / OT_adapt) owns the snapshot/move/transfer dance
+    # internally, so T (and every other REMAP-policy variable on the
+    # mesh, including hidden SLCN psi_star history) is already on the
+    # adapted node positions when we get here. The harness only zeros
+    # V, P for a cold-restart of the flow solve.
     V.data[...] = 0.0
     P.data[...] = 0.0
     return True, misalign
@@ -364,26 +477,52 @@ print(f"  init done {time.time()-t0:.1f}s "
 
 hist = []
 t_sim = 0.0
+# Width of one history row. The row is assembled in TWO places — here (seeding
+# from history.npz on --resume) and the per-step append in the loop. They MUST
+# stay column-for-column identical: a mismatch makes a later np.asarray(hist)
+# raise a cryptic "inhomogeneous shape" mid-run (it bit the FMG restart test).
+# The assert below fails loudly at resume time instead, and this constant is the
+# single source of truth for the width.
+_HIST_NCOL = 16
 if resume_label:
     hpath = os.path.join(OUT_DIR, "history.npz")
     if os.path.exists(hpath):
-        z = np.load(hpath)
-        for i in range(len(z['step'])):
-            if int(z['step'][i]) > resume_step:
-                continue
-            _mis = (float(z['misalignment'][i])
-                    if 'misalignment' in z.files else float('nan'))
-            hist.append((int(z['step'][i]),
-                         float(z['t'][i]),
-                         float(z['dt'][i]),
-                         float(z['wall'][i]),
-                         float(z['vrms'][i]),
-                         float(z['Nu'][i]),
-                         float(z['Tmin'][i]),
-                         float(z['Tmax'][i]),
-                         int(z['adapted'][i]),
-                         _mis))
+        # A run interrupted mid-write (an OOM / jetsam kill, Ctrl-C during the
+        # np.savez) can leave a truncated/corrupt history.npz (BadZipFile / bad
+        # CRC). The *simulation* state lives in the mesh + field checkpoints, not
+        # here, so a bad plot-history must NOT block the restart — warn and carry
+        # on with no seeded history.
+        try:
+            z = np.load(hpath)
+            # Solver/timing columns are absent in a pre-instrumentation npz.
+            _has_solver = 'stokes_ksp_its' in z.files
+            for i in range(len(z['step'])):
+                if int(z['step'][i]) > resume_step:
+                    continue
+                _mis = (float(z['misalignment'][i])
+                        if 'misalignment' in z.files else float('nan'))
+                hist.append((
+                    int(z['step'][i]), float(z['t'][i]), float(z['dt'][i]),
+                    float(z['wall'][i]), float(z['vrms'][i]), float(z['Nu'][i]),
+                    float(z['Tmin'][i]), float(z['Tmax'][i]), int(z['adapted'][i]),
+                    _mis,
+                    int(z['stokes_ksp_its'][i]) if _has_solver else -1,
+                    int(z['stokes_snes_its'][i]) if _has_solver else -1,
+                    int(z['adv_ksp_its'][i]) if _has_solver else -1,
+                    float(z['t_stokes'][i]) if _has_solver else 0.0,
+                    float(z['t_advdiff'][i]) if _has_solver else 0.0,
+                    float(z['t_adapt'][i]) if _has_solver else 0.0,
+                ))
+        except Exception as _e:
+            hist = []
+            print(f"  WARNING: prior history.npz unreadable "
+                  f"({type(_e).__name__}: {_e}); resuming without seeded "
+                  f"history (simulation state is intact in the checkpoints).")
         if hist:
+            assert all(len(r) == _HIST_NCOL for r in hist), (
+                f"resumed history rows have inconsistent widths "
+                f"{sorted({len(r) for r in hist})}; the resume-seed tuple (here) "
+                f"and the per-step append tuple must both be {_HIST_NCOL} columns.")
             t_sim = hist[-1][1]
             print(f"  resumed history: {len(hist)} entries, "
                   f"t={t_sim:.5f}")
@@ -399,14 +538,31 @@ print(f"  running steps {START_STEP}..{END_STEP - 1} "
 print(f"{'step':>5} {'t':>9} {'dt':>10} {'wall':>7} "
       f"{'vrms':>10} {'Nu':>8} {'T[min,max]':>22} {'adapt'}")
 
+# Header for the in-run-dir log (Nu / vrms / iterations / wall-time).
+_LOG_HEADER = (
+    f"# {tag}  np={uw.mpi.size}  Ra={Ra:.1e}  dEta={args.delta_eta:.1e}  "
+    f"strategy={args.strategy}  adapt_every={args.adapt_every}  "
+    f"REFINE={_REFINE}  velPC={_PCVEL}"
+    + (f"/{os.environ.get('MG_TYPE','full')}" if (_REFINE > 0 and _PCVEL == 'gmg') else "")
+    + "\n"
+    f"# kspV = outer-KSP its of the Stokes (velocity) solve; snesV = Stokes SNES its;\n"
+    f"# kspT = AdvDiff KSP its; mismatch = metric-mesh misalignment BEFORE adapt;\n"
+    f"# t_stk/t_adv/t_adpt = wall seconds for Stokes / advection / adaptation phases\n"
+    f"{'step':>5} {'t':>9} {'dt':>10} {'wall':>6} {'vrms':>11} "
+    f"{'Nu':>8} {'Tmin':>7} {'Tmax':>7} {'mismatch':>8} {'kspV':>6} {'snesV':>5} {'kspT':>5} "
+    f"{'t_stk':>7} {'t_adv':>7} {'t_adpt':>7} {'adapt':>6}\n")
+
 n_adapt_skipped = 0
 n_adapt_done = 0
 for s in range(START_STEP, END_STEP):
     t_step_0 = time.time()
     did_adapt = False
     misalign = float('nan')
+    t_adapt = 0.0
     if args.strategy != "off" and (s % args.adapt_every == 0):
+        _ta0 = time.time()
         did_adapt, misalign = _adapt_step()
+        t_adapt = time.time() - _ta0
         if did_adapt:
             n_adapt_done += 1
         else:
@@ -419,44 +575,96 @@ for s in range(START_STEP, END_STEP):
     # computed from the just-remapped T before AdvDiff uses it,
     # and the SLCN trace-back history stays consistent.
     try:
+        _ts0 = time.time()
         stokes.solve(zero_init_guess=did_adapt)
-        dt = adv.estimate_dt(direction_aware=True) * float(args.dt_mult)
+        t_stokes = time.time() - _ts0
+        # Orientation-aware + sliver-robust dt: direction_aware uses the per-cell
+        # extent ALONG v̂ (credits cells the mover stretched along the flow, up to
+        # ~10×); --dt-cell-percentile (median) reduces over cells so a few slivers
+        # (v ACROSS a thin cell) don't collapse dt. SLCN is unconditionally stable.
+        # pct=0 restores the strict min-cell CFL.
+        _td0 = time.time()
+        dt = float(adv.estimate_dt(
+            direction_aware=True,
+            percentile=float(args.dt_cell_percentile))) * float(args.dt_mult)
         adv.solve(timestep=dt, zero_init_guess=False)
+        t_advdiff = time.time() - _td0
     except Exception as e:
         print(f"  EXCEPTION at step {s}: {e}", flush=True)
         break
+    # Solver iteration counts: outer KSP iterations (the FMG-vs-GAMG signal —
+    # how many fgmres its the Stokes solve took) + SNES iterations.
+    def _solver_its(slv):
+        try:
+            return (int(slv.snes.getKSP().getIterationNumber()),
+                    int(slv.snes.getIterationNumber()))
+        except Exception:
+            return (-1, -1)
+    st_ksp, st_snes = _solver_its(stokes)
+    ad_ksp, ad_snes = _solver_its(adv)
     t_sim += dt
     wall = time.time() - t_step_0
 
     T_arr = T.data[:, 0]
-    if np.isnan(T_arr).any() or np.isinf(T_arr).any():
-        print(f"  step {s}: NaN/Inf in T — ABORT", flush=True)
+    # COLLECTIVE guards: T.data is rank-local, so reduce min/max/NaN across
+    # ranks before any `break`. A rank-local break desyncs the loop (some ranks
+    # exit, others continue) → MPI deadlock/hang in parallel.
+    _bad = bool(np.isnan(T_arr).any() or np.isinf(T_arr).any())
+    _bad = bool(uw.mpi.comm.allreduce(_bad, op=__import__("mpi4py").MPI.LOR))
+    if _bad:
+        if uw.mpi.rank == 0:
+            print(f"  step {s}: NaN/Inf in T — ABORT", flush=True)
         break
-    Tmin, Tmax = float(T_arr.min()), float(T_arr.max())
+    Tmin = float(uw.mpi.comm.allreduce(float(T_arr.min()), op=__import__("mpi4py").MPI.MIN))
+    Tmax = float(uw.mpi.comm.allreduce(float(T_arr.max()), op=__import__("mpi4py").MPI.MAX))
     if Tmax > 1.1 or Tmin < -0.1:
-        print(f"  step {s}: T overshoot [{Tmin:+.4f},{Tmax:+.4f}]"
-              f" — ABORT", flush=True)
+        if uw.mpi.rank == 0:
+            print(f"  step {s}: T overshoot [{Tmin:+.4f},{Tmax:+.4f}]"
+                  f" — ABORT", flush=True)
         break
 
     v_sq = np.asarray(uw.function.evaluate(
         V.sym.dot(V.sym), mesh.X.coords))
-    vrms = float(np.sqrt(np.mean(v_sq)))
+    # Collective vrms (v_sq is rank-local; reduce sum+count for a global rms —
+    # the previous np.mean(v_sq) was rank-local and printed a different value
+    # per rank).
+    _MPI = __import__("mpi4py").MPI
+    _vs = uw.mpi.comm.allreduce(float(v_sq.sum()), op=_MPI.SUM)
+    _vn = uw.mpi.comm.allreduce(int(v_sq.size), op=_MPI.SUM)
+    vrms = float(np.sqrt(_vs / max(_vn, 1)))
     Nu_val = _nu()
 
     hist.append((s, t_sim, dt, wall, vrms, Nu_val,
-                 Tmin, Tmax, int(did_adapt), misalign))
-    _h = np.asarray(hist)
+                 Tmin, Tmax, int(did_adapt), misalign,
+                 st_ksp, st_snes, ad_ksp,
+                 t_stokes, t_advdiff, t_adapt))
+    _h = np.asarray(hist, dtype=float)
     np.savez(os.path.join(OUT_DIR, "history.npz"),
              step=_h[:, 0], t=_h[:, 1], dt=_h[:, 2],
              wall=_h[:, 3], vrms=_h[:, 4], Nu=_h[:, 5],
              Tmin=_h[:, 6], Tmax=_h[:, 7], adapted=_h[:, 8],
-             misalignment=_h[:, 9])
+             misalignment=_h[:, 9], stokes_ksp_its=_h[:, 10],
+             stokes_snes_its=_h[:, 11], adv_ksp_its=_h[:, 12],
+             t_stokes=_h[:, 13], t_advdiff=_h[:, 14], t_adapt=_h[:, 15])
+    # Human-readable per-step log IN THE RUN DIR (rewritten each step).
+    if uw.mpi.rank == 0:
+        with open(os.path.join(OUT_DIR, "run_log.txt"), "w") as _lf:
+            _lf.write(_LOG_HEADER)
+            for _r in hist:
+                _mm = _r[9] if np.isfinite(_r[9]) else float('nan')
+                _lf.write(
+                    f"{int(_r[0]):>5d} {_r[1]:>9.5f} {_r[2]:>10.3e} "
+                    f"{_r[3]:>6.2f} {_r[4]:>11.4e} {_r[5]:>+8.4f} "
+                    f"{_r[6]:>+7.3f} {_r[7]:>+7.3f} {_mm:>8.3f} "
+                    f"{int(_r[10]):>6d} {int(_r[11]):>5d} {int(_r[12]):>5d} "
+                    f"{_r[13]:>7.2f} {_r[14]:>7.2f} {_r[15]:>7.2f} "
+                    f"{'ADAPT' if int(_r[8]) else '':>6}\n")
     if s % args.snapshot_every == 0:
         snapshot(s)
     if s % args.log_every == 0:
         print(f"{s:>5d} {t_sim:>9.5f} {dt:>10.3e} "
               f"{wall:>6.2f}s {vrms:>10.3e} {Nu_val:>+8.3f} "
-              f"[{Tmin:+.3f},{Tmax:+.3f}]  "
+              f"[{Tmin:+.3f},{Tmax:+.3f}] kspV={st_ksp:>3d} "
               f"{'ADAPT' if did_adapt else ''}",
               flush=True)
     if args.max_t > 0 and t_sim >= args.max_t:
@@ -471,3 +679,6 @@ print(f"=== done; adapts done={n_adapt_done}, "
       f"skipped={n_adapt_skipped} ===", flush=True)
 if hist:
     snapshot(int(hist[-1][0]))
+# Done-sentinel for the live render watcher (rank 0).
+if uw.mpi.rank == 0:
+    open(os.path.join(OUT_DIR, "_RUN_DONE"), "w").write("done\n")

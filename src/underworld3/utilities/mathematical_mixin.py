@@ -246,6 +246,16 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value, so
+            # it composes with the variable's non-dimensional .sym. Compatible
+            # units reduce via the model scaling; sympy cannot operate on the Pint
+            # object directly (UW3 issue #282). Matches the transparent-container
+            # behaviour of variable-variable arithmetic (units derived on demand).
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:
@@ -288,6 +298,16 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value, so
+            # it composes with the variable's non-dimensional .sym. Compatible
+            # units reduce via the model scaling; sympy cannot operate on the Pint
+            # object directly (UW3 issue #282). Matches the transparent-container
+            # behaviour of variable-variable arithmetic (units derived on demand).
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:
@@ -322,6 +342,16 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value, so
+            # it composes with the variable's non-dimensional .sym. Compatible
+            # units reduce via the model scaling; sympy cannot operate on the Pint
+            # object directly (UW3 issue #282). Matches the transparent-container
+            # behaviour of variable-variable arithmetic (units derived on demand).
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:
@@ -360,6 +390,13 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value
+            # (UW3 issue #282); see the note in __add__.
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:
@@ -395,6 +432,16 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value, so
+            # it composes with the variable's non-dimensional .sym. Compatible
+            # units reduce via the model scaling; sympy cannot operate on the Pint
+            # object directly (UW3 issue #282). Matches the transparent-container
+            # behaviour of variable-variable arithmetic (units derived on demand).
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:
@@ -420,6 +467,16 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value, so
+            # it composes with the variable's non-dimensional .sym. Compatible
+            # units reduce via the model scaling; sympy cannot operate on the Pint
+            # object directly (UW3 issue #282). Matches the transparent-container
+            # behaviour of variable-variable arithmetic (units derived on demand).
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:
@@ -443,6 +500,16 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value, so
+            # it composes with the variable's non-dimensional .sym. Compatible
+            # units reduce via the model scaling; sympy cannot operate on the Pint
+            # object directly (UW3 issue #282). Matches the transparent-container
+            # behaviour of variable-variable arithmetic (units derived on demand).
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:
@@ -469,6 +536,16 @@ class MathematicalMixin:
             other_sym = other
         elif isinstance(other, MathematicalMixin) and hasattr(other, "sym"):
             other_sym = other.sym
+        elif hasattr(other, "magnitude") and hasattr(other, "units"):
+            # Unit-bearing scalar (UWQuantity / Pint) -> non-dimensional value, so
+            # it composes with the variable's non-dimensional .sym. Compatible
+            # units reduce via the model scaling; sympy cannot operate on the Pint
+            # object directly (UW3 issue #282). Matches the transparent-container
+            # behaviour of variable-variable arithmetic (units derived on demand).
+            import underworld3 as uw
+
+            _nd = uw.non_dimensionalise(other)
+            other_sym = float(_nd.magnitude) if hasattr(_nd, "magnitude") else float(_nd)
         elif hasattr(other, "_sympify_"):
             other_sym = other._sympify_()
         else:

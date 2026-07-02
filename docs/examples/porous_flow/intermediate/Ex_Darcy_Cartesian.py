@@ -52,23 +52,36 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
+
+def in_notebook():
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+
+    shell = get_ipython()
+    if shell is None:
+        return False
+
+    return shell.__class__.__name__ == "ZMQInteractiveShell"
+
+
 # %% [markdown]
 """
 ## Configurable Parameters
 
 Override from command line:
-```bash
+
 python Ex_Darcy_Cartesian.py -uw_cell_size 0.025
 python Ex_Darcy_Cartesian.py -uw_permeability_power 3
-```
 """
 
 # %%
 params = uw.Params(
-    uw_cell_size = 0.05,          # Mesh cell size
-    uw_permeability_power = 2,    # Exponent for depth-dependent permeability
-    uw_domain_width = 4.0,        # Domain width
-    uw_domain_height = 1.0,       # Domain height (before deformation)
+    uw_cell_size=0.05,          # Mesh cell size
+    uw_permeability_power=2,    # Exponent for depth-dependent permeability
+    uw_domain_width=4.0,        # Domain width
+    uw_domain_height=1.0,       # Domain height before deformation
 )
 
 # %% [markdown]
@@ -94,9 +107,11 @@ x, y = mesh.X
 h_fn = 1.0 + x * 0.2 / 4 + 0.04 * sympy.cos(2.0 * np.pi * x) * y
 
 new_coords = mesh.X.coords.copy()
-new_coords[:, 1] = uw.function.evaluate(h_fn * y, mesh.X.coords, mesh.N)
+new_coords[:, 1] = np.asarray(
+    uw.function.evaluate(h_fn * y, mesh.X.coords, mesh.N)
+).reshape(-1)
 
-mesh._deform_mesh(new_coords=new_coords)
+mesh.deform(new_coords)
 
 # %% [markdown]
 """
@@ -104,7 +119,7 @@ mesh._deform_mesh(new_coords=new_coords)
 """
 
 # %%
-if uw.mpi.size == 1 and uw.is_notebook:
+if uw.mpi.size == 1 and in_notebook():
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -133,7 +148,7 @@ darcy.constitutive_model = uw.constitutive_models.DarcyFlowModel
 darcy.petsc_options.delValue("ksp_monitor")
 
 # Depth-dependent permeability
-k = (y + 0.01)
+k = y + 0.01
 pw = params.uw_permeability_power
 darcy.constitutive_model.Parameters.permeability = k**pw
 
@@ -164,7 +179,7 @@ p_soln.stats()
 """
 
 # %%
-if uw.mpi.size == 1 and uw.is_notebook:
+if uw.mpi.size == 1 and in_notebook():
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -172,7 +187,10 @@ if uw.mpi.size == 1 and uw.is_notebook:
     pvmesh.point_data["V"] = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
     pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
     pvmesh.point_data["dP"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym[0] - (h_fn - y))
-    pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(pvmesh, sympy.log(v_soln.sym.dot(v_soln.sym)))
+    pvmesh.point_data["S"] = vis.scalar_fn_to_pv_points(
+        pvmesh,
+        sympy.log(v_soln.sym.dot(v_soln.sym)),
+    )
 
     velocity_points = vis.meshVariable_to_pv_cloud(v_soln)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
@@ -206,7 +224,12 @@ if uw.mpi.size == 1 and uw.is_notebook:
         opacity=1.0,
     )
 
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.5, opacity=0.5)
+    pl.add_arrows(
+        velocity_points.points,
+        velocity_points.point_data["V"],
+        mag=0.5,
+        opacity=0.5,
+    )
     pl.add_mesh(pvstream, line_width=1.0)
     pl.show(cpos="xy", jupyter_backend="html")
 
@@ -216,5 +239,13 @@ if uw.mpi.size == 1 and uw.is_notebook:
 """
 
 # %%
-_, _, _, max_p, _, _, _ = p_soln.stats()
+with mesh.access(p_soln):
+    local_max_p = float(np.max(p_soln.data[:, 0]))
+
+if uw.mpi.size > 1:
+    from mpi4py import MPI
+    max_p = MPI.COMM_WORLD.allreduce(local_max_p, op=MPI.MAX)
+else:
+    max_p = local_max_p
+
 print("Max pressure: {:4f}".format(max_p))

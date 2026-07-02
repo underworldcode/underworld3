@@ -353,6 +353,11 @@ def UnstructuredSimplexBox(
         verbose=verbose,
     )
 
+    # Bounding-surface objects for tangent slip: axis-aligned box faces are
+    # planes (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_box_face_surfaces
+    register_box_face_surfaces(new_mesh, minCoords, maxCoords)
+
     return new_mesh
 
 
@@ -1362,5 +1367,10 @@ def StructuredQuadBox(
         units=units,
         verbose=verbose,
     )
+
+    # Bounding-surface objects for tangent slip: axis-aligned box faces are
+    # planes (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_box_face_surfaces
+    register_box_face_surfaces(new_mesh, minCoords, maxCoords)
 
     return new_mesh

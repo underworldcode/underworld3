@@ -18,6 +18,12 @@ Profile, optimize, and scale your simulations.
 
 **[→ Performance Guide](performance.md)**
 
+### Multigrid Preconditioning (FMG vs GAMG)
+Robust, anisotropy-tolerant solves on adapted meshes — build a mesh with
+`refinement` and the solver uses geometric Full Multigrid automatically.
+
+**[→ Multigrid Preconditioning](multigrid-preconditioning.md)**
+
 ### Complex Rheologies
 Implement advanced material models and constitutive laws.
 
@@ -43,6 +49,13 @@ Accurate free-slip and Neumann conditions on elliptical and non-planar boundarie
 Dynamic remeshing and adaptive refinement strategies.
 
 **[→ Mesh Adaptation](mesh-adaptation.md)**
+
+### Semi-Lagrangian Time Integration (SLCN / SL-BDF2)
+How `AdvDiffusionSLCN` discretizes advection–diffusion in time: the BDF
+time-derivative and Adams-Moulton/θ flux knobs, and how to pair them
+(SLCN vs SL-BDF2).
+
+**[→ Semi-Lagrangian Time Integration](semi-lagrangian-time-integration.md)**
 
 ### Porous Media Flow
 Darcy flow, Richards equation, and variably-saturated groundwater modelling.
@@ -86,11 +99,14 @@ Ready to contribute to Underworld3?
 
 parallel-computing
 performance
+multigrid-preconditioning
+solver-iteration-callbacks
 complex-rheologies
 vep-transverse-isotropy-faults
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
+semi-lagrangian-time-integration
 porous-flow
 snapshot-restore
 troubleshooting

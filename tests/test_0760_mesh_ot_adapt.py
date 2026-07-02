@@ -100,20 +100,35 @@ def test_ot_adapt_preserves_field_pattern_annulus():
 # ---------------------------------------------------------------------------
 @pytest.mark.tier_a
 @pytest.mark.level_1
-def test_ot_adapt_box_moves_interior_pins_boundary():
+def test_ot_adapt_box_moves_interior_slides_boundary_on_faces():
+    # Generic topology-based slip is now active on Cartesian boxes too:
+    # boundary nodes on the box faces SLIDE tangentially; corners are pinned
+    # (incident face normals disagree); the box shape (axis-aligned bounding
+    # planes) is preserved exactly.
     m, T, feat = _box_with_field()
     is_bnd = _boundary_mask(m)
     X0 = np.asarray(m.X.coords).copy()
     moved = m.OT_adapt(T, refinement=3.0, fields_to_remap=[T])
     assert moved is True
     X1 = np.asarray(m.X.coords)
-    # Cartesian boundary is pinned (no slip): boundary nodes do not move
-    assert float(np.linalg.norm(X1[is_bnd] - X0[is_bnd], axis=1).max()) < 1.0e-12
-    # interior is refined
+    # interior refined
     assert float(np.linalg.norm(X1[~is_bnd] - X0[~is_bnd], axis=1).max()) > 1.0e-3
-    # field pattern preserved within FE-remap tolerance
+    # box CORNERS are pinned (each of the four unit-square corners is still
+    # present at its original position)
+    for cc in ([0., 0.], [0., 1.], [1., 0.], [1., 1.]):
+        assert np.any(np.all(np.abs(X1 - np.array(cc)) < 1.0e-9, axis=1)), \
+            f"corner {cc} lost"
+    # face vertices stay on the bounding planes (x=0, x=1, y=0 or y=1):
+    # for each originally-boundary node, at least one coord is 0 or 1
+    on_face = (np.minimum(X1[is_bnd], 1 - X1[is_bnd]).min(axis=1) < 1.0e-9)
+    assert on_face.all(), "boundary node left the box face"
+    # field pattern preserved within FE-remap tolerance — looser than the
+    # old pinned-box test (5e-2) because face slip reallocates some node
+    # budget from the BL interior to the boundary, mildly increasing remap
+    # error on a sharp tanh feature at this coarse base mesh. Still
+    # well-controlled (≪ the BL amplitude of 1).
     err = np.abs(np.asarray(T.data)[:, 0] - feat(np.asarray(T.coords))).max()
-    assert float(err) < 5.0e-2
+    assert float(err) < 1.5e-1
 
 
 # ---------------------------------------------------------------------------

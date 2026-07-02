@@ -163,6 +163,24 @@ def petsc_dm_filter_by_label(incoming_dm, label_name, label_value):
         return subdm
 
 
+def petsc_dm_set_regular_refinement(dm, regular=True):
+        """Flag a DMPlex as having been produced by uniform (regular) refinement
+        of its coarse DM.
+
+        This is the flag PETSc's geometric multigrid checks
+        (``DMCreateInterpolation_Plex``) to take the exact *nested* interpolation
+        path (``DMPlexComputeInterpolatorNested``, which maps coarse cell ``c`` to
+        fine children ``c*numSubcells + r``) instead of the point-location
+        *general* path. Only valid when the dm's point numbering follows the
+        canonical ``refine()`` convention and its coarse DM is set
+        (``setCoarseDM``). Not exposed by petsc4py, hence this wrapper.
+        """
+        cdef DM c_dm = dm
+        cdef PetscBool flag = PETSC_TRUE if regular else PETSC_FALSE
+        CHKERRQ( DMPlexSetRegularRefinement(c_dm.dm, flag) )
+        return
+
+
 
 # This is not cython, does it need to be here or in discretisation.py ?
 

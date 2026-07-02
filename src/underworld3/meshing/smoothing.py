@@ -58,6 +58,7 @@ Future extensions (separate PRs):
     path is serial-exact (rank-boundary nodes under-count forces)
 """
 
+import warnings
 from typing import Optional, Sequence
 
 import numpy as np
@@ -445,8 +446,27 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     # appropriate skip-or-adapt criterion in a dynamic loop.
     log_density = -np.log(A_actual)
     log_rho = np.log(rho)
-    if log_density.std() > 1.0e-12 and log_rho.std() > 1.0e-12:
-        alignment = float(np.corrcoef(log_density, log_rho)[0, 1])
+    # Pearson r of log(1/A_c) vs log(rho_c), from GLOBAL moment sums. Cells are
+    # partitioned across ranks, so a rank-local np.corrcoef yields a DIFFERENT
+    # alignment on each rank — the skip/adapt decision in smooth_mesh_interior
+    # then diverges across ranks and the (collective) mover deadlocks. Reducing
+    # the moments makes every rank agree. Serial: identical to np.corrcoef (the
+    # 1/n normalisation cancels in the ratio).
+    if _uw.mpi.size > 1:
+        _ar = lambda v: _uw.mpi.comm.allreduce(float(v))
+    else:
+        _ar = float
+    n_c = _ar(log_density.size)
+    sx = _ar(log_density.sum()); sy = _ar(log_rho.sum())
+    sxx = _ar((log_density * log_density).sum())
+    syy = _ar((log_rho * log_rho).sum())
+    sxy = _ar((log_density * log_rho).sum())
+    var_x = sxx / n_c - (sx / n_c) ** 2
+    var_y = syy / n_c - (sy / n_c) ** 2
+    if var_x > 1.0e-24 and var_y > 1.0e-24:
+        alignment = float((sxy / n_c - (sx / n_c) * (sy / n_c))
+                          / np.sqrt(var_x * var_y))
+        alignment = max(-1.0, min(1.0, alignment))
     else:
         alignment = 0.0
     # Misalignment: 0 = perfectly aligned, 1 = orthogonal.
@@ -547,7 +567,6 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
     else:
         edges, deg = cache
 
-    is_bnd = _pinned_mask(dm, pinned_labels)
     tris = _tri_cells(dm)
     cdim = mesh.cdim
     v0 = edges[:, 0]
@@ -555,54 +574,15 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
 
     coords = np.asarray(mesh.X.coords, dtype=np.double).copy()
 
-    # Boundary tangential slip. Fully locking every boundary node
-    # freezes the rim's angular distribution, so near a feature the
-    # interior must distort (the "touchy"/anisotropic refinement).
-    # Instead let boundary nodes SLIDE ALONG the boundary while
-    # staying EXACTLY ON it: each ring gets its OWN centre (robust
-    # if rings are not perfectly concentric) and every slip node is
-    # snapped back to its original distance from that centre after
-    # each step — so a slip node can change θ but can NEVER move
-    # off / away from the surface (the radial DOF is removed, not
-    # just penalised). One node per ring is a hard anchor (kills
-    # the ring's rigid-rotation gauge). The global inversion guard
-    # also blocks a slip node overtaking a neighbour (boundary
-    # self-tangle). TODO: a general deformed / free-surface
-    # boundary needs projection onto the boundary polyline, not a
-    # per-ring radius — circular form is exact for the Annulus.
-    if boundary_slip and is_bnd.any():
-        bc = np.nonzero(is_bnd)[0]
-        c0 = coords[bc].mean(axis=0)
-        rg = np.round(np.linalg.norm(coords[bc] - c0, axis=1), 6)
-        is_anchor = np.zeros(n_verts, dtype=bool)
-        slip_center = np.zeros((n_verts, cdim))
-        slip_rtarget = np.zeros(n_verts)
-        for rv in np.unique(rg):
-            grp = bc[rg == rv]
-            rc = coords[grp].mean(axis=0)        # this ring's centre
-            is_anchor[grp[np.argmax(
-                (coords[grp] - rc)[:, 0])]] = True
-            slip_center[grp] = rc
-            slip_rtarget[grp] = np.linalg.norm(
-                coords[grp] - rc, axis=1)
-        is_slip = is_bnd & ~is_anchor
-        is_pinned = is_anchor
-        sidx = np.nonzero(is_slip)[0]
-        s_ctr = slip_center[sidx]
-        s_rad = slip_rtarget[sidx]
-
-        def _project(Y):
-            v = Y[sidx] - s_ctr
-            nrm = np.linalg.norm(v, axis=1)
-            nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-            Y[sidx] = s_ctr + v * (s_rad / nrm)[:, None]
-            return Y
-    else:
-        is_pinned = is_bnd
-        is_slip = np.zeros(n_verts, dtype=bool)
-
-        def _project(Y):
-            return Y
+    # Boundary tangential slip via the mesh-owned contract
+    # (boundary-slip-strategy.md): each slip vertex slides tangentially and
+    # snaps back onto its bounding surface (radial ring / plane / facet);
+    # non-slip, junction, and degenerate-normal vertices pin. Replaces the
+    # per-ring COM radial snap (one node/ring anchored the rotation gauge);
+    # the global inversion guard below still blocks a slip node overtaking a
+    # neighbour, and tangential θ-drift is a harmless re-parameterisation.
+    is_pinned, _project = mesh.boundary_slip(
+        boundary_slip, reference_coords=coords, boundary_labels=pinned_labels)
 
     free = ~is_pinned
 
@@ -856,9 +836,20 @@ _OT_CACHE: dict = {}
 _GEMA_STATE: dict = {}
 
 
-def _use_direct_solver(solver, singular=False):
+def _use_direct_solver(solver, singular=False, elliptic=True):
     r"""Force a cached MA sub-solver onto a sparse **direct** factorisation
     (MUMPS LU) instead of the UW3 default GMRES + GAMG.
+
+    **Parallel safety (parallel-singular-corruption, 2026-05-27):** MUMPS
+    (the only parallel LU in this build) corrupts the heap when the same
+    factorisation path is exercised over *repeated* solves at np >= 3 — a
+    probabilistic SEGV/SIGBUS or MPI deadlock (the UW3 default GMRES+GAMG, which
+    never calls MUMPS, is clean). Since the movers re-solve in a Picard/outer
+    loop, MUMPS is unusable in parallel here. Under MPI this function therefore
+    falls back to the MUMPS-free iterative path (:func:`_use_iterative_solver`);
+    the direct MUMPS path below is kept for the validated **serial** efficiency
+    lever. ``elliptic`` is forwarded to the iterative fallback (φ-Poisson →
+    GAMG; mass systems → CG+Jacobi).
 
     Why this is the dominant MA-efficiency lever (profiled 2026-05-17,
     res-16 Annulus, AMP=8, warm re-call): the Picard loop fixes the
@@ -879,6 +870,12 @@ def _use_direct_solver(solver, singular=False):
     the iterative path produced — but it also eliminates the
     GAMG-on-pure-Neumann ``DIVERGED_LINEAR_SOLVE`` re-solve pathology.
     """
+    # Parallel: MUMPS-repeated corrupts the heap (see docstring) — use the
+    # MUMPS-free iterative path instead. Serial keeps the fast direct solve.
+    if uw.mpi.size > 1:
+        _use_iterative_solver(solver, singular=singular, elliptic=elliptic)
+        return
+
     o = solver.petsc_options
     # These three sub-problems are *linear* (φ Poisson with the Hessian
     # source frozen; the SPD Hessian-recovery mass system; the ∇φ
@@ -1007,8 +1004,22 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
         o["mg_levels_ksp_type"] = "richardson"
         o["mg_levels_pc_type"] = "sor"
         o["mg_levels_ksp_max_it"] = 4
-        o["mg_coarse_pc_type"] = "lu"
-        o["mg_coarse_pc_factor_mat_solver_type"] = "mumps"
+        # GAMG coarse solve. MUMPS (parallel LU) corrupts the heap over repeated
+        # parallel solves (parallel-singular-corruption) — so in parallel use a
+        # MUMPS-free coarse: `redundant` replicates the (tiny) coarse grid to
+        # every rank and solves it with a dense SVD, which is robust on the
+        # singular pure-Neumann coarse and never calls MUMPS (verified clean +
+        # convergent at np=5). Serial keeps the fast MUMPS coarse.
+        for k in ("mg_coarse_pc_factor_mat_solver_type",
+                  "mg_coarse_redundant_pc_type"):
+            try: o.delValue(k)
+            except Exception: pass
+        if uw.mpi.size > 1:
+            o["mg_coarse_pc_type"] = "redundant"
+            o["mg_coarse_redundant_pc_type"] = "svd"
+        else:
+            o["mg_coarse_pc_type"] = "lu"
+            o["mg_coarse_pc_factor_mat_solver_type"] = "mumps"
     else:
         o["ksp_type"] = "cg"              # consistent mass = SPD
         o["pc_type"] = "jacobi"           # mass matrix → trivial
@@ -1016,26 +1027,79 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
                   "pc_gamg_agg_nsmooths", "pc_gamg_threshold",
                   "mg_levels_ksp_type", "mg_levels_pc_type",
                   "mg_levels_ksp_max_it", "mg_coarse_pc_type",
-                  "mg_coarse_pc_factor_mat_solver_type"):
+                  "mg_coarse_pc_factor_mat_solver_type",
+                  "mg_coarse_redundant_pc_type"):
             try:
                 o.delValue(k)
             except Exception:
                 pass
 
 
-def _patch_volumes(tris, coords, n_verts):
+def _patch_volumes(tris, coords, n_verts, vol_field=None):
     """Per-vertex dual-patch area: a node's share (1/3) of every
     incident triangle's |area|. ρ_cur ∝ 1/patch for the (opt-in,
     n_outer>1) outer MA composition; at equidistribution
-    ``patch · ρ_tgt`` is uniform. Serial-exact (parallel under-counts
-    at rank-partition boundaries — acceptable for serial validation).
+    ``patch · ρ_tgt`` is uniform.
+
+    This quantity is exactly the **lumped P1 mass diagonal** ``M_ii = ∫ N_i dV``.
+    The hand-rolled local sum below is serial-exact, but **under-counts shared
+    vertices on rank-partition boundaries in parallel** — each rank only adds its
+    own incident triangles and never sums the neighbouring rank's. So in parallel
+    we assemble it through the FE mass matrix instead (``_lumped_vertex_volumes``),
+    where PETSc does the cross-rank ``localToGlobal(ADD)`` for us. Requires the
+    P1 ``vol_field``; falls back to the local sum when it is not supplied.
     """
+    if vol_field is not None and uw.mpi.size > 1:
+        return _lumped_vertex_volumes(vol_field)
     area = np.abs(_signed_areas(coords, tris)) / 3.0
     patch = np.zeros(n_verts, dtype=np.double)
     for k in range(3):
         np.add.at(patch, tris[:, k], area)
     patch[patch <= 0.0] = patch[patch > 0.0].mean()
     return patch
+
+
+def _lumped_vertex_volumes(vol_field):
+    r"""Parallel-correct per-vertex dual-patch volume = the lumped P1 mass
+    diagonal ``M_ii = ∫ N_i dV`` of ``vol_field``'s (P1, continuous, scalar)
+    space, assembled via the FE mass matrix so the cross-rank sum over shared
+    partition-boundary vertices is done by PETSc — unlike the hand-rolled local
+    sum in :func:`_patch_volumes`, which under-counts those vertices in parallel.
+
+    Identity: by partition of unity (``Σ_j N_j ≡ 1``) the consistent mass matrix
+    has row sums ``Σ_j M_ij = ∫ N_i Σ_j N_j = ∫ N_i dV``, i.e. the lumped diagonal
+    is ``M·1``.
+
+    TODO(petsc4py): PETSc has a purpose-built
+    ``DMCreateMassMatrixLumped(dm, &llm, &lm)`` that returns this lumped diagonal
+    directly (with the cross-rank ADD built in), but petsc4py (3.25) does not bind
+    it yet — only the *consistent* ``DM.createMassMatrix`` is exposed, hence the
+    ``M·1`` below. Replace this body with ``subdm.createMassMatrixLumped()`` once
+    petsc4py exposes that DM method.
+
+    Returns a per-vertex numpy array in ``vol_field``'s local DOF ordering (the
+    same depth-0 vertex ordering the movers use for ``vol_field.array``).
+    """
+    mesh = vol_field.mesh
+    indexset, subdm = mesh.dm.createSubDM(vol_field.field_id)
+    M = subdm.createMassMatrix(subdm)      # consistent P1 mass (FE-assembled, parallel-correct)
+    ones = M.createVecRight()
+    ones.set(1.0)
+    lumped = M.createVecLeft()
+    M.mult(ones, lumped)                   # M·1 = row sums = lumped diagonal
+    lvec = subdm.getLocalVec()
+    subdm.globalToLocal(lumped, lvec, addv=False)
+    out = np.asarray(lvec.array).copy()
+    subdm.restoreLocalVec(lvec)
+    for obj in (M, ones, lumped, indexset, subdm):
+        try:
+            obj.destroy()
+        except Exception:
+            pass
+    pos = out > 0.0
+    if not pos.all():
+        out[~pos] = out[pos].mean()
+    return out
 
 
 def _hessian_recovery_class():
@@ -1166,7 +1230,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
         phi = uw.discretisation.MeshVariable(
             f"winslow_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1206,123 +1270,25 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
 
     for outer in range(n_outer):
         dm = mesh.dm
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # Boundary tangential slip (same per-ring radius projection
-        # as the spring). MA's natural Neumann BC (∇φ·n̂=0) already
-        # makes ∇φ tangential at the boundary, so letting boundary
-        # nodes move by ∇φ then snapping back to their ring radius
-        # is the redistribution the formulation naturally wants —
-        # fully pinning them discards it. Nodes provably stay on
-        # the surface (radial DOF removed; drift ~machine ε). One
-        # node/ring anchors the rotation gauge.
-        _slip_mode = boundary_slip
-        if isinstance(_slip_mode, str):
-            _slip_mode = _slip_mode.lower()
-            if _slip_mode not in ("ring", "box", "axes", "axis"):
-                raise ValueError(
-                    f"boundary_slip must be False/True/'ring'/'box', "
-                    f"got {boundary_slip!r}")
-            if _slip_mode in ("axes", "axis"):
-                _slip_mode = "box"
-        elif _slip_mode is True:
-            _slip_mode = "ring"
-        if _slip_mode and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            if _slip_mode == "ring":
-                c0 = old_coords[bc].mean(axis=0)
-                rg = np.round(
-                    np.linalg.norm(old_coords[bc] - c0, axis=1),
-                    6)
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                slip_center = np.zeros((n_verts, _cdim))
-                slip_rtarget = np.zeros(n_verts)
-                for rv in np.unique(rg):
-                    grp = bc[rg == rv]
-                    rc = old_coords[grp].mean(axis=0)
-                    is_anchor[grp[np.argmax(
-                        (old_coords[grp] - rc)[:, 0])]] = True
-                    slip_center[grp] = rc
-                    slip_rtarget[grp] = np.linalg.norm(
-                        old_coords[grp] - rc, axis=1)
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                _sidx = np.nonzero(is_slip)[0]
-                _sctr = slip_center[_sidx]
-                _srad = slip_rtarget[_sidx]
-
-                def _project(Y):
-                    v = Y[_sidx] - _sctr
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                    return Y
-            else:  # "box" — axis-aligned edge slip
-                # Pin corners (on 2 box edges); allow other
-                # boundary nodes to slide along their single
-                # edge. Detect edges from boundary coord extents.
-                bc_coords = old_coords[bc]
-                xmin = bc_coords[:, 0].min()
-                xmax = bc_coords[:, 0].max()
-                ymin = bc_coords[:, 1].min()
-                ymax = bc_coords[:, 1].max()
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    xmin = uw.mpi.comm.allreduce(
-                        float(xmin), op=_MPI.MIN)
-                    xmax = uw.mpi.comm.allreduce(
-                        float(xmax), op=_MPI.MAX)
-                    ymin = uw.mpi.comm.allreduce(
-                        float(ymin), op=_MPI.MIN)
-                    ymax = uw.mpi.comm.allreduce(
-                        float(ymax), op=_MPI.MAX)
-                tol = 1.0e-9 * max(xmax - xmin, ymax - ymin, 1.0)
-                on_xmin = np.abs(bc_coords[:, 0] - xmin) < tol
-                on_xmax = np.abs(bc_coords[:, 0] - xmax) < tol
-                on_ymin = np.abs(bc_coords[:, 1] - ymin) < tol
-                on_ymax = np.abs(bc_coords[:, 1] - ymax) < tol
-                on_x_edge = on_xmin | on_xmax
-                on_y_edge = on_ymin | on_ymax
-                is_corner_loc = on_x_edge & on_y_edge
-                is_anchor = np.zeros(n_verts, dtype=bool)
-                is_anchor[bc[is_corner_loc]] = True
-                is_slip = is_bnd & ~is_anchor
-                is_pinned = is_anchor
-                # For each slip node, record which axis is fixed
-                # and the target value on that axis.
-                fixed_axis = np.full(n_verts, -1, dtype=np.int8)
-                fixed_val = np.zeros(n_verts)
-                xfix = on_x_edge & ~is_corner_loc
-                yfix = on_y_edge & ~is_corner_loc
-                fixed_axis[bc[xfix]] = 0
-                fixed_val[bc[xfix]] = bc_coords[xfix, 0]
-                fixed_axis[bc[yfix]] = 1
-                fixed_val[bc[yfix]] = bc_coords[yfix, 1]
-                _sidx = np.nonzero(is_slip)[0]
-                _sax = fixed_axis[_sidx]
-                _sval = fixed_val[_sidx]
-                _ix0 = _sidx[_sax == 0]
-                _ix1 = _sidx[_sax == 1]
-                _v0 = _sval[_sax == 0]
-                _v1 = _sval[_sax == 1]
-
-                def _project(Y):
-                    Y[_ix0, 0] = _v0
-                    Y[_ix1, 1] = _v1
-                    return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md): MA's natural Neumann BC (∇φ·n̂=0) makes
+        # ∇φ tangential at the boundary, so slip vertices slide along their
+        # surface (radial ring / box face / facet) and snap back; non-slip,
+        # junction, and degenerate-normal vertices pin. Replaces the inline
+        # per-ring / box-edge snap (the 'ring'/'box' hint is now inferred from
+        # the registered bounding surfaces).
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=old_coords,
+            boundary_labels=pinned_labels)
 
         if tris is not None and n_outer > 1:
-            patch = _patch_volumes(tris, old_coords, n_verts)
+            patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
             patch /= float(np.mean(patch))
         else:
             patch = np.ones(n_verts, dtype=np.double)
@@ -1368,7 +1334,13 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
         # Picard φ (it changes slowly under ω-relaxation) → a handful
         # of CG iters on the once-built hierarchy. The exact direct
         # path is indifferent to the initial guess.
-        _zig = (linear_solver != "gamg")
+        # Under MPI, ``linear_solver="direct"`` silently falls back to
+        # the iterative path inside ``_use_direct_solver`` (the
+        # MUMPS-heap-corruption guard at smoothing.py:914); honour the
+        # warm-start in that case too — otherwise the parallel mover
+        # pays extra Krylov iterations per Picard step for nothing.
+        _zig = not (linear_solver == "gamg"
+                    or (linear_solver == "direct" and uw.mpi.size > 1))
         prev_change = None
         # If target-side ρ is on, gradphi needs to be tracking the
         # current φ inside the Picard loop (it's used by ps.f via
@@ -1575,7 +1547,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
         phi = uw.discretisation.MeshVariable(
             f"ot_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1606,71 +1578,34 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
     else:
         phi, ps, gradphi, gproj, vol_field = cache
 
-    _zig = (linear_solver != "gamg")
+    # See _winslow_elliptic for the rationale on this combined check —
+    # ``linear_solver="direct"`` silently routes to the iterative path
+    # under MPI, so honour the warm-start there too.
+    _zig = not (linear_solver == "gamg"
+                or (linear_solver == "direct" and uw.mpi.size > 1))
 
     for outer in range(n_outer):
         dm = mesh.dm
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
 
-        # --- boundary slip via projected normals (mesh.Gamma_P1) ------
-        # Unified, geometry-agnostic slip (replaces the old box/ring
-        # special cases). Boundary nodes slide tangentially — we zero the
-        # projected-normal component of their displacement — and, for
-        # curved (radial) coordinate systems, snap back to their reference
-        # |r| so they stay on the surface. The normal comes from
-        # mesh.Gamma_P1 (the symbolic mesh.Gamma projected to a P1 field),
-        # which is valid for every geometry and is the same source used for
-        # free surfaces. Nodes with a degenerate projected normal (box
-        # corners where opposing face normals cancel, or an occasional
-        # unlocatable vertex) are pinned rather than slipped. `boundary_slip`
-        # is a bool; legacy 'ring'/'box'/'axes' strings are accepted as
-        # aliases for slip-on.
-        from underworld3.meshing._ot_adapt import (
-            _slip_normals, _boundary_centre, _is_radial_coords)
-
-        if _slip_on and is_bnd.any():
-            bidx = np.nonzero(is_bnd)[0]
-            bcoords = old_coords[bidx]
-            n_hat, valid = _slip_normals(mesh, bcoords)
-            slip_b = bidx[valid]
-            is_pinned = np.zeros(n_verts, dtype=bool)
-            is_pinned[bidx[~valid]] = True   # degenerate-normal nodes pinned
-            _n_slip = n_hat[valid]
-            _old_slip = old_coords[slip_b]
-            _radial = _is_radial_coords(mesh)
-            if _radial:
-                _centre = _boundary_centre(mesh, bcoords)
-                _r_target = np.linalg.norm(_old_slip - _centre, axis=1)
-
-            def _project(Y):
-                # tangential slide: remove the normal component of the
-                # boundary-node displacement
-                disp = Y[slip_b] - _old_slip
-                dn = (disp * _n_slip).sum(axis=1, keepdims=True)
-                Y[slip_b] = _old_slip + (disp - dn * _n_slip)
-                # snap curved boundaries back onto the surface (fixed |r|)
-                if _radial:
-                    v = Y[slip_b] - _centre
-                    nrm = np.linalg.norm(v, axis=1)
-                    nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                    Y[slip_b] = _centre + v * (_r_target / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md). Slip stays gated to radial meshes via
+        # ``_slip_on`` (a Cartesian boundary pins — the vertex-evaluated facet
+        # normal is degenerate there, see above); on a radial mesh the
+        # registered radial surfaces do the tangent slide + |r| restore.
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip if _slip_on else False,
+            reference_coords=old_coords, boundary_labels=pinned_labels)
 
         # --- compute V (patch volumes) on current mesh ---------
         if tris is None:
             patch = np.ones(n_verts, dtype=np.double)
         else:
-            patch = _patch_volumes(tris, old_coords, n_verts)
+            patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
         # Normalise so the mean over the domain is the cell mean.
         patch_mean = float(np.mean(patch))
         if uw.mpi.size > 1:
@@ -1955,7 +1890,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                 _use_iterative_solver(s, singular, elliptic)
         else:
             def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular)
+                _use_direct_solver(s, singular, elliptic)
 
         X = mesh.CoordinateSystem.X
         # Projected ∇ρ — first derivative only (UW3-clean), the
@@ -2027,7 +1962,11 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     else:
         grho, gproj, Df, usolvers, ufields = cache
 
-    _zig = (linear_solver != "gamg")
+    # See _winslow_elliptic for rationale — ``linear_solver="direct"``
+    # silently falls back to the iterative path under MPI, so honour
+    # the warm-start there too.
+    _zig = not (linear_solver == "gamg"
+                or (linear_solver == "direct" and uw.mpi.size > 1))
 
     # ---- build the eigen-clamped metric tensor field D ONCE ------
     # on the *undeformed* mesh (the design metric), then hold it
@@ -2327,7 +2266,6 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         dm = mesh.dm
         pStart, pEnd = dm.getDepthStratum(0)
         n_verts = pEnd - pStart
-        is_bnd = _pinned_mask(dm, pinned_labels)
         tris = _tri_cells(dm)
         old_coords = np.asarray(mesh.X.coords).copy()
         _cdim = mesh.cdim
@@ -2340,43 +2278,15 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         if metric_refresh_per_iter and outer > 0:
             _build_M_tensor()
 
-        # Boundary tangential slip — identical per-ring radius
-        # projection to _winslow_elliptic (the radial DOF is
-        # removed, so slip nodes provably stay on their ring; one
-        # node/ring anchors the rotation gauge).
-        if boundary_slip and is_bnd.any():
-            bc = np.nonzero(is_bnd)[0]
-            c0 = old_coords[bc].mean(axis=0)
-            rg = np.round(
-                np.linalg.norm(old_coords[bc] - c0, axis=1), 6)
-            is_anchor = np.zeros(n_verts, dtype=bool)
-            slip_center = np.zeros((n_verts, _cdim))
-            slip_rtarget = np.zeros(n_verts)
-            for rv in np.unique(rg):
-                grp = bc[rg == rv]
-                rc = old_coords[grp].mean(axis=0)
-                is_anchor[grp[np.argmax(
-                    (old_coords[grp] - rc)[:, 0])]] = True
-                slip_center[grp] = rc
-                slip_rtarget[grp] = np.linalg.norm(
-                    old_coords[grp] - rc, axis=1)
-            is_slip = is_bnd & ~is_anchor
-            is_pinned = is_anchor
-            _sidx = np.nonzero(is_slip)[0]
-            _sctr = slip_center[_sidx]
-            _srad = slip_rtarget[_sidx]
-
-            def _project(Y):
-                v = Y[_sidx] - _sctr
-                nrm = np.linalg.norm(v, axis=1)
-                nrm = np.where(nrm > 1.0e-30, nrm, 1.0)
-                Y[_sidx] = _sctr + v * (_srad / nrm)[:, None]
-                return Y
-        else:
-            is_pinned = is_bnd
-
-            def _project(Y):
-                return Y
+        # Boundary tangential slip via the mesh-owned contract
+        # (boundary-slip-strategy.md): slip vertices slide tangentially and
+        # snap back onto their bounding surface (radial ring / plane / facet);
+        # non-slip, junction, and degenerate-normal vertices pin. Replaces the
+        # inline per-ring COM radial snap (one node/ring anchored the rotation
+        # gauge; the signed-area backtrack below still guards against tangle).
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=old_coords,
+            boundary_labels=pinned_labels)
 
         # D is fixed & Lagrangian (built once, above) — no
         # re-projection feedback. The outer loop is a damped
@@ -2577,6 +2487,133 @@ def _build_local_to_owned_map(dm, gsection, vec):
             is_owned)
 
 
+def smooth_surface_field(
+    field,
+    n_iters: int = 10,
+    alpha: float = 0.5,
+    taubin: bool = True,
+    mu: Optional[float] = None,
+    passband: float = 0.1,
+    pinned_labels: Optional[Sequence[str]] = None,
+):
+    r"""Low-pass a scalar field over a (surface) mesh's vertex-edge graph.
+
+    The *field* analogue of the coordinate graph-Laplacian Jacobi path in
+    :func:`smooth_mesh_interior`. Each sweep blends every vertex value toward
+    the mean of its edge-neighbours,
+
+    .. math::
+
+        h_i \leftarrow h_i + f\,\Big( \tfrac{1}{|N(i)|}\sum_{j\in N(i)} h_j
+                                       - h_i \Big),
+
+    attenuating high-wavenumber (facet-scale / sawtooth) content while leaving
+    the smooth, long-wavelength field. Plain Laplacian smoothing
+    (``taubin=False``) also damps the smooth part and shrinks amplitudes; the
+    **Taubin** :math:`\lambda\,|\,\mu` scheme — a positive blend ``alpha``
+    followed by a negative back-step ``mu`` each iteration — is a near-flat
+    passband low-pass that leaves the mean and the long-wavelength amplitude
+    essentially unchanged (the discrete analogue of a volume-preserving
+    filter).
+
+    Designed for the free-surface height field carried on a codim-1 surface
+    submesh (:meth:`Mesh.extract_surface`): the graph operator needs only the
+    edge connectivity, so it works on a 1-manifold loop where an FE solve is
+    not yet available. No global gather, no FFT — unlike a spectral
+    (Fourier ``h(θ)``) low-pass it is purely local on the surface graph.
+
+    Parameters
+    ----------
+    field : degree-1 scalar ``MeshVariable``
+        Smoothed **in place** (its nodal values are overwritten).
+    n_iters : int, default 10
+        Number of Taubin (or plain-Laplacian) iterations.
+    alpha : float, default 0.5
+        Positive blend factor :math:`\lambda \in (0, 1]`.
+    taubin : bool, default True
+        Apply the volume-preserving :math:`\lambda\,|\,\mu` pair each
+        iteration. ``False`` ⇒ plain Laplacian smoothing (shrinks).
+    mu : float, optional
+        Negative back-step factor. Default derived from ``passband`` as
+        :math:`\mu = 1/(k_{pb} - 1/\lambda)` (the standard Taubin choice;
+        gives :math:`|\mu| \gtrsim \lambda`). Ignored when ``taubin`` is False.
+    passband : float, default 0.1
+        Taubin passband wavenumber :math:`k_{pb}` used to derive ``mu``.
+    pinned_labels : sequence of str, optional
+        Boundary labels whose vertices are held fixed (e.g. the endpoints of
+        an open surface arc). A closed loop (annulus / shell ``Upper``) has
+        none, so the default ``None`` is correct there.
+
+    Notes
+    -----
+    Parallel-correct and **bit-identical serial vs parallel**. The
+    neighbour-average is a single ``A.mult`` against the parallel
+    vertex-vertex adjacency from :func:`_build_adjacency_matrix` (assembled
+    with GLOBAL vertex indices, so an owned row sees every neighbour — even
+    those owned by another rank not in this rank's overlap); the field is
+    loaded into / read out of the global Vec via
+    :func:`_build_local_to_owned_map`, and the smoothed result is scattered
+    back to the field's local array (ghosts filled) with ``globalToLocal``.
+    The constant mode (eigenvalue 0) is preserved exactly on any rank count.
+    """
+    from petsc4py import PETSc
+
+    mesh = field.mesh
+
+    # Parallel vertex-vertex adjacency (entries 1.0; global indices) + the
+    # 1-dof-per-vertex scalar DM that owns the Vec/section layout.
+    A, dm_scalar, gsection = _build_adjacency_matrix(mesh)
+
+    g = dm_scalar.createGlobalVector()
+    tmp = g.duplicate()
+    ones = g.duplicate()
+    ones.set(1.0)
+    deg = g.duplicate()
+    A.mult(ones, deg)                       # row sums = vertex degrees
+    deg_arr = deg.array_r
+    deg_safe = np.where(deg_arr > 0.0, deg_arr, 1.0)
+
+    owned_local, owned_vec_pos, is_owned = _build_local_to_owned_map(
+        dm_scalar, gsection, g)
+
+    if taubin and mu is None:
+        # Standard Taubin: 1/λ + 1/μ = k_pb  ⇒  μ = 1/(k_pb − 1/λ) < 0.
+        mu = 1.0 / (passband - 1.0 / alpha)
+
+    # Load the field (local: owned+ghost) into the global Vec (owned rows).
+    # field.data[i] ↔ vertex pStart+i (degree-1), matching the owned map.
+    fvals = np.asarray(field.data[:, 0], dtype=float)
+    g.array[owned_vec_pos] = fvals[owned_local]
+
+    # Positions of pinned owned vertices within the global Vec (held fixed).
+    pin_vec_pos = None
+    if pinned_labels:
+        pmask = _pinned_mask(mesh.dm, tuple(pinned_labels))   # local-chart mask
+        full_to_vec = np.full(is_owned.shape[0], -1, dtype=np.int64)
+        full_to_vec[owned_local] = owned_vec_pos
+        pin_owned = owned_local[pmask[owned_local]]
+        pin_vec_pos = full_to_vec[pin_owned]
+        pin_vals = g.array_r[pin_vec_pos].copy()
+
+    def _blend(f):
+        A.mult(g, tmp)                       # tmp = Σ_{neighbours} (global-correct)
+        a = g.array                          # writable view of owned rows
+        a += f * (tmp.array_r / deg_safe - a)
+        if pin_vec_pos is not None:
+            a[pin_vec_pos] = pin_vals
+
+    for _ in range(n_iters):
+        _blend(alpha)
+        if taubin:
+            _blend(mu)
+
+    # Scatter owned -> local (fills ghosts) and write back to the field.
+    lvec = dm_scalar.createLocalVector()
+    dm_scalar.globalToLocal(g, lvec)
+    field.data[:, 0] = lvec.array_r
+    return field
+
+
 def smooth_mesh_interior(
     mesh,
     pinned_labels: Optional[Sequence[str]] = None,
@@ -2589,6 +2626,7 @@ def smooth_mesh_interior(
     verbose: bool = False,
     skip_threshold=_UNSET,
     strategy: Optional[str] = None,
+    slip_surfaces=None,
 ):
     r"""Smooth a mesh's interior vertices, optionally toward a
     spatially-varying target spacing.
@@ -2825,6 +2863,680 @@ def smooth_mesh_interior(
         f = 1 + 8 * sympy.exp(-((r0.sym[0] - 1.0) / 0.12) ** 2)
         smooth_mesh_interior(mesh, metric=f)
     """
+    # slip_surfaces is the public alias for the deprecated boundary_slip;
+    # resolve to a single spec threaded to the bare mover.
+    if slip_surfaces is not None:
+        if boundary_slip not in (None, False):
+            warnings.warn(
+                "smooth_mesh_interior: pass either slip_surfaces or the "
+                "deprecated boundary_slip, not both; using slip_surfaces.",
+                stacklevel=2)
+        boundary_slip = slip_surfaces
+    if boundary_slip is None:
+        boundary_slip = False
+    # Pre-create the projected-normal field (mesh.Gamma_P1) ONCE here,
+    # before the mover snapshots the DM. Creating this MeshVariable mid-
+    # mover restructures the DM and hard-aborts (project_uw3_smoother_footguns).
+    if boundary_slip not in (None, False, (), []):
+        try:
+            _ = mesh.Gamma_P1
+        except Exception:
+            pass
+    # Phase-1 remesh redesign: the adapt op now owns field transfer.
+    # Wrap the mover body so every REMAP-policy variable on the mesh is
+    # snapshotted, the mover runs, and a single deform-back /
+    # global_evaluate / deform-forward pair carries every variable onto
+    # the adapted node positions. Re-entrancy guard
+    # ``mesh._in_remesh_transfer`` lets composite adapts (OT_adapt) wrap
+    # the whole reset+build+smooth dance once at the outer level and
+    # have this inner call skip its own wrap.
+    if not getattr(mesh, "_in_remesh_transfer", False):
+        from underworld3.discretisation.remesh import (
+            remesh_with_field_transfer)
+        def _do_move():
+            _smooth_mesh_interior_bare(
+                mesh,
+                pinned_labels=pinned_labels,
+                n_iters=n_iters,
+                alpha=alpha,
+                metric=metric,
+                method=method,
+                boundary_slip=boundary_slip,
+                method_kwargs=method_kwargs,
+                verbose=verbose,
+                skip_threshold=skip_threshold,
+                strategy=strategy,
+            )
+        remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
+        return
+    # Re-entrant call from inside a composite adapt op: fall through to
+    # the bare mover.
+    _smooth_mesh_interior_bare(
+        mesh,
+        pinned_labels=pinned_labels,
+        n_iters=n_iters,
+        alpha=alpha,
+        metric=metric,
+        method=method,
+        boundary_slip=boundary_slip,
+        method_kwargs=method_kwargs,
+        verbose=verbose,
+        skip_threshold=skip_threshold,
+        strategy=strategy,
+    )
+
+
+
+# ===== grafted from feature/elliptic-ma: mmpde mover + helpers =====
+def _tet_cells(dm):
+    """Tetrahedron vertex-index quadruples (local-chart), or ``None`` if the
+    mesh is not all-tet. The 3D analogue of :func:`_tri_cells` — used for the
+    signed-volume backtrack of the equidistribution mover in 3D."""
+    cStart, cEnd = dm.getHeightStratum(0)
+    pStart, pEnd = dm.getDepthStratum(0)
+    tets = []
+    for c in range(cStart, cEnd):
+        closure = dm.getTransitiveClosure(c)[0]
+        vs = [p - pStart for p in closure if pStart <= p < pEnd]
+        if len(vs) != 4:
+            return None
+        tets.append(vs)
+    if not tets:
+        return None
+    return np.asarray(tets, dtype=np.int64)
+
+
+def _owned_cell_mask(dm):
+    """Local-chart boolean mask over cells (height stratum 0): True for
+    owned cells, False for ghost/overlap cells (leaves of the point SF).
+    Indexed like ``_tri_cells`` / ``_signed_areas`` (cell i ↔ point
+    cStart+i). Assembly must sum over OWNED cells only so that a
+    ``localToGlobal(ADD_VALUES)`` ghost reduction does not double-count
+    overlap cells.
+    """
+    cStart, cEnd = dm.getHeightStratum(0)
+    is_owned = np.ones(cEnd - cStart, dtype=bool)
+    sf = dm.getPointSF()
+    if sf is None:
+        return is_owned
+    try:
+        _n_roots, leaves, _remote = sf.getGraph()
+    except Exception:
+        return is_owned
+    if leaves is None or len(leaves) == 0:
+        return is_owned
+    for leaf in leaves:
+        if cStart <= leaf < cEnd:
+            is_owned[leaf - cStart] = False
+    return is_owned
+
+
+def _min_incident_edge_nd(cells, coords):
+    """Dimension-general shortest-incident-edge per vertex. ``cells`` is
+    (n_cells, d+1); returns (n_verts,). Used by the MMPDE per-node step
+    cap. (The 2D-only ``_min_incident_edge`` reads the DM directly; this
+    works for tets too and takes an explicit cell array so the caller can
+    restrict the stencil.)"""
+    n_verts = coords.shape[0]
+    ncorner = cells.shape[1]
+    v = np.full(n_verts, np.inf)
+    for a in range(ncorner):
+        for b in range(a + 1, ncorner):
+            e = np.linalg.norm(coords[cells[:, a]] - coords[cells[:, b]],
+                               axis=1)
+            np.minimum.at(v, cells[:, a], e)
+            np.minimum.at(v, cells[:, b], e)
+    return v
+
+
+def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+                   n_outer=150, p=1.5, theta=1.0 / 3.0, tau=1.0,
+                   step_frac=0.2, area_floor_frac=0.01,
+                   boundary_slip=False, outer_tol=1.0e-7, tol=1.0e-3,
+                   stol=None, stol_k=3,
+                   fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
+                   accel="cg", momentum=0.0,
+                   **_ignored):
+    r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
+    MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
+    arXiv:1410.7872). Dimension-general (`d = 2, 3`) and parallel-safe.
+
+    Generates the physical mesh as the image of a **fixed computational
+    (reference) mesh** under the inverse coordinate map, minimizing
+    Huang's functional ``G = theta*sqrt(detM)*S**q + (1-2theta)*d**q *
+    r**p * detM**((1-p)/2)`` with ``q = d*p/2``, ``S = tr(J Minv J^T)``,
+    ``J = Ehat @ inv(E)``, ``r = det J``.
+    Because `G → ∞` as `det𝕁 → 0` the map is non-folding (Math. Comp. 87
+    (2018) 1887); because it is the inverse map of a convex computational
+    domain it genuinely *clusters and aligns* to `M` — a thin strip on a
+    fault, not the isotropic centre-of-gravity blob the scalar MA mover
+    produces, and not the non-clustering smooth of the decoupled
+    `_winslow_anisotropic`. See
+    ``docs/developer/design/anisotropic-mmpde-mover.md``.
+
+    ``metric`` is the SPD `d×d` metric tensor: a sympy `Matrix` (function
+    of ``mesh.CoordinateSystem.X``) or a ``VarType.TENSOR`` /
+    ``SYM_TENSOR`` :class:`MeshVariable`. Build it small **across** a
+    feature (along its normal) and base along it, localized near the
+    feature (e.g. `M = I + (R²-1)·exp(-(d_seg/W)²)·n nᵀ`).
+
+    Parallel safety (release gate: `np>=2` must match serial): the
+    per-element `d×d` algebra is rank-local (batched ``numpy.linalg``);
+    the **velocity assembly** `Σ_{K∋i}|K|v^K_i` is summed over **owned
+    cells** into the coordinate DM Vec with ``localToGlobal(ADD_VALUES)``
+    + ``globalToLocal`` (cross-rank ghost reduction — not ``np.add.at``
+    into a global array); the per-node step and the energy/area
+    line-search predicates are computed from owned/assembled data with
+    collective ``allreduce`` so every rank takes the same accept/backtrack
+    branch; only owned vertices move and ghosts are halo-synced each trial
+    so the final ``_deform_mesh`` is consistent.
+
+    Time integration: gradient flow `dx_i/dt = (P_i/τ)Σ|K|v`,
+    `P_i = detM(x_i)^{(p-1)/2}` (scale-free), explicit Euler with a
+    per-node step cap (``step_frac``·min-incident-edge) and an **energy
+    line-search backtrack** (accept only if no fold *and* `I_h`
+    decreases) so the descent is monotone. ``n_outer`` Euler steps.
+
+    The steepest-descent direction is accelerated by ``accel`` (default
+    ``"cg"``, nonlinear conjugate gradient, parameter-free): this cuts the
+    outer-iteration count ~13× on the first (uniform→radial) adapt vs plain
+    descent and makes adapt-every-step affordable. ``"heavyball"`` /
+    ``"hb-restart"`` use Polyak momentum with coefficient ``momentum`` (default
+    0.9 for those modes); ``"none"`` is plain descent. The line-search keeps
+    every accelerator fold-safe. (Previously controlled by the ``MMPDE_ACCEL`` /
+    ``MMPDE_MOMENTUM`` environment variables, now removed — pass as kwargs, e.g.
+    ``method_kwargs={"accel": "cg"}`` through ``smooth_mesh_interior``.)
+    """
+    import sympy
+    from petsc4py import PETSc
+    pinned_labels = tuple(pinned_labels)
+    cdim = mesh.cdim
+    if cdim not in (2, 3):
+        raise NotImplementedError(
+            "_winslow_mmpde supports 2D/3D simplex meshes only")
+    p = float(p); theta = float(theta); tau = float(tau)
+    q = cdim * p / 2.0
+    dq = float(cdim) ** q
+    parallel = uw.mpi.size > 1
+
+    # --- metric as evaluable sympy entries -------------------------
+    # Accept a full d×d SPD tensor (sympy Matrix or tensor MeshVariable) OR a
+    # scalar density rho — the latter is coerced to the isotropic tensor rho*I,
+    # so mmpde takes the same metric forms as the ma/ot/anisotropic movers.
+    Msym = metric.sym if isinstance(metric, uw.discretisation.MeshVariable) else metric
+    if not isinstance(Msym, sympy.MatrixBase):
+        Msym = sympy.sympify(Msym)
+    if not isinstance(Msym, sympy.MatrixBase):        # bare scalar expression
+        Msym = sympy.eye(cdim) * Msym
+    elif Msym.shape == (1, 1):                        # 1x1 (scalar MeshVariable)
+        Msym = sympy.eye(cdim) * Msym[0, 0]
+    if Msym.shape != (cdim, cdim):
+        raise ValueError(
+            f"_winslow_mmpde metric must be {cdim}x{cdim} (or a scalar "
+            f"density), got {Msym.shape}")
+
+    def _eval_M_analytic(pts):
+        """Exact Eulerian metric via sympy evaluate → (n, cdim, cdim).
+        Correct but slow (sympy symbolic processing dominates the cost)."""
+        n = pts.shape[0]
+        out = np.empty((n, cdim, cdim))
+        for a in range(cdim):
+            for b in range(cdim):
+                e = Msym[a, b]
+                if getattr(e, "free_symbols", None):
+                    out[:, a, b] = np.asarray(
+                        uw.function.evaluate(e, pts)).reshape(-1)
+                else:
+                    out[:, a, b] = float(e)
+        return out
+
+    # `_eval_M` is (re)bound below once `ref` is known: either the exact
+    # analytic path, or a bake-once + Shepard/RBF interpolation from the
+    # FIXED reference cloud (Eulerian — the metric is a function of space,
+    # so we interpolate from a static cloud to the moving centroids, NOT a
+    # Lagrangian nodal field). RBF is ~10× faster per eval and smooths the
+    # analytic endpoint "elbow" kink; the metric is a guide field so the
+    # interpolation error costs no correctness (the line-search on I_h
+    # keeps the move valid for whatever M it is handed).
+    _eval_M = _eval_M_analytic
+
+    def _dM_dx(cen):
+        """∂M/∂x at centroids via centred FD on the analytic metric →
+        (n, cdim, cdim, cdim) indexed [cell, a, b, component]."""
+        n = cen.shape[0]
+        d = np.zeros((n, cdim, cdim, cdim))
+        for c in range(cdim):
+            sh = np.zeros(cdim); sh[c] = fd_eps
+            Mp = _eval_M(cen + sh)
+            Mm = _eval_M(cen - sh)
+            d[:, :, :, c] = (Mp - Mm) / (2.0 * fd_eps)
+        return d
+
+    # --- topology / parallel scaffolding ---------------------------
+    dm = mesh.dm
+    pStart, pEnd = dm.getDepthStratum(0)
+    n_verts = pEnd - pStart
+    if cdim == 2:
+        cells_all = _tri_cells(dm)
+        signed_vol = _signed_areas
+    else:
+        cells_all = _tet_cells(dm)
+        signed_vol = _signed_volumes
+    if cells_all is None:
+        return
+    fact = 2.0 if cdim == 2 else 6.0           # d! → |K| = |detE|/d!
+    owned_cell = _owned_cell_mask(dm)
+    cells_own = cells_all[owned_cell]
+    is_owned_v = _owned_vertex_mask(dm)
+
+    coord_dm = dm.getCoordinateDM()
+    local_vec = dm.getCoordinatesLocal()
+    global_vec = dm.getCoordinates()
+    vloc = coord_dm.getLocalVec()
+    vglob = coord_dm.getGlobalVec()
+
+    coords = np.asarray(local_vec.array, dtype=np.double).reshape(-1, cdim).copy()
+
+    # Fixed computational reference = coords at first call, cached on mesh
+    # (ghosted: this rank's local array including halo).
+    ref = getattr(mesh, "_mmpde_reference_coords", None)
+    if ref is None or ref.shape != coords.shape:
+        ref = coords.copy()
+        mesh._mmpde_reference_coords = ref
+
+    # --- RBF/Shepard bake of the metric (the production-fast path) ------
+    # Bake the metric at the CURRENT mesh NODES (its own DOF locations), then
+    # interpolate to the moving centroids each step via k-NN inverse-distance
+    # (Shepard). Source = nodes, NOT the fixed reference cloud `ref` (`ref` is
+    # kept for the _edge_mats reference frame). Two reasons:
+    #   * MONOTONE: a P1 density is positive by construction; Shepard is a convex
+    #     (positive-weight) average of the sampled node values, so the result is
+    #     GUARANTEED positive — no negative/non-SPD garbage, the SPD floor / NaN
+    #     bail never has to fire.
+    #   * ROBUST + FAST: nodes are always inside the mesh (never out-of-domain),
+    #     and Shepard needs no per-step cell location. RBF doesn't need
+    #     high-precision eval — speed + monotonicity. (Restores the earlier
+    #     "RBF metric eval" design intent: the fixed-`ref` FE bake could
+    #     mis-locate / drift outside a deformed interior and return ρ<0.)
+    if metric_eval == "rbf":
+        from scipy.spatial import cKDTree
+        M_src = _eval_M_analytic(coords)                 # nodal values (positive)
+        _tree = cKDTree(coords)
+        _kk = int(rbf_k) if rbf_k else (cdim + 2)
+
+        def _eval_M(pts):
+            dist, idx = _tree.query(pts, k=_kk)
+            if _kk == 1:
+                return M_src[idx]
+            w = 1.0 / np.maximum(dist, 1.0e-12) ** 2
+            w /= w.sum(axis=1, keepdims=True)
+            return np.einsum('nk,nkab->nab', w, M_src[idx])
+    else:
+        _eval_M = _eval_M_analytic
+
+    # --- SPD sanitiser on the evaluated metric -------------------------
+    # The MMPDE functional G uses fractional powers that are defined ONLY
+    # for an SPD metric: sqrt(detM), detM**((1-p)/2), and S**q with
+    # S = tr(J M⁻¹ Jᵀ). The metric is a guide field FE-evaluated at the
+    # FIXED reference cloud; once the interior has deformed, a reference
+    # point can fall OUTSIDE the current mesh and the P1 metric field is
+    # then evaluated by FE EXTRAPOLATION (out-of-cell basis functions go
+    # negative), yielding a non-SPD tensor — e.g. a scalar density ρ·I
+    # with ρ<0. Its determinant ρ² stays positive (so a detM>0 test
+    # passes) but M is negative-definite, so S<0 and S**q = NaN → the
+    # energy is non-finite and the mover bails with zero displacement
+    # (no adaptation). Project every evaluated tensor onto SPD with a
+    # small RELATIVE eigenvalue floor: a genuine SPD metric is returned
+    # unchanged (no-op), while extrapolation garbage becomes a benign
+    # "coarsen here" (tiny positive eigenvalues) instead of a NaN.
+    _eval_M_raw = _eval_M
+
+    def _spd_sanitise(M):
+        # Symmetrise: the metric is symmetric by construction, so for a valid
+        # tensor this is an exact no-op (M_ij == M_ji bit-for-bit).
+        Ms = 0.5 * (M + np.swapaxes(M, -1, -2))
+        if Ms.shape[0] == 0:
+            return Ms                                   # rank owns no cells
+        w, Vc = np.linalg.eigh(Ms)
+        wmax = float(np.nanmax(w))
+        floor = max(wmax, 1.0) * 1.0e-8
+        # Per-tensor SPD test: a cell is "bad" only if one of its OWN
+        # eigenvalues is non-finite or below the floor. Project just those
+        # cells; every already-SPD tensor is returned untouched (bit-identical
+        # to the symmetrised input), so one bad point cannot perturb the rest.
+        bad = ~np.isfinite(w).all(axis=1) | (w.min(axis=1) < floor)
+        if not bad.any():
+            return Ms
+        out = Ms.copy()
+        wf = np.clip(np.nan_to_num(w[bad], nan=floor, posinf=wmax, neginf=floor),
+                     floor, None)
+        out[bad] = np.einsum('nij,nj,nkj->nik', Vc[bad], wf, Vc[bad])
+        return out
+
+    def _eval_M(pts):
+        return _spd_sanitise(_eval_M_raw(pts))
+
+    # Mesh-owned boundary slip is applied per outer iter via mesh.boundary_slip
+    # (below). Pre-touch Gamma_P1 here so the projected-normal MeshVariable
+    # exists before any DM snapshot (footgun-safe; redundant with the central
+    # pre-touch in smooth_mesh_interior, kept as defence-in-depth).
+    from underworld3.meshing._ot_adapt import _resolve_slip
+    _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
+
+    # Reference edge matrices (fixed) for the owned cells.
+    def _edge_mats(X, cells):
+        pc = X[cells]                               # (Nc, d+1, d)
+        cols = [pc[:, k + 1] - pc[:, 0] for k in range(cdim)]
+        return np.stack(cols, axis=2)               # (Nc, d, d) columns
+    Eh = _edge_mats(ref, cells_own)
+    detEh = np.linalg.det(Eh)
+
+    a0 = signed_vol(coords, cells_all)
+    orient = np.sign(np.median(a0)) or 1.0
+    a0_own_med = float(np.median(np.abs(signed_vol(coords, cells_own))))
+    if parallel:
+        a0_own_med = uw.mpi.comm.allreduce(a0_own_med) / uw.mpi.size
+    a_min_floor = float(area_floor_frac) * a0_own_med
+    # Representative background cell size h0 (mean reference edge length over
+    # owned cells), used to make the convergence test SCALE-RELATIVE: a move
+    # of dmax < tol·h0 is negligible vs the cell size, so the adapt has
+    # converged regardless of absolute coordinate units. (The old absolute
+    # outer_tol=1e-7 never fired — dx~1e-6 ≫ 1e-7 yet ≪ h0~0.08 — so every
+    # adapt ran to the n_outer cap.)
+    _ecols = np.linalg.norm(Eh, axis=1)            # (n_own, cdim) edge lengths
+    h0_scale = float(np.mean(_ecols)) if _ecols.size else 1.0
+    if parallel:
+        h0_scale = uw.mpi.comm.allreduce(h0_scale) / uw.mpi.size
+
+    def _halo_sync(X):
+        """Make ghost vertices exact copies of their owners."""
+        if not parallel:
+            return X
+        local_vec.array[:] = X.ravel()
+        coord_dm.localToGlobal(local_vec, global_vec, addv=False)
+        coord_dm.globalToLocal(global_vec, local_vec)
+        return np.asarray(local_vec.array).reshape(-1, cdim).copy()
+
+    def _energy(X):
+        """I_h = Σ_owned |K| G (collective)."""
+        E = _edge_mats(X, cells_own)
+        detE = np.linalg.det(E)
+        Einv = np.linalg.inv(E)
+        J = np.einsum('mij,mjk->mik', Eh, Einv)
+        r = detEh / detE
+        cen = X[cells_own].mean(axis=1)
+        M = _eval_M(cen); Minv = np.linalg.inv(M); detM = np.linalg.det(M)
+        JMi = np.einsum('mij,mjk->mik', J, Minv)
+        S = np.einsum('mij,mij->m', JMi, J)
+        G = (theta * np.sqrt(detM) * S ** q
+             + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
+        K = np.abs(detE) / fact
+        loc = float(np.sum(K * G))
+        if parallel:
+            loc = uw.mpi.comm.allreduce(loc)
+        return loc
+
+    def _min_area(X):
+        amin = float((signed_vol(X, cells_own) * orient).min())
+        if parallel:
+            from mpi4py import MPI as _MPI
+            amin = uw.mpi.comm.allreduce(amin, op=_MPI.MIN)
+        return amin
+
+    prevI = _energy(coords)
+    _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
+    # Acceleration of the first-order steepest-descent direction (``accel``).
+    # The energy+min-area line-search below stays the fold guard, so any
+    # accelerator overshoot is backtracked — never tangles (verified fold-proof
+    # even at step_frac=2). ``accel`` in {"none","heavyball","hb-restart","cg"}:
+    #   none      : plain steepest descent
+    #   heavyball : step += momentum * previous accepted displacement (Polyak);
+    #               ``momentum`` defaults to 0.9 if left at 0 for this mode
+    #   hb-restart: heavyball + gradient restart (drop momentum when it opposes
+    #               the descent direction — O'Donoghue & Candès robustness)
+    #   cg        : nonlinear conjugate gradient (Polak-Ribière+), parameter-free
+    #               — the default (≈13× fewer outer iters than plain descent on
+    #               the first radial adapt, best mesh quality, no tuning).
+    _accel = str(accel).lower() if accel is not None else "none"
+    _valid_accel = ("none", "heavyball", "hb-restart", "cg")
+    if _accel not in _valid_accel:
+        raise ValueError(
+            f"_winslow_mmpde: unknown accel {accel!r}; "
+            f"choose from {_valid_accel}")
+    _mmpde_beta = float(momentum)
+    if _accel in ("heavyball", "hb-restart") and _mmpde_beta == 0.0:
+        _mmpde_beta = 0.9
+    _prev_disp = np.zeros_like(coords)
+    _prev_v = np.zeros_like(coords)
+    _prev_dir = np.zeros_like(coords)
+
+    def _gdot(a, b, mask):
+        s = float(np.sum(a[mask] * b[mask]))
+        if parallel:
+            from mpi4py import MPI as _MPI
+            s = uw.mpi.comm.allreduce(s, op=_MPI.SUM)
+        return s
+
+    for outer in range(n_outer):
+        # Mesh-owned tangent slip (see boundary-slip-strategy.md): the
+        # reference is the current coords (refreshed each outer iter), so the
+        # tangent slide / surface restore are measured from this iteration's
+        # mesh — matching the previous per-iter _build_slip_projector build.
+        is_pinned, _project = mesh.boundary_slip(
+            boundary_slip, reference_coords=coords,
+            boundary_labels=pinned_labels)
+        free = ~is_pinned
+
+        # --- per-element terms on owned cells (rank-local d×d algebra) -
+        E = _edge_mats(coords, cells_own)
+        detE = np.linalg.det(E)
+        Einv = np.linalg.inv(E)
+        J = np.einsum('mij,mjk->mik', Eh, Einv)
+        r = detEh / detE
+        cen = coords[cells_own].mean(axis=1)
+        M = _eval_M(cen); Minv = np.linalg.inv(M); detM = np.linalg.det(M)
+        sdetM = np.sqrt(detM)
+        JMi = np.einsum('mij,mjk->mik', J, Minv)
+        S = np.einsum('mij,mij->m', JMi, J)
+        G = (theta * sdetM * S ** q
+             + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
+        K = np.abs(detE) / fact
+        # ∂G/∂𝕁 = 2qθ√detM S^{q-1} M⁻¹ 𝕁ᵀ ; ∂G/∂r = p(1-2θ)dq detM^{(1-p)/2} r^{p-1}
+        MinvJT = np.einsum('mij,mkj->mik', Minv, J)
+        dGdJ = (2.0 * q * theta * sdetM * S ** (q - 1.0))[:, None, None] * MinvJT
+        dGdr = (p * (1.0 - 2.0 * theta) * dq
+                * detM ** ((1 - p) / 2) * r ** (p - 1.0))
+        # local vertex velocities: V rows = -G E⁻¹ + E⁻¹ dGdJ Eh E⁻¹ + dGdr r E⁻¹
+        mid = np.einsum('mij,mjk,mkl,mln->min', Einv, dGdJ, Eh, Einv)
+        V = (-G[:, None, None] * Einv + mid
+             + (dGdr * r)[:, None, None] * Einv)        # (Nc, d, d): rows v1..vd
+        # grad_i (G+Jacobian part) = -Σ |K| v ; v0 = -(Σ_k vk)
+        vrows = V                                        # rows index local vert 1..d
+        v0 = -vrows.sum(axis=1)                          # (Nc, d)
+        grad_loc = np.zeros((n_verts, cdim))
+        np.add.at(grad_loc, cells_own[:, 0], -(K[:, None] * v0))
+        for k in range(cdim):
+            np.add.at(grad_loc, cells_own[:, k + 1],
+                      -(K[:, None] * vrows[:, k, :]))
+
+        # --- metric-variation term ∂G/∂M : ∂M/∂x (ESSENTIAL on the feature)
+        # ∂G/∂M = θ√detM[½Sq M⁻¹ - q S^{q-1} M⁻¹ 𝕁ᵀ𝕁 M⁻¹]
+        #         + (1-2θ)dq rᵖ (1-p)/2 detM^{(1-p)/2} M⁻¹
+        JTJ = np.einsum('mji,mjk->mik', J, J)
+        MJTJM = np.einsum('mij,mjk,mkl->mil', Minv, JTJ, Minv)
+        dGdM = (theta * sdetM)[:, None, None] * (
+            0.5 * (S ** q)[:, None, None] * Minv
+            - q * (S ** (q - 1.0))[:, None, None] * MJTJM)
+        dGdM += ((1.0 - 2.0 * theta) * dq * r ** p
+                 * ((1.0 - p) / 2.0) * detM ** ((1 - p) / 2)
+                 )[:, None, None] * Minv
+        dMdx = _dM_dx(cen)                                # (Nc,d,d,c)
+        # grad contribution per centroid component c, shared 1/(d+1) per vert
+        gmet = np.einsum('mab,mabc->mc', dGdM, dMdx)      # tr(dGdM·∂_cM)
+        gmet = (K / (cdim + 1.0))[:, None] * gmet
+        for k in range(cdim + 1):
+            np.add.at(grad_loc, cells_own[:, k], gmet)
+
+        # velocity = -grad, assembled cross-rank via coord DM (ADD ghost)
+        vel_loc = -grad_loc
+        if parallel:
+            vloc.array[:] = vel_loc.ravel()
+            # localToGlobal(ADD_VALUES) accumulates into vglob; it is fetched
+            # once (getGlobalVec, before the loop) and reused every outer iter,
+            # so it must be zeroed first — otherwise it carries stale pooled
+            # values on the first use and the previous iteration's assembled
+            # velocity on every subsequent one.
+            vglob.zeroEntries()
+            coord_dm.localToGlobal(vloc, vglob, addv=True)
+            coord_dm.globalToLocal(vglob, vloc)
+            vel = np.asarray(vloc.array).reshape(-1, cdim).copy()
+        else:
+            vel = vel_loc
+
+        # P_i balancing at vertices (pointwise, complete everywhere)
+        Mv = _eval_M(coords); detMv = np.linalg.det(Mv)
+        Pi = detMv ** ((p - 1.0) / 2.0)
+        v = (Pi / tau)[:, None] * vel
+
+        # nonlinear-CG (Polak-Ribière+): replace the steepest-descent direction
+        # v with the conjugate direction d = v + beta_cg * d_prev (β from gradient
+        # history — parameter-free; auto-restarts when β<0).
+        if _accel == "cg":
+            _fo_cg = free & is_owned_v
+            _den = _gdot(_prev_v, _prev_v, _fo_cg)
+            _beta_cg = (max(0.0, _gdot(v, v - _prev_v, _fo_cg) / _den)
+                        if _den > 0.0 else 0.0)
+            _prev_v = v.copy()
+            v = v + _beta_cg * _prev_dir
+            _prev_dir = v.copy()
+
+        # Per-node step cap from the min incident edge over rank-local
+        # cells. NOTE (parallel): a partition-boundary owned vertex may not
+        # see every incident edge from rank-local cells, so its cap differs
+        # slightly from serial → an ~0.006%-level serial/parallel drift in
+        # the final mesh. The velocity ASSEMBLY itself is bit-identical
+        # serial vs parallel (localToGlobal(ADD_VALUES) is exact); only this
+        # cap is rank-dependent. The drift is below the move's own
+        # non-determinism, so we accept it rather than force a ghost-complete
+        # MIN reduction (PETSc localToGlobal has no portable MIN/MAX mode
+        # here — MAX_VALUES errors on this DM). Left as a known small
+        # non-reproducibility; revisit only if a bit-exact mesh is required.
+        h = _min_incident_edge_nd(cells_all, coords)
+        mag = np.linalg.norm(v, axis=1)
+        cap = step_frac * h
+        sc = np.ones_like(mag)
+        m = (mag > cap) & (mag > 0.0)
+        sc[m] = cap[m] / mag[m]
+        step = v * sc[:, None]
+        # Robustness guard (esp. parallel): a degenerate / near-inverted cell can
+        # produce a non-finite gradient (inf v -> mag=inf -> sc=cap/inf=0 ->
+        # step = inf*0 = NaN here). A NaN/inf displacement then makes a NaN trial
+        # whose centroid query blows up `_energy`/`_eval_M` (kd-tree) and, on a
+        # subset of ranks, deadlocks the whole job. Zero any non-finite step so
+        # that node simply does not move this iteration while the rest of the
+        # mesh still adapts.
+        step = np.where(np.isfinite(step), step, 0.0)
+
+        if _accel in ("heavyball", "hb-restart") and _mmpde_beta > 0.0:
+            _disp = _prev_disp
+            if _accel == "hb-restart":
+                # gradient restart: drop momentum when it opposes the descent
+                # step (overlap < 0) so it never drives uphill.
+                if _gdot(step, _prev_disp, free & is_owned_v) < 0.0:
+                    _disp = np.zeros_like(_prev_disp)
+            step = step + _mmpde_beta * _disp
+            step = np.where(np.isfinite(step), step, 0.0)
+
+        # only owned interior vertices move; ghosts halo-synced each trial
+        free_owned = free & is_owned_v
+
+        # energy line-search backtrack (monotone, fold-free; collective)
+        scale = 1.0
+        accepted = coords
+        Inew = prevI
+        for _bt in range(24):
+            trial = coords.copy()
+            trial[free_owned] += scale * step[free_owned]
+            trial = _project(trial)
+            trial = _halo_sync(trial)
+            # reject any non-finite trial (defense-in-depth: projection/halo
+            # could still introduce inf/NaN) so `_energy` never queries NaN.
+            if np.all(np.isfinite(trial)) and _min_area(trial) > a_min_floor:
+                Itr = _energy(trial)
+                if Itr < prevI:
+                    accepted = trial; Inew = Itr; break
+            scale *= 0.5
+        else:
+            accepted = coords; Inew = prevI; scale = 0.0
+        dmax = float(np.linalg.norm(
+            (accepted - coords)[is_owned_v], axis=1).max(initial=0.0))
+        if parallel:
+            from mpi4py import MPI as _MPI
+            dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
+        _prev_disp = accepted - coords   # accepted move, for next-iter momentum
+        coords = accepted
+        mesh._deform_mesh(coords)
+        if verbose:
+            uw.pprint(
+                f"  mmpde outer {outer+1}/{n_outer}: I={Inew:.6e} "
+                f"dI={Inew-prevI:+.2e} scale={scale:.3f} max|Δx|={dmax:.2e}")
+        # Converged when (a) the line-search could make no downhill move
+        # (scale collapsed to 0 — at a local minimum / stuck), or (b) the
+        # accepted node move is negligible relative to the cell size
+        # (dmax < tol·h0). tol defaults to 1e-3 (move < 0.1% of a cell).
+        # The legacy absolute `outer_tol` is retained as an additional, even
+        # tighter floor for callers that set it.
+        prevI = Inew
+        # Stagnation (residual stol) exit: PETSc-`stol`-style "give up when the
+        # meshing functional stops dropping well below the last steps". The
+        # node-step `dmax` is capped and never shrinks on this descent mover, so
+        # a step-test can't fire; instead test the *energy* (the residual) drop
+        # over the last `stol_k` accepted iterations -- a WINDOW (not single
+        # step), which is immune to the line-search per-iteration noise and to
+        # the occasional big drop after a scale reduction. Opt-in: stol=None/0
+        # preserves the previous behaviour bit-for-bit.
+        if stol is not None and stol > 0.0:
+            _Iwin.append(Inew)
+            if len(_Iwin) > stol_k:
+                _Iref = _Iwin[-1 - stol_k]
+                _rel = (_Iref - Inew) / max(abs(_Iref), 1.0e-30)
+                if _rel < stol:
+                    if verbose:
+                        uw.pprint(
+                            f"  mmpde stol-exit at outer {outer+1}/{n_outer}: "
+                            f"rel energy drop over last {stol_k} = {_rel:.2e} "
+                            f"< stol={stol:.1e}")
+                    break
+        if scale == 0.0 or dmax < tol * h0_scale or dmax < outer_tol:
+            break
+
+    coord_dm.restoreLocalVec(vloc)
+    coord_dm.restoreGlobalVec(vglob)
+
+
+
+
+def _smooth_mesh_interior_bare(
+    mesh,
+    pinned_labels: Optional[Sequence[str]] = None,
+    n_iters: int = 5,
+    alpha: float = 0.5,
+    metric=None,
+    method: str = "spring",
+    boundary_slip: bool = False,
+    method_kwargs: Optional[dict] = None,
+    verbose: bool = False,
+    skip_threshold=_UNSET,
+    strategy: Optional[str] = None,
+):
+    """Internal mover dispatch — no transfer, no helper wrap.
+
+    Identical to the body of :func:`smooth_mesh_interior` minus the
+    Phase-1 transfer wrap. Composite adapt ops (``_ot_adapt_step``,
+    ``follow_metric``) own the wrap at their level and call this bare
+    form to avoid nesting the snapshot/restore dance. End-users should
+    keep using :func:`smooth_mesh_interior`.
+    """
     if pinned_labels is None:
         pinned_labels = _auto_pinned_labels(mesh)
     pinned_labels = tuple(pinned_labels)
@@ -2873,18 +3585,30 @@ def smooth_mesh_interior(
             # log(1/A_c) vs log(ρ_c). 0 ⇒ mesh density is
             # perfectly aligned with the metric; 1 ⇒ uncorrelated.
             # Skip when misalignment is below threshold.
-            if mm["misalignment"] < float(skip_threshold):
-                if verbose:
+            #
+            # COLLECTIVE remesh decision: the mover is a collective operation,
+            # so the skip/adapt choice MUST be unanimous or the ranks deadlock.
+            # `misalignment` is reduced globally (mesh_metric_mismatch) so it is
+            # already identical on every rank; the OR-reduction below is the
+            # belt-and-suspenders guarantee that **if any rank needs to remesh,
+            # all ranks remesh** (and all skip together otherwise).
+            _need_adapt = mm["misalignment"] >= float(skip_threshold)
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                _need_adapt = bool(uw.mpi.comm.allreduce(
+                    int(_need_adapt), op=_MPI.MAX))
+            if not _need_adapt:
+                if verbose and uw.mpi.rank == 0:
                     print(f"  smooth_mesh_interior: skipping "
                           f"(misalignment {mm['misalignment']:.3f} "
-                          f"< threshold {skip_threshold:.3f}; "
+                          f"< threshold {float(skip_threshold):.3f}; "
                           f"alignment r={mm['alignment']:.3f})",
                           flush=True)
                 return
-            if verbose:
+            if verbose and uw.mpi.rank == 0:
                 print(f"  smooth_mesh_interior: adapting "
                       f"(misalignment {mm['misalignment']:.3f} ≥ "
-                      f"threshold {skip_threshold:.3f}; "
+                      f"threshold {float(skip_threshold):.3f}; "
                       f"alignment r={mm['alignment']:.3f})",
                       flush=True)
         if method == "spring":
@@ -2894,6 +3618,19 @@ def smooth_mesh_interior(
             _winslow_elliptic(mesh, metric, pinned_labels, verbose,
                               boundary_slip=boundary_slip, **mk)
         elif method in ("ot", "equidistribute", "improve"):
+            # The OT / equidistribution mover is incomplete — e.g. its boundary
+            # slip is gated to radial geometries (box boundaries are pinned, not
+            # slid; see boundary-slip-strategy.md) — and is expected to be
+            # superseded by ``method='mmpde'`` with a scalar metric. This fires
+            # for every OT use, including the internal ``mesh.OT_adapt`` reset
+            # path. (Python shows a given DeprecationWarning once per location.)
+            warnings.warn(
+                "smooth_mesh_interior(method='ot'/'equidistribute'/'improve') "
+                "is an incomplete mesh mover (boundary slip is gated to radial "
+                "geometries) and is expected to be superseded by "
+                "method='mmpde' with a scalar metric. Prefer 'mmpde' for "
+                "production adaptive meshing.",
+                DeprecationWarning, stacklevel=2)
             _winslow_equidistribute(mesh, metric, pinned_labels,
                                      verbose,
                                      boundary_slip=boundary_slip,
@@ -2902,6 +3639,9 @@ def smooth_mesh_interior(
             _winslow_anisotropic(mesh, metric, pinned_labels,
                                  verbose,
                                  boundary_slip=boundary_slip, **mk)
+        elif method in ("mmpde", "variational"):
+            _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+                           boundary_slip=boundary_slip, **mk)
         else:
             raise ValueError(
                 f"smooth_mesh_interior: unknown method {method!r}; "
@@ -3084,6 +3824,20 @@ def metric_density_from_gradient(
     mesh : underworld3 mesh
     field : scalar MeshVariable or sympy scalar expression
         The field whose gradient drives refinement (e.g. ``T``).
+    refinement : float, optional
+        Target COARSEST:FINEST edge-length ratio ``R = h_max/h_min``
+        the metric grades to. When ``> 1`` this **overrides** ``amp``
+        (and the strategy default). Because the mover equidistributes
+        ``ρ`` (so cell edge ``h ∝ ρ^{-1/d}``), the full ``t∈[0,1]``
+        range gives ``h_max/h_min = (1 + amp)^{power/d}``; this is
+        inverted to set ``amp = R^{d/power} - 1``. So ``R`` is a
+        predictable, **mesh-independent** resolution knob (``R=2`` ⇒
+        finest cells ~2× smaller than the coarsest). The *realised*
+        ratio tracks ``R`` until the fixed node budget saturates it
+        (large ``R`` is capped — going further needs h-refinement to
+        add nodes, not just redistribution). ``None`` (default) ⇒ use
+        ``amp`` / the ``strategy`` preset. Exposed in the convection
+        harness as ``--resolution-ratio``.
     amp : float, default 8.0
         Bunching intensity: ``ρ_max = (1 + amp)^power`` where
         ``|∇field|`` is strongest. Larger ⇒ stronger
@@ -3167,6 +3921,15 @@ def metric_density_from_gradient(
         power = s["power"]
 
     cdim = mesh.cdim
+
+    # `refinement` R = target COARSEST:FINEST edge-length ratio (h_max/h_min).
+    # The mover equidistributes ρ=(1+amp·t)^power, so cell edge h ∝ ρ^(-1/d) and
+    # the full t∈[0,1] range gives h_max/h_min = (1+amp)^(power/d). Invert that to
+    # set amp, so R is a predictable, mesh-independent edge-length ratio. This
+    # OVERRIDES the strategy's amp (R is the explicit resolution knob).
+    # (Previously `refinement` was accepted but unused — a silent no-op.)
+    if refinement is not None and float(refinement) > 1.0:
+        amp = float(refinement) ** (cdim / float(power)) - 1.0
     X = mesh.CoordinateSystem.X
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
@@ -3358,10 +4121,21 @@ def metric_density_from_gradient(
             rho_raw = np.maximum(gmag, 1.0e-30) ** 2
             rho0.data[:, 0] = np.clip(
                 rho_raw, np.exp(log_rho_min), np.exp(log_rho_max))
+        elif metric_choice == "arc-length":
+            # Smooth arc-length monitor rho = sqrt(1 + (A*ghat)^2),
+            # ghat = |grad field|/g_hi, A = sqrt(ref^4 - 1) so rho = ref^2 at
+            # the hi-percentile gradient. Grades continuously from rho=1 in
+            # flat regions (no clip kink) -> cleaner OT / Monge-Ampere meshes.
+            A = np.sqrt(max(ref_val ** 4 - 1.0, 0.0))
+            ghat = gmag / max(g_hi, 1.0e-30)
+            rho_al = np.sqrt(1.0 + (A * ghat) ** 2)
+            rho0.data[:, 0] = np.clip(
+                rho_al, np.exp(log_rho_min), np.exp(log_rho_max))
         else:
             raise ValueError(
-                f"metric_choice must be 'front-following' or "
-                f"'gradient-uniform', got {metric_choice!r}")
+                f"metric_choice must be 'front-following', "
+                f"'gradient-uniform', or 'arc-length', got "
+                f"{metric_choice!r}")
         return rho0.sym[0]
 
     if mode == "raw":
@@ -3672,57 +4446,73 @@ def follow_metric(
     if method_kwargs:
         mover_kwargs.update(method_kwargs)
 
-    old_X = np.asarray(mesh.X.coords).copy()
-    smooth_mesh_interior(
-        mesh,
-        metric=rho,
-        method="anisotropic",
-        method_kwargs={**mover_kwargs, "resolution_ratio": R},
-        skip_threshold=skip_threshold,
-        verbose=verbose,
-    )
-    new_X = np.asarray(mesh.X.coords)
-    moved = not np.allclose(new_X, old_X)
-    # ADAPTIVE Jacobi polish: gentle graph-Laplacian smoothing
-    # of interior nodes toward neighbour-centroid average,
-    # repeated until the worst cell-shape quality
-    #
-    #     q = 4√3 · A / (e₀² + e₁² + e₂²)
-    #
-    # exceeds ``polish_quality_target`` (default 0.3 — the
-    # threshold below which cells look like visible slivers; an
-    # equilateral has q=1, a degenerate sliver q→0). Capped at
-    # ``polish_max_iters`` so pathological cases can't run away.
-    #
-    # The polish doesn't significantly undo the metric
-    # distribution (each step is averaging toward neighbours,
-    # not enforcing any spatial target), so the BL refinement
-    # stays intact while sliver cells get rounded out.
-    # `polish_max_iters=0` disables entirely.
-    if moved and polish_max_iters > 0:
-        tris_polish = _tri_cells(mesh.dm)
-        for _polish_iter in range(int(polish_max_iters)):
-            # Check current shape quality
-            p = np.asarray(mesh.X.coords)[tris_polish]
-            e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
-            e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
-            e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
-            A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
-                                       tris_polish))
-            q = (4.0 * np.sqrt(3.0) * A
-                 / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
-            q_min = float(q.min())
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                q_min = uw.mpi.comm.allreduce(
-                    q_min, op=_MPI.MIN)
-            if verbose:
-                uw.pprint(
-                    f"  follow_metric polish iter {_polish_iter}: "
-                    f"q_min={q_min:.3f} (target {polish_quality_target:.2f})")
-            if q_min >= float(polish_quality_target):
-                break
-            smooth_mesh_interior(
-                mesh, n_iters=1, alpha=float(polish_alpha))
-    return moved
+    # Phase-1 remesh redesign: wrap the whole anisotropic-move + polish
+    # pipeline in a single field-transfer pass at this composite level.
+    # The inner smooth_mesh_interior calls see ``mesh._in_remesh_transfer``
+    # set by the helper and skip their own wrap, so REMAP variables
+    # (including hidden solver history) are transferred exactly once,
+    # after the polish.
+    from underworld3.discretisation.remesh import (
+        remesh_with_field_transfer)
+    _state = {"moved": False}
+
+    def _do_move():
+        _old_X = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(
+            mesh,
+            metric=rho,
+            method="anisotropic",
+            method_kwargs={**mover_kwargs, "resolution_ratio": R},
+            skip_threshold=skip_threshold,
+            verbose=verbose,
+        )
+        _new_X = np.asarray(mesh.X.coords)
+        _state["moved"] = not np.allclose(_new_X, _old_X)
+        _polish(_state["moved"])
+
+    def _polish(moved):
+        # ADAPTIVE Jacobi polish: gentle graph-Laplacian smoothing
+        # of interior nodes toward neighbour-centroid average,
+        # repeated until the worst cell-shape quality
+        #
+        #     q = 4√3 · A / (e₀² + e₁² + e₂²)
+        #
+        # exceeds ``polish_quality_target`` (default 0.3 — the
+        # threshold below which cells look like visible slivers; an
+        # equilateral has q=1, a degenerate sliver q→0). Capped at
+        # ``polish_max_iters`` so pathological cases can't run away.
+        #
+        # The polish doesn't significantly undo the metric
+        # distribution (each step is averaging toward neighbours,
+        # not enforcing any spatial target), so the BL refinement
+        # stays intact while sliver cells get rounded out.
+        # `polish_max_iters=0` disables entirely.
+        if moved and polish_max_iters > 0:
+            tris_polish = _tri_cells(mesh.dm)
+            for _polish_iter in range(int(polish_max_iters)):
+                # Check current shape quality
+                p = np.asarray(mesh.X.coords)[tris_polish]
+                e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
+                e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
+                e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
+                A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
+                                           tris_polish))
+                q = (4.0 * np.sqrt(3.0) * A
+                     / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
+                q_min = float(q.min())
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    q_min = uw.mpi.comm.allreduce(
+                        q_min, op=_MPI.MIN)
+                if verbose:
+                    uw.pprint(
+                        f"  follow_metric polish iter {_polish_iter}: "
+                        f"q_min={q_min:.3f} (target {polish_quality_target:.2f})")
+                if q_min >= float(polish_quality_target):
+                    break
+                smooth_mesh_interior(
+                    mesh, n_iters=1, alpha=float(polish_alpha))
+
+    remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
+    return _state["moved"]
 

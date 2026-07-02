@@ -38,6 +38,7 @@ import dataclasses
 import datetime
 import json
 import os
+import warnings
 from typing import Any, Optional
 
 import numpy as np
@@ -311,12 +312,20 @@ def write_snapshot(model, path: str) -> str:
         # path: lazy-allocated vars with _gvec == None have no data.
         mesh_vars = [v for v in mesh_vars if v._gvec is not None]
 
-        mesh.write_checkpoint(
-            mesh_safe,
-            outputPath=bulk_dir,
-            meshVars=mesh_vars,
-            index=0,
-        )
+        # write_checkpoint is user-deprecated in favour of write_timestep, but
+        # the snapshot backend is a legitimate internal user: it relies on the
+        # `{base}.mesh.00000.h5` / `{base}.{var}.00000.h5` filename convention
+        # (consumed by the reload path below). Suppress the FutureWarning for
+        # this internal call rather than spam every snapshot. (Migrating the
+        # snapshot to write_timestep is tracked in #252.)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            mesh.write_checkpoint(
+                mesh_safe,
+                outputPath=bulk_dir,
+                meshVars=mesh_vars,
+                index=0,
+            )
 
         mesh_records.append({
             "name": mesh.name,

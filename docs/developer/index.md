@@ -124,6 +124,7 @@ guides/hpc-cluster-setup
 :caption: Design Documents
 
 design/UNITS_SIMPLIFIED_DESIGN_2025-11
+design/ND_UNITS_BOUNDARY_CONTRACT
 design/WHY_UNITS_NOT_DIMENSIONALITY
 design/SYMBOL_DISAMBIGUATION_2025-12
 design/ADAPTIVE_MESHING_DESIGN
@@ -157,6 +158,7 @@ CHANGELOG
 subsystems/meshing
 subsystems/discretisation
 subsystems/solvers
+subsystems/boundary-stress-and-projection-postprocessing
 subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory

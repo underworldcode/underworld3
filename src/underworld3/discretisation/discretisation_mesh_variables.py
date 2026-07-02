@@ -111,6 +111,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         _register: bool = True,
         units: Optional[str] = None,
         units_backend: Optional[str] = None,
+        remesh_policy=None,
     ):
         """
         Create or return existing MeshVariable instance.
@@ -148,6 +149,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             "_register": _register,
             "units": units,
             "units_backend": units_backend,
+            "remesh_policy": remesh_policy,
         }
 
         return obj
@@ -165,6 +167,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         _register=True,
         units=None,
         units_backend=None,
+        remesh_policy=None,
     ):
         """
         Initialize MeshVariable (only called for NEW objects).
@@ -189,6 +192,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             _register = params["_register"]
             units = params["units"]
             units_backend = params["units_backend"]
+            remesh_policy = params.get("remesh_policy", remesh_policy)
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
             pass
@@ -230,14 +234,21 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
-        # Variable type inference
+        # Variable type inference. On a cd-1 mesh (dim < cdim, e.g.
+        # SphericalManifold), vector fields are stored with ``cdim``
+        # components — the natural embedded-Cartesian representation
+        # of a surface-tangent vector. We accept either dim or cdim
+        # as a vector match; on volume meshes dim == cdim and the
+        # two branches coincide.
         if vtype == None:
             if isinstance(num_components, int) and num_components == 1:
                 vtype = uw.VarType.SCALAR
-            elif isinstance(num_components, int) and num_components == mesh.dim:
+            elif (isinstance(num_components, int)
+                  and (num_components == mesh.dim or num_components == mesh.cdim)):
                 vtype = uw.VarType.VECTOR
             elif isinstance(num_components, tuple):
-                if num_components[0] == mesh.dim and num_components[1] == mesh.dim:
+                if ((num_components[0] == mesh.dim and num_components[1] == mesh.dim)
+                        or (num_components[0] == mesh.cdim and num_components[1] == mesh.cdim)):
                     vtype = uw.VarType.TENSOR
                 else:
                     vtype = uw.VarType.MATRIX
@@ -256,6 +267,25 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.shape = num_components
         self.degree = degree
         self.continuous = continuous
+
+        # Remesh transfer policy (see discretisation/remesh.py). Default
+        # REMAP: on a mesh adapt, the value is the old field evaluated at
+        # the new node positions — safe for any Eulerian quantity, and
+        # safe-by-default for forgotten variables. Operators / the
+        # framework can stamp REINIT (recomputed from a source) or CARRY
+        # (Lagrangian / operator-managed) on hidden vars they create.
+        from underworld3.discretisation.remesh import RemeshPolicy
+        if remesh_policy is None:
+            self._remesh_policy = RemeshPolicy.REMAP
+        elif isinstance(remesh_policy, RemeshPolicy):
+            self._remesh_policy = remesh_policy
+        else:
+            self._remesh_policy = RemeshPolicy(remesh_policy)
+        # Set to a weakref of an operator (e.g. a SemiLagrangian DDt)
+        # that owns this variable's transfer; the generic per-var pass
+        # in remesh_with_field_transfer skips it and the operator's
+        # on_remesh hook handles it instead. None = generic pass owns it.
+        self._remesh_managed_by = None
 
         # Store unit metadata for variable and initialize backend
         # Convert string units to pint.Unit using the global uw.units registry
@@ -280,19 +310,26 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             self._units = None
 
-        # Component and shape handling
+        # Component and shape handling.
+        # Vector / tensor fields are sized by ``cdim`` (the embedded
+        # coordinate space) rather than ``dim`` (topological). For
+        # volume meshes dim == cdim so this is unchanged; for manifold
+        # meshes (e.g. SphericalManifold: dim=2, cdim=3) vectors are
+        # 3-component (tangent-constrained) and rank-2 tensors are
+        # 3x3 — matching the gradient / flux dimensions the JIT and
+        # solver layers expect.
         if vtype == uw.VarType.SCALAR:
             self.shape = (1, 1)
             self.num_components = 1
         elif vtype == uw.VarType.VECTOR:
-            self.shape = (1, mesh.dim)
-            self.num_components = mesh.dim
+            self.shape = (1, mesh.cdim)
+            self.num_components = mesh.cdim
         elif vtype == uw.VarType.TENSOR:
-            self.num_components = mesh.dim * mesh.dim
-            self.shape = (mesh.dim, mesh.dim)
+            self.num_components = mesh.cdim * mesh.cdim
+            self.shape = (mesh.cdim, mesh.cdim)
         elif vtype == uw.VarType.SYM_TENSOR:
-            self.num_components = math.comb(mesh.dim + 1, 2)
-            self.shape = (mesh.dim, mesh.dim)
+            self.num_components = math.comb(mesh.cdim + 1, 2)
+            self.shape = (mesh.cdim, mesh.cdim)
         elif vtype == uw.VarType.MATRIX:
             self.num_components = self.shape[0] * self.shape[1]
 
@@ -313,8 +350,11 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
-            self._sym = sympy.Matrix.zeros(1, mesh.dim)
-            for comp in range(mesh.dim):
+            # cdim components — embedded-coord vector. Volume meshes
+            # have dim==cdim so unchanged; manifold meshes get the
+            # extra component(s) the gradient/flux need.
+            self._sym = sympy.Matrix.zeros(1, mesh.cdim)
+            for comp in range(mesh.cdim):
                 self._sym[0, comp] = UnderworldFunction(
                     self.symbol,
                     self,
@@ -326,11 +366,12 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
         elif vtype == uw.VarType.TENSOR:
-            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
+            # cdim x cdim — embedded-coord rank-2 tensor.
+            self._sym = sympy.Matrix.zeros(mesh.cdim, mesh.cdim)
 
             # Matrix form (any number of components)
-            for i in range(mesh.dim):
-                for j in range(mesh.dim):
+            for i in range(mesh.cdim):
+                for j in range(mesh.cdim):
                     self._sym[i, j] = UnderworldFunction(
                         self.symbol,
                         self,
@@ -340,11 +381,12 @@ class _BaseMeshVariable(Stateful, uw_object):
                     )(*self.mesh.r)
 
         elif vtype == uw.VarType.SYM_TENSOR:
-            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
+            # cdim x cdim symmetric.
+            self._sym = sympy.Matrix.zeros(mesh.cdim, mesh.cdim)
 
             # Matrix form (any number of components)
-            for i in range(mesh.dim):
-                for j in range(0, mesh.dim):
+            for i in range(mesh.cdim):
+                for j in range(0, mesh.cdim):
                     if j >= i:
                         self._sym[i, j] = UnderworldFunction(
                             self.symbol,
@@ -463,6 +505,27 @@ class _BaseMeshVariable(Stateful, uw_object):
             return quantity.dimensionality
         except Exception:
             return None
+
+    @property
+    def remesh_policy(self):
+        """Per-variable transfer policy on a mesh adapt.
+
+        See :class:`underworld3.discretisation.remesh.RemeshPolicy`.
+        Default is :attr:`~underworld3.discretisation.remesh.RemeshPolicy.REMAP`
+        (the safe Eulerian default — evaluate the old field at the new
+        node positions). Set to ``REINIT`` for stateless work-vars
+        (gradient/Hessian projection targets, RBF proxies) and ``CARRY``
+        only for genuinely Lagrangian fields.
+        """
+        return self._remesh_policy
+
+    @remesh_policy.setter
+    def remesh_policy(self, value):
+        from underworld3.discretisation.remesh import RemeshPolicy
+        if isinstance(value, RemeshPolicy):
+            self._remesh_policy = value
+        else:
+            self._remesh_policy = RemeshPolicy(value)
 
     def _create_variable_array(self, initial_data=None):
         """
@@ -1080,8 +1143,9 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         Note: This is a low-level method intended to be called by wrapper
         functions such as ``mesh.write_timestep()`` which handle output paths,
-        XDMF generation, and multi-variable coordination. Prefer using
-        ``mesh.write_timestep()`` for normal checkpoint and visualisation output.
+        optional XDMF generation, optional PETSc reload metadata, and
+        multi-variable coordination. Prefer using ``mesh.write_timestep()`` for
+        mesh-variable output.
 
         Note: This is a COLLECTIVE operation - all MPI ranks must call it.
 
@@ -1181,11 +1245,14 @@ class _BaseMeshVariable(Stateful, uw_object):
         verbose=False,
     ):
         """
-        Read a mesh variable from an arbitrary vertex-based checkpoint file
-        and reconstruct/interpolate the data field accordingly. The saved
-        mesh and the live mesh may have different sizes/decompositions; the
-        values are matched by nearest-neighbour kd-tree interpolation to
-        the live mesh nodes.
+        Read a mesh variable from ``Mesh.write_timestep()`` output using the
+        coordinate-remap path. The saved mesh and the live mesh may have
+        different sizes or decompositions; values are matched to the live mesh
+        nodes by nearest-neighbour KDTree interpolation.
+
+        This is the flexible remap reader. It is distinct from
+        ``read_checkpoint()``, which loads PETSc DMPlex section/vector metadata
+        for PETSc-native same-mesh reload.
 
         Parallel-safe and memory-bounded. Two transient swarms route the
         work without ever holding the full file on more than one rank:
@@ -1207,9 +1274,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
 
         # Format dispatch: ``data_filename`` may be either the
-        # legacy ``write_timestep`` prefix (in which case we
-        # reconstruct the per-variable file path the usual way) or a
-        # v1.1 snapshot wrapper path produced by
+        # ``write_timestep`` filename base (in which case we reconstruct the
+        # per-variable file path the usual way) or a v1.1 snapshot wrapper path
+        # produced by
         # ``model.save_state(file=…)``. The format-detection logic is
         # hidden from the user — same call, both formats.
         import h5py
@@ -1421,10 +1488,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         filename: str,
         data_name: Optional[str] = None,
     ):
-        """Load this mesh variable from ``Mesh.write_checkpoint()`` output.
+        """Load this mesh variable from PETSc reload output.
 
         This is an exact PETSc DMPlex section/vector reload path. It does not
-        use the coordinate/KDTree remapping used by ``read_timestep()``.
+        use the coordinate/KDTree remapping used by ``read_timestep()``. New
+        output should be written with ``Mesh.write_timestep(...,
+        petsc_reload=True)``; legacy ``Mesh.write_checkpoint()`` files are also
+        supported.
         """
 
         if data_name is None:

@@ -22,18 +22,17 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   PetscScalar       *a;
   PetscInt           p, q, i;
   PetscMPIInt        rank, size;
-  Vec                pointVec;
+  Vec                pointVec = NULL;
   PetscSF            cellSF;
   PetscLayout        layout;
   PetscReal         *globalPoints;
-  PetscScalar       *globalPointsScalar;
+  PetscScalar       *globalPointsScalar = NULL;
   const PetscInt    *ranges;
   PetscMPIInt       *counts, *displs;
   const PetscSFNode *foundCells;
   const PetscInt    *foundPoints;
   PetscMPIInt       *foundProcs, *globalProcs;
   PetscInt           n, N, numFound;
-  PetscErrorCode     ierr;
 
   PetscFunctionBegin;
   PetscValidHeaderSpecific(dm, DM_CLASSID, 2);
@@ -66,41 +65,49 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   PetscCall(PetscMalloc3(N,&foundCells,N,&foundProcs,N,&globalProcs));
   /* foundCells[p] = m->locatePoint(&globalPoints[p*ctx->dim]); */
 #else
-  #if defined(PETSC_USE_COMPLEX)
-  PetscCall(PetscMalloc1(N * ctx->dim, &globalPointsScalar));
-  for (i = 0; i < N * ctx->dim; i++) globalPointsScalar[i] = globalPoints[i];
-  #else
-  globalPointsScalar = globalPoints;
-  #endif
-  PetscCall(VecCreateSeqWithArray(PETSC_COMM_SELF, ctx->dim, N * ctx->dim, globalPointsScalar, &pointVec));
   PetscCall(PetscMalloc2(N, &foundProcs, N, &globalProcs));
   for (p = 0; p < N; ++p) foundProcs[p] = size;
   cellSF = NULL;
-  /* the Underworld code is used to find good guesses for the owning cells */
-  if (owning_cell)
-  {
-    PetscSFNode *sf_cells;
-    ierr = PetscMalloc1(N, &sf_cells);
-    CHKERRQ(ierr);
-    size_t range = 0;
-    for (size_t p = 0; p < (size_t)N; p++)
-    {
-      sf_cells[p].rank = 0;
-      sf_cells[p].index = owning_cell[p];
-      if (owning_cell[p] > range)
-      {
-        range = owning_cell[p];
-      }
+  if (owning_cell) {
+    /*
+      Bypass DMLocatePoints when the caller supplies a hint (ported from
+      feature/dminterp-bypass-element-check, 17a5a8d).
+
+      The caller is expected to call this path only on meshes where the
+      hint is authoritative for cell containment — simplex cells (planar
+      faces, affine reference map) and 2-manifold meshes (where PETSc's
+      DMPlexLocatePoint_Simplex_2D_Internal pseudo-inverse projection is
+      itself unreliable near triangle edges in 3-D). On those meshes the
+      UW3 barycentric hint (Mesh._robust_owning_cells / get_closest_cells)
+      correctly contains every query coord, so PETSc's re-verification adds
+      no information and only introduces wrong-cell fallback opportunities
+      (the parallel mesh-adapt remap excursions and the SphericalManifold
+      trace-back failures).
+
+      Each rank claims every point whose hint is a valid cell id (we treat
+      (size_t)-1 as a non-claim sentinel for genuine-exterior points). The
+      MPI_Allreduce(MIN, foundProcs) below assigns each point to the lowest
+      claimant; with the MPI_COMM_SELF ctx used by the evaluator this is a
+      per-rank no-op (each rank keeps its own points).
+    */
+    numFound    = 0;
+    foundPoints = NULL;
+    foundCells  = NULL;
+    for (p = 0; p < N; ++p) {
+      if (owning_cell[p] != (size_t)-1) foundProcs[p] = rank;
     }
-    ierr = PetscSFCreate(PETSC_COMM_SELF, &cellSF);
-    CHKERRQ(ierr);
-    // PETSC_OWN_POINTER => sf_cells memory control goes to cellSF
-    // nroots must be > max(iremote.index), so use range + 1
-    ierr = PetscSFSetGraph(cellSF, range + 1, N, NULL, PETSC_OWN_POINTER, sf_cells, PETSC_OWN_POINTER);
-    CHKERRQ(ierr);
+  } else {
+    /* Build pointVec lazily — only the DMLocatePoints path needs it. */
+    #if defined(PETSC_USE_COMPLEX)
+    PetscCall(PetscMalloc1(N * ctx->dim, &globalPointsScalar));
+    for (i = 0; i < N * ctx->dim; i++) globalPointsScalar[i] = globalPoints[i];
+    #else
+    globalPointsScalar = globalPoints;
+    #endif
+    PetscCall(VecCreateSeqWithArray(PETSC_COMM_SELF, ctx->dim, N * ctx->dim, globalPointsScalar, &pointVec));
+    PetscCall(DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF));
+    PetscCall(PetscSFGetGraph(cellSF, NULL, &numFound, &foundPoints, &foundCells));
   }
-  PetscCall(DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF));
-  PetscCall(PetscSFGetGraph(cellSF, NULL, &numFound, &foundPoints, &foundCells));
 #endif
 
   /*
@@ -176,9 +183,13 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
 #else
   PetscCall(PetscFree2(foundProcs, globalProcs));
   PetscCall(PetscSFDestroy(&cellSF));
-  PetscCall(VecDestroy(&pointVec));
+  /* pointVec / globalPointsScalar are only constructed on the !owning_cell
+     (DMLocatePoints) branch above. */
+  if (!owning_cell) {
+    PetscCall(VecDestroy(&pointVec));
+    if ((void *)globalPointsScalar != (void *)globalPoints) PetscCall(PetscFree(globalPointsScalar));
+  }
 #endif
-  if ((void *)globalPointsScalar != (void *)globalPoints) PetscCall(PetscFree(globalPointsScalar));
   if (!redundantPoints) PetscCall(PetscFree3(globalPoints, counts, displs));
   PetscCall(PetscLayoutDestroy(&layout));
   PetscFunctionReturn(PETSC_SUCCESS);

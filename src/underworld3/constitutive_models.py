@@ -311,7 +311,15 @@ class Constitutive_Model(uw_object):
         self._DFDt = self.Unknowns.DFDt
         self._DuDt = self.Unknowns.DuDt
 
-        self.dim = u.mesh.dim
+        # Constitutive tensors relate gradients to fluxes; both live in
+        # the embedded coordinate space (cdim-dimensional), not the
+        # topological one. ``u.sym.jacobian(mesh.N)`` produces a
+        # (u_dim x cdim) matrix, so the conductivity / viscosity
+        # tensor must also be cdim-sized to multiply against it. For
+        # volume meshes ``dim == cdim`` so this is a no-op; for
+        # manifold meshes (e.g. SphericalManifold: dim=2, cdim=3) the
+        # constitutive tensor correctly acts on the 3-component flux.
+        self.dim = u.mesh.cdim
         self.u_dim = u.num_components
 
         self.Parameters = self._Parameters(self)
@@ -2268,15 +2276,21 @@ class DarcyFlowModel(Constitutive_Model):
     r"""
     Darcy flow constitutive model for porous media flow.
 
-    Relates the Darcy flux to pressure gradients and body forces:
+    The ``flux`` property returns the assembly flux
+    :math:`\mathbf{F}` that enters the PDE as :math:`-\nabla\cdot\mathbf{F} = f`:
 
     .. math::
 
-        q_{i} = \kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
+        F_{i} = \kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
 
     where :math:`\kappa` is the permeability (or hydraulic conductivity),
     :math:`p` is the pressure (or hydraulic head), and :math:`s` is the
-    body force term (e.g., gravity: :math:`s = \rho g`).
+    body force term (e.g., gravity: :math:`s = \rho g`). The **physical Darcy
+    velocity** is minus this (flow runs *down* the head gradient):
+
+    .. math::
+
+        q_{i} = -F_{i} = -\kappa_{ij} \left( \frac{\partial p}{\partial x_j} - s_j \right)
 
     Parameters
     ----------
