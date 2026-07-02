@@ -91,10 +91,11 @@ def rbf_prolongation(coarse_coords, fine_coords, smooth=0.0):
     Pc = np.hstack([np.ones((nc, 1)), coarse_coords])          # affine tail
     Acc = phi(cdist(coarse_coords, coarse_coords)) + smooth * np.eye(nc)
     M = np.block([[Acc, Pc], [Pc.T, np.zeros((dim + 1, dim + 1))]])
-    Minv = np.linalg.inv(M)
     B = np.hstack([phi(cdist(fine_coords, coarse_coords)),
                    np.ones((fine_coords.shape[0], 1)), fine_coords])
-    Praw = (B @ Minv)[:, :nc]
+    # Solve M Xᵀ = Bᵀ rather than forming M⁻¹ explicitly (faster, more stable). M is
+    # symmetric, so B M⁻¹ = solve(M, Bᵀ)ᵀ.
+    Praw = np.linalg.solve(M, B.T).T[:, :nc]
     rs = Praw.sum(axis=1, keepdims=True)
     rs[np.abs(rs) < 1e-12] = 1.0
     return sp.csr_matrix(Praw / rs)
@@ -173,9 +174,12 @@ def sbr_refine_where(dm, predicate):
 # --------------------------------------------------------------------------- #
 def _to_petsc_aij(csr):
     csr = csr.tocsr()
+    # Match the PETSc build's integer width for the CSR index arrays: a hard int32 cast
+    # can overflow / mis-address entries on a 64-bit PetscInt build with large meshes.
     M = PETSc.Mat().createAIJ(
         size=csr.shape,
-        csr=(csr.indptr.astype("int32"), csr.indices.astype("int32"), csr.data),
+        csr=(csr.indptr.astype(PETSc.IntType),
+             csr.indices.astype(PETSc.IntType), csr.data),
     )
     M.assemble()
     return M
