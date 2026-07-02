@@ -153,6 +153,10 @@ class SolverBaseClass(uw_object):
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
 
+        # Custom multigrid prolongation hierarchy (see set_custom_mg /
+        # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
+        self._custom_mg = None
+
     def _jacobian_source(self, expr, newton_expr=None):
         """Prepare a residual flux for Jacobian differentiation.
 
@@ -251,6 +255,48 @@ class SolverBaseClass(uw_object):
             self._update_constants()
         except Exception:
             pass
+
+    def set_custom_mg(self, coarse_meshes, kind="barycentric", verbose=False):
+        r"""Drive geometric multigrid with a prolongation we build ourselves.
+
+        Supplies a sequence of (possibly **non-nested**) coarse meshes from which
+        a barycentric or RBF prolongation ``P`` is assembled and installed into
+        the PCMG via ``PC.setMGInterpolation``; coarse operators are formed by
+        Galerkin RAP. This decouples geometric multigrid from a nested
+        ``refine()`` hierarchy — it works even when the solver mesh has no
+        refinement hierarchy at all.
+
+        Parameters
+        ----------
+        coarse_meshes : list of Mesh
+            Coarsest-first list of coarse meshes (the finest level is the
+            solver's own mesh). Need not be nested with the solver mesh.
+        kind : {"barycentric", "rbf"}
+            Prolongation builder. ``barycentric`` is FE-exact; ``rbf`` is a
+            polyharmonic RBF (Shepard-normalised). Default ``barycentric``.
+        verbose : bool
+            Print the per-level DOF counts at injection.
+
+        Notes
+        -----
+        Supported both on single-field (scalar / vector) solvers — where the
+        prolongation is installed directly on the solver's ``PCMG`` — and on the
+        **Stokes velocity block** (the ``fieldsplit_velocity_`` sub-PC), where the
+        velocity sub-PC is only reachable once the monolithic Jacobian has been
+        assembled; the install there assembles the Jacobian, descends the
+        fieldsplit to the velocity sub-PC, and rebuilds it as a fresh ``PCMG``
+        driven by our ``P``. Injection happens at solve time (after
+        ``setFromOptions`` / nullspace attach) via
+        :func:`underworld3.utilities.custom_mg.inject_custom_mg`. See
+        :mod:`underworld3.utilities.custom_mg`.
+        """
+        if kind not in ("barycentric", "rbf"):
+            raise ValueError("kind must be 'barycentric' or 'rbf'")
+        if not coarse_meshes:
+            raise ValueError("coarse_meshes must be a non-empty coarsest-first list")
+        self._custom_mg = {"coarse_meshes": list(coarse_meshes),
+                           "kind": kind, "verbose": verbose}
+        self.is_setup = False
 
     def add_update_callback(self, callback):
         r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
@@ -1200,6 +1246,8 @@ class SolverBaseClass(uw_object):
                 self._stokes_nullspace = None
             if hasattr(self, "_stokes_nullspace_basis"):
                 self._stokes_nullspace_basis = ()
+            if hasattr(self, "_velocity_rotation_nullspace"):
+                self._velocity_rotation_nullspace = None
             if hasattr(self, "_constant_nullspace_obj"):
                 self._constant_nullspace_obj = None
 
@@ -2009,6 +2057,114 @@ class SolverBaseClass(uw_object):
 
         return
 
+    def _assemble_volume_reaction(self, time=None, verbose=False):
+        """RAW per-rank FEM VOLUME residual (no boundary terms) in the DM-local layout,
+        as a numpy array.
+
+        At an essential-BC (Dirichlet) node this residual IS the consistent boundary
+        reaction — the integrated nodal flux :math:`\\int_\\Gamma (F\\cdot\\hat n)\\phi_i`
+        (heat flux for a scalar diffusion solve, traction for Stokes). Interior nodes are
+        ~0. General across scalar / vector / Stokes solvers: the current solution is
+        gathered from ``self.fields`` when present (Stokes) else the single
+        ``Unknowns.u`` field.
+
+        NOTE: the returned array is NOT globally assembled. The DM has overlap=0, so each
+        rank computes only its OWNED cells' contribution; a boundary node shared across a
+        partition cut therefore holds only this rank's PARTIAL reaction. The complete
+        reaction is assembled by the caller (``utilities.boundary_flux._desmear``) by
+        SUMMING each rank's partial by coordinate — not by a hand-rolled localToGlobal.
+        """
+        cdef DM dm
+        cdef Vec xvec
+        cdef Vec fvec
+        cdef DM _time_dm_reaction
+        cdef PetscFormKey key
+        cdef IS ccell_is
+        cdef PetscReal residual_time = 0.0
+        cdef PetscReal implicit_form_time = <PetscReal>-1.7976931348623157e308
+
+        self._build(verbose, False, None)
+
+        if time is not None:
+            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                t_nd = float(uw.non_dimensionalise(time))
+            else:
+                t_nd = float(time)
+            _time_dm_reaction = self.dm
+            UW_DMSetTime(_time_dm_reaction.dm, <PetscReal>t_nd)
+
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+
+        gvec = self.dm.getGlobalVec()
+        xlocal = self.dm.getLocalVec()
+        flocal = self.dm.getLocalVec()
+        gvec.setArray(0.0)
+        xlocal.setArray(0.0)
+        flocal.setArray(0.0)
+
+        try:
+            # gather the current solution into the global vector (field-structure agnostic)
+            if getattr(self, "fields", None):
+                for name, var in self.fields.items():
+                    sgvec = gvec.getSubVector(self._subdict[name][0])
+                    self._subdict[name][1].localToGlobal(var.vec, sgvec)
+                    gvec.restoreSubVector(self._subdict[name][0], sgvec)
+            else:
+                _names, _iss, _subdms = self.dm.createFieldDecomposition()
+                sgvec = gvec.getSubVector(_iss[0])
+                _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                gvec.restoreSubVector(_iss[0], sgvec)
+
+            self.dm.globalToLocal(gvec, xlocal)
+
+            dm = self.dm
+            xvec = xlocal
+            fvec = flocal
+            CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
+
+            # Return the RAW local residual: each rank has computed its OWNED cells'
+            # contribution to its local nodes (the DM has overlap=0, so a boundary node
+            # shared across a partition cut holds only this rank's PARTIAL contribution).
+            # The caller assembles the complete reaction by summing these partials across
+            # ranks by coordinate (boundary_flux._desmear), consistent with the boundary-
+            # mass gather — this reproduces the rock-solid volume integral at cut nodes.
+            return np.array(flocal.array, copy=True)
+        finally:
+            self.dm.restoreLocalVec(flocal)
+            self.dm.restoreLocalVec(xlocal)
+            self.dm.restoreGlobalVec(gvec)
+
+    def boundary_flux(self, boundary, mass="lumped", remove_mean=False, normal=None):
+        r"""Consistent boundary flux on ``boundary``, recovered from the essential-BC
+        reaction of the last solve (the Consistent Boundary Flux method).
+
+        Returns ``(xs, flux)`` with one entry per boundary node on this rank: for a
+        **scalar** solver the outward normal flux :math:`F\cdot\hat n` (e.g. surface heat
+        flux :math:`-k\,\partial T/\partial n`, whose boundary mean is the Nusselt
+        number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
+        ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
+
+        ``mass`` de-smears the nodal reaction with the ``"lumped"`` (diagonal, monotone —
+        no overshoot at a flux jump) or ``"consistent"`` boundary mass. ``remove_mean``
+        subtracts the boundary mean — leave ``False`` for a physical flux (the mean is
+        the Nusselt number); ``True`` gives a gauge-free field (e.g. dynamic topography).
+        Parallel-safe and partition-independent."""
+        from underworld3.utilities.boundary_flux import boundary_flux as _bf
+        return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
+
+    def boundary_flux_field(self, boundary, field, mass="lumped",
+                            remove_mean=False, scale=1.0, normal=None):
+        r"""Write the consistent boundary flux (see :meth:`boundary_flux`) onto a scalar
+        MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
+        ``scale``. This is the field hand-off for downstream machinery (surface heat
+        flux for coupling, or — with ``remove_mean=True`` and ``scale=-1/(\Delta\rho g)``
+        — dynamic topography). Returns ``field``."""
+        from underworld3.utilities.boundary_flux import boundary_flux_to_field as _bff
+        return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
+                    scale=scale, normal=normal)
+
 ## Specific to dimensionality
 
 
@@ -2360,6 +2516,45 @@ class SNES_Scalar(SolverBaseClass):
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
 
+        # TODO(BUG): natural BC on an INTERNAL surface is partition-dependent.
+        # An interior facet has two support cells; the FE-assembly DM is kept
+        # non-overlapped on purpose (overlap double-counts volume assembly via
+        # LocalToGlobal+ADD — see discretisation_mesh.py ~L760). At a partition
+        # seam ~few interior facets have only ONE local support cell, and PETSc's
+        # DMPlexComputeBdResidual_Single_Internal attributes the whole per-facet
+        # elemVec to support[0]'s cell closure (plexfem.c ~L4928) with the facet
+        # normal oriented outward from support[0] (dmfieldds.c ~L790). When the
+        # local-only support cell is the OPPOSITE side from the serial support[0],
+        # the integral is the same value but is scattered through a different
+        # cell closure; closure DOFs that are non-owned on this rank are added
+        # locally then dropped at global assembly → the assembled load UNDER-counts
+        # by ~0.027% (the force *function* integral / RMS is identical to machine
+        # precision). In an ill-conditioned solve (augmented Stokes_Constrained)
+        # this amplifies to ~0.1% velocity.
+        #
+        # Three cheap workarounds were TESTED and do NOT work:
+        #   * editing the boundary LABEL (owner-only / ghost-strip): no-op — the
+        #     ghost facet copies already contribute nothing (PETSc integrates each
+        #     facet once), so stripping them is bit-identical;
+        #   * a 1-cell partition OVERLAP on the assembly DM: no-op — verified the
+        #     overlap propagates (+ghost cells) yet F0 is bit-identical, so overlap
+        #     does NOT recover the dropped DOFs (and it double-counts volume anyway);
+        #   * assembling the surface load on a codim-1 SUBMESH (extract_surface):
+        #     blocked — UW3 FE on an embedded surface fails at setup because the
+        #     gradient/flux term has cdim components but is reshaped to dim
+        #     (the manifold vector-FE gap).
+        # A deterministic support[0] cannot be imposed from UW3 (support order
+        # follows the DMPlex point partition). Genuine fixes, all substantial:
+        #   (a) MANUALLY assemble the boundary load (per-facet ∫ f·φ keyed by GLOBAL
+        #       velocity DOF, each facet once) into a partition-independent vector
+        #       and inject it via a guarded SNES function wrap — reimplements the bd
+        #       residual but sidesteps PETSc's support[0] scatter;
+        #   (b) fix UW3 manifold vector-FE, then assemble the load on the surface
+        #       submesh and map to the parent by coincident-node coordinate;
+        #   (c) a PETSc patch making the interior-facet bd residual scatter to the
+        #       OWNED support cell.
+        # See planning file (underworld.md, Bugs) and
+        # project_stokes_constrained_parallel_session.
         for index,bc in enumerate(self.natural_bcs):
 
             components = bc.components
@@ -2820,6 +3015,13 @@ class SNES_Scalar(SolverBaseClass):
         # ``constant_nullspace`` was set.
         self._attach_constant_nullspace()
 
+        # Custom multigrid prolongation: inject our P hierarchy before the
+        # first PCSetUp (so the Galerkin coarse operators are built from it).
+        # No-op unless set_custom_mg() was called.
+        if self._custom_mg is not None:
+            from underworld3.utilities.custom_mg import inject_custom_mg
+            inject_custom_mg(self)
+
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
@@ -3086,7 +3288,7 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1):
+    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         For vector solvers (no pressure field), this constrains
@@ -3105,6 +3307,11 @@ class SNES_Vector(SolverBaseClass):
             Dimensionless stabilisation parameter.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
+        local_h : bool, default=True
+            Scale the penalty by a local per-cell mesh size
+            (:meth:`Mesh.cell_size`) rather than the global minimum
+            (:meth:`Mesh.get_min_radius`). See
+            ``SNES_Stokes_SaddlePt.add_nitsche_bc`` for details.
 
         Warnings
         --------
@@ -3151,12 +3358,18 @@ class SNES_Vector(SolverBaseClass):
             g = sympy.Integer(0)
         constraint = u_dot_d - g
 
-        # Mesh size
-        h = uw.function.expression(
-            r"h_{\mathrm{Nitsche}}",
-            mesh.get_min_radius(),
-            "Nitsche mesh size parameter",
-        )
+        # Mesh size for the penalty term (gamma*mu/h). Default: a LOCAL,
+        # per-cell size (mesh.cell_size()) that tracks deformation/adaptation
+        # so the stabilisation is scaled correctly on a non-uniform mesh. Set
+        # local_h=False for the legacy single global-minimum scalar.
+        if local_h:
+            h_sym = mesh.cell_size()
+        else:
+            h_sym = uw.function.expression(
+                r"h_{\mathrm{Nitsche}}",
+                mesh.get_min_radius(),
+                "Nitsche mesh size parameter (global)",
+            ).sym
 
         # Viscosity from constitutive model
         mu = self.constitutive_model.viscosity
@@ -3173,7 +3386,7 @@ class SNES_Vector(SolverBaseClass):
         # f0_bd: velocity boundary residual (value term)
         f0_components = []
         for c in range(dim):
-            f0_c = (gamma * mu / h.sym) * constraint * d[c]    # penalty
+            f0_c = (gamma * mu / h_sym) * constraint * d[c]    # penalty
             f0_c -= t_d * d[c]                                   # consistency
             f0_components.append(f0_c)
 
@@ -3836,6 +4049,12 @@ class SNES_Vector(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants()
+
+        # Custom geometric-MG prolongation on the (top-level vector) PC, if
+        # registered via set_custom_fmg. Mirrors the SNES_Scalar hook.
+        if self._custom_mg is not None:
+            from underworld3.utilities.custom_mg import inject_custom_mg
+            inject_custom_mg(self)
 
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
@@ -4731,6 +4950,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
+        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
+        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n=0 +
+        # reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_info = None
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -4755,7 +4980,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # interior h DOFs directly in the fine local PetscSection
         # (_constrain_interior_multipliers_in_section) — lossless (correct
         # constraint-boundary closure) and refined/FMG-safe (no DMAddBoundary
-        # ordering restriction). Default ON.
+        # ordering restriction). Default ON: it is both a correctness-neutral DOF
+        # reduction AND a conditioning win — leaving the interior h DOFs in place
+        # keeps the near-singular ε-screened interior block in the solved system,
+        # which an iterative ([p,h] Schur) solve handles poorly. See that method's
+        # docstring for why disabling it is ill-conditioned, not "more accurate".
         self._reduce_interior_multiplier = True
 
         self._degree = degree
@@ -4877,6 +5106,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._petsc_velocity_nullspace_basis = ()
         self._stokes_nullspace = None
         self._stokes_nullspace_basis = ()
+        self._velocity_rotation_nullspace = None
 
         # Construct strainrate tensor for future usage.
         # Grab gradients, and let's switch out to sympy.Matrix notation
@@ -4911,7 +5141,82 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None):
+    def add_rotated_freeslip_bc(self, boundary, normal=None):
+        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
+        the boundary velocity DOFs into a per-node (normal, tangential) frame and
+        imposing the rotated normal component as an exact Dirichlet constraint.
+
+        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
+        this enforces zero wall-normal flow to machine precision, and the constraint
+        **reaction** is the consistent boundary normal traction
+        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
+        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
+        boundaries because the normal is taken per node.
+
+        Parameters
+        ----------
+        boundary : str
+            Boundary label to constrain.
+        normal : None or sympy 1×dim Matrix or array, optional
+            Per-node outward normal source. ``None`` uses the geometric facet
+            normal (PETSc ``computeCellGeometryFVM``; works in 2D and 3D). A
+            sympy ``1×dim`` matrix supplies an analytic normal (exact
+            ``X/|X|`` on a spherical cap, a constant on a planar face) — preferred
+            on curved boundaries. A constant array is also accepted.
+
+        Notes
+        -----
+        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
+        edge) is constrained on the whole span of its accumulated normals: a 3D
+        face frees two tangential directions, a 3D edge frees one (the edge
+        tangent), a corner is fully pinned. Registering delegates the solve to
+        :mod:`underworld3.utilities.rotated_bc`.
+        """
+        self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def boundary_normal_traction(self, boundary, mass="lumped"):
+        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
+        rotated-free-slip ``boundary`` as the constraint reaction from the last
+        solve — the smooth, bounded quantity used for dynamic topography
+        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
+        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
+        :meth:`solve`.
+
+        ``mass`` chooses the boundary-mass de-smear of the nodal reaction:
+        ``"lumped"`` (default) is monotone — it cannot overshoot where the traction
+        jumps (e.g. across a viscosity contrast), so it is the safe choice for driving
+        a free surface; ``"consistent"`` uses the full P2 line mass (marginally sharper
+        on smooth tractions, but overshoots at discontinuities)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
+        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
+
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="lumped"):
+        r"""Write the dynamic topography
+        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
+        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
+        constraint reaction of the last solve. This is the hand-off to the free-surface
+        machinery — the 3-number topography integrator drives node motion from a surface
+        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
+        pass it here after each :meth:`solve`; its boundary nodes are filled and the
+        interior left untouched.
+
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length). ``mass`` selects
+        the recovery de-smear (``"lumped"`` default is monotone — no overshoot at a
+        stress jump — and is the safe choice for a free surface). Requires a prior
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "dynamic_topography requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
+        return _dtf(self, boundary, self._rotated_freeslip_info, field,
+                    buoyancy_scale=buoyancy_scale, mass=mass)
+
+    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -4960,6 +5265,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundaries. Use a DG MeshVariable that is 1 on the active
             side and 0 on the inactive side. The mask multiplies all
             Nitsche terms so that only the active-side cell contributes.
+        local_h : bool, default=True
+            Scale the penalty term :math:`\gamma\mu/h` by a **local**,
+            per-cell mesh size (:meth:`Mesh.cell_size`, deformation- and
+            adaptation-tracking) rather than the single **global** minimum
+            cell size (:meth:`Mesh.get_min_radius`). On a non-uniform or
+            adaptive mesh the local size scales the stabilisation correctly
+            on every facet; on a uniform mesh the two coincide. Set ``False``
+            to restore the legacy global-h behaviour exactly.
 
         Examples
         --------
@@ -5037,12 +5350,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # n_dot_d is always positive when n = d (it's |n|²),
         # so sign of PETSc face normal doesn't affect this term
 
-        # Mesh size (global estimate via UWexpression constant)
-        h = uw.function.expression(
-            r"h_{\mathrm{Nitsche}}",
-            mesh.get_min_radius(),
-            "Nitsche mesh size parameter",
-        )
+        # Mesh size for the penalty term (gamma*mu/h). Default: a LOCAL,
+        # per-cell characteristic size (mesh.cell_size()), so the Nitsche
+        # stabilisation is correctly scaled on every facet of a non-uniform
+        # or adaptively-refined mesh — the boundary kernel sees the adjacent
+        # cell's size. The field tracks mesh deformation/adaptation. Set
+        # local_h=False to restore the legacy single global-minimum scalar
+        # (mesh.get_min_radius()); on a uniform mesh the two coincide.
+        if local_h:
+            h_sym = mesh.cell_size()
+        else:
+            h_sym = uw.function.expression(
+                r"h_{\mathrm{Nitsche}}",
+                mesh.get_min_radius(),
+                "Nitsche mesh size parameter (global)",
+            ).sym
 
         # Viscosity from constitutive model
         mu = self.constitutive_model.viscosity
@@ -5061,7 +5383,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # = penalty + consistency + pressure flux
         f0_components = []
         for c in range(dim):
-            f0_c = (gamma * mu / h.sym) * constraint * d[c]    # penalty
+            f0_c = (gamma * mu / h_sym) * constraint * d[c]    # penalty
             f0_c -= t_d * d[c]                                   # consistency
             f0_c += p_sym * n_dot_d * d[c]                       # pressure flux
             f0_components.append(f0_c)
@@ -5523,6 +5845,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def _reset_stokes_nullspace(self):
         self._stokes_nullspace = None
         self._stokes_nullspace_basis = ()
+        # the cached velocity rotation nullspace is built from node coordinates,
+        # so it must be invalidated whenever the nullspace config / geometry
+        # changes (e.g. mesh deformation) — see _build_velocity_rotation_nullspace.
+        self._velocity_rotation_nullspace = None
 
     def _pressure_dirichlet_bcs(self):
         """Return essential boundary conditions applied to the pressure field."""
@@ -5742,6 +6068,79 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 f"{len(self._stokes_nullspace_basis)} basis mode(s)",
                 flush=True,
             )
+
+    def _build_velocity_rotation_nullspace(self):
+        """Cache a velocity-rotation-only ``MatNullSpace`` (zero in pressure /
+        multiplier blocks). Used to project the rigid-rotation gauge out of the
+        converged solution — see ``_remove_velocity_rotation_gauge``. Cached;
+        the cache is invalidated by ``_reset_stokes_nullspace`` / solver rebuild
+        because the modes depend on node coordinates."""
+        if self._velocity_rotation_nullspace is not None:
+            return self._velocity_rotation_nullspace
+        if not self._petsc_velocity_nullspace_basis:
+            return None
+
+        vecs = [self._build_velocity_nullspace_vector(m)
+                for m in self._petsc_velocity_nullspace_basis]
+        orthonormal = []
+        for bvec in vecs:
+            for ovec in orthonormal:
+                bvec.axpy(-ovec.dot(bvec), ovec)
+            bnorm = bvec.norm()
+            if np.isclose(bnorm, 0.0):
+                bvec.destroy()
+                continue
+            bvec.scale(1.0 / bnorm)
+            orthonormal.append(bvec)
+        if not orthonormal:
+            return None
+
+        self._velocity_rotation_nullspace = PETSc.NullSpace().create(
+            constant=False, vectors=tuple(orthonormal), comm=self.dm.comm)
+        return self._velocity_rotation_nullspace
+
+    def _remove_velocity_rotation_gauge(self, gvec):
+        """Project the rigid-body rotation gauge out of the converged solution.
+
+        For a free-slip (non-Dirichlet) velocity, the rigid rotations are a true
+        nullspace of the velocity block (A_uu·rotation = 0). The monolithic
+        nullspace attached for the solve is NOT removed inside a fieldsplit/Schur
+        iteration — the inner velocity KSP has no rotation nullspace, so it leaves
+        an unconstrained rigid rotation in the velocity. Because the operator is
+        blind to it, the true residual still converges to machine precision, but
+        the rotation amplitude is PARTITION-DEPENDENT (the tangential velocity then
+        differs serial-vs-parallel by ~0.1-1% while the physical / radial flow is
+        partition-clean to round-off). Since the rotation is a genuine nullspace,
+        removing it from the converged ``gvec`` does NOT change the residual and
+        yields the same rotation-free solution on any decomposition. This is the
+        velocity analogue of the constant-pressure gauge (see set_pressure_gauge).
+        No-op when there are no velocity rotation modes.
+
+        Why a post-solve projection rather than attaching the rotation nullspace
+        to the fieldsplit velocity SUB-BLOCK so the inner KSP removes it in-solve:
+        the in-solve route was implemented and MEASURED, and it does not fix the
+        gauge. A ``DMSetNullSpaceConstructor(dm, 0, ...)`` (rotations-only, built
+        with ``DMPlexCreateRigidBody``) DOES attach the rotation nullspace to the
+        fieldsplit velocity block — verified: the velocity sub-block operator
+        carries the 1 (2-D) / 3 (3-D) rotation modes after PC setup — yet the
+        converged GLOBAL velocity still retained the full rotation gauge (rotation
+        coefficient ~0.18, i.e. unchanged). Removing a nullspace gauge is a
+        projection on the converged GLOBAL solution; attaching the nullspace to a
+        sub-block operator only constrains the inner Krylov solves, and with
+        ``fgmres`` + a variable (fieldsplit/Schur) preconditioner that reintroduces
+        rotation, the assembled outer solution is not gauge-free. (PETSc also
+        dispatches ``DMCreateSubDM`` nullspace constructors by SUB-DM-LOCAL field
+        index, so a field-0 constructor needs a block-sniffing guard to avoid
+        leaking onto the ``[p,h]`` Schur block — but even with that, the global
+        gauge persists.) So the explicit post-solve projection is the correct AND
+        necessary mechanism, not a stopgap: it is mathematically exact (the rotation
+        is a true nullspace, so it does not change the residual) and robust to
+        operator rebuild. Building only the rotation modes (zero in the pressure /
+        multiplier blocks) keeps it from touching the pressure/multiplier gauge,
+        which is handled by the monolithic nullspace."""
+        rot_ns = self._build_velocity_rotation_nullspace()
+        if rot_ns is not None:
+            rot_ns.remove(gvec)
 
 
     ## F0, F1 should be f0 and F1, (pf0 for Saddles can be added here)
@@ -6482,6 +6881,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         appends the local offset of every h-bearing point regardless of
         constraint, so the copy back into the full-domain ``h`` MeshVariable is
         size-correct without change.
+
+        Why this is lossless (and why disabling it is NOT a "more accurate"
+        reference). The interior ``h`` rows are the screening block alone,
+        ``ε M_ii h_i + ε M_ib h_b = 0`` (no constraint or buoyancy source reaches
+        the interior), so the interior multiplier is fully determined by the
+        boundary trace, ``h_i = -M_ii^{-1} M_ib h_b`` — a *bounded* O(h_b)
+        quantity that feeds back into the boundary row only at O(ε). At ε=1e-6 its
+        effect on the physical solution is negligible: pinning ``h_i = 0`` instead
+        moves a converged solve by ~1e-8 in velocity and ~1e-5 in topography
+        (measured, 2-D annulus). So the pinned DOFs carry no physical signal.
+
+        Disabling the reduction (``_reduce_interior_multiplier = False``) does NOT
+        recover lost physics; it re-admits ~ndof/3 interior DOFs whose only
+        coupling is the near-singular ``ε M_ii`` block, enlarging and
+        ill-conditioning the ``[p,h]`` Schur complement. On a direct/well-converged
+        solve the answer is essentially unchanged (lossless, as above); on an
+        iterative grouped-Schur solve (e.g. ``snes_type=ksponly`` on the 3-D shell)
+        the extra ill-conditioned DOFs degrade convergence and the solve can land
+        on a different representative — which is the origin of the "answer moves a
+        few percent / parallel spread worsens when off" behaviour. That is a
+        conditioning effect, not evidence the knockout drops information. Keep it
+        ON; it is the recommended, validated path.
         """
         from petsc4py import PETSc
         import numpy as np
@@ -7421,6 +7842,41 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Set time on the DM so petsc_t is available in pointwise functions.
         # Non-dimensionalise if the scaling system is active.
         cdef DM _time_dm_stokes
+
+        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
+        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
+        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
+        if self._rotated_freeslip_bcs:
+            # This is a LINEAR solve path: it assembles the Jacobian and residual once at
+            # U=0 and solves the rotated saddle directly, so it does NOT run the SNES
+            # nonlinear iteration. Nonlinear rheology / Picard / warm-start are therefore
+            # unsupported through this path — guard the explicit cases rather than
+            # silently returning a single-linearisation answer.
+            if picard != 0 or not zero_init_guess:
+                raise NotImplementedError(
+                    "rotated free-slip BCs support only a single linear solve "
+                    "(zero_init_guess=True, picard=0). Nonlinear rheology or warm-start "
+                    "would require integrating the rotated constraint into the SNES "
+                    "iteration; not yet implemented.")
+            # Run the same pre-solve preamble as the standard path so the pointwise
+            # functions see the DM time, the auxiliary vector, and updated constants
+            # (needed for problems whose coefficients live in auxiliary fields).
+            if time is not None:
+                if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                    t_nd = float(uw.non_dimensionalise(time))
+                else:
+                    t_nd = float(time)
+                _time_dm_stokes = self.dm
+                UW_DMSetTime(_time_dm_stokes.dm, t_nd)
+            self.mesh.update_lvec()
+            self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+            self._update_constants()
+
+            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+            self._rotated_freeslip_info = solve_rotated_freeslip(
+                self, self._rotated_freeslip_bcs, verbose=verbose)
+            return
+
         if time is not None:
             if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
                 t_nd = float(uw.non_dimensionalise(time))
@@ -7491,6 +7947,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
+            # Custom geometric-MG prolongation on the velocity block (if registered
+            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+            # before the real solve — because the velocity sub-PC is only reachable
+            # once the monolithic Jacobian is assembled (see custom_mg).
+            if self._custom_mg is not None:
+                from underworld3.utilities.custom_mg import inject_custom_mg
+                inject_custom_mg(self)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         else:
@@ -7501,7 +7964,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
+            # Custom geometric-MG prolongation on the velocity block (if registered
+            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+            # before the real solve — because the velocity sub-PC is only reachable
+            # once the monolithic Jacobian is assembled (see custom_mg).
+            if self._custom_mg is not None:
+                from underworld3.utilities.custom_mg import inject_custom_mg
+                inject_custom_mg(self)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
+
+        # Project the rigid-body rotation gauge out of the converged solution.
+        # The fieldsplit/Schur inner velocity solve leaves an unconstrained (and
+        # partition-dependent) rigid rotation that the true residual is blind to;
+        # removing this genuine velocity nullspace makes the tangential velocity
+        # partition-independent to round-off without changing the residual.
+        self._remove_velocity_rotation_gauge(gvec)
 
         # SNESSetUpdate fires only at the START of each iteration, so the final
         # converged iterate is otherwise un-hooked. Apply the callbacks once more

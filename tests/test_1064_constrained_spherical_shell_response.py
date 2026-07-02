@@ -6,9 +6,23 @@ This test records facts exposed by the Zhong et al. (2008)-style benchmark:
   scale for this low-resolution response case;
 * a direct-LU diagnostic path gives matching Nitsche and constrained responses,
   but it does not reproduce the validated Nitsche/default response and should
-  not be treated as the benchmark reference;
-* the practical fast grouped-Schur constrained path currently does not reproduce
-  the Zhong velocity response and remains an expected failure.
+  not be treated as the benchmark reference. A monolithic direct factorisation
+  of the *constrained* saddle point is a SERIAL diagnostic only: it gives the
+  wrong velocity response and segfaults in parallel (the indefinite KKT
+  factorisation is not robust here), so ``Stokes_Constrained`` now emits a
+  warning when ``pc_type`` is ``lu``/``cholesky``. Use the grouped
+  ``u | [p,h]`` field-split for production;
+* the DEFAULT constrained field-split path now reproduces the Zhong velocity
+  response: ``Stokes_Constrained`` defaults to a flexible outer Krylov (fgmres)
+  with an unpreconditioned (true-residual) convergence test and a tightened
+  Eisenstat-Walker tolerance — required because the grouped ``u | [p,h]`` Schur
+  preconditioner uses inner *iterative* sub-solves (a variable preconditioner),
+  which a non-flexible method false-converged on, giving a wrong, partition-
+  dependent answer;
+* two *alternative* sub-solver choices remain expected failures for this load:
+  the fast grouped-Schur variant with a ``gasm`` Schur block, and the
+  direct-LU-sub-solve field-split (LU on the indefinite KKT blocks is not robust
+  and segfaults in parallel).
 
 Run:
     pixi run -e amr-dev pytest -q tests/test_1064_constrained_spherical_shell_response.py
@@ -168,6 +182,24 @@ def solve_response(method, solver_mode):
 def test_default_nitsche_matches_zhong_velocity_response():
     surface_velocity, cmb_velocity, snes_reason = solve_response(
         "nitsche",
+        "default",
+    )
+
+    assert snes_reason > 0
+    assert abs(surface_velocity - ZHONG_SURFACE_VELOCITY) / ZHONG_SURFACE_VELOCITY < 0.05
+    assert abs(cmb_velocity - ZHONG_CMB_VELOCITY) / ZHONG_CMB_VELOCITY < 0.05
+
+
+def test_default_constrained_matches_zhong_velocity_response():
+    """The DEFAULT constrained field-split path reproduces the Zhong response.
+
+    This is the headline of the fgmres + unpreconditioned-norm + tightened-EW
+    solver defaults: the grouped u | [p,h] Schur solve now genuinely converges
+    (it previously false-converged on the variable preconditioner) and matches
+    the validated Nitsche/default velocity scale to within the benchmark tol.
+    """
+    surface_velocity, cmb_velocity, snes_reason = solve_response(
+        "constrained",
         "default",
     )
 
