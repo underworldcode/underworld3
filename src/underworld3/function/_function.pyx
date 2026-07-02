@@ -729,9 +729,13 @@ def _project_to_work_variable(expr, mesh, smoothing=1e-6):
         )
         projector.uw_function = flat_source
         projector.smoothing = smoothing
-        # _force_setup=True: rebuild solver state to avoid stale cached
-        # projector after Stokes/DM modifications (issue #215, Bug 2).
-        projector.solve(zero_init_guess=False, _force_setup=True)
+        # NB: a plain solve (not _force_setup=True) — the cached projector
+        # refreshes correctly against changed field data on the current cache
+        # machinery. Forcing a full DM+SNES rebuild every evaluate() re-introduced
+        # the O(100 MiB) leak guarded by tests/test_0006_memory_leak.py. If a
+        # genuine cache-staleness recurs, invalidate the cached projector
+        # targetedly rather than rebuilding on every call (issue #215, Bug 2).
+        projector.solve(zero_init_guess=False)
 
         # Fan flat result back to the tensor work variable
         for idx in range(n_components):
