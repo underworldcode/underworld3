@@ -9,7 +9,12 @@ essential free-slip solve bit-for-bit. Direct LU here; FMG wiring is a later ste
 """
 import numpy as np
 from petsc4py import PETSc
-from mpi4py import MPI
+
+# Shared Consistent-Boundary-Flux machinery (the σ_nn recovery is a rotated-frame reading
+# of the same primitive): the consolidated-label boundary stratum, the lumped/consistent
+# boundary-mass de-smear, and the scalar-field hand-off all live in `boundary_flux`.
+from underworld3.utilities.boundary_flux import (
+    _boundary_stratum_is, _desmear, write_boundary_scalar_field)
 
 # Monotonic counter so each rotated solve gets a UNIQUE PETSc options prefix. With a
 # fixed prefix, sequential rotated solves (e.g. two solvers in one script, or one
@@ -58,10 +63,11 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     lsec = dm.getLocalSection()
     VEL = _velocity_field_id(solver)
     interior_ref = cvec.mean(axis=0)
-    bval = [b.value for b in solver.mesh.boundaries if b.name == boundary][0]
-    # In parallel a rank may own NO part of this boundary → getStratumIS returns a
-    # null IS; calling getIndices() on it segfaults. Guard and return no local nodes.
-    sis = dm.getStratumIS(boundary, bval)
+    # Boundary facets via the consolidated "UW_Boundaries" label (per-boundary labels do
+    # not survive mesh adaptation); raises a clear error for an unknown boundary name.
+    # In parallel a rank may own NO part of this boundary → a null IS; guard and return
+    # no local nodes (calling getIndices() on a null IS would segfault).
+    sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     if sis is None or sis.handle == 0:
         return []
     facets = [int(z) for z in sis.getIndices()]
@@ -490,23 +496,20 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     normal = dict((nm, nrm) for nm, nrm in
                   [(s if isinstance(s, tuple) else (s, None)) for s in info["boundaries"]]).get(boundary)
     nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-    xs = []; Rn = []; pts = []
+    xs = []; Rn = []
     for q, nrm in nodes:
         lo = lsec.getFieldOffset(q, VEL)
         rcv = rca[lo:lo + dim]                    # Cartesian reaction at this node (local)
         xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
         Rn.append(float(np.dot(nrm, rcv)))        # R_i = n̂·r_c  (corner-correct)
-        pts.append(q)
     dm.restoreLocalVec(rcl)
     xs = np.array(xs); Rn = np.array(Rn)
-    if dim != 2:
-        # no line-mass geometry in 3D yet → crude global-mean-removed load
-        comm = dm.comm.tompi4py()
-        tot = comm.allreduce(float(Rn.sum()), op=MPI.SUM)
-        cnt = comm.allreduce(int(Rn.size), op=MPI.SUM)
-        return xs, (-Rn) - (-tot / max(cnt, 1))
-    sig = _recover_sigma_nn_2d(solver, boundary, pts, Rn, xs, mass=mass)
-    return xs, sig
+    # σ_nn = −(nodal reaction), de-smeared by the SHARED boundary-mass primitive and
+    # mean-removed (the ρg·h gauge). partial_reaction=False: the reaction here comes from
+    # the ASSEMBLED global operator Q(A·u−b), already complete at every node (ranks agree
+    # at a partition-cut node — must OVERWRITE, not sum, else shared nodes double-count).
+    return xs, _desmear(solver, boundary, xs, -Rn, mass,
+                        remove_mean=True, partial_reaction=False)
 
 
 def dynamic_topography_field(solver, boundary, info, field, buoyancy_scale=1.0, mass="lumped"):
@@ -524,107 +527,12 @@ def dynamic_topography_field(solver, boundary, info, field, buoyancy_scale=1.0, 
     """
     dim = solver.mesh.dim
     xs, sig = boundary_normal_traction(solver, boundary, info, mass=mass)
-
+    # σ_nn is already mean-removed (the ρg·h gauge); topography h = -σ_nn / (Δρ g).
     def key(c):
         return tuple(round(float(t), 9) for t in np.asarray(c).ravel()[:dim])
-
-    # σ_nn is already mean-removed (the ρg·h gauge); topography h = -σ_nn / (Δρ g)
     hmap = {key(x): -float(s) / buoyancy_scale for x, s in zip(np.asarray(xs), np.asarray(sig))}
-    fc = np.asarray(field.coords)
-    # Build the new nodal values in a LOCAL numpy copy, then assign the field ONCE.
-    # A per-element write to var.data fires the variable's write-callback each time; the
-    # number of boundary nodes differs per rank (a rank may own none of the boundary),
-    # so per-element writes would desync any collective in the callback and deadlock.
-    newdata = np.asarray(field.data).copy()
-    for i in range(fc.shape[0]):
-        h = hmap.get(key(fc[i]))
-        if h is not None:
-            newdata[i, 0] = h
-    field.data[...] = newdata
-    # refresh the field's gvec cache so symbolic/BdIntegral reads see the update
-    base = getattr(field, "_base_var", field)
-    if hasattr(base, "_sync_lvec_to_gvec"):
-        base._sync_lvec_to_gvec()
-    if hasattr(base, "_canonical_data"):
-        base._canonical_data = None
-    solver.mesh._stale_lvec = True
-    return field
-
-
-def _recover_sigma_nn_2d(solver, boundary, pts, Rn, xs, mass="lumped"):
-    """De-smear the nodal reaction loads R into a pointwise σ_nn on `boundary` (2D) with
-    either the LUMPED (diagonal, monotone) or the CONSISTENT P2 line mass.
-
-    Parallel-safe by construction: each rank emits its local boundary ELEMENTS as
-    self-contained coordinate-keyed records (the three P2 node keys + the element length);
-    an allgather assembles the SAME global boundary mass on every rank (elements
-    de-duplicated by key, so a facet shared across a partition cut is counted once). Every
-    rank forms the identical de-smear and returns σ at its own local nodes, so the result
-    — and the mean-removal gauge — is partition-independent."""
-    dm = solver.dm; dim = 2; comm = dm.comm.tompi4py()
-    csec = dm.getCoordinateSection()
-    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-    v0, v1 = dm.getDepthStratum(0); e0, e1 = dm.getDepthStratum(1)
-    def vcoord(q): return cvec[csec.getOffset(q) // dim]
-    def key(c): return (round(float(c[0]), 9), round(float(c[1]), 9))
-
-    # local node -> reaction load, keyed by coordinate (ghosts included via pts/Rn)
-    nodeR = {key(x): float(R) for x, R in zip(xs, Rn)}
-
-    # local boundary elements as coordinate-keyed records: (ka, kmid, kb, h)
-    bval = [bb.value for bb in solver.mesh.boundaries if bb.name == boundary][0]
-    sis = dm.getStratumIS(boundary, bval)
-    strat = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
-    edges = [q for q in strat if e0 <= q < e1]
-    local_elems = []
-    for e in edges:
-        a, bb = (int(c) for c in dm.getCone(e))
-        ca, cb = vcoord(a), vcoord(bb)
-        cmid = _point_coord(dm, dim, cvec, csec, v0, v1, e)
-        h = float(np.hypot(*(cb - ca)))
-        local_elems.append((key(ca), key(cmid), key(cb), h))
-
-    # gather elements + node loads across ranks (1D boundary → cheap)
-    all_elems = comm.allgather(local_elems)
-    all_nodeR = comm.allgather(nodeR)
-    R_by_key = {}
-    for d in all_nodeR:
-        R_by_key.update(d)                       # same key → same value on every rank
-    # de-duplicate elements (a shared facet appears on >1 rank)
-    uniq = {}
-    for lst in all_elems:
-        for (ka, km, kb, h) in lst:
-            uniq[(ka, km, kb)] = h
-    # global node numbering
-    keys = sorted(R_by_key.keys())
-    gidx = {k: i for i, k in enumerate(keys)}
-    n = len(keys); R = np.zeros(n)
-    for k, i in gidx.items():
-        R[i] = R_by_key[k]
-
-    if mass == "lumped":
-        # diagonal P2 line mass (row sums of the consistent mass): h*[1/6, 2/3, 1/6] for
-        # (vertexA, mid-edge, vertexB). Monotone → no overshoot at a stress jump.
-        mL = np.zeros(n)
-        for (ka, km, kb), h in uniq.items():
-            mL[gidx[ka]] += h / 6.0
-            mL[gidx[km]] += 2.0 * h / 3.0
-            mL[gidx[kb]] += h / 6.0
-        sig_g = -R / mL
-    else:
-        # consistent P2 line mass M σ = −R
-        M = np.zeros((n, n))
-        Me = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
-        for (ka, km, kb), h in uniq.items():
-            tri = [gidx[ka], gidx[km], gidx[kb]]
-            Mh = (h / 30.0) * Me
-            for ii in range(3):
-                for jj in range(3):
-                    M[tri[ii], tri[jj]] += Mh[ii, jj]
-        sig_g = np.linalg.solve(M, -R)
-    sig_g = sig_g - sig_g.mean()                 # global gauge → partition-independent
-    # return σ at THIS rank's local nodes, in the input (xs/pts) order
-    return np.array([sig_g[gidx[key(x)]] for x in xs])
+    # shared bulk field write (parallel-safe: write ONCE, not per node)
+    return write_boundary_scalar_field(solver, field, hmap, dim)
 
 
 def _rigid_rotation_global(solver):

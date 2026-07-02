@@ -126,10 +126,16 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     return nmap
 
 
-def _desmear(solver, boundary, xs, R, mass, remove_mean):
+def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     """De-smear per-node reaction loads R (aligned with xs) into a pointwise flux via the
     boundary mass, assembled globally by a coordinate-keyed allgather so every rank forms
-    the identical system. Returns the flux at this rank's local nodes (xs order)."""
+    the identical system. Returns the flux at this rank's local nodes (xs order).
+
+    ``partial_reaction`` controls how a boundary node shared across a partition cut is
+    reconciled across ranks: ``True`` (default) SUMS each rank's contribution — correct
+    when R is the RAW per-rank volume residual (``boundary_flux``, DM overlap=0); ``False``
+    OVERWRITES (all ranks already agree) — correct when R comes from an ASSEMBLED global
+    operator, e.g. the rotated free-slip reaction ``Q(A·u − b)`` (``rotated_bc``)."""
     dm = solver.dm; dim = solver.mesh.dim; comm = dm.comm.tompi4py()
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
@@ -153,13 +159,15 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean):
         h = float(np.hypot(*(vcoord(b) - vcoord(a))))
         local_elems.append((_key(vcoord(a), dim), _key(cmid, dim), _key(vcoord(b), dim), h))
 
-    # SUM the nodal reaction across ranks by coordinate: with overlap=0 a boundary node
-    # shared across a partition cut holds only each rank's partial cell contribution, so
-    # summing them assembles the complete reaction (matches the rock-solid volume integral).
+    # Reconcile the nodal reaction across ranks by coordinate. partial_reaction=True: SUM
+    # (raw per-rank residual, DM overlap=0, so a cut node holds only each rank's partial
+    # → summing assembles the complete reaction, matching the rock-solid volume integral).
+    # partial_reaction=False: OVERWRITE (already-assembled global reaction, all ranks agree
+    # — summing would double-count shared nodes).
     R_by = {}
     for d in comm.allgather(nodeR):
         for k, v in d.items():
-            R_by[k] = R_by.get(k, 0.0) + v
+            R_by[k] = (R_by.get(k, 0.0) + v) if partial_reaction else v
     uniq = {}
     for lst in comm.allgather(local_elems):
         for (ka, km, kb, h) in lst:
@@ -220,6 +228,31 @@ def boundary_flux(solver, boundary, mass="lumped", remove_mean=False, normal=Non
     return xs, (np.column_stack(cols) if nodes else np.zeros((0, ncomp)))
 
 
+def write_boundary_scalar_field(solver, field, value_by_key, dim):
+    """Write ``value_by_key`` (coordinate-key → scalar) onto a scalar MeshVariable
+    ``field`` at the matching nodes; interior nodes untouched. Returns ``field``.
+
+    The field is written ONCE from a local numpy copy: a per-node write to ``var.data``
+    fires the variable's write-callback each time, and the boundary-node count differs per
+    rank (a rank may own none of the boundary), so per-node writes would desync the
+    callback's collective and deadlock. Shared by the boundary-flux and rotated-free-slip
+    (dynamic topography) field hand-offs."""
+    fc = np.asarray(field.coords)
+    newdata = np.asarray(field.data).copy()
+    for i in range(fc.shape[0]):
+        v = value_by_key.get(_key(fc[i], dim))
+        if v is not None:
+            newdata[i, 0] = v
+    field.data[...] = newdata
+    base = getattr(field, "_base_var", field)
+    if hasattr(base, "_sync_lvec_to_gvec"):
+        base._sync_lvec_to_gvec()
+    if hasattr(base, "_canonical_data"):
+        base._canonical_data = None
+    solver.mesh._stale_lvec = True
+    return field
+
+
 def boundary_flux_to_field(solver, boundary, field, mass="lumped",
                            remove_mean=False, scale=1.0, normal=None):
     """See ``SolverBaseClass.boundary_flux_field``. Writes ``scale * flux`` onto the
@@ -236,20 +269,4 @@ def boundary_flux_to_field(solver, boundary, field, mass="lumped",
             "returned a vector (traction). Pass normal= to project onto the normal "
             "component, or use boundary_flux() directly for the full vector.")
     fmap = {_key(x, dim): scale * float(f) for x, f in zip(np.asarray(xs), flux.ravel())}
-    fc = np.asarray(field.coords)
-    # Write the field ONCE from a local copy: a per-node write to var.data fires the
-    # write-callback each time, and the boundary-node count differs per rank (a rank may
-    # own none of the boundary), so per-node writes would desync the callback and hang.
-    newdata = np.asarray(field.data).copy()
-    for i in range(fc.shape[0]):
-        v = fmap.get(_key(fc[i], dim))
-        if v is not None:
-            newdata[i, 0] = v
-    field.data[...] = newdata
-    base = getattr(field, "_base_var", field)
-    if hasattr(base, "_sync_lvec_to_gvec"):
-        base._sync_lvec_to_gvec()
-    if hasattr(base, "_canonical_data"):
-        base._canonical_data = None
-    solver.mesh._stale_lvec = True
-    return field
+    return write_boundary_scalar_field(solver, field, fmap, dim)

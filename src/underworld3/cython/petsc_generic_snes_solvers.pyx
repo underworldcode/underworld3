@@ -7587,18 +7587,44 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self._build(verbose, debug, debug_name)
 
+        # Set time on the DM so petsc_t is available in pointwise functions.
+        # Non-dimensionalise if the scaling system is active.
+        cdef DM _time_dm_stokes
+
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
         if self._rotated_freeslip_bcs:
+            # This is a LINEAR solve path: it assembles the Jacobian and residual once at
+            # U=0 and solves the rotated saddle directly, so it does NOT run the SNES
+            # nonlinear iteration. Nonlinear rheology / Picard / warm-start are therefore
+            # unsupported through this path — guard the explicit cases rather than
+            # silently returning a single-linearisation answer.
+            if picard != 0 or not zero_init_guess:
+                raise NotImplementedError(
+                    "rotated free-slip BCs support only a single linear solve "
+                    "(zero_init_guess=True, picard=0). Nonlinear rheology or warm-start "
+                    "would require integrating the rotated constraint into the SNES "
+                    "iteration; not yet implemented.")
+            # Run the same pre-solve preamble as the standard path so the pointwise
+            # functions see the DM time, the auxiliary vector, and updated constants
+            # (needed for problems whose coefficients live in auxiliary fields).
+            if time is not None:
+                if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                    t_nd = float(uw.non_dimensionalise(time))
+                else:
+                    t_nd = float(time)
+                _time_dm_stokes = self.dm
+                UW_DMSetTime(_time_dm_stokes.dm, t_nd)
+            self.mesh.update_lvec()
+            self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+            self._update_constants()
+
             from underworld3.utilities.rotated_bc import solve_rotated_freeslip
             self._rotated_freeslip_info = solve_rotated_freeslip(
                 self, self._rotated_freeslip_bcs, verbose=verbose)
             return
 
-        # Set time on the DM so petsc_t is available in pointwise functions.
-        # Non-dimensionalise if the scaling system is active.
-        cdef DM _time_dm_stokes
         if time is not None:
             if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
                 t_nd = float(uw.non_dimensionalise(time))
