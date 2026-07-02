@@ -211,6 +211,47 @@ def test_rotated_freeslip_sigma_nn_lumped_no_overshoot():
     assert tv_l < tv_c, f"lumped TV {tv_l:.3f} not smoother than consistent {tv_c:.3f}"
 
 
+def test_rotated_freeslip_nonlinear_guard_raises():
+    """Step-0 safety guard: the rotated free-slip path is a single LINEAR solve
+    (it assembles J,F once at u=0). A nonlinear constitutive model would be
+    silently linearised, so solve() must fail fast with a clear NotImplementedError
+    rather than return a single-linearisation answer. A linear model must NOT trip
+    the guard (covered by the other tests, checked directly here too)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+
+    # nonlinear (viscoplastic yield) -> guard must raise
+    vN = uw.discretisation.MeshVariable("vNg", mesh, mesh.dim, degree=2, continuous=True)
+    pN = uw.discretisation.MeshVariable("pNg", mesh, 1, degree=1, continuous=False)
+    sN = uw.systems.Stokes(mesh, velocityField=vN, pressureField=pN)
+    sN.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    sN.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    sN.constitutive_model.Parameters.yield_stress = 1.0
+    sN.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-10
+    sN.bodyforce = sympy.Matrix([[0.0, -1.0]])
+    sN.tolerance = 1e-6
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        sN.add_rotated_freeslip_bc(wall)
+    sN.petsc_use_pressure_nullspace = True
+    with pytest.raises(NotImplementedError, match="LINEAR"):
+        sN.solve()
+
+    # linear (constant viscosity) -> guard must NOT raise
+    vL = uw.discretisation.MeshVariable("vLg", mesh, mesh.dim, degree=2, continuous=True)
+    pL = uw.discretisation.MeshVariable("pLg", mesh, 1, degree=1, continuous=False)
+    sL = uw.systems.Stokes(mesh, velocityField=vL, pressureField=pL)
+    sL.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    sL.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    sL.bodyforce = sympy.Matrix([[0.0, -1.0]])
+    sL.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        sL.add_rotated_freeslip_bc(wall)
+    sL.petsc_use_pressure_nullspace = True
+    sL.petsc_options["snes_type"] = "ksponly"
+    sL.solve()  # must not raise
+    assert sL._rotated_freeslip_info is not None
+
+
 def test_rotated_freeslip_dynamic_topography_field():
     """dynamic_topography writes h = -(sigma_nn - mean)/(rho g) onto a scalar surface
     MeshVariable (the free-surface hand-off): the field at the top vertices reproduces

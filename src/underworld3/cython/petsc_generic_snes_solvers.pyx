@@ -5176,6 +5176,51 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.is_setup = False
         return
 
+    def _residual_is_nonlinear(self, tol=1e-8):
+        r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
+        — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
+        iteration is required.
+
+        Detected by a NUMERICAL probe: assemble the Jacobian at two distinct
+        velocity states and compare. A symbolic test on ``F1.sym`` cannot see the
+        nonlinearity — the effective viscosity's strain-rate (velocity-gradient)
+        dependence is carried as a JIT-substituted *placeholder* symbol
+        (``\dot\varepsilon_{II}``) in the flux, decoupled from the gradient
+        ``L`` in the symbolic form, so it only becomes visible once the operator
+        is assembled at a concrete iterate. Constant- or temperature-dependent
+        viscosity ⇒ ``J`` independent of ``v`` ⇒ the two assemblies are
+        bit-identical ⇒ linear.
+
+        Used to fail-fast on the rotated-free-slip path, which is a single linear
+        solve (assemble ``J(0)``, ``F(0)`` once) and would otherwise SILENTLY
+        return one Newton linearisation from ``u=0`` for a nonlinear model. The
+        caller must have run the pre-solve preamble (auxiliary vector + constants)
+        so the assembly sees the correct coefficients.
+        """
+        snes = self.snes
+        dm = self.dm
+        snes.setUp()
+        J = snes.getJacobian()[0]
+        U1 = dm.getGlobalVec(); U2 = dm.getGlobalVec()
+        # two distinct smooth, bounded states with non-zero velocity gradients
+        # (a linear operator gives the SAME J for both; only a solution-dependent
+        # viscosity makes them differ). Ownership-relative index keeps it
+        # partition-independent enough for the norm comparison.
+        rs, re = U1.getOwnershipRange()
+        idx = np.arange(rs, re, dtype=float)
+        U1.setArray(0.1 * np.sin(0.7 * idx + 0.3))
+        U2.setArray(0.1 * np.sin(1.3 * idx + 1.1))
+        J1 = J.copy(); J2 = J.copy()
+        try:
+            snes.computeJacobian(U1, J1)
+            snes.computeJacobian(U2, J2)
+            J2.axpy(-1.0, J1)                       # J2 <- J(U2) - J(U1)
+            rel = J2.norm() / (J1.norm() + 1e-300)
+        finally:
+            dm.restoreGlobalVec(U1); dm.restoreGlobalVec(U2)
+            J1.destroy(); J2.destroy()
+        return rel > tol
+
     def boundary_normal_traction(self, boundary, mass="lumped"):
         r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
         rotated-free-slip ``boundary`` as the constraint reaction from the last
@@ -7850,8 +7895,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # This is a LINEAR solve path: it assembles the Jacobian and residual once at
             # U=0 and solves the rotated saddle directly, so it does NOT run the SNES
             # nonlinear iteration. Nonlinear rheology / Picard / warm-start are therefore
-            # unsupported through this path — guard the explicit cases rather than
-            # silently returning a single-linearisation answer.
+            # unsupported through this path — guard the explicit cases (and, below, a
+            # nonlinear constitutive model) rather than silently returning a
+            # single-linearisation answer.
             if picard != 0 or not zero_init_guess:
                 raise NotImplementedError(
                     "rotated free-slip BCs support only a single linear solve "
@@ -7860,7 +7906,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     "iteration; not yet implemented.")
             # Run the same pre-solve preamble as the standard path so the pointwise
             # functions see the DM time, the auxiliary vector, and updated constants
-            # (needed for problems whose coefficients live in auxiliary fields).
+            # (needed for problems whose coefficients live in auxiliary fields). This
+            # must precede the nonlinearity probe below so the trial assemblies see
+            # the correct coefficients.
             if time is not None:
                 if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
                     t_nd = float(uw.non_dimensionalise(time))
@@ -7871,6 +7919,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.mesh.update_lvec()
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
             self._update_constants()
+
+            # A nonlinear constitutive model would be silently linearised at u=0 by
+            # this one-shot path (the guard above only catches the EXPLICIT nonlinear
+            # signals). Probe the assembled Jacobian for solution-dependence and fail
+            # fast rather than return a single-linearisation answer.
+            if self._residual_is_nonlinear():
+                raise NotImplementedError(
+                    "rotated free-slip BCs currently support only LINEAR Stokes "
+                    "(constant or temperature-dependent viscosity). The registered "
+                    "constitutive model is nonlinear in the unknowns (the effective "
+                    "viscosity depends on velocity, its gradient, or pressure), which "
+                    "through the rotated free-slip path would silently return a single "
+                    "Newton linearisation from u=0. Integrating the rotated constraint "
+                    "into the SNES nonlinear iteration is not yet implemented.")
 
             from underworld3.utilities.rotated_bc import solve_rotated_freeslip
             self._rotated_freeslip_info = solve_rotated_freeslip(
