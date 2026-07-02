@@ -1072,6 +1072,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         return
 
+    # TODO(BUG): Stale proxy DM after swarm data write
+    # _update() marks proxy as stale, but _update_proxy_if_stale() (lazy
+    # re-interpolation) only fires when material.sym is accessed. Code that
+    # reads the proxy MeshVariable DM directly (e.g. a Projection solver
+    # evaluating its uw_function at quadrature points) gets stale data.
+    # See GitHub issue #215 (Bug 3).
     def _update_proxy_if_stale(self):
         """
         Actually update the proxy mesh variable if it's marked as stale.
@@ -2690,6 +2696,15 @@ class Swarm(Stateful, uw_object):
         for var in list(self._vars.values()):
             if hasattr(var, "_canonical_data"):
                 var._canonical_data = None
+            # Mark the proxy stale (lazy) so it re-interpolates on next access.
+            # NB: set the flag directly rather than calling var._update() —
+            # IndexSwarmVariable._update() is EAGER (_update_proxy_variables),
+            # so calling it here re-interpolates the proxy on every invalidation
+            # (i.e. every swarm.access write), an O(100 MiB) leak over a time loop
+            # (tests/test_0006_memory_leak.py). The proxy still refreshes lazily
+            # via .sym / _update_proxy_if_stale().
+            if hasattr(var, "_proxy_stale"):
+                var._proxy_stale = True
 
         # Invalidate cached spatial index
         self._kdtree = None
@@ -3617,10 +3632,7 @@ class Swarm(Stateful, uw_object):
         self.dm.migrate(remove_sent_points=True)
 
         # Invalidate cached data — particle count changed after addNPoints + migrate
-        self._particle_coordinates._canonical_data = None
-        for var in self._vars.values():
-            if hasattr(var, "_canonical_data"):
-                var._canonical_data = None
+        self._invalidate_canonical_data()
 
         # Informational: addNPoints + direct dm.migrate path doesn't go
         # through Swarm.migrate, so bump explicitly.
@@ -4249,11 +4261,7 @@ class Swarm(Stateful, uw_object):
 
         # Invalidate canonical-data caches — the underlying arrays
         # have been reallocated by the addNPoints path.
-        if hasattr(self._particle_coordinates, "_canonical_data"):
-            self._particle_coordinates._canonical_data = None
-        for var in self._vars.values():
-            if hasattr(var, "_canonical_data"):
-                var._canonical_data = None
+        self._invalidate_canonical_data()
 
         # The raw PETSc primitives used above (removePoint loop +
         # addNPoints + direct field writes) deliberately bypass
