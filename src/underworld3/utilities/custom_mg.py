@@ -660,18 +660,64 @@ def maybe_inject_custom_mg(solver, field_id=None):
     the solver — so every solver on an adapted mesh drives geometric MG with no
     per-solver call. A solver-set hierarchy (if present) always wins.
     """
-    if solver._custom_mg is None:
-        coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
-        if coarse is None:
-            return                          # nothing to inject
-        builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
-        solver._custom_mg = {
-            "mode": "hierarchy",
-            "hierarchy": CustomMGHierarchy(list(coarse) + [solver.mesh],
-                                           builder=builder, field_id=field_id),
-            "verbose": False,
-        }
-    inject_custom_mg(solver)
+    # Solver-set hierarchy (set_custom_fmg): the user asked for it explicitly —
+    # build + install directly and let any error surface.
+    if solver._custom_mg is not None:
+        inject_custom_mg(solver)
+        return
+
+    # Mesh-owned hierarchy (adapt() child): OPPORTUNISTIC auto-pickup. It must never
+    # crash a solve, so build the transfers and verify the finest one matches this
+    # solver's assembled operator before installing. It does NOT for a scalar solver
+    # whose DM carries auxiliary fields (e.g. semi-Lagrangian advection-diffusion):
+    # _reduced_map then counts the full unconstrained DOFs, not the reduced operator
+    # size, and the PtAP in PCMG setup fails. In that case skip and fall back to the
+    # solver's own preconditioner. (The Stokes velocity block, field_id=0, and P1
+    # scalar Poisson match and are unaffected.)
+    coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
+    if coarse is None:
+        return                              # nothing to inject
+
+    # Semi-Lagrangian advection-diffusion (carries a DuDt trace-back operator): its
+    # assembled operator is boundary-reduced in a way the coarse DS-copy does NOT
+    # reproduce, so the per-level BC reductions disagree and the custom-P transfers
+    # don't chain (rectangular PtAP -> PETSc error 60). A scalar AD solve is cheap and
+    # doesn't need geometric FMG, so skip the OPPORTUNISTIC mesh-owned auto-pickup and
+    # let it use its default preconditioner. An explicit set_custom_fmg() still works.
+    if getattr(solver, "DuDt", None) is not None:
+        return
+
+    builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
+    h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=builder,
+                          field_id=field_id)
+    try:
+        Ps = h.build(solver)
+    except Exception as exc:                # pragma: no cover - defensive
+        import warnings
+        warnings.warn(f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
+                      "solver's default preconditioner.")
+        return
+
+    # Dimensional guard (checkable for the monolithic operator, field_id is None):
+    # the finest transfer must chain to the operator PCMG will Galerkin against.
+    if field_id is None and len(Ps):
+        try:
+            solver.snes.setUp()
+            op_n = int(solver.snes.getJacobian()[0].getSize()[0])
+            pr, pc = (int(v) for v in Ps[-1].getSize())
+            if op_n > 0 and (pr != op_n or pc >= pr):   # rows!=op or no coarsening
+                import warnings
+                warnings.warn(
+                    "custom_mg: mesh-owned adapt-mesh FMG transfer is incompatible "
+                    f"with this solver's operator (transfer {pr}x{pc}, operator {op_n}); "
+                    "skipping the auto-pickup (using the default preconditioner). "
+                    "set_custom_fmg() an explicit hierarchy to override.")
+                return
+        except Exception:
+            pass                            # can't check -> don't block working cases
+
+    h.install(solver, verbose=False)
+    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
 
 
 def inject_custom_mg(solver):

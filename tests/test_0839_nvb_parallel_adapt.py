@@ -178,6 +178,32 @@ def test_adapt_accepts_callable_metric_exact_surface_distance():
     assert _global_owned_cells(child.dm) == 206        # confluent (same at any np)
 
 
+def test_advdiff_scalar_on_nvb_child_no_custom_mg_crash():
+    """A semi-Lagrangian advection-diffusion solve on an NVB adapt child must not
+    choke on the mesh-owned custom-P FMG auto-pickup. That tail is the Stokes
+    VELOCITY-block preconditioner; auto-injecting it on a scalar SLCN operator built
+    a transfer that mismatched the (boundary-reduced) operator -> rectangular PtAP,
+    PETSc error 60. maybe_inject_custom_mg now skips it (the solver has a DuDt
+    trace-back operator) and the scalar solve uses its default PC and completes."""
+    mesh = _base()
+    child = mesh.adapt(_bullseye_metric(mesh), max_levels=2, engine="nvb")
+    assert getattr(child, "_custom_mg_coarse_meshes", None) is not None  # tail present
+
+    T = uw.discretisation.MeshVariable("Tad", child, 1, degree=2)
+    x, y = child.X
+    T.data[:, 0] = np.asarray(uw.function.evaluate(
+        sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2) / 0.02)), T.coords)).reshape(-1)
+    v = sympy.Matrix([[-(y - 0.5), (x - 0.5)]])          # solid-body rotation
+    adv = uw.systems.AdvDiffusionSLCN(child, u_Field=T, V_fn=v, order=1,
+                                      monotone_mode="clamp")
+    adv.constitutive_model = uw.constitutive_models.DiffusionModel
+    adv.constitutive_model.Parameters.diffusivity = 1.0e-3
+    adv.f = 0.0
+    adv.solve(timestep=0.01)          # raised PETSc err 60 (PtAP) before the fix
+    assert np.isfinite(np.asarray(T.data)).all()
+    assert float(T.data[:, 0].max()) <= 1.01              # bounded (monotone clamp)
+
+
 def _solcx_metric(base):
     """A viscosity-jump band metric around x=0.5 (the SolCx interface)."""
     M = uw.discretisation.MeshVariable("Mjump", base, 1, degree=1)
