@@ -2820,8 +2820,8 @@ class SNES_Scalar(SolverBaseClass):
         # first PCSetUp (so the Galerkin coarse operators are built from it).
         # Picks up a solver-set (set_custom_mg) OR a mesh-owned (adapt child)
         # hierarchy. No-op unless one is present.
-        from underworld3.utilities.custom_mg import maybe_inject_custom_mg
-        maybe_inject_custom_mg(self, field_id=None)
+        from underworld3.utilities.custom_mg import auto_inject_custom_mg
+        auto_inject_custom_mg(self, field_id=None)
 
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
@@ -3842,8 +3842,8 @@ class SNES_Vector(SolverBaseClass):
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
         # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
         # SNES_Scalar hook.
-        from underworld3.utilities.custom_mg import maybe_inject_custom_mg
-        maybe_inject_custom_mg(self, field_id=None)
+        from underworld3.utilities.custom_mg import auto_inject_custom_mg
+        auto_inject_custom_mg(self, field_id=None)
 
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
@@ -7701,8 +7701,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # once the monolithic Jacobian is assembled (see custom_mg). Picks up
             # a solver-set (set_custom_fmg field_id=0) or mesh-owned (adapt child)
             # hierarchy on the velocity block.
-            from underworld3.utilities.custom_mg import maybe_inject_custom_mg
-            maybe_inject_custom_mg(self, field_id=0)
+            from underworld3.utilities.custom_mg import auto_inject_custom_mg
+            auto_inject_custom_mg(self, field_id=0)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         else:
@@ -7719,8 +7719,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # once the monolithic Jacobian is assembled (see custom_mg). Picks up
             # a solver-set (set_custom_fmg field_id=0) or mesh-owned (adapt child)
             # hierarchy on the velocity block.
-            from underworld3.utilities.custom_mg import maybe_inject_custom_mg
-            maybe_inject_custom_mg(self, field_id=0)
+            from underworld3.utilities.custom_mg import auto_inject_custom_mg
+            auto_inject_custom_mg(self, field_id=0)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         # Project the rigid-body rotation gauge out of the converged solution.

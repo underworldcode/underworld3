@@ -183,7 +183,7 @@ def test_advdiff_scalar_on_nvb_child_no_custom_mg_crash():
     choke on the mesh-owned custom-P FMG auto-pickup. That tail is the Stokes
     VELOCITY-block preconditioner; auto-injecting it on a scalar SLCN operator built
     a transfer that mismatched the (boundary-reduced) operator -> rectangular PtAP,
-    PETSc error 60. maybe_inject_custom_mg now skips it (the solver has a DuDt
+    PETSc error 60. auto_inject_custom_mg now skips it (the solver has a DuDt
     trace-back operator) and the scalar solve uses its default PC and completes."""
     mesh = _base()
     child = mesh.adapt(_bullseye_metric(mesh), max_levels=2, engine="nvb")

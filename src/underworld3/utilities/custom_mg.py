@@ -649,7 +649,7 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     solver.is_setup = False
 
 
-def maybe_inject_custom_mg(solver, field_id=None):
+def auto_inject_custom_mg(solver, field_id=None):
     """Solve-hook entry: inject custom-P FMG from either a solver-set hierarchy
     (``set_custom_fmg``) or a **mesh-owned** one (``mesh.adapt`` refinement child).
 
