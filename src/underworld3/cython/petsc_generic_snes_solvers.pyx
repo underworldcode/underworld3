@@ -1820,17 +1820,21 @@ class SolverBaseClass(uw_object):
         return
 
     def _assemble_volume_reaction(self, time=None, verbose=False):
-        """Globally-assembled FEM VOLUME residual (no boundary terms) in the DM-local
-        layout, as a numpy array.
+        """RAW per-rank FEM VOLUME residual (no boundary terms) in the DM-local layout,
+        as a numpy array.
 
         At an essential-BC (Dirichlet) node this residual IS the consistent boundary
         reaction — the integrated nodal flux :math:`\\int_\\Gamma (F\\cdot\\hat n)\\phi_i`
         (heat flux for a scalar diffusion solve, traction for Stokes). Interior nodes are
         ~0. General across scalar / vector / Stokes solvers: the current solution is
         gathered from ``self.fields`` when present (Stokes) else the single
-        ``Unknowns.u`` field, and the per-rank cell residual is summed across ranks
-        (``localToGlobal`` ADD) so boundary nodes shared across a partition cut carry the
-        complete flux.
+        ``Unknowns.u`` field.
+
+        NOTE: the returned array is NOT globally assembled. The DM has overlap=0, so each
+        rank computes only its OWNED cells' contribution; a boundary node shared across a
+        partition cut therefore holds only this rank's PARTIAL reaction. The complete
+        reaction is assembled by the caller (``utilities.boundary_flux._desmear``) by
+        SUMMING each rank's partial by coordinate — not by a hand-rolled localToGlobal.
         """
         cdef DM dm
         cdef Vec xvec

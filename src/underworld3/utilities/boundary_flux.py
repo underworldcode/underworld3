@@ -10,7 +10,10 @@ nodal reaction with the boundary mass gives a pointwise surface flux:
 This module holds the parts that do not depend on the equation: the boundary-node
 gathering, the boundary-mass de-smear (lumped / consistent), and the field hand-off.
 The equation-specific bit — extracting the nodal reaction — is the solver method
-``_assemble_volume_reaction`` (globally assembled, so shared boundary nodes are complete).
+``_assemble_volume_reaction``, which returns each rank's RAW (per-rank) volume FEM
+residual; the complete reaction at a boundary node shared across a partition cut is then
+assembled here in ``_desmear`` by SUMMING each rank's partial contribution by coordinate
+(the same rock-solid gather used for the boundary mass — no hand-rolled global assembly).
 
 ``mass="lumped"`` (default) uses the diagonal boundary mass: being an M-matrix it cannot
 overshoot where the flux jumps (no Gibbs wiggle) and is a purely local division.
@@ -23,6 +26,22 @@ from mpi4py import MPI
 
 def _key(c, dim):
     return tuple(round(float(t), 9) for t in np.asarray(c).ravel()[:dim])
+
+
+def _boundary_stratum_is(dm, mesh, boundary):
+    """Facet stratum IS for ``boundary`` via the CONSOLIDATED ``UW_Boundaries`` label
+    (boundaries are distinguished by value on this one label — the per-boundary labels
+    named like the boundary do not survive mesh adaptation; only ``UW_Boundaries`` is
+    rebuilt). Returns None if this rank owns no part of the boundary. Raises a clear
+    error for an unknown boundary name."""
+    match = [b.value for b in mesh.boundaries if b.name == boundary]
+    if not match:
+        raise ValueError(
+            f"Unknown boundary {boundary!r}; known: {[b.name for b in mesh.boundaries]}")
+    label = dm.getLabel("UW_Boundaries")
+    if label is None:
+        return None
+    return label.getStratumIS(match[0])
 
 
 def _point_coord(dm, dim, cvec, csec, v0, v1, q):
@@ -38,8 +57,8 @@ def _point_coord(dm, dim, cvec, csec, v0, v1, q):
 def _boundary_field_nodes(solver, boundary, field_id=0):
     """DMPlex points carrying `field_id` DOFs on `boundary`, with their coordinates.
     Parallel-safe: a rank owning no part of the boundary gets a NULL stratum IS
-    (guarded); ghost nodes are included (their reaction is completed by the global
-    assembly in ``_assemble_volume_reaction``)."""
+    (guarded); ghost/shared nodes are included and their partial per-rank reactions are
+    summed by coordinate in ``_desmear`` to form the complete reaction."""
     dm = solver.dm
     dim = solver.mesh.dim
     lsec = dm.getLocalSection()
@@ -47,8 +66,7 @@ def _boundary_field_nodes(solver, boundary, field_id=0):
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
     fS, fE = dm.getHeightStratum(1)
-    bval = [b.value for b in solver.mesh.boundaries if b.name == boundary][0]
-    sis = dm.getStratumIS(boundary, bval)
+    sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     if sis is None or sis.handle == 0:
         return [], lsec, csec, cvec, v0, v1
     facets = [int(z) for z in sis.getIndices()]
@@ -84,8 +102,7 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     coord = {q: c for q, c in nodes}
     if normal is None:
         # accumulate area-weighted facet normals to the closure nodes
-        bval = [b.value for b in solver.mesh.boundaries if b.name == boundary][0]
-        sis = dm.getStratumIS(boundary, bval)
+        sis = _boundary_stratum_is(dm, solver.mesh, boundary)
         facets = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
         fS, fE = dm.getHeightStratum(1)
         acc = {}
@@ -127,8 +144,7 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean):
     e0, e1 = dm.getDepthStratum(1)
     def vcoord(q): return cvec[csec.getOffset(q) // dim]
     nodeR = {_key(x, dim): float(r) for x, r in zip(xs, R)}
-    bval = [b.value for b in solver.mesh.boundaries if b.name == boundary][0]
-    sis = dm.getStratumIS(boundary, bval)
+    sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     strat = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
     local_elems = []
     for e in [q for q in strat if e0 <= q < e1]:
@@ -158,6 +174,9 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean):
             mL[gi[ka]] += h / 6.0; mL[gi[km]] += 2.0 * h / 3.0; mL[gi[kb]] += h / 6.0
         sig = Rg / mL
     else:
+        # consistent P2 line mass — a dense (n×n) solve in the number of boundary nodes
+        # (O(n^3)); fine for a 1D boundary (n ~ resolution) but prefer the default lumped
+        # (O(n), monotone) for very large boundaries.
         M = np.zeros((n, n))
         Me = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
         for (ka, km, kb), h in uniq.items():
@@ -207,7 +226,16 @@ def boundary_flux_to_field(solver, boundary, field, mass="lumped",
     scalar MeshVariable ``field`` at the boundary nodes (interior untouched)."""
     dim = solver.mesh.dim
     xs, flux = boundary_flux(solver, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
-    fmap = {_key(x, dim): scale * float(f) for x, f in zip(np.asarray(xs), np.asarray(flux).ravel())}
+    flux = np.asarray(flux)
+    # a SCALAR field can only hold a scalar flux — a vector solver returns a per-node
+    # traction VECTOR unless a `normal` is given to project it. Fail fast rather than
+    # silently pairing the flattened vector with the nodes.
+    if flux.ndim > 1 and flux.shape[1] != 1:
+        raise ValueError(
+            "boundary_flux_field target is a scalar MeshVariable but boundary_flux "
+            "returned a vector (traction). Pass normal= to project onto the normal "
+            "component, or use boundary_flux() directly for the full vector.")
+    fmap = {_key(x, dim): scale * float(f) for x, f in zip(np.asarray(xs), flux.ravel())}
     fc = np.asarray(field.coords)
     # Write the field ONCE from a local copy: a per-node write to var.data fires the
     # write-callback each time, and the boundary-node count differs per rank (a rank may
