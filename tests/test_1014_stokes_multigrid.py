@@ -91,7 +91,12 @@ def test_invalid_preconditioner_raises():
         stokes.preconditioner = "wibble"
 
 
-def test_scalar_poisson_auto_geometric_mg():
+def test_scalar_poisson_auto_falls_back_to_gamg():
+    # #276: native geometric FMG is locked out for single-field (scalar/vector)
+    # solvers — DMCreateInjection is not reliably constructible on a refined
+    # DMPlex for a single field (fails on curved shells and some high-degree flat
+    # cases). So a scalar solver on a refined hierarchy falls back to GAMG rather
+    # than crashing; robust geometric MG for scalars is via custom_mg.set_custom_fmg.
     poisson = uw.systems.Poisson(mesh_refined)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson.constitutive_model.Parameters.diffusivity = 1
@@ -99,7 +104,7 @@ def test_scalar_poisson_auto_geometric_mg():
     poisson.add_dirichlet_bc(0.0, "Bottom")
     poisson.add_dirichlet_bc(1.0, "Top")
     poisson.solve()
-    assert poisson.petsc_options.getString("pc_type") == "mg"
+    assert poisson.petsc_options.getString("pc_type") == "gamg"
     assert poisson.snes.getConvergedReason() > 0
 
 

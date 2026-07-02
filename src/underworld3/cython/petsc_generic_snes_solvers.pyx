@@ -473,6 +473,32 @@ class SolverBaseClass(uw_object):
         else:  # "gamg" — explicit, always applied
             want_fmg = False
 
+        # Native geometric FMG relies on DMCreateInjection between the refined
+        # DMPlex levels. For a **single-field** (scalar / vector) discretisation
+        # this is fragile: whether PETSc can build the injection depends on the
+        # geometry×element-degree×refinement combination, and it fails at solve
+        # time with err62 "Could not locate matching functional for injection"
+        # on the common curved-shell cases (issue #276) as well as some flat
+        # high-degree ones. The Stokes velocity sub-block (prefix
+        # "fieldsplit_velocity_") is the validated, robust native-FMG path and is
+        # unaffected. So never auto-route a single-field solver to native FMG —
+        # fall back to GAMG. Geometric MG on a scalar/vector solver is available,
+        # robustly, via ``underworld3.utilities.custom_mg.set_custom_fmg`` (own
+        # barycentric/RBF prolongation + Galerkin coarse operators; no injection).
+        if want_fmg and prefix == "":
+            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
+                import warnings
+                warnings.warn(
+                    f"[{self.name}] preconditioner='fmg' is not supported on a "
+                    f"single-field (scalar/vector) solver: native geometric FMG "
+                    f"needs DMCreateInjection, which PETSc cannot reliably build "
+                    f"on a refined DMPlex (issue #276). Falling back to GAMG. For "
+                    f"geometric MG on this solver use "
+                    f"underworld3.utilities.custom_mg.set_custom_fmg().",
+                    stacklevel=2,
+                )
+            want_fmg = False
+
         if want_fmg:
             # Geometric Full Multigrid on the refinement hierarchy. Galerkin
             # (RAP) coarse operators are required because UW3 does not install
@@ -500,7 +526,7 @@ class SolverBaseClass(uw_object):
                 opts.delValue(f"{prefix}{key}")
             self._pc_managed_value = "mg"
         else:
-            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
+            if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
                 import warnings
                 warnings.warn(
                     f"[{self.name}] preconditioner='fmg' requested but the mesh "
