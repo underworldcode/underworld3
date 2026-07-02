@@ -120,8 +120,15 @@ class SolverBaseClass(uw_object):
 
         Notes
         -----
-        Single-field (scalar/vector) solvers only for now; the Stokes
-        velocity-block path is a separate increment. See
+        Supported both on single-field (scalar / vector) solvers — where the
+        prolongation is installed directly on the solver's ``PCMG`` — and on the
+        **Stokes velocity block** (the ``fieldsplit_velocity_`` sub-PC), where the
+        velocity sub-PC is only reachable once the monolithic Jacobian has been
+        assembled; the install there assembles the Jacobian, descends the
+        fieldsplit to the velocity sub-PC, and rebuilds it as a fresh ``PCMG``
+        driven by our ``P``. Injection happens at solve time (after
+        ``setFromOptions`` / nullspace attach) via
+        :func:`underworld3.utilities.custom_mg.inject_custom_mg`. See
         :mod:`underworld3.utilities.custom_mg`.
         """
         if kind not in ("barycentric", "rbf"):
@@ -4721,6 +4728,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._multipliers = []
         self._multiplier_screening = []
         self._block_constraint_bcs = []
+        # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
+        # add_rotated_freeslip_bc; when non-empty, solve() delegates to
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n=0 +
+        # reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_info = None
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -4905,6 +4918,81 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     from collections import namedtuple
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
+
+    def add_rotated_freeslip_bc(self, boundary, normal=None):
+        r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
+        the boundary velocity DOFs into a per-node (normal, tangential) frame and
+        imposing the rotated normal component as an exact Dirichlet constraint.
+
+        Unlike Nitsche/penalty free-slip (weak, leaks :math:`\mathcal O(10^{-3})`),
+        this enforces zero wall-normal flow to machine precision, and the constraint
+        **reaction** is the consistent boundary normal traction
+        :math:`\sigma_{nn}` (see :meth:`boundary_normal_traction`) with no
+        augmented-Lagrangian splitting. Correct on deformed / tilted / curved
+        boundaries because the normal is taken per node.
+
+        Parameters
+        ----------
+        boundary : str
+            Boundary label to constrain.
+        normal : None or sympy 1×dim Matrix or array, optional
+            Per-node outward normal source. ``None`` uses the geometric facet
+            normal (PETSc ``computeCellGeometryFVM``; works in 2D and 3D). A
+            sympy ``1×dim`` matrix supplies an analytic normal (exact
+            ``X/|X|`` on a spherical cap, a constant on a planar face) — preferred
+            on curved boundaries. A constant array is also accepted.
+
+        Notes
+        -----
+        A node shared by several rotated-free-slip boundaries (a box corner, a 3D
+        edge) is constrained on the whole span of its accumulated normals: a 3D
+        face frees two tangential directions, a 3D edge frees one (the edge
+        tangent), a corner is fully pinned. Registering delegates the solve to
+        :mod:`underworld3.utilities.rotated_bc`.
+        """
+        self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def boundary_normal_traction(self, boundary, mass="lumped"):
+        r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
+        rotated-free-slip ``boundary`` as the constraint reaction from the last
+        solve — the smooth, bounded quantity used for dynamic topography
+        (:math:`h_\infty=-(\sigma_{nn}-\overline{\sigma_{nn}})/\rho g`). Requires a
+        prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
+        :meth:`solve`.
+
+        ``mass`` chooses the boundary-mass de-smear of the nodal reaction:
+        ``"lumped"`` (default) is monotone — it cannot overshoot where the traction
+        jumps (e.g. across a viscosity contrast), so it is the safe choice for driving
+        a free surface; ``"consistent"`` uses the full P2 line mass (marginally sharper
+        on smooth tractions, but overshoots at discontinuities)."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
+        return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
+
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="lumped"):
+        r"""Write the dynamic topography
+        :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
+        rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
+        constraint reaction of the last solve. This is the hand-off to the free-surface
+        machinery — the 3-number topography integrator drives node motion from a surface
+        field, so create a scalar ``field`` (P1 recommended, continuous) up front and
+        pass it here after each :meth:`solve`; its boundary nodes are filled and the
+        interior left untouched.
+
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length). ``mass`` selects
+        the recovery de-smear (``"lumped"`` default is monotone — no overshoot at a
+        stress jump — and is the safe choice for a free surface). Requires a prior
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "dynamic_topography requires a completed rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import dynamic_topography_field as _dtf
+        return _dtf(self, boundary, self._rotated_freeslip_info, field,
+                    buoyancy_scale=buoyancy_scale, mass=mass)
 
     def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
@@ -7502,6 +7590,41 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Set time on the DM so petsc_t is available in pointwise functions.
         # Non-dimensionalise if the scaling system is active.
         cdef DM _time_dm_stokes
+
+        # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
+        # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
+        # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
+        if self._rotated_freeslip_bcs:
+            # This is a LINEAR solve path: it assembles the Jacobian and residual once at
+            # U=0 and solves the rotated saddle directly, so it does NOT run the SNES
+            # nonlinear iteration. Nonlinear rheology / Picard / warm-start are therefore
+            # unsupported through this path — guard the explicit cases rather than
+            # silently returning a single-linearisation answer.
+            if picard != 0 or not zero_init_guess:
+                raise NotImplementedError(
+                    "rotated free-slip BCs support only a single linear solve "
+                    "(zero_init_guess=True, picard=0). Nonlinear rheology or warm-start "
+                    "would require integrating the rotated constraint into the SNES "
+                    "iteration; not yet implemented.")
+            # Run the same pre-solve preamble as the standard path so the pointwise
+            # functions see the DM time, the auxiliary vector, and updated constants
+            # (needed for problems whose coefficients live in auxiliary fields).
+            if time is not None:
+                if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+                    t_nd = float(uw.non_dimensionalise(time))
+                else:
+                    t_nd = float(time)
+                _time_dm_stokes = self.dm
+                UW_DMSetTime(_time_dm_stokes.dm, t_nd)
+            self.mesh.update_lvec()
+            self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+            self._update_constants()
+
+            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+            self._rotated_freeslip_info = solve_rotated_freeslip(
+                self, self._rotated_freeslip_bcs, verbose=verbose)
+            return
+
         if time is not None:
             if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
                 t_nd = float(uw.non_dimensionalise(time))
