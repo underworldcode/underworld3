@@ -93,6 +93,45 @@ class SolverBaseClass(uw_object):
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
 
+        # Custom multigrid prolongation hierarchy (see set_custom_mg /
+        # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
+        self._custom_mg = None
+
+    def set_custom_mg(self, coarse_meshes, kind="barycentric", verbose=False):
+        r"""Drive geometric multigrid with a prolongation we build ourselves.
+
+        Supplies a sequence of (possibly **non-nested**) coarse meshes from which
+        a barycentric or RBF prolongation ``P`` is assembled and installed into
+        the PCMG via ``PC.setMGInterpolation``; coarse operators are formed by
+        Galerkin RAP. This decouples geometric multigrid from a nested
+        ``refine()`` hierarchy — it works even when the solver mesh has no
+        refinement hierarchy at all.
+
+        Parameters
+        ----------
+        coarse_meshes : list of Mesh
+            Coarsest-first list of coarse meshes (the finest level is the
+            solver's own mesh). Need not be nested with the solver mesh.
+        kind : {"barycentric", "rbf"}
+            Prolongation builder. ``barycentric`` is FE-exact; ``rbf`` is a
+            polyharmonic RBF (Shepard-normalised). Default ``barycentric``.
+        verbose : bool
+            Print the per-level DOF counts at injection.
+
+        Notes
+        -----
+        Single-field (scalar/vector) solvers only for now; the Stokes
+        velocity-block path is a separate increment. See
+        :mod:`underworld3.utilities.custom_mg`.
+        """
+        if kind not in ("barycentric", "rbf"):
+            raise ValueError("kind must be 'barycentric' or 'rbf'")
+        if not coarse_meshes:
+            raise ValueError("coarse_meshes must be a non-empty coarsest-first list")
+        self._custom_mg = {"coarse_meshes": list(coarse_meshes),
+                           "kind": kind, "verbose": verbose}
+        self.is_setup = False
+
     def add_update_callback(self, callback):
         r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
 
@@ -2662,6 +2701,13 @@ class SNES_Scalar(SolverBaseClass):
         # ``constant_nullspace`` was set.
         self._attach_constant_nullspace()
 
+        # Custom multigrid prolongation: inject our P hierarchy before the
+        # first PCSetUp (so the Galerkin coarse operators are built from it).
+        # No-op unless set_custom_mg() was called.
+        if self._custom_mg is not None:
+            from underworld3.utilities.custom_mg import inject_custom_mg
+            inject_custom_mg(self)
+
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
@@ -3677,6 +3723,12 @@ class SNES_Vector(SolverBaseClass):
 
         # Update constants (e.g. changed material params) before solve
         self._update_constants()
+
+        # Custom geometric-MG prolongation on the (top-level vector) PC, if
+        # registered via set_custom_fmg. Mirrors the SNES_Scalar hook.
+        if self._custom_mg is not None:
+            from underworld3.utilities.custom_mg import inject_custom_mg
+            inject_custom_mg(self)
 
         # solve
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
@@ -7412,6 +7464,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
+            # Custom geometric-MG prolongation on the velocity block (if registered
+            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+            # before the real solve — because the velocity sub-PC is only reachable
+            # once the monolithic Jacobian is assembled (see custom_mg).
+            if self._custom_mg is not None:
+                from underworld3.utilities.custom_mg import inject_custom_mg
+                inject_custom_mg(self)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         else:
@@ -7422,6 +7481,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.petsc_options.setValue("snes_max_it", snes_max_it)
             self.snes.setFromOptions()
             self._attach_stokes_nullspace()
+            # Custom geometric-MG prolongation on the velocity block (if registered
+            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+            # before the real solve — because the velocity sub-PC is only reachable
+            # once the monolithic Jacobian is assembled (see custom_mg).
+            if self._custom_mg is not None:
+                from underworld3.utilities.custom_mg import inject_custom_mg
+                inject_custom_mg(self)
             self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         # Project the rigid-body rotation gauge out of the converged solution.
