@@ -48,6 +48,9 @@ GOLDEN_ANNULUS = (1.897011154231e-02, 4.563841e-05, 9.341699e-06)
 # annulus driven by CUSTOM GEOMETRIC FMG on the velocity block (nested hierarchy):
 # (velocity L2, radial-leakage L2 on Lower arc, radial-leakage L2 on Upper arc)
 GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
+# NONLINEAR (power-law) box with rotated free-slip through the manual Newton/Picard
+# loop: (velocity L2, nonlinear iteration count). Recompute `python <thisfile> nonlinear`.
+GOLDEN_BOX_NONLINEAR = (2.724091573142e-03, 38)
 # box sigma_nn (boundary_normal_traction on Top, default lumped mass) vs analytic SolCx
 # sigma_yy, whole boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
 GOLDEN_BOX_SIGMA = (3.985444e-02, 0.999208)
@@ -160,6 +163,36 @@ def _annulus_fmg_diagnostics():
     leak_up = float(np.sqrt(uw.maths.BdIntegral(
         mesh=fine, fn=vr**2, boundary="Upper").evaluate()))
     return L2, leak_lo, leak_up
+
+
+def _box_nonlinear_diagnostics():
+    """NONLINEAR box: power-law viscosity eta = eps_II^(1/n-1) with rotated free-slip
+    on all four walls, solved by the manual Newton/Picard loop (GAMG velocity block).
+    Returns (velocity L2, nonlinear iteration count) — both must be partition-
+    independent (the loop's ptap / rotate / constrain / increment-solve are all
+    collective and ownership-relative)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 16), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("vNLp", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pNLp", mesh, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    g = sympy.Matrix([[v.sym[0].diff(x), v.sym[0].diff(y)],
+                      [v.sym[1].diff(x), v.sym[1].diff(y)]])
+    e = 0.5 * (g + g.T)
+    eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
+    s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / 3.0 - 1.0)
+    s.bodyforce = sympy.Matrix([[0.0, -3.0 * sympy.cos(sympy.pi * x)]])
+    s.penalty = 0.0
+    s.tolerance = 1e-8
+    s.petsc_use_pressure_nullspace = True
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.solve()
+
+    L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
+    return L2, int(s._rotated_freeslip_info["nonlinear_iterations"])
 
 
 def _box_sigma_diagnostics():
@@ -278,6 +311,19 @@ def test_rotated_freeslip_annulus_fmg_partition_independent():
         f"{leak_up_ref} vs {leak_up}")
 
 
+def test_rotated_freeslip_box_nonlinear_partition_independent():
+    """NONLINEAR rotated free-slip is partition-independent: a power-law box solved by
+    the manual Newton/Picard loop reproduces the serial velocity L2 and iteration count
+    at np=2/4 — the rotated residual/Jacobian, the increment solve and the constraint
+    zeroing are all parallel-safe (ownership-relative indexing, collective norms)."""
+    L2, iters = _box_nonlinear_diagnostics()
+    L2_ref, iters_ref = GOLDEN_BOX_NONLINEAR
+    assert np.isclose(L2, L2_ref, rtol=1e-6, atol=0), (
+        f"nonlinear box velocity L2 differs serial vs np={uw.mpi.size}: {L2_ref} vs {L2}")
+    assert iters == iters_ref, (
+        f"nonlinear iteration count differs serial vs np={uw.mpi.size}: {iters_ref} vs {iters}")
+
+
 def test_rotated_freeslip_box_sigma_nn_partition_independent():
     """sigma_nn (boundary_normal_traction) recovery is partition-independent: the whole-
     boundary relL2 / |corr| vs analytic SolCx sigma_yy match the serial reference (and
@@ -309,7 +355,11 @@ if __name__ == "__main__":
     #   `python <thisfile> {box,annulus,annulus_fmg,sigma,topo}`.
     import sys
     _kind = sys.argv[1] if len(sys.argv) > 1 else "box"
-    if _kind == "topo":
+    if _kind == "nonlinear":
+        _L2, _its = _box_nonlinear_diagnostics()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_NONLINEAR {_L2:.12e} {_its}")
+    elif _kind == "topo":
         _b = _box_topography_bdl2()
         if uw.mpi.rank == 0:
             print(f"DIAG_TOPO bdl2={_b:.9e}")
