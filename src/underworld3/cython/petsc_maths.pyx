@@ -259,14 +259,14 @@ class CellWiseIntegral:
         super().__init__()
 
     @timing.routine_timer_decorator
-    def evaluate(self) -> float:
+    def evaluate(self):
         """
         Evaluate the cell-wise integral and return results per cell.
 
         Returns
         -------
         ndarray
-            Array of integral values, one per mesh cell.
+            Array of integral values, one per (rank-local) mesh cell.
 
         Raises
         ------
@@ -300,27 +300,39 @@ class CellWiseIntegral:
         cdef Vec cgvec
         cgvec = a_global
 
-        # TODO(BUG): clone+createDefault+createDS gives dmc a single P1 field,
-        # but cgvec is packed for mesh.dm's multi-field layout — the integral
-        # reads the wrong DOFs and over-counts by ~2x on the unit square.
-        # Same bug as PR #172 (reverted in PR #173-followup). Tests in
-        # tests/test_0501_integrals.py::test_cellwise_integrate_* are xfail
-        # until this is rewritten to integrate against mesh.dm + getDS()
-        # directly (the pre-PR-172 Integral pattern).
-        cdef DM dmc = self.mesh.dm.clone()
-        cdef FE fec = FE().createDefault(self.mesh.dim, 1, False, -1)
-        dmc.setField(0, fec)
-        dmc.createDS()
-
-        cdef DS ds = dmc.getDS()
+        # Integrate on the mesh DM with its own DS (the `Integral` pattern
+        # above).  The JIT objective is compiled against the mesh's
+        # multi-field packing, so it must be evaluated with the mesh DS and
+        # the mesh-packed solution vector.  An earlier clone + createDefault
+        # + createDS variant attached a single P1 field to the cloned DM
+        # while cgvec remained packed for mesh.dm — the layout mismatch made
+        # the integral read the wrong DOFs and over-count (~2x for fn=1 on
+        # the unit square; the same defect that forced the PR #172 revert
+        # for Integral, see 88807c26).
+        #
+        # Note: setting the objective on the shared mesh DS re-inherits the
+        # issue-#171 repeated-call cost-growth behaviour that Integral has —
+        # accepted here for correctness parity.
+        cdef DM dm = self.mesh.dm
+        cdef DS ds = self.mesh.dm.getDS()
         CHKERRQ( PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]) )
 
-        cdef Vec rvec = dmc.createGlobalVec()
-        CHKERRQ( DMPlexComputeCellwiseIntegralFEM(dmc.dm, cgvec.vec, rvec.vec, NULL) )
+        # DMPlexComputeCellwiseIntegralFEM writes Nf scalars per cell into a
+        # flat [cell*Nf + field] layout when the output vector carries no
+        # DM/section.  Only field 0 has an objective; the other field slots
+        # are left at zero.
+        num_fields = self.mesh.dm.getNumFields()
+        cStart, cEnd = self.mesh.dm.getHeightStratum(0)
+        num_cells = cEnd - cStart
+
+        rvec_py = PETSc.Vec().createMPI((num_cells * num_fields, None),
+                                        comm=self.mesh.dm.comm)
+        cdef Vec rvec = rvec_py
+        CHKERRQ( DMPlexComputeCellwiseIntegralFEM(dm.dm, cgvec.vec, rvec.vec, NULL) )
         self.mesh.dm.restoreGlobalVec(a_global)
 
-        results = rvec.array.copy()
-        rvec.destroy()
+        results = rvec_py.array.reshape(-1, num_fields)[:, 0].copy()
+        rvec_py.destroy()
 
         return results
 
