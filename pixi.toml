@@ -98,6 +98,11 @@ meshio = ">=5.3,<6"
 # Utilities
 requests = "*"
 matplotlib = ">=3.10,<4"
+# Floor sqlite to a modern build: the petsc 3.25 solve on linux-64 otherwise
+# drags in the ancient sqlite-3.32.3, whose bundled libsqlite lacks
+# sqlite3_deserialize -> python's _sqlite3 fails to load (undefined symbol),
+# breaking any test module that imports sqlite (e.g. test_1004).
+sqlite = ">=3.46"
 
 # Jupyter kernel support (needed for pixi-kernel in all environments)
 ipykernel = ">=6.29,<7"
