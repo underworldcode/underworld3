@@ -576,6 +576,19 @@ class CustomMGHierarchy:
         nlev = len(self.level_meshes)
         parallel = mpi.size > 1
 
+        # Operator-faithful finest level: finalize the DM section and assemble the
+        # operator BEFORE reading the finest reduced map. The finest transfer's row
+        # space must be the space the operator's PCMG will Galerkin against; the DM
+        # global section is that space only once the SNES is set up (an adapt()
+        # child can otherwise carry a not-yet-finalized / auxiliary section that
+        # disagrees with the assembled operator -> rectangular finest transfer ->
+        # cryptic PETSc error 60 in the PtAP). setUp is idempotent (the install
+        # paths call it again).
+        try:
+            solver.snes.setUp()
+        except Exception:
+            pass
+
         coords, maps, ncomp = [], [], []
         for k, mesh in enumerate(self.level_meshes):
             c = np.asarray(mesh._get_coords_for_basis(degree, continuous))
@@ -599,6 +612,14 @@ class CustomMGHierarchy:
             raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
         nc = ncomp[0]
 
+        # Operator-faithful check: the finest reduced map must span exactly the
+        # assembled operator's rows. Checkable directly for the monolithic
+        # single-field operator (field_id is None — scalar / single-field vector,
+        # e.g. Poisson, Projection, semi-Lagrangian AdvDiffusion on an adapt child).
+        # Fail here with an actionable message rather than deep inside PETSc's PtAP.
+        if self.field_id is None:
+            self._assert_finest_matches_operator(solver, maps[-1], parallel)
+
         Ps = []
         for l in range(1, nlev):
             if parallel:
@@ -619,6 +640,35 @@ class CustomMGHierarchy:
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         return Ps
+
+    @staticmethod
+    def _assert_finest_matches_operator(solver, finest_map, parallel):
+        """Guarantee the finest reduced map spans the assembled operator's rows.
+
+        The finest transfer is Galerkin-multiplied against the solver's real
+        operator (``PtAP``); if the row space disagrees the product is rectangular
+        and PETSc aborts with a bare error 60. On a plain mesh the DM global section
+        and the operator always agree; the guard matters for adapt() children whose
+        DM section could be stale relative to the freshly assembled operator."""
+        try:
+            op_n = int(solver.snes.getJacobian()[0].getSize()[0])
+        except Exception:
+            return                                   # can't read operator -> skip
+        if op_n <= 0:
+            return
+        if parallel:
+            _l2g, rstart, rend, _n = finest_map
+            red_n = int(solver.dm.comm.tompi4py().allreduce(int(rend - rstart)))
+        else:
+            red_n = int(len(finest_map))             # r2f length = reduced global size
+        if red_n != op_n:
+            raise RuntimeError(
+                f"custom_mg: finest reduced-map size {red_n} != assembled operator "
+                f"size {op_n}. The DM global section disagrees with the operator "
+                f"(an adapt-child section inconsistency); the finest transfer would "
+                f"be rectangular and the Galerkin PtAP would abort (PETSc error 60). "
+                f"Rebuild the solver so its DM section matches the operator before "
+                f"installing custom-P.")
 
     def install(self, solver, verbose=False):
         if self.transfers is None:
@@ -667,25 +717,15 @@ def auto_inject_custom_mg(solver, field_id=None):
         return
 
     # Mesh-owned hierarchy (adapt() child): OPPORTUNISTIC auto-pickup. It must never
-    # crash a solve, so build the transfers and verify the finest one matches this
-    # solver's assembled operator before installing. It does NOT for a scalar solver
-    # whose DM carries auxiliary fields (e.g. semi-Lagrangian advection-diffusion):
-    # _reduced_map then counts the full unconstrained DOFs, not the reduced operator
-    # size, and the PtAP in PCMG setup fails. In that case skip and fall back to the
-    # solver's own preconditioner. (The Stokes velocity block, field_id=0, and P1
-    # scalar Poisson match and are unaffected.)
+    # crash a solve, so build the transfers (which now validate the finest reduced
+    # map against the assembled operator — see CustomMGHierarchy.build) inside a
+    # try/except and fall back to the solver's default preconditioner on any failure.
+    # The finest map is derived from the DM section AFTER snes.setUp() finalizes it,
+    # so it is faithful to the operator on adapt children too — including scalar
+    # semi-Lagrangian advection-diffusion (which earlier had to be skipped).
     coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
     if coarse is None:
         return                              # nothing to inject
-
-    # Semi-Lagrangian advection-diffusion (carries a DuDt trace-back operator): its
-    # assembled operator is boundary-reduced in a way the coarse DS-copy does NOT
-    # reproduce, so the per-level BC reductions disagree and the custom-P transfers
-    # don't chain (rectangular PtAP -> PETSc error 60). A scalar AD solve is cheap and
-    # doesn't need geometric FMG, so skip the OPPORTUNISTIC mesh-owned auto-pickup and
-    # let it use its default preconditioner. An explicit set_custom_fmg() still works.
-    if getattr(solver, "DuDt", None) is not None:
-        return
 
     builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
     h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=builder,

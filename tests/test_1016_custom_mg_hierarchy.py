@@ -58,3 +58,83 @@ def test_rbf_builder_also_works():
     s.solve()
     assert s.snes.getKSP().getPC().getType()=="mg"
     assert s.snes.getConvergedReason()>0
+
+
+# --------------------------------------------------------------------------- #
+#  Operator-faithful finest reduced map (adapt-child regression)
+# --------------------------------------------------------------------------- #
+def test_finest_map_operator_mismatch_raises():
+    """The finest reduced map must span exactly the assembled operator's rows.
+    A stale/oversized finest map (adapt-child section inconsistency) must fail
+    with an actionable error, not a bare PETSc PtAP error 60."""
+    m0, coarse, fine = _hierarchy()
+    s=_poisson(fine); s._build(False,False,None); s.snes.setUp()
+    op_n = int(s.snes.getJacobian()[0].getSize()[0])
+    # A correct finest map (length == op_n) passes; a doctored oversized one raises.
+    good = np.arange(op_n)
+    custom_mg.CustomMGHierarchy._assert_finest_matches_operator(s, good, parallel=False)
+    bad = np.arange(op_n + 17)
+    with pytest.raises(RuntimeError, match="finest reduced-map size"):
+        custom_mg.CustomMGHierarchy._assert_finest_matches_operator(s, bad, parallel=False)
+
+
+def test_advdiff_on_nvb_adapt_child_gets_custom_mg():
+    """TASK C: a semi-Lagrangian AdvDiffusion on an NVB adapt() child now installs
+    custom-P geometric MG via the mesh-owned auto-pickup (previously skipped by a
+    DuDt guard because the finest reduced map read from the DM section could
+    disagree with the assembled operator). The finest map is now read after the
+    SNES section is finalized and validated against the operator, so the transfer
+    is faithful on adapt children -> the PC becomes 'mg', the solve converges, and
+    the result matches a default-preconditioner solve."""
+    pytest.importorskip(
+        "underworld3.utilities._nvb_transform",
+        reason="native uwnvb transform not built (needs the custom-PETSc/amr env)")
+    if PETSc.COMM_WORLD.getSize() > 1:
+        pytest.skip("serial regression; parallel adapt covered elsewhere")
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0,0), maxCoords=(1,1), cellSize=0.15, regular=False,
+        qdegree=3, refinement=1)
+    x, y = base.CoordinateSystem.X
+
+    def metric(coords):
+        d = np.abs(coords[:,0]-0.5)
+        h = np.where(d<0.1, 0.03, np.minimum(0.03+(0.12-0.03)*(d-0.1)/0.2, 0.12))
+        return 1.0/h**2
+
+    child = base.adapt(metric, max_levels=3, engine="nvb")
+    assert child._custom_mg_coarse_meshes is not None   # adapt child carries a tail
+
+    def make(name):
+        T = uw.discretisation.MeshVariable(name, child, 1, degree=2)
+        T.data[:,0] = np.asarray(uw.function.evaluate(
+            sympy.exp(-(((x-0.3)**2+(y-0.7)**2)/(2*0.05**2))), T.coords)).reshape(-1)
+        V = uw.discretisation.MeshVariable(name+"V", child, child.dim, degree=2)
+        V.data[:,0] = 0.4
+        adv = uw.systems.AdvDiffusionSLCN(child, u_Field=T, V_fn=V.sym, order=1,
+                                          monotone_mode="clamp")
+        adv.constitutive_model = uw.constitutive_models.DiffusionModel
+        adv.constitutive_model.Parameters.diffusivity = 2.0e-4
+        adv.f = 0.0
+        adv.add_dirichlet_bc(0.0, "Top")
+        return adv, T
+
+    # reference: mesh-owned pickup disabled (clear the coarse tail)
+    advR, TR = make("Tc_ref")
+    saved = child._custom_mg_coarse_meshes
+    child._custom_mg_coarse_meshes = None
+    advR.solve(timestep=0.01)
+    ref = np.asarray(TR.data[:,0]).copy()
+    child._custom_mg_coarse_meshes = saved
+
+    # custom-P via the real auto-pickup path (no monkeypatch)
+    advC, TC = make("Tc_cmg")
+    advC.solve(timestep=0.01)
+    cust = np.asarray(TC.data[:,0])
+
+    assert advC.snes.getKSP().getPC().getType() == "mg"    # custom-P installed
+    assert advC._custom_mg is not None                     # registered, not skipped
+    assert advC.snes.getConvergedReason() > 0
+    # same solution up to iterative tolerance (different preconditioners)
+    rel = np.linalg.norm(cust-ref)/max(np.linalg.norm(ref), 1e-30)
+    assert rel < 1e-4
