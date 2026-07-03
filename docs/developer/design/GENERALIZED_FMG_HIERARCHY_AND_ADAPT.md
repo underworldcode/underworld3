@@ -76,12 +76,44 @@ The supported parallel path is the **nested, co-partitioned** hierarchy:
   (`localToGlobal` gives the reduced global ordering across ranks).
 - `P` is assembled as an MPIAIJ matrix (fine local rows; coarse local + ghost columns).
 
-**Non-nested / independent-mesh custom-P** (cross-rank point-location) is **serial-only /
-experimental** — it is not on the parallel-supported path. The production case
-(targeted refinement = nested) needs only the rank-local path.
+**Non-nested / independent-mesh custom-P** in parallel (cross-rank point location) is now
+supported via a **cross-partition transfer** (`_build_crosspart_transfer`,
+`_gather_coarse_cloud`). When the coarse and fine meshes are partitioned independently, a
+fine leaf on rank *r* can sit in a coarse cell owned by rank *s*, so the rank-local builder
+either misses it (nearest-DOF fallback — wrong) or leaves a coarse DOF with no fine image
+(zero column). The fix exploits the fact that a coarse MG level is, by definition, **small**:
+
+- **All-gather the coarse node cloud** (coords + each node/component's GLOBAL reduced column
+  index, `-1` for a BC-constrained DOF), deduplicated by rounded coordinate (ghost copies are
+  bit-identical). Every rank then holds the *full* coarse mesh.
+- Each rank locates its **owned** fine nodes against that full cloud → point location spans
+  partitions. Columns are the coarse global reduced indices (off-rank columns are fine for
+  MPIAIJ); constrained coarse DOFs stay as barycentric vertices but drop from the columns
+  (reduced→reduced). Fine rows stay rank-local.
+
+`CustomMGHierarchy(..., cross_partition=...)` / `set_custom_fmg(..., cross_partition=...)`:
+`"auto"` (default) builds the rank-local co-partitioned transfer first and rebuilds a level
+cross-partition **only if it has zero columns** (the signature of a cross-partition miss) —
+so the validated nested/adapt path stays on the fast rank-local builder bit-for-bit, while
+non-nested tails are fixed automatically. `True` forces cross-partition (use when a coarse
+level is known non-nested and might mis-locate without producing a zero column); `False`
+forces the rank-local path. Validated: an independent (non-co-partitioned) coarse box tail
+converges in the same iteration count as serial and matches a GAMG reference to ~1e-8 at
+np2 and np4.
 
 Non-load-balancing SBR → bound the added refinement depth (configurable cap); document the
 imbalance/level trade-off.
+
+### Operator-faithful finest reduced map
+The finest transfer's row space **must** equal the assembled operator's space (PCMG Galerkins
+`PᵀAP` against the real operator). The finest reduced map is read from the DM global section,
+which is that space only **after** `snes.setUp()` finalizes it — critical on an `adapt()`
+child, whose section can otherwise be read before finalization and disagree with the operator
+(a rectangular finest transfer → bare PETSc error 60 in the PtAP). `CustomMGHierarchy.build`
+calls `snes.setUp()` before reading the finest map and asserts its size against the assembled
+operator (`_assert_finest_matches_operator`), failing with an actionable message instead. This
+removed the earlier defensive skip of semi-Lagrangian advection-diffusion on adapt children —
+such solves now install custom-P geometric MG and match a default-preconditioner solve.
 
 ## Correctness invariants (must hold, all levels)
 1. BCs applied at every level; transfers reduced→reduced (no zero columns).
