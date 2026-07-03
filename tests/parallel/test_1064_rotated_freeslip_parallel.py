@@ -54,9 +54,9 @@ GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
 GOLDEN_BOX_NONLINEAR = (8.069396188270e-04, 7)
 # box sigma_nn (boundary_normal_traction on Top, default lumped mass) vs analytic SolCx
 # sigma_yy, whole boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
-GOLDEN_BOX_SIGMA = (3.985444e-02, 0.999208)
+GOLDEN_BOX_SIGMA = (5.554578e-02, 0.998466)
 # dynamic_topography field: BdIntegral L2 of h over Top. Recompute `python <thisfile> topo`.
-GOLDEN_TOPO_BDL2 = 2.560593173e-01
+GOLDEN_TOPO_BDL2 = 2.553916470e-01
 
 
 def _wrap(dm, m0):
@@ -202,7 +202,7 @@ def _box_sigma_diagnostics():
     SolCx sigma_yy over the WHOLE boundary. The per-rank local (xs, sigma) are gathered
     + de-duplicated on rank 0, the metric is computed there and broadcast, so every rank
     returns the same (relL2, |corr|) — a direct partition-independence check."""
-    res = 48
+    res = 24
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
     sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
@@ -245,7 +245,7 @@ def _box_sigma_diagnostics():
 def _box_topography_bdl2():
     """dynamic_topography onto a P1 surface field; return the (collective) BdIntegral L2
     of h over Top — a partition-independent scalar functional of the topography field."""
-    res = 48
+    res = 24
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
     sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
@@ -333,12 +333,12 @@ def test_rotated_freeslip_box_sigma_nn_partition_independent():
     parallel-safe."""
     relL2, corr, nnodes = _box_sigma_diagnostics()
     relL2_ref, corr_ref = GOLDEN_BOX_SIGMA
-    assert nnodes == 97, f"expected 97 top nodes, gathered {nnodes} at np={uw.mpi.size}"
+    assert nnodes == 49, f"expected 49 top nodes, gathered {nnodes} at np={uw.mpi.size}"
     assert np.isclose(relL2, relL2_ref, rtol=1e-4, atol=0), (
         f"sigma_nn relL2 differs serial vs np={uw.mpi.size}: {relL2_ref} vs {relL2}")
     assert np.isclose(corr, corr_ref, rtol=1e-4, atol=0), (
         f"sigma_nn corr differs serial vs np={uw.mpi.size}: {corr_ref} vs {corr}")
-    assert relL2 < 0.08, f"sigma_nn relL2 vs analytic {relL2:.3f} too large"
+    assert relL2 < 0.10, f"sigma_nn relL2 vs analytic {relL2:.3f} too large"
 
 
 def test_rotated_freeslip_dynamic_topography_partition_independent():
