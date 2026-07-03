@@ -116,8 +116,8 @@ rich = "*"
 # Quick install (~5 min), no AMR tools.
 
 [feature.conda-petsc.dependencies]
-petsc = ">=3.21,<4"
-petsc4py = ">=3.21,<4"
+petsc = ">=3.25,<4"
+petsc4py = ">=3.25,<4"
 mpi4py = ">=4,<5"
 
 [feature.conda-petsc.target.osx-arm64.dependencies]
@@ -133,15 +133,15 @@ h5py = { version = ">=3.12,<4", build = "*mpich*" }
 # Use these when you need the non-default MPI for your platform.
 
 [feature.conda-petsc-mpich.dependencies]
-petsc = ">=3.21,<4"
-petsc4py = ">=3.21,<4"
+petsc = ">=3.25,<4"
+petsc4py = ">=3.25,<4"
 mpi4py = ">=4,<5"
 h5py = { version = ">=3.12,<4", build = "*mpich*" }
 
 [feature.conda-petsc-openmpi.dependencies]
 openmpi = ">=5.0,<6"
-petsc = ">=3.21,<4"
-petsc4py = ">=3.21,<4"
+petsc = ">=3.25,<4"
+petsc4py = ">=3.25,<4"
 mpi4py = ">=4,<5"
 h5py = { version = ">=3.12,<4", build = "*openmpi*" }
 
