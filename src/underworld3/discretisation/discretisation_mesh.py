@@ -1276,8 +1276,11 @@ class Mesh(Stateful, uw_object):
         a = np.linalg.norm(v1 - v2, axis=1)
         b = np.linalg.norm(v2 - v0, axis=1)
         cl_ = np.linalg.norm(v0 - v1, axis=1)
-        A = np.maximum(
-            0.5 * np.abs(np.cross(v1 - v0, v2 - v0)), 1.0e-300)
+        # 2-D triangle area from the z-component of the edge cross product
+        # (numpy 2.0 removed the 2-D np.cross that returned this scalar).
+        _e1, _e2 = v1 - v0, v2 - v0
+        _cross_z = _e1[:, 0] * _e2[:, 1] - _e1[:, 1] * _e2[:, 0]
+        A = np.maximum(0.5 * np.abs(_cross_z), 1.0e-300)
         q = 4.0 * np.sqrt(3.0) * A / (a * a + b * b + cl_ * cl_)
 
         def _ang(o, p, r):

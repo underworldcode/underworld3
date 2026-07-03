@@ -197,18 +197,18 @@ def _evaluate_impl(
         # Convert coordinates
         if isinstance(coords, UnitAwareArray):
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, UWQuantity):
             coords_nondim = uw.non_dimensionalise(coords)
             if hasattr(coords_nondim, 'value'):
-                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.float64)
             else:
-                coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, np.ndarray):
-            coords_for_eval = np.asarray(coords, dtype=np.double)
+            coords_for_eval = np.asarray(coords, dtype=np.float64)
         else:
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
 
         # Evaluate using optimized lambdification
         raw_values = evaluate_pure_sympy(expr_unwrapped, coords_for_eval)
@@ -292,21 +292,21 @@ def _evaluate_impl(
     if isinstance(coords, UnitAwareArray):
         # Unit-aware array - need to non-dimensionalise
         coords_nondim = uw.non_dimensionalise(coords)
-        coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+        coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
     elif isinstance(coords, UWQuantity):
         # UWQuantity from arithmetic operations (e.g., coords - dt * velocity)
         coords_nondim = uw.non_dimensionalise(coords)
         if hasattr(coords_nondim, 'value'):
-            coords_for_eval = np.asarray(coords_nondim.value, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim.value, dtype=np.float64)
         else:
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
     elif isinstance(coords, np.ndarray):
         # Plain numpy array - assume it's already [0-1] non-dimensional
-        coords_for_eval = np.asarray(coords, dtype=np.double)
+        coords_for_eval = np.asarray(coords, dtype=np.float64)
     else:
         # Other type - try to non-dimensionalise
         coords_nondim = uw.non_dimensionalise(coords)
-        coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+        coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
 
     # Ensure coordinates are 2D: shape (N, ndim) not (ndim,)
     # This handles single coordinate evaluation: coords[60] -> shape (2,) -> (1, 2)
@@ -489,18 +489,18 @@ def _global_evaluate_impl(
         # Convert coordinates
         if isinstance(coords, UnitAwareArray):
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, UWQuantity):
             coords_nondim = uw.non_dimensionalise(coords)
             if hasattr(coords_nondim, 'value'):
-                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim.value, dtype=np.float64)
             else:
-                coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+                coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, np.ndarray):
-            coords_for_eval = np.asarray(coords, dtype=np.double)
+            coords_for_eval = np.asarray(coords, dtype=np.float64)
         else:
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_eval = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_eval = np.asarray(coords_nondim, dtype=np.float64)
 
         # Evaluate using optimized lambdification
         raw_result = evaluate_pure_sympy(expr, coords_for_eval)
@@ -524,18 +524,18 @@ def _global_evaluate_impl(
         if isinstance(coords, UnitAwareArray):
             # Extract base array and non-dimensionalize if needed
             coords_nondim = uw.non_dimensionalise(coords)
-            coords_for_cython = np.asarray(coords_nondim, dtype=np.double)
+            coords_for_cython = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, UWQuantity):
             # UWQuantity from arithmetic operations (e.g., coords - dt * velocity)
             # Extract the underlying value and non-dimensionalize
             coords_nondim = uw.non_dimensionalise(coords)
             # coords_nondim might be a scalar or array - ensure it's an array
             if hasattr(coords_nondim, 'value'):
-                coords_for_cython = np.asarray(coords_nondim.value, dtype=np.double)
+                coords_for_cython = np.asarray(coords_nondim.value, dtype=np.float64)
             else:
-                coords_for_cython = np.asarray(coords_nondim, dtype=np.double)
+                coords_for_cython = np.asarray(coords_nondim, dtype=np.float64)
         elif isinstance(coords, np.ndarray):
-            coords_for_cython = np.asarray(coords, dtype=np.double)
+            coords_for_cython = np.asarray(coords, dtype=np.float64)
         else:
             coords_for_cython = coords
     else:

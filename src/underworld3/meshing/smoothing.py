@@ -561,7 +561,7 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
         if edges.shape[0] == 0:
             return
         deg = np.bincount(
-            edges.ravel(), minlength=n_verts).astype(np.double)
+            edges.ravel(), minlength=n_verts).astype(np.float64)
         deg[deg == 0.0] = 1.0
         _SPRING_CACHE[key] = (edges, deg)
     else:
@@ -572,7 +572,7 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
     v0 = edges[:, 0]
     v1 = edges[:, 1]
 
-    coords = np.asarray(mesh.X.coords, dtype=np.double).copy()
+    coords = np.asarray(mesh.X.coords, dtype=np.float64).copy()
 
     # Boundary tangential slip via the mesh-owned contract
     # (boundary-slip-strategy.md): each slip vertex slides tangentially and
@@ -1052,7 +1052,7 @@ def _patch_volumes(tris, coords, n_verts, vol_field=None):
     if vol_field is not None and uw.mpi.size > 1:
         return _lumped_vertex_volumes(vol_field)
     area = np.abs(_signed_areas(coords, tris)) / 3.0
-    patch = np.zeros(n_verts, dtype=np.double)
+    patch = np.zeros(n_verts, dtype=np.float64)
     for k in range(3):
         np.add.at(patch, tris[:, k], area)
     patch[patch <= 0.0] = patch[patch > 0.0].mean()
@@ -1291,7 +1291,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
             patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
             patch /= float(np.mean(patch))
         else:
-            patch = np.ones(n_verts, dtype=np.double)
+            patch = np.ones(n_verts, dtype=np.float64)
         _va = vol_field.array
         _va[...] = patch.reshape(_va.shape)
 
@@ -1603,7 +1603,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
 
         # --- compute V (patch volumes) on current mesh ---------
         if tris is None:
-            patch = np.ones(n_verts, dtype=np.double)
+            patch = np.ones(n_verts, dtype=np.float64)
         else:
             patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
         # Normalise so the mean over the domain is the cell mean.
@@ -3135,7 +3135,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     vloc = coord_dm.getLocalVec()
     vglob = coord_dm.getGlobalVec()
 
-    coords = np.asarray(local_vec.array, dtype=np.double).reshape(-1, cdim).copy()
+    coords = np.asarray(local_vec.array, dtype=np.float64).reshape(-1, cdim).copy()
 
     # Fixed computational reference = coords at first call, cached on mesh
     # (ghosted: this rank's local array including halo).
@@ -3698,11 +3698,11 @@ def _smooth_mesh_interior_bare(
     parallel = uw.mpi.size > 1
 
     coords = np.asarray(
-        local_vec.array, dtype=np.double).reshape(-1, cdim).copy()
+        local_vec.array, dtype=np.float64).reshape(-1, cdim).copy()
 
     for sweep in range(n_iters):
         new_int = np.empty((int_owned_local.shape[0], cdim),
-                           dtype=np.double)
+                           dtype=np.float64)
         # For each coordinate component, do A @ coord_comp (PETSc
         # handles cross-rank communication), then divide by degree
         # to get the per-vertex neighbour average.
