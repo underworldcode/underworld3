@@ -5208,8 +5208,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # partition-independent enough for the norm comparison.
         rs, re = U1.getOwnershipRange()
         idx = np.arange(rs, re, dtype=float)
-        U1.setArray(0.1 * np.sin(0.7 * idx + 0.3))
-        U2.setArray(0.1 * np.sin(1.3 * idx + 1.1))
+        # write IN PLACE into each vec's PETSc-owned array (getArray returns a writable
+        # view). setArray with a fresh numpy temporary on a POOLED getGlobalVec is risky:
+        # its storage lifetime/pool reuse is not guaranteed for the later computeJacobian.
+        a1 = U1.getArray(); a1[:] = 0.1 * np.sin(0.7 * idx + 0.3)
+        a2 = U2.getArray(); a2[:] = 0.1 * np.sin(1.3 * idx + 1.1)
         J1 = J.copy(); J2 = J.copy()
         try:
             snes.computeJacobian(U1, J1)

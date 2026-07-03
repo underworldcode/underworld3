@@ -433,7 +433,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         Fh = Fc.duplicate(); Q.mult(Fc, Fh); _zero_rows_local(Fh, normal_rows)
         return Fh
 
-    r0 = None; last_reason = 0; iters = 0
+    r0 = None; last_reason = 0; iters = 0; converged = False
     phase = "picard" if continuation else "newton"
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
@@ -447,7 +447,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         # residual convergence (relative to the initial residual, plus an absolute
         # floor so an already-converged warm start does not chase machine noise).
         if rnorm <= rtol * r0 + atol:
-            Fhat.destroy(); break
+            converged = True; Fhat.destroy(); break
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
         # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
         # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
@@ -469,6 +469,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         # (otherwise the relative test above, with a tiny r0, chatters near machine
         # level). ‖u‖=0 on a cold start ⇒ this never fires prematurely (d is large).
         if d.norm() <= stol * (u.norm() + 1e-30):
+            converged = True
             Ahat.destroy(); dhat.destroy(); d.destroy(); bhat.destroy(); Fhat.destroy()
             break
         # backtracking line search on ‖F̂‖ (full Newton/Picard step first). Cheap
@@ -493,13 +494,24 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     if continuation:
         solver._set_newton_alpha(0.0)
 
+    # The loop can exhaust max_it or stall in the line search (`not improved`) without
+    # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
+    # on divergence — so an unconverged iterate left in the fields is not silent.
+    if not converged:
+        from underworld3 import mpi
+        rel = (rnorm / (r0 + 1e-300)) if r0 is not None else float("nan")
+        mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
+                   f"in {iters + 1} iterations (rel |F̂| = {rel:.2e}); the fields hold "
+                   f"the last (unconverged) iterate.")
+
     Fc.destroy()                             # residual output buffer (reaction is kept for info)
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
-            "nonlinear_iterations": iters, "continuation_switched": phase == "newton"}
+            "nonlinear_iterations": iters, "converged": converged,
+            "continuation_switched": continuation and phase == "newton"}
 
 
 def _build_rotated_custom_Pl(solver, Q, normal_rows):
