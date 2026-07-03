@@ -48,6 +48,9 @@ GOLDEN_ANNULUS = (1.897011154231e-02, 4.563841e-05, 9.341699e-06)
 # annulus driven by CUSTOM GEOMETRIC FMG on the velocity block (nested hierarchy):
 # (velocity L2, radial-leakage L2 on Lower arc, radial-leakage L2 on Upper arc)
 GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
+# 3D spherical shell (free-slip both boundaries, all 3 rotation nullspace modes):
+# velocity L2. Recompute with `python <thisfile> spherical3d`.
+GOLDEN_SPHERICAL3D = 4.069689334228e-03
 # NONLINEAR (power-law) box with rotated free-slip through the manual Newton loop
 # (consistent tangent): (velocity L2, nonlinear iteration count). Recompute
 # `python <thisfile> nonlinear`.
@@ -123,6 +126,35 @@ def _annulus_diagnostics():
     leak_up = float(np.sqrt(uw.maths.BdIntegral(
         mesh=mesh, fn=vr**2, boundary="Upper").evaluate()))
     return L2, leak_lo, leak_up
+
+
+def _spherical3d_diagnostics():
+    """3D spherical shell with per-node radial free-slip on BOTH boundaries (the
+    Zhong #248 configuration): all three rigid rotations are nullspace modes.
+    Returns (velocity L2, outer KSP its, converged reason)."""
+    RI, RO = 0.55, 1.0
+    mesh = uw.meshing.SphericalShell(radiusInner=RI, radiusOuter=RO,
+                                     cellSize=0.25, qdegree=2)
+    x, y, z = mesh.X
+    r = sympy.sqrt(x**2 + y**2 + z**2)
+    v = uw.discretisation.MeshVariable("Vs", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("Ps", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    ylm = (3 * (z / r) ** 2 - 1) / 2
+    s.bodyforce = ylm * (r - RI) * (RO - r) * 20.0 / r * sympy.Matrix([[x, y, z]])
+    nhat = sympy.Matrix([[x / r, y / r, z / r]])
+    s.add_rotated_freeslip_bc("Lower", normal=nhat)
+    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.tolerance = 1e-7
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.solve()
+
+    L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
+    info = s._rotated_freeslip_info
+    return L2, int(info["ksp_its"]), int(info["ksp_reason"])
 
 
 def _annulus_fmg_diagnostics():
@@ -313,6 +345,20 @@ def test_rotated_freeslip_annulus_fmg_partition_independent():
         f"{leak_up_ref} vs {leak_up}")
 
 
+def test_rotated_freeslip_spherical3d_partition_independent():
+    """3D spherical shell (free-slip inner+outer, all three rotation nullspace
+    modes): the parallel solve reproduces the serial velocity L2, converges, and
+    stays within the bounded outer iteration count (the 1/mu-mass Schur
+    preconditioner — issue #248's rotated blow-out was ~44 its)."""
+    L2, its, reason = _spherical3d_diagnostics()
+    L2_ref = GOLDEN_SPHERICAL3D
+    assert reason > 0, f"3D spherical rotated solve diverged: reason {reason}"
+    assert its <= 25, f"3D spherical Schur iteration blow-out: {its} outer its"
+    assert np.isclose(L2, L2_ref, rtol=1e-5, atol=0), (
+        f"3D spherical velocity L2 differs serial vs np={uw.mpi.size}: "
+        f"{L2_ref} vs {L2}")
+
+
 def test_rotated_freeslip_box_nonlinear_partition_independent():
     """NONLINEAR rotated free-slip is partition-independent: a power-law box solved by
     the manual Newton/Picard loop reproduces the serial velocity L2 and iteration count
@@ -377,6 +423,10 @@ if __name__ == "__main__":
         _L2, _lo, _up = _annulus_fmg_diagnostics()
         if uw.mpi.rank == 0:
             print(f"DIAG_ANNULUS_FMG {_L2:.12e} {_lo:.6e} {_up:.6e}")
+    elif _kind == "spherical3d":
+        _L2, _its, _reason = _spherical3d_diagnostics()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_SPHERICAL3D {_L2:.12e} its={_its} reason={_reason}")
     else:
         _L2, _verr = _box_diagnostics()
         if uw.mpi.rank == 0:

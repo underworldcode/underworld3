@@ -67,6 +67,59 @@ def test_rotated_freeslip_box_reproduces_essential():
     assert sol.velocity_error(v) < 1e-3
 
 
+@pytest.mark.level_2
+def test_rotated_freeslip_spherical_shell_3d():
+    """3D spherical shell, free-slip inner+outer (the Zhong #248 configuration):
+    all THREE rigid rotations must be recognised as nullspace modes and projected
+    out, the self-contained Schur solve must converge in a bounded iteration
+    count (the 1/mu-mass Schur preconditioner — ~30 its with selfp), and the
+    radial leak must be machine-zero on both boundaries."""
+    RI, RO = 0.55, 1.0
+    mesh = uw.meshing.SphericalShell(radiusInner=RI, radiusOuter=RO,
+                                     cellSize=0.25, qdegree=2)
+    x, y, z = mesh.X
+    r = sympy.sqrt(x**2 + y**2 + z**2)
+    v = uw.discretisation.MeshVariable("Vs", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("Ps", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    # Y_20-like radial internal load, zero on the boundaries
+    ylm = (3 * (z / r) ** 2 - 1) / 2
+    g = (r - RI) * (RO - r) * 20.0
+    s.bodyforce = ylm * g / r * sympy.Matrix([[x, y, z]])
+    nhat = sympy.Matrix([[x / r, y / r, z / r]])
+    s.add_rotated_freeslip_bc("Lower", normal=nhat)
+    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.tolerance = 1e-7
+    s.solve()
+
+    info = s._rotated_freeslip_info
+    assert info["ksp_reason"] > 0, f"rotated KSP diverged: {info['ksp_reason']}"
+    assert info["ksp_its"] <= 25, (
+        f"Schur iteration blow-out: {info['ksp_its']} outer its "
+        "(1/mu-mass Schur preconditioning regressed?)")
+    assert info["rotation_gauge_removed"], "3D rotation gauge not detected/removed"
+
+    vc = v.coords
+    rr = np.linalg.norm(vc, axis=1)
+    rhat = vc / rr[:, None]
+    vr = np.einsum("ij,ij->i", v.data, rhat)
+    vmax = np.linalg.norm(v.data, axis=1).max() + 1e-30
+    for lab, mask in [("inner", np.abs(rr - RI) < 1e-3), ("outer", np.abs(rr - RO) < 1e-3)]:
+        leak = np.abs(vr[mask]).max() / vmax
+        assert leak < 1e-10, f"{lab} radial leakage {leak:.2e} not machine-zero"
+    # all three rigid-rotation gauges removed (nodal check, serial test)
+    for k, t in enumerate([
+            np.column_stack([np.zeros(len(vc)), -vc[:, 2], vc[:, 1]]),
+            np.column_stack([vc[:, 2], np.zeros(len(vc)), -vc[:, 0]]),
+            np.column_stack([-vc[:, 1], vc[:, 0], np.zeros(len(vc))])]):
+        rotfrac = abs(np.sum(v.data * t)) / (np.linalg.norm(t) * np.linalg.norm(v.data) + 1e-30)
+        assert rotfrac < 1e-8, f"rotation mode {k} gauge {rotfrac:.2e} not removed"
+
+
 def test_rotated_freeslip_annulus_zero_leakage():
     """Annulus: per-node radial free-slip on both arcs → machine-zero v_r leakage,
     with the analytic radial normal."""
