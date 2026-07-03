@@ -159,6 +159,10 @@ run_build() {
         # Step 2: Check/build petsc4py
         if ! petsc4py_installed "$env"; then
             echo "  Installing petsc4py for $env..."
+            # The in-tree build/ cache is SHARED across envs/worktrees and pip
+            # silently reuses its objects even when numpy/PETSc changed —
+            # stale-ABI imports ("numpy.dtype size changed"). Always start clean.
+            rm -rf "$PETSC_CUSTOM/src/binding/petsc4py/build"
             $PIXI run -e "$env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation --no-cache-dir || {
                 echo -e "${YELLOW}petsc4py build failed${NC}"
                 exit 1
@@ -779,6 +783,7 @@ run_setup() {
         if petsc_built; then
             echo -e "${GREEN}✓ Custom PETSc already built${NC}"
             echo "Installing petsc4py..."
+            rm -rf "$PETSC_CUSTOM/src/binding/petsc4py/build"   # shared stale-ABI cache
             $PIXI run -e "$new_env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation 2>/dev/null
         else
             echo -e "${YELLOW}Custom PETSc needs to be built (~1 hour)${NC}"
@@ -1340,6 +1345,7 @@ worktree_create() {
     # into the main repo makes pixi install into the wrong environment.
     if is_amr_env "$env" && [ -d "$wt_path/petsc-custom/petsc/src/binding/petsc4py" ]; then
         echo "  Installing petsc4py for $env..."
+        rm -rf "$wt_path/petsc-custom/petsc/src/binding/petsc4py/build"   # shared stale-ABI cache
         (cd "$wt_path" && $PIXI run -e "$env" pip install \
             "$wt_path/petsc-custom/petsc/src/binding/petsc4py" --no-build-isolation 2>/dev/null) && \
             echo -e "    ${GREEN}✓${NC} petsc4py installed" || \
