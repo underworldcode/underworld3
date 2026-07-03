@@ -1169,6 +1169,124 @@ class Surface:
 
         return self._abs_distance_var
 
+    def _signed_distance_at(self, coords: np.ndarray) -> np.ndarray:
+        """Exact signed distance from arbitrary query points to this surface.
+
+        This is the geometric primitive underneath the ``distance`` /
+        ``abs_distance`` fields, but evaluated at *any* points rather than only
+        the mesh nodes. It does **not** touch or interpolate the P1 distance
+        field — it re-runs the exact point-to-polyline (2D) / implicit-distance
+        (3D) computation directly. That makes it safe to call on the centroids
+        of a *refined* mesh during adaptation: the distance resolves itself at
+        the new resolution instead of aliasing a coarse P1 field.
+
+        Parameters
+        ----------
+        coords : ndarray, shape (N, 2) or (N, 3)
+            Query points in model (internal) coordinate space — the same space
+            the surface control points live in (cf. ``mesh._coords``).
+
+        Returns
+        -------
+        ndarray, shape (N,)
+            Signed distance at each query point (edge-clamped: beyond a finite
+            edge it is the radial distance to the nearest endpoint).
+        """
+        self._ensure_discretized()
+        coords = np.asarray(coords, dtype=float)
+
+        if self.is_2d:
+            from underworld3.utilities.geometry_tools import (
+                signed_distance_pointcloud_polyline_2d
+            )
+
+            coords_2d = coords[:, :2]
+            if hasattr(self, "_vertices_2d") and self._vertices_2d is not None:
+                vertices_2d = self._vertices_2d
+            else:
+                vertices_2d = self._pv_mesh.points[:, :2]
+            return signed_distance_pointcloud_polyline_2d(coords_2d, vertices_2d)
+
+        # 3D: pyvista implicit distance to the surface polydata
+        pv = _require_pyvista()
+        pv_pts = pv.PolyData(np.ascontiguousarray(coords[:, :3]))
+        dist_result = pv_pts.compute_implicit_distance(self._pv_mesh)
+        return np.asarray(dist_result.point_data["implicit_distance"])
+
+    def signed_distance(self, coords: np.ndarray) -> np.ndarray:
+        """Exact **signed** distance from arbitrary points to the surface.
+
+        Unlike ``distance`` (a P1 :class:`MeshVariable` sampled at the mesh
+        nodes), this evaluates the exact geometry at *whatever* points you pass
+        — so it stays accurate on a refined mesh. Positive on one side of the
+        surface, negative on the other.
+
+        Parameters
+        ----------
+        coords : ndarray, shape (N, 2) or (N, 3)
+            Query points in model coordinate space.
+
+        Returns
+        -------
+        ndarray, shape (N,)
+            Signed distance at each point.
+        """
+        return self._signed_distance_at(coords)
+
+    def unsigned_distance(self, coords: np.ndarray) -> np.ndarray:
+        """Exact **unsigned**, edge-clamped distance from arbitrary points.
+
+        ``abs()`` of :meth:`signed_distance`. Because the underlying distance is
+        edge-clamped (it falls back to the nearest endpoint beyond a finite
+        edge), this is the true distance to the *finite* surface — the right
+        quantity for a distance-driven refinement metric.
+
+        Parameters
+        ----------
+        coords : ndarray, shape (N, 2) or (N, 3)
+            Query points in model coordinate space.
+
+        Returns
+        -------
+        ndarray, shape (N,)
+            Unsigned distance at each point (``>= 0``).
+        """
+        return np.abs(self._signed_distance_at(coords))
+
+    @property
+    def director(self) -> sympy.Matrix:
+        r"""Unit surface-normal as a symbolic column vector — the TI director n̂.
+
+        The gradient of a signed-distance field is its unit normal, so this is
+        ``∇d / |∇d|`` built from the :attr:`distance` field. It is the natural
+        **director** for :class:`~underworld3.constitutive_models.TransverseIsotropicFlowModel`
+        (the weak-plane orientation): the same fault object that drives the
+        refinement metric and the weak-zone viscosity also supplies the normal::
+
+            ti = uw.constitutive_models.TransverseIsotropicFlowModel
+            stokes.constitutive_model = ti
+            stokes.constitutive_model.Parameters.director = fault.director
+
+        For a **planar** surface the signed distance is linear, so ``∇d`` is the
+        exact constant unit normal everywhere. Near a curved surface or a finite
+        edge it is the local unit normal wherever the field is smooth. The
+        normalisation makes it robust where ``|∇d|`` drifts from 1 (interpolated
+        distance, edge clamping).
+
+        Returns
+        -------
+        sympy.Matrix
+            ``(dim, 1)`` unit normal expression, evaluatable on this surface's
+            mesh (call :meth:`remap_to` first if the surface was built on a
+            different mesh, e.g. an ``adapt`` parent).
+        """
+        d = self.distance.sym[0]
+        X = self.mesh.X
+        dim = self.mesh.dim
+        grad = [sympy.diff(d, X[i]) for i in range(dim)]
+        norm = sympy.sqrt(sum(g ** 2 for g in grad)) + sympy.sympify(1e-30)
+        return sympy.Matrix([g / norm for g in grad])
+
     def _compute_distance_field(self) -> None:
         """Compute signed distance field from mesh nodes to surface.
 
@@ -1197,31 +1315,9 @@ class Surface:
         # coordinate space used to create them — typically model coordinates.
         coords = np.asarray(self.mesh._coords)
 
-        if self.is_2d:
-            # 2D: Use geometry_tools for signed distance to polyline
-            from underworld3.utilities.geometry_tools import (
-                signed_distance_pointcloud_polyline_2d
-            )
-
-            # Get 2D coordinates
-            coords_2d = coords[:, :2]
-
-            # Use stored 2D vertices for distance computation
-            if hasattr(self, '_vertices_2d') and self._vertices_2d is not None:
-                vertices_2d = self._vertices_2d
-            else:
-                # Fall back to pyvista mesh points
-                vertices_2d = self._pv_mesh.points[:, :2]
-
-            distances = signed_distance_pointcloud_polyline_2d(coords_2d, vertices_2d)
-
-        else:
-            # 3D: Use pyvista's compute_implicit_distance
-            pv = _require_pyvista()
-            pv_mesh = pv.PolyData(coords)
-            dist_result = pv_mesh.compute_implicit_distance(self._pv_mesh)
-            # Keep signed distance - helpers use sympy.Abs() when needed
-            distances = dist_result.point_data["implicit_distance"]
+        # Exact signed distance at the mesh nodes (same primitive that
+        # signed_distance()/unsigned_distance() expose for arbitrary points).
+        distances = self._signed_distance_at(coords)
 
         # Companion UNSIGNED distance field. The per-node distance is already
         # edge-clamped (the segment/surface distance falls back to the nearest
@@ -1448,6 +1544,62 @@ class Surface:
         # Mark all variable proxies as stale (they project to mesh nodes)
         self._mark_all_proxies_stale()
 
+    def remap_to(self, new_mesh: "Mesh") -> "Surface":
+        """Re-home this surface onto a different mesh and return ``self``.
+
+        The surface **geometry** (control points, polyline/polydata vertices) is
+        unchanged — only the mesh its *fields* are computed against changes.
+        Cached distance fields (which were bound to the old mesh) are dropped so
+        they recompute, at **exact** distance, on the new mesh's nodes on next
+        access.
+
+        This is the companion to :meth:`Mesh.adapt` for the nested (child-
+        returning) engines (``engine="sbr"``/``"nvb"``): ``adapt`` leaves the
+        base mesh untouched and returns a refined *child*, so — unlike the
+        in-place :meth:`Mesh.remesh` — registered surfaces are not auto-notified.
+        Re-homing lets **one** fault object drive both the geometry-only
+        refinement metric (:meth:`refinement_metric_function`, evaluated before
+        the child exists) and the child-side constitutive model (its
+        ``distance`` / normal live on the child)::
+
+            fault  = uw.meshing.Surface("fault", base, trace)
+            metric = fault.refinement_metric_function(h_near, h_far, width)
+            child  = base.adapt(metric, engine="nvb")
+            fault.remap_to(child)                 # distance now on the child
+            eta = fault.influence_function(width, value_near=1e-3, value_far=1.0)
+
+        Parameters
+        ----------
+        new_mesh : Mesh
+            The mesh to re-home onto (e.g. an ``adapt`` child).
+
+        Returns
+        -------
+        Surface
+            ``self`` (for chaining).
+        """
+        if new_mesh is self.mesh:
+            return self
+
+        old_mesh = self.mesh
+        if old_mesh is not None and hasattr(old_mesh, "unregister_surface"):
+            old_mesh.unregister_surface(self)
+
+        self.mesh = new_mesh
+        self._dim = None  # re-detect from the new mesh
+        if new_mesh is not None and hasattr(new_mesh, "register_surface"):
+            new_mesh.register_surface(self)
+
+        # Drop cached fields bound to the OLD mesh; the geometry (pyvista mesh /
+        # 2D vertices) is mesh-independent and stays as-is. .distance / .abs_distance
+        # rebuild lazily on the new mesh's nodes (exact) on next access.
+        self._distance_var = None
+        self._abs_distance_var = None
+        self._distance_stale = True
+        self._mark_all_proxies_stale()
+
+        return self
+
     def refinement_metric(
         self,
         h_near,
@@ -1571,6 +1723,70 @@ class Surface:
         # The metric defines edge lengths, not areas/volumes
         # Higher metric values → finer mesh (smaller elements)
         metric.data[:, 0] = 1.0 / (h_values ** 2)
+
+        return metric
+
+    def refinement_metric_function(
+        self,
+        h_near,
+        h_far,
+        width=None,
+        profile: str = "linear",
+    ):
+        r"""Return a **callable** refinement metric based on exact distance.
+
+        This is the self-resolving companion to :meth:`refinement_metric`. Where
+        ``refinement_metric`` bakes ``M = 1/h²`` into a P1 :class:`MeshVariable`
+        sampled at the *base* mesh nodes, this returns a plain function
+        ``metric(coords) -> M`` that computes the **exact** distance
+        (:meth:`unsigned_distance`) at whatever points it is handed and maps it
+        through the same profile.
+
+        Pass it straight to :meth:`Mesh.adapt`, which re-evaluates the callable
+        at the cell centroids of **each refined level**. The metric therefore
+        resolves itself at the new resolution as mesh levels appear — it never
+        interpolates a coarse P1 field, so a thin feature refines to a clean,
+        uniform-width band instead of the *patchy* levels a P1-interpolated
+        ``1/h²`` produces (that peaked quantity aliases across a base cell).
+
+        Parameters
+        ----------
+        h_near, h_far : float or quantity
+            Target edge length near / far from the surface (same unit handling
+            as :meth:`refinement_metric`).
+        width : float or quantity, optional
+            Transition distance; defaults to ``2 * h_far``.
+        profile : {"linear", "smoothstep", "gaussian"}
+            Distance-to-size profile. Default ``"linear"``.
+
+        Returns
+        -------
+        callable
+            ``metric(coords: ndarray[N, dim]) -> ndarray[N]`` giving ``M = 1/h²``
+            at each query point.
+
+        Examples
+        --------
+        >>> fault = uw.meshing.Surface("fault", mesh, fault_points)
+        >>> fault.discretize()
+        >>> metric = fault.refinement_metric_function(h_near=0.005, h_far=0.05,
+        ...                                           width=0.02)
+        >>> child = mesh.adapt(metric, max_levels=3, engine="nvb")
+        """
+        if self.mesh is None:
+            raise RuntimeError(
+                f"Surface '{self.name}' must be attached to a mesh to create "
+                "a refinement metric"
+            )
+
+        h_near = _to_nd_length(h_near)
+        h_far = _to_nd_length(h_far)
+        width = _to_nd_length(width) if width is not None else 2.0 * h_far
+
+        def metric(coords: np.ndarray) -> np.ndarray:
+            d = self.unsigned_distance(coords)
+            h = _profile_to_edge_lengths(d, h_near, h_far, width, profile)
+            return 1.0 / (h ** 2)
 
         return metric
 

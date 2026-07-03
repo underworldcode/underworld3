@@ -42,7 +42,8 @@ import numpy as np
 from petsc4py import PETSc
 
 __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
-           "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where"]
+           "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where",
+           "nvb_refine"]
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +168,32 @@ def sbr_refine_where(dm, predicate):
             if predicate(d.computeCellGeometryFVM(c)[1]):
                 lab.setValue(c, _DM_ADAPT_REFINE)
     return _sbr_apply(dm, mark)
+
+
+# --------------------------------------------------------------------------- #
+#  Newest-vertex bisection (NVB) — GRADED refinement (serial Route A)
+# --------------------------------------------------------------------------- #
+def nvb_refine(dm, cells, boundaries=(), regions=()):
+    """NVB-refine an explicit list of ``cells`` (serial, single level), returning a
+    fresh interpolated ``DMPlex`` with boundary/region labels transferred.
+
+    Counterpart to :func:`sbr_refine` but with a **bounded conforming closure**, so
+    a marked cell deep in a uniform patch adds O(1) cells locally instead of
+    draining the longest-edge path to the patch edge — the property that lets
+    successive levels *grade* (see :mod:`underworld3.utilities.nvb`).
+
+    Single-shot: builds an :class:`~underworld3.utilities.nvb.NVBMesh` from ``dm``
+    (longest-edge seed), refines, and emits the DM. For a **multi-level** graded
+    adapt, drive a *persistent* ``NVBMesh`` across levels instead (so the
+    refinement-edge labelling — hence the similarity-class / shape-regularity bound
+    — propagates parent→child); ``Mesh._adapt_nested(engine="nvb")`` does this.
+
+    ``boundaries`` / ``regions`` are ``(name, value)`` iterables of labels to carry.
+    """
+    from underworld3.utilities.nvb import NVBMesh
+    nvb = NVBMesh.from_dm(dm, boundaries=boundaries, regions=regions)
+    nvb.refine(set(int(c) for c in cells))
+    return nvb.to_dm(boundaries=boundaries, regions=regions, comm=dm.comm)
 
 
 # --------------------------------------------------------------------------- #
@@ -620,6 +647,77 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
         "verbose": verbose,
     }
     solver.is_setup = False
+
+
+def auto_inject_custom_mg(solver, field_id=None):
+    """Solve-hook entry: inject custom-P FMG from either a solver-set hierarchy
+    (``set_custom_fmg``) or a **mesh-owned** one (``mesh.adapt`` refinement child).
+
+    A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
+    coarse tail). The first time a solver on such a mesh solves, we lazily build a
+    :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]`` targeting ``field_id``
+    (0 for the Stokes velocity block, None for scalar/vector) and register it on
+    the solver — so every solver on an adapted mesh drives geometric MG with no
+    per-solver call. A solver-set hierarchy (if present) always wins.
+    """
+    # Solver-set hierarchy (set_custom_fmg): the user asked for it explicitly —
+    # build + install directly and let any error surface.
+    if solver._custom_mg is not None:
+        inject_custom_mg(solver)
+        return
+
+    # Mesh-owned hierarchy (adapt() child): OPPORTUNISTIC auto-pickup. It must never
+    # crash a solve, so build the transfers and verify the finest one matches this
+    # solver's assembled operator before installing. It does NOT for a scalar solver
+    # whose DM carries auxiliary fields (e.g. semi-Lagrangian advection-diffusion):
+    # _reduced_map then counts the full unconstrained DOFs, not the reduced operator
+    # size, and the PtAP in PCMG setup fails. In that case skip and fall back to the
+    # solver's own preconditioner. (The Stokes velocity block, field_id=0, and P1
+    # scalar Poisson match and are unaffected.)
+    coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
+    if coarse is None:
+        return                              # nothing to inject
+
+    # Semi-Lagrangian advection-diffusion (carries a DuDt trace-back operator): its
+    # assembled operator is boundary-reduced in a way the coarse DS-copy does NOT
+    # reproduce, so the per-level BC reductions disagree and the custom-P transfers
+    # don't chain (rectangular PtAP -> PETSc error 60). A scalar AD solve is cheap and
+    # doesn't need geometric FMG, so skip the OPPORTUNISTIC mesh-owned auto-pickup and
+    # let it use its default preconditioner. An explicit set_custom_fmg() still works.
+    if getattr(solver, "DuDt", None) is not None:
+        return
+
+    builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
+    h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=builder,
+                          field_id=field_id)
+    try:
+        Ps = h.build(solver)
+    except Exception as exc:                # pragma: no cover - defensive
+        import warnings
+        warnings.warn(f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
+                      "solver's default preconditioner.")
+        return
+
+    # Dimensional guard (checkable for the monolithic operator, field_id is None):
+    # the finest transfer must chain to the operator PCMG will Galerkin against.
+    if field_id is None and len(Ps):
+        try:
+            solver.snes.setUp()
+            op_n = int(solver.snes.getJacobian()[0].getSize()[0])
+            pr, pc = (int(v) for v in Ps[-1].getSize())
+            if op_n > 0 and (pr != op_n or pc >= pr):   # rows!=op or no coarsening
+                import warnings
+                warnings.warn(
+                    "custom_mg: mesh-owned adapt-mesh FMG transfer is incompatible "
+                    f"with this solver's operator (transfer {pr}x{pc}, operator {op_n}); "
+                    "skipping the auto-pickup (using the default preconditioner). "
+                    "set_custom_fmg() an explicit hierarchy to override.")
+                return
+        except Exception:
+            pass                            # can't check -> don't block working cases
+
+    h.install(solver, verbose=False)
+    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
 
 
 def inject_custom_mg(solver):
