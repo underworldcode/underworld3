@@ -68,7 +68,12 @@ python = "3.12.*"
 
 # Build requirements
 cython = ">=3.1,<4"
-numpy = ">=2"
+# numpy 2.5.0 breaks locally-built petsc4py at import ("numpy.dtype size
+# changed ... Expected 96 from C header, got 88 from PyObject") — verified
+# with a CLEAN petsc4py rebuild against 2.5.0 (fails) vs 2.4.6 (works).
+# conda-forge petsc4py binaries are unaffected; only the AMR envs' local
+# builds break. Lift the cap when petsc4py/Cython support numpy 2.5.
+numpy = ">=2,<2.5"
 pip = ">=25,<26"
 setuptools = ">=75,<76"
 compilers = "*"

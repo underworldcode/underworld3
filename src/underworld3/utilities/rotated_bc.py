@@ -6,7 +6,11 @@ u=Qᵀû, remove the rigid-rotation gauge, and expose σ_nn as the constraint re
 
 The rotated saddle is solved by a self-contained fieldsplit-Schur KSP by default: the
 velocity block is geometric FMG on the custom prolongation (``set_custom_fmg``) when a
-hierarchy is registered, else GAMG; direct MUMPS LU is opt-in via ``solver._rotated_use_lu``.
+hierarchy is registered (the PREFERRED route), else GAMG tuned to the native path's
+settings; the Schur complement is preconditioned by the native 1/mu pressure mass
+(the Pmat p-p block, exactly the standard path's ``schur_precondition=a11``), with a
+constant-pressure nullspace on the inner Schur solve for enclosed domains; direct
+MUMPS LU is opt-in via ``solver._rotated_use_lu``.
 σ_nn / dynamic topography reuse the shared Consistent-Boundary-Flux de-smear in
 ``underworld3.utilities.boundary_flux``.
 """
@@ -82,15 +86,31 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     # analytic / constant normal specs. An analytic (sympy) normal is LAMBDIFIED
     # once into a fast numpy callable — per-node sympy .subs() is orders of magnitude
     # slower and, in parallel, serialises on the rank that owns the boundary (the
-    # others idle), which looked like a hang.
+    # others idle), which looked like a hang. Components are UNWRAPPED first so a
+    # normal written in curvilinear terms (e.g. ``mesh.CoordinateSystem.unit_e_0``,
+    # whose UWexpressions hide the Cartesian coordinates behind ``r`` etc.) reduces
+    # to pure mesh.X before lambdify — otherwise the generated function references
+    # the curvilinear symbol by bare name and dies with a NameError at call time.
     sym_fn = None
     const_normal = None
     if normal is not None:
         try:
             import sympy
             if isinstance(normal, sympy.Matrix):
-                sym_fn = sympy.lambdify(list(solver.mesh.X),
-                                        [normal[0, k] for k in range(dim)], "numpy")
+                from underworld3.function.expressions import unwrap
+                comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
+                                              return_self=False))
+                         for k in range(dim)]
+                stray = set().union(*[c.free_symbols for c in comps]) \
+                    - set(solver.mesh.X)
+                if stray:
+                    raise ValueError(
+                        f"analytic normal for boundary '{boundary}' contains "
+                        f"symbols {sorted(map(str, stray))} that are not mesh "
+                        "coordinates — express it in mesh.X (e.g. radial X/|X|).")
+                sym_fn = sympy.lambdify(list(solver.mesh.X), comps, "numpy")
+        except ValueError:
+            raise
         except Exception:
             sym_fn = None
         if sym_fn is None:
@@ -210,10 +230,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     snes = solver.snes
 
     # Assemble the operator FIRST so its parallel row layout is final before we build
-    # Q against it (A = exact Jacobian at 0 — linear; b = -F(0)).
+    # Q against it (A = exact Jacobian at 0 — linear; b = -F(0)). The Pmat is
+    # assembled alongside: its p-p block is the native 1/mu pressure mass (the
+    # DS JacobianPreconditioner term) that preconditions the Schur complement —
+    # petsc4py's computeJacobian(x, J) would silently pass J as its own Pmat and
+    # the mass block would never be assembled.
     snes.setUp()
     U0 = dm.getGlobalVec(); U0.set(0.0)
-    J = snes.getJacobian()[0]; snes.computeJacobian(U0, J)
+    J, Jp = snes.getJacobian()[:2]
+    snes.computeJacobian(U0, J, Jp)
     Aorig = J.copy()
     F0 = dm.getGlobalVec(); snes.computeFunction(U0, F0)
     b = F0.copy(); b.scale(-1.0)
@@ -232,15 +257,21 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         if gsec.getFieldDof(q, PRE) > 0 and gsec.getFieldOffset(q, PRE) >= 0:
             pin = gsec.getFieldOffset(q, PRE); break
 
-    # constrain rotated normal rows (v_n=0): zero the matrix rows/cols (identity
-    # diagonal) AND the RHS at those rows — zeroRowsColumns does NOT touch the RHS,
-    # so a nonzero b there would leak straight into the solution (û_i = b_i / 1),
-    # independent of the solver/tolerance.
+    # constrain rotated normal rows (v_n=0): zero the matrix rows/cols AND the RHS
+    # at those rows — zeroRowsColumns does NOT touch the RHS, so a nonzero b there
+    # would leak straight into the solution (û_i = b_i / diag), independent of the
+    # solver/tolerance.
+    # The constraint diagonal is set to the mean |diag(A_vv)| rather than 1.0: unit
+    # diagonals amid O(eta/h^2) viscous entries put a spectrum outlier on EVERY
+    # rotated boundary node (the whole surface on a sphere), which poisons
+    # diagonal-based Schur approximations and MG smoothing exactly in the boundary
+    # strip. Any positive diagonal is exact — the solution rows are explicitly
+    # zeroed after the solve.
     # zeroRowsColumns takes GLOBAL row indices (correct); the RHS write must use
     # OWNERSHIP-RELATIVE local indices (bhat.getArray() is this rank's local slice,
     # so indexing it with global rows overflows on any rank whose ownership does not
     # start at 0 — the np>1 crash that masqueraded as a hang).
-    Ahat.zeroRowsColumns(normal_rows, diag=1.0)
+    Ahat.zeroRowsColumns(normal_rows, diag=_velocity_diag_scale(Ahat, solver))
     brs, bre = bhat.getOwnershipRange()
     bloc = np.asarray([g - brs for g in normal_rows if brs <= g < bre], dtype=np.int64)
     ba = bhat.getArray(); ba[bloc] = 0.0; bhat.setArray(ba)
@@ -259,10 +290,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         ksp = PETSc.KSP().create(); ksp.setOperators(Ahat); ksp.setType("preonly")
         pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
         Uhat = dm.createGlobalVec(); ksp.solve(bhat, Uhat)   # returned in info → own it
-        ksp_reason = ksp.getConvergedReason()
+        ksp_reason = ksp.getConvergedReason(); ksp_its = ksp.getIterationNumber()
     else:
-        Uhat, ksp_reason = _solve_rotated_iterative(
-            solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose)
+        Mp = _pressure_mass_schur_pmat(solver)
+        Uhat, ksp_reason, ctx = _solve_rotated_iterative(
+            solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose, Mp=Mp)
+        ksp_its = ctx["ksp"].getIterationNumber()
+        _destroy_rotated_ksp_ctx(ctx)
 
     # rotate back u = Qᵀ û  (U is returned in info → create, don't borrow from the pool)
     U = dm.createGlobalVec(); Qt.mult(Uhat, U)
@@ -271,7 +305,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
 
     return {"Q": Q, "Qt": Qt, "A": Aorig, "b": b, "U": U, "Uhat": Uhat,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
-            "rotation_gauge_removed": removed, "ksp_reason": ksp_reason}
+            "rotation_gauge_removed": removed, "ksp_reason": ksp_reason,
+            "ksp_its": ksp_its}
 
 
 def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge):
@@ -281,18 +316,35 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
     the linear one-shot and the nonlinear driver. Returns whether the gauge was
     removed."""
     dm = solver.dm
-    # Remove the rigid-rotation gauge ONLY when it is a genuine null space of the
-    # constrained problem (closed circular/spherical free-slip); on straight walls
-    # the constraint pins the rotation, and projecting would corrupt the solution.
+    # Remove the rigid-rotation gauge — every mode that is a genuine null space of
+    # the constrained problem (closed circular free-slip: one; full spherical
+    # shell: all three); on straight walls the constraint pins the rotations, and
+    # projecting would corrupt the solution.
     # Done on the GLOBAL vector U with PETSc dots (parallel-correct ownership — a
-    # local nodal sum would double-count shared nodes at rank boundaries).
+    # local nodal sum would double-count shared nodes at rank boundaries). The
+    # surviving modes are orthonormalised (Gram-Schmidt) before projection — the
+    # three 3D modes are not mutually orthogonal on a general mesh.
+    # COLLECTIVE: all ranks walk the same mode list, same order.
     removed = False
-    if remove_rotation_gauge and _rotation_is_nullspace(solver, Q, normal_rows):
-        tg = _rigid_rotation_global(solver)
-        coef = U.dot(tg) / (tg.dot(tg) + 1e-30)
-        U.axpy(-coef, tg)
-        dm.restoreGlobalVec(tg)                 # transient → return to pool
-        removed = True
+    if remove_rotation_gauge:
+        live = []
+        for tg in _rigid_rotation_modes(solver):
+            if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
+                live.append(tg.copy())          # owned copy — pool vec goes back below
+            dm.restoreGlobalVec(tg)
+        ortho = []
+        for w in live:
+            for q in ortho:
+                w.axpy(-w.dot(q), q)
+            nrm = w.norm()
+            if nrm > 1e-14:
+                w.scale(1.0 / nrm); ortho.append(w)
+            else:
+                w.destroy()
+        for q in ortho:
+            U.axpy(-U.dot(q), q)
+            q.destroy()
+            removed = True
 
     # scatter U → velocity/pressure fields
     for name, var in solver.fields.items():
@@ -422,9 +474,16 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     uh = u.duplicate(); Q.mult(u, uh); _zero_rows_local(uh, normal_rows); Qt.mult(uh, u)
     uh.destroy()                             # transient projection buffer
 
-    J = snes.getJacobian()[0]
+    J, Jp = snes.getJacobian()[:2]
+    pres_is = solver._subdict["pressure"][0]
     Fc = dm.createGlobalVec()
     reaction = dm.createGlobalVec()          # the final (un-zeroed) Cartesian residual
+
+    # Reused across Newton iterations: the rotated operator (ptap-with-result), the
+    # 1/mu pressure-mass Schur pmat (values refreshed in place), the constraint
+    # diagonal scale (frozen at the first tangent — only the magnitude matters),
+    # and the KSP/PC context (fieldsplit ISs, FMG hierarchy, GAMG setup survive).
+    Ahat = None; Mp = None; ctx = None; diag_scale = None; lin_its = []
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
@@ -457,12 +516,23 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
                 from underworld3 import mpi
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
                            f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
-        snes.computeJacobian(u, J)
-        Ahat = J.ptap(Qt); Ahat.zeroRowsColumns(normal_rows, diag=1.0)
+        snes.computeJacobian(u, J, Jp)       # Jp carries the 1/mu mass (Schur pmat)
+        if Ahat is None:
+            Ahat = J.ptap(Qt)
+        else:
+            J.ptap(Qt, result=Ahat)          # same nonzero pattern → in-place refresh
+        if ctx is None:
+            Mp = _pressure_mass_schur_pmat(solver)
+        elif Mp is not None:
+            Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
+        if diag_scale is None:
+            diag_scale = _velocity_diag_scale(Ahat, solver)
+        Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
         bhat = Fhat.copy(); bhat.scale(-1.0)
-        dhat, last_reason = _solve_rotated_iterative(
+        dhat, last_reason, ctx = _solve_rotated_iterative(
             solver, Ahat, bhat, Q, Qt, normal_rows,
-            custom_Pl=custom_Pl, nsp=nsp, verbose=False)
+            custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
+        lin_its.append(ctx["ksp"].getIterationNumber())
         d = dm.createGlobalVec(); Qt.mult(dhat, d)
         # step-norm convergence (SNES_CONVERGED_SNORM): a tiny Newton step means we
         # are at the solution — the exit for a warm start that is already converged
@@ -470,7 +540,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         # level). ‖u‖=0 on a cold start ⇒ this never fires prematurely (d is large).
         if d.norm() <= stol * (u.norm() + 1e-30):
             converged = True
-            Ahat.destroy(); dhat.destroy(); d.destroy(); bhat.destroy(); Fhat.destroy()
+            dhat.destroy(); d.destroy(); bhat.destroy(); Fhat.destroy()
             break
         # backtracking line search on ‖F̂‖ (full Newton/Picard step first). Cheap
         # insurance far from the solution; α=1 is accepted immediately near it. If no
@@ -485,7 +555,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
             if Ftry.norm() < rnorm:
                 u.destroy(); u = utry; improved = True; Ftry.destroy(); break
             utry.destroy(); Ftry.destroy(); alpha *= 0.5
-        Ahat.destroy(); dhat.destroy(); d.destroy(); bhat.destroy(); Fhat.destroy()
+        dhat.destroy(); d.destroy(); bhat.destroy(); Fhat.destroy()
         if not improved:
             break
 
@@ -505,12 +575,16 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
                    f"the last (unconverged) iterate.")
 
     Fc.destroy()                             # residual output buffer (reaction is kept for info)
+    _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
+    if Ahat is not None:
+        Ahat.destroy()                       # the reused rotated operator
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
             "nonlinear_iterations": iters, "converged": converged,
+            "ksp_its": lin_its,
             "continuation_switched": continuation and phase == "newton"}
 
 
@@ -531,11 +605,54 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     return list(Ps[:-1]) + [Pfine]
 
 
+def _pressure_mass_schur_pmat(solver):
+    """The native 1/mu pressure-mass Schur preconditioner block, extracted from the
+    solver's assembled Pmat — the SAME p-p block the standard path uses via
+    ``pc_fieldsplit_schur_precondition=a11`` (the DS JacobianPreconditioner term
+    ``_pp_G0``). Q is identity on pressure, so the block needs no rotation.
+    Returns None (→ selfp fallback) when the Pmat is not distinct from the operator
+    or the block was not assembled. The CALLER must have assembled the Pmat
+    (``snes.computeJacobian(x, J, Jp)``) and owns the returned Mat."""
+    A, P = solver.snes.getJacobian()[:2]
+    if P is None or P.handle == A.handle:
+        return None
+    pres_is = solver._subdict["pressure"][0]
+    Mp = P.createSubMatrix(pres_is, pres_is)
+    if Mp.norm() == 0.0:                               # not assembled → useless
+        Mp.destroy()
+        return None
+    return Mp
+
+
+def _velocity_diag_scale(Ahat, solver):
+    """Mean |diag| of the (rotated) velocity block — the representative diagonal
+    for constraint rows (see the zeroRowsColumns call sites). Collective."""
+    d = Ahat.getDiagonal()
+    vis = solver._subdict["velocity"][0]
+    sub = d.getSubVector(vis)
+    n = sub.getSize()
+    s = sub.norm(PETSc.NormType.NORM_1) / max(n, 1)
+    d.restoreSubVector(vis, sub)
+    d.destroy()
+    return float(s) if s > 0.0 else 1.0
+
+
+def _destroy_rotated_ksp_ctx(ctx):
+    """Release the reusable rotated-KSP context (KSP and the owned Schur pmat)."""
+    if ctx is None:
+        return
+    if ctx.get("ksp") is not None:
+        ctx["ksp"].destroy()
+    if ctx.get("Mp") is not None:
+        ctx["Mp"].destroy()
+
+
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
-                             custom_Pl=None, nsp=None):
+                             custom_Pl=None, nsp=None, Mp=None, ctx=None):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
-    (PR#290, rotated) when a hierarchy is registered (``set_custom_fmg``), else GAMG.
+    (PR#290, rotated) when a hierarchy is registered (``set_custom_fmg``), else GAMG
+    (tuned to the native path's settings).
 
     A plain rotated Mat has no DM field info, so UW3's DM-coupled fieldsplit cannot
     split it — we build the split from EXPLICIT velocity/pressure index sets. For the
@@ -544,64 +661,142 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     automatically and only the FINE prolongation is rotated (Galerkin coarse ops
     auto-correct). NO direct solve of the fine system.
 
+    Preconditioning parity with the native solve (the Schur-iteration fix):
+      * ``Mp`` — the 1/mu pressure-mass block from the native Pmat
+        (``_pressure_mass_schur_pmat``) is installed as a USER Schur preconditioner,
+        exactly what the standard path uses via ``schur_precondition=a11``. Without
+        it (Mp=None) the Schur pre falls back to selfp, which degrades badly on
+        curved/deformed boundaries and variable viscosity.
+      * the pressure sub-solve mirrors the native FGMRES+GASM at the solver
+        tolerance; the constant-pressure nullspace is attached to the Schur
+        complement for enclosed domains (the hand-built IS fieldsplit does not
+        inherit it from the operator).
+
     ``custom_Pl`` / ``nsp`` may be PREBUILT (nonlinear driver: build once, reuse each
-    Newton step); when None they are built here (linear one-shot)."""
+    Newton step); when None they are built here (linear one-shot).
+
+    Returns ``(Uhat, reason, ctx)``. Passing ``ctx`` back in reuses the KSP/PC
+    across Newton iterations — the fieldsplit ISs, Schur USER pmat and FMG
+    prolongations survive; only the operator-values refresh is paid. The caller
+    must keep ``Ahat``/``Mp`` the SAME Mat objects (values updated in place) and
+    release the context with ``_destroy_rotated_ksp_ctx`` when done."""
     from underworld3.utilities import custom_mg
     dm = solver.dm
     vel_is = solver._subdict["velocity"][0]
     pres_is = solver._subdict["pressure"][0]
 
-    if custom_Pl is None:
-        custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
+    if ctx is None:
+        if custom_Pl is None:
+            custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
 
-    # rotated coupled null space (pressure-const ⊕ Q·rotation) on the operator
-    if nsp is None:
-        nsp = _rotated_nullspace(solver, Q, normal_rows)
-    if nsp is not None:
-        Ahat.setNullSpace(nsp); Ahat.setTransposeNullSpace(nsp); nsp.remove(bhat)
+        # rotated coupled null space (pressure-const ⊕ Q·rotation) on the operator
+        if nsp is None:
+            nsp = _rotated_nullspace(solver, Q, normal_rows)
+        if nsp is not None:
+            Ahat.setNullSpace(nsp); Ahat.setTransposeNullSpace(nsp)
 
-    # UNIQUE prefix per solve (see _ROT_SOLVE_COUNT) so sequential rotated solves
-    # do not share global-options state; the keys are removed after the solve.
-    global _ROT_SOLVE_COUNT
-    _ROT_SOLVE_COUNT += 1
-    pfx = f"rotfs{_ROT_SOLVE_COUNT}_"
-    opts = PETSc.Options()
-    cfg = {
-        "ksp_type": "fgmres", "ksp_rtol": str(float(solver.tolerance)), "ksp_max_it": "300",
-        "pc_type": "fieldsplit", "pc_fieldsplit_type": "schur",
-        "pc_fieldsplit_schur_fact_type": "full", "pc_fieldsplit_schur_precondition": "selfp",
-        "fieldsplit_vel_ksp_type": "preonly",
-        "fieldsplit_pres_ksp_type": "fgmres", "fieldsplit_pres_ksp_rtol": "1e-6",
-        "fieldsplit_pres_ksp_max_it": "200", "fieldsplit_pres_pc_type": "jacobi",
-    }
-    if custom_Pl is None:                             # GAMG velocity block
-        cfg["fieldsplit_vel_pc_type"] = "gamg"
-    for k, v in cfg.items():
-        opts[pfx + k] = v
-    try:
-        ksp = PETSc.KSP().create(comm=dm.comm); ksp.setOptionsPrefix(pfx)
+        # UNIQUE prefix per KSP (see _ROT_SOLVE_COUNT) so concurrent rotated solves
+        # do not share global-options state; the keys are removed after setup.
+        global _ROT_SOLVE_COUNT
+        _ROT_SOLVE_COUNT += 1
+        pfx = f"rotfs{_ROT_SOLVE_COUNT}_"
+        opts = PETSc.Options()
+        tol = float(solver.tolerance)
+        cfg = {
+            "ksp_type": "fgmres", "ksp_rtol": str(tol), "ksp_max_it": "300",
+            "pc_type": "fieldsplit", "pc_fieldsplit_type": "schur",
+            "pc_fieldsplit_schur_fact_type": "full",
+            # native-parity pressure sub-solve (pyx Stokes defaults): FGMRES at the
+            # solver tolerance; GASM on the 1/mu mass, jacobi if only selfp exists.
+            "fieldsplit_pres_ksp_type": "fgmres",
+            "fieldsplit_pres_ksp_rtol": str(tol),
+            "fieldsplit_pres_ksp_max_it": "200",
+        }
+        if Mp is not None:
+            cfg["fieldsplit_pres_pc_type"] = "gasm"
+        else:
+            cfg["pc_fieldsplit_schur_precondition"] = "selfp"
+            cfg["fieldsplit_pres_pc_type"] = "jacobi"
+        if custom_Pl is None:
+            # GAMG fallback velocity block, tuned to native parity (pyx Stokes
+            # defaults). NOTE: the custom-FMG route is the preferred velocity
+            # block — this applies only when no hierarchy is registered.
+            cfg.update({
+                "fieldsplit_vel_ksp_type": "fgmres",
+                "fieldsplit_vel_ksp_rtol": str(tol * 0.1),
+                "fieldsplit_vel_ksp_max_it": "200",
+                "fieldsplit_vel_pc_type": "gamg",
+                "fieldsplit_vel_pc_gamg_type": "agg",
+                "fieldsplit_vel_pc_gamg_repartition": "true",
+                "fieldsplit_vel_pc_mg_type": "additive",
+                "fieldsplit_vel_pc_gamg_agg_nsmooths": "2",
+                "fieldsplit_vel_mg_levels_ksp_max_it": "3",
+                "fieldsplit_vel_mg_levels_ksp_converged_maxits": "true",
+            })
+        else:
+            # full-MG cycle per Schur application, by design
+            cfg["fieldsplit_vel_ksp_type"] = "preonly"
+        for k, v in cfg.items():
+            opts[pfx + k] = v
+        try:
+            ksp = PETSc.KSP().create(comm=dm.comm); ksp.setOptionsPrefix(pfx)
+            ksp.setOperators(Ahat)
+            pc = ksp.getPC(); pc.setType("fieldsplit")
+            pc.setFieldSplitIS(("vel", vel_is), ("pres", pres_is))
+            ksp.setFromOptions()
+            if Mp is not None:
+                pc.setFieldSplitSchurPreType(
+                    PETSc.PC.FieldSplitSchurPreType.USER, Mp)
+            pc.setUp()
+            if custom_Pl is not None:                 # geometric FMG via custom P
+                vel_pc = pc.getFieldSplitSubKSP()[0].getPC()
+                A_vv, P_vv = vel_pc.getOperators()
+                vel_pc.reset(); vel_pc.setOperators(A_vv, P_vv)
+                custom_mg._configure_pcmg(vel_pc, custom_Pl)
+                # The Galerkin-coarsened ROTATED velocity block inherits every
+                # rigid-rotation nullspace mode of the constrained problem (a
+                # closed circle: one; a spherical shell: three) — the default
+                # redundant/LU coarse solve hits a zero pivot (SUBPC_ERROR,
+                # outer reason -11). SVD is nullspace-robust and the coarse
+                # level is small; same choice as the native spherical FMG setups.
+                vopts = PETSc.Options()
+                vpfx = vel_pc.getOptionsPrefix() or ""
+                vopts.setValue(vpfx + "mg_coarse_pc_type", "svd")
+                vopts.delValue(vpfx + "mg_coarse_redundant_pc_type")
+                vel_pc.setFromOptions()
+                vel_pc.setUp()
+                vopts.delValue(vpfx + "mg_coarse_pc_type")
+            # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
+            # domains): the IS-built fieldsplit does not propagate the coupled
+            # nullspace to the inner Schur solve, which is otherwise singular
+            # and grinds against its iteration cap every outer iteration.
+            cns = None
+            if getattr(solver, "_petsc_use_pressure_nullspace", False):
+                S = pc.getFieldSplitSubKSP()[1].getOperators()[0]
+                cns = PETSc.NullSpace().create(constant=True, comm=dm.comm)
+                S.setNullSpace(cns)
+        finally:
+            # all options consumed by setFromOptions/setUp — drop them so the
+            # global database stays clean (and bounded under time-stepping).
+            for k in cfg:
+                try:
+                    opts.delValue(pfx + k)
+                except Exception:
+                    pass
+        ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "custom_Pl": custom_Pl, "pfx": pfx}
+    else:
+        ksp = ctx["ksp"]
+        nsp = ctx["nsp"]
+        # Same Mat objects, new values (ptap-with-result / createSubMatrix-with-
+        # submat) — poke the KSP so PCSetUp refreshes on the changed operator.
         ksp.setOperators(Ahat)
-        pc = ksp.getPC(); pc.setType("fieldsplit")
-        pc.setFieldSplitIS(("vel", vel_is), ("pres", pres_is))
-        ksp.setFromOptions()
-        pc.setUp()
-        if custom_Pl is not None:                     # geometric FMG via custom P
-            vel_pc = pc.getFieldSplitSubKSP()[0].getPC()
-            A_vv, P_vv = vel_pc.getOperators()
-            vel_pc.reset(); vel_pc.setOperators(A_vv, P_vv)
-            custom_mg._configure_pcmg(vel_pc, custom_Pl)
-            vel_pc.setUp()
 
-        Uhat = Ahat.createVecRight(); Uhat.set(0.0)
-        ksp.solve(bhat, Uhat)
-    finally:
-        # all options consumed by setFromOptions/setUp/solve — drop them so the
-        # global database stays clean (and bounded under time-stepping).
-        for k in cfg:
-            try:
-                opts.delValue(pfx + k)
-            except Exception:
-                pass
+    if nsp is not None:
+        nsp.remove(bhat)                              # project EVERY rhs
+
+    Uhat = Ahat.createVecRight(); Uhat.set(0.0)
+    ksp.solve(bhat, Uhat)
     # An identity constraint row in an ITERATIVE solve only drives its residual
     # (= û_i) below tolerance, so û_i ~ tol, not exactly 0. Because zeroRowsColumns
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
@@ -612,16 +807,22 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     ua = Uhat.getArray(); ua[loc] = 0.0; Uhat.setArray(ua)
     if verbose:
         from underworld3 import mpi
-        kind = "custom-FMG" if custom_Pl is not None else "GAMG"
-        mpi.pprint(f"[rotated_bc] velocity block = {kind}; outer KSP "
-                   f"{ksp.getConvergedReason()} in {ksp.getIterationNumber()} its")
-    return Uhat, ksp.getConvergedReason()
+        kind = "custom-FMG" if ctx["custom_Pl"] is not None else "GAMG"
+        schur = "1/mu-mass" if ctx["Mp"] is not None else "selfp"
+        mpi.pprint(f"[rotated_bc] velocity block = {kind}; Schur pre = {schur}; "
+                   f"outer KSP {ksp.getConvergedReason()} in "
+                   f"{ksp.getIterationNumber()} its")
+    return Uhat, ksp.getConvergedReason(), ctx
 
 
 def _rotated_nullspace(solver, Q, normal_rows):
-    """Coupled Stokes null space in the rotated frame: constant pressure, plus the
-    rigid rotation Q·(-y,x) when it is a genuine null space of the constraints.
-    Returns a PETSc.NullSpace on the composite vector, or None.
+    """Coupled Stokes null space in the rotated frame: constant pressure, plus every
+    rigid rotation Q·mode that is a genuine null space of the constraints — one
+    mode (-y,x) in 2D, up to THREE (e_k×r) in 3D (all three on a spherical shell
+    with free-slip inner and outer boundaries; leaving them off makes the outer
+    Krylov grind against a near-singular operator and pollutes the solution with
+    arbitrary rotation content). Returns a PETSc.NullSpace on the composite
+    vector, or None.
 
     Each vector is ZEROED at the constrained normal rows so it is exactly compatible
     with the strong v_n=0 constraint. Without this, a rotation-mode vector that is
@@ -638,12 +839,13 @@ def _rotated_nullspace(solver, Q, normal_rows):
         pis = solver._subdict["pressure"][0]
         sp = pv.getSubVector(pis); sp.set(1.0); pv.restoreSubVector(pis, sp)
         pv.normalize(); vecs.append(pv)
-    # rigid rotation (rotated), only if it satisfies the constraints
-    if solver.mesh.dim == 2 and _rotation_is_nullspace(solver, Q, normal_rows):
-        tg = _rigid_rotation_global(solver)
-        tr = tg.duplicate(); Q.mult(tg, tr)        # tr persists in the NullSpace
+    # rigid rotations (rotated), each only if it satisfies the constraints.
+    # COLLECTIVE: all ranks walk the same mode list, same order.
+    for tg in _rigid_rotation_modes(solver):
+        if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
+            tr = tg.duplicate(); Q.mult(tg, tr)    # tr persists in the NullSpace
+            vecs.append(tr)
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
-        vecs.append(tr)
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -663,20 +865,17 @@ def _rotated_nullspace(solver, Q, normal_rows):
     return PETSc.NullSpace().create(constant=False, vectors=ortho, comm=dm.comm)
 
 
-def _rotation_is_nullspace(solver, Q, normal_rows, tol=1e-8):
-    """True iff the rigid-body rotation t=(-y,x) satisfies all rotated v_n=0
-    constraints — i.e. Q·t is ~0 on every constrained normal row.
+def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
+    """True iff the rigid-body mode ``tg`` satisfies all rotated v_n=0
+    constraints — i.e. Q·tg is ~0 on every constrained normal row. (A closed
+    circular boundary admits its one rotation; a full spherical shell admits all
+    three; straight/partial walls pin them.)
 
     COLLECTIVE: every rank runs the same global-vector ops. Do NOT early-return on
     a per-rank ``not normal_rows`` — in parallel a rank may own no boundary node
     (empty normal_rows) while others do, and an early return there would desync the
     collective norms below and deadlock."""
-    if solver.mesh.dim != 2:
-        return False
-    dm = solver.dm
-    tg = _rigid_rotation_global(solver)
     tr = tg.duplicate(); Q.mult(tg, tr)
-    dm.restoreGlobalVec(tg)                       # tg transient → return to pool
     full = tr.norm()                              # parallel norm
     # norm of tr restricted to the constrained rows: zero everything else, then .norm()
     rs, re = tr.getOwnershipRange()
@@ -777,19 +976,34 @@ def dynamic_topography_field(solver, boundary, info, field, buoyancy_scale=1.0, 
     return write_boundary_scalar_field(solver, field, hmap, dim)
 
 
-def _rigid_rotation_global(solver):
-    """The Cartesian rigid-body rotation t=(-y,x) as a composite GLOBAL vector
-    (velocity DOFs only, zero pressure). Parallel-safe: built via localToGlobal on
-    the velocity sub-DM, so shared nodes are handled by PETSc, not double-counted."""
+def _rigid_rotation_modes(solver):
+    """The Cartesian rigid-body rotation mode(s) as composite GLOBAL vectors
+    (velocity DOFs only, zero pressure): ``[(-y,x)]`` in 2D, ``[e_k×r]`` for
+    k=x,y,z in 3D — a spherical shell with free-slip on both boundaries has all
+    THREE. Parallel-safe: built via localToGlobal on the velocity sub-DM, so
+    shared nodes are handled by PETSc, not double-counted. The vectors are
+    borrowed from the DM pool — every one must go back via
+    ``dm.restoreGlobalVec``. COLLECTIVE: all ranks build the same mode list."""
     dm = solver.dm
     v = solver.Unknowns.u
     c = v.coords
     saved = v.data.copy()
-    v.data[...] = np.column_stack([-c[:, 1], c[:, 0]])
-    tg = dm.getGlobalVec(); tg.set(0.0)
+    if solver.mesh.dim == 2:
+        fields = [np.column_stack([-c[:, 1], c[:, 0]])]
+    else:
+        x, y, z = c[:, 0], c[:, 1], c[:, 2]
+        zero = np.zeros_like(x)
+        fields = [np.column_stack([zero, -z, y]),      # e_x × r
+                  np.column_stack([z, zero, -x]),      # e_y × r
+                  np.column_stack([-y, x, zero])]      # e_z × r
     vis = solver._subdict["velocity"][0]
-    sg = tg.getSubVector(vis)
-    solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
-    tg.restoreSubVector(vis, sg)
+    modes = []
+    for f in fields:
+        v.data[...] = f
+        tg = dm.getGlobalVec(); tg.set(0.0)
+        sg = tg.getSubVector(vis)
+        solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
+        tg.restoreSubVector(vis, sg)
+        modes.append(tg)
     v.data[...] = saved
-    return tg
+    return modes
