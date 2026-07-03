@@ -204,12 +204,21 @@ Jupyterbook/Notebooks/.DS_Store
 Jupyterbook/Notebooks/Examples-NavierStokes/order_1/NS_test_Re_250_0.06_step_0.png
 Documentation/index.aux
 
-# Claude Code files (track commands, ignore settings)
+# Claude Code files (track commands and skills, ignore settings)
 CLAUDE.md
 .claude/*
 !.claude/commands/
 .claude/commands/*
 !.claude/commands/*.md
+# Ship skills with the repo: allow SKILL.md + supporting assets, ignore junk
+!.claude/skills/
+.claude/skills/**/*
+!.claude/skills/**/
+!.claude/skills/**/*.md
+!.claude/skills/**/*.py
+!.claude/skills/**/*.typ
+!.claude/skills/**/*.json
+!.claude/skills/**/*.png
 
 # Prevent future markdown clutter in root (allow essential docs only)
 /*_ANALYSIS.md
