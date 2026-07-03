@@ -420,6 +420,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     else:
         u = _gather_fields_to_global(solver)
     uh = u.duplicate(); Q.mult(u, uh); _zero_rows_local(uh, normal_rows); Qt.mult(uh, u)
+    uh.destroy()                             # transient projection buffer
 
     J = snes.getJacobian()[0]
     Fc = dm.createGlobalVec()
@@ -492,6 +493,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     if continuation:
         solver._set_newton_alpha(0.0)
 
+    Fc.destroy()                             # residual output buffer (reaction is kept for info)
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
@@ -518,7 +520,7 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
-                             custom_Pl=None, nsp=None, Uhat0=None):
+                             custom_Pl=None, nsp=None):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
     (PR#290, rotated) when a hierarchy is registered (``set_custom_fmg``), else GAMG.
@@ -531,8 +533,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     auto-correct). NO direct solve of the fine system.
 
     ``custom_Pl`` / ``nsp`` may be PREBUILT (nonlinear driver: build once, reuse each
-    Newton step); when None they are built here (linear one-shot). ``Uhat0`` seeds the
-    KSP initial guess (unused in the linear path; the nonlinear increment starts at 0)."""
+    Newton step); when None they are built here (linear one-shot)."""
     from underworld3.utilities import custom_mg
     dm = solver.dm
     vel_is = solver._subdict["velocity"][0]
@@ -710,10 +711,10 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     # driver stashes it directly (the final ``computeFunction`` residual); the linear
     # one-shot reconstructs it as A·u−b (with A=J(0), b=−F(0), F affine ⇒ A·u−b=F(u)).
     if info.get("reaction") is not None:
-        rc = info["reaction"]
+        rc = info["reaction"]; own_rc = False    # owned by info — do NOT destroy
     else:
         A = info["A"]; b = info["b"]; U = info["U"]
-        rc = A.createVecLeft(); A.mult(U, rc); rc.axpy(-1.0, b)
+        rc = A.createVecLeft(); A.mult(U, rc); rc.axpy(-1.0, b); own_rc = True
     rcl = dm.getLocalVec(); dm.globalToLocal(rc, rcl); rca = np.asarray(rcl.getArray())
 
     lsec = dm.getLocalSection(); VEL = _velocity_field_id(solver)
@@ -730,6 +731,8 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
         xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
         Rn.append(float(np.dot(nrm, rcv)))        # R_i = n̂·r_c  (corner-correct)
     dm.restoreLocalVec(rcl)
+    if own_rc:
+        rc.destroy()                          # reconstructed A·u−b (linear path) — free it
     xs = np.array(xs); Rn = np.array(Rn)
     # σ_nn = −(nodal reaction), de-smeared by the SHARED boundary-mass primitive and
     # mean-removed (the ρg·h gauge). partial_reaction=False: the reaction here comes from
