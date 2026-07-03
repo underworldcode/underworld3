@@ -1,6 +1,6 @@
 # July 2026 — Post-AI-Development Quality Campaign
 
-**Status**: Phase 1 (audit) in progress
+**Status**: Phase 1 (audit) complete 2026-07-03 — remediation worklist ready for maintainer review
 **Base**: `development` @ `1d003481`
 **Campaign plan**: approved 2026-07-03 (L. Moresi)
 
@@ -15,12 +15,12 @@ and remediates in reviewed, tested waves.
 
 | # | Dimension | Review document | Status |
 |---|-----------|-----------------|--------|
-| 1 | Loose ends (TODOs, stubs, skipped tests, disabled logic) | `LOOSE-ENDS-AUDIT.md` | pending |
-| 2 | Branch & worktree triage ledger | `BRANCH-TRIAGE-LEDGER.md` | pending |
-| 3 | API consistency & convention proposal | `API-CONSISTENCY-REVIEW.md` | pending |
-| 4 | Readability of change hotspots | `READABILITY-REVIEW.md` | pending |
-| 5 | Swarm/particle subsystem architecture | `SWARM-SUBSYSTEM-REVIEW.md` | pending |
-| 6 | Docs & standards coherence | `DOCS-STANDARDS-COHERENCE.md` | pending |
+| 1 | Loose ends (TODOs, stubs, skipped tests, disabled logic) | `LOOSE-ENDS-AUDIT.md` | complete |
+| 2 | Branch & worktree triage ledger | `BRANCH-TRIAGE-LEDGER.md` | complete |
+| 3 | API consistency & convention proposal | `API-CONSISTENCY-REVIEW.md` | complete |
+| 4 | Readability of change hotspots | `READABILITY-REVIEW.md` | complete |
+| 5 | Swarm/particle subsystem architecture | `SWARM-SUBSYSTEM-REVIEW.md` | complete |
+| 6 | Docs & standards coherence | `DOCS-STANDARDS-COHERENCE.md` | complete |
 
 Cross-dimension synthesis and the ranked remediation worklist: `REMEDIATION-WORKLIST.md`.
 
