@@ -1405,6 +1405,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 zero_init_guess,
                 _force_setup=_force_setup,
                 verbose=verbose,
+                picard=picard,
                 divergence_retries=divergence_retries,
             )
 
