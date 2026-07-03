@@ -336,7 +336,7 @@ def _gather_fields_to_global(solver):
 
 
 def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=True,
-                                     verbose=False, zero_init_guess=True,
+                                     verbose=False, zero_init_guess=True, picard=0,
                                      rtol=None, atol=1.0e-11, stol=1.0e-8, max_it=50):
     """Nonlinear rotated strong-free-slip solve: a manual outer Newton/Picard loop
     that rotates the residual F(u), the Jacobian J(u) and the v_n=0 constraint EVERY
@@ -364,7 +364,24 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     The tangent used by ``computeJacobian`` is the solver's own (``consistent_jacobian``
     → Picard / Newton / continuation), so the rotated loop inherits the same tangent
     the standard path would use. The converged Cartesian residual is stashed as the
-    constraint reaction for σ_nn recovery (``boundary_normal_traction``)."""
+    constraint reaction for σ_nn recovery (``boundary_normal_traction``).
+
+    Tangent / warmup handling (mirrors the standard ``solve`` path so nothing is
+    silently ignored):
+
+    * ``consistent_jacobian == "continuation"`` — a two-phase Picard→Newton solve via
+      the ``constants[]``-routed blend α: phase 1 holds α=0 (frozen/Picard tangent) to
+      the loose ``solver.newton_switch_rtol`` (and at least ``picard`` iterations if
+      given) to enter Newton's basin; phase 2 sets α=1 (consistent Newton tangent) and
+      drives to the requested tolerance. α is restored to 0 afterwards.
+    * ``consistent_jacobian is True`` (pure Newton) with ``picard > 0`` — a Picard
+      warmup needs the frozen tangent, which the pure-Newton compile does not carry, so
+      this **raises** ``NotImplementedError`` pointing to ``"continuation"`` rather than
+      silently ignoring the request.
+    * ``consistent_jacobian is False`` (default, frozen/Picard) — the whole solve is
+      already the frozen tangent, so ``picard`` is inherently satisfied (matches the
+      standard path, whose post-warmup Newton phase also uses the frozen tangent here).
+    """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions(); solver._setup_discretisation(); solver._setup_solver()
     dm = solver.dm
@@ -372,6 +389,23 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     snes.setUp()
     if rtol is None:
         rtol = float(solver.tolerance)
+
+    # Resolve the tangent / warmup policy (see the docstring). ``continuation`` runs a
+    # staged α=0 → α=1 solve; pure Newton + picard>0 is unsupported (no frozen tangent
+    # to warm up with) and errors loudly; frozen (default) already satisfies a warmup.
+    mode = getattr(solver, "consistent_jacobian", False)
+    continuation = (mode == "continuation")
+    if picard and not continuation and mode is True:
+        raise NotImplementedError(
+            f"rotated free-slip: a Picard->Newton warmup (picard={picard}) with the "
+            "consistent Newton tangent (consistent_jacobian=True) requires "
+            "consistent_jacobian='continuation' — with pure Newton the frozen (Picard) "
+            "tangent needed for the warmup is not compiled in. Use "
+            "consistent_jacobian='continuation' (staged Picard then Newton), or drop "
+            "picard to run pure Newton.")
+    switch_rtol = max(float(getattr(solver, "newton_switch_rtol", 1.0e-2)), rtol)
+    if continuation:
+        solver._set_newton_alpha(0.0)            # start in the Picard phase
 
     # Q, the custom-FMG prolongation and the coupled null space depend only on the
     # geometry / normals (NOT the solution), so build them ONCE and reuse each step.
@@ -399,6 +433,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         return Fh
 
     r0 = None; last_reason = 0; iters = 0
+    phase = "picard" if continuation else "newton"
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
@@ -406,11 +441,21 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
             r0 = rnorm
         if verbose:
             from underworld3 import mpi
-            mpi.pprint(f"[rotated_bc] nonlinear iter {iters:2d}  |F̂|={rnorm:.6e}  rel={rnorm/(r0+1e-300):.3e}")
+            mpi.pprint(f"[rotated_bc] nonlinear iter {iters:2d}  |F̂|={rnorm:.6e}  "
+                       f"rel={rnorm/(r0+1e-300):.3e}  [{phase}]")
         # residual convergence (relative to the initial residual, plus an absolute
         # floor so an already-converged warm start does not chase machine noise).
         if rnorm <= rtol * r0 + atol:
             Fhat.destroy(); break
+        # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
+        # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
+        # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
+        if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
+            solver._set_newton_alpha(1.0); phase = "newton"
+            if verbose:
+                from underworld3 import mpi
+                mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
+                           f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
         snes.computeJacobian(u, J)
         Ahat = J.ptap(Qt); Ahat.zeroRowsColumns(normal_rows, diag=1.0)
         bhat = Fhat.copy(); bhat.scale(-1.0)
@@ -442,12 +487,17 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         if not improved:
             break
 
+    # Restore a clean frozen (Picard) tangent for any subsequent solve (next time
+    # step), matching the standard _continuation_solve which leaves alpha at 0.
+    if continuation:
+        solver._set_newton_alpha(0.0)
+
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
-            "nonlinear_iterations": iters}
+            "nonlinear_iterations": iters, "continuation_switched": phase == "newton"}
 
 
 def _build_rotated_custom_Pl(solver, Q, normal_rows):

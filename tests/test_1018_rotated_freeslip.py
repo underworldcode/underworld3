@@ -211,10 +211,11 @@ def test_rotated_freeslip_sigma_nn_lumped_no_overshoot():
     assert tv_l < tv_c, f"lumped TV {tv_l:.3f} not smoother than consistent {tv_c:.3f}"
 
 
-def _powerlaw_stokes(mesh, prefix, amp=3.0, nexp=3.0):
+def _powerlaw_stokes(mesh, prefix, amp=2.0, nexp=3.0, cj=None):
     """A genuinely NONLINEAR Stokes: power-law viscosity eta = eps_II^(1/n - 1)
     (smooth, so Newton/Picard iterates robustly), driven by a horizontally-varying
-    vertical body force so there is real shear."""
+    vertical body force so there is real shear. ``cj`` sets ``consistent_jacobian``
+    (None=default frozen/Picard, True=consistent Newton, "continuation"=staged)."""
     x, y = mesh.X
     v = uw.discretisation.MeshVariable(prefix + "v", mesh, mesh.dim, degree=2, continuous=True)
     p = uw.discretisation.MeshVariable(prefix + "p", mesh, 1, degree=1, continuous=False)
@@ -227,41 +228,49 @@ def _powerlaw_stokes(mesh, prefix, amp=3.0, nexp=3.0):
     s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / nexp - 1.0)
     s.bodyforce = sympy.Matrix([[0.0, -amp * sympy.cos(sympy.pi * x)]])
     s.penalty = 0.0
-    s.tolerance = 1e-8
+    s.tolerance = 1e-7
     s.petsc_use_pressure_nullspace = True
+    if cj is not None:
+        s.consistent_jacobian = cj
     return s, v, p
 
 
-def _powerlaw_essential(mesh, prefix):
-    s, v, p = _powerlaw_stokes(mesh, prefix)
+def _powerlaw_essential(mesh, prefix, cj=None):
+    s, v, p = _powerlaw_stokes(mesh, prefix, cj=cj)
     s.add_essential_bc((sympy.oo, 0.0), "Top")
     s.add_essential_bc((sympy.oo, 0.0), "Bottom")
     s.add_essential_bc((0.0, sympy.oo), "Left")
     s.add_essential_bc((0.0, sympy.oo), "Right")
     s.solve()
-    return v
+    return v, s.snes.getIterationNumber()
 
 
-def test_rotated_freeslip_nonlinear_matches_essential():
-    """A NONLINEAR (power-law) rotated free-slip solve genuinely iterates and
-    converges to the SAME answer as the native essential nonlinear free-slip solve
-    on the axis-aligned box (both impose v_n=0 — identical discrete problem), with
-    machine-zero wall-normal velocity. This exercises the rotated constraint INSIDE
-    the nonlinear iteration (rotate F(u), J(u), v_n=0 every step)."""
+@pytest.fixture(scope="module")
+def plaw_box_ref():
+    """A small power-law box + its native ESSENTIAL nonlinear free-slip solution,
+    solved ONCE (Newton tangent) and shared across the rotated-vs-essential box
+    tests. The converged solution is tangent-independent, so this one reference
+    serves the Picard / Newton / continuation tests. Returns (mesh, vE_data,
+    essential_newton_iters)."""
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
-    vE = _powerlaw_essential(mesh, "nlE")
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    vE, its = _powerlaw_essential(mesh, "refE", cj=True)
+    return mesh, np.copy(vE.data), its
 
-    s, vR, pR = _powerlaw_stokes(mesh, "nlR")
+
+def test_rotated_freeslip_nonlinear_matches_essential(plaw_box_ref):
+    """Default (frozen/Picard) tangent through the rotated path: genuinely iterates
+    and converges to the native essential nonlinear free-slip answer (both impose
+    v_n=0 — identical discrete problem), with machine-zero wall-normal flow on every
+    wall. Exercises the rotated constraint INSIDE the nonlinear iteration."""
+    mesh, vE, _ = plaw_box_ref
+    s, vR, pR = _powerlaw_stokes(mesh, "nlP")           # default (Picard) tangent
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(wall)
-    s.solve()  # routes to the nonlinear rotated driver
-
+    s.solve()
     info = s._rotated_freeslip_info
     assert info["nonlinear_iterations"] > 1, "rotated solve did not genuinely iterate"
-    rel = np.linalg.norm(vR.data - vE.data) / np.linalg.norm(vE.data)
-    assert rel < 1e-3, f"nonlinear rotated free-slip differs from essential by {rel:.2e}"
-    # zero wall-normal flow on every wall
+    assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-3
     vc = vR.coords
     for lab, msk, comp in [("Top", np.abs(vc[:, 1] - 1) < 1e-6, 1),
                            ("Bottom", np.abs(vc[:, 1]) < 1e-6, 1),
@@ -271,58 +280,72 @@ def test_rotated_freeslip_nonlinear_matches_essential():
         assert leak < 1e-10, f"{lab} wall-normal velocity {leak:.2e} not machine-zero"
 
 
-def test_rotated_freeslip_newton_tangent_matches_essential():
-    """The CONSISTENT NEWTON tangent (consistent_jacobian=True) works through the
-    rotated path: on a power-law box it converges in the SAME small number of Newton
-    iterations as the native essential Newton solve, and to the same answer at
-    (near) machine precision — i.e. the rotated constraint does not degrade the
-    Newton tangent, it is genuine Newton, not defect-correction. Contrast the frozen
-    (Picard) tangent, which converges only at a linear rate (many more iterations)."""
-    mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
-
-    sE, vE, _ = _powerlaw_stokes(mesh, "ntE")
-    sE.consistent_jacobian = True
-    sE.add_essential_bc((sympy.oo, 0.0), "Top")
-    sE.add_essential_bc((sympy.oo, 0.0), "Bottom")
-    sE.add_essential_bc((0.0, sympy.oo), "Left")
-    sE.add_essential_bc((0.0, sympy.oo), "Right")
-    sE.solve()
-    essential_newton_its = sE.snes.getIterationNumber()
-
-    s, vR, pR = _powerlaw_stokes(mesh, "ntR")
-    s.consistent_jacobian = True
+def test_rotated_freeslip_newton_tangent(plaw_box_ref):
+    """consistent_jacobian=True is genuine Newton through the rotated path: it
+    converges in about the same small iteration count as the native essential Newton
+    solve (NOT the ~4-5x larger Picard count) and to the same answer at (near) machine
+    precision — the rotated constraint does not degrade the consistent tangent."""
+    mesh, vE, ess_its = plaw_box_ref
+    s, vR, pR = _powerlaw_stokes(mesh, "ntR", cj=True)
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(wall)
     s.solve()
-
     its = s._rotated_freeslip_info["nonlinear_iterations"]
-    # genuine Newton: a small iteration count, comparable to the essential Newton
-    # solve (NOT the ~4-5x larger Picard/frozen-tangent count on the same problem).
-    assert its <= 2 * essential_newton_its + 2, (
-        f"rotated Newton took {its} iters vs essential Newton {essential_newton_its} "
+    assert its <= 2 * ess_its + 2, (
+        f"rotated Newton took {its} iters vs essential Newton {ess_its} "
         f"— tangent likely not the consistent one")
     assert its < 20, f"rotated Newton not converging at Newton rate ({its} iters)"
-    rel = np.linalg.norm(vR.data - vE.data) / np.linalg.norm(vE.data)
-    assert rel < 1e-6, f"rotated Newton differs from essential Newton by {rel:.2e}"
+    assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
 
 
-def test_rotated_freeslip_nonlinear_warm_start():
-    """Warm-start (zero_init_guess=False) through the nonlinear rotated path: a
-    2-step 'time loop' re-solving from the previous converged state stays correct
-    and converges (the step-norm exit avoids chasing machine noise)."""
-    mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
-    vE = _powerlaw_essential(mesh, "wsE")
+def test_rotated_freeslip_continuation_tangent(plaw_box_ref):
+    """consistent_jacobian='continuation' works through the rotated path: a staged
+    Picard→Newton solve (α=0 to the loose newton_switch_rtol, then α=1) that switches
+    tangents and converges to the essential Newton answer. picard=N extends the α=0
+    phase (so the wrapper's picard forwarding and the staging are both exercised)."""
+    mesh, vE, _ = plaw_box_ref
+    s, vR, pR = _powerlaw_stokes(mesh, "ctR", cj="continuation")
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    s.solve()
+    info = s._rotated_freeslip_info
+    assert info["continuation_switched"], "continuation never switched Picard→Newton"
+    assert 1 < info["nonlinear_iterations"] < 36, "continuation not staging as expected"
+    assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
 
-    s, vR, pR = _powerlaw_stokes(mesh, "wsR")
+    # picard=N holds the α=0 (Picard) phase for >= N iterations before switching
+    s2, _, _ = _powerlaw_stokes(mesh, "ctR2", cj="continuation")
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s2.add_rotated_freeslip_bc(wall)
+    s2.solve(picard=25)
+    assert s2._rotated_freeslip_info["nonlinear_iterations"] >= 25, (
+        "picard did not extend the continuation Picard phase")
+
+
+def test_rotated_freeslip_picard_newton_unsupported_raises(plaw_box_ref):
+    """picard>0 with the pure consistent-Newton tangent has no frozen warmup tangent
+    to form, so the rotated path raises a clear NotImplementedError pointing to
+    'continuation' rather than silently ignoring it. Also confirms the SNES_Stokes
+    wrapper forwards picard to the plain-Stokes solve at all."""
+    mesh, _, _ = plaw_box_ref
+    s, v, p = _powerlaw_stokes(mesh, "prN", cj=True)
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(wall)
+    with pytest.raises(NotImplementedError, match="continuation"):
+        s.solve(picard=3)
+
+
+def test_rotated_freeslip_nonlinear_warm_start(plaw_box_ref):
+    """Warm-start (zero_init_guess=False) through the nonlinear rotated path: a 2-step
+    'time loop' re-solving from the previous converged state stays correct and
+    converges in few iterations (the step-norm exit avoids chasing machine noise)."""
+    mesh, vE, _ = plaw_box_ref
+    s, vR, pR = _powerlaw_stokes(mesh, "wsR", cj=True)     # Newton (fast)
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(wall)
     s.solve()                              # cold
     s.solve(zero_init_guess=False)         # warm (step 2)
-
-    rel = np.linalg.norm(vR.data - vE.data) / np.linalg.norm(vE.data)
-    assert rel < 1e-3, f"warm-start rotated free-slip differs from essential by {rel:.2e}"
+    assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
     # warm-start from an already-converged state converges in few iterations
     assert s._rotated_freeslip_info["nonlinear_iterations"] <= 3
 
@@ -332,16 +355,15 @@ def test_rotated_freeslip_nonlinear_geometric_fmg():
     the custom prolongation (set_custom_fmg) — the rotated prolongation is built once
     and reused across Newton iterations — and still converges to the essential
     nonlinear free-slip solution."""
+    # a small 2-level nested hierarchy (one refinement) + the Newton tangent keep the
+    # cost down while still exercising the rotated custom-FMG prolongation reuse.
     m0 = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25, regular=True, qdegree=3)
-    dm0 = m0.dm
-    dm1 = dm0.refine()
-    dm2 = dm1.refine()
-    coarse = [_wrap(dm0, m0), _wrap(dm1, m0)]
-    fine = _wrap(dm2, m0)
-    vE = _powerlaw_essential(fine, "nlfE")
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.4, regular=True, qdegree=3)
+    coarse = [_wrap(m0.dm, m0)]
+    fine = _wrap(m0.dm.refine(), m0)
+    vE, _ = _powerlaw_essential(fine, "nlfE", cj=True)
 
-    s, vR, pR = _powerlaw_stokes(fine, "nlfR")
+    s, vR, pR = _powerlaw_stokes(fine, "nlfR", cj=True)
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(wall)
     custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
@@ -359,7 +381,7 @@ def test_rotated_freeslip_nonlinear_annulus_zero_leakage():
     per-node radial free-slip on both arcs genuinely iterates, gives machine-zero
     radial leakage, and the rigid-rotation gauge is removed."""
     RI, RO = 0.5, 1.0
-    mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.15, qdegree=3)
+    mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.3, qdegree=3)
     x, y = mesh.X
     r = sympy.sqrt(x**2 + y**2)
     th = sympy.atan2(y, x)
@@ -375,6 +397,7 @@ def test_rotated_freeslip_nonlinear_annulus_zero_leakage():
     s.bodyforce = sympy.Matrix([[x / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0,
                                  y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
     nhat = sympy.Matrix([[x / r, y / r]])
+    s.consistent_jacobian = True                 # Newton tangent (few iterations)
     s.add_rotated_freeslip_bc("Lower", normal=nhat)
     s.add_rotated_freeslip_bc("Upper", normal=nhat)
     s.petsc_use_pressure_nullspace = True

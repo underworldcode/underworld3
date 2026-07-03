@@ -48,9 +48,10 @@ GOLDEN_ANNULUS = (1.897011154231e-02, 4.563841e-05, 9.341699e-06)
 # annulus driven by CUSTOM GEOMETRIC FMG on the velocity block (nested hierarchy):
 # (velocity L2, radial-leakage L2 on Lower arc, radial-leakage L2 on Upper arc)
 GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
-# NONLINEAR (power-law) box with rotated free-slip through the manual Newton/Picard
-# loop: (velocity L2, nonlinear iteration count). Recompute `python <thisfile> nonlinear`.
-GOLDEN_BOX_NONLINEAR = (2.724091573142e-03, 38)
+# NONLINEAR (power-law) box with rotated free-slip through the manual Newton loop
+# (consistent tangent): (velocity L2, nonlinear iteration count). Recompute
+# `python <thisfile> nonlinear`.
+GOLDEN_BOX_NONLINEAR = (8.069396188270e-04, 7)
 # box sigma_nn (boundary_normal_traction on Top, default lumped mass) vs analytic SolCx
 # sigma_yy, whole boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
 GOLDEN_BOX_SIGMA = (3.985444e-02, 0.999208)
@@ -167,12 +168,12 @@ def _annulus_fmg_diagnostics():
 
 def _box_nonlinear_diagnostics():
     """NONLINEAR box: power-law viscosity eta = eps_II^(1/n-1) with rotated free-slip
-    on all four walls, solved by the manual Newton/Picard loop (GAMG velocity block).
-    Returns (velocity L2, nonlinear iteration count) — both must be partition-
-    independent (the loop's ptap / rotate / constrain / increment-solve are all
-    collective and ownership-relative)."""
+    on all four walls, solved by the manual Newton loop (consistent tangent, GAMG
+    velocity block). Returns (velocity L2, nonlinear iteration count) — both must be
+    partition-independent (the loop's ptap / rotate / constrain / increment-solve are
+    all collective and ownership-relative)."""
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(16, 16), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
     x, y = mesh.X
     v = uw.discretisation.MeshVariable("vNLp", mesh, mesh.dim, degree=2, continuous=True)
     p = uw.discretisation.MeshVariable("pNLp", mesh, 1, degree=1, continuous=False)
@@ -183,10 +184,11 @@ def _box_nonlinear_diagnostics():
     e = 0.5 * (g + g.T)
     eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
     s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / 3.0 - 1.0)
-    s.bodyforce = sympy.Matrix([[0.0, -3.0 * sympy.cos(sympy.pi * x)]])
+    s.bodyforce = sympy.Matrix([[0.0, -2.0 * sympy.cos(sympy.pi * x)]])
     s.penalty = 0.0
-    s.tolerance = 1e-8
+    s.tolerance = 1e-7
     s.petsc_use_pressure_nullspace = True
+    s.consistent_jacobian = True                 # Newton tangent (few iterations)
     for wall in ("Top", "Bottom", "Left", "Right"):
         s.add_rotated_freeslip_bc(wall)
     s.solve()

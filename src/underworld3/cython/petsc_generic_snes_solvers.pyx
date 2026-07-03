@@ -7908,25 +7908,26 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
             self._update_constants()
 
-            # Two paths:
-            #  * LINEAR model, zero initial guess, no Picard warmup → the validated
-            #    one-shot solve (assemble J(0),F(0); rotate; single self-contained
-            #    fieldsplit KSP). Fast, and the linear solution is exact so warm-start
-            #    / Picard would add nothing — hence the extra guards on this branch.
-            #  * otherwise (nonlinear rheology, or an explicitly-requested warm-start
-            #    / Picard) → the manual outer Newton/Picard loop that rotates F(u),
-            #    J(u) and the v_n=0 constraint every iteration. A nonlinear model is
-            #    detected by probing the assembled Jacobian for solution-dependence
-            #    (a symbolic test cannot see the JIT-substituted strain-rate term).
+            # Two paths, keyed on whether the model is nonlinear (detected by probing
+            # the assembled Jacobian for solution-dependence — a symbolic test cannot
+            # see the JIT-substituted strain-rate term):
+            #  * LINEAR model → the validated one-shot solve (assemble J(0),F(0);
+            #    rotate; single self-contained fieldsplit KSP). Fast, and the linear
+            #    solution is exact, so warm-start / Picard warmup add nothing and are
+            #    correctly ignored here.
+            #  * NONLINEAR model → the manual outer Newton/Picard loop that rotates
+            #    F(u), J(u) and the v_n=0 constraint every iteration. It honours
+            #    zero_init_guess (warm start), the Picard warmup count, and the
+            #    consistent_jacobian tangent (Picard / Newton / continuation).
             from underworld3.utilities.rotated_bc import (
                 solve_rotated_freeslip, solve_rotated_freeslip_nonlinear)
-            if zero_init_guess and picard == 0 and not self._residual_is_nonlinear():
+            if not self._residual_is_nonlinear():
                 self._rotated_freeslip_info = solve_rotated_freeslip(
                     self, self._rotated_freeslip_bcs, verbose=verbose)
             else:
                 self._rotated_freeslip_info = solve_rotated_freeslip_nonlinear(
                     self, self._rotated_freeslip_bcs, verbose=verbose,
-                    zero_init_guess=zero_init_guess)
+                    zero_init_guess=zero_init_guess, picard=picard)
             return
 
         if time is not None:
