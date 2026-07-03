@@ -713,9 +713,17 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             def dtype(self):
                 return self._get_array_data().dtype
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
@@ -920,9 +928,17 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             def dtype(self):
                 return self._get_array_data().dtype
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
@@ -2027,8 +2043,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 X_chunk = h5f_swarm["coordinates"][()].reshape(-1, dim)
                 D_chunk = h5f_data["data"][()].reshape(-1, n_components)
         else:
-            X_chunk = np.empty((0, dim), dtype=np.double)
-            D_chunk = np.empty((0, n_components), dtype=np.double)
+            X_chunk = np.empty((0, dim), dtype=np.float64)
+            D_chunk = np.empty((0, n_components), dtype=np.float64)
 
         tmp_swarm = uw.swarm.Swarm(self.swarm.mesh)
         saved = SwarmVariable(

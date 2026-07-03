@@ -141,7 +141,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         # Use non-dimensional [0-1] coordinates for PyVista
         # PyVista only needs coordinates for spatial positioning (visualization)
         # evaluate() expects non-dimensional coords to query PETSc KDTrees
-        mesh_coordinates_nd = np.asarray(mesh.X.coords, dtype=np.double)
+        mesh_coordinates_nd = np.asarray(mesh.X.coords, dtype=np.float64)
 
         # Store units metadata for labeling and axis annotation
         mesh_units = mesh.units if mesh.units is not None else uw.units.dimensionless
@@ -176,7 +176,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         cells_array = np.hstack((cells_size, cells_array), dtype=int)
 
         # Use non-dimensional [0-1] coordinates for PyVista (see meshio path above)
-        mesh_coordinates_nd = np.asarray(mesh.X.coords, dtype=np.double)
+        mesh_coordinates_nd = np.asarray(mesh.X.coords, dtype=np.float64)
         pv_mesh = pv.UnstructuredGrid(cells_array, cells_type, coords_to_pv_coords(mesh_coordinates_nd))
 
         # Store units metadata for labeling
@@ -268,7 +268,7 @@ def meshVariable_to_pv_cloud(meshVar):
     # These may be dimensional (UnitAwareArray with meters) when units are active
     # The alpha parameter in meshVariable_to_pv_mesh_object is now computed from
     # these coordinates directly, ensuring scale consistency
-    coords = np.asarray(meshVar.coords, dtype=np.double)
+    coords = np.asarray(meshVar.coords, dtype=np.float64)
 
     points = np.zeros((coords.shape[0], 3))
     points[:, 0] = coords[:, 0]

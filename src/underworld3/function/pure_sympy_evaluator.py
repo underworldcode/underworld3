@@ -256,7 +256,7 @@ def evaluate_pure_sympy(expr, coords, coord_symbols=None):
     - ~10,000x faster than sympy.subs() for many points
     """
     # Ensure coords is 2D numpy array
-    coords_array = np.asarray(coords, dtype=np.double)
+    coords_array = np.asarray(coords, dtype=np.float64)
     if coords_array.ndim == 1:
         coords_array = coords_array.reshape(1, -1)
 

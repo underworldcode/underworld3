@@ -1441,7 +1441,7 @@ class UnitAwareArray(NDArray_With_Callback):
             b_units = getattr(b, "_units", None)
 
             # Compute cross product using numpy's default behavior
-            result = np.core.numeric.cross(np.asarray(a), np.asarray(b), *args, **kwargs)
+            result = np.cross(np.asarray(a), np.asarray(b), *args, **kwargs)
 
             # Determine result units
             if a_units is not None and b_units is not None:
@@ -1472,7 +1472,7 @@ class UnitAwareArray(NDArray_With_Callback):
             b_units = getattr(b, "_units", None)
 
             # Compute dot product
-            result = np.core.multiarray.dot(np.asarray(a), np.asarray(b), *args, **kwargs)
+            result = np.dot(np.asarray(a), np.asarray(b), *args, **kwargs)
 
             # Determine result units
             if a_units is not None and b_units is not None:
@@ -1518,7 +1518,7 @@ class UnitAwareArray(NDArray_With_Callback):
                         )
 
             # Perform concatenation
-            result = np.core.multiarray.concatenate(
+            result = np.concatenate(
                 [np.asarray(arr) for arr in arrays], *args, **kwargs
             )
 
@@ -1552,13 +1552,13 @@ class UnitAwareArray(NDArray_With_Callback):
         def array_equal_impl(a1, a2, *args, **kwargs):
             """Compare arrays for equality, ignoring units."""
             # Convert to plain numpy arrays and compare
-            return np.core.numeric.array_equal(np.asarray(a1), np.asarray(a2), *args, **kwargs)
+            return np.array_equal(np.asarray(a1), np.asarray(a2), *args, **kwargs)
 
         @implements(np.allclose)
         def allclose_impl(a, b, *args, **kwargs):
             """Check if arrays are close, ignoring units."""
             # Convert to plain numpy arrays and compare
-            return np.core.numeric.allclose(np.asarray(a), np.asarray(b), *args, **kwargs)
+            return np.allclose(np.asarray(a), np.asarray(b), *args, **kwargs)
 
         @implements(np.shape)
         def shape_impl(a):
@@ -1580,10 +1580,8 @@ class UnitAwareArray(NDArray_With_Callback):
             """Column stack arrays (convert to plain arrays, units not preserved)."""
             return np.column_stack([np.asarray(arr) for arr in tup])
 
-        @implements(np.row_stack)
-        def row_stack_impl(tup):
-            """Row stack arrays (convert to plain arrays, units not preserved)."""
-            return np.row_stack([np.asarray(arr) for arr in tup])
+        # (np.row_stack was removed in numpy 2.0; it aliased np.vstack, which is
+        # already handled by vstack_impl above — no separate handler needed.)
 
         @implements(np.dstack)
         def dstack_impl(tup):
