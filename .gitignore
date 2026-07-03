@@ -257,3 +257,8 @@ docs/beginner/tutorials/html5/*.html
 petsc-custom/petsc
 petsc-custom/.petsc-version
 Untitled*.ipynb
+
+# Simulation output dumped at repo root (belongs in ~/+Simulations)
+Expt_Grains/
+*.passive_swarm.*.h5
+*.passive_swarm.*.xdmf
