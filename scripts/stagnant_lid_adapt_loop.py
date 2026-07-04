@@ -89,6 +89,31 @@ p.add_argument('--pert-mode', type=int, default=5,
 p.add_argument('--pert-amplitude', type=float, default=0.01,
                help='Amplitude of the initial T perturbation '
                     '(relative to T_cond ~ 1).')
+p.add_argument('--cell-size', type=float, default=1.0/16,
+               help='Background cell size for the fresh Annulus '
+                    '(--from-perturbation). Default 1/16; use '
+                    '1/24 for the higher-resolution runs.')
+p.add_argument('--adapt-method', type=str, default='legacy',
+               choices=['legacy', 'ot-reset-ma', 'ot-reset'],
+               help='legacy = the in-loop --strategy / '
+                    '--refinement follow_metric path. ot-reset-ma '
+                    '= mesh.OT_adapt() reset-to-uniform pattern '
+                    'with the elliptic Monge-Ampere mover '
+                    '(mover="ma"). ot-reset = same but the '
+                    'gradient-flow OT mover.')
+p.add_argument('--metric-choice', type=str, default='front-following',
+               choices=['front-following', 'arc-length',
+                        'gradient-uniform'],
+               help='Metric density shape for the ot-reset* '
+                    'adapt methods. arc-length = the smooth '
+                    'sqrt(1+(A.ghat)^2) monitor (no clip kink).')
+p.add_argument('--dt-basis', type=str, default='min',
+               choices=['min', 'mean'],
+               help='min = adv.estimate_dt (minimum-cell crossing '
+                    'time; collapses on tiny adapted BL cells). '
+                    'mean = a dt built from the MEAN cell size so '
+                    'a few small MA cells do not throttle the '
+                    'step (SLCN is unconditionally stable).')
 args = p.parse_args()
 
 
@@ -136,7 +161,7 @@ elif args.from_perturbation:
     # Fresh Annulus matching the uniform-res16 setup.
     mesh = uw.meshing.Annulus(
         radiusOuter=1.0, radiusInner=0.5,
-        cellSize=1.0/16, qdegree=3)
+        cellSize=float(args.cell_size), qdegree=3)
 else:
     resume_step = 0
     resume_label = None
@@ -162,6 +187,24 @@ if resume_label:
                         outputPath=OUT_DIR)
     except Exception:
         P.data[...] = 0.0
+    # OT-reset reference = the UNIFORM IC mesh (init.mesh), NOT the deformed
+    # resumed mesh. Otherwise OT_adapt lazily snapshots the deformed step-N
+    # coords as its reset target and reset-to-uniform reduces to carrying the
+    # deformed state across steps — the sliver-accumulation pattern the reset
+    # was designed to avoid. init.mesh is the fresh mesh saved at step 0;
+    # same (topology-preserving) ordering as the resumed mesh in serial.
+    if args.adapt_method in ("ot-reset-ma", "ot-reset"):
+        _init_path = os.path.join(OUT_DIR, "init.mesh.00000.h5")
+        if os.path.exists(_init_path):
+            _init_mesh = uw.discretisation.Mesh(_init_path)
+            mesh.OT_adapt_reset_reference(
+                coords=np.asarray(_init_mesh.X.coords).copy())
+            print(f"  OT_adapt reference reset to uniform IC: {_init_path}",
+                  flush=True)
+        else:
+            print("  WARNING: init.mesh missing — OT_adapt reference will "
+                  "lazy-init from the DEFORMED resumed mesh (sliver risk)",
+                  flush=True)
 elif args.from_perturbation:
     # T_cond + amp · sin(m·θ) · sin(π(r-r_i)/(r_o-r_i))
     r_inner, r_o = 0.5, 1.0
@@ -272,6 +315,32 @@ def _nu_midshell():
 _nu = _nu_surface
 
 
+def _estimate_dt_mean():
+    """A timestep built from the MEAN cell size rather than the
+    minimum. On an MA-adapted mesh a handful of tiny boundary-layer
+    cells would otherwise collapse adv.estimate_dt() (a min over
+    cells) and stall the run. SLCN advection is unconditionally
+    stable, so the cell size is an accuracy control, not a CFL
+    limit; using the mean keeps the physical step sensible while
+    still shrinking as the whole mesh refines. Parallel-safe
+    (allreduce over ranks)."""
+    from mpi4py import MPI
+    comm = uw.mpi.comm
+    r = np.asarray(mesh._radii, dtype=float)
+    h_sum = comm.allreduce(float(r.sum()), op=MPI.SUM)
+    h_cnt = comm.allreduce(int(r.size), op=MPI.SUM)
+    h_mean = h_sum / max(h_cnt, 1)
+    vel = np.squeeze(np.asarray(uw.function.evaluate(
+        V.sym, mesh._centroids))).reshape(-1, mesh.dim)
+    vmag = np.linalg.norm(vel, axis=1)
+    vmax = comm.allreduce(
+        float(vmag.max()) if vmag.size else 0.0, op=MPI.MAX)
+    kappa = 1.0  # DiffusionModel diffusivity (set above)
+    dt_adv = (h_mean / vmax) if vmax > 0 else np.inf
+    dt_diff = h_mean ** 2 / kappa
+    return float(min(dt_adv, dt_diff))
+
+
 def snapshot(step):
     label = "init" if step == 0 else f"step{step:04d}"
     mesh.write_timestep(filename=label, index=0,
@@ -304,7 +373,7 @@ def _adapt_step():
     if args.refinement > 0:
         rho_diag = uw.meshing.metric_density_from_gradient(
             mesh, T, refinement=float(args.refinement),
-            coarsening="auto", metric_choice="front-following",
+            coarsening="auto", metric_choice=args.metric_choice,
             gradient_smoothing_length=grad_L, name="diag")
     else:
         rho_diag = uw.meshing.metric_density_from_gradient(
@@ -315,6 +384,22 @@ def _adapt_step():
     misalign = float(mm["misalignment"])
     print(f"  mismatch before adapt: misalignment={misalign:.3f} "
           f"(skip threshold {sk})", flush=True)
+    # --- reset-to-uniform OT_adapt path (elliptic-MA or grad-flow OT) ---
+    if args.adapt_method in ("ot-reset-ma", "ot-reset"):
+        mover = "ma" if args.adapt_method == "ot-reset-ma" else "ot"
+        moved = mesh.OT_adapt(
+            T,
+            refinement=float(args.refinement),
+            coarsening="auto",
+            metric_choice=args.metric_choice,
+            mover=mover,
+            grad_smoothing_length=(grad_L if grad_L else "auto"),
+            fields_to_remap=[T],
+            fields_to_zero=[V, P],
+            skip_threshold=sk,
+            verbose=True,
+        )
+        return bool(moved), misalign
     if args.refinement > 0:
         moved = uw.meshing.follow_metric(
             mesh, T,
@@ -420,7 +505,10 @@ for s in range(START_STEP, END_STEP):
     # and the SLCN trace-back history stays consistent.
     try:
         stokes.solve(zero_init_guess=did_adapt)
-        dt = adv.estimate_dt(direction_aware=True) * float(args.dt_mult)
+        if args.dt_basis == "mean":
+            dt = _estimate_dt_mean() * float(args.dt_mult)
+        else:
+            dt = adv.estimate_dt(direction_aware=True) * float(args.dt_mult)
         adv.solve(timestep=dt, zero_init_guess=False)
     except Exception as e:
         print(f"  EXCEPTION at step {s}: {e}", flush=True)

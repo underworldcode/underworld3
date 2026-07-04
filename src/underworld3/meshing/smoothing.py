@@ -2887,7 +2887,17 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     if metric_eval == "rbf":
         from scipy.spatial import cKDTree
         M_ref = _eval_M_analytic(ref)                    # one analytic pass
-        _tree = cKDTree(ref)
+        ref_cloud = ref
+        # PARALLEL: the reference cloud must be GLOBAL — a rank-local KDTree has
+        # no neighbours from adjacent ranks, so centroids near a partition
+        # boundary interpolate from incomplete data and can yield a non-SPD
+        # metric (sqrt(detM) NaN). Allgather the (coords, metric) cloud; it is
+        # tiny (mesh nodes) and the metric is a guide field, so this is exact
+        # enough and cheap.
+        if parallel:
+            ref_cloud = np.concatenate(uw.mpi.comm.allgather(ref), axis=0)
+            M_ref = np.concatenate(uw.mpi.comm.allgather(M_ref), axis=0)
+        _tree = cKDTree(ref_cloud)
         _kk = int(rbf_k) if rbf_k else (cdim + 2)
 
         def _eval_M(pts):

@@ -570,6 +570,14 @@ class SolverBaseClass(uw_object):
         verbose : bool, default=False
             Log each retry on rank 0.
         """
+        # Opt-in hook fired immediately before the linear/nonlinear solve, after
+        # the operator + nullspace are attached. Lets callers override solver
+        # internals that PETSc only exposes once the operator is sized (e.g.
+        # injecting a custom geometric MG interpolation on the velocity block of
+        # an adapted mesh). No-op unless self._pre_solve_hook is set. Default None.
+        _hook = getattr(self, "_pre_solve_hook", None)
+        if _hook is not None:
+            _hook(self)
         self.snes.solve(None, gvec)
         if divergence_retries <= 0:
             return
