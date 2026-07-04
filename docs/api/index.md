@@ -29,6 +29,7 @@ model
 utilities
 visualisation
 adaptivity
+workflows
 ```
 
 ## Quick Links

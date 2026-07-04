@@ -1,5 +1,11 @@
 # Building Workflow Packages on Underworld3
 
+This guide covers the **practical mechanics** of pip-installable
+workflow packages: layout, dependencies, design conventions.  For
+the conceptual model — what a workflow *is*, products, recipes,
+freshness — see the [workflow concepts guide](workflow-concepts.md).
+For the API reference, see [`underworld3.workflows`](../../api/workflows.md).
+
 Complex simulations — hydrogen exploration, groundwater modelling, mantle
 convection — share a large amount of structural boilerplate (mesh setup,
 reference quantities, solver configuration) on top of a smaller body of

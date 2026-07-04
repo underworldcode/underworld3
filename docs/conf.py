@@ -186,8 +186,17 @@ exclude_patterns = [
     'docstrings/**',
     # Skip AI context files (for Claude Code agents, not published docs)
     'developer/ai-notes/**',
-    # Skip examples (not needed for main docs)
-    'examples/**',
+    # Skip example source / output / cache (markdown guides come through)
+    'examples/**/*.py',
+    'examples/**/*.ipynb',
+    'examples/**/output/**',
+    'examples/**/__pycache__/**',
+    'examples/**/.meshes/**',
+    'examples/**/.ipynb_checkpoints/**',
+    'examples/assets/**',
+    'examples/media/**',
+    'examples/WIP/**',
+    'examples/MIGRATION_STATUS.md',
     # Skip myst_nb execution artifacts (regenerated each build)
     'jupyter_execute/**',
 ]

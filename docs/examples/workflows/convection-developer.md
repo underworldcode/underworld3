@@ -22,7 +22,7 @@ CLI driver — stay essentially the same.
 | File | What lives there |
 |------|------------------|
 | `convection_config.py` | `ConvectionConfig` (Pydantic), the workflow-step DAG (`create_mesh` → `create_solvers` → `evolve` → `summarise_run`), diagnostics, steady-state test |
-| `convection_sweep.py` | `SweepConfig` and the `(Ra × aspect)` aggregation cascade (`run_sweep` → `tabulate_*` → `plot_*`) |
+| `convection_sweep.py` | `SweepConfig` and the `(rayleigh × aspect_ratio)` aggregation cascade (`run_sweep` → `tabulate_*` → `plot_*`) |
 | `convection_visualise.py` | Frame rendering and movie encoding (not yet a workflow_step — see "Open work" below) |
 | `simulate.py` | CLI driver, auto-derived from `ConvectionConfig` via `cli_from_config` |
 | `warm_start.py` | Recipe: project T from a prior run onto a new mesh / degree as a seeded IC |
@@ -30,7 +30,11 @@ CLI driver — stay essentially the same.
 
 ## Workflow DAGs
 
-### Per-cell workflow (`convection_config`)
+### Per-case workflow (`convection_config`)
+
+A "case" is one model run: one `ConvectionConfig` instance, one
+output directory, one steady-state termination.  In the sweep
+context, every (rayleigh, aspect_ratio) combination is a case.
 
 ```
 predict_bl_thickness ──▶ bl_thickness ──┐
@@ -63,16 +67,24 @@ run_sweep ──▶ all_cells_completed ──┬──▶ tabulate_nu_vs_ra ─
                                     └──▶ tabulate_vrms_vs_ra ──▶ vrms_vs_ra_csv ──▶ plot_vrms_vs_ra ──▶ vrms_vs_ra_plot
 ```
 
-`run_sweep` is the bridge between the two workflows: it iterates the
-`(Ra × aspect)` grid and, for each cell, instantiates a nested
-`WorkflowRunner(convection_config, cell_config, products=...)` and
-calls `runner.build("run_summary")`.  Each cell's products land in
-its own `<cell_dir>/products/manifest.yaml`; the sweep's outer
+`run_sweep` is the bridge between the two workflows.  This
+particular sweep grid is `(rayleigh × aspect_ratio)` because those
+are the diagnostics canonically swept in Rayleigh-Bénard work; the
+framework imposes no specific axes.  For each case in the grid,
+`run_sweep` instantiates a nested
+`WorkflowRunner(convection_config, case_config, products=...)` and
+calls `runner.build("run_summary")`.  Each case's products land in
+its own `<case_dir>/products/manifest.yaml`; the sweep's outer
 products (CSV tables, plots) land in `<output_dir>/products/manifest.yaml`.
+
+Note: the product name `all_cells_completed` and the helper
+`_cell_key()` in the source use "cell" in the spreadsheet sense
+(one entry in the parameter grid).  Prose in this doc uses "case"
+to avoid collision with "convection cell" in the physics literature.
 
 ## Step reference
 
-### Per-cell steps (in `convection_config`)
+### Per-case steps (in `convection_config`)
 
 | Step | Produces | Requires | Notes |
 |------|----------|----------|-------|
@@ -87,20 +99,39 @@ products (CSV tables, plots) land in `<output_dir>/products/manifest.yaml`.
 
 | Step | Produces | Requires | Notes |
 |------|----------|----------|-------|
-| `run_sweep` | `all_cells_completed` | — | iterates `(Ra × aspect)`, runs each cell to steady state via a nested per-cell runner |
-| `tabulate_nu_vs_ra` | `nu_vs_ra_csv` | `all_cells_completed` | tidy CSV: `aspect, Ra, status, n_steps, Nu_mean, Nu_std, Nu_top_mean, Nu_bot_mean` |
+| `run_sweep` | `all_cells_completed` | — | iterates `(rayleigh × aspect_ratio)`, runs each case to steady state via a nested per-case runner.  Product name retains the spreadsheet-cell convention. |
+| `tabulate_nu_vs_ra` | `nu_vs_ra_csv` | `all_cells_completed` | tidy CSV columns: `aspect, Ra, status, n_steps, Nu_mean, Nu_std, Nu_top_mean, Nu_bot_mean` |
 | `tabulate_vrms_vs_ra` | `vrms_vs_ra_csv` | `all_cells_completed` | same shape for Vrms |
-| `plot_nu_vs_ra` | `nu_vs_ra_plot` | `nu_vs_ra_csv, all_cells_completed` | log-log Nu(Ra) per aspect with `0.27·Ra^(1/3)` reference |
-| `plot_vrms_vs_ra` | `vrms_vs_ra_plot` | `vrms_vs_ra_csv, all_cells_completed` | log-log Vrms(Ra) per aspect |
+| `plot_nu_vs_ra` | `nu_vs_ra_plot` | `nu_vs_ra_csv, all_cells_completed` | log-log Nu(Ra), one curve per aspect_ratio, with `0.27·Ra^(1/3)` reference |
+| `plot_vrms_vs_ra` | `vrms_vs_ra_plot` | `vrms_vs_ra_csv, all_cells_completed` | log-log Vrms(Ra), one curve per aspect_ratio |
 
 ## Config classes
 
-### `ConvectionConfig` — per-cell parameters
+### `ConvectionConfig` — per-case parameters
 
 Identity fields (declared in `_identity_fields`, fold into `cache_key`):
 
 `aspect_ratio, cellsize, qdegree, regular, T_degree, rayleigh,
 viscosity, diffusivity, T_top, T_bottom`
+
+The non-dimensional Boussinesq formulation pins `viscosity = 1`,
+`diffusivity = 1`, `T_top = 0`, `T_bottom = 1` — Ra absorbs the
+viscous + thermal scales, and the boundary temperatures set the
+temperature contrast.  These four fields stay in the config (so a
+developer who really wants to tweak them — e.g. shift the T scale
+to `[-0.5, 0.5]` to mask AdvDiff drift, per the in-code comment) and
+in `_identity_fields` (so the tweak invalidates the cache).
+`simulate.py` suppresses them from the CLI's `--help` so they don't
+present as user knobs; the user-facing doc table omits them.
+
+`qdegree` is also pinned by a `@model_validator(mode='after')` —
+it's structurally a function of the highest variable degree
+(currently `T_degree`, since v=2 and p=1 are dominated by T at
+default `T_degree=3`).  Even if a caller passes `qdegree` to the
+constructor, the validator overrides it to `max(2, T_degree)`.
+Field stays in the config so it lands in the manifest snapshot;
+not user-tunable.  Hidden from the CLI for the same reason as the
+non-dim quartet above.
 
 Operational fields (changeable between invocations without
 invalidating cached products):
@@ -117,14 +148,19 @@ invalidating cached products):
 | `dt_factor` | `2.0` | Multiplier on `adv_diff.estimate_dt()` |
 | `diag_every` | `0` | Heavy-diagnostic cadence (0 = match `save_every`) |
 | `clip_T_range` | `False` | Clip T to `[T_top, T_bottom]` after each AdvDiff solve (high-Ra safety) |
-| `output_dir` | `"output/convection/run"` | Per-cell run directory |
+| `output_dir` | `"output/convection/run"` | Per-case run directory |
 | `restart_policy` | `"error"` | One of `error / fresh / seed_from_old` |
 
 Timeseries column schema: `step, t, dt, Nu_top, Nu_bot, Vrms, Vmax, mean_T`.
 
-### `SweepConfig` — sweep grid + per-cell defaults
+### `SweepConfig` — sweep grid + per-case defaults
 
-Identity fields (the grid plus per-cell mesh + physics):
+The sweep axes are workflow-specific.  This convection workflow
+sweeps over Rayleigh number and aspect ratio (`rayleigh_values`
+and `aspect_ratios` lists).  Other workflows would expose
+different lists.
+
+Identity fields (the grid axes plus per-case mesh + physics):
 
 `rayleigh_values, aspect_ratios, cellsize, qdegree, regular,
 viscosity, diffusivity, T_top, T_bottom`
@@ -142,10 +178,10 @@ forwarding it in `_per_run_config`.
 | `_identity_fields` (class-level tuple) | declared on both configs; aliases `_IDENTITY_FIELDS` module constant for `ConvectionConfig` |
 | `WorkflowConfig.cache_key()` | called by the runner during `_save_quietly` and `_expected_cache_key` — convection doesn't call it directly |
 | `@workflow_step(produces=, requires=)` | every step in `convection_config` and `convection_sweep` |
-| `WorkflowRunner` | `simulate.py` for single runs, `convection_sweep.run_sweep` for nested per-cell runners, `convection_notebook.py` for the sweep cascade |
-| `WorkflowProducts` | per-cell at `<output_dir>/products/`, plus the sweep's outer products dir |
-| `Run` | wraps every per-cell run directory; `evolve` produces a `Run`, `summarise_run` consumes one |
-| `Manifest` | the cell's `manifest.yaml` (different from the products manifest); accessed via `Run.manifest` |
+| `WorkflowRunner` | `simulate.py` for single runs, `convection_sweep.run_sweep` for nested per-case runners, `convection_notebook.py` for the sweep cascade |
+| `WorkflowProducts` | per-case at `<output_dir>/products/`, plus the sweep's outer products dir |
+| `Run` | wraps every per-case run directory; `evolve` produces a `Run`, `summarise_run` consumes one |
+| `Manifest` | the case's `manifest.yaml` (different from the products manifest); accessed via `Run.manifest` |
 | `RUN_NAME` | the `"run"` filename stem for the h5/xdmf chain |
 | `Run.append_step` | `evolve`'s step-0 fresh-start path; `warm_start`'s seeded step-0 |
 | `Run.append_timeseries_row` | `evolve`'s inner loop (csv every step, h5 every save_every) |
@@ -155,7 +191,7 @@ forwarding it in `_per_run_config`.
 | `diagram` / `WorkflowRunner.diagram` | available; documentation generator could embed |
 | `WorkflowRunner.observe` / `what_invalidates` | available; not yet wired into the example notebook (UI hooks for future widgets) |
 
-## On-disk layout (per-cell)
+## On-disk layout (per-case)
 
 ```
 <output_dir>/
@@ -181,11 +217,11 @@ serve different roles:
   Run-directory's identity card — workflow name, config_hash,
   config_snapshot, `workflow_api`.  Exists for any run.
 - The **inner** `products/manifest.yaml` is the registered
-  workflow-product graph for this cell — `cache_key` + `inputs` per
+  workflow-product graph for this case — `cache_key` + `inputs` per
   product.  Created when `WorkflowRunner(..., products=...)` is
   used.
 
-When a cell's identity changes (e.g. `T_degree` bump), the outer
+When a case's identity changes (e.g. `T_degree` bump), the outer
 manifest's `config_hash` mismatch triggers `_check_compatibility`'s
 archive-or-error logic.  The products manifest's `cache_key`s
 independently mismatch, triggering the runner's per-product rebuild.
@@ -194,7 +230,7 @@ independently mismatch, triggering the runner's per-product rebuild.
 
 ```
 <sweep_output_dir>/
-  aspect_1x1/Ra1e3/...         # Per-cell run directory (see above)
+  aspect_1x1/Ra1e3/...         # Per-case run directory (see above)
   aspect_1x1/Ra1e4/...
   aspect_4x1/Ra1e3/...
   ...
@@ -245,7 +281,7 @@ legs cold-start instead.  ~50 lines, mostly orchestration.
   `@workflow_step`-decorated.  Decorating them would add
   `temperature_frames`, `tracer_frames`, `temperature_movie`,
   `tracer_movie` as products with cache_keys derived from the
-  cell's `run_directory` cache_key.  Re-running the notebook would
+  case's `run_directory` cache_key.  Re-running the notebook would
   then short-circuit movie rendering when the underlying h5 chain
   hasn't grown.
 

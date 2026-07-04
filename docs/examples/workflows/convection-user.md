@@ -48,7 +48,15 @@ python simulate.py --rayleigh=1e5 --T-degree=5 \
 
 `python simulate.py --help` lists every available knob.
 
-### Run a sweep over (Ra × aspect ratio) and produce Nu(Ra) plots
+### Run a sweep over Rayleigh number and aspect ratio
+
+This particular workflow's sweep varies two parameters: the
+**Rayleigh number** (buoyancy strength) and the **aspect ratio**
+(box width / height).  Each combination of an Ra value and an
+aspect_ratio value is one *case* — its own model run with its own
+output directory and its own steady-state termination.  Workflows
+in other domains will pick different parameter axes; nothing about
+the framework requires the axes to be these two.
 
 Open `convection_notebook.py` (it's a Jupytext-style script — runs
 as a regular Python file, opens as a notebook in JupyterLab):
@@ -65,17 +73,17 @@ config = sweep.SweepConfig(
     output_dir="output/convection_sweep",
 )
 runner = WorkflowRunner(sweep, config, products=WorkflowProducts(config))
-runner.build("nu_vs_ra_plot")    # drives every cell to steady state, then plots
+runner.build("nu_vs_ra_plot")    # drives every case to steady state, then plots
 runner.build("vrms_vs_ra_plot")
 ```
 
-Each `(Ra, aspect)` cell runs in its own subdirectory.  Cells that
-were already steady on a previous invocation skip immediately;
-stalled cells extend on the next run.
+Each `(rayleigh, aspect_ratio)` case runs in its own subdirectory.
+Cases that were already steady on a previous invocation skip
+immediately; stalled cases extend on the next run.
 
 ### Render movies
 
-After a cell has reached steady state:
+After a case has reached steady state:
 
 ```python
 import convection_visualise as viz
@@ -98,21 +106,25 @@ diffusion time across the layer.
 
 ### What the simulation is solving
 
+The dimensionless Boussinesq formulation collapses all the physics
+into the **Rayleigh number**, so the only knobs that change the
+problem are `rayleigh` and the **box aspect ratio**.  Viscosity,
+thermal diffusivity, and the boundary temperatures are pinned by
+the non-dimensionalisation (effectively `1`, `1`, `0`, `1`); the
+`ConvectionConfig` fields with those names exist for completeness
+but should be left at their defaults.
+
 | Knob | Default | Meaning |
 |------|---------|---------|
 | `rayleigh` | `1e6` | Buoyancy strength.  ~10³ is barely-convective, 10⁴ steady cells, 10⁵–10⁶ vigorous, 10⁷+ time-dependent.  Cubed in the parameter space — every factor of 10 makes the boundary layers thinner by ~3×. |
 | `aspect_ratio` | `1.0` | Box width / height.  1×1 gives a single roll; longer boxes give multiple rolls.  4×1 is a common diagnostic geometry. |
-| `viscosity` | `1.0` | Constant fluid viscosity (non-dim).  Changing this is equivalent to changing Ra. |
-| `diffusivity` | `1.0` | Thermal diffusivity (non-dim).  Same. |
-| `T_top`, `T_bottom` | `0.0`, `1.0` | Boundary temperatures.  The defaults give Nu ≈ heat flux directly. |
 
 ### Mesh + numerics
 
 | Knob | Default | Meaning |
 |------|---------|---------|
 | `cellsize` | `1/16` | Target element size.  At Ra=10⁶ you want at least 1/24 to resolve the boundary layers; 1/48 for safety.  Bigger → faster but under-resolved. |
-| `qdegree` | `3` | Quadrature order.  Match to the highest-degree variable. |
-| `T_degree` | `3` | Polynomial order of the temperature field.  Higher → smoother T at the boundaries (so Nu is more accurate) but more DOFs.  Increasing this on a converged run is a good test of mesh-independence (use the warm-start recipe — see below). |
+| `T_degree` | `3` | Polynomial order of the temperature field.  Higher → smoother T at the boundaries (so Nu is more accurate) but more DOFs.  Increasing this on a converged run is a good test of mesh-independence (use the warm-start recipe — see below).  The mesh's quadrature order auto-tracks this. |
 | `regular` | `False` | If True, builds a regular mesh; otherwise unstructured. |
 
 ### When the run stops
@@ -142,12 +154,12 @@ the physics.  At low Ra the flow is quasi-static and `0.02` /
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `output_dir` | `"output/convection/run"` | Where this run's files live.  Each `(Ra, aspect)` cell of a sweep gets its own subdir under the sweep's `output_dir`. |
-| `restart_policy` | `"error"` | What to do when re-running with a *different* mesh or physics in the same `output_dir`: <br>• `"error"` (default) — stop with a list of changed fields. <br>• `"fresh"` — archive the old directory to `<name>.archive-<timestamp>` and start over. <br>• `"seed_from_old"` — same archive, but use the old run's last T as the new run's IC. |
+| `output_dir` | `"output/convection/run"` | Where this run's files live.  Each `(rayleigh, aspect_ratio)` case of a sweep gets its own subdir under the sweep's `output_dir`. |
+| `restart_policy` | `"error"` | Behaviour when you re-invoke the workflow against an `output_dir` that **already exists** with a different config.  All three options operate in-place on the same directory: <br>• `"error"` (default) — stop with a list of changed fields. <br>• `"fresh"` — rename the old directory to `<name>.archive-<timestamp>/` and start over. <br>• `"seed_from_old"` — same archive, but use the old run's last T as the new run's initial condition. <br><br>To start a **new** run from a separate **existing** run (e.g. seed a Ra=10⁶ run from a converged Ra=10⁵ result, with both directories preserved), use the `warm_start` recipe instead — see below. |
 
 ## Output: what you get
 
-Every per-cell run dir contains:
+Every per-case run dir contains:
 
 - **`manifest.yaml`** — what the run is for: workflow name,
   parameter snapshot, identity hash, version stamps.  Reading it
@@ -170,11 +182,11 @@ Every per-cell run dir contains:
 A sweep additionally produces:
 
 - **`tables/nu_vs_ra.csv`**, **`tables/vrms_vs_ra.csv`** — tidy CSVs
-  with one row per (cell, status) suitable for pandas / excel.
+  with one row per case (suitable for pandas / excel).
 - **`figures/nu_vs_ra.png`**, **`figures/vrms_vs_ra.png`** — log-log
   plots, error bars from the steady-window standard deviation, with
   the `0.27·Ra^(1/3)` reference line on the Nu plot.
-- **`<cell>/movies/temperature.mp4`** etc. (optional) — rendered
+- **`<case>/movies/temperature.mp4`** etc. (optional) — rendered
   movies.
 
 ## Recipes
@@ -183,30 +195,45 @@ The workflow ships with two example recipes for common operations.
 They live as Python files alongside the workflow code so you can
 copy and adapt them.
 
-### Warm-start a high-resolution run from a low-resolution one
+### Start a new run from an existing converged run
 
-`warm_start.py` takes a source run dir and projects its converged T
-field onto a new mesh, optionally with different settings:
+`warm_start.py` takes a *source* run directory and projects its
+converged T field onto a freshly-built *target* mesh, optionally
+with different settings.  The source directory is left untouched —
+two separate runs, two separate sets of output.
+
+The most common use is climbing in Rayleigh number: each new Ra
+inherits an already-organised circulation pattern from the lower-Ra
+solve below it, skipping the long cold-start transient.
 
 ```python
 from warm_start import warm_start
 from underworld3.workflows import WorkflowRunner
 import convection_config as cc
 
-# Source: the converged T_degree=3 run
+# Source: a converged Ra=1e5 run (stays intact)
+# Target: a fresh Ra=1e6 run, seeded from the source's last T
 target_cfg = warm_start(
-    "output/Ra1e5",
-    "output/Ra1e5_T5",
-    T_degree=5,           # bump the polynomial order
+    "output/Ra1e5",          # source — read only
+    "output/Ra1e6",          # target — newly created
+    rayleigh=1e6,
 )
 
-# Drive the new run forward; transient is short because the seed is good
+# Drive the target forward; transient is short because the seed is good
 WorkflowRunner(cc, target_cfg).build("run_summary")
 ```
 
-Useful for: refining `T_degree` or `qdegree` after a coarse run
-has settled, branching ensembles from a single seed, or moving a
-case to a finer mesh.
+Other useful applications:
+
+- **Refining the FE space**: bump `T_degree=3 → 5` or `cellsize=1/24 →
+  1/48` on a converged run.  The kd-tree projection inside
+  `Run.load_field` handles cross-mesh / cross-degree interpolation.
+- **Branching ensembles**: clone a converged run multiple times with
+  small perturbations (custom IC tweaks after `warm_start` returns
+  the target config) to study sensitivity.
+
+If you have a sequence of Ra values to walk, the `ramp.py` recipe
+chains warm-starts for you — see below.
 
 ### Ramp through Rayleigh numbers
 
@@ -232,13 +259,15 @@ leg stalls, subsequent legs cold-start instead.
 
 ### Sweep over a different parameter
 
-`SweepConfig` currently exposes `(Ra × aspect_ratio)`.  To sweep
-over, say, `cellsize` instead, copy `convection_sweep.py` and:
+`SweepConfig` currently sweeps over Rayleigh number and aspect
+ratio because those are the canonical Rayleigh-Bénard
+diagnostics, but the framework doesn't require it.  To sweep over,
+say, `cellsize` instead, copy `convection_sweep.py` and:
 
 1. Add `cellsize_values: list[float]` to your subclass (and remove
    the scalar `cellsize` from `_identity_fields`).
 2. In `_per_run_config`, iterate over `cellsize_values` and forward
-   each to the per-cell config.
+   each to the per-case config.
 3. Mirror the change in `tabulate_*` and `plot_*`.
 
 ### Add a new diagnostic

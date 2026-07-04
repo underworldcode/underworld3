@@ -39,7 +39,7 @@ from typing import Literal
 
 import numpy as np
 import sympy
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from underworld3.workflows import (  # noqa: F401  (RUN_NAME re-exported for viz)
     RUN_NAME,
@@ -97,6 +97,9 @@ class ConvectionConfig(WorkflowConfig):
     # Identity — mesh
     cellsize: float = Field(default=1.0 / 16, gt=0)
     aspect_ratio: float = Field(default=1.0, gt=0)
+    # qdegree is auto-derived from T_degree by ``_sync_qdegree``
+    # below — kept as a Pydantic field so it lands in the manifest
+    # snapshot (and the cache_key) but not user-tunable in practice.
     qdegree: int = Field(default=3, ge=1)
     regular: bool = False
 
@@ -106,6 +109,19 @@ class ConvectionConfig(WorkflowConfig):
     # Changing it forces a fresh run because the on-disk h5 layout and
     # the JIT cache key both depend on the FE space.
     T_degree: int = Field(default=3, ge=1)
+
+    @model_validator(mode="after")
+    def _sync_qdegree(self):
+        """Pin ``qdegree`` to the highest variable degree (currently T).
+
+        Runs after every construction.  Even if the caller passes
+        ``qdegree`` explicitly, the value is overwritten — qdegree
+        is structurally a function of the FE space, not an
+        independent knob.  Stokes velocity (degree 2) and pressure
+        (degree 1) are dominated by T_degree (default 3).
+        """
+        self.qdegree = max(2, self.T_degree)
+        return self
 
     # Identity — physics
     rayleigh: float = Field(default=1e6, gt=0)

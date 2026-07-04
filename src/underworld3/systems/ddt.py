@@ -1156,6 +1156,30 @@ class SemiLagrangian(uw_object):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
 
+    def _clamp_to_domain(self, coords):
+        """Return back-trace coords clamped to the mesh domain.
+
+        Uses the mesh-supplied ``return_coords_to_bounds`` (analytic for
+        cartesian / annulus / etc) when available. Falls back to a kd-tree
+        nearest-mesh-point lookup for general meshes (or for h5-loaded
+        meshes where the analytic clamp wasn't reattached).
+        """
+        if getattr(self.mesh, "return_coords_to_bounds", None) is not None:
+            return self.mesh.return_coords_to_bounds(coords)
+
+        # Generic fallback: find points outside the domain, replace each
+        # with the nearest mesh vertex (kd-tree built from mesh coords).
+        coords_arr = np.asarray(coords)
+        in_or_not = self.mesh.points_in_domain(coords_arr, strict_validation=False)
+        if in_or_not.all():
+            return coords
+        self.mesh._build_kd_tree_index()
+        ext = ~in_or_not
+        _, nearest = self.mesh._index.query(coords_arr[ext], k=1, sqr_dists=False)
+        coords_arr = coords_arr.copy()
+        coords_arr[ext] = self.mesh._indexCoords[nearest]
+        return coords_arr
+
     def update(
         self,
         dt: float,
@@ -1420,6 +1444,15 @@ class SemiLagrangian(uw_object):
             # If we do `dt_for_calc * v_at_node_pts`, Pint handles it and loses UnitAwareArray units.
             mid_pt_coords = coords - v_at_node_pts * (0.5 * dt_for_calc)
 
+            # Clamp back-trace mid-points to the mesh domain. Without this,
+            # global_evaluate falls through to RBF extrapolation outside the
+            # boundary, which can produce wild values when fields have steep
+            # gradients at the wall (eg high-Ra convection BLs). The
+            # equivalent call exists in swarm.advect — this was lost in the
+            # SLCN DDt when it migrated from swarm-based to evaluate-based
+            # back-trace.
+            mid_pt_coords = self._clamp_to_domain(mid_pt_coords)
+
             v_mid_result = uw.function.global_evaluate(
                 self.V_fn,
                 mid_pt_coords,
@@ -1474,6 +1507,10 @@ class SemiLagrangian(uw_object):
 
             # Calculate upstream coordinates: current position - velocity * timestep
             end_pt_coords = coords - v_at_mid_pts * dt_for_calc
+
+            # Clamp upstream points to the mesh domain (see comment at the
+            # mid-point clamp above).
+            end_pt_coords = self._clamp_to_domain(end_pt_coords)
 
             # Extract scalar from (1,1) Matrix for scalar variables
             # MeshVariable.sym returns Matrix([[value]]) for scalars

@@ -47,10 +47,23 @@ from underworld3.workflows import cli_from_config, config_from_args
 
 
 def build_parser():
-    """Auto-derived parser plus this CLI's action flags."""
+    """Auto-derived parser plus this CLI's action flags.
+
+    Suppresses fields that are pinned by the non-dimensional
+    Boussinesq formulation (viscosity, diffusivity, T_top, T_bottom)
+    and the workflow-itself metadata (workflow_name, description).
+    Power users can still set those programmatically via Python.
+    """
+    hidden = {
+        "workflow_name", "description",          # workflow self-metadata
+        "viscosity", "diffusivity",              # absorbed into Rayleigh
+        "T_top", "T_bottom",                     # set by the temperature scale
+        "qdegree",                               # auto-derived from T_degree
+    }
     parser = cli_from_config(
         cc.ConvectionConfig,
         description="Run a single convection workflow to steady state.",
+        hidden_fields=hidden,
     )
     parser.add_argument(
         "--movies", action="store_true",
