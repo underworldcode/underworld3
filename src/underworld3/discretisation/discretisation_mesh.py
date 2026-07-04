@@ -952,6 +952,18 @@ class Mesh(Stateful, uw_object):
         # discretisation/remesh.py.
         self._remesh_hooks = []
 
+        # Capability gate for coordinate mutation. `_deform_mesh` (the raw
+        # primitive that moves nodes WITHOUT the field/SL-history transfer)
+        # is only permitted inside a sanctioned context: a remesh transaction
+        # (`_in_remesh_transfer`, set by remesh_with_field_transfer) or a
+        # `_coord_mutation()` scope (depth>0, opened by `deform`,
+        # `ephemeral_coords`, and trusted internal movers). Outside those,
+        # a bare call on a mesh that already carries variables/history raises
+        # with a pointer to the public methods — so the field/history transfer
+        # can never be silently skipped. See `deform`/`ephemeral_coords`.
+        self._in_remesh_transfer = getattr(self, "_in_remesh_transfer", False)
+        self._coord_mutation_depth = 0
+
         self._evaluation_hash = None
         self._evaluation_interpolated_results = None
         self._dm_initialized = False
@@ -1034,7 +1046,11 @@ class Mesh(Stateful, uw_object):
                         f"{float(numpy.sqrt(_d2.max())):.2e}); the reloaded "
                         "reference geometry does not match the saved fine."
                     )
-                self._deform_mesh(_def_canon[_idx].reshape(-1, _cdim))
+                # Restoring saved deformed geometry; fields are reloaded
+                # separately from the checkpoint, so this is a sanctioned
+                # internal coordinate move (no live-state transfer needed).
+                with self._coord_mutation():
+                    self._deform_mesh(_def_canon[_idx].reshape(-1, _cdim))
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -1930,7 +1946,10 @@ class Mesh(Stateful, uw_object):
         new_sub_coords = numpy.array(self.X.coords)
         new_sub_coords[sub_rows] = self.parent.X.coords[parent_rows]
 
-        self._deform_mesh(new_sub_coords)
+        # Submesh follows its parent's geometry; this is a sanctioned
+        # internal coordinate move (the parent owns the transfer).
+        with self._coord_mutation():
+            self._deform_mesh(new_sub_coords)
         self._parent_mesh_version = self.parent._mesh_version
 
     def _re_extract_from_parent(self, verbose=False):
@@ -2759,6 +2778,116 @@ class Mesh(Stateful, uw_object):
             kept.append(r)
         self._remesh_hooks = kept
 
+    # ------------------------------------------------------------------
+    # Coordinate-mutation capability gate + sanctioned entry points
+    # ------------------------------------------------------------------
+    def _assert_coord_mutation_allowed(self):
+        """Guard for :meth:`_deform_mesh`.
+
+        Moving coordinates with the raw primitive skips the field /
+        SL-DDt-history transfer. That is only safe (a) before the mesh
+        carries any variables/history (construction, restart-before-solvers)
+        or (b) inside a sanctioned scope — a remesh transaction
+        (``_in_remesh_transfer``) or a ``_coord_mutation()`` scope opened by
+        :meth:`deform`, :meth:`ephemeral_coords`, or a trusted internal mover.
+        Outside those, on a live mesh, raise with a pointer to the public API.
+        """
+        allowed = (getattr(self, "_in_remesh_transfer", False)
+                   or getattr(self, "_coord_mutation_depth", 0) > 0)
+        if allowed:
+            return
+        has_state = bool(getattr(self, "vars", None)) or bool(
+            getattr(self, "_remesh_hooks", None))
+        if not has_state:
+            return
+        raise RuntimeError(
+            "Mesh._deform_mesh() is an internal primitive — it moves nodes "
+            "WITHOUT transferring fields or solver/DDt history onto the new "
+            "layout, which corrupts the solution. This mesh already carries "
+            "variables, so a direct call (or an in-place write to "
+            "`mesh.X.coords`) is rejected.\n"
+            "  Use instead:\n"
+            "    • mesh.deform(new_coords, dt=…)        — impose an arbitrary "
+            "node displacement (free surface / prescribed motion)\n"
+            "    • mesh.adapt(metric) / mesh.OT_adapt(field)\n"
+            "    • uw.meshing.smooth_mesh_interior(…) / uw.meshing.follow_metric(…)\n"
+            "  These route the field + SL/DDt-history transfer "
+            "(remesh_with_field_transfer). For trusted scheme-internal trial "
+            "meshes that will be discarded, use `with mesh.ephemeral_coords(): …`."
+        )
+
+    @contextmanager
+    def _coord_mutation(self):
+        """Internal: sanction direct ``_deform_mesh`` calls within this scope.
+
+        Re-entrant. Does NOT itself transfer fields — callers either are the
+        transfer transaction (REMAP + ``on_remesh`` already run by
+        ``remesh_with_field_transfer``), restore saved state separately, or
+        intend an ephemeral trial (see :meth:`ephemeral_coords`).
+        """
+        self._coord_mutation_depth += 1
+        try:
+            yield
+        finally:
+            self._coord_mutation_depth -= 1
+
+    @contextmanager
+    def ephemeral_coords(self):
+        """Trusted scheme-internal trial coordinate moves, restored on exit.
+
+        For schemes (e.g. RK4 surface stages) that probe trial meshes to
+        compute velocities/increments and must NOT commit a transfer. The
+        coordinates are snapshotted on enter and restored on exit, so the
+        intermediate meshes are genuinely ephemeral — only the final
+        committed move (via :meth:`deform`) updates fields + history.
+        """
+        saved = numpy.asarray(self.X.coords).copy()
+        self._coord_mutation_depth += 1
+        try:
+            yield
+        finally:
+            try:
+                self._deform_mesh(saved)
+            finally:
+                self._coord_mutation_depth -= 1
+
+    def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
+        """Move the mesh to ``new_coords``, transferring all fields + history.
+
+        The public, foolproof way to impose an arbitrary node displacement
+        (free surface, prescribed mesh motion). Wraps the remesh transaction
+        so that REMAP variables are re-interpolated onto the new layout and
+        every registered ``on_remesh`` hook fires — in particular the
+        SemiLagrangian DDt's coherent ALE (carry its history stack + a
+        one-step ``v_mesh = Δx/dt`` correction consumed by the next solve).
+
+        Parameters
+        ----------
+        new_coords : ndarray
+            Target vertex coordinates (shape of ``mesh.X.coords``).
+        dt : float, optional
+            Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
+            SemiLagrangian history is present and the move is advective (a
+            free-surface step); omit for a pure geometric re-mesh.
+        zero : list of MeshVariable, optional
+            Variables to zero after the move (e.g. V, P for a cold restart).
+        verbose : bool
+
+        Returns
+        -------
+        bool
+            True if the mesh moved (geometry changed), False for a no-op.
+        """
+        from underworld3.discretisation.remesh import remesh_with_field_transfer
+
+        _nc = numpy.asarray(new_coords)
+
+        def _do_move():
+            self._deform_mesh(_nc)
+
+        return remesh_with_field_transfer(
+            self, _do_move, dt=dt, extra_zero=zero, verbose=verbose)
+
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
         """
@@ -2777,7 +2906,18 @@ class Mesh(Stateful, uw_object):
         recompute n_outer×); the wrapper does a full recompute once at
         sweep exit by calling ``_deform_mesh`` again with
         ``active_vars=None``.
+
+        .. warning::
+
+           This is the **internal** coordinate-mutation primitive. It moves
+           nodes WITHOUT transferring fields or solver/DDt history onto the
+           new layout. It may only be called inside a sanctioned coordinate-
+           mutation scope (see :meth:`deform`, :meth:`ephemeral_coords`, and
+           ``remesh_with_field_transfer``). A bare call on a mesh that already
+           carries variables raises — use the public methods instead.
         """
+
+        self._assert_coord_mutation_allowed()
 
         with self._mesh_update_lock:
             coord_vec = self.dm.getCoordinatesLocal()
@@ -3712,7 +3852,10 @@ class Mesh(Stateful, uw_object):
                 f"({coords.shape} vs current {expected_shape}); programming "
                 f"error since _mesh_version matched"
             )
-        self._deform_mesh(coords)
+        # Snapshot restore: variables are reloaded just below, so this is a
+        # sanctioned internal coordinate move (no live-state transfer needed).
+        with self._coord_mutation():
+            self._deform_mesh(coords)
 
         current_vars = {var.clean_name: var for var in self.vars.values()}
         for var_clean_name, saved_array in payload["vars"].items():
