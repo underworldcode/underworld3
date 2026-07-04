@@ -2653,6 +2653,31 @@ class Swarm(Stateful, uw_object):
         self._nnmapdict = {}
         self._migration_disabled = False
 
+        # Deterministic (SPMD-consistent) creation index — used to order
+        # collective per-swarm operations identically on every rank.
+        self._instance_number = Swarm.instances
+
+        # Names of variables whose canonical writes were made while
+        # _migration_disabled was set: the PETSc pack is deferred (not
+        # discarded) and flushed by _flush_pending_petsc_sync() at context
+        # exit (SWARM-04).
+        self._pending_petsc_sync = set()
+
+        # Set when particle coordinates are written through the modern
+        # interface; the actual (collective) migrate() is deferred to the
+        # next collective point — migration-context exit or solve entry —
+        # never run per-write, which would deadlock when ranks write
+        # unevenly (SWARM-03).
+        self._needs_migration = False
+
+        # SPMD-consistent guard: while True, _sync_before_assembly() must NOT
+        # run the deferred migration. Set by advection() around its substep
+        # loop — its velocity evaluations pass through Mesh.update_lvec(), and
+        # a migrate() there would reorder particle rows between the coordinate
+        # array and the velocity array captured from it. advection() runs its
+        # own migrate() at the end.
+        self._deferred_migration_suspended = False
+
         super().__init__()
 
         # Register with the same model already captured in self._model_ref
@@ -3394,6 +3419,13 @@ class Swarm(Stateful, uw_object):
                     offset = swarm_orig_size * i
                     self._remeshed.data[offset::, 0] = i
 
+        # Invalidate cached data — the swarm was just given its particles.
+        # Any canonical `.data` array created before populate() (legitimate:
+        # variables must be created first) is sized for the empty swarm and
+        # would otherwise hide every particle from reads and corrupt writes
+        # (SWARM-17, same stale-cache class as #216).
+        self._invalidate_canonical_data()
+
         # Informational: particle population just changed.
         self._population_generation += 1
 
@@ -3465,6 +3497,19 @@ class Swarm(Stateful, uw_object):
         # Unlikely, but we should check this
         uw.mpi.barrier()
         if global_unclaimed_points == 0:
+            # No particle needs to change rank, but we were still called
+            # because coordinates and/or the population may have changed
+            # (in-place coordinate writes, addNPoints, serial advection).
+            # The cached canonical arrays, the particle kd-tree, and the
+            # proxy variables are stale regardless of whether anything
+            # moved between ranks. Skipping this invalidation froze proxy
+            # mesh variables after serial advection (issue #289) and left
+            # wrong-sized `.data` caches after particle addition
+            # (SWARM-01/SWARM-02, 2026-07 audit).
+            self._invalidate_canonical_data()
+            self._needs_migration = False
+            # any explicit/terminal migrate ends an advection suspension
+            self._deferred_migration_suspended = False
             return
 
         # Migrate particles between processes (if there are more than one of them)
@@ -3539,6 +3584,9 @@ class Swarm(Stateful, uw_object):
         # Any particle movement (send, receive, or balanced swap) makes
         # cached arrays stale — both size and values may have changed.
         self._invalidate_canonical_data()
+        self._needs_migration = False
+        # any explicit/terminal migrate ends an advection suspension
+        self._deferred_migration_suspended = False
 
         return
 
@@ -3741,6 +3789,12 @@ class Swarm(Stateful, uw_object):
             with self.access(self._remeshed):
                 # self._Xorig.data[...] = globalCoordinatesArray
                 self._remeshed.data[...] = 0
+
+        # Invalidate cached data — the particle count changed via addNPoints
+        # (mirrors add_particles_with_coordinates). This must not be left to
+        # migrate(): with migrate=False nothing else invalidates, and every
+        # cached `.data` array keeps the old particle count (SWARM-01).
+        self._invalidate_canonical_data()
 
         if migrate:
             self.migrate(remove_sent_points=True, delete_lost_points=delete_lost_points)
@@ -4328,7 +4382,14 @@ class Swarm(Stateful, uw_object):
                     f"{var_clean_name!r} data shape mismatch — current "
                     f"{current.shape} vs snapshot {saved.shape}"
                 )
-            current[...] = saved
+            # Write THROUGH the canonical array (not the detached
+            # np.asarray view above) so the PETSc pack callback fires.
+            # Writing into the view mutated only the cached copy: the
+            # DMSwarm field kept its post-realloc garbage, and the first
+            # cache invalidation after restore (e.g. migrate() at the end
+            # of advection) silently replaced the restored values with
+            # that garbage (exposed by the SWARM-01 invalidation fix).
+            var.data[...] = saved
 
     def _legacy_access(self, *writeable_vars: SwarmVariable):
         """
