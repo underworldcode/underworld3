@@ -22,73 +22,145 @@ import sympy
 import underworld3 as uw
 
 
-p = argparse.ArgumentParser()
-p.add_argument('--src-dir', type=str,
-               default=os.path.expanduser(
-                   '~/+Simulations/StagnantLid/'
-                   'uniform_res16_Ra1e7_dEta1e4'))
-p.add_argument('--src-stem', type=str,
-               default='sl_uniform_res16_Ra1e7_dEta1e4_step00125')
-p.add_argument('--strategy', type=str, default='med',
-               choices=list(uw.meshing.ADAPT_STRATEGIES.keys()))
-p.add_argument('--adapt-every', type=int, default=5)
-p.add_argument('--n-steps', type=int, default=100)
-p.add_argument('--log-every', type=int, default=2)
-p.add_argument('--snapshot-every', type=int, default=20)
-p.add_argument('--out-tag', type=str, default=None)
-p.add_argument('--resume', action='store_true')
-p.add_argument('--grad-smooth-h0', type=float, default=0.0,
-               help='gradient_smoothing_length expressed as a '
-                    'multiple of mean h0 (background cell size). '
-                    '0 = no smoothing; 2.0 = L = 2·h0 (the '
-                    "production gradient-side de-noising).")
-p.add_argument('--refinement', type=float, default=0.0,
-               help='If > 0, use uw.meshing.follow_metric() with '
-                    'this refinement value instead of the legacy '
-                    'strategy-based path. coarsening="auto" '
-                    '(= refinement^(1/d)) and metric='
-                    '"front-following" are used. 0 = use the '
-                    'legacy --strategy path.')
-p.add_argument('--max-t', type=float, default=0.0,
-               help='If > 0, stop the loop as soon as t_sim '
-                    'reaches this value (in addition to the '
-                    '--n-steps cap).')
-p.add_argument('--from-perturbation', action='store_true',
-               help='Start from the near-conductive initial '
-                    'state (T_cond + small mode-5 perturbation, '
-                    'V=P=0) instead of loading from --src-stem. '
-                    'Builds a fresh Annulus(0.5, 1.0, '
-                    'cellSize=1/16, qdegree=3) to match the '
-                    'uniform-res16 setup.')
-p.add_argument('--skip-threshold', type=float, default=-1.0,
-               help='Override the adapt skip threshold. -1 (the '
-                    'default) means use the strategy default '
-                    '(typically 0.9). Set to a very high value '
-                    '(e.g. 99) to never skip — adapt every '
-                    '--adapt-every steps. 0 means always skip.')
-p.add_argument('--dt-mult', type=float, default=1.0,
-               help='Multiplier on estimate_dt (which returns '
-                    'the single-cell crossing time, CFL=1). SLCN '
-                    'is unconditionally stable, so multipliers '
-                    '> 1 (e.g. 3-5) give larger physical-time '
-                    'steps at modest accuracy cost. 1.0 is the '
-                    'historic default.')
-p.add_argument('--Ra', type=float, default=1.0e7,
-               help='Rayleigh number (default 1e7).')
-p.add_argument('--delta-eta', type=float, default=1.0e4,
-               help='Frank-Kamenetskii viscosity contrast '
-                    'eta(cold)/eta(hot). Default 1e4 (stiff '
-                    'stagnant lid). 100 = much softer lid, more '
-                    'dynamic flow.')
-p.add_argument('--pert-mode', type=int, default=5,
-               help='Azimuthal wavenumber of the initial T '
-                    'perturbation. Mode 5 gives the classic '
-                    'five-cell symmetric pattern; mode 1 breaks '
-                    'symmetry, drives drifting / time-varying '
-                    'convection.')
-p.add_argument('--pert-amplitude', type=float, default=0.01,
-               help='Amplitude of the initial T perturbation '
-                    '(relative to T_cond ~ 1).')
+_DESCRIPTION = """
+Stagnant-lid convection with periodic mesh adaptation.
+
+The validated production path (defaults) is:
+
+  --adapt-method ot-reset       # reset mesh to IC + OT × 5 per adapt
+  --refinement 3.0              # primary "feature" knob
+  --coarsening auto             # equidistribution-optimal envelope
+  --grad-smooth-length 0.0      # physical L; ≈h0 = mild, ≈2·h0 strong
+  --dt-mult 3.0                 # SLCN is unconditionally stable
+
+So a typical production invocation reduces to:
+
+  python -u scripts/stagnant_lid_adapt_loop.py \\
+    --from-perturbation --Ra 1e7 --delta-eta 1e2 --pert-mode 1 \\
+    --n-steps 200 --refinement 3.0 --grad-smooth-length 0.0625
+
+The "advanced" group (suppressed in --help) holds dead-end /
+experimental knobs from the 2026-05-23/24 OT investigation
+(spring polish, escalating-R chain, metric-degree, anisotropic
+fallback, legacy strategy path). Use --help-all to see them.
+"""
+
+p = argparse.ArgumentParser(
+    description=_DESCRIPTION,
+    formatter_class=argparse.RawDescriptionHelpFormatter)
+
+# ---- I/O & run shape -------------------------------------------------
+io_grp = p.add_argument_group("I/O and run shape")
+io_grp.add_argument('--out-tag', type=str, default=None,
+                    help='Output dir tag under '
+                         '~/+Simulations/StagnantLid/.')
+io_grp.add_argument('--n-steps', type=int, default=100)
+io_grp.add_argument('--log-every', type=int, default=2)
+io_grp.add_argument('--snapshot-every', type=int, default=20)
+io_grp.add_argument('--resume', action='store_true',
+                    help='Resume from latest snapshot in --out-tag.')
+io_grp.add_argument('--max-t', type=float, default=0.0,
+                    help='Hard stop at this simulated time (in '
+                         'addition to --n-steps).')
+
+# ---- Physics ---------------------------------------------------------
+phys_grp = p.add_argument_group("Physics")
+phys_grp.add_argument('--Ra', type=float, default=1.0e7,
+                      help='Rayleigh number.')
+phys_grp.add_argument('--delta-eta', type=float, default=1.0e4,
+                      help='Frank-Kamenetskii viscosity contrast '
+                           'eta(cold)/eta(hot). 1e4 = stiff lid; '
+                           '1e2 = softer / more dynamic.')
+phys_grp.add_argument('--from-perturbation', action='store_true',
+                      help='Start from T_cond + small mode-N '
+                           'perturbation, V=P=0 (else load from '
+                           '--src-stem).')
+phys_grp.add_argument('--pert-mode', type=int, default=5,
+                      help='Azimuthal wavenumber of initial T '
+                           'perturbation. 5 = five-cell symmetric; '
+                           '1 = asymmetric / drifting.')
+phys_grp.add_argument('--pert-amplitude', type=float, default=0.01,
+                      help='Amplitude relative to T_cond.')
+
+# ---- Mesh + adaptation (production knobs) ----------------------------
+adapt_grp = p.add_argument_group(
+    "Mesh adaptation (production knobs)")
+adapt_grp.add_argument('--cell-size-inv', type=int, default=16,
+                       help='Annulus cellSize = 1/N for the fresh-'
+                            'perturbation start. 16 = baseline; '
+                            '32 = double resolution.')
+adapt_grp.add_argument('--adapt-method', type=str,
+                       default='ot-reset',
+                       choices=['ot-reset', 'anisotropic'],
+                       help='ot-reset (default, validated) or '
+                            'anisotropic (legacy follow_metric).')
+adapt_grp.add_argument('--adapt-every', type=int, default=5,
+                       help='Trigger an adapt every N steps.')
+adapt_grp.add_argument('--refinement', type=float, default=3.0,
+                       help='Cell-size envelope: cells refine to '
+                            'h0/R. Primary feature knob. '
+                            'Validated 1.5–5; 3 ≈ Nu sweet spot.')
+adapt_grp.add_argument('--coarsening', type=str, default='auto',
+                       help='Coarsening side: "auto" '
+                            '(= refinement^(1/d), '
+                            'equidistribution-optimal) or numeric '
+                            '(e.g. 1.0 for refine-only).')
+adapt_grp.add_argument('--grad-smooth-length', type=float,
+                       default=0.0,
+                       help='Physical length scale L for screened-'
+                            'Poisson de-noising of projected '
+                            '|∇field| before metric construction. '
+                            'Most effective sliver lever; '
+                            'preserves BL peak location. 0 = off; '
+                            '≈ h0 mild; ≈ 2·h0 stronger.')
+adapt_grp.add_argument('--metric-choice', type=str,
+                       default='front-following',
+                       choices=['front-following', 'gradient-uniform'],
+                       help='Metric distribution: front-following '
+                            '(log-linear in percentile rank) or '
+                            'gradient-uniform (ρ ∝ |∇field|² — '
+                            'sharper peaks, higher Nu).')
+
+# ---- Time stepping ---------------------------------------------------
+dt_grp = p.add_argument_group("Time stepping")
+dt_grp.add_argument('--dt-mult', type=float, default=3.0,
+                    help='Multiplier on estimate_dt. SLCN is '
+                         'unconditionally stable.')
+dt_grp.add_argument('--fixed-dt', type=float, default=0.0,
+                    help='If > 0, override estimate_dt for '
+                         'lock-step comparison across runs.')
+
+# ---- Loaded-snapshot start (less common) -----------------------------
+resume_grp = p.add_argument_group(
+    "Loaded-snapshot start (use --from-perturbation otherwise)")
+resume_grp.add_argument('--src-dir', type=str,
+                        default=os.path.expanduser(
+                            '~/+Simulations/StagnantLid/'
+                            'uniform_res16_Ra1e7_dEta1e4'))
+resume_grp.add_argument('--src-stem', type=str,
+                        default='sl_uniform_res16_Ra1e7_dEta1e4_step00125')
+
+# ---- ADVANCED / experimental — suppressed from --help ---------------
+# Kept available for the curious; investigations 2026-05-23/24
+# showed none of these beat the production path.
+adv_grp = p.add_argument_group(
+    "Advanced / experimental (hidden in --help)")
+adv_grp.add_argument('--strategy', type=str, default='med',
+                     choices=list(uw.meshing.ADAPT_STRATEGIES.keys()),
+                     help=argparse.SUPPRESS)
+adv_grp.add_argument('--skip-threshold', type=float, default=-1.0,
+                     help=argparse.SUPPRESS)
+adv_grp.add_argument('--metric-degree', type=int, default=1,
+                     help=argparse.SUPPRESS)
+adv_grp.add_argument('--grad-smooth-h0', type=float, default=0.0,
+                     help=argparse.SUPPRESS)
+adv_grp.add_argument('--post-spring-size-w', type=float, default=0.0,
+                     help=argparse.SUPPRESS)
+adv_grp.add_argument('--post-spring-shape-w', type=float, default=1.0,
+                     help=argparse.SUPPRESS)
+adv_grp.add_argument('--escalating-r-list', type=str, default='',
+                     help=argparse.SUPPRESS)
+
 args = p.parse_args()
 
 
@@ -136,7 +208,7 @@ elif args.from_perturbation:
     # Fresh Annulus matching the uniform-res16 setup.
     mesh = uw.meshing.Annulus(
         radiusOuter=1.0, radiusInner=0.5,
-        cellSize=1.0/16, qdegree=3)
+        cellSize=1.0/float(args.cell_size_inv), qdegree=3)
 else:
     resume_step = 0
     resume_label = None
@@ -288,9 +360,19 @@ def _adapt_step():
     the adapt fires."""
     old_X = np.asarray(mesh.X.coords).copy()
     old_T = np.asarray(T.data).copy()
-    h0 = float(mesh._radii.mean())
-    grad_L = (args.grad_smooth_h0 * h0
-              if args.grad_smooth_h0 > 0 else None)
+    # Parallel-safe characteristic mesh length. mesh._radii is
+    # rank-local; mesh.get_mean_radius() does the allreduce so
+    # all ranks agree on grad_L and the screened-Poisson JIT
+    # C source is identical across ranks.
+    h0 = mesh.get_mean_radius()
+    # grad_smooth_length (physical, preferred) takes precedence
+    # over the legacy grad_smooth_h0 (multiplier of h0).
+    if args.grad_smooth_length > 0.0:
+        grad_L = float(args.grad_smooth_length)
+    elif args.grad_smooth_h0 > 0.0:
+        grad_L = args.grad_smooth_h0 * h0
+    else:
+        grad_L = None
     # Resolve the effective skip threshold for THIS adapt
     if args.skip_threshold >= 0:
         sk = (None if args.skip_threshold > 10.0
@@ -304,7 +386,7 @@ def _adapt_step():
     if args.refinement > 0:
         rho_diag = uw.meshing.metric_density_from_gradient(
             mesh, T, refinement=float(args.refinement),
-            coarsening="auto", metric_choice="front-following",
+            coarsening="auto", metric_choice=args.metric_choice,
             gradient_smoothing_length=grad_L, name="diag")
     else:
         rho_diag = uw.meshing.metric_density_from_gradient(
@@ -315,32 +397,56 @@ def _adapt_step():
     misalign = float(mm["misalignment"])
     print(f"  mismatch before adapt: misalignment={misalign:.3f} "
           f"(skip threshold {sk})", flush=True)
-    if args.refinement > 0:
-        moved = uw.meshing.follow_metric(
-            mesh, T,
-            refinement=args.refinement,
-            coarsening="auto",
-            metric="front-following",
-            skip_threshold=sk,
-            gradient_smoothing_length=grad_L,
+    # Adapt branch — anisotropic via follow_metric (the production
+    # default), or OT / OT+spring as alternatives selected by
+    # --adapt-method.
+    if args.adapt_method == "anisotropic":
+        if args.refinement > 0:
+            moved = uw.meshing.follow_metric(
+                mesh, T,
+                refinement=args.refinement,
+                coarsening="auto",
+                metric="front-following",
+                skip_threshold=sk,
+                gradient_smoothing_length=grad_L,
+                verbose=True,
+            )
+            new_X = np.asarray(mesh.X.coords).copy()
+            if not moved:
+                return False, misalign
+        else:
+            rho = uw.meshing.metric_density_from_gradient(
+                mesh, T, strategy=args.strategy, name="loop",
+                gradient_smoothing_length=grad_L)
+            uw.meshing.smooth_mesh_interior(
+                mesh, metric=rho, method="anisotropic",
+                strategy=args.strategy,
+                method_kwargs=dict(relax=0.2, n_outer=12),
+                verbose=True)
+            new_X = np.asarray(mesh.X.coords).copy()
+            if np.allclose(new_X, old_X):
+                return False, misalign
+    elif args.adapt_method == "ot-reset":
+        # The validated OT-reset adapt is now a library method on the mesh:
+        # it resets to the cached reference coords, FE-remaps T onto the
+        # clean canvas, builds the gradient metric, runs the OT mover, then
+        # FE-remaps T onto the adapted positions and zeros V,P (cold flow
+        # restart). The reset reference is seeded once below (fresh = IC
+        # uniform mesh; resume = init snapshot). skip_threshold is left off
+        # here to preserve the validated always-adapt cadence.
+        moved = mesh.OT_adapt(
+            T,
+            refinement=(float(args.refinement) if args.refinement > 0
+                        else float(STRAT["resolution_ratio"])),
+            coarsening=args.coarsening,
+            grad_smoothing_length=grad_L,
+            metric_choice=args.metric_choice,
+            fields_to_remap=[T],
+            fields_to_zero=[V, P],
             verbose=True,
         )
-        new_X = np.asarray(mesh.X.coords).copy()
-        if not moved:
-            return False, misalign
-    else:
-        rho = uw.meshing.metric_density_from_gradient(
-            mesh, T, strategy=args.strategy, name="loop",
-            gradient_smoothing_length=grad_L)
-        uw.meshing.smooth_mesh_interior(
-            mesh, metric=rho, method="anisotropic",
-            strategy=args.strategy,
-            method_kwargs=dict(relax=0.2, n_outer=12),
-            verbose=True)
-        new_X = np.asarray(mesh.X.coords).copy()
-        if np.allclose(new_X, old_X):
-            return False, misalign
-    # FE-remap T; explicitly zero V,P post-adapt
+        return moved, misalign
+    # FE-remap T; explicitly zero V,P post-adapt (anisotropic path)
     new_Tx = np.asarray(T.coords).copy()
     mesh._deform_mesh(old_X)
     T.data[...] = old_T
@@ -352,6 +458,33 @@ def _adapt_step():
     P.data[...] = 0.0
     return True, misalign
 
+
+# Save the IC mesh coords — used by adapt-method=ot-reset to
+# reset the mesh to a uniform "clean canvas" before each adapt.
+# On resume the current mesh is at deformed coords, so we load
+# the uniform IC from the init snapshot (always written at step
+# 0 by the harness). When init.mesh.00000.h5 isn't present we
+# fall back to the current mesh — which is correct for fresh
+# (--from-perturbation) starts.
+_init_path = os.path.join(OUT_DIR, "init.mesh.00000.h5")
+if resume_label is not None and os.path.exists(_init_path):
+    _init_mesh = uw.discretisation.Mesh(_init_path)
+    UNIFORM_X = np.asarray(_init_mesh.X.coords).copy()
+    if UNIFORM_X.shape != mesh.X.coords.shape:
+        raise SystemExit(
+            f"ot-reset: init mesh vertex count differs from "
+            f"loaded mesh: {UNIFORM_X.shape} vs "
+            f"{mesh.X.coords.shape}")
+    del _init_mesh
+else:
+    UNIFORM_X = np.asarray(mesh.X.coords).copy()
+
+# Seed the OT_adapt reset reference explicitly. For a fresh run UNIFORM_X is
+# the current (IC uniform) mesh; on resume it is the IC mesh loaded from the
+# init snapshot (the loaded working mesh is in a deformed state, so the lazy
+# cache must NOT initialise from it).
+if args.adapt_method == "ot-reset":
+    mesh.OT_adapt_reset_reference(coords=UNIFORM_X)
 
 # Initial Stokes solve
 print("  initial Stokes solve...", flush=True)
@@ -420,7 +553,10 @@ for s in range(START_STEP, END_STEP):
     # and the SLCN trace-back history stays consistent.
     try:
         stokes.solve(zero_init_guess=did_adapt)
-        dt = adv.estimate_dt(direction_aware=True) * float(args.dt_mult)
+        if args.fixed_dt > 0.0:
+            dt = float(args.fixed_dt)
+        else:
+            dt = adv.estimate_dt(direction_aware=True) * float(args.dt_mult)
         adv.solve(timestep=dt, zero_init_guess=False)
     except Exception as e:
         print(f"  EXCEPTION at step {s}: {e}", flush=True)
@@ -438,9 +574,15 @@ for s in range(START_STEP, END_STEP):
               f" — ABORT", flush=True)
         break
 
-    v_sq = np.asarray(uw.function.evaluate(
-        V.sym.dot(V.sym), mesh.X.coords))
-    vrms = float(np.sqrt(np.mean(v_sq)))
+    # Volume-integrated vrms = sqrt(∫ V·V dV / ∫ 1 dV). Uses
+    # uw.maths.Integral so the result is parallel-safe and
+    # weights correctly when cell sizes vary (the previous
+    # rank-local np.mean over mesh.X.coords gave a different
+    # answer on every rank and was biased on graded meshes).
+    _vol = float(uw.maths.Integral(mesh=mesh, fn=1.0).evaluate())
+    _v2i = float(uw.maths.Integral(
+        mesh=mesh, fn=V.sym.dot(V.sym)).evaluate())
+    vrms = float(np.sqrt(max(_v2i / max(_vol, 1e-30), 0.0)))
     Nu_val = _nu()
 
     hist.append((s, t_sim, dt, wall, vrms, Nu_val,

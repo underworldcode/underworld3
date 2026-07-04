@@ -3708,6 +3708,7 @@ class Mesh(Stateful, uw_object):
 
         return self._min_radius
 
+    @uw.collective_operation
     def get_min_radius(self) -> float:
         """
         This method returns the global minimum distance from any cell centroid to a face.
@@ -3724,6 +3725,7 @@ class Mesh(Stateful, uw_object):
 
         return all_min_radii.min()
 
+    @uw.collective_operation
     def get_max_radius(self) -> float:
         """
         This method returns the global maximum distance from any cell centroid to a face.
@@ -3737,6 +3739,32 @@ class Mesh(Stateful, uw_object):
         all_max_radii = uw.utilities.gather_data(np.array((self._radii.max(),)), bcast=True)
 
         return all_max_radii.max()
+
+    @uw.collective_operation
+    def get_mean_radius(self) -> float:
+        """
+        Global mean distance from any cell centroid to a face — the
+        characteristic background cell length scale. Parallel-safe via
+        MPI allreduce of the local sum and count.
+
+        Together with :meth:`get_min_radius` / :meth:`get_max_radius`
+        this is the canonical "mesh length" API. Use this anywhere you
+        need a representative h0 (smoothing-length defaults, diffusion-
+        stability heuristics, problem-scale normalisation) rather than
+        reaching for the rank-local ``self._radii`` array, which gives
+        different answers on different MPI ranks and leaks downstream
+        (e.g. into JIT C source via per-rank pointwise-function inputs).
+        """
+
+        import numpy as np
+
+        radii = np.asarray(self._radii)
+        local_sum = float(radii.sum())
+        local_n = int(radii.size)
+        if uw.mpi.size > 1:
+            local_sum = uw.mpi.comm.allreduce(local_sum)
+            local_n = uw.mpi.comm.allreduce(local_n)
+        return local_sum / max(local_n, 1)
 
     # This should be deprecated in favour of using integrals
     def stats(self, uw_function, uw_meshVariable, basis=None):
