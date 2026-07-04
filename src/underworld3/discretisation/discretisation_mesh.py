@@ -2345,6 +2345,29 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
+        # The navigation coords (used to build the kd-tree control points and
+        # for point location) were captured as a reference to the ORIGINAL
+        # coords in __init__ and are not updated by the DM rebuild above, so
+        # on an adapted/deformed mesh they still describe the old geometry.
+        # They MUST be refreshed BEFORE _build_kd_tree_index() runs: that
+        # rebuild indexes _nav_coords with the NEW nav-DM point range, and a
+        # stale (old-sized) array raises IndexError when the mesh grew — and
+        # silently mislocates points otherwise (issue #286).
+        if getattr(self, "_nav_dm", None) is None:
+            self._nav_coords = numpy.asarray(
+                self.dm.getCoordinatesLocal().array
+            ).reshape(-1, self.cdim)
+        else:
+            # manifold mesh: the nav clone carries its own (ghosted) coords;
+            # refresh them from the rebuilt main DM where possible.
+            try:
+                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
+                self._nav_coords = numpy.asarray(
+                    self._nav_dm.getCoordinatesLocal().array
+                ).reshape(-1, self.cdim)
+            except Exception:
+                pass
+
         self._index = None
         self._build_kd_tree_index()
 
@@ -2395,25 +2418,8 @@ class Mesh(Stateful, uw_object):
         self.boundary_face_control_points_sign = None
         self._domain_radius_squared = float("inf")
 
-        # The navigation coords (used to build those control points and for
-        # point location) were captured as a reference to the ORIGINAL coords
-        # in __init__ and never refreshed here, so on a volume mesh they stayed
-        # at the undeformed geometry — the real reason a bulged-out region read
-        # as exterior. Re-point them at the current (deformed) DM coordinates.
-        if getattr(self, "_nav_dm", None) is None:
-            self._nav_coords = numpy.asarray(
-                self.dm.getCoordinatesLocal().array
-            ).reshape(-1, self.cdim)
-        else:
-            # manifold mesh: the nav clone carries its own (ghosted) coords;
-            # refresh them from the rebuilt main DM where possible.
-            try:
-                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
-                self._nav_coords = numpy.asarray(
-                    self._nav_dm.getCoordinatesLocal().array
-                ).reshape(-1, self.cdim)
-            except Exception:
-                pass
+        # NB: the _nav_coords refresh for the deformed/adapted geometry happens
+        # ABOVE, before _build_kd_tree_index() — see the issue #286 note there.
 
         # BUGFIX(#130): recompute the DOF coordinate cache for every
         # already-registered variable. Variables created before this
