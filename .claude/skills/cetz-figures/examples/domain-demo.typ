@@ -100,11 +100,15 @@
       }
     }
 
-    // 2. Dashed lines from test point to A and B centroids
+    // 2. Dashed lines from test point to all centroids
     let dashed-a = (paint: colour-a, thickness: 0.8pt, dash: "dashed")
     let dashed-b = (paint: colour-b, thickness: 0.8pt, dash: "dashed")
+    let dashed-c = (paint: colour-c, thickness: 0.6pt, dash: "dashed")
+    let dashed-d = (paint: colour-d, thickness: 0.6pt, dash: "dashed")
     line(xp, ca, stroke: dashed-a)
     line(xp, cb, stroke: dashed-b)
+    line(xp, cc, stroke: dashed-c)
+    line(xp, cd, stroke: dashed-d)
 
     // 3. All domain centroids
     dot(ca, label: $c _ A$, direction: (-0.12, -0.08), align-to: "east",

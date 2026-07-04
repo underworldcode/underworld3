@@ -16,17 +16,12 @@ Underworld3 provides `mesh.Gamma`, which gives the outward normal vector at boun
 
 For straight-edged boundaries (boxes, etc.), `mesh.Gamma` is exact. But for curved boundaries, the mesh is a piecewise-linear approximation of the curve, creating a "stair-step" pattern of normals:
 
-```
-True ellipse surface:     Mesh approximation:
+```{figure} figures/curved-bc/facet-vs-true-normals.png
+:alt: Facet-based vs true surface normals on a curved boundary
+:width: 80%
+:align: center
 
-    ╭───────╮                ╱─────╲
-   ╱         ╲              ╱       ╲
-  │    →→→    │            │  →→↗↗   │
-  │   →→→→    │    vs      │ →→→↗↗   │
-   ╲         ╱              ╲       ╱
-    ╰───────╯                ╲─────╱
-
-(smooth normals)          (step-function normals)
+True surface normals (left) vs facet-based `mesh.Gamma` normals (right) on a piecewise-linear mesh approximation of a curved boundary.
 ```
 
 This can cause significant errors in free-slip boundary conditions.

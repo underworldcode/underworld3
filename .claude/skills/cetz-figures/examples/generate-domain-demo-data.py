@@ -64,8 +64,8 @@ def assign_domain(cx, cy):
     # Domain C (green): far left
     if cx <= -1.2:
         return "C"
-    # Domain D (yellow): far bottom, plus right boundary strip
-    if cy <= -1.2 or (cx > 1.4 and cy <= 0.1):
+    # Domain D (yellow): bottom region, plus right boundary strip
+    if cy <= -0.75 or (cx > 1.4 and cy <= 0.1):
         return "D"
     # Domain B (red): upper-right quadrant plus entire top strip
     if (cx > 0.1 and cy > 0.1) or cy > 1.4:
