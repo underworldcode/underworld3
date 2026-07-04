@@ -1172,6 +1172,8 @@ class SemiLagrangian(uw_object):
         smoothing=0.0,
         preserve_moments=False,
         with_forcing_history: bool = False,
+        theta: float = 0.5,
+        monotone_mode: Optional[str] = None,
     ):
         super().__init__()
 
@@ -1185,6 +1187,23 @@ class SemiLagrangian(uw_object):
         self.order = order
         self.preserve_moments = preserve_moments
         self.with_forcing_history = with_forcing_history
+        # Adams-Moulton θ for the implicit flux at order 1:
+        #   θ=0.5  → Crank-Nicolson (A-stable, NOT L-stable; rings on stiff modes)
+        #   θ=1.0  → Backward Euler (L-stable, monotone for diffusion)
+        # Settable after construction: ``adv_diff.DuDt.theta = 1.0``.
+        self.theta = float(theta)
+        # Monotonicity limiter for the SL trace-back result:
+        #   None    → pure FE (legacy; can overshoot at non-nodal points
+        #             in cells with sharp gradients)
+        #   "clamp" → B.2: clip FE result to [nbr_min, nbr_max] of the
+        #             k=dim+1 nearest psi_star DOFs (preferred default —
+        #             bit-identical to FE in smooth regions, saves the
+        #             catastrophe at sharp-gradient overshoots)
+        #   "pick"  → B.1: keep FE if in nbr bounds, else re-evaluate
+        #             via RBF (Shepard). Doubles trace-back cost; more
+        #             conservative than clamp
+        # Settable after construction: ``adv_diff.DuDt.monotone_mode = "clamp"``.
+        self.monotone_mode = monotone_mode
 
         # Forcing-history storage. Allocated only if requested. Populated
         # each step via update_forcing_history(forcing_fn) — used by ETD-2
@@ -1295,7 +1314,7 @@ class SemiLagrangian(uw_object):
         self._exp_coeffs = _create_exp_coefficients(self.instance_number)
         # Initialise to order-1 / viscous values
         _update_bdf_values(self._bdf_coeffs, 1, None, [])
-        _update_am_values(self._am_coeffs, 1, 0.5)
+        _update_am_values(self._am_coeffs, 1, self.theta)
         _update_exp_values(self._exp_coeffs, None, None)
 
         # Working variable that has a potentially different discretisation from psi_star
@@ -1636,6 +1655,7 @@ class SemiLagrangian(uw_object):
         verbose: Optional[bool] = False,
         dt_physical: Optional[float] = None,
         store_result: Optional[bool] = True,
+        monotone_mode: Optional[str] = "__instance__",
     ):
         """Sample upstream values along characteristics before solve.
 
@@ -1655,6 +1675,13 @@ class SemiLagrangian(uw_object):
 
         self._dt = dt
 
+        # Resolve monotone_mode: explicit param overrides instance attr.
+        # Sentinel "__instance__" means "use self.monotone_mode" (the
+        # API-friendly default; lets the user set the limiter once via
+        # `slddt.monotone_mode = "clamp"` and have every solve honour it).
+        if monotone_mode == "__instance__":
+            monotone_mode = getattr(self, "monotone_mode", None)
+
         if not self._history_initialised:
             self.initialise_history()
 
@@ -1671,7 +1698,7 @@ class SemiLagrangian(uw_object):
 
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
-        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
         ## Progress from the oldest part of the history
         # 1. Copy the stored values down the chain in preparation for the next timestep
@@ -1903,6 +1930,7 @@ class SemiLagrangian(uw_object):
             v_mid_result = uw.function.global_evaluate(
                 self.V_fn,
                 mid_pt_coords,
+                evalf=evalf,
             )
 
             # CRITICAL: Preserve UnitAwareArray through slicing
@@ -1967,9 +1995,15 @@ class SemiLagrangian(uw_object):
 
             # Evaluate psi_star at upstream coordinates
             # global_evaluate now returns dimensional results (gateway fix 2025-11-28)
+            # When evalf=True, route through RBF (Shepard, bounded by neighbour
+            # values) instead of FE shape functions. FE Lagrange P3 can
+            # overshoot at non-nodal upstream points in cells with sharp
+            # gradients — observed as the 'pepper' DOF scatter that ignites
+            # catastrophic ringing on free-surface convection at high Ra.
             value_at_end_points = uw.function.global_evaluate(
                 expr_to_evaluate,
                 end_pt_coords,
+                evalf=evalf,
             )
 
             # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned
@@ -1977,6 +2011,61 @@ class SemiLagrangian(uw_object):
             psi_star_units = self.psi_star[i].units
             if psi_star_units is not None and not isinstance(value_at_end_points, UnitAwareArray):
                 value_at_end_points = UnitAwareArray(value_at_end_points, units=psi_star_units)
+
+            # Monotonicity limiter (B.1 / B.2). Bound the FE/RBF
+            # trace-back result to the local data range of psi_star
+            # near each upstream coord. Cures the FE Lagrange
+            # overshoot pattern in cells with sharp gradients while
+            # preserving FE accuracy elsewhere.
+            #   monotone_mode = "clamp" → B.2: clip to [nbr_min, nbr_max]
+            #   monotone_mode = "pick"  → B.1: keep FE if in bounds,
+            #                              else use RBF at that DOF
+            if monotone_mode in ("clamp", "pick"):
+                # Plain-numpy coords for kdtree (handle pint/unit-aware)
+                if hasattr(end_pt_coords, "magnitude"):
+                    epc_nd = np.asarray(end_pt_coords.magnitude)
+                else:
+                    epc_nd = np.asarray(end_pt_coords)
+                psi_coords_nd = np.asarray(self.psi_star[i].coords_nd)
+                if hasattr(psi_coords_nd, "magnitude"):
+                    psi_coords_nd = np.asarray(
+                        psi_coords_nd.magnitude)
+                nnn = self.mesh.dim + 1
+                kdt = uw.kdtree.KDTree(
+                    np.ascontiguousarray(psi_coords_nd))
+                _, idxs = kdt.query(
+                    np.ascontiguousarray(epc_nd), k=nnn,
+                    sqr_dists=False)
+                psi_data = np.asarray(self.psi_star[i].data)
+                # psi_data: (n_dofs, ...) — flatten trailing dims for
+                # ease of nbr-min/max, then restore.
+                psi_data_flat = psi_data.reshape(psi_data.shape[0], -1)
+                nbr_vals = psi_data_flat[idxs]  # (n_pts, k, ncomp_flat)
+                nbr_min = nbr_vals.min(axis=1)
+                nbr_max = nbr_vals.max(axis=1)
+                veep_np = np.asarray(value_at_end_points)
+                orig_shape = veep_np.shape
+                veep_flat = veep_np.reshape(nbr_min.shape)
+                if monotone_mode == "clamp":
+                    veep_lim = np.clip(veep_flat, nbr_min, nbr_max)
+                else:
+                    # B.1 "pick": re-evaluate via RBF where FE was
+                    # out of bounds.
+                    value_rbf = uw.function.global_evaluate(
+                        expr_to_evaluate, end_pt_coords, evalf=True)
+                    vrbf_flat = np.asarray(value_rbf).reshape(
+                        nbr_min.shape)
+                    out_of_bounds = ((veep_flat < nbr_min)
+                                     | (veep_flat > nbr_max))
+                    veep_lim = np.where(
+                        out_of_bounds, vrbf_flat, veep_flat)
+                value_at_end_points = veep_lim.reshape(orig_shape)
+                # Re-wrap units after numpy ops, if needed.
+                if (psi_star_units is not None
+                        and not isinstance(
+                            value_at_end_points, UnitAwareArray)):
+                    value_at_end_points = UnitAwareArray(
+                        value_at_end_points, units=psi_star_units)
 
             self.psi_star[i].array[...] = value_at_end_points
 

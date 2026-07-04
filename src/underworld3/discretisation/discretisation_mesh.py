@@ -1784,6 +1784,31 @@ class Mesh(Stateful, uw_object):
         self.dm.setCoordinatesLocal(coord_vec)
         self.nuke_coords_and_rebuild()
 
+        # BUGFIX: invalidate caches whose contents become stale when mesh
+        # coordinates change. Without these, _function.evaluate hits cached
+        # DMInterpolation structures built on the pre-deform mesh — the
+        # cells those coords were in have moved, but the structure still
+        # says "coord i is in cell N, use these shape function values".
+        # This produces silent stale-interpolation amplification across
+        # steps and matches the catastrophic-ringing fingerprint:
+        # deterministic from-scratch, irreproducible on checkpoint+restart,
+        # unhelped by Winslow smoothing.  mesh.adapt() and _legacy_access
+        # invalidate the same caches; _deform_mesh was the gap.
+        self._evaluation_hash = None
+        self._evaluation_interpolated_results = None
+        if hasattr(self, '_dminterpolation_cache'):
+            self._dminterpolation_cache.invalidate_all("mesh deformed")
+        self._topology_version += 1
+        # Also nuke any *user-installed* navigation caches that key
+        # off coord-array identity. The runner's
+        # restore_points_to_domain installs a `_restore_kdt` /
+        # `_restore_coords_id` pair on the mesh; we invalidate
+        # explicitly so a deform can never be missed even if id()
+        # reuses an old address.
+        for attr in ("_restore_kdt", "_restore_coords_id"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+
         # Rebuild the _coords array view.  nuke_coords_and_rebuild may
         # replace the coordinate vector internally (createCoordinateSpace),
         # leaving self._coords as a stale numpy view of the old buffer.

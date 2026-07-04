@@ -585,7 +585,11 @@ def _step(state, scheme, dt_factor, dt_cap=None,
         # check uses only the current u_n and h to enforce that.
         LOAD_VALIDITY_CAP = 0.25
         u_n_now = sample_un()
-        h_inf = max(float(np.max(np.abs(h0))), 1.0e-10)
+        # Floor at 0.01·r_o (1% of domain radius) so the limiter doesn't
+        # trap Δt → 0 at startup when h ≈ 0 (e.g. convection from rest).
+        # For cases with finite initial h (relaxation, continent isostasy),
+        # h_inf is naturally larger than the floor so the floor is dormant.
+        h_inf = max(float(np.max(np.abs(h0))), 0.01 * r_o)
         u_n_inf = float(np.max(np.abs(u_n_now)))
         ratio = dt * u_n_inf / h_inf
         if ratio > LOAD_VALIDITY_CAP and u_n_inf > 1e-10:

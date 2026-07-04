@@ -2945,6 +2945,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         # Update History / Flux History terms
         # SemiLagrange and Lagrange may have different sequencing.
 
+        # NOTE: monotone_mode is taken from the DDt instance attribute
+        # by default (e.g. `adv_diff.DuDt.monotone_mode = "clamp"`).
+        # Direct override via kwarg is also supported; see ddt.py.
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
