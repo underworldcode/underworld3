@@ -1356,7 +1356,35 @@ class SemiLagrangian(uw_object):
     bcs : list, default=[]
         Boundary conditions for projections.
     order : int, default=1
-        Number of history timesteps (1 for first-order, 2 for second-order).
+        Number of history timesteps and, for the time-derivative operator,
+        the order of the BDF backward-difference stencil taken *along the
+        characteristic*:
+
+        - ``order = 1`` → ``[1, -1]``: single-step difference
+          ``(ψ^{n+1} - ψ*)/Δt``. Paired with a trapezoidal (Crank-Nicolson,
+          ``theta=0.5``) flux this is the standard **SLCN** scheme — second-
+          order accurate even though the stencil and the departure point
+          are first-order, because the trapezoidal-along-the-trajectory
+          structure recovers the order (Spiegelman & Katz, 2006).
+        - ``order = 2`` → ``[3/2, -2, 1/2]``: BDF2 stencil
+          ``(3/2 ψ^{n+1} - 2 ψ* + 1/2 ψ**)/Δt``, using two departure
+          points. This is the **SL-BDF2** scheme. BDF2 is a one-sided
+          implicit method: it expects the *flux evaluated at* ``n+1``
+          only, i.e. a Backward-Euler-centred flux (``theta=1.0``), **not**
+          Crank-Nicolson. SL-BDF2 reaches the same second order as SLCN but
+          avoids the spurious resonance/ringing CN can show on stiff modes
+          (Bonaventura et al., 2021).
+
+        .. important::
+           BDF (time-derivative) and Adams-Moulton/θ (flux) are *distinct*
+           multistep families and must be **paired consistently**: SLCN =
+           ``order=1`` + ``theta=0.5``; SL-BDF2 = ``order=2`` + ``theta=1.0``.
+           Mixing a BDF2 stencil with a Crank-Nicolson flux (``order=2`` +
+           ``theta=0.5``) centres the two sides at different times and is
+           **not** a consistent second-order scheme. In
+           :class:`~underworld3.systems.solvers.SNES_AdvectionDiffusion` the
+           advective ``DuDt`` carries this BDF ``order`` while the diffusive
+           ``DFDt`` carries the θ-method flux — set them as a matched pair.
     smoothing : float, default=0.0
         Smoothing parameter for projections.
     preserve_moments : bool, default=False
@@ -1393,6 +1421,24 @@ class SemiLagrangian(uw_object):
     - Problems where CFL stability is restrictive
     - Viscoelastic stress advection
 
+    The time-derivative (BDF ``order``) and the diffusive flux integrator
+    (Adams-Moulton ``theta``) are separate choices that must be paired
+    consistently — see ``order`` and ``theta`` above and the discussion in
+    ``docs/advanced/semi-lagrangian-time-integration.md``.
+
+    References
+    ----------
+    Spiegelman, M., & Katz, R. F. (2006). A semi-Lagrangian Crank-Nicolson
+    algorithm for the numerical solution of advection-diffusion problems.
+    *Geochemistry, Geophysics, Geosystems*, 7(4).
+    https://doi.org/10.1029/2005GC001073
+
+    Bonaventura, L., Calzola, E., Carlini, E., & Ferretti, R. (2021).
+    Second order fully semi-Lagrangian discretizations of
+    advection-diffusion-reaction systems. *Journal of Scientific Computing*,
+    88, 23. https://doi.org/10.1007/s10915-021-01518-8 — SL-BDF2 reaches
+    second order while avoiding the spurious resonance of CN-type schemes.
+
     See Also
     --------
     Eulerian : For fixed-mesh time derivatives without advection.
@@ -1419,6 +1465,7 @@ class SemiLagrangian(uw_object):
         with_forcing_history: bool = False,
         monotone_mode: Optional[str] = None,
         theta: float = 0.5,
+        old_frame_traceback: bool = False,
     ):
         super().__init__()
 
@@ -1458,6 +1505,36 @@ class SemiLagrangian(uw_object):
         # Settable after construction:
         #   ``adv_diff.DuDt.theta = 1.0``
         self.theta = float(theta)
+
+        # Old-frame semi-Lagrangian reach-back (Stage 0 of the
+        # lagged-clone design, docs/developer/design/
+        # lagged-clone-sl-history.md). On a moving mesh the standard
+        # ALE trace-back samples the CARRY'd history on the NEW
+        # geometry and subtracts v_mesh = Δx/dt to compensate the node
+        # motion. That fold is lossy at a disequilibrium free surface
+        # (it re-interpolates the new mesh for the exact-by-construction
+        # old nodal value, and leaves a spurious normal component) and
+        # blows up high-Ra free-surface convection (~step 20, Ra=1e5).
+        #
+        # With ``old_frame_traceback=True`` the trace-back instead:
+        #   * computes the departure foot from the PHYSICAL velocity
+        #     only (no v_mesh — V_fn must be the physical velocity, NOT
+        #     v − v_mesh), x_dep = x_new − dt·V(x_new − ½dt·V); and
+        #   * samples ``psi_star`` on the mesh EPHEMERALLY restored to
+        #     the previous-step (old) geometry, where the foot is always
+        #     representable (the old domain covers the vacated layer).
+        # Mesh motion is then exact (known old node positions) and only
+        # the physical advection is approximate, sampled where it is
+        # always interpolable. ``on_remesh`` stashes the old geometry;
+        # ``update_pre_solve`` consumes it. Mesh-agnostic: works for a
+        # free surface or interior-node (mmpde/OT) adaptation alike.
+        #
+        # Settable after construction:
+        #   ``adv_diff.DuDt.old_frame_traceback = True``
+        self.old_frame_traceback = bool(old_frame_traceback)
+        # One-step stash of the previous-step (old) geometry, set by
+        # ``on_remesh`` and consumed (cleared) by ``update_pre_solve``.
+        self._oldframe_X = None
 
         # Forcing-history storage. Allocated only if requested. Populated
         # each step via update_forcing_history(forcing_fn) — used by ETD-2
@@ -1778,10 +1855,23 @@ class SemiLagrangian(uw_object):
                     for v in owned if v in ctx.managed_snapshot}
             remap_var_set(self.mesh, owned,
                           ctx.old_X, ctx.new_X, snap)
-            # The ALE pulse is meaningless on a reset; clear any
-            # pending displacement so the next solve does a plain
-            # trace-back.
+            # The ALE pulse / old-frame reach are meaningless on a
+            # discrete reset; clear any pending state so the next solve
+            # does a plain (current-mesh) trace-back.
             self._pending_v_mesh_disp = None
+            self._oldframe_X = None
+            return
+
+        # Old-frame reach-back: don't build a v_mesh pulse at all.
+        # Stash the geometry the CARRY'd history corresponds to (the
+        # mesh as of the last solve) so the next ``update_pre_solve``
+        # can sample ``psi_star`` on it. The history .data is unchanged
+        # (CARRY), so across multiple adapts before one solve we keep
+        # the EARLIEST old_X — the geometry the data actually belongs
+        # to — rather than overwriting with each intermediate move.
+        if self.old_frame_traceback:
+            if self._oldframe_X is None:
+                self._oldframe_X = np.asarray(ctx.old_X).copy()
             return
 
         # Standard ALE: leave CARRY'd .data alone, accumulate Δx for
@@ -2232,6 +2322,19 @@ class SemiLagrangian(uw_object):
         if not self._history_initialised:
             self.initialise_history()
 
+        # Old-frame reach-back (mutually exclusive with the ALE pulse:
+        # ``on_remesh`` stashes ``_oldframe_X`` INSTEAD of a v_mesh disp,
+        # so ``_ale_active`` is False below whenever this is True). When
+        # active the foot is computed from the physical V (no v_mesh) and
+        # ``psi_star`` is sampled on the mesh ephemerally restored to the
+        # old geometry — see the ``global_evaluate`` block in the loop.
+        # Computed up here because it also governs how psi_star[0] is
+        # re-recorded (direct nodal carry, not a lossy re-evaluate on the
+        # deformed mesh).
+        _oldframe_active = (self.old_frame_traceback
+                            and self._oldframe_X is not None)
+        _oldframe_X = self._oldframe_X
+
         # Refresh the source-snapshot variable so the projection's source
         # field captures psi_star[0]'s state from BEFORE this step's solve.
         # Per-step memcpy keeps the snapshot machinery aligned with
@@ -2339,8 +2442,18 @@ class SemiLagrangian(uw_object):
                 # evaluate path bit-identically; non-scalar / expression psi_fn
                 # falls back to evaluate(). Proper fix (remap-on-adapt / ALE)
                 # tracked separately.
+                # Old-frame: record the history by a DIRECT nodal carry
+                # of the field rather than re-evaluating psi_fn at the
+                # (centroid-shifted) nodes of the DEFORMED mesh. The
+                # re-evaluate injects boundary-layer interpolation error
+                # that grows with mesh distortion and then rides the
+                # old-geometry sample below — the exact value we want is
+                # the carried nodal value (cf. the lagged-clone "store
+                # primitives" principle). Reuses the parallel direct-copy
+                # path, which returns None for non-scalar / expression
+                # psi_fn (those fall back to evaluate).
                 _direct = (self._record_psi_star_from_field_data()
-                           if uw.mpi.size > 1 else None)
+                           if (uw.mpi.size > 1 or _oldframe_active) else None)
                 if _direct is not None:
                     eval_result = _direct
                 else:
@@ -2606,8 +2719,16 @@ class SemiLagrangian(uw_object):
             # Calculate upstream coordinates: current position - velocity * timestep
             end_pt_coords = coords - v_at_mid_pts * dt_for_calc
 
-            # Clamp upstream coordinates to the domain boundary
-            if self.mesh.return_coords_to_bounds is not None:
+            # Clamp upstream coordinates to the domain boundary.
+            # Skipped under old-frame: the foot is sampled on the OLD
+            # geometry, whose domain covers the layer the moving surface
+            # vacated; clamping to the new-mesh / construction-time
+            # bounds would pull valid old-domain feet onto the boundary.
+            # The monotone limiter on the sample below bounds any foot
+            # that does fall outside the old mesh (matches the validated
+            # prototype, which omits this clamp).
+            if (self.mesh.return_coords_to_bounds is not None
+                    and not _oldframe_active):
                 end_pt_coords = self.mesh.return_coords_to_bounds(end_pt_coords)
 
             # Extract scalar from (1,1) Matrix for scalar variables
@@ -2631,12 +2752,32 @@ class SemiLagrangian(uw_object):
             # option (uw.function.global_evaluate), so any resampling
             # path can request the same bounded result. monotone_mode is
             # None in the default trajectory → no-op (bit-identical).
-            value_at_end_points = uw.function.global_evaluate(
-                expr_to_evaluate,
-                end_pt_coords,
-                evalf=evalf,
-                monotone=monotone_mode,
-            )
+            # Old-frame: sample psi_star on the mesh ephemerally
+            # restored to the previous-step (old) geometry. The foot
+            # (end_pt_coords) was computed in the current frame from the
+            # physical velocity; the old mesh covers the old domain so
+            # the foot is representable there with no extrapolation.
+            # ``ephemeral_coords`` snapshots the current (new) geometry
+            # and restores it on exit; ``_deform_mesh`` only rebuilds the
+            # DS / DOF-coordinate caches, leaving every variable's nodal
+            # .data untouched (de-risked: bit-identical round-trip), so
+            # psi_star realises "the old field on the old geometry".
+            if _oldframe_active:
+                with self.mesh.ephemeral_coords():
+                    self.mesh._deform_mesh(_oldframe_X)
+                    value_at_end_points = uw.function.global_evaluate(
+                        expr_to_evaluate,
+                        end_pt_coords,
+                        evalf=evalf,
+                        monotone=monotone_mode,
+                    )
+            else:
+                value_at_end_points = uw.function.global_evaluate(
+                    expr_to_evaluate,
+                    end_pt_coords,
+                    evalf=evalf,
+                    monotone=monotone_mode,
+                )
 
             # CRITICAL FIX (2025-11-27): If psi_star has units, ensure the assigned
             # value also has units. global_evaluate may return plain arrays.
@@ -2691,6 +2832,12 @@ class SemiLagrangian(uw_object):
         # consumption clears the lot.
         if _ale_active:
             self._consume_ale_pulse()
+
+        # Old-frame: consume the one-step old-geometry stash. The next
+        # adapt re-stashes; a non-adapting step sees None and traces
+        # back on the current mesh (old geom == new geom).
+        if _oldframe_active:
+            self._oldframe_X = None
 
         return
 

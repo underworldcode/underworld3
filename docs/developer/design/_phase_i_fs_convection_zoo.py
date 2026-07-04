@@ -343,7 +343,10 @@ def _build(res=20, Ra=1.0e4, structured=False, v_degree=2,
            rho_g=1.0,
            nitsche_penalty=0.0,
            t_degree=3,
-           outer_refine_factor=1.0):
+           outer_refine_factor=1.0,
+           nitsche_normal="radial",
+           adv_order=1,
+           old_frame=False):
     """Build the thermal-convection / free-surface annulus benchmark.
 
     Variables
@@ -470,10 +473,33 @@ def _build(res=20, Ra=1.0e4, structured=False, v_degree=2,
     #      surface displacement Δh ≈ Δt·v_n implicitly through the Stokes
     #      operator. K_fssa = rho_g · θ · Δt is the stiffness that opposes
     #      surface radial velocity. Zero θ recovers no-FSSA behaviour.
+    # Velocity-constraint / surface-stress terms use the TRUE mesh normal
+    # when nitsche_normal="true" (mesh.Gamma_P1, projected P1 normals that
+    # auto-update on deform). On a DEFORMED surface the analytic radial r̂
+    # is NOT the surface normal, so penalising v·r̂ constrains the wrong
+    # component and leaks throughflow ∝ surface tilt — the residual
+    # free-surface instability. Gravity/buoyancy below correctly stay radial.
+    bc_normal_var = None
+    if nitsche_normal == "true":
+        _bc_n = mesh.Gamma_P1            # true (projected) surface normal
+    elif nitsche_normal == "field":
+        # Caller-supplied normal: a vector MeshVariable the driver fills with
+        # the GENUINE surface normal computed from deformed surface geometry
+        # (Gamma_P1 returns radial — see PROJECTED_NORMALS investigation).
+        bc_normal_var = uw.discretisation.MeshVariable(
+            f"n_user_conv_{pair_tag}", mesh, mesh.cdim, degree=2,
+            continuous=True, varsymbol=r"n_{\rm u}")
+        # init radial so it's harmless until the driver fills the surface
+        _nc = np.asarray(bc_normal_var.coords)
+        _rr = np.sqrt((_nc ** 2).sum(1))
+        bc_normal_var.data[:, 0] = _nc[:, 0] / _rr
+        bc_normal_var.data[:, 1] = _nc[:, 1] / _rr
+        _bc_n = bc_normal_var.sym
+    else:
+        _bc_n = mesh.CoordinateSystem.unit_e_0   # analytic radial r̂ (legacy)
     K_fssa = float(rho_g * fssa_theta * fssa_dt_ref)
     fssa_term = (
-        K_fssa * v.sym.dot(mesh.CoordinateSystem.unit_e_0)
-        * mesh.CoordinateSystem.unit_e_0
+        K_fssa * v.sym.dot(_bc_n) * _bc_n
     )
     # Nitsche-style penalty as an updateable MeshVariable so the time
     # loop can ramp it down (release the surface gradually). Same role
@@ -486,8 +512,7 @@ def _build(res=20, Ra=1.0e4, structured=False, v_degree=2,
     nitsche_K_var.data[:, 0] = float(nitsche_penalty)
     nitsche_term = (
         nitsche_K_var.sym[0]
-        * v.sym.dot(mesh.CoordinateSystem.unit_e_0)
-        * mesh.CoordinateSystem.unit_e_0
+        * v.sym.dot(_bc_n) * _bc_n
     )
     stokes.add_natural_bc(
         -rho_g * delta_h_load.sym[0] * mesh.CoordinateSystem.unit_e_0
@@ -568,9 +593,38 @@ def _build(res=20, Ra=1.0e4, structured=False, v_degree=2,
     # mesh's monkey-patched default (snap out-of-mesh trace-back coords
     # to nearest DOF), avoiding silent extrapolation that injects
     # spurious BC-from-undeformed-surface values into the T transport.
+    # old_frame: the production cure for the high-Ra free-surface SL
+    # blow-up. The trace-back samples psi_star on the previous-step
+    # geometry instead of the lossy v_mesh fold. Build an explicit DuDt
+    # so the advective BDF order genuinely flows (the default solver path
+    # hardcodes the DuDt at order 1) and old_frame is set. V_fn must be
+    # PHYSICAL (v_mesh stays 0 unless --ale-correction, so v - v_mesh = v).
+    #
+    # SCHEME ORDERS ARE DECOUPLED. ``adv_order`` sets the BDF order of the
+    # advective time-derivative (DuDt): 1 = single-step backward difference
+    # (SLCN), 2 = BDF2 stencil. The diffusive flux (DFDt) is kept as the
+    # order-1 Adams–Moulton θ-method (so θ selects the flux time-centring):
+    #   * SLCN    = adv_order 1 + θ=0.5 (trapezoidal flux, centred n..n+1)
+    #   * SL-BDF2 = adv_order 2 + θ=1.0 (flux implicit at n+1, the centring
+    #               BDF2 requires — NOT trapezoidal; BDF2+CN is inconsistent)
+    # Letting DFDt.order follow adv_order instead would select AM3/AM4 for
+    # the flux (and ignore θ), which is a different, untested scheme. See
+    # systems/ddt.py SemiLagrangian docstring (theta/order) for refs.
+    if old_frame:
+        _duDt = uw.systems.ddt.SemiLagrangian(
+            mesh, t_soln.sym, v.sym - v_mesh.sym,
+            vtype=uw.VarType.SCALAR, degree=t_soln.degree,
+            continuous=t_soln.continuous, varsymbol=t_soln.symbol,
+            bcs=[], order=adv_order, smoothing=0.0,
+            monotone_mode=None, theta=0.5, old_frame_traceback=True,
+        )
+    else:
+        _duDt = None
     adv_diff = uw.systems.AdvDiffusionSLCN(
         mesh, u_Field=t_soln, V_fn=v.sym - v_mesh.sym, verbose=False,
         restore_points_func=mesh.restore_points_to_domain,
+        # DFDt (flux) kept order-1 θ-method; DuDt carries the BDF order.
+        order=(1 if old_frame else adv_order), DuDt=_duDt,
     )
     # TODO(env-flag-hack): UW_LAUNCH_CLIP — see also matching block in
     # main loop (look for `launch_clip_active`). When we decide where
@@ -640,6 +694,7 @@ def _build(res=20, Ra=1.0e4, structured=False, v_degree=2,
         'internal_idx': internal_idx, 'internal_th': internal_th,
         'area_uw_initial': area_uw_initial,
         'nitsche_K_var': nitsche_K_var,
+        'bc_normal_var': bc_normal_var,
         'nitsche_penalty_initial': float(nitsche_penalty),
         'X_initial': X_initial,
         'surface_disp_var': surface_disp_var,
@@ -1645,6 +1700,49 @@ def main():
                    "re-snap the surface ring radially. Value = iteration "
                    "count (0 = off). Sawtooth-only: small counts; a blanket "
                    "low-pass over-damps the signal. Parallel-clean.")
+    p.add_argument('--deform-aware-bounds', action='store_true',
+                   help="Replace mesh.return_coords_to_bounds with a "
+                   "deform-aware clamp that returns out-of-domain SL "
+                   "trace-back points to the LIVE deformed surface r(theta) "
+                   "(read from the current upper nodes each call) instead of "
+                   "the frozen r_o circle. Fixes the boundary->inward zero/"
+                   "overshoot artefact: the stock annulus clamp uses the "
+                   "undeformed radii, so inward-bulge departure points fall "
+                   "outside the mesh and RBF-extrapolate to illegal values.")
+    p.add_argument('--resolve-before-advect', action='store_true',
+                   help="Sequencing fix: re-solve Stokes on the FINAL deformed "
+                   "mesh after all mesh motion and BEFORE the velocity is "
+                   "consumed by ALE (v_mesh) + adv_diff. The RK schemes leave "
+                   "v at an intermediate-stage mesh (no re-solve after the "
+                   "accepted deform); using that stale v on the final mesh "
+                   "injects a per-step transport error that accumulates "
+                   "(worse at finer res). The isostasy driver re-solved "
+                   "end-of-step; the convection zoo did not.")
+    p.add_argument('--separate-operators', action='store_true',
+                   help="Bulletproof separated-operator surface convection (no "
+                   "ALE). After the mesh deforms each step, FE-remap T "
+                   "geometrically onto the deformed mesh (preserve the "
+                   "physical field; undo _deform_mesh's Lagrangian carry), "
+                   "re-solve Stokes on the remapped T, then SL-advect by v "
+                   "(V_fn=v, run WITHOUT --ale-correction). Keeps the "
+                   "mesh-motion remap and the advection as separate, "
+                   "individually-valid operators so interpolation/ALE error "
+                   "can't alias into integrator-scheme deficiency.")
+    p.add_argument('--rigid-surface', action='store_true',
+                   help="Isolation reference: FREEZE the mesh. Each step does "
+                   "only stokes.solve() + adv_diff.solve() on the fixed "
+                   "initial mesh — no surface evolution, no diffuser mesh "
+                   "motion, no ALE. Tests whether the convection + T-solve is "
+                   "clean independent of the free-surface mesh-motion path.")
+    p.add_argument('--no-bounds-clamp', action='store_true',
+                   help="Disable mesh.return_coords_to_bounds (the SL "
+                   "trace-back departure-point clamp). The annulus clamp is "
+                   "hardwired to the UNDEFORMED radii (0.99*r_o, 1.01*r_i), so "
+                   "on a deformed free surface it wrongly yanks in-bulge "
+                   "departure points back to r=0.99 and samples the cold "
+                   "near-surface field (T~0) — the boundary->inward zero "
+                   "artefact. Disabling lets out-of-domain points RBF-"
+                   "extrapolate (bounded by monotone) instead.")
     args = p.parse_args()
 
     if args.p_degree >= args.v_degree:
@@ -1712,6 +1810,44 @@ def main():
               flush=True)
         _reset_gamma_history()
         os.makedirs(SNAP_DIR, exist_ok=True)
+
+        # Free-surface fix probe: the annulus SL trace-back bounds-clamp is
+        # hardwired to the undeformed radii and mis-clamps in-bulge departure
+        # points to r=0.99 (cold) once the surface deforms. Disable it so
+        # out-of-domain points RBF-extrapolate instead.
+        if args.no_bounds_clamp:
+            state['mesh'].return_coords_to_bounds = None
+            print("  [no-bounds-clamp] return_coords_to_bounds disabled",
+                  flush=True)
+        if args.deform_aware_bounds:
+            _dm_mesh = state['mesh']
+            _dm_idx = state['internal_idx']
+            _dm_ri = float(state['r_inner'])
+
+            def _deform_aware_clamp(coords, _m=_dm_mesh, _ii=_dm_idx,
+                                    _ri=_dm_ri):
+                c = np.asarray(coords)
+                xy = c[:, :2]
+                r = np.sqrt((xy ** 2).sum(axis=1))
+                th = np.arctan2(xy[:, 1], xy[:, 0])
+                # LIVE deformed surface radius vs angle (current upper nodes)
+                spos = _m.X.coords[_ii]
+                sr = np.sqrt(spos[:, 0] ** 2 + spos[:, 1] ** 2)
+                sth = np.arctan2(spos[:, 1], spos[:, 0])
+                o = np.argsort(sth)
+                r_surf = np.interp(th, sth[o], sr[o], period=2 * np.pi)
+                scale = np.ones_like(r)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    scale = np.where(r > r_surf, 0.999 * r_surf / r, scale)
+                    scale = np.where(r < _ri, 1.001 * _ri / r, scale)
+                scale = np.where(np.isfinite(scale), scale, 1.0)
+                c[:, 0] = c[:, 0] * scale
+                c[:, 1] = c[:, 1] * scale
+                return c
+
+            _dm_mesh.return_coords_to_bounds = _deform_aware_clamp
+            print("  [deform-aware-bounds] live-surface clamp installed",
+                  flush=True)
 
         # --- Goal-2: one-time surface submesh for --surface-smooth ---
         # Extract the Upper boundary as a codim-1 submesh and build a
@@ -1896,16 +2032,35 @@ def main():
             # compute v_mesh = Δcoords/Δt for the ALE correction.
             v_mesh_var = state['v_mesh']
             prev_v_dof_coords = v_mesh_var.coords.copy()
+            # Separated-operator reference: snapshot the mesh coords and the
+            # T field BEFORE the mesh moves, so we can FE-remap T (preserve
+            # the physical field) onto the deformed mesh afterwards instead
+            # of Lagrangian-carrying it (the ALE shortcut). Operator 1 =
+            # geometric remap; operator 2 = SL advection by v (no v_mesh).
+            if args.separate_operators:
+                _so_X_old = state['mesh'].X.coords.copy()
+                _so_T_old = state['t_soln'].data[:, 0].copy()
             # Instrumentation: tag the step + phase for restore logging.
             globals()['_DEBUG_STEP'] = s + 1
             globals()['_DEBUG_PHASE'] = 'step'
             T_pre_step = state['t_soln'].data[:, 0].copy()
             _T_TRACK['step'] = s + 1
             _t_track("step_begin")
-            h_pole, dt = _step(state, scheme, args.dt_factor,
-                               dt_cap=dt_thermal,
-                               dt_cap_mode=args.dt_cap_mode,
-                               dt_cap_c=args.dt_cap_c)
+            if args.rigid_surface:
+                # Frozen mesh: only the Stokes + (later) adv_diff solves.
+                # No surface evolution, no diffuser, no ALE. dt via the
+                # same fixed thermal-CFL cap as _step's 'fixed' mode.
+                _rs_stokes = state['stokes']
+                _rs_stokes.solve(zero_init_guess=False)
+                dt = args.dt_factor * _rs_stokes.estimate_dt()
+                if args.dt_cap_mode != 'none':
+                    dt = min(dt, dt_thermal)
+                h_pole = 0.0
+            else:
+                h_pole, dt = _step(state, scheme, args.dt_factor,
+                                   dt_cap=dt_thermal,
+                                   dt_cap_mode=args.dt_cap_mode,
+                                   dt_cap_c=args.dt_cap_c)
             # Optional Winslow smoothing of interior nodes after the
             # step's mesh deformation. Boundary stays put, interior
             # re-equilibrates so high-aspect-ratio refined cells don't
@@ -1975,6 +2130,65 @@ def main():
                                    _mv.boundaries.Lower.name],
                     method='spring', n_iters=args.mover_iters,
                     alpha=0.5)
+            # === Separated-operator reference (bulletproof; no ALE) ===
+            # Operator 1 — GEOMETRIC REMAP of T onto the deformed mesh.
+            # _deform_mesh Lagrangian-carries T (DOF values ride the moving
+            # nodes), which is a spurious advection by the non-material mesh
+            # motion. Undo it: evaluate the PRE-deform field (X_old, T_old) at
+            # the NEW node positions, so the physical T field is preserved
+            # across the mesh move. Then re-solve Stokes on the remapped T,
+            # then SL-advect by v (operator 2). ALE folds 1+2 into one SL
+            # trace-back along v - v_mesh; here we keep them separate so an
+            # interpolation/ALE bug can't masquerade as a scheme deficiency.
+            if args.separate_operators:
+                import underworld3 as uw
+                _so_mesh = state['mesh']
+                _so_T = state['t_soln']
+                _so_X_new = _so_mesh.X.coords.copy()      # deformed vertices
+                # Query points are T's OWN P3 DOF positions on the deformed
+                # mesh (NOT the mesh vertices). Restore the old geometry +
+                # old field, sample the old field at those new DOF positions,
+                # then restore the deformed geometry and write the remap.
+                _so_T_dof_new = np.asarray(_so_T.coords).copy()
+                _so_mesh._deform_mesh(_so_X_old)
+                _so_T.data[:, 0] = _so_T_old
+                _so_T_remap = np.asarray(uw.function.evaluate(
+                    _so_T.sym[0], _so_T_dof_new)).reshape(-1)
+                _so_mesh._deform_mesh(_so_X_new)
+                _so_T.data[:, 0] = _so_T_remap
+                if getattr(args, 'clip_t', False):
+                    np.clip(_so_T.data[:, 0], 0.0, 1.0,
+                            out=_so_T.data[:, 0])
+                # Re-solve Stokes on the remapped T (buoyancy changed) so v
+                # reflects operator-1's field before operator-2 advects.
+                state['stokes'].is_setup = False
+                state['stokes'].solve(zero_init_guess=False)
+            # Sequencing fix: re-solve Stokes on the FINAL deformed mesh
+            # (after _step + any mover/smoother/tangent-slip motion) so the
+            # velocity consumed by ALE and adv_diff below is consistent with
+            # the current mesh. The RK schemes leave v at an intermediate
+            # stage mesh; using that stale v injects a per-step transport
+            # error. Mesh is not moved here, so v_mesh (from coords) is
+            # unaffected — only the fluid velocity v is refreshed.
+            if args.resolve_before_advect and not args.rigid_surface:
+                _stk = state['stokes']
+                # FORCE a genuine rebuild+re-solve on the deformed mesh: the
+                # smooth deform_by_inc path leaves stokes.is_setup=True, so a
+                # plain solve() short-circuits (snes_its=0) against the stale
+                # pre-deform assembly. Reset is_setup so the assembly is
+                # rebuilt on the CURRENT mesh before advection consumes v.
+                _stk.is_setup = False
+                _vb = float(np.sqrt((np.asarray(state['v'].data) ** 2).sum()))
+                _stk.solve(zero_init_guess=False)
+                _va = float(np.sqrt((np.asarray(state['v'].data) ** 2).sum()))
+                if (s + 1) <= 10:
+                    try:
+                        _snes_its = int(_stk.snes.getIterationNumber())
+                    except Exception:
+                        _snes_its = -1
+                    print(f"  [resolve] step {s+1}: snes_its={_snes_its} "
+                          f"v_rms {_vb:.6e}->{_va:.6e} (Δ={_va-_vb:+.3e})",
+                          flush=True)
             # ALE correction: compute mesh velocity at v's DOFs and
             # write into v_mesh, so SLCN's V_fn = v - v_mesh traces
             # back at the right relative velocity. Off → leaves v_mesh

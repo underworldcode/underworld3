@@ -50,6 +50,13 @@ Dynamic remeshing and adaptive refinement strategies.
 
 **[→ Mesh Adaptation](mesh-adaptation.md)**
 
+### Semi-Lagrangian Time Integration (SLCN / SL-BDF2)
+How `AdvDiffusionSLCN` discretizes advection–diffusion in time: the BDF
+time-derivative and Adams-Moulton/θ flux knobs, and how to pair them
+(SLCN vs SL-BDF2).
+
+**[→ Semi-Lagrangian Time Integration](semi-lagrangian-time-integration.md)**
+
 ### Porous Media Flow
 Darcy flow, Richards equation, and variably-saturated groundwater modelling.
 
@@ -98,6 +105,7 @@ vep-transverse-isotropy-faults
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
+semi-lagrangian-time-integration
 porous-flow
 snapshot-restore
 troubleshooting

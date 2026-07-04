@@ -143,7 +143,9 @@ class TestBasic:
         is_interior = ~is_bnd
         coords[is_interior] += 0.04 * rng.standard_normal(
             (int(is_interior.sum()), coords.shape[1]))
-        mesh._deform_mesh(coords)
+        # deliberate direct use of the gated internal primitive
+        with mesh._coord_mutation():
+            mesh._deform_mesh(coords)
         ar_before = _min_aspect_ratio(mesh)
         smooth_mesh_interior(mesh, n_iters=10, alpha=0.5)
         ar_after = _min_aspect_ratio(mesh)
