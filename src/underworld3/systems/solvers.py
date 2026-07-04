@@ -2221,6 +2221,57 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         self._block_constraint_bcs.append(cbc)
         return h
 
+    def add_smoothing_field(self, source, length_scale, degree=None):
+        r"""Register a full-domain scalar field coupled into the saddle system as a
+        screened-Poisson (implicit-gradient) smoother:
+
+        .. math:: \bar q - \ell^2 \nabla^2 \bar q = f
+
+        Unlike :meth:`add_constraint_bc`, the interior DOFs are kept LIVE (no
+        screening reduction) and the field carries a Helmholtz volume residual
+        instead of a boundary constraint. At convergence the field equals the
+        nonlocal (length-scale ``length_scale``) average of ``source``.
+
+        This is the monolithic (block-solve) analogue of an external
+        :class:`SNES_Projection` smoother: solved simultaneously with (u, p), so
+        when ``source`` depends on the velocity the full cross-coupling enters the
+        Jacobian (true consistent tangent for gradient plasticity).
+
+        Parameters
+        ----------
+        source : sympy expression
+            The local field to smooth (e.g. strain-rate invariant).  May depend
+            on the velocity for a coupled solve.
+        length_scale : float
+            Internal length scale :math:`\ell`.
+        degree : int, optional
+            Field polynomial degree (defaults to the pressure degree).
+
+        Returns
+        -------
+        s : MeshVariable
+            The smoothed field (full-domain scalar).
+        """
+        idx = len(self._multipliers)
+        field_name = f"smooth_{idx}"
+        s_degree = self._degree - 1 if degree is None else degree
+        s = uw.discretisation.MeshVariable(
+            f"Sm{self.instance_number}_{idx}", self.mesh, 1, degree=s_degree,
+        )
+        s.data[:] = 0.0
+        s._solver_field_name = field_name
+        # Markers consumed by the Cython assembly (SNES_Stokes_SaddlePt):
+        s._is_smoothing = True
+        s._smooth_source = sympy.sympify(source)
+        s._smooth_ell2 = float(length_scale) ** 2
+
+        self._multipliers.append(s)
+        self._multiplier_screening.append(0.0)   # unused for smoothing fields
+        self.fields[field_name] = s
+        self.is_setup = False
+        self._needs_function_rewire = True
+        return s
+
     def multiplier(self, boundary):
         """Return the multiplier field for ``boundary`` (None if not constrained).
 

@@ -5352,7 +5352,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if str(opts.getAll().get("pc_type", "")) != "fieldsplit":
             return  # respect a user's direct (lu) solve of the monolithic system
 
-        group1 = ["1"] + [str(cbc.lam._solver_field_id) for cbc in self._block_constraint_bcs]
+        # Group pressure with every extra scalar DM field (constraint multipliers
+        # AND coupled smoothing fields) into the "1" split for the u | [p,...] Schur.
+        group1 = ["1"] + [str(m._solver_field_id) for m in self._multipliers]
         opts["pc_fieldsplit_0_fields"] = "0"
         opts["pc_fieldsplit_1_fields"] = ",".join(group1)
 
@@ -5668,16 +5670,76 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## Boundary coupling (C, C^T) and off-diagonal blocks are added by the
         ## natural-bc loop in later milestones.
         self._h_F0 = []
+        self._h_F1 = []     # gradient flux (smoothing fields only; None otherwise)
         self._hh_G0 = []
+        self._hh_G3 = []    # gradient Jacobian (smoothing fields only; None otherwise)
+        # Stage-2 cross-coupling blocks (smoothing fields only; None otherwise):
+        #   su = d(ebar-row)/d(u)   ;   us = d(u-row)/d(ebar)
+        self._su_G0 = []
+        self._su_G1 = []
+        self._us_G0 = []
+        self._us_G2 = []
         for mvar, eps in zip(self._multipliers, self._multiplier_screening):
-            h_F0 = sympy.ImmutableDenseMatrix(sympy.Array([eps * mvar.sym[0]]).reshape(1))
-            hh_G0 = sympy.ImmutableMatrix(
-                sympy.derive_by_array(sympy.Array([eps * mvar.sym[0]]), mvar.sym).reshape(1, 1)
-            )
-            self._h_F0.append(h_F0)
-            self._hh_G0.append(hh_G0)
-            fns_residual.append(h_F0)
-            fns_jacobian.append(hh_G0)
+            if getattr(mvar, "_is_smoothing", False):
+                # Coupled screened-Poisson (implicit-gradient) field:
+                #   f0 = ebar - source         (reaction - source)
+                #   f1 = ell^2 * grad(ebar)    (gradient flux)
+                # self Jacobian:  G0 = d f0/d ebar = 1 ,  G3 = d f1/d(grad ebar) = ell^2 I
+                ell2 = mvar._smooth_ell2
+                src = mvar._smooth_source
+                grad_h = sympy.Array(self.mesh.vector.gradient(mvar.sym)).reshape(dim)
+                f0_e = sympy.Array([mvar.sym[0] - src]).reshape(1)
+                h_F0 = sympy.ImmutableDenseMatrix(f0_e)
+                h_F1 = sympy.ImmutableDenseMatrix(
+                    sympy.Array([ell2 * grad_h[i] for i in range(dim)]).reshape(dim, 1)
+                )
+                hh_G0 = sympy.ImmutableMatrix([[sympy.sympify(1)]])
+                hh_G3 = sympy.ImmutableMatrix(sympy.sympify(ell2) * sympy.eye(dim))
+                self._h_F0.append(h_F0)
+                self._h_F1.append(h_F1)
+                self._hh_G0.append(hh_G0)
+                self._hh_G3.append(hh_G3)
+                fns_residual += [h_F0, h_F1]
+                fns_jacobian += [hh_G0, hh_G3]
+
+                # Cross block (ebar-row, u):  mirror the pressure pu block.
+                #   g0 = d f0_e/d u ;  g1 = d f0_e/d(grad u) = -d(source)/dL
+                su_G0 = sympy.ImmutableMatrix(
+                    sympy.derive_by_array(f0_e, self.u.sym).reshape(dim))
+                su_G1 = sympy.ImmutableMatrix(
+                    sympy.derive_by_array(f0_e, self.Unknowns.L).reshape(dim * dim))
+                # Cross block (u-row, ebar):  g2 = d F1/d ebar = d(2 eta edot)/d ebar
+                #                                = 2 (d eta/d ebar) edot.
+                # Built EXPLICITLY from viscosity.sym (which exposes ebar as a live
+                # field): both the assembly F1 and cm.flux treat the viscosity as a
+                # CONSTANT Parameter (constants[] mechanism), so derive(F1/flux, ebar)
+                # compiles to zero.  Storage [i][j] = d F1[i][j]/d ebar.
+                visc_sym = sympy.sympify(self.constitutive_model.viscosity.sym)
+                dvisc = sympy.diff(visc_sym, mvar.sym[0])
+                edot_t = sympy.Matrix(self.constitutive_model.grad_u)
+                us_G0 = sympy.ImmutableMatrix(sympy.zeros(dim, 1))
+                _ebar_to_u_jac = getattr(self, "_smoothing_full_tangent", False)
+                if _ebar_to_u_jac:
+                    us_G2 = sympy.ImmutableMatrix(
+                        sympy.Matrix(dim, dim, lambda i, j: 2 * dvisc * edot_t[i, j]))
+                else:
+                    us_G2 = sympy.ImmutableMatrix(sympy.zeros(dim, dim))  # inexact (lag ebar->u)
+                self._su_G0.append(su_G0); self._su_G1.append(su_G1)
+                self._us_G0.append(us_G0); self._us_G2.append(us_G2)
+                fns_jacobian += [su_G0, su_G1, us_G0, us_G2]
+            else:
+                h_F0 = sympy.ImmutableDenseMatrix(sympy.Array([eps * mvar.sym[0]]).reshape(1))
+                hh_G0 = sympy.ImmutableMatrix(
+                    sympy.derive_by_array(sympy.Array([eps * mvar.sym[0]]), mvar.sym).reshape(1, 1)
+                )
+                self._h_F0.append(h_F0)
+                self._h_F1.append(None)
+                self._hh_G0.append(hh_G0)
+                self._hh_G3.append(None)
+                self._su_G0.append(None); self._su_G1.append(None)
+                self._us_G0.append(None); self._us_G2.append(None)
+                fns_residual.append(h_F0)
+                fns_jacobian.append(hh_G0)
 
         # Now natural bcs (compiled into boundary integral terms)
         # Need to loop on them all ...
@@ -6261,6 +6323,31 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # the exact analog of pressure's _pp_G0 living only in JacobianPreconditioner).
             # Reuse pressure's already-compiled _pp_G0 (= 1/mu, same scaling) so there is
             # NO extra JIT term (the 1/mu Piecewise of SolCx is otherwise compiled twice).
+            if getattr(mvar, "_is_smoothing", False):
+                # Coupled Helmholtz field: residual (f0, f1) + self-Jacobian (G0, -, -, G3).
+                PetscDSSetResidual(ds.ds, fid,
+                        ext.fns_residual[i_res[self._h_F0[k]]],
+                        ext.fns_residual[i_res[self._h_F1[k]]])
+                PetscDSSetJacobian(              ds.ds, fid, fid,
+                        ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL,
+                        ext.fns_jacobian[i_jac[self._hh_G3[k]]])
+                PetscDSSetJacobianPreconditioner(ds.ds, fid, fid,
+                        ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL,
+                        ext.fns_jacobian[i_jac[self._hh_G3[k]]])
+                # Stage-2 cross-coupling: (ebar,u) g0,g1 and (u,ebar) g0,_,g2,_
+                PetscDSSetJacobian(              ds.ds, fid, 0,
+                        ext.fns_jacobian[i_jac[self._su_G0[k]]],
+                        ext.fns_jacobian[i_jac[self._su_G1[k]]], NULL, NULL)
+                PetscDSSetJacobian(              ds.ds, 0, fid,
+                        ext.fns_jacobian[i_jac[self._us_G0[k]]], NULL,
+                        ext.fns_jacobian[i_jac[self._us_G2[k]]], NULL)
+                PetscDSSetJacobianPreconditioner(ds.ds, fid, 0,
+                        ext.fns_jacobian[i_jac[self._su_G0[k]]],
+                        ext.fns_jacobian[i_jac[self._su_G1[k]]], NULL, NULL)
+                PetscDSSetJacobianPreconditioner(ds.ds, 0, fid,
+                        ext.fns_jacobian[i_jac[self._us_G0[k]]], NULL,
+                        ext.fns_jacobian[i_jac[self._us_G2[k]]], NULL)
+                continue
             hh_pc = self._pp_G0 if self._multiplier_schur_pc else self._hh_G0[k]
             PetscDSSetResidual(ds.ds, fid, ext.fns_residual[i_res[self._h_F0[k]]], NULL)
             PetscDSSetJacobian(              ds.ds, fid, fid, ext.fns_jacobian[i_jac[self._hh_G0[k]]], NULL, NULL, NULL)
