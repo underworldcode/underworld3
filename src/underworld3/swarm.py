@@ -425,8 +425,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             if not data_changed:
                 return
 
-            # Skip updates during coordinate changes to prevent corruption
-            if hasattr(var.swarm, "_migration_disabled") and var.swarm._migration_disabled:
+            # While migration is suppressed, DEFER the PETSc pack rather than
+            # discarding the write: the DMSwarm layout may be mid-change, so
+            # packing now could corrupt it, but the user's values must survive.
+            # They are flushed by Swarm._flush_pending_petsc_sync() when the
+            # migration-control context exits (SWARM-04).
+            if getattr(var.swarm, "_migration_disabled", False):
+                var.swarm._pending_petsc_sync.add(var.clean_name)
                 return
 
             # Persist changes to PETSc (like swarm callback updates coordinates)
@@ -476,8 +481,16 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             if not data_changed:
                 return
 
-            # Skip updates during migration to prevent corruption
-            if hasattr(self.swarm, "_migration_disabled") and self.swarm._migration_disabled:
+            # While migration is suppressed, DEFER the PETSc pack rather than
+            # discarding the write: the DMSwarm layout may be mid-change, so
+            # packing now could corrupt it, but the user's values must survive
+            # in the canonical array. They are flushed to PETSc by
+            # Swarm._flush_pending_petsc_sync() when the migration-control
+            # context exits (SWARM-04: previously these writes were silently
+            # lost — nothing re-packed, and migrate()'s trailing invalidation
+            # destroyed the only copy).
+            if getattr(self.swarm, "_migration_disabled", False):
+                self.swarm._pending_petsc_sync.add(self.clean_name)
                 return
 
             # Check for None array to prevent copy errors
@@ -2750,6 +2763,100 @@ class Swarm(Stateful, uw_object):
         # Invalidate cached spatial index
         self._kdtree = None
 
+    def _flush_pending_petsc_sync(self):
+        """Pack canonical arrays written while migration was suppressed.
+
+        Writes made inside ``migration_control()`` / ``migration_disabled()``
+        land in each variable's canonical array but their PETSc pack is
+        deferred (see the sync callbacks). This flushes them into the DMSwarm
+        fields. Called on migration-context exit and defensively at
+        :meth:`migrate` entry; a no-op when nothing is pending (SWARM-04).
+        """
+        pending, self._pending_petsc_sync = self._pending_petsc_sync, set()
+        for name in pending:
+            var = self._vars.get(name, None)
+            if var is None:
+                continue
+            canonical = getattr(var, "_canonical_data", None)
+            if canonical is None:
+                # cache was invalidated after the write; PETSc already holds
+                # the authoritative data — nothing left to flush.
+                continue
+            arr = np.asarray(canonical).reshape(-1, var.num_components)
+            if arr.shape[0] != max(self.dm.getLocalSize(), 0):
+                raise RuntimeError(
+                    f"Cannot flush deferred writes for swarm variable "
+                    f"'{name}': cached array has {arr.shape[0]} rows but the "
+                    f"DMSwarm holds {self.dm.getLocalSize()} particles. The "
+                    "particle layout changed while migration was disabled."
+                )
+            var.pack_raw_data_to_petsc(arr, sync=True)
+            if self._coord_var is var:
+                self._needs_migration = True
+            if hasattr(var, "_on_data_changed"):
+                var._on_data_changed()
+
+    def _sync_before_assembly(self):
+        """Collective: bring PETSc-facing swarm state up to date for a solve.
+
+        Called from ``Mesh.update_lvec()`` — the common entry point where
+        assembly pulls variable data — this performs, in order:
+
+        1. any DEFERRED particle migration (coordinates written through the
+           modern interface mark ``_needs_migration`` instead of migrating
+           per-write, which would deadlock under uneven writes — SWARM-03);
+        2. an eager refresh of stale proxy mesh variables, which are
+           otherwise refreshed only via the lazy ``.sym`` accessor — solvers
+           read the proxy DM directly and previously consumed stale data
+           (issue #215 Bug 3 / issue #289).
+
+        Rank-local flags are combined with a global MAX reduction so every
+        rank takes the same sequence of collective actions even when writes
+        were rank-uneven. Repeated calls are no-ops (flag-guarded).
+        """
+        if self._migration_disabled:
+            # A migration-suppressed context is active (SPMD-consistent by
+            # construction); leave everything for its exit to handle.
+            return
+
+        # A swarm with no particles anywhere has nothing to migrate or
+        # project — leave proxies stale (they refresh after population)
+        # rather than issue spurious starved-rank warnings pre-populate.
+        global_count = max(self.local_size, 0)
+        if uw.mpi.size > 1:
+            global_count = uw.mpi.comm.allreduce(global_count, op=uw.MPI.MAX)
+        if global_count == 0:
+            return
+
+        if not self._deferred_migration_suspended:
+            needs_migration = bool(self._needs_migration)
+            if uw.mpi.size > 1:
+                needs_migration = (
+                    uw.mpi.comm.allreduce(int(needs_migration), op=uw.MPI.MAX) > 0
+                )
+            if needs_migration:
+                self.migrate()
+
+        # Deterministic variable order: the refresh performs collective
+        # mesh-variable writes, so all ranks must visit variables in the
+        # same sequence.
+        for name in sorted(self._vars.keys()):
+            var = self._vars.get(name)
+            if var is None:
+                continue
+            has_proxy = (
+                getattr(var, "_meshVar", None) is not None
+                or isinstance(var, IndexSwarmVariable)
+            )
+            if not has_proxy:
+                continue
+            stale = bool(getattr(var, "_proxy_stale", False))
+            if uw.mpi.size > 1:
+                stale = uw.mpi.comm.allreduce(int(stale), op=uw.MPI.MAX) > 0
+            if stale:
+                var._proxy_stale = True  # align ranks before the collective refresh
+                var._update_proxy_if_stale()
+
     def _get_kdtree(self):
         """
         Return a cached KDTree for the swarm particle coordinates.
@@ -3257,7 +3364,9 @@ class Swarm(Stateful, uw_object):
         Use migration_control(disable=True) for new code.
 
         Context manager that temporarily disables particle migration for the swarm.
-        Migration is NOT called when exiting the context.
+        Migration is NOT called when exiting the context. Writes made inside
+        the context are packed to PETSc at exit (only the migration is
+        suppressed — data is never discarded).
 
         Usage:
             with swarm.migration_disabled():
@@ -3293,6 +3402,10 @@ class Swarm(Stateful, uw_object):
             with swarm.migration_control(disable=True):
                 # Operations where migration should never happen
                 # No migration on exit
+
+        In both modes, variable/coordinate writes made inside the context are
+        flushed to the underlying DMSwarm at exit — only the migration itself
+        is deferred (default) or skipped (``disable=True``).
         """
 
         class _MigrationControlContext:
@@ -3311,6 +3424,13 @@ class Swarm(Stateful, uw_object):
 
             def __exit__(self, exc_type, exc_val, exc_tb):
                 self.swarm._migration_disabled = self.original_value
+
+                # Flush writes deferred while the flag was set — suppressing
+                # migration must not discard data (SWARM-04). Skipped only
+                # when an enclosing context still holds the flag (it flushes
+                # on its own exit).
+                if not self.swarm._migration_disabled:
+                    self.swarm._flush_pending_petsc_sync()
 
                 # Perform deferred migration if not disabled and not still blocked
                 if not self.disable and not self.swarm._migration_disabled:
@@ -3457,6 +3577,11 @@ class Swarm(Stateful, uw_object):
 
         if self._migration_disabled:
             return
+
+        # Deferred writes must reach the DMSwarm before we read coordinates
+        # from it below (no-op unless a migration-suppressed context left
+        # pending packs behind, SWARM-04).
+        self._flush_pending_petsc_sync()
 
         # Informational: migration may move or drop particles. Bump
         # unconditionally; restore is not gated on this counter so a
