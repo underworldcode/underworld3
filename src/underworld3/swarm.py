@@ -1156,7 +1156,32 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         new_coords = meshVar.coords
 
-        Values = self.rbf_interpolate(new_coords, verbose=verbose, nnn=nnn)
+        # Starved-rank guard (SWARM-07): with <= 1 local particles there is
+        # nothing meaningful to interpolate — rbf_interpolate would return
+        # silent zeros. Keep this rank's current proxy nodal values instead,
+        # and say so. NB: MeshVariable reads/writes perform collective ghost
+        # synchronisation, so EVERY rank must execute the same read-then-write
+        # sequence; only the values differ on starved ranks.
+        current_values = np.array(meshVar.data[...], copy=True)
+
+        if self.swarm.local_size <= 1:
+            # Warn only once the swarm has ever held particles: proxied
+            # variables are created (and their .sym touched) before
+            # populate(), and that expected pre-population state should not
+            # generate noise.
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"Swarm proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; proxy variable "
+                    f"'{getattr(meshVar, 'clean_name', meshVar.name)}' left "
+                    "unchanged on this rank.",
+                    stacklevel=2,
+                )
+            Values = current_values
+        else:
+            Values = self.rbf_interpolate(new_coords, verbose=verbose, nnn=nnn)
 
         meshVar.data[...] = Values[...]
 
@@ -1482,8 +1507,21 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         raw_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=False)
         data_size = raw_data.shape
 
-        # What to do if there are no particles
+        # What to do if there are no particles: never SILENTLY return zeros
+        # (SWARM-07) — a starved rank writing these into a proxy corrupts it.
+        # (Silent only for a swarm that has never been populated: proxied
+        # variables legitimately touch this path at creation time.)
         if data_size[0] <= 1:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"rbf_interpolate: rank {uw.mpi.rank} holds only "
+                    f"{data_size[0]} particles of swarm variable "
+                    f"'{self.clean_name}' — returning zeros for this rank's "
+                    "query points.",
+                    stacklevel=2,
+                )
             return np.zeros((new_coords.shape[0], data_size[1]))
 
         if nnn is None:
@@ -2219,6 +2257,25 @@ class IndexSwarmVariable(SwarmVariable):
         """
         self._proxy_stale = True
 
+    def _update_proxy_if_stale(self):
+        """
+        Refresh the level-set proxy variables if they are marked stale.
+
+        Overrides the base implementation (which requires ``self._meshVar``;
+        an IndexSwarmVariable keeps its proxies in ``_meshLevelSetVars``
+        instead). Used by the lazy ``.sym`` accessor and by the solve-entry
+        refresh (``Swarm._sync_before_assembly``).
+        """
+        if not self._proxy_stale or self._updating_proxy:
+            return
+
+        try:
+            self._updating_proxy = True
+            self._update_proxy_variables()
+            self._proxy_stale = False
+        finally:
+            self._updating_proxy = False
+
     # This is the sympy vector interface - it's meaningless if these are not spatial arrays
     @property
     def sym(self):
@@ -2229,9 +2286,7 @@ class IndexSwarmVariable(SwarmVariable):
         and only if the proxy variables are marked as stale due to data changes.
         This avoids expensive RBF interpolation during data assignment operations.
         """
-        if self._proxy_stale:
-            self._update_proxy_variables()
-            self._proxy_stale = False
+        self._update_proxy_if_stale()
         return self._MaskArray
 
     @property
@@ -2393,23 +2448,55 @@ class IndexSwarmVariable(SwarmVariable):
         update_type 1: calculate the material property value on mesh_levelset nodes from the nearest N particles directly.
 
         """
-        if self.update_type == 0:
-            # Use non-dimensional coordinates for internal level set KDTree
-            kd = self._meshLevelSetVars[0]._get_kdtree()
+        # Starved-rank guard (SWARM-07): with <= 1 local particles the
+        # nearest-neighbour machinery cannot run — KDTree construction on an
+        # empty coordinate array raises IndexError, aborting/hanging the
+        # collective proxy update — and there is nothing to project anyway.
+        # Leave this rank's level-set nodal values unchanged and warn. Every
+        # rank still enters the (collective) access contexts below so ranks
+        # holding particles can proceed.
+        starved = self.swarm.local_size <= 1
+        if starved and self.swarm._population_generation > 0:
+            # (silent for a never-populated swarm — creation-time .sym
+            # touches are expected; see the equivalent guard in
+            # _rbf_to_meshVar)
+            import warnings
 
-            n_distance, n_indices = kd.query(
-                self.swarm._particle_coordinates.data, k=self.nnn, sqr_dists=False
+            warnings.warn(
+                f"IndexSwarmVariable proxy update: rank {uw.mpi.rank} holds "
+                f"{max(self.swarm.local_size, 0)} particles; level-set "
+                f"variables for '{self.clean_name}' left unchanged on this "
+                "rank.",
+                stacklevel=2,
             )
-            kd_swarm = self.swarm._get_kdtree()
-            # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
-            d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1, sqr_dists=False)
+
+        if self.update_type == 0:
+            if not starved:
+                # Use non-dimensional coordinates for internal level set KDTree
+                kd = self._meshLevelSetVars[0]._get_kdtree()
+
+                n_distance, n_indices = kd.query(
+                    self.swarm._particle_coordinates.data, k=self.nnn, sqr_dists=False
+                )
+                kd_swarm = self.swarm._get_kdtree()
+                # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
+                d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1, sqr_dists=False)
 
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
 
-                with self.swarm.mesh.access(meshVar), self.swarm.access():
-                    node_values = np.zeros((meshVar.data.shape[0],))
-                    w = np.zeros((meshVar.data.shape[0],))
+                # MeshVariable reads/writes perform collective ghost
+                # synchronisation, so every rank must execute exactly the
+                # same read-then-write sequence per level set: compute into
+                # a LOCAL buffer first, then issue a single symmetric write.
+                # (The previous in-context formulation issued a
+                # data-dependent number of writes per rank — the deferred
+                # sync at access-exit then ran mismatched collectives.)
+                final_values = np.array(meshVar.data[:, 0], copy=True)
+
+                if not starved:
+                    node_values = np.zeros(final_values.shape[0])
+                    w = np.zeros(final_values.shape[0])
 
                     for i in range(self.swarm.local_size):
                         tem = np.isclose(n_distance[i, :], n_distance[i, 0])
@@ -2425,7 +2512,7 @@ class IndexSwarmVariable(SwarmVariable):
                             w[ind] += 1.0 / (1.0e-16 + dist[j])
 
                     node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
-                    meshVar.data[:, 0] = node_values[...]
+                    final_values = node_values
 
                     # if there is no material found,
                     # impose a near-neighbour hunt for a valid material and set that one
@@ -2433,8 +2520,18 @@ class IndexSwarmVariable(SwarmVariable):
                     if len(ind_w0) > 0:
                         ind_ = np.where(self.data[n[ind_w0]] == ii)[0]
                         if len(ind_) > 0:
-                            meshVar.data[ind_w0[ind_]] = 1.0
+                            final_values[ind_w0[ind_]] = 1.0
+
+                # single symmetric write (starved ranks write back their
+                # current values, i.e. the proxy is left unchanged there)
+                meshVar.data[:, 0] = final_values
         elif self.update_type == 1:
+            # NOTE: this branch performs data-dependent MeshVariable writes
+            # outside any access context, which is not parallel-safe
+            # independently of the starved-rank issue (pre-existing).
+            # The guard here only prevents the empty-rank KDTree crash.
+            if starved:
+                return
             kd = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
             n_distance, n_indices = kd.query(
                 self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=False
