@@ -193,3 +193,37 @@ def test_issue289_proxy_tracks_particles_through_advection():
     del mesh
 
 
+# --------------------------------------------------------------------------
+# SWARM-05 / BF-08 (issue #215 Bug 3): solve consumes a fresh proxy
+# --------------------------------------------------------------------------
+
+def test_projection_solve_consumes_fresh_proxy(mesh):
+    """Write material.data, run a Projection solve WITHOUT touching .sym, and
+    assert the solve consumed the new values (the proxy is refreshed eagerly
+    at solve entry rather than only via the lazy .sym accessor)."""
+    swarm = uw.swarm.Swarm(mesh=mesh)
+    var = swarm.add_variable("mat", 1, proxy_degree=1)
+    swarm.populate(fill_param=3)
+
+    var.data[:, 0] = 1.0
+
+    proj_var = uw.discretisation.MeshVariable("pv0113", mesh, 1, degree=1)
+    proj = uw.systems.Projection(mesh, proj_var)
+    proj.uw_function = var.sym[0]  # captured ONCE; refreshes the proxy now
+    proj.petsc_options.delValue("ksp_monitor")
+
+    proj.solve()
+    assert abs(float(np.mean(proj_var.data)) - 1.0) < 0.05
+
+    # update the particle data; do NOT touch .sym before solving
+    var.data[:, 0] = 2.0
+    proj.solve()
+
+    mean_after = float(np.mean(proj_var.data))
+    assert abs(mean_after - 2.0) < 0.05, (
+        f"Projection solve consumed a stale proxy: mean {mean_after:.3f}, "
+        "expected ~2.0 (issue #215 Bug 3 / SWARM-05)"
+    )
+
+    del swarm
+    del mesh

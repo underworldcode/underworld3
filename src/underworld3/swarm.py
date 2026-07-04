@@ -509,6 +509,15 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # STEP 1: Sync to PETSc using established method with correct shape
             self.pack_raw_data_to_petsc(canonical_array, sync=True)
 
+            # Coordinate writes may strand particles on the wrong rank. Mark
+            # the swarm for DEFERRED migration — migrate() itself is
+            # collective and must not run from a per-write callback (ranks
+            # write unevenly → deadlock). The migration happens at the next
+            # collective point: migration-control context exit or solve entry
+            # (SWARM-03; the class docstring's automatic-migration promise).
+            if getattr(self.swarm, "_coord_var", None) is self:
+                self.swarm._needs_migration = True
+
             # STEP 2: Handle variable-specific updates (like IndexSwarmVariable proxy marking)
             if hasattr(self, "_on_data_changed"):
                 self._on_data_changed()
@@ -1101,12 +1110,11 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         return
 
-    # TODO(BUG): Stale proxy DM after swarm data write
-    # _update() marks proxy as stale, but _update_proxy_if_stale() (lazy
-    # re-interpolation) only fires when material.sym is accessed. Code that
-    # reads the proxy MeshVariable DM directly (e.g. a Projection solver
-    # evaluating its uw_function at quadrature points) gets stale data.
-    # See GitHub issue #215 (Bug 3).
+    # NB: laziness is safe because freshness is enforced at CONSUMPTION:
+    # the `.sym` accessors call this, and `Swarm._sync_before_assembly()`
+    # (invoked from Mesh.update_lvec at solve entry) eagerly refreshes any
+    # stale proxy before a solver reads the proxy DM directly
+    # (issue #215 Bug 3 / issue #289).
     def _update_proxy_if_stale(self):
         """
         Actually update the proxy mesh variable if it's marked as stale.
@@ -2633,10 +2641,13 @@ class Swarm(Stateful, uw_object):
     >>> temperature = swarm.add_variable("temperature", 1)
     >>> velocity = swarm.add_variable("velocity", mesh.dim)
 
-    Manual particle migration after coordinate updates:
+    Particle migration after coordinate updates:
 
-    Note: particle migration is still called automatically when we
-    `access` and update the particle_coordinates variables
+    Note: writing particle coordinates (via ``swarm._particle_coordinates.data``
+    or the ``coords`` setter) marks the swarm for migration; the collective
+    ``migrate()`` itself is DEFERRED to the next collective point — a
+    ``migration_control()`` context exit, an explicit ``swarm.migrate()``,
+    or solve entry — never run per-write (uneven writes would deadlock).
 
     Note: `swarm.populate` uses a the mesh point locations for discontinuous interpolants to
     determine the particle locations.
@@ -4929,6 +4940,13 @@ class Swarm(Stateful, uw_object):
         #         del updated_current_coords
         #         del v_at_Vpts
 
+        # Suspend the deferred (solve-entry) migration for the duration of
+        # the substep loop: the velocity evaluations below pass through
+        # Mesh.update_lvec(), and a migrate() firing there would reorder
+        # particle rows between the coordinate array and the velocity array
+        # captured from it. advection() performs its own migrate() at the end.
+        self._deferred_migration_suspended = True
+
         # Wrap this whole thing in sub-stepping loop
         for step in range(0, substeps):
 
@@ -5004,6 +5022,7 @@ class Swarm(Stateful, uw_object):
                 self._particle_coordinates.data[...] = new_coords[...]
 
         ## End of substepping loop
+        self._deferred_migration_suspended = False
 
         ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
         ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
