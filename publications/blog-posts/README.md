@@ -93,10 +93,11 @@ Each post is self-contained but feeds into larger pieces.
     particle ownership. What happens when particles cross processor boundaries.
 
 12. **"Particles That Know Calculus"**
-    Status: not started
+    Status: **published** (2026-06-03)
     Feeds into: Paper 2 (proxy variables)
     Content: Swarm variables as first-class symbolic objects. Proxy mesh
     variables via RBF projection. How particle data participates in weak forms.
+    URL: https://www.underworldcode.org/particles-in-underworld3/
 
 13. **"Stress Has a History"**
     Status: not started
