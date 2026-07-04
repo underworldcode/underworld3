@@ -126,8 +126,8 @@ such solves now install custom-P geometric MG and match a default-preconditioner
 - Hierarchy build: uniform-only; uniform + N SBR levels; nesting + label survival.
 - Per-level reduction: zero-column count == 0 on all transfers (scalar + free-slip vector).
 - Transfer: partition-of-unity; barycentric vs rbf; nested-exact vs general.
-- Solve: FMG + V-cycle converge on nested and (serial) non-nested; match uniform-FMG iters;
-  beat GAMG; regression — existing FMG/GAMG paths unchanged.
+- Solve: FMG + V-cycle converge on nested and non-nested (serial and np2/4); match
+  uniform-FMG iters; beat GAMG; regression — existing FMG/GAMG paths unchanged.
 - Parallel (np>1): co-located transfers, reduced sections, FMG convergence; bounded levels.
 
 ## Phased roadmap
@@ -144,7 +144,7 @@ such solves now install custom-P geometric MG and match a default-preconditioner
 
 Later (not this pass; do not block): dynamic per-step reallocation loop; efficiency
 (transfer caching, exact-nested combinatorial P, operator reuse); load-balancing adapters;
-non-nested parallel transfers; knockout-as-coarsening as an alternative Layer-2 strategy.
+knockout-as-coarsening as an alternative Layer-2 strategy.
 
 ## Status (2026-06-29)
 
@@ -162,8 +162,9 @@ Landed (committed, tested — `test_1014/1015/1016/1017` serial 20 +
   vs GAMG 46; SolCx velocity block 6 iters vs GAMG ~198, np=1/2/4.
 
 **Current scope:** scalar / single-field-vector **and** Stokes velocity-block;
-**serial and parallel** (nested co-partitioned). Non-nested custom-P is serial-only
-(experimental). Hardening steps 1–3 are complete; what remains is test
+**serial and parallel** — nested co-partitioned (fast rank-local build) **and
+non-nested** (cross-partition transfer, `cross_partition="auto"`, np2/4 matches
+serial). Hardening steps 1–4 are complete; what remains is test
 tier-classification + undrafting PR #290.
 
 **Solver-family coverage** — the install keys off the PC topology, so one of two
@@ -222,10 +223,26 @@ Hardening steps (all complete as of 2026-06-29):
    SolCx velocity block 6 iters, matching the GAMG reference and each other
    across rank counts (`tests/parallel/test_1017_custom_mg_parallel_mpi.py`). The
    **legacy** finest-only path (`set_custom_mg` / `_reduce_to_global`) stays
-   serial-only and raises loudly at np>1. Non-nested custom-P in parallel remains
-   out of scope (cross-rank point location).
+   serial-only and raises loudly at np>1.
+4. ~~**Non-nested (np>1)**.~~ **DONE** (2026-07-03). A non-nested coarse tail
+   (`set_custom_fmg([independent coarse mesh])`) is partitioned independently of
+   the fine mesh, so a fine leaf on rank *r* may sit in a coarse cell owned by
+   rank *s* — the rank-local build (step 3) then produces zero columns (23 at
+   np2, 48 at np4, caught loudly by the zero-column guard). Fix = a
+   **cross-partition transfer** (`_gather_coarse_cloud` + `_build_crosspart_transfer`):
+   all-gather the (small) coarse node cloud — coords + each node/component's
+   global reduced column index (`-1` = constrained) — dedup by coordinate, then
+   every rank locates its **owned** fine nodes against the **full** coarse mesh.
+   Columns are coarse global reduced indices (MPIAIJ handles off-rank); fine rows
+   stay rank-local. Routed via `cross_partition` on `CustomMGHierarchy` /
+   `set_custom_fmg`: `"auto"` (default) uses the fast rank-local build and only
+   rebuilds a level cross-partition when it has zero columns — so the validated
+   nested/adapt path stays **bit-identical** on the fast builder, non-nested tails
+   are fixed automatically; `True`/`False` force either path. Validated np=1/2/4:
+   a non-nested coarse-tail custom-P FMG converges in the same 6 iters as serial
+   and matches a GAMG reference to ~1e-8
+   (`test_1017_custom_mg_parallel_mpi.py::test_parallel_custom_fmg_nonnested`).
 
 ## Explicit non-goals for this pass
 - Knockout (shown to pay full-fine assembly; structural value only) — not pursued now.
-- Non-nested custom-P in parallel — serial/experimental only.
 - Dynamic time-stepping convection integration — later phase.

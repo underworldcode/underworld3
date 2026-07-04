@@ -218,7 +218,7 @@ adapter="sbr", verbose=False) -> child`** (`discretisation_mesh.py`,
 - The child owns the static coarse tail `child._custom_mg_coarse_meshes`
   (`= parent._coarse_level_meshes()`, built once and cached) + `_custom_mg_builder`.
 
-**Solver auto-pickup** (`custom_mg.maybe_inject_custom_mg`, called from the four
+**Solver auto-pickup** (`custom_mg.auto_inject_custom_mg`, called from the four
 solve hooks in `petsc_generic_snes_solvers.pyx`): when a solver's `_custom_mg` is
 unset but its mesh carries `_custom_mg_coarse_meshes`, it lazily builds
 `CustomMGHierarchy([*coarse, solver.mesh], field_id=…)` (0 for the Stokes
