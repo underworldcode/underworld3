@@ -33,7 +33,6 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   const PetscInt    *foundPoints;
   PetscMPIInt       *foundProcs, *globalProcs;
   PetscInt           n, N, numFound;
-  PetscErrorCode     ierr;
 
   PetscFunctionBegin;
   PetscValidHeaderSpecific(dm, DM_CLASSID, 2);
@@ -76,31 +75,31 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   PetscCall(PetscMalloc2(N, &foundProcs, N, &globalProcs));
   for (p = 0; p < N; ++p) foundProcs[p] = size;
   cellSF = NULL;
-  /* the Underworld code is used to find good guesses for the owning cells */
-  if (owning_cell)
-  {
-    PetscSFNode *sf_cells;
-    ierr = PetscMalloc1(N, &sf_cells);
-    CHKERRQ(ierr);
-    size_t range = 0;
-    for (size_t p = 0; p < (size_t)N; p++)
-    {
-      sf_cells[p].rank = 0;
-      sf_cells[p].index = owning_cell[p];
-      if (owning_cell[p] > range)
-      {
-        range = owning_cell[p];
-      }
+  if (owning_cell) {
+    /*
+      BYPASS DMLocatePoints. The Underworld-side hint is authoritative:
+      `_get_closest_local_cells_internal` returns a valid local cell id for points
+      this rank actually owns (in-cell test runs on the kdtree pick; falls back
+      to walking nearby cells), and -1 for points it doesn't own. The in-cell
+      test is manifold-aware (cell_normal × edge perpendicular), which avoids
+      the failure mode of PETSc's DMPlexLocatePoint_Simplex_2D_Internal on
+      near-edge 2-manifold queries. See docs/examples/parallel_point_eval/INVESTIGATION.md.
+
+      Each rank claims only points it owns; the MPI_Allreduce(MIN, foundProcs)
+      below then assigns each point to the (single) owning rank.
+    */
+    numFound    = 0;
+    foundPoints = NULL;
+    foundCells  = NULL;
+    for (p = 0; p < N; ++p) {
+      /* owning_cell carries int64 reinterpreted as size_t; -1 → SIZE_MAX.
+         Casting back to (signed) PetscInt recovers the -1 sentinel. */
+      if ((PetscInt)owning_cell[p] >= 0) foundProcs[p] = rank;
     }
-    ierr = PetscSFCreate(PETSC_COMM_SELF, &cellSF);
-    CHKERRQ(ierr);
-    // PETSC_OWN_POINTER => sf_cells memory control goes to cellSF
-    // nroots must be > max(iremote.index), so use range + 1
-    ierr = PetscSFSetGraph(cellSF, range + 1, N, NULL, PETSC_OWN_POINTER, sf_cells, PETSC_OWN_POINTER);
-    CHKERRQ(ierr);
+  } else {
+    PetscCall(DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF));
+    PetscCall(PetscSFGetGraph(cellSF, NULL, &numFound, &foundPoints, &foundCells));
   }
-  PetscCall(DMLocatePoints(dm, pointVec, DM_POINTLOCATION_REMOVE, &cellSF));
-  PetscCall(PetscSFGetGraph(cellSF, NULL, &numFound, &foundPoints, &foundCells));
 #endif
 
   /*

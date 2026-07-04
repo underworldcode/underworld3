@@ -1151,9 +1151,13 @@ def petsc_interpolate(   expr,
             # CACHE MISS - Create structure and cache it
             cached_info = CachedDMInterpolationInfo()
 
-            # Get cell hints
-            # coords is already np.ndarray type (function signature ensures this)
-            cells = mesh.get_closest_cells(coords)
+            # Cell hints with per-rank ownership filtering.
+            # `_get_closest_local_cells_internal` runs the actual in-cell test
+            # (manifold-aware via cell_normal × edge perpendicular) and returns
+            # -1 for points not owned by this rank. The downstream bypass in
+            # DMInterpolationSetUp_UW treats -1 as "don't claim", letting the
+            # MPI_Allreduce(MIN) pick the rank that legitimately owns each point.
+            cells = mesh._get_closest_local_cells_internal(coords).astype(np.int64)
 
             # Create and set up DMInterpolation structure (EXPENSIVE)
             # This calls DMLocatePoints which is COLLECTIVE — all ranks must enter.

@@ -253,8 +253,26 @@ setup_local_macos_openmpi_build_env() {
     _macos_target="$(
         printf '%s\n' "${_fc_driver}" | python3 -c 'import re, sys; text = sys.stdin.read(); match = re.search(r"-mmacosx-version-min=([0-9]+\.[0-9]+)", text); print(match.group(1) if match else "")'
     )"
+    # conda-forge gfortran embeds the SDK path of the machine it was built on
+    # (e.g. /Applications/Xcode_16.4.app/...). On a machine where that path is
+    # missing — typically because the user has Command Line Tools but not the
+    # corresponding Xcode.app — fall back to whatever xcrun reports as the
+    # active SDK. The gfortran-reported deployment target is still honoured.
+    if [ -n "${_sdkroot}" ] && [ ! -d "${_sdkroot}" ]; then
+        local _sdkroot_fallback
+        _sdkroot_fallback="$(xcrun --show-sdk-path 2>/dev/null || true)"
+        if [ -n "${_sdkroot_fallback}" ] && [ -d "${_sdkroot_fallback}" ]; then
+            echo "Note: gfortran-reported SDK ${_sdkroot} not found; falling back to ${_sdkroot_fallback}"
+            _sdkroot="${_sdkroot_fallback}"
+        fi
+    fi
     if [ -z "${_sdkroot}" ] || [ -z "${_macos_target}" ]; then
         echo "Error: unable to determine gfortran macOS SDK/deployment target"
+        exit 1
+    fi
+    if [ ! -d "${_sdkroot}" ]; then
+        echo "Error: macOS SDK not found at ${_sdkroot}"
+        echo "Install Xcode at that path, or install Command Line Tools so xcrun can report a fallback."
         exit 1
     fi
 
