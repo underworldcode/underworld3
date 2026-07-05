@@ -66,10 +66,6 @@ class SwarmType(Enum):
     DMSWARM_PIC = 1
 
 
-# We can grab this type from the PETSc module
-# SwarmPICLayout has been moved to pic_swarm.py
-
-
 # Note - much of the setup is necessarily the same as the MeshVariable
 # and the duplication should be removed.
 
@@ -106,8 +102,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     varsymbol : str, optional
         LaTeX symbol for display. Defaults to ``name``.
     rebuild_on_cycle : bool, default=True
-        If True, rebuild the proxy when particles cycle through periodic
-        boundaries. Recommended for continuous fields.
+        No effect. Retained for backward compatibility with the removed
+        particle-recycling (streak swarm) feature.
     units : str or pint.Unit, optional
         Physical units for this variable (e.g., 'kelvin', 'Pa').
         Requires reference quantities to be set on the model.
@@ -335,7 +331,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._nn_proxy = _nn_proxy
         self._create_proxy_variable()
 
-        # recycle swarm
+        # Inert: kept for backward compatibility with the removed
+        # particle-recycling (streak swarm) feature.
         self._rebuild_on_cycle = rebuild_on_cycle
         self._register = _register
 
@@ -683,49 +680,44 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 reshaped_data = modified_data.reshape(-1, self.parent.num_components)
                 self.parent.data[:] = reshaped_data
 
-            # Forward common array methods
+            # Reduction methods follow the MeshVariable array-view contract:
+            # scalar (float) for single-component variables, per-component
+            # tuple for multi-component variables (LE-07 / BF-11).
+            #
+            # NOTE: these are simple arithmetic reductions over the particle
+            # values. Swarm particles are generally non-uniformly distributed
+            # in space, so mean()/std() only APPROXIMATE the spatial
+            # statistics — use mesh integrals of the proxy field for
+            # spatially-accurate statistics.
+
+            def _per_component_reduction(self, reduction):
+                data = self._get_array_data()
+                if self.parent.num_components == 1:
+                    return float(reduction(data))
+                flat = np.asarray(data).reshape(data.shape[0], -1)
+                return tuple(
+                    float(reduction(flat[:, i])) for i in range(self.parent.num_components)
+                )
+
             def max(self):
-                return self._get_array_data().max()
+                """Maximum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.max)
 
             def min(self):
-                return self._get_array_data().min()
+                """Minimum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.min)
 
             def mean(self):
-                """
-                Compute mean value of swarm particles.
-
-                ⚠️  WARNING: This computes a simple arithmetic mean of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial mean. For accurate spatial
-                statistics, consider using integration via swarm proxy variables or
-                computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Mean value (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().mean()
+                """Arithmetic particle mean (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.mean)
 
             def sum(self):
-                return self._get_array_data().sum()
+                """Sum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.sum)
 
             def std(self):
-                """
-                Compute standard deviation of swarm particles.
-
-                ⚠️  WARNING: This computes a simple numpy std of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial standard deviation. For accurate
-                spatial statistics, consider using integration via swarm proxy variables
-                or computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Standard deviation (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().std()
+                """Arithmetic particle standard deviation (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.std)
 
             @property
             def shape(self):
@@ -898,49 +890,45 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 packed_data = self.parent._pack_array_to_data_format(modified_data)
                 self.parent.data[:] = packed_data
 
-            # Forward common array methods
+            # Reduction methods follow the MeshVariable array-view contract:
+            # scalar (float) for single-component variables, per-component
+            # tuple for multi-component variables (LE-07 / BF-11). Components
+            # are ordered as in the flat canonical layout.
+            #
+            # NOTE: these are simple arithmetic reductions over the particle
+            # values. Swarm particles are generally non-uniformly distributed
+            # in space, so mean()/std() only APPROXIMATE the spatial
+            # statistics — use mesh integrals of the proxy field for
+            # spatially-accurate statistics.
+
+            def _per_component_reduction(self, reduction):
+                data = self._get_array_data()
+                if self.parent.num_components == 1:
+                    return float(reduction(data))
+                flat = np.asarray(data).reshape(data.shape[0], -1)
+                return tuple(
+                    float(reduction(flat[:, i])) for i in range(self.parent.num_components)
+                )
+
             def max(self):
-                return self._get_array_data().max()
+                """Maximum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.max)
 
             def min(self):
-                return self._get_array_data().min()
+                """Minimum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.min)
 
             def mean(self):
-                """
-                Compute mean value of swarm particles.
-
-                ⚠️  WARNING: This computes a simple arithmetic mean of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial mean. For accurate spatial
-                statistics, consider using integration via swarm proxy variables or
-                computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Mean value (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().mean()
+                """Arithmetic particle mean (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.mean)
 
             def sum(self):
-                return self._get_array_data().sum()
+                """Sum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.sum)
 
             def std(self):
-                """
-                Compute standard deviation of swarm particles.
-
-                ⚠️  WARNING: This computes a simple numpy std of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial standard deviation. For accurate
-                spatial statistics, consider using integration via swarm proxy variables
-                or computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Standard deviation (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().std()
+                """Arithmetic particle standard deviation (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.std)
 
             @property
             def shape(self):
@@ -1561,17 +1549,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             nnn = data_size[0]
 
         # Use direct PETSc access to avoid callback circular dependency
-        if self.swarm.recycle_rate > 1:
-            not_remeshed = self.swarm._remeshed.data[:, 0] != 0
-            D = raw_data[not_remeshed].copy()
-
-            kdt = uw.kdtree.KDTree(self.swarm._particle_coordinates.data[not_remeshed, :])
-            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
-        else:
-            D = raw_data.copy()
-            # Use cached KDTree for standard swarms
-            kdt = self.swarm._get_kdtree()
-            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
+        D = raw_data.copy()
+        kdt = self.swarm._get_kdtree()
+        values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
 
         return values
 
@@ -2617,15 +2597,6 @@ class IndexSwarmVariable(SwarmVariable):
         return
 
 
-## Import PIC-related classes from separate module to maintain compatibility
-# from .pic_swarm import PICSwarm, NodalPointPICSwarm, SwarmPICLayout
-
-## This should be the basic swarm, and we can then create a sub-class that will
-## be a PIC swarm
-
-# PICSwarm and NodalPointPICSwarm classes have been moved to pic_swarm.py
-
-
 ## New - Basic Swarm (no PIC skillz)
 ## What is missing:
 ##  - no celldm
@@ -2652,9 +2623,10 @@ class Swarm(Stateful, uw_object):
         The mesh object that defines the computational domain for particle operations.
         Particles will be associated with this mesh for spatial queries and operations.
     recycle_rate : int, optional
-        Rate at which particles are recycled for streak management. If > 1, enables
-        streak particle functionality where particles are duplicated and tracked
-        across multiple cycles. Default is 0 (no recycling).
+        Particle recycling (streak swarms) is NOT implemented: values > 1
+        raise ``NotImplementedError``. The parameter is retained so that
+        existing calls passing the default (0 or 1, meaning no recycling)
+        keep working.
     verbose : bool, optional
         Enable verbose output for debugging and monitoring particle operations.
         Default is False.
@@ -2667,11 +2639,6 @@ class Swarm(Stateful, uw_object):
     >>> mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1))
     >>> swarm = uw.swarm.Swarm(mesh=mesh)
     >>> swarm.populate(fill_param=2)
-
-    Create a streak swarm with recycling:
-
-    >>> streak_swarm = uw.swarm.Swarm(mesh=mesh, recycle_rate=5)
-    >>> streak_swarm.populate(fill_param=1)
 
     Add custom particle data:
 
@@ -2695,6 +2662,16 @@ class Swarm(Stateful, uw_object):
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
+        # Particle recycling (streak swarms) was excised in 2026-07: the
+        # machinery had been broken (NameError) and untested for some time
+        # (audit finding SWARM-08). Refuse rather than crash later.
+        if recycle_rate > 1:
+            raise NotImplementedError(
+                "Particle recycling / streak swarms (recycle_rate > 1) are not "
+                "implemented. Construct the Swarm without recycle_rate and manage "
+                "particle re-seeding explicitly (e.g. add_particles_with_coordinates)."
+            )
+
         Swarm.instances += 1
 
         self.verbose = verbose
@@ -2750,9 +2727,9 @@ class Swarm(Stateful, uw_object):
 
         ####
 
-        # Is the swarm a streak-swarm ?
+        # Retained attribute: always 0 or 1 (no recycling) — see the
+        # NotImplementedError guard above.
         self.recycle_rate = recycle_rate
-        self.cycle = 0
 
         # dictionary for variables
         # Using WeakValueDictionary to prevent circular references
@@ -2790,21 +2767,6 @@ class Swarm(Stateful, uw_object):
             _proxy=False,
             rebuild_on_cycle=False,
         )
-
-        # This is for swarm streak management:
-        # add variable to hold swarm origins
-
-        if self.recycle_rate > 1:
-
-            self._remeshed = uw.swarm.SwarmVariable(
-                "DMSwarm_remeshed",
-                self,
-                1,
-                dtype=int,
-                _register=True,
-                _proxy=False,
-                rebuild_on_cycle=False,
-            )
 
         self._X0_uninitialised = True
         self._index = None
@@ -3641,49 +3603,6 @@ class Swarm(Stateful, uw_object):
         self.dm.restoreField("DMSwarmPIC_coor")
         self.dm.restoreField("DMSwarm_rank")
 
-        if self.recycle_rate > 1:
-            with self.access():
-                # This is a mesh-local quantity, so let's just
-                # store it on the mesh in an ad_hoc fashion for now
-
-                self.mesh.particle_X_orig = self._particle_coordinates.data.copy()
-
-            with self.access():
-                swarm_orig_size = self.local_size
-                all_local_coords = np.vstack(
-                    (self._particle_coordinates.data,) * (self.recycle_rate)
-                )
-
-                swarm_new_size = all_local_coords.shape[0]
-
-            self.dm.addNPoints(swarm_new_size - swarm_orig_size)
-
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-
-            # Compute perturbation - extract magnitude if coordinates have units
-            # numpy.array(..., dtype=float64) forces conversion to plain array
-            coord_data = np.array(all_local_coords, dtype=np.float64)
-            search_lengths = np.array(self.mesh._search_lengths[all_local_cells], dtype=np.float64)
-
-            perturbation = (
-                (0.33 / (1 + fill_param))
-                * (np.random.random(size=coord_data.shape) - 0.5)
-                * 0.00001
-                * search_lengths  # typical cell size
-            )
-
-            # Add perturbation (coords array stores dimensionless values)
-            coords[...] = coord_data + perturbation
-
-            self.dm.restoreField("DMSwarmPIC_coor")
-
-            ## Now set the cycle values
-
-            with self.access(self._remeshed):
-                for i in range(0, self.recycle_rate):
-                    offset = swarm_orig_size * i
-                    self._remeshed.data[offset::, 0] = i
-
         # Invalidate cached data — the swarm was just given its particles.
         # Any canonical `.data` array created before populate() (legitimate:
         # variables must be created first) is sized for the empty swarm and
@@ -3956,13 +3875,6 @@ class Swarm(Stateful, uw_object):
             self.dm.restoreField("DMSwarm_rank")
             self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Here we update the swarm cycle values as required
-
-        if self.recycle_rate > 1:
-            with self.access(self._remeshed):
-                # self._Xorig.data[...] = coordinatesArray
-                self._remeshed.data[...] = 0
-
         self.dm.migrate(remove_sent_points=True)
 
         # Invalidate cached data — particle count changed after addNPoints + migrate
@@ -4053,13 +3965,6 @@ class Swarm(Stateful, uw_object):
         self.dm.restoreField("DMSwarm_rank")
         self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Here we update the swarm cycle values as required
-
-        if self.recycle_rate > 1:
-            with self.access(self._remeshed):
-                # self._Xorig.data[...] = globalCoordinatesArray
-                self._remeshed.data[...] = 0
-
         # Invalidate cached data — the particle count changed via addNPoints
         # (mirrors add_particles_with_coordinates). This must not be left to
         # migrate(): with migrate=False nothing else invalidates, and every
@@ -4146,8 +4051,14 @@ class Swarm(Stateful, uw_object):
         else:
             # Sequential fallback: rank 0 creates the file and writes its slab,
             # then each higher rank appends in turn.
-
-            points_data_copy = self.points[:].copy()
+            #
+            # MODEL-UNIT coordinates, exactly like the parallel branch above:
+            # the deprecated `self.points` used here previously applied the
+            # model length scale, so sequential checkpoints differed from
+            # parallel ones by that factor and could not round-trip through
+            # read_timestep, which re-inserts raw model-unit coordinates
+            # (SWARM-19 / BF-17).
+            points_data_copy = self._particle_coordinates.data[:].copy()
             local_n = points_data_copy.shape[0]
 
             if comm.rank == 0:
@@ -4520,7 +4431,7 @@ class Swarm(Stateful, uw_object):
         Captured: per-rank particle coordinates (from
         ``DMSwarmPIC_coor``) and every user swarm-variable's data
         array. PETSc-internal variables (``DMSwarmPIC_coor``,
-        ``DMSwarm_X0``, ``DMSwarm_remeshed``) are excluded — their
+        ``DMSwarm_X0``) are excluded — their
         contents either come from the captured coords or are
         regenerated on the next solve.
         """
@@ -4997,12 +4908,17 @@ class Swarm(Stateful, uw_object):
                 # Use internal model-unit coordinates directly (no conversion needed)
                 v_at_Vpts = np.zeros_like(self._particle_coordinates.data[...])
 
-                # First evaluate the velocity at the particle locations
-                # (this is a local operation)
+                # First evaluate the velocity at the launch points. This must
+                # be a GLOBAL evaluation: no migration happens inside the
+                # substep loop (deferred migration is suspended above, so
+                # arrays keep a stable row order), which means from substep 2
+                # onward a particle can sit outside this rank's domain — a
+                # rank-local evaluation silently extrapolates wrong values
+                # for it (SWARM-16 / BF-16).
 
-                v_at_Vpts[...] = uw.function.evaluate(V_fn_matrix, self._particle_coordinates.data)[
-                    :, 0, :
-                ]
+                v_at_Vpts[...] = uw.function.global_evaluate(
+                    V_fn_matrix, self._particle_coordinates.data
+                )[:, 0, :]
 
                 mid_pt_coords = (
                     self._particle_coordinates.data[...]
@@ -5061,97 +4977,6 @@ class Swarm(Stateful, uw_object):
         ## End of substepping loop
         self._deferred_migration_suspended = False
 
-        ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
-        ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
-        ## original location.
-
-        if self.recycle_rate > 1:
-            # Restore particles which have cycle == cycle rate (use >= just in case)
-
-            # Remove remesh points and recreate a new set at the mesh-local
-            # locations that we already have stored.
-
-            with self.access(self._particle_coordinates, self._remeshed):
-                remeshed = self._remeshed.data[:, 0] == 0
-                # This is one way to do it ... we can do this better though
-                self.data[remeshed, 0] = 1.0e100
-
-            swarm_size = self.dm.getLocalSize()
-
-            num_remeshed_points = self.mesh.particle_X_orig.shape[0]
-
-            self.dm.addNPoints(num_remeshed_points)
-
-            # Informational: remesh just re-injected particles.
-            self._population_generation += 1
-
-            ## cellid = self.dm.getField("DMSwarm_cellid")
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-            rmsh = self.dm.getField("DMSwarm_remeshed")
-
-            # print(f"cellid -> {cellid.shape}")
-            # print(f"particle coords -> {coords.shape}")
-            # print(f"remeshed points  -> {num_remeshed_points}")
-
-            # Compute perturbation - extract magnitude if coordinates have units
-            # numpy.array(..., dtype=float64) forces conversion to plain array
-            coord_data = np.array(self.mesh.particle_X_orig[:, :], dtype=np.float64)
-            radii_data = np.array(self.mesh._radii[cellid[swarm_size::]], dtype=np.float64)
-
-            perturbation = 0.00001 * (
-                (0.33 / (1 + self.fill_param))
-                * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
-                * radii_data.reshape(-1, 1)
-            )
-
-            # Add perturbation (coords array stores dimensionless values)
-            coords[swarm_size::] = coord_data + perturbation
-            ## cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
-            rmsh[swarm_size::] = 0
-
-            # self.dm.restoreField("DMSwarm_cellid")
-            self.dm.restoreField("DMSwarmPIC_coor")
-            self.dm.restoreField("DMSwarm_remeshed")
-
-            # when we let this go, the particles may be re-distributed to
-            # other processors, and we will need to rebuild the remeshed
-            # array before trying to compute / assign values to variables
-
-            for swarmVar in self.vars.values():
-                if swarmVar._rebuild_on_cycle:
-                    with self.access(swarmVar):
-                        if swarmVar.dtype is int:
-                            nnn = 1
-                        else:
-                            nnn = self.mesh.dim + 1  # 3 for triangles, 4 for tets ...
-
-                        interpolated_values = (
-                            swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
-                            #     swarmVar._meshVar.fn, self.mesh.particle_X_orig
-                            # )
-                        ).astype(swarmVar.dtype)
-
-                        swarmVar.data[swarm_size::] = interpolated_values
-
-            ##
-            ## Determine RANK
-            ##
-
-            # Migrate will already have been called by the access manager.
-            # Maybe we should hash the local particle coords to make this
-            # a little more user-friendly
-
-            # self.dm.migrate(remove_sent_points=True)
-
-            with self.access(self._remeshed):
-                self._remeshed.data[...] = np.mod(self._remeshed.data[...] - 1, self.recycle_rate)
-
-            self.cycle += 1
-
-            ## End of cycle_swarm loop
-            #
-            #
-
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that
         # boundary particles whose owner is the 2nd/3rd-closest centroid
@@ -5188,8 +5013,14 @@ class Swarm(Stateful, uw_object):
             # Plain UWQuantity without units context - use magnitude
             vel = vel.magnitude
 
-        # Ensure vel is a plain numpy array
+        # Ensure vel is a plain numpy array in flat (n_particles, dim) form.
+        # evaluate() returns matrix-shaped (n, 1, dim) arrays; indexing that
+        # shape as vel[:, 1] hit the size-1 axis and the swallowed IndexError
+        # made estimate_dt() return None for every non-trivial velocity —
+        # silently disabling advection's step_limit substepping (BF-16).
         vel = np.asarray(vel)
+        if vel.ndim == 3:
+            vel = vel.reshape(vel.shape[0], -1)
 
         try:
             magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
@@ -5199,6 +5030,9 @@ class Swarm(Stateful, uw_object):
             max_magvel = math.sqrt(magvel_squared.max())
 
         except (ValueError, IndexError):
+            # Sanctioned: a rank holding zero particles has an empty vel
+            # array (its .max() raises); it contributes zero to the
+            # global maximum below.
             max_magvel = 0.0
 
         from mpi4py import MPI
@@ -5220,6 +5054,12 @@ class Swarm(Stateful, uw_object):
 class NodalPointSwarm(Swarm):
     r"""BASIC_Swarm with particles located at the coordinate points of a meshVariable
 
+    .. deprecated:: 2026-07
+        ``NodalPointSwarm`` is deprecated and will be removed in the next
+        release cycle. The semi-Lagrangian history managers in
+        ``uw.systems.ddt`` no longer use it and there are no remaining
+        internal callers.
+
     The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
     after they have been moved.
 
@@ -5231,13 +5071,26 @@ class NodalPointSwarm(Swarm):
         trackedVariable: uw.discretisation.MeshVariable,
         verbose=False,
     ):
+        import warnings
+
+        warnings.warn(
+            "NodalPointSwarm is deprecated and will be removed in the next "
+            "release cycle. Use the semi-Lagrangian history managers in "
+            "uw.systems.ddt, or a plain Swarm populated at the variable's "
+            "coordinates.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         self.trackedVariable = trackedVariable
         self.swarmVariable = None
 
         mesh = trackedVariable.mesh
 
-        # Set up a standard swarm
-        super().__init__(mesh, verbose, clip_to_mesh=False)
+        # Keyword-explicit: Swarm.__init__ takes recycle_rate as its second
+        # positional parameter, so a positional `verbose` here used to land
+        # in recycle_rate and be silently discarded (SWARM-11).
+        super().__init__(mesh, verbose=verbose, clip_to_mesh=False)
 
         nswarm = self
 
