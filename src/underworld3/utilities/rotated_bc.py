@@ -39,7 +39,10 @@ def _warn_if_ksp_diverged(ksp, kind):
     rotation-nullspace bug (#306) go unnoticed until it produced clearly-wrong
     physics in a downstream test."""
     reason = int(ksp.getConvergedReason())
-    if reason >= 0:
+    # Convention: > 0 == converged, < 0 == diverged, 0 == KSP_CONVERGED_ITERATING
+    # (should not happen after ksp.solve() returns; warn if it does). Matches
+    # petsc_generic_snes_solvers.pyx:2979.
+    if reason > 0:
         return
     its = int(ksp.getIterationNumber())
     try:
