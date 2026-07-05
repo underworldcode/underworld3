@@ -81,8 +81,8 @@ def UnstructuredSimplexBox(
         Gmsh output verbosity level. 0 is silent, higher values
         produce more diagnostic output.
     units : str, optional
-        **Deprecated**. Mesh coordinates are always in model reference
-        units. This parameter is retained for backward compatibility.
+        Deprecated and ignored (DeprecationWarning). Mesh coordinates are
+        always in the model's units (``model.set_reference_quantities``).
     verbose : bool, default=False
         If True, print additional diagnostic information during
         mesh construction.
@@ -419,7 +419,8 @@ def BoxInternalBoundary(
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     units : str, optional
-        Coordinate units for unit-aware arrays.
+        Deprecated and ignored (DeprecationWarning). Mesh coordinates are
+        always in the model's units (``model.set_reference_quantities``).
     verbose : bool, default=False
         Print diagnostic information during mesh construction.
 
@@ -1003,7 +1004,8 @@ def StructuredQuadBox(
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     units : str, optional
-        **Deprecated**. Mesh coordinates are always in model reference units.
+        Deprecated and ignored (DeprecationWarning). Mesh coordinates are
+        always in the model's units (``model.set_reference_quantities``).
     verbose : bool, default=False
         Print diagnostic information during mesh construction.
 
@@ -1104,18 +1106,6 @@ def StructuredQuadBox(
         Back = sympy.Matrix([0, 1, 0])
 
     # Convert coordinates to non-dimensional units (handles UWQuantity objects)
-    # Detect units from UWQuantity inputs (if not explicitly specified)
-    if units is None:
-        # Try to detect units from maxCoords (most likely to have units)
-        if maxCoords is not None and hasattr(maxCoords, "__iter__"):
-            for coord in maxCoords:
-                if hasattr(coord, "units"):  # UWQuantity
-                    units = str(coord.units)
-                    break
-                elif hasattr(coord, "_pint_qty"):  # Direct Pint Quantity
-                    units = str(coord._pint_qty.units)
-                    break
-
     if minCoords is not None:
         minCoords = tuple(uw.scaling.non_dimensionalise(c) for c in minCoords)
     if maxCoords is not None:

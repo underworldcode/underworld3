@@ -136,6 +136,7 @@ design/GEOGRAPHIC_COORDINATE_SYSTEM_DESIGN
 design/mesh-geometry-audit
 design/PROJECTED_NORMALS_API_DESIGN
 design/TURBULENCE_MODEL_DESIGN
+design/declined-coord-units-proposal
 ```
 
 ```{toctree}
