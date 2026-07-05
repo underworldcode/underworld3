@@ -680,49 +680,44 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 reshaped_data = modified_data.reshape(-1, self.parent.num_components)
                 self.parent.data[:] = reshaped_data
 
-            # Forward common array methods
+            # Reduction methods follow the MeshVariable array-view contract:
+            # scalar (float) for single-component variables, per-component
+            # tuple for multi-component variables (LE-07 / BF-11).
+            #
+            # NOTE: these are simple arithmetic reductions over the particle
+            # values. Swarm particles are generally non-uniformly distributed
+            # in space, so mean()/std() only APPROXIMATE the spatial
+            # statistics — use mesh integrals of the proxy field for
+            # spatially-accurate statistics.
+
+            def _per_component_reduction(self, reduction):
+                data = self._get_array_data()
+                if self.parent.num_components == 1:
+                    return float(reduction(data))
+                flat = np.asarray(data).reshape(data.shape[0], -1)
+                return tuple(
+                    float(reduction(flat[:, i])) for i in range(self.parent.num_components)
+                )
+
             def max(self):
-                return self._get_array_data().max()
+                """Maximum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.max)
 
             def min(self):
-                return self._get_array_data().min()
+                """Minimum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.min)
 
             def mean(self):
-                """
-                Compute mean value of swarm particles.
-
-                ⚠️  WARNING: This computes a simple arithmetic mean of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial mean. For accurate spatial
-                statistics, consider using integration via swarm proxy variables or
-                computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Mean value (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().mean()
+                """Arithmetic particle mean (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.mean)
 
             def sum(self):
-                return self._get_array_data().sum()
+                """Sum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.sum)
 
             def std(self):
-                """
-                Compute standard deviation of swarm particles.
-
-                ⚠️  WARNING: This computes a simple numpy std of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial standard deviation. For accurate
-                spatial statistics, consider using integration via swarm proxy variables
-                or computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Standard deviation (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().std()
+                """Arithmetic particle standard deviation (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.std)
 
             @property
             def shape(self):
@@ -895,49 +890,45 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 packed_data = self.parent._pack_array_to_data_format(modified_data)
                 self.parent.data[:] = packed_data
 
-            # Forward common array methods
+            # Reduction methods follow the MeshVariable array-view contract:
+            # scalar (float) for single-component variables, per-component
+            # tuple for multi-component variables (LE-07 / BF-11). Components
+            # are ordered as in the flat canonical layout.
+            #
+            # NOTE: these are simple arithmetic reductions over the particle
+            # values. Swarm particles are generally non-uniformly distributed
+            # in space, so mean()/std() only APPROXIMATE the spatial
+            # statistics — use mesh integrals of the proxy field for
+            # spatially-accurate statistics.
+
+            def _per_component_reduction(self, reduction):
+                data = self._get_array_data()
+                if self.parent.num_components == 1:
+                    return float(reduction(data))
+                flat = np.asarray(data).reshape(data.shape[0], -1)
+                return tuple(
+                    float(reduction(flat[:, i])) for i in range(self.parent.num_components)
+                )
+
             def max(self):
-                return self._get_array_data().max()
+                """Maximum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.max)
 
             def min(self):
-                return self._get_array_data().min()
+                """Minimum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.min)
 
             def mean(self):
-                """
-                Compute mean value of swarm particles.
-
-                ⚠️  WARNING: This computes a simple arithmetic mean of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial mean. For accurate spatial
-                statistics, consider using integration via swarm proxy variables or
-                computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Mean value (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().mean()
+                """Arithmetic particle mean (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.mean)
 
             def sum(self):
-                return self._get_array_data().sum()
+                """Sum (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.sum)
 
             def std(self):
-                """
-                Compute standard deviation of swarm particles.
-
-                ⚠️  WARNING: This computes a simple numpy std of the particle values.
-                Since swarm particles are typically non-uniformly distributed in space,
-                this is an APPROXIMATION of the spatial standard deviation. For accurate
-                spatial statistics, consider using integration via swarm proxy variables
-                or computing mesh integrals of the proxy field.
-
-                Returns
-                -------
-                float or tuple
-                    Standard deviation (float for scalar variables, tuple for multi-component)
-                """
-                return self._get_array_data().std()
+                """Arithmetic particle standard deviation (float for scalars, per-component tuple otherwise)."""
+                return self._per_component_reduction(np.std)
 
             @property
             def shape(self):
