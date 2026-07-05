@@ -4060,8 +4060,14 @@ class Swarm(Stateful, uw_object):
         else:
             # Sequential fallback: rank 0 creates the file and writes its slab,
             # then each higher rank appends in turn.
-
-            points_data_copy = self.points[:].copy()
+            #
+            # MODEL-UNIT coordinates, exactly like the parallel branch above:
+            # the deprecated `self.points` used here previously applied the
+            # model length scale, so sequential checkpoints differed from
+            # parallel ones by that factor and could not round-trip through
+            # read_timestep, which re-inserts raw model-unit coordinates
+            # (SWARM-19 / BF-17).
+            points_data_copy = self._particle_coordinates.data[:].copy()
             local_n = points_data_copy.shape[0]
 
             if comm.rank == 0:
