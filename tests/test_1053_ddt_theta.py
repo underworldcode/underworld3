@@ -91,3 +91,14 @@ class TestTheta:
         assert d.theta == 0.5
         assert float(d._am_coeffs[0].sym) == pytest.approx(0.5)
         assert float(d._am_coeffs[1].sym) == pytest.approx(0.5)
+
+    def test_state_restore_preserves_theta(self):
+        """Regression (2026-07 audit, D9a / READ-45): restoring a state
+        snapshot re-derives the AM coefficients — it must use the
+        instance's theta, not a hard-coded Crank-Nicolson 0.5."""
+        d = _make_sl(theta=1.0)
+        snapshot = d.state
+        d.state = snapshot
+        # Backward-Euler coefficients [1.0, 0.0] must survive the restore.
+        assert float(d._am_coeffs[0].sym) == pytest.approx(1.0)
+        assert float(d._am_coeffs[1].sym) == pytest.approx(0.0)

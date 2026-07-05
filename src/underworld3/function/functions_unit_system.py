@@ -29,6 +29,30 @@ import numpy as np
 import underworld3 as uw
 
 
+def _validate_coords_not_sequence(coords):
+    """Reject Python list/tuple coordinate input with a clear error.
+
+    Coordinate lists — in particular quantity-valued lists such as
+    ``[(x_qty, y_qty)]`` — are NOT a supported coordinate form
+    (maintainer ruling D7, 2026-07-06: the coordinate-units family is
+    unsupported). Supported forms are documented on :func:`evaluate`.
+    Without this guard a list falls through to
+    ``uw.non_dimensionalise(list)`` whose error message does not tell
+    the user what to pass instead.
+    """
+    if isinstance(coords, (list, tuple)):
+        raise TypeError(
+            "evaluate()/global_evaluate() coordinates must be a numpy array "
+            "of model-unit values with shape (n_points, dim), or a "
+            "unit-aware array (UnitAwareArray, or an array-valued "
+            "UWQuantity). Python lists/tuples of coordinates — including "
+            "quantity-valued lists such as [(x_qty, y_qty)] — are not "
+            "supported. Convert first, e.g. "
+            "np.asarray(coords, dtype=float) for plain model-unit numbers, "
+            "or uw.non_dimensionalise(quantity) per dimensional coordinate."
+        )
+
+
 def _evaluate_impl(
     expr,
     coords,
@@ -60,11 +84,19 @@ def _evaluate_impl(
     ----------
     expr : sympy expression or UWexpression
         Expression to evaluate
-    coords : array-like
-        Coordinates at which to evaluate. Can be:
-        - numpy array of doubles (shape: n_points x n_dims) in non-dimensional form
+    coords : numpy.ndarray or UnitAwareArray
+        Coordinates at which to evaluate. Supported forms:
+        - numpy array of doubles (shape: n_points x n_dims) in model
+          (non-dimensional) units
         - UnitAwareArray with dimensional coordinates (e.g., from mesh.X.coords)
         - Both work transparently - dimensional coords are auto-converted
+
+        Python lists/tuples of coordinates — including quantity-valued
+        lists such as ``[(x_qty, y_qty)]`` — are NOT supported and raise
+        ``TypeError`` (the coordinate-units family is unsupported;
+        maintainer ruling D7, 2026-07). Convert dimensional coordinates
+        explicitly, e.g. ``float(uw.non_dimensionalise(x_qty))``, and
+        pass a plain array.
     coord_sys : mesh.N vector coordinate system, optional
         Coordinate system to use (default: None)
     other_arguments : dict, optional
@@ -119,6 +151,8 @@ def _evaluate_impl(
     >>> if hasattr(result, 'to'):
     ...     result_K = result.to('K')  # Unit conversion
     """
+    _validate_coords_not_sequence(coords)
+
     from ._function import evaluate_nd as _evaluate_nd
     from .unit_conversion import has_units
     from underworld3.units import get_units
@@ -452,6 +486,8 @@ def _global_evaluate_impl(
     -----
     See :func:`evaluate` for details on evaluation modes.
     """
+    _validate_coords_not_sequence(coords)
+
     from ._function import global_evaluate_nd as _global_evaluate_nd
     from ..units import get_units
     from .quantities import quantity, UWQuantity
