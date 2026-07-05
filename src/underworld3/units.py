@@ -851,6 +851,12 @@ def non_dimensionalise(expression, model=None) -> Any:
             try:
                 scale = model.get_scale_for_dimensionality(dimensionality)
                 result_qty = expression / scale
+                # TODO(BUG): UWQuantity.__init__ has no `dimensionality`
+                # kwarg, so this raises TypeError whenever a raw
+                # pint.Quantity is non-dimensionalised with active scaling
+                # and a resolvable scale. Found while verifying BF-12
+                # (2026-07 audit). The uw.quantity (UWQuantity) path works
+                # and is the workaround.
                 # Return UWQuantity to preserve dimensionality
                 return UWQuantity(float(result_qty.magnitude), units="dimensionless", dimensionality=dimensionality)
             except ValueError as e:
