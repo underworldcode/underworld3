@@ -87,7 +87,7 @@ def test_deformed_spherical_shell_boundary_area_parallel():
     a = math.log(2.0)
     mapped = (np.exp(a * t) - 1.0) / (math.exp(a) - 1.0)
     new_radii = 0.5 + thickness * mapped
-    mesh._deform_mesh(coords * (new_radii / radii)[:, None])
+    mesh.deform(coords * (new_radii / radii)[:, None])
 
     lower = float(uw.maths.BdIntegral(mesh=mesh, fn=1.0, boundary="Lower").evaluate())
     upper = float(uw.maths.BdIntegral(mesh=mesh, fn=1.0, boundary="Upper").evaluate())
