@@ -1021,13 +1021,6 @@ class Eulerian(uw_object):
         super()._object_viewer()
 
         ## feedback on this instance
-        # display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
-        # display(
-        #     Latex(
-        #         r"$\quad\Delta t_{\textrm{phys}} = $ "
-        #         + sympy.sympify(self.dt_physical)._repr_latex_()
-        #     )
-        # )
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def _setup_projections(self):
@@ -3161,13 +3154,9 @@ class Lagrangian(uw_object):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
-        display(
-            Latex(
-                r"$\quad\Delta t_{\textrm{phys}} = $ "
-                + sympy.sympify(self.dt_physical)._repr_latex_()
-            )
-        )
+        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
+        # so the viewer reports the expression and history depth only.
+        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     @property
@@ -3522,13 +3511,9 @@ class Lagrangian_Swarm(uw_object):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
-        display(
-            Latex(
-                r"$\quad\Delta t_{\textrm{phys}} = $ "
-                + sympy.sympify(self.dt_physical)._repr_latex_()
-            )
-        )
+        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
+        # so the viewer reports the expression and history depth only.
+        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     @property
