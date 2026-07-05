@@ -186,3 +186,53 @@ class TestPinningAPI:
                              n_iters=1, alpha=0.5)
         after = np.asarray(mesh.X.coords)
         assert np.allclose(before[is_bnd], after[is_bnd])
+
+
+class TestMMPDEDimensionGuard:
+    """The MMPDE mover is 2D-only (READ-01/BF-09, 2026-07 audit): the 3D
+    branch used to reference `_signed_volumes`, which was never implemented,
+    so any 3D invocation died with a NameError deep in the mover. The
+    contract is now an immediate, honest NotImplementedError for cdim != 2,
+    while 2D invocation keeps working."""
+
+    def test_mmpde_3d_raises_not_implemented(self):
+        import sympy
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0, 0.0),
+            maxCoords=(1.0, 1.0, 1.0),
+            cellSize=0.5,
+        )
+        with pytest.raises(NotImplementedError,
+                           match="MMPDE mesh movement is currently 2D-only"):
+            smooth_mesh_interior(
+                mesh, metric=sympy.sympify(1), method="mmpde",
+                method_kwargs=dict(n_outer=1))
+
+    def test_mmpde_3d_guard_fires_before_any_mesh_work(self):
+        """The guard reads only mesh.cdim, before metric parsing or DM
+        access, so a minimal cdim stand-in locks the contract
+        deterministically (same pattern as test_0762's non2d tests)."""
+        from underworld3.meshing.smoothing import _winslow_mmpde
+
+        class _Mesh3D:
+            cdim = 3
+
+        with pytest.raises(NotImplementedError,
+                           match="MMPDE mesh movement is currently 2D-only"):
+            _winslow_mmpde(_Mesh3D(), metric=1, pinned_labels=(),
+                           verbose=False)
+
+    def test_mmpde_2d_smoke_still_works(self):
+        """A small 2D mmpde invocation still runs and leaves a valid mesh."""
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        before = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(
+            mesh, metric=rho, method="mmpde",
+            method_kwargs=dict(n_outer=3, metric_eval="rbf"))
+        after = np.asarray(mesh.X.coords)
+        assert np.all(np.isfinite(after))
+        assert not np.allclose(before, after)   # the mover actually moved

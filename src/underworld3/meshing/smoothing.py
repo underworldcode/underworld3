@@ -2717,6 +2717,11 @@ def smooth_mesh_interior(
           *separable* feature the explicit 1-D OT is exact and
           cheaper — ``"anisotropic"`` earns its keep on the general
           non-separable case.
+        * ``"mmpde"`` — variational moving-mesh (Huang–Kamenski
+          MMPDE) with a full tensor (or scalar) metric; the
+          recommended production mover for adaptive meshing.
+          **Currently 2D-only** (triangle meshes) — a 3D mesh
+          raises ``NotImplementedError``.
 
         With a fixed node count neither can exceed ≈1.3–1.8×
         deep/near grading (the optimal-transport ≈10× needs *more
@@ -2930,8 +2935,9 @@ def smooth_mesh_interior(
 # ===== grafted from feature/elliptic-ma: mmpde mover + helpers =====
 def _tet_cells(dm):
     """Tetrahedron vertex-index quadruples (local-chart), or ``None`` if the
-    mesh is not all-tet. The 3D analogue of :func:`_tri_cells` — used for the
-    signed-volume backtrack of the equidistribution mover in 3D."""
+    mesh is not all-tet. The 3D analogue of :func:`_tri_cells` — used by the
+    3D boundary-face extraction in ``_ot_adapt`` (the MMPDE mover itself is
+    currently 2D-only)."""
     cStart, cEnd = dm.getHeightStratum(0)
     pStart, pEnd = dm.getDepthStratum(0)
     tets = []
@@ -2999,7 +3005,10 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
                    **_ignored):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
     MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
-    arXiv:1410.7872). Dimension-general (`d = 2, 3`) and parallel-safe.
+    arXiv:1410.7872). **2D (triangle meshes) only** and parallel-safe.
+    The underlying method is dimension-general, but the 3D (tetrahedral)
+    discretization has not been implemented — a 3D mesh raises
+    ``NotImplementedError`` immediately.
 
     Generates the physical mesh as the image of a **fixed computational
     (reference) mesh** under the inverse coordinate map, minimizing
@@ -3051,9 +3060,14 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     from petsc4py import PETSc
     pinned_labels = tuple(pinned_labels)
     cdim = mesh.cdim
-    if cdim not in (2, 3):
+    if cdim != 2:
+        # Guard here, before any metric parsing or DM work, so a 3D caller
+        # gets an honest message rather than a NameError from the (never
+        # implemented) 3D discretization deeper in the mover (READ-01).
         raise NotImplementedError(
-            "_winslow_mmpde supports 2D/3D simplex meshes only")
+            "MMPDE mesh movement is currently 2D-only (triangle meshes): "
+            "the 3D tetrahedral discretization of the mover has not been "
+            f"implemented. Got a mesh with cdim={cdim}.")
     p = float(p); theta = float(theta); tau = float(tau)
     q = cdim * p / 2.0
     dq = float(cdim) ** q
@@ -3116,15 +3130,14 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
     n_verts = pEnd - pStart
-    if cdim == 2:
-        cells_all = _tri_cells(dm)
-        signed_vol = _signed_areas
-    else:
-        cells_all = _tet_cells(dm)
-        signed_vol = _signed_volumes
+    # cdim == 2 is guaranteed by the guard at the top of this function.
+    # (The former 3D branch here referenced `_signed_volumes`, which was
+    # never implemented — READ-01.)
+    cells_all = _tri_cells(dm)
+    signed_vol = _signed_areas
     if cells_all is None:
         return
-    fact = 2.0 if cdim == 2 else 6.0           # d! → |K| = |detE|/d!
+    fact = 2.0                                 # d! → |K| = |detE|/d!
     owned_cell = _owned_cell_mask(dm)
     cells_own = cells_all[owned_cell]
     is_owned_v = _owned_vertex_mask(dm)
