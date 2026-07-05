@@ -227,3 +227,41 @@ def test_projection_solve_consumes_fresh_proxy(mesh):
 
     del swarm
     del mesh
+
+
+# --------------------------------------------------------------------------
+# Fossil-variable lifetime contract
+# --------------------------------------------------------------------------
+
+def test_variable_outliving_swarm_is_a_usable_fossil(mesh):
+    """A SwarmVariable holds its parent swarm by WEAK reference (strong
+    back-references would defer DMSwarm destruction to gc time — the
+    transient-evaluation-swarm leak). A variable that outlives its swarm
+    must therefore remain usable SYMBOLICALLY — ``.sym`` returns the last
+    projection with a warning, never raising from a stale-refresh attempt —
+    while particle-data access still raises the lifetime error.
+    (Regression: test_0726's fixture drops the swarm and composes with the
+    surviving variable; the populate() invalidation fix made the lazy
+    refresh dereference the dead parent.)"""
+    import gc
+    import warnings
+
+    swarm = uw.swarm.Swarm(mesh=mesh)
+    var = uw.swarm.SwarmVariable("fossil", swarm, size=1, proxy_degree=1)
+    swarm.populate(fill_param=2)  # marks the proxy stale (SWARM-17 fix)
+
+    del swarm
+    gc.collect()
+    assert var._swarm_ref() is None, "test premise: parent swarm collected"
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sym = var.sym  # must WARN, not raise
+    assert sym is not None
+    assert any("no longer exists" in str(w.message) for w in caught)
+
+    # particle-data access still enforces the lifetime guard
+    with pytest.raises(RuntimeError, match="garbage collected"):
+        _ = var.swarm
+
+    del mesh

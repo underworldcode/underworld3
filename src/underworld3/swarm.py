@@ -1129,6 +1129,28 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         if not self._proxy_stale or self._updating_proxy:
             return
 
+        # Lifetime contract: variables hold their parent swarm by WEAK
+        # reference (a strong back-reference would cycle with the swarm's
+        # own strong _coord_var/_X0 members and defer DMSwarm destruction
+        # from refcount-immediate to gc time — the transient-evaluation-
+        # swarm leak guarded by tests/test_0006_memory_leak.py). A variable
+        # that outlives its swarm is therefore a symbolic FOSSIL: its proxy
+        # keeps the last projection and can never be refreshed — say so
+        # loudly instead of raising from deep inside a .sym access.
+        # Particle-data paths (.data, rbf_interpolate, ...) still raise
+        # via the .swarm property guard.
+        if self._swarm_ref is None or self._swarm_ref() is None:
+            import warnings
+
+            warnings.warn(
+                f"SwarmVariable '{self.clean_name}': the parent swarm no "
+                "longer exists; the proxy mesh variable retains its last "
+                "projection and cannot be refreshed.",
+                stacklevel=2,
+            )
+            self._proxy_stale = False  # nothing can ever refresh it again
+            return
+
         try:
             self._updating_proxy = True
             self._rbf_to_meshVar(self._meshVar)
@@ -2275,6 +2297,21 @@ class IndexSwarmVariable(SwarmVariable):
         refresh (``Swarm._sync_before_assembly``).
         """
         if not self._proxy_stale or self._updating_proxy:
+            return
+
+        # Fossil-variable contract — see the base implementation: a
+        # variable that outlives its (weakly-referenced) parent swarm keeps
+        # the last level-set projection and warns instead of raising.
+        if self._swarm_ref is None or self._swarm_ref() is None:
+            import warnings
+
+            warnings.warn(
+                f"IndexSwarmVariable '{self.clean_name}': the parent swarm "
+                "no longer exists; the level-set proxies retain their last "
+                "projection and cannot be refreshed.",
+                stacklevel=2,
+            )
+            self._proxy_stale = False  # nothing can ever refresh it again
             return
 
         try:
