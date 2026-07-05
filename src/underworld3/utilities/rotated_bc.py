@@ -75,7 +75,7 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     # In parallel a rank may own NO part of this boundary → a null IS; guard and return
     # no local nodes (calling getIndices() on a null IS would segfault).
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-    if sis is None or sis.handle == 0:
+    if not (sis and sis.getSize() > 0):
         return []
     facets = [int(z) for z in sis.getIndices()]
     fS, fE = dm.getHeightStratum(1)              # facets (edges in 2D, faces in 3D)
