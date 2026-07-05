@@ -5052,6 +5052,12 @@ class Swarm(Stateful, uw_object):
 class NodalPointSwarm(Swarm):
     r"""BASIC_Swarm with particles located at the coordinate points of a meshVariable
 
+    .. deprecated:: 2026-07
+        ``NodalPointSwarm`` is deprecated and will be removed in the next
+        release cycle. The semi-Lagrangian history managers in
+        ``uw.systems.ddt`` no longer use it and there are no remaining
+        internal callers.
+
     The swarmVariable `X0` is defined so that the particles can "snap back" to their original locations
     after they have been moved.
 
@@ -5063,13 +5069,26 @@ class NodalPointSwarm(Swarm):
         trackedVariable: uw.discretisation.MeshVariable,
         verbose=False,
     ):
+        import warnings
+
+        warnings.warn(
+            "NodalPointSwarm is deprecated and will be removed in the next "
+            "release cycle. Use the semi-Lagrangian history managers in "
+            "uw.systems.ddt, or a plain Swarm populated at the variable's "
+            "coordinates.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         self.trackedVariable = trackedVariable
         self.swarmVariable = None
 
         mesh = trackedVariable.mesh
 
-        # Set up a standard swarm
-        super().__init__(mesh, verbose, clip_to_mesh=False)
+        # Keyword-explicit: Swarm.__init__ takes recycle_rate as its second
+        # positional parameter, so a positional `verbose` here used to land
+        # in recycle_rate and be silently discarded (SWARM-11).
+        super().__init__(mesh, verbose=verbose, clip_to_mesh=False)
 
         nswarm = self
 

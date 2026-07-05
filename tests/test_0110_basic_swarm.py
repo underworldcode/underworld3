@@ -180,3 +180,35 @@ def test_recycle_rate_not_implemented():
     s = swarm.Swarm(mesh, recycle_rate=0)
     s.populate(fill_param=1)
     assert s._particle_coordinates.data.shape[0] > 0
+
+
+@pytest.mark.tier_a
+def test_nodal_point_swarm_deprecated_but_working():
+    """NodalPointSwarm: deprecation warning + construction smoke test.
+
+    The class is deprecated (audit SWARM-11, remediation D5) and will be
+    removed next release cycle; during the warning period it must still
+    construct correctly. This also pins the SWARM-11 positional-argument
+    fix: `verbose` used to be passed positionally into Swarm's
+    `recycle_rate` slot and silently discarded.
+    """
+    import numpy as np
+    import underworld3 as uw
+    from underworld3.meshing import UnstructuredSimplexBox
+
+    mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0)
+    T = uw.discretisation.MeshVariable("T_nps_smoke", mesh, 1)
+
+    with pytest.warns(DeprecationWarning, match="NodalPointSwarm is deprecated"):
+        nswarm = uw.swarm.NodalPointSwarm(T, verbose=True)
+
+    # verbose must reach Swarm.__init__ (not land in recycle_rate)
+    assert nswarm.verbose is True
+    assert nswarm.recycle_rate == 0
+
+    # Still functional during the warning period: one particle per node of
+    # the tracked variable, with launch points recorded for snap-back.
+    n_local = nswarm._particle_coordinates.data.shape[0]
+    n_global = uw.mpi.comm.allreduce(n_local)
+    assert n_global == T.coords.shape[0]
+    assert nswarm._nX0.data.shape == (n_local, mesh.dim)
