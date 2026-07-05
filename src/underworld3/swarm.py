@@ -3893,18 +3893,25 @@ class Swarm(Stateful, uw_object):
         migrate=True,
         delete_lost_points=True,
     ) -> int:
-        """Add particles on every rank, then migrate to correct owners.
+        """Insert the full coordinate array on every rank (low-level primitive).
 
-        Every rank inserts **all** supplied points into the local swarm, then
-        ``dm.migrate()`` moves each particle to the rank that owns its
-        spatial location.  If the same array is passed on every rank, this
-        produces one copy of each point in the correct partition — but calling
-        it with *different* arrays per rank will accumulate all of them.
+        Every rank inserts **all** supplied points into its local swarm.
+        There is no locality filtering and no deduplication: migration is a
+        scatter that routes each inserted particle to the rank owning its
+        location, so passing the same array on every rank at ``np`` processes
+        yields ``np`` copies of every point.
 
-        This is primarily an internal method used by global-evaluation and
-        mesh-transfer utilities.  For general use, prefer
-        :meth:`add_particles_with_coordinates`, which filters non-local
-        points automatically and never creates duplicates.
+        Correct usage is one of:
+
+        - ``migrate=False``, where each rank deliberately keeps a full copy
+          of the points (the global-evaluation / mesh-transfer pattern), or
+        - input that is pre-partitioned across ranks — or supplied on rank 0
+          only, with empty ``(0, dim)`` arrays elsewhere — followed by
+          migration to route each point to its owner.
+
+        For general use, prefer :meth:`add_particles_with_coordinates`,
+        which accepts a rank-identical array and filters non-local points so
+        each point is added exactly once.
 
         Parameters
         ----------
