@@ -3187,19 +3187,24 @@ class Lagrangian(uw_object):
         be called manually after setting initial conditions.
         """
         psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evaluate(
-                        self.psi_fn[i, j],
-                        self.swarm.data,
-                    )
-                    psi_star_0[i, j].data[:] = updated_psi
+        # Component-wise write through the canonical (N, components) storage.
+        # Indexing the SwarmVariable itself (``psi_star_0[i, j]``) returns a
+        # *symbolic* component with no ``.data`` — the modern component
+        # address is ``.data[:, var._data_layout(i, j)]`` (audit SWARM-06).
+        coords = np.asarray(self.swarm._particle_coordinates.data)
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                updated_psi = uw.function.evaluate(
+                    self.psi_fn[i, j],
+                    coords,
+                )
+                psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
+                    updated_psi
+                ).reshape(-1)
 
         # Copy to all other history slots
         for k in range(1, self.order):
-            with self.swarm.access(self.psi_star[k]):
-                self.psi_star[k].data[...] = psi_star_0.data[...]
+            self.psi_star[k].data[...] = psi_star_0.data[...]
 
         self._history_initialised = True
         return
@@ -3270,15 +3275,19 @@ class Lagrangian(uw_object):
         # Now update the swarm variable
 
         psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evaluate(
-                        self.psi_fn[i, j],
-                        self.swarm.data,
-                        evalf=evalf,
-                    )
-                    psi_star_0[i, j].data[:] = updated_psi
+        # Grab the current psi values at the (pre-advection) particle
+        # positions via the canonical component storage (audit SWARM-06).
+        coords = np.asarray(self.swarm._particle_coordinates.data)
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                updated_psi = uw.function.evaluate(
+                    self.psi_fn[i, j],
+                    coords,
+                    evalf=evalf,
+                )
+                psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
+                    updated_psi
+                ).reshape(-1)
 
         # Now update the swarm locations
 
@@ -3539,19 +3548,24 @@ class Lagrangian_Swarm(uw_object):
         be called manually after setting initial conditions.
         """
         psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evaluate(
-                        self.psi_fn[i, j],
-                        self.swarm.data,
-                    )
-                    psi_star_0[i, j].data[:] = updated_psi
+        # Component-wise write through the canonical (N, components) storage.
+        # Indexing the SwarmVariable itself (``psi_star_0[i, j]``) returns a
+        # *symbolic* component with no ``.data`` — the modern component
+        # address is ``.data[:, var._data_layout(i, j)]`` (audit SWARM-06).
+        coords = np.asarray(self.swarm._particle_coordinates.data)
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                updated_psi = uw.function.evaluate(
+                    self.psi_fn[i, j],
+                    coords,
+                )
+                psi_star_0.data[:, psi_star_0._data_layout(i, j)] = np.asarray(
+                    updated_psi
+                ).reshape(-1)
 
         # Copy to all other history slots
         for k in range(1, self.order):
-            with self.swarm.access(self.psi_star[k]):
-                self.psi_star[k].data[...] = psi_star_0.data[...]
+            self.psi_star[k].data[...] = psi_star_0.data[...]
 
         self._history_initialised = True
         return
@@ -3621,23 +3635,27 @@ class Lagrangian_Swarm(uw_object):
                 )
                 print(f"Lagrange swarm copying {i-1} to {i}", flush=True)
 
-            with self.swarm.access(self.psi_star[i]):
-                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
         phi = 1 / self.step_averaging
 
         psi_star_0 = self.psi_star[0]
-        with self.swarm.access(psi_star_0):
-            for i in range(psi_star_0.shape[0]):
-                for j in range(psi_star_0.shape[1]):
-                    updated_psi = uw.function.evaluate(
+        # Blend the freshly-evaluated psi into slot 0 component-by-component
+        # through the canonical (N, components) storage (audit SWARM-06).
+        coords = np.asarray(self.swarm._particle_coordinates.data)
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                ij = psi_star_0._data_layout(i, j)
+                updated_psi = np.asarray(
+                    uw.function.evaluate(
                         self.psi_fn[i, j],
-                        self.swarm.data,
+                        coords,
                         evalf=evalf,
                     )
-                    psi_star_0[i, j].data[:] = (
-                        phi * updated_psi + (1 - phi) * psi_star_0[i, j].data[:]
-                    )
+                ).reshape(-1)
+                psi_star_0.data[:, ij] = (
+                    phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
+                )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
