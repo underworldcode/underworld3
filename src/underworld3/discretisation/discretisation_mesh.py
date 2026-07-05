@@ -2345,6 +2345,29 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
+        # The navigation coords (used to build the kd-tree control points and
+        # for point location) were captured as a reference to the ORIGINAL
+        # coords in __init__ and are not updated by the DM rebuild above, so
+        # on an adapted/deformed mesh they still describe the old geometry.
+        # They MUST be refreshed BEFORE _build_kd_tree_index() runs: that
+        # rebuild indexes _nav_coords with the NEW nav-DM point range, and a
+        # stale (old-sized) array raises IndexError when the mesh grew — and
+        # silently mislocates points otherwise (issue #286).
+        if getattr(self, "_nav_dm", None) is None:
+            self._nav_coords = numpy.asarray(
+                self.dm.getCoordinatesLocal().array
+            ).reshape(-1, self.cdim)
+        else:
+            # manifold mesh: the nav clone carries its own (ghosted) coords;
+            # refresh them from the rebuilt main DM where possible.
+            try:
+                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
+                self._nav_coords = numpy.asarray(
+                    self._nav_dm.getCoordinatesLocal().array
+                ).reshape(-1, self.cdim)
+            except Exception:
+                pass
+
         self._index = None
         self._build_kd_tree_index()
 
@@ -2395,25 +2418,8 @@ class Mesh(Stateful, uw_object):
         self.boundary_face_control_points_sign = None
         self._domain_radius_squared = float("inf")
 
-        # The navigation coords (used to build those control points and for
-        # point location) were captured as a reference to the ORIGINAL coords
-        # in __init__ and never refreshed here, so on a volume mesh they stayed
-        # at the undeformed geometry — the real reason a bulged-out region read
-        # as exterior. Re-point them at the current (deformed) DM coordinates.
-        if getattr(self, "_nav_dm", None) is None:
-            self._nav_coords = numpy.asarray(
-                self.dm.getCoordinatesLocal().array
-            ).reshape(-1, self.cdim)
-        else:
-            # manifold mesh: the nav clone carries its own (ghosted) coords;
-            # refresh them from the rebuilt main DM where possible.
-            try:
-                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
-                self._nav_coords = numpy.asarray(
-                    self._nav_dm.getCoordinatesLocal().array
-                ).reshape(-1, self.cdim)
-            except Exception:
-                pass
+        # NB: the _nav_coords refresh for the deformed/adapted geometry happens
+        # ABOVE, before _build_kd_tree_index() — see the issue #286 note there.
 
         # BUGFIX(#130): recompute the DOF coordinate cache for every
         # already-registered variable. Variables created before this
@@ -2924,11 +2930,38 @@ class Mesh(Stateful, uw_object):
         return project(numpy.asarray(coords, dtype=float))
 
     @timing.routine_timer_decorator
-    def update_lvec(self):
+    def update_lvec(self, swarm_sync=True):
         """
         This method creates and/or updates the mesh variable local vector.
         If the local vector is already up to date, this method will do nothing.
+
+        ``swarm_sync=False`` skips the swarm-dependency hook below. It MUST
+        be passed at call sites that only a SUBSET of ranks reach (e.g. the
+        refresh calls inside ``petsc_interpolate`` — ranks with zero interior
+        points skip that function entirely): the hook performs collective
+        reductions, so running it on a subset of ranks deadlocks. Such sites
+        rely on an earlier all-ranks ``update_lvec()`` for freshness, exactly
+        as they already do for the collective ``globalToLocal`` below.
         """
+
+        # Swarm dependencies first (issues #215 Bug 3 / #289): run any
+        # deferred particle migration and refresh stale swarm-variable
+        # proxies BEFORE the staleness check below — the refresh writes
+        # proxy MeshVariable data, which is what sets _stale_lvec. Solvers
+        # read the proxy DM directly, so the lazy `.sym` refresh alone
+        # cannot guarantee freshness at assembly. Collective; flag-guarded
+        # no-op when nothing changed. Ordered deterministically so all
+        # ranks act on swarms in the same sequence.
+        if swarm_sync and not getattr(self, "_swarm_sync_in_progress", False):
+            self._swarm_sync_in_progress = True
+            try:
+                for swarm in sorted(
+                    self._registered_swarms,
+                    key=lambda s: s._instance_number,
+                ):
+                    swarm._sync_before_assembly()
+            finally:
+                self._swarm_sync_in_progress = False
 
         if self._stale_lvec:
             if not self._lvec:

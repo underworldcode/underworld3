@@ -1285,7 +1285,11 @@ def petsc_interpolate(   expr,
 
         if cached_info is not None:
             # CACHE HIT - Fast path. Evaluate using cached structure
-            mesh.update_lvec()  # Ensure fresh values
+            # swarm_sync=False: petsc_interpolate is reached by only the
+            # ranks that hold interior points — the swarm-dependency hook
+            # does collective reductions and must not run on a subset.
+            # Freshness comes from the all-ranks update_lvec() in evaluate().
+            mesh.update_lvec(swarm_sync=False)  # Ensure fresh values
             cached_info.evaluate(mesh, outarray)
 
         else:
@@ -1326,7 +1330,9 @@ def petsc_interpolate(   expr,
             mesh._dminterpolation_cache.store_structure(coords, dofcount, cached_info)
 
             # Evaluate
-            mesh.update_lvec()
+            # swarm_sync=False: see the cache-hit branch above — only a
+            # subset of ranks reaches petsc_interpolate.
+            mesh.update_lvec(swarm_sync=False)
             cached_info.evaluate(mesh, outarray)
         # === END CACHING ===
 
