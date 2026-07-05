@@ -1,5 +1,10 @@
 # Underworld3 AI Assistant Context
 
+> **⚖️ MANDATORY**: Read `docs/developer/UW3_STYLE_CHARTER.md` before writing any code.
+> It is the normative style contract for every session (human or AI), it is two pages,
+> and it WINS over the surrounding code and over any other style document on conflict.
+> Core clause: match the Charter, not the code next door — and flag deviations you find.
+
 > **Note**: Human-readable developer documentation is in `docs/developer/` (Sphinx/MyST format).
 > For development history and completed migrations, see `docs/developer/ai-notes/historical-notes.md`
 
