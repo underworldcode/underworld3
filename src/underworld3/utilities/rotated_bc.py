@@ -31,6 +31,30 @@ from underworld3.utilities.boundary_flux import (
 _ROT_SOLVE_COUNT = 0
 
 
+def _warn_if_ksp_diverged(ksp, kind):
+    """Emit a rank-0 warning if a KSP finished on a KSP_DIVERGED_* reason
+    (negative converged-reason). ``ksp.solve`` never raises on divergence, so
+    without this the linear rotated-freeslip solvers here would return a
+    partial answer to the caller silently — which is exactly what let the 3D
+    rotation-nullspace bug (#306) go unnoticed until it produced clearly-wrong
+    physics in a downstream test."""
+    reason = int(ksp.getConvergedReason())
+    # Convention: > 0 == converged, < 0 == diverged, 0 == KSP_CONVERGED_ITERATING
+    # (should not happen after ksp.solve() returns; warn if it does). Matches
+    # petsc_generic_snes_solvers.pyx:2979.
+    if reason > 0:
+        return
+    its = int(ksp.getIterationNumber())
+    try:
+        rnorm = float(ksp.getResidualNorm())
+    except Exception:
+        rnorm = float("nan")
+    from underworld3 import mpi
+    mpi.pprint(f"[rotated_bc] WARNING: {kind} KSP did NOT converge "
+               f"(reason={reason}, iterations={its}, |r|={rnorm:.3e}); "
+               f"proceeding with the last iterate.")
+
+
 # --------------------------------------------------------------------------- #
 #  Rotation construction
 # --------------------------------------------------------------------------- #
@@ -291,6 +315,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
         Uhat = dm.createGlobalVec(); ksp.solve(bhat, Uhat)   # returned in info → own it
         ksp_reason = ksp.getConvergedReason(); ksp_its = ksp.getIterationNumber()
+        _warn_if_ksp_diverged(ksp, kind="rotated direct-LU")
     else:
         Mp = _pressure_mass_schur_pmat(solver)
         Uhat, ksp_reason, ctx = _solve_rotated_iterative(
@@ -797,6 +822,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
 
     Uhat = Ahat.createVecRight(); Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
+    _warn_if_ksp_diverged(ksp, kind="rotated fieldsplit-Schur")
     # An identity constraint row in an ITERATIVE solve only drives its residual
     # (= û_i) below tolerance, so û_i ~ tol, not exactly 0. Because zeroRowsColumns
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
