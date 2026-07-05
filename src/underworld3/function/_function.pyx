@@ -822,10 +822,13 @@ def _clement_to_work_variable(expr, mesh, derivfns):
             # P1 - data is at nodes
             nodal_values[varfn] = var.data[:, comp].flatten()
         else:
-            # Higher degree - need to evaluate at node coords
-            nodal_values[varfn] = uw.function.evaluate(
-                var.sym[comp, 0], node_coords, rbf=True
-            ).flatten()
+            # Higher degree - need to evaluate at node coords. Evaluate the
+            # component's own applied function directly: var.sym is a row
+            # matrix (1, cdim) for vectors (and (rows, cols) for tensors), so
+            # indexing it by the flat data-column index is wrong / can raise.
+            nodal_values[varfn] = np.asarray(uw.function.evaluate(
+                varfn, node_coords, rbf=True
+            )).flatten()
 
     # Compute Clement gradients for derivative source variables
     gradient_at_nodes = {}
@@ -840,11 +843,14 @@ def _clement_to_work_variable(expr, mesh, derivfns):
                 grad = compute_clement_gradient_at_nodes(source_var, component=c)
                 gradient_at_nodes[(source_var, c)] = grad
 
-    # Add derivative values to nodal_values dictionary
+    # Add derivative values to nodal_values dictionary. Each derivative
+    # expression carries its own flat data-column index (diffcls.component,
+    # set at UnderworldFunction registration) — use it to retrieve the
+    # matching per-component gradient, so e.g. v[1].diff(x) reads the
+    # component-1 gradient rather than component 0.
     for source_var, deriv_list in derivfns.items():
-        comp = 0 if source_var.num_components == 1 else 0  # TODO: handle multi-component
-        grad = gradient_at_nodes[(source_var, comp)]  # shape (n_nodes, dim)
         for deriv_expr, diffindex in deriv_list:
+            grad = gradient_at_nodes[(source_var, deriv_expr.component)]  # (n_nodes, dim)
             # grad[:, diffindex] gives ∂f/∂x_i at all nodes
             nodal_values[deriv_expr] = grad[:, diffindex]
 
