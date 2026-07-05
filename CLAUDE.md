@@ -548,7 +548,6 @@ pixi run -e default python   # Run Python in environment
 - `src/underworld3/function/expressions.py` - UWexpression (lazy evaluation, symbol disambiguation)
 - `src/underworld3/function/_function.pyx` - UnderworldFunction (mesh variable symbols)
 - `src/underworld3/discretisation/enhanced_variables.py` - EnhancedMeshVariable (units, math ops, persistence)
-- `src/underworld3/discretisation/persistence.py` - Stub for future persistence features
 
 ### Historical Notes
 For development history, completed migrations, and fixed bugs:
