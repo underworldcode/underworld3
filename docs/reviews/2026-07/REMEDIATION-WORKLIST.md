@@ -152,11 +152,14 @@ Do after Track-0 swarm fixes and WA-02 (which deletes pic_swarm's 18 sites).
 
 Every shim lands with the two-test pattern (old signature = identical result +
 exactly one DeprecationWarning; new signature = zero warnings). Conventions
-C1–C9 from `API-CONSISTENCY-REVIEW.md` are adopted as THE convention set.
+C2–C9 from `API-CONSISTENCY-REVIEW.md` are adopted; **C1 is superseded by the
+maintainer decision of 2026-07-04** (recorded in `UW3_STYLE_CHARTER.md` §6): the
+ORIGINAL value-first order `add_<kind>_bc(value, boundary, ...)` is canonical, and
+the NEWER boundary-first methods migrate to it.
 
 | # | Finding | Sev | Eff | Action | Deps / notes |
 |---|---------|-----|-----|--------|--------------|
-| WC-01 | API-01 | High | M | Boundary-first arg order on the legacy BC trio via the `isinstance(boundary, str)` shim | **[D2]** window + removal policy; WE-09 sweeps call sites |
+| WC-01 | API-01 | High | M | Value-first arg order (per D2, decided 2026-07-04): migrate `add_nitsche_bc`/`add_rotated_freeslip_bc`/`add_constraint_bc` to `(value, boundary, ...)` with shims for their current boundary-first signatures; legacy trio already conforms | **[D2 DECIDED]** shim kept indefinitely pending contrary ruling; WE-09 sweep now targets only the newer methods' call sites |
 | WC-02 | API-02 | Med | S | ONE datum name (`value`) with `conds=`/`g=` aliases; ONE direction convention; finish `components=` deprecation | **[D3]** name choice; same edit as WC-01 |
 | WC-03 | API-04 | Med | S | `consistent_jacobian` → validated property `{False, True, "continuation"}`, falsy→False, else ValueError; NumPy docstring from the `pyx:71-91` comment | Bug-fix-flavoured (invalid values currently silently select Newton) |
 | WC-04 | API-05 | Med | S | `SolverBaseClass.set_custom_fmg(...)` method (lazy-import pattern); deprecate `set_custom_mg`; unify on `builder=` | Coordinate with `bugfix/custom-mg-parallel` (BT); np2/np4 |
@@ -327,7 +330,7 @@ comment/docstring-only. All unverified rows re-verify at their remediation base.
 | WE-06 | DOC-07 | Med | M | Status headers on the ~16 unmarked design docs (per-doc git verification before stamping) | |
 | WE-07 | DOC-08 | Low | S | Fix `mesh-adaptation.md:247` + the `mesh.adapt()` docstring Examples (deprecated patterns) | |
 | WE-08 | API-12 | Low | S | Convert `units.py` public docstrings Google→NumPy (`docstring_sweep.py` assists) | |
-| WE-09 | API-01/02 sweep | High | L | Update ~920 docs + ~450 tests call sites to boundary-first BC order | After WC-01/02 **[D2]** |
+| WE-09 | API-01/02 sweep | Med | M | Update call sites of the NEWER methods (nitsche/rotated/constraint) to value-first order; the ~1,370 legacy-order sites already conform (per D2 decision) | After WC-01/02 **[D2 DECIDED]** |
 | WE-10 | LE-23 | Low | S | Update the `disk_snapshot.py` "Phase 1 (this commit)" header (phases 2/3 shipped) | |
 | WE-11 | SWARM-24 | Med | S | Interim: banner on the misleading 26-line `swarm-system.md` stub pointing at the swarm review; real doc is FO-01's deliverable | |
 
@@ -358,7 +361,7 @@ comment/docstring-only. All unverified rows re-verify at their remediation base.
 ## Decisions needed from Louis
 
 1. **persistence.py fate (LE-12 / WA-01)** — delete `discretisation/persistence.py` outright, or leave a one-release warn-on-import shim? (Either way the CLAUDE.md Key Files entry is updated.)
-2. **BC argument-order migration (API-01 / WC-01, WE-09)** — approve the boundary-first convention and the arg-order shim; set the deprecation-window length and decide whether the old `(conds, boundary)` order is ever hard-removed. ~1,370 old-order call sites in docs+tests make "one cycle then remove" a hard break of the most-used API; recommendation is to keep the shim indefinitely.
+2. **BC argument-order migration (API-01 / WC-01, WE-09)** — **DECIDED 2026-07-04**: the ORIGINAL value-first order `(value, boundary)` is canonical (most used in examples/benchmarks; matches previous major versions). The newer boundary-first methods migrate to it with shims. Remaining sub-decision: confirm the canonical datum name (`conds` implied vs `value`) — see #3.
 3. **Canonical BC value-parameter name (API-02 / WC-02)** — `value` (proposed, self-documenting) vs `g` (zero-churn alternative); shim mechanics are identical either way.
 4. **Recycle/streak swarms (SWARM-08/09 / WA-02, WA-03)** — port the working recycle logic from the dead `swarms/pic_swarm.py` into `Swarm`, or excise `recycle_rate > 1` and its docstring claims; `pic_swarm.py` (1,534 never-installed lines) is deleted either way.
 5. **NodalPointSwarm fate (SWARM-11 / BF-14)** — keep with a smoke test, or deprecate; it has zero remaining instantiation sites and a positional-argument bug.

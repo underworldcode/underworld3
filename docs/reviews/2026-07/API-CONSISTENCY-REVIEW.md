@@ -135,6 +135,18 @@ consistent — no finding.
 
 ### THE convention set (proposed)
 
+> **Maintainer decision 2026-07-04 — supersedes C1 and amends C2 below.** This review
+> proposed boundary-first BC ordering; L. Moresi ruled the other way: the ORIGINAL
+> value-first order `add_<kind>_bc(value, boundary, ...)` is canonical — it is the
+> most widely used in the published examples and benchmarks and matches previous
+> major versions. Wave C therefore migrates the NEWER boundary-first methods
+> (`add_nitsche_bc`, `add_rotated_freeslip_bc`, `add_constraint_bc`) to value-first,
+> shimming their current signatures; the legacy trio is already conforming. The
+> canonical datum name is pending confirmation (`conds`, implied by the original-order
+> decision, vs the `value` proposed here). The normative statement lives in
+> `docs/developer/UW3_STYLE_CHARTER.md` §6, which wins over this review on conflict.
+> The analysis below is preserved as written for the audit record.
+
 | # | Convention | Rule |
 |---|---|---|
 | C1 | **BC argument order** | `add_<kind>_bc(boundary, value, ...)` — boundary label (str) first, prescribed datum second. Matches every method added since the trio; the trio is shimmed. |

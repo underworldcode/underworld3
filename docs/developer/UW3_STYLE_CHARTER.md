@@ -10,9 +10,19 @@ understand it. Over-complication and inconsistent patterns are the enemies of th
 rule: a clever construction that saves ten lines but costs the reader a detour has
 made the code worse. When in doubt, write the plain version.
 
-Don't forget this: Underworld3 is a python api for building mathematical models, particularly for geoscience. The founding rule applies as much to the python scripts and Jupyter notebook codes as it does to the code we write under-the-hood. We write code that makes models easy to read. We always hide complex and irrelevant detail at least one level below the notebooks / scripts. There should never be inner-workings (private _method_xxx() ) visible to the user. 
+Don't forget this: Underworld3 is a Python API for building mathematical models,
+particularly for geoscience. The founding rule applies as much to the Python scripts
+and Jupyter notebooks as it does to the code we write under the hood. We write code
+that makes models easy to read, and we always hide complex or irrelevant detail at
+least one level below the notebooks and scripts. Inner workings (private
+`_method_xxx()`) are never visible to the user.
 
-Consistent patterns, common choices are the defaults, uncommon choices are harder to find. Documentation is great: the docstrings turn into the documentation and are jupyter friendly. We do not shy away from equations in docstrings, and we do provide good, simple examples. We don't overdo it and we don't force feed our users with emoji, nor pat ourselves on the back for our cleverness. We also don't care how complicated something has been to code, or debug, we just report how it works.
+Consistent patterns: common choices are the defaults; uncommon choices are harder to
+find. Documentation is great — the docstrings turn into the documentation and are
+Jupyter-friendly. We do not shy away from equations in docstrings, and we do provide
+good, simple examples. We don't overdo it, we don't force-feed our users with emoji,
+and we don't pat ourselves on the back for our cleverness. We also don't care how
+complicated something was to code or debug; we just report how it works.
 
 ## 2. Match the Charter, Not the Surrounding Code
 
@@ -85,9 +95,11 @@ These settle the June-2026 drift (see `docs/reviews/2026-07/API-CONSISTENCY-REVI
   scalars `(N, 1, 1)`, vectors `(N, 1, dim)`, tensors `(N, dim, dim)`.
 - Mesh coordinates are `mesh.X.coords`.
 - NEVER in new code: `with mesh.access(...)` / `with swarm.access(...)`, `mesh.data`,
-  `mesh.points`, or the flat `.data` compatibility property. They exist only so old
-  code keeps running.
-- .data bypasses all units evaluation and all re-packing. It CAN be used for a raw variable to variable copy. It is likely to be working within the non-dimensionalisation boundary.
+  or `mesh.points`. They exist only so old code keeps running.
+- The flat `.data` property carries ONE sanctioned exception: it bypasses all units
+  evaluation and re-packing, so it may be used for a raw variable-to-variable copy
+  inside the non-dimensionalisation boundary (where values are already consistent).
+  Any other use in new code goes through `.array`.
 
 ```python
 temperature.array[:, 0, 0] = values      # GOOD — scalar, three indices
