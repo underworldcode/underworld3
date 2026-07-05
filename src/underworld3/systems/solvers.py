@@ -2969,27 +2969,6 @@ class SNES_Vector_Projection(SNES_Vector):
         "Vector projection pointwise smoothing term: F_1(u)",
     )
 
-    @timing.routine_timer_decorator
-    def projection_problem_description(self):
-        """Build residual terms for vector projection FEM assembly."""
-        # residual terms - defines the problem:
-        # solve for a best fit to the continuous mesh
-        # variable given the values in self.function
-        # F0 is left in place for the user to inject
-        # non-linear constraints if required
-
-        self._f0 = self.F0.sym
-
-        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
-
-        self._f1 = (
-            self.F1.sym
-            + self.smoothing * self.Unknowns.E
-            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
-        )
-
-        return
-
     # Use SymbolicProperty for automatic unwrapping
     uw_function = SymbolicProperty(matrix_wrap=True, doc="Vector function to project onto mesh")
 
