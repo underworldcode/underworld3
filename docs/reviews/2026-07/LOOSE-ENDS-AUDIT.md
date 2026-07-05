@@ -418,6 +418,12 @@ conflict — `discretisation_mesh.py:282-301`).
 | `tests/test_0502_boundary_integrals.py:141` — "six MPI skips are the same partition-seam assembly family as `pyx:2545`; add an np=2 characterisation test of the known wrong value" | Wrong diagnosis. The underlying bug is an **UnboundLocalError in the `BoxInternalBoundary` constructor**: `boundaries`/`boundary_normals` are bound only inside the `if uw.mpi.rank == 0:` gmsh block (`meshing/cartesian.py:536`, bindings ~547-548 / ~644-648) while `Mesh(...)` at ~896-901 runs on all ranks — rank>0 raises before any mesh exists, exactly as the test file's own comment (115-117) says. The `pyx:2545` bug concerns natural-BC *residual* scatter and its comment notes the pure integral is machine-precision identical in parallel. The skips also do not remove all parallel internal-boundary coverage (Annulus/spherical internal tests at 240-293, 325 carry no MPI skip; test_0502 is not in the parallel CI suite — `scripts/test_levels.sh:179,190`, `scripts/test.sh:99`). A "known wrong value" characterisation test is impossible: at np=2 the constructor raises. The real fix is a one-liner mesh-construction bug (broadcast/bind the Enum on all ranks), unrelated to `pyx:2545`. |
 
 ## Sign-Off
+| Role | Name | Date | Status |
+|------|------|------|--------|
+| Maintainer | Louis Moresi | 2026-07-05 | Pending review |
+| Author | Claude (audit session) | 2026-07-03 | Complete |
+
+
 
 - **Author**: loose-ends audit (dimension 1), 2026-07-03, on the audit worktree
   at `development` @ `1d003481`.

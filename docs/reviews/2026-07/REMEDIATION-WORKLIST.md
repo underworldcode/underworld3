@@ -424,9 +424,9 @@ recorded in each source review's own Testing Instructions section:
 
 ## Sign-Off
 
-| Reviewer | Role | Status |
-|----------|------|--------|
-| Louis Moresi | Maintainer | Pending review — 18 decision items above require explicit sign-off |
-| Claude (audit synthesis session) | Author | Complete 2026-07-03 |
+| Role | Name | Date | Status |
+|------|------|------|--------|
+| Maintainer | Louis Moresi | 2026-07-05 | Pending review — 18 decision items above require explicit sign-off |
+| Author | Claude (audit synthesis session) | 2026-07-03 | Complete |
 
 *Underworld development team with AI support from Claude Code.*

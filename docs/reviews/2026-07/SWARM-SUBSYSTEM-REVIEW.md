@@ -490,6 +490,12 @@ verification and are recorded so they are not resubmitted:
   SWARM-13).
 
 ## Sign-Off
+| Role | Name | Date | Status |
+|------|------|------|--------|
+| Maintainer | Louis Moresi | 2026-07-05 | Pending review |
+| Author | Claude (audit session) | 2026-07-03 | Complete |
+
+
 
 - **Audit dimension**: 5 — Swarm/particle subsystem architecture
 - **Reviewer**: Claude (Fable 5), AI-assisted audit under the July 2026 quality

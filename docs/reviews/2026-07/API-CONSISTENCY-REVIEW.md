@@ -328,7 +328,7 @@ adversarial verification — recorded so they are not re-found:
 
 ## Sign-Off
 
-| Reviewer | Role | Status |
-|---|---|---|
-| Louis Moresi | Maintainer | Pending review |
-| Claude (audit session, Dimension 3 — api) | Author | Complete 2026-07-03 |
+| Role | Name | Date | Status |
+|------|------|------|--------|
+| Maintainer | Louis Moresi | 2026-07-05 | Pending review |
+| Author | Claude (audit session, Dimension 3 — api) | 2026-07-03 | Complete |

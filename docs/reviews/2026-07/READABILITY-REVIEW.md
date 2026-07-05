@@ -453,6 +453,12 @@ adversarial verification. Recorded so later audits do not resurrect them:
 ---
 
 ## Sign-Off
+| Role | Name | Date | Status |
+|------|------|------|--------|
+| Maintainer | Louis Moresi | 2026-07-05 | Pending review |
+| Author | Claude (audit session) | 2026-07-03 | Complete |
+
+
 
 - Audit dimension: **4 — Readability of change hotspots**
 - Base audited: `development` @ `1d003481`

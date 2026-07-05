@@ -823,6 +823,7 @@ The bulk-list spot checks recorded above were run on 2026-07-03 against developm
 
 ## Sign-Off
 
-| Reviewer | Role | Status |
-|----------|------|--------|
-| Louis Moresi | Maintainer | Pending review |
+| Role | Name | Date | Status |
+|------|------|------|--------|
+| Maintainer | Louis Moresi | 2026-07-05 | Pending review |
+| Author | Claude (audit session, Dimension 2 — branch triage) | 2026-07-03 | Complete |

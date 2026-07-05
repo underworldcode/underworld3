@@ -403,6 +403,12 @@ Wave E fixes are docs and docstrings only; validation is mechanical:
   artifact); including early-July merges gives ~105. Use 95.
 
 ## Sign-Off
+| Role | Name | Date | Status |
+|------|------|------|--------|
+| Maintainer | Louis Moresi | 2026-07-05 | Pending review |
+| Author | Claude (audit session) | 2026-07-03 | Complete |
+
+
 
 - **Auditor**: Claude (docs dimension subagent), 2026-07-03. All `file:line`
   evidence above read directly in the audit worktree at `e848d131` (content
