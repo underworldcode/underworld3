@@ -161,19 +161,6 @@ class TestCoordinateSymbolEvaluation:
         assert value > 1e5, \
             f"Coordinate value {value:.2e} m is too small, expected ~1e6 m"
 
-    @pytest.mark.skip(reason="UnitAwareExpression class not implemented - feature replaced by simplified units architecture")
-    def test_unitawareexpression_coordinate_to_meters(self):
-        """
-        Test: UnitAwareExpression(x, units.m).to('m') gives correct value.
-
-        NOTE: UnitAwareExpression was planned but not implemented.
-        The units architecture was simplified (see UNITS_SIMPLIFIED_DESIGN_2025-11.md).
-        This test is kept for documentation of the double-scaling bug that was fixed.
-
-        CRITICAL BUG (fixed): This was double-scaling to 8.41×10¹² meters.
-        """
-        pass
-
     @pytest.mark.tier_a  # Production-ready - critical regression test
     def test_non_dimensionalise_unit_aware_array(self):
         """

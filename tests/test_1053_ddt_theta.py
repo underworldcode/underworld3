@@ -91,3 +91,24 @@ class TestTheta:
         assert d.theta == 0.5
         assert float(d._am_coeffs[0].sym) == pytest.approx(0.5)
         assert float(d._am_coeffs[1].sym) == pytest.approx(0.5)
+
+
+class TestPreserveMoments:
+
+    def test_preserve_moments_true_raises(self):
+        """`preserve_moments` was a documented no-op (its implementation was
+        dead behind `if 0 and ...` and has been deleted); requesting it must
+        fail loudly rather than silently doing nothing (LE-09 / WA-04)."""
+        mesh = uw.meshing.StructuredQuadBox(
+            elementRes=(4, 4),
+            minCoords=(0.0, 0.0),
+            maxCoords=(1.0, 1.0),
+        )
+        v = uw.discretisation.MeshVariable(
+            "U_pm", mesh, mesh.dim, degree=1)
+        psi = sympy.zeros(1, 1)
+        with pytest.raises(NotImplementedError):
+            ddt_module.SemiLagrangian(
+                mesh, psi_fn=psi, V_fn=v.sym,
+                vtype=uw.VarType.SCALAR, degree=2, continuous=False,
+                preserve_moments=True)

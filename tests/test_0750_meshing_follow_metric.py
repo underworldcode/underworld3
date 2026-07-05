@@ -319,44 +319,12 @@ def test_metric_choice_arc_length_builds_envelope():
     assert v.max() <= 3.0 ** 2 + 1.0e-6
 
 
-@pytest.mark.tier_a
-@pytest.mark.level_1
-@pytest.mark.xfail(
-    reason="Strong metric capture (alignment>0.6) was an elliptic-ma MA-mover "
-    "property; the development merge's follow_metric uses the gentler "
-    "anisotropic mover (~0 alignment with the mild arc-length monitor). "
-    "Arc-length capture is validated via the OT mover (test_0760).",
-    strict=False)
-def test_follow_metric_arclength_clean_and_captures():
-    m, T = _build_annulus_with_field()
-    moved = uw.meshing.follow_metric(
-        m, T, refinement=3.0, metric="arc-length")
-    assert moved is True
-    assert _inverted_count(m) == 0          # untangled map (polish removes slivers)
-    al = _sm.mesh_metric_mismatch(
-        m, _sm.metric_density_from_gradient(
-            m, T, refinement=3.0, metric_choice="arc-length", name="al2"))
-    assert al["alignment"] > 0.6            # mesh tracks the metric
-
-
-@pytest.mark.tier_a
-@pytest.mark.level_1
-@pytest.mark.xfail(
-    reason="follow_metric boundary-slip was an elliptic-ma MA-mover capability; "
-    "the development merge's follow_metric pins boundaries. Tangential boundary "
-    "slip is now via smooth_mesh_interior(method='mmpde', slip_surfaces=...) — "
-    "see test_0855.",
-    strict=False)
-def test_follow_metric_boundary_slides_on_circle():
-    m, T = _build_annulus_with_field()
-    isb = _sm._pinned_mask(m.dm, tuple(_sm._auto_pinned_labels(m)))
-    X0 = np.asarray(m.X.coords).copy()
-    uw.meshing.follow_metric(m, T, refinement=3.0, metric="arc-length")
-    X = np.asarray(m.X.coords)
-    r0 = np.linalg.norm(X0[isb], axis=1)
-    r = np.linalg.norm(X[isb], axis=1)
-    assert float(np.linalg.norm(X[isb] - X0[isb], axis=1).max()) > 1.0e-3
-    assert float(np.abs(r - r0).max()) < 1.0e-6   # stayed on the ring
+# NOTE (LE-20 / WA-22): two xfail tests were deleted here. They asserted
+# elliptic-ma MA-mover capabilities (strong metric capture; boundary slip in
+# follow_metric) that the development merge deliberately dropped. Surviving
+# coverage: arc-length capture via the OT mover (test_0760); tangential
+# boundary slip via smooth_mesh_interior(method='mmpde', slip_surfaces=...)
+# (test_0855). See git history if the MA mover returns.
 
 
 @pytest.mark.tier_a

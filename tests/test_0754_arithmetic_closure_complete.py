@@ -163,15 +163,38 @@ class TestArithmeticClosure:
         assert isinstance(result.units, Unit), \
             f"Result.units should be Pint Unit, got {type(result.units)}"
 
-    @pytest.mark.skip(reason="UnitAwareExpression class not implemented - feature replaced by simplified units architecture")
-    def test_unitawareexpression_minus_uwquantity(self):
-        """Test: UnitAwareExpression - UWQuantity works (reverse of Bug #3)
+@pytest.mark.tier_a
+@pytest.mark.level_2  # Units integration - intermediate complexity
+class TestMultiplicationOrderIndependence:
+    """T_left + f*(T_right - T_left) must not depend on operand order.
 
-        NOTE: UnitAwareExpression was planned but not implemented.
-        The units architecture was simplified (see UNITS_SIMPLIFIED_DESIGN_2025-11.md).
-        This test is kept for documentation of planned feature.
-        """
-        pass
+    Ported from the deleted ``test_quantities_simplified.py`` (which imported
+    a module that was never implemented): the original multiplication-order
+    bug gave different results for ``f * dT`` vs ``dT * f``. Expected value:
+    0.1 * 273 + 1000 = 1027.3 kelvin for every ordering.
+    """
+
+    def _terms(self):
+        T_left = uw.quantity(1000, "kelvin")
+        T_right = uw.quantity(1273, "kelvin")
+        factor = uw.quantity(0.1, "dimensionless")
+        return T_left, T_right, factor
+
+    def test_all_orderings_equal(self):
+        T_left, T_right, factor = self._terms()
+
+        case1 = factor * (T_right - T_left) + T_left
+        case2 = (T_right - T_left) * factor + T_left
+        case3 = T_left + factor * (T_right - T_left)
+        case4 = T_left + (T_right - T_left) * factor
+
+        for case in (case1, case2, case3, case4):
+            assert abs(case.value - 1027.3) < 0.01, \
+                f"Expected 1027.3, got {case.value}"
+
+    def test_scalar_multiplication_commutes(self):
+        T = uw.quantity(1000, "kelvin")
+        assert (T * 2).value == (2 * T).value == 2000
 
 
 @pytest.mark.tier_a
@@ -284,16 +307,6 @@ class TestPintUnitObjects:
 
         assert isinstance(result.units, Unit), \
             f"Multiplication result.units should be Pint Unit, got {type(result.units)} (Bug #1!)"
-
-    @pytest.mark.skip(reason="UnitAwareExpression class not implemented - feature replaced by simplified units architecture")
-    def test_unitawareexpression_units_is_pint_unit(self):
-        """Test: UnitAwareExpression.units returns Pint Unit
-
-        NOTE: UnitAwareExpression was planned but not implemented.
-        The units architecture was simplified (see UNITS_SIMPLIFIED_DESIGN_2025-11.md).
-        This test is kept for documentation of planned feature.
-        """
-        pass
 
 
 @pytest.mark.tier_a

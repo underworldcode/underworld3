@@ -13,8 +13,9 @@ Design (see ``memory/project_snapshot_v1_1_disk_format.md`` and
     the *layout* and the *metadata*, not the binary serialisation of
     fields.
 
-File structure (target — phases 2+ fill in the bulk under these
-groups; phase 1 writes the metadata and empty stub groups):
+File structure (the phased writers below fill the bulk under these
+groups; ``write_snapshot_skeleton`` stubs each group with a
+``filled_by`` attribute naming its writer):
 
     my_run.snap.h5/
     ├── /metadata          (attrs: uw3_version, schema_version,
@@ -26,10 +27,10 @@ groups; phase 1 writes the metadata and empty stub groups):
     ├── /swarms            (phase 3 — possibly @external_file refs)
     └── /python_state      (phase 3 — Snapshottable dataclasses as attrs)
 
-Phase 1 (this commit): the metadata layer and the skeleton group
-structure, with an inspectability acceptance test that asserts an
-external reader (h5py here) sees meaningful information without any
-UW3 imports.
+Phases 1 (metadata + skeleton), 2 (mesh + variables) and 3 (swarms +
+python_state) are all implemented in this module; an inspectability
+acceptance test asserts an external reader (h5py) sees meaningful
+information without any UW3 imports.
 """
 
 from __future__ import annotations
