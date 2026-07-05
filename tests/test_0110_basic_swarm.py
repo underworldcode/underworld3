@@ -212,3 +212,27 @@ def test_nodal_point_swarm_deprecated_but_working():
     n_global = uw.mpi.comm.allreduce(n_local)
     assert n_global == T.coords.shape[0]
     assert nswarm._nX0.data.shape == (n_local, mesh.dim)
+
+
+@pytest.mark.tier_a
+def test_estimate_dt_with_mesh_variable_velocity():
+    """estimate_dt must return a positive limit for a non-trivial velocity.
+
+    Regression (BF-16 collateral): evaluate() returns matrix-shaped
+    (n, 1, dim) arrays; estimate_dt indexed vel[:, 1] into the size-1 axis
+    and the swallowed IndexError made it return None for every velocity —
+    silently disabling advection's step_limit substepping.
+    """
+    import numpy as np
+    import underworld3 as uw
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(8, 8))
+    V = uw.discretisation.MeshVariable("V_dt_est", mesh, mesh.dim, degree=1)
+    V.array[:, 0, 0] = -(V.coords[:, 1] - 0.5)
+    V.array[:, 0, 1] = V.coords[:, 0] - 0.5
+
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.populate(fill_param=1)
+
+    dt_limit = swarm.estimate_dt(V.sym)
+    assert dt_limit is not None and dt_limit > 0.0

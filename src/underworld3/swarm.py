@@ -4917,12 +4917,17 @@ class Swarm(Stateful, uw_object):
                 # Use internal model-unit coordinates directly (no conversion needed)
                 v_at_Vpts = np.zeros_like(self._particle_coordinates.data[...])
 
-                # First evaluate the velocity at the particle locations
-                # (this is a local operation)
+                # First evaluate the velocity at the launch points. This must
+                # be a GLOBAL evaluation: no migration happens inside the
+                # substep loop (deferred migration is suspended above, so
+                # arrays keep a stable row order), which means from substep 2
+                # onward a particle can sit outside this rank's domain — a
+                # rank-local evaluation silently extrapolates wrong values
+                # for it (SWARM-16 / BF-16).
 
-                v_at_Vpts[...] = uw.function.evaluate(V_fn_matrix, self._particle_coordinates.data)[
-                    :, 0, :
-                ]
+                v_at_Vpts[...] = uw.function.global_evaluate(
+                    V_fn_matrix, self._particle_coordinates.data
+                )[:, 0, :]
 
                 mid_pt_coords = (
                     self._particle_coordinates.data[...]
@@ -5017,8 +5022,14 @@ class Swarm(Stateful, uw_object):
             # Plain UWQuantity without units context - use magnitude
             vel = vel.magnitude
 
-        # Ensure vel is a plain numpy array
+        # Ensure vel is a plain numpy array in flat (n_particles, dim) form.
+        # evaluate() returns matrix-shaped (n, 1, dim) arrays; indexing that
+        # shape as vel[:, 1] hit the size-1 axis and the swallowed IndexError
+        # made estimate_dt() return None for every non-trivial velocity —
+        # silently disabling advection's step_limit substepping (BF-16).
         vel = np.asarray(vel)
+        if vel.ndim == 3:
+            vel = vel.reshape(vel.shape[0], -1)
 
         try:
             magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
@@ -5028,6 +5039,9 @@ class Swarm(Stateful, uw_object):
             max_magvel = math.sqrt(magvel_squared.max())
 
         except (ValueError, IndexError):
+            # Sanctioned: a rank holding zero particles has an empty vel
+            # array (its .max() raises); it contributes zero to the
+            # global maximum below.
             max_magvel = 0.0
 
         from mpi4py import MPI
