@@ -140,3 +140,9 @@ Examples:
   good parallel output that is properly flushed.
 - The user should never see parallel / mpi calls. `uw.mpi.rank` or `mpi.rank` is a
   mistake — there should be a wrapper already and it will work better. Guide the users!
+- Scripts and drivers written during development sessions use uw's own machinery, not
+  hand-rolled equivalents. Option parsing is the canonical example: use `uw.Params` /
+  `Param` (notebook-editable defaults, units-aware, `-uw_name value` CLI overrides via
+  PETSc options) — not `argparse`, not ad-hoc `sys.argv` handling, not a config dict at
+  the top of the file. A session script is a model a reader should be able to run and
+  read; the founding rule applies to it in full.
