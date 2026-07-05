@@ -1,5 +1,15 @@
 # Branch Triage Ledger — Quality Audit 2026-07
 
+> **Maintainer rulings 2026-07-06:** `feature/adapt-on-top`, `bugfix/yield-homotopy`,
+> and the free-surface branches (`feature/exp-integrator-freesurface`,
+> `feature/fs-stress-equilibrium`, `feature/fs-surface-smoother-driver`,
+> `feature/exp-integrator-investigation`) are **KEEP_ACTIVE** — ongoing development;
+> no landing pressure, no cleanup may touch them. The workflows package lands from
+> `worktree-product-system` (canonical); `feature/adaptive-convection` rebases onto it
+> afterwards. **Deletion batches 1 and 2 are ON HOLD** pending the maintainer's own
+> read of this ledger; rescue tags and branch pushes remain in force.
+
+
 ## Overview
 
 This ledger triages every local branch and worktree of the underworld3 repository as part of

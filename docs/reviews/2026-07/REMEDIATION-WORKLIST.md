@@ -360,6 +360,31 @@ comment/docstring-only. All unverified rows re-verify at their remediation base.
 
 ## Decisions needed from Louis
 
+> **ALL 18 DECIDED — interactive maintainer session, 2026-07-06.** Rulings:
+> **1** persistence.py: DELETE outright. **2** BC order: original value-first
+> `(conds, boundary)` is canonical (decided 2026-07-04); newer methods migrate with
+> shims. **3** Canonical datum name: **`conds`**. **4** recycle_rate>1: EXCISE
+> (guard + docstring fix); pic_swarm.py deleted. **5** NodalPointSwarm: DEPRECATE
+> now (BF-14 fix included), delete next cycle. **6** Swarm reductions: align to
+> per-component tuples. **7** Coord-units family: UNSUPPORTED — prune skips,
+> delete test_0630, rewrite test_0620, deprecate units= kwarg. **8** 3D MMPDE:
+> NotImplementedError guard as PLACEHOLDER (3D is a committed future project —
+> MMPDE+NVB capstone). **9** Both one-line corrections: FIX (theta restore,
+> projection double-count). **10** .pyx sub-wave: RUN; BC-label divergence UNIFIED
+> as its own separately-validated commit. **11, 12**: executed in #313 as approved
+> shapes. **13** pykdtree: REMOVE. **14** uw.quantity is THE factory;
+> create_quantity deprecated; UWQuantity exposed top-level. **15** Rescues
+> executed & pushed; adapt-on-top / yield-homotopy / free-surface branches
+> reclassified KEEP_ACTIVE ("careful we are not going to pull the rug out from
+> active development"); workflows package lands from product-system (canonical),
+> adaptive-convection rebases onto it; **deletion batches 1 and 2: HOLD** pending
+> the maintainer's own ledger read. **16** Design dir: delete the 6 .trace.txt,
+> move the 29 experiment artifacts to design/experiments/. **17** Both release
+> blockers stay listed; #291 fix in flight externally (#318). **18** snes_max_it:
+> becomes a default, never a clobber.
+>
+> The list below is preserved as the decision record.
+
 1. **persistence.py fate (LE-12 / WA-01)** — delete `discretisation/persistence.py` outright, or leave a one-release warn-on-import shim? (Either way the CLAUDE.md Key Files entry is updated.)
 2. **BC argument-order migration (API-01 / WC-01, WE-09)** — **DECIDED 2026-07-04**: the ORIGINAL value-first order `(value, boundary)` is canonical (most used in examples/benchmarks; matches previous major versions). The newer boundary-first methods migrate to it with shims. Remaining sub-decision: confirm the canonical datum name (`conds` implied vs `value`) — see #3.
 3. **Canonical BC value-parameter name (API-02 / WC-02)** — `value` (proposed, self-documenting) vs `g` (zero-churn alternative); shim mechanics are identical either way.
