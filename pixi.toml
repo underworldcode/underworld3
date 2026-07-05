@@ -68,7 +68,12 @@ python = "3.12.*"
 
 # Build requirements
 cython = ">=3.1,<4"
-numpy = "<2"
+# numpy 2.5.0 breaks locally-built petsc4py at import ("numpy.dtype size
+# changed ... Expected 96 from C header, got 88 from PyObject") — verified
+# with a CLEAN petsc4py rebuild against 2.5.0 (fails) vs 2.4.6 (works).
+# conda-forge petsc4py binaries are unaffected; only the AMR envs' local
+# builds break. Lift the cap when petsc4py/Cython support numpy 2.5.
+numpy = ">=2,<2.5"
 pip = ">=25,<26"
 setuptools = ">=75,<76"
 compilers = "*"
@@ -98,6 +103,11 @@ meshio = ">=5.3,<6"
 # Utilities
 requests = "*"
 matplotlib = ">=3.10,<4"
+# Floor sqlite to a modern build: the petsc 3.25 solve on linux-64 otherwise
+# drags in the ancient sqlite-3.32.3, whose bundled libsqlite lacks
+# sqlite3_deserialize -> python's _sqlite3 fails to load (undefined symbol),
+# breaking any test module that imports sqlite (e.g. test_1004).
+sqlite = ">=3.46"
 
 # Jupyter kernel support (needed for pixi-kernel in all environments)
 ipykernel = ">=6.29,<7"
@@ -116,8 +126,8 @@ rich = "*"
 # Quick install (~5 min), no AMR tools.
 
 [feature.conda-petsc.dependencies]
-petsc = ">=3.21,<4"
-petsc4py = ">=3.21,<4"
+petsc = ">=3.25,<4"
+petsc4py = ">=3.25,<4"
 mpi4py = ">=4,<5"
 
 [feature.conda-petsc.target.osx-arm64.dependencies]
@@ -133,15 +143,15 @@ h5py = { version = ">=3.12,<4", build = "*mpich*" }
 # Use these when you need the non-default MPI for your platform.
 
 [feature.conda-petsc-mpich.dependencies]
-petsc = ">=3.21,<4"
-petsc4py = ">=3.21,<4"
+petsc = ">=3.25,<4"
+petsc4py = ">=3.25,<4"
 mpi4py = ">=4,<5"
 h5py = { version = ">=3.12,<4", build = "*mpich*" }
 
 [feature.conda-petsc-openmpi.dependencies]
 openmpi = ">=5.0,<6"
-petsc = ">=3.21,<4"
-petsc4py = ">=3.21,<4"
+petsc = ">=3.25,<4"
+petsc4py = ">=3.25,<4"
 mpi4py = ">=4,<5"
 h5py = { version = ">=3.12,<4", build = "*openmpi*" }
 

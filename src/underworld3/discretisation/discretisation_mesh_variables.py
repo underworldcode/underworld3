@@ -1343,8 +1343,8 @@ class _BaseMeshVariable(Stateful, uw_object):
                         -1, n_components
                     )
         else:
-            X_src = np.empty((0, dim), dtype=np.double)
-            D_src = np.empty((0, n_components), dtype=np.double)
+            X_src = np.empty((0, dim), dtype=np.float64)
+            D_src = np.empty((0, n_components), dtype=np.float64)
 
         src_size_before = max(source_swarm.dm.getLocalSize(), 0)
         source_swarm.add_particles_with_global_coordinates(X_src, migrate=False)
@@ -1424,7 +1424,7 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         # Reorder by original_index and write into self.data
         idx = origin_index_var.array[:, 0, 0]
-        out = np.zeros((n_query_local, n_components), dtype=np.double)
+        out = np.zeros((n_query_local, n_components), dtype=np.float64)
         out[idx, :] = result.array[:, 0, :]
         self.data[...] = out
 
@@ -2267,9 +2267,17 @@ class _BaseMeshVariable(Stateful, uw_object):
                 units_str = f", units='{self.units}'" if self.units else ""
                 return f"SimpleMeshArrayView(shape={self.shape}, dtype={self.dtype}{units_str})"
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""
@@ -2576,9 +2584,17 @@ class _BaseMeshVariable(Stateful, uw_object):
                 units_str = f", units='{self.units}'" if self.units else ""
                 return f"TensorMeshArrayView(shape={self.shape}, dtype={self.dtype}{units_str})"
 
-            def __array__(self):
-                """Support for numpy functions like np.allclose(), np.isfinite(), etc."""
-                return self._get_array_data()
+            def __array__(self, dtype=None, copy=None):
+                """Support for numpy functions like np.allclose(), np.isfinite(), etc.
+
+                numpy 2.0 calls __array__ with dtype/copy keywords; honour them.
+                """
+                arr = self._get_array_data()
+                if dtype is not None:
+                    arr = arr.astype(dtype, copy=bool(copy))
+                elif copy:
+                    arr = arr.copy()
+                return arr
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 """Support for numpy universal functions"""

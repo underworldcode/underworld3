@@ -324,6 +324,31 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 
 ---
 
+## Boundary Conditions: Free-slip
+
+**Prefer rotated strong free-slip** (`solver.add_rotated_freeslip_bc(boundary, normal=None)`)
+to impose `v·n̂ = 0`:
+
+- Enforces zero wall-normal flow to **machine precision** (Nitsche / penalty leak ~1e-3).
+- Correct on **curved / tilted / deformed** boundaries — the normal is taken per node
+  (pass an analytic `normal`, e.g. `X/|X|`, for an exact normal on curved faces).
+- Works **inside the nonlinear SNES** and with **geometric FMG**. It honours
+  `solver.consistent_jacobian`: use `True` (consistent Newton) for smooth nonlinear
+  rheologies; `"continuation"` (staged Picard→Newton) for robustness far from the
+  solution. The rotated constraint is transparent to the tangent.
+- The constraint **reaction** is the boundary normal traction σ_nn
+  (`solver.boundary_normal_traction(boundary)` / `solver.dynamic_topography(...)`) — no
+  augmented-Lagrangian splitting.
+
+**Reserve Nitsche / penalty** (`add_nitsche_bc`) for BCs that must **evolve in time**
+(e.g. a Dirichlet→Neumann / traction ramp) — a hard rotated constraint cannot morph.
+
+**Implementation**: `src/underworld3/utilities/rotated_bc.py` (per-node rotation `Q`,
+strong `v_n=0`, reaction = σ_nn); the solve dispatch is in
+`src/underworld3/cython/petsc_generic_snes_solvers.pyx`.
+
+---
+
 ## Data Access Patterns
 
 **Authoritative Reference**: `docs/developer/UW3_Style_and_Patterns_Guide.md`
