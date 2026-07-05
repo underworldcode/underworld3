@@ -66,10 +66,6 @@ class SwarmType(Enum):
     DMSWARM_PIC = 1
 
 
-# We can grab this type from the PETSc module
-# SwarmPICLayout has been moved to pic_swarm.py
-
-
 # Note - much of the setup is necessarily the same as the MeshVariable
 # and the duplication should be removed.
 
@@ -106,8 +102,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     varsymbol : str, optional
         LaTeX symbol for display. Defaults to ``name``.
     rebuild_on_cycle : bool, default=True
-        If True, rebuild the proxy when particles cycle through periodic
-        boundaries. Recommended for continuous fields.
+        No effect. Retained for backward compatibility with the removed
+        particle-recycling (streak swarm) feature.
     units : str or pint.Unit, optional
         Physical units for this variable (e.g., 'kelvin', 'Pa').
         Requires reference quantities to be set on the model.
@@ -335,7 +331,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._nn_proxy = _nn_proxy
         self._create_proxy_variable()
 
-        # recycle swarm
+        # Inert: kept for backward compatibility with the removed
+        # particle-recycling (streak swarm) feature.
         self._rebuild_on_cycle = rebuild_on_cycle
         self._register = _register
 
@@ -1561,17 +1558,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             nnn = data_size[0]
 
         # Use direct PETSc access to avoid callback circular dependency
-        if self.swarm.recycle_rate > 1:
-            not_remeshed = self.swarm._remeshed.data[:, 0] != 0
-            D = raw_data[not_remeshed].copy()
-
-            kdt = uw.kdtree.KDTree(self.swarm._particle_coordinates.data[not_remeshed, :])
-            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
-        else:
-            D = raw_data.copy()
-            # Use cached KDTree for standard swarms
-            kdt = self.swarm._get_kdtree()
-            values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
+        D = raw_data.copy()
+        kdt = self.swarm._get_kdtree()
+        values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
 
         return values
 
@@ -2652,9 +2641,10 @@ class Swarm(Stateful, uw_object):
         The mesh object that defines the computational domain for particle operations.
         Particles will be associated with this mesh for spatial queries and operations.
     recycle_rate : int, optional
-        Rate at which particles are recycled for streak management. If > 1, enables
-        streak particle functionality where particles are duplicated and tracked
-        across multiple cycles. Default is 0 (no recycling).
+        Particle recycling (streak swarms) is NOT implemented: values > 1
+        raise ``NotImplementedError``. The parameter is retained so that
+        existing calls passing the default (0 or 1, meaning no recycling)
+        keep working.
     verbose : bool, optional
         Enable verbose output for debugging and monitoring particle operations.
         Default is False.
@@ -2667,11 +2657,6 @@ class Swarm(Stateful, uw_object):
     >>> mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1))
     >>> swarm = uw.swarm.Swarm(mesh=mesh)
     >>> swarm.populate(fill_param=2)
-
-    Create a streak swarm with recycling:
-
-    >>> streak_swarm = uw.swarm.Swarm(mesh=mesh, recycle_rate=5)
-    >>> streak_swarm.populate(fill_param=1)
 
     Add custom particle data:
 
@@ -2695,6 +2680,16 @@ class Swarm(Stateful, uw_object):
 
     @timing.routine_timer_decorator
     def __init__(self, mesh, recycle_rate=0, verbose=False, clip_to_mesh=True):
+        # Particle recycling (streak swarms) was excised in 2026-07: the
+        # machinery had been broken (NameError) and untested for some time
+        # (audit finding SWARM-08). Refuse rather than crash later.
+        if recycle_rate > 1:
+            raise NotImplementedError(
+                "Particle recycling / streak swarms (recycle_rate > 1) are not "
+                "implemented. Construct the Swarm without recycle_rate and manage "
+                "particle re-seeding explicitly (e.g. add_particles_with_coordinates)."
+            )
+
         Swarm.instances += 1
 
         self.verbose = verbose
@@ -2750,9 +2745,9 @@ class Swarm(Stateful, uw_object):
 
         ####
 
-        # Is the swarm a streak-swarm ?
+        # Retained attribute: always 0 or 1 (no recycling) — see the
+        # NotImplementedError guard above.
         self.recycle_rate = recycle_rate
-        self.cycle = 0
 
         # dictionary for variables
         # Using WeakValueDictionary to prevent circular references
@@ -2790,21 +2785,6 @@ class Swarm(Stateful, uw_object):
             _proxy=False,
             rebuild_on_cycle=False,
         )
-
-        # This is for swarm streak management:
-        # add variable to hold swarm origins
-
-        if self.recycle_rate > 1:
-
-            self._remeshed = uw.swarm.SwarmVariable(
-                "DMSwarm_remeshed",
-                self,
-                1,
-                dtype=int,
-                _register=True,
-                _proxy=False,
-                rebuild_on_cycle=False,
-            )
 
         self._X0_uninitialised = True
         self._index = None
@@ -3641,49 +3621,6 @@ class Swarm(Stateful, uw_object):
         self.dm.restoreField("DMSwarmPIC_coor")
         self.dm.restoreField("DMSwarm_rank")
 
-        if self.recycle_rate > 1:
-            with self.access():
-                # This is a mesh-local quantity, so let's just
-                # store it on the mesh in an ad_hoc fashion for now
-
-                self.mesh.particle_X_orig = self._particle_coordinates.data.copy()
-
-            with self.access():
-                swarm_orig_size = self.local_size
-                all_local_coords = np.vstack(
-                    (self._particle_coordinates.data,) * (self.recycle_rate)
-                )
-
-                swarm_new_size = all_local_coords.shape[0]
-
-            self.dm.addNPoints(swarm_new_size - swarm_orig_size)
-
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-
-            # Compute perturbation - extract magnitude if coordinates have units
-            # numpy.array(..., dtype=float64) forces conversion to plain array
-            coord_data = np.array(all_local_coords, dtype=np.float64)
-            search_lengths = np.array(self.mesh._search_lengths[all_local_cells], dtype=np.float64)
-
-            perturbation = (
-                (0.33 / (1 + fill_param))
-                * (np.random.random(size=coord_data.shape) - 0.5)
-                * 0.00001
-                * search_lengths  # typical cell size
-            )
-
-            # Add perturbation (coords array stores dimensionless values)
-            coords[...] = coord_data + perturbation
-
-            self.dm.restoreField("DMSwarmPIC_coor")
-
-            ## Now set the cycle values
-
-            with self.access(self._remeshed):
-                for i in range(0, self.recycle_rate):
-                    offset = swarm_orig_size * i
-                    self._remeshed.data[offset::, 0] = i
-
         # Invalidate cached data — the swarm was just given its particles.
         # Any canonical `.data` array created before populate() (legitimate:
         # variables must be created first) is sized for the empty swarm and
@@ -3956,13 +3893,6 @@ class Swarm(Stateful, uw_object):
             self.dm.restoreField("DMSwarm_rank")
             self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Here we update the swarm cycle values as required
-
-        if self.recycle_rate > 1:
-            with self.access(self._remeshed):
-                # self._Xorig.data[...] = coordinatesArray
-                self._remeshed.data[...] = 0
-
         self.dm.migrate(remove_sent_points=True)
 
         # Invalidate cached data — particle count changed after addNPoints + migrate
@@ -4052,13 +3982,6 @@ class Swarm(Stateful, uw_object):
         ranks[swarm_size::] = uw.mpi.rank
         self.dm.restoreField("DMSwarm_rank")
         self.dm.restoreField("DMSwarmPIC_coor")
-
-        # Here we update the swarm cycle values as required
-
-        if self.recycle_rate > 1:
-            with self.access(self._remeshed):
-                # self._Xorig.data[...] = globalCoordinatesArray
-                self._remeshed.data[...] = 0
 
         # Invalidate cached data — the particle count changed via addNPoints
         # (mirrors add_particles_with_coordinates). This must not be left to
@@ -4520,7 +4443,7 @@ class Swarm(Stateful, uw_object):
         Captured: per-rank particle coordinates (from
         ``DMSwarmPIC_coor``) and every user swarm-variable's data
         array. PETSc-internal variables (``DMSwarmPIC_coor``,
-        ``DMSwarm_X0``, ``DMSwarm_remeshed``) are excluded — their
+        ``DMSwarm_X0``) are excluded — their
         contents either come from the captured coords or are
         regenerated on the next solve.
         """
@@ -5060,97 +4983,6 @@ class Swarm(Stateful, uw_object):
 
         ## End of substepping loop
         self._deferred_migration_suspended = False
-
-        ## Cycling of the swarm is a cheap and cheerful version of population control for particles. It turns the
-        ## swarm into a streak-swarm where particles are Lagrangian for a number of steps and then reset to their
-        ## original location.
-
-        if self.recycle_rate > 1:
-            # Restore particles which have cycle == cycle rate (use >= just in case)
-
-            # Remove remesh points and recreate a new set at the mesh-local
-            # locations that we already have stored.
-
-            with self.access(self._particle_coordinates, self._remeshed):
-                remeshed = self._remeshed.data[:, 0] == 0
-                # This is one way to do it ... we can do this better though
-                self.data[remeshed, 0] = 1.0e100
-
-            swarm_size = self.dm.getLocalSize()
-
-            num_remeshed_points = self.mesh.particle_X_orig.shape[0]
-
-            self.dm.addNPoints(num_remeshed_points)
-
-            # Informational: remesh just re-injected particles.
-            self._population_generation += 1
-
-            ## cellid = self.dm.getField("DMSwarm_cellid")
-            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-            rmsh = self.dm.getField("DMSwarm_remeshed")
-
-            # print(f"cellid -> {cellid.shape}")
-            # print(f"particle coords -> {coords.shape}")
-            # print(f"remeshed points  -> {num_remeshed_points}")
-
-            # Compute perturbation - extract magnitude if coordinates have units
-            # numpy.array(..., dtype=float64) forces conversion to plain array
-            coord_data = np.array(self.mesh.particle_X_orig[:, :], dtype=np.float64)
-            radii_data = np.array(self.mesh._radii[cellid[swarm_size::]], dtype=np.float64)
-
-            perturbation = 0.00001 * (
-                (0.33 / (1 + self.fill_param))
-                * (np.random.random(size=(num_remeshed_points, self.dim)) - 0.5)
-                * radii_data.reshape(-1, 1)
-            )
-
-            # Add perturbation (coords array stores dimensionless values)
-            coords[swarm_size::] = coord_data + perturbation
-            ## cellid[swarm_size::] = self.mesh.particle_CellID_orig[:, 0]
-            rmsh[swarm_size::] = 0
-
-            # self.dm.restoreField("DMSwarm_cellid")
-            self.dm.restoreField("DMSwarmPIC_coor")
-            self.dm.restoreField("DMSwarm_remeshed")
-
-            # when we let this go, the particles may be re-distributed to
-            # other processors, and we will need to rebuild the remeshed
-            # array before trying to compute / assign values to variables
-
-            for swarmVar in self.vars.values():
-                if swarmVar._rebuild_on_cycle:
-                    with self.access(swarmVar):
-                        if swarmVar.dtype is int:
-                            nnn = 1
-                        else:
-                            nnn = self.mesh.dim + 1  # 3 for triangles, 4 for tets ...
-
-                        interpolated_values = (
-                            swarmVar.rbf_interpolate(self.mesh.particle_X_orig, nnn=nnn)
-                            #     swarmVar._meshVar.fn, self.mesh.particle_X_orig
-                            # )
-                        ).astype(swarmVar.dtype)
-
-                        swarmVar.data[swarm_size::] = interpolated_values
-
-            ##
-            ## Determine RANK
-            ##
-
-            # Migrate will already have been called by the access manager.
-            # Maybe we should hash the local particle coords to make this
-            # a little more user-friendly
-
-            # self.dm.migrate(remove_sent_points=True)
-
-            with self.access(self._remeshed):
-                self._remeshed.data[...] = np.mod(self._remeshed.data[...] - 1, self.recycle_rate)
-
-            self.cycle += 1
-
-            ## End of cycle_swarm loop
-            #
-            #
 
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that

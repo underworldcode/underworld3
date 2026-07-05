@@ -157,3 +157,26 @@ def test_particle_clip_context_manager(setup_data):
 
     npts1 = swarm._particle_coordinates.data.shape[0]
     assert npts1 == 0
+
+
+@pytest.mark.tier_a
+def test_recycle_rate_not_implemented():
+    """recycle_rate > 1 (streak swarms) must refuse at construction.
+
+    The recycling machinery was excised in 2026-07 (audit SWARM-08/SWARM-09,
+    remediation D4): it had been broken for some time (NameError in populate
+    and advection) and had zero tests. A clear NotImplementedError at
+    construction replaces a crash deep inside populate().
+    """
+    from underworld3 import swarm
+    from underworld3.meshing import UnstructuredSimplexBox
+
+    mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0)
+
+    with pytest.raises(NotImplementedError, match="recycle_rate"):
+        swarm.Swarm(mesh, recycle_rate=5)
+
+    # The no-recycling defaults still construct and populate normally
+    s = swarm.Swarm(mesh, recycle_rate=0)
+    s.populate(fill_param=1)
+    assert s._particle_coordinates.data.shape[0] > 0
