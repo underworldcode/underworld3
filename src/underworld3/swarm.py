@@ -4102,6 +4102,11 @@ class Swarm(Stateful, uw_object):
             del points_data_copy
 
         ## Add swarm coordinate unit metadata to the file
+        # TODO(BUG): save() returns on non-zero ranks while rank 0 is still
+        # appending this metadata; a rank that immediately reopens the file
+        # (e.g. read_timestep straight after write_timestep) hits HDF5 file
+        # locking (BlockingIOError, errno 35). A trailing barrier would make
+        # the file quiescent on return. Found while reproducing issue #324.
         import json
 
         # Use preferred selective_ranks pattern for coordinate metadata
@@ -4145,15 +4150,30 @@ class Swarm(Stateful, uw_object):
         output_base_name = os.path.join(outputPath, base_filename)
         swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
 
-        ### open up file with coords on all procs
-        with h5py.File(f"{swarm_file}", "r") as h5f:
-            coordinates = h5f["coordinates"][:]
+        if migrate:
+            # Rank 0 reads the saved coordinates; the other ranks stage no
+            # points and migration routes each particle to the rank that
+            # owns its location. Reading the full dataset on every rank and
+            # then migrating restores one copy of the swarm per rank —
+            # migration is a scatter with no deduplication (issue #324).
+            # Same rank-0 routed-read design as SwarmVariable.read_timestep.
+            if uw.mpi.rank == 0:
+                with h5py.File(f"{swarm_file}", "r") as h5f:
+                    coordinates = h5f["coordinates"][:]
+            else:
+                coordinates = np.empty((0, self.mesh.cdim), dtype=np.float64)
 
-        # We make it possible not to migrate the swarm because this
-        # will also delete points outside the mesh. We may not want to do
-        # that (either for debugging / visualisation, or when adapting the mesh)
+            self.add_particles_with_global_coordinates(coordinates, migrate=False)
+            self.migrate(remove_sent_points=True, delete_lost_points=True)
+        else:
+            # No migration: every rank keeps a full copy of the saved swarm.
+            # Skipping migration also preserves points that fall outside the
+            # mesh, which migration would delete (useful for debugging /
+            # visualisation, or when adapting the mesh).
+            with h5py.File(f"{swarm_file}", "r") as h5f:
+                coordinates = h5f["coordinates"][:]
 
-        self.add_particles_with_global_coordinates(coordinates, migrate=migrate)
+            self.add_particles_with_global_coordinates(coordinates, migrate=False)
 
         return
 
