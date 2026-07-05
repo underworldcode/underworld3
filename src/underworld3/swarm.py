@@ -2597,15 +2597,6 @@ class IndexSwarmVariable(SwarmVariable):
         return
 
 
-## Import PIC-related classes from separate module to maintain compatibility
-# from .pic_swarm import PICSwarm, NodalPointPICSwarm, SwarmPICLayout
-
-## This should be the basic swarm, and we can then create a sub-class that will
-## be a PIC swarm
-
-# PICSwarm and NodalPointPICSwarm classes have been moved to pic_swarm.py
-
-
 ## New - Basic Swarm (no PIC skillz)
 ## What is missing:
 ##  - no celldm
