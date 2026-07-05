@@ -523,6 +523,15 @@ def BoxInternalBoundary(
 
     dim = len(minCoords)
 
+    # Every rank passes these Enums to Mesh() below, so they must be bound
+    # on every rank — only the gmsh geometry construction is rank-0 work.
+    if dim == 2:
+        boundaries = boundaries_2D
+        boundary_normals = boundary_normals_2D
+    else:
+        boundaries = boundaries_3D
+        boundary_normals = boundary_normals_3D
+
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
@@ -545,8 +554,6 @@ def BoxInternalBoundary(
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
             yint = zintCoord
-            boundaries = boundaries_2D
-            boundary_normals = boundary_normals_2D
 
             if not simplex:
                 cellSize = 0.0
@@ -640,8 +647,6 @@ def BoxInternalBoundary(
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
             zint = zintCoord
-            boundaries = boundaries_3D
-            boundary_normals = boundary_normals_3D
 
             if not simplex:
                 cellSize = 0.0

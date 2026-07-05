@@ -112,9 +112,10 @@ def test_bd_integral_invalid_boundary():
 
 
 # --- Internal boundary tests (BoxInternalBoundary) ---
-# BoxInternalBoundary has a pre-existing MPI bug (UnboundLocalError in the mesh
-# constructor) so these tests are skipped under MPI. They use lazy initialization
-# to avoid crashing the entire module if the mesh constructor fails.
+# These run in serial and parallel: the BoxInternalBoundary rank>0
+# UnboundLocalError (2026-07 audit, BF-13) is fixed. Two signed-normal
+# tests remain serial-only — see the TODO(BUG) on
+# test_bd_integral_internal_normal_ny.
 
 from underworld3.meshing import BoxInternalBoundary
 
@@ -138,7 +139,6 @@ def _get_internal_mesh():
     return _mesh_internal, _x_i, _y_i
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_boundary_length():
     """Internal boundary at y=0.5 across a unit box should have length 1.0."""
 
@@ -149,7 +149,6 @@ def test_bd_integral_internal_boundary_length():
     assert abs(value - 1.0) < 0.001, f"Expected 1.0, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_coordinate_fn():
     """Integrate x along internal boundary at y=0.5: int_0^1 x dx = 0.5."""
 
@@ -160,7 +159,16 @@ def test_bd_integral_internal_coordinate_fn():
     assert abs(value - 0.5) < 0.01, f"Expected 0.5, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
+# TODO(BUG): internal-boundary facet-normal orientation is rank-dependent at
+# partition seams: at np2 one seam facet contributes with flipped sign, so
+# |integral of n_y| = 1 - 2/32 = 0.9375. Scalar integrands (length,
+# coordinate functions) are exact in parallel; only signed-normal integrands
+# are affected. Found while unskipping after the BF-13 constructor fix
+# (2026-07 audit) — separate defect, not covered by BF-13.
+@pytest.mark.skipif(
+    uw.mpi.size > 1,
+    reason="Internal-boundary normal orientation is rank-dependent at partition seams (see TODO(BUG) above)",
+)
 def test_bd_integral_internal_normal_ny():
     """Integrate n_y along internal boundary at y=0.5.
     The internal boundary has normals pointing in +y or -y direction,
@@ -178,7 +186,6 @@ def test_bd_integral_internal_normal_ny():
     assert abs(abs(value) - 1.0) < 0.01, f"Expected |n_y integral| = 1.0, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_normal_nx():
     """Integrate n_x along internal boundary at y=0.5.
     The internal boundary is horizontal, so n_x should be ~0."""
@@ -193,7 +200,10 @@ def test_bd_integral_internal_normal_nx():
     assert abs(value) < 0.01, f"Expected ~0, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
+@pytest.mark.skipif(
+    uw.mpi.size > 1,
+    reason="Internal-boundary normal orientation is rank-dependent at partition seams (see TODO(BUG) above)",
+)
 def test_bd_integral_internal_normal_weighted():
     """Integrate x * n_y along internal boundary at y=0.5.
     int_0^1 x * n_y dx = n_y * 0.5. Since |n_y| = 1, result should be ~0.5."""
@@ -208,7 +218,6 @@ def test_bd_integral_internal_normal_weighted():
     assert abs(abs(value) - 0.5) < 0.01, f"Expected |value| = 0.5, got {value}"
 
 
-@pytest.mark.skipif(uw.mpi.size > 1, reason="BoxInternalBoundary has pre-existing MPI bug")
 def test_bd_integral_internal_does_not_affect_external():
     """External boundaries should still work on the internal-boundary mesh."""
 

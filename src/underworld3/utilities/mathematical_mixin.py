@@ -792,6 +792,13 @@ class MathematicalMixin:
         )
 
 
+# TODO(DESIGN): UnitAwareDerivativeMatrix defines no __mul__/__neg__, and
+# sympy's DomainMatrix element-wise path bypasses _sympy_(), so expressions
+# like `UnitAwareDerivativeMatrix * NegativeOne` raise TypeError inside the
+# Projection residual template (2026-07 audit, LE-06 / BF-10). Part (a) —
+# the units-free rewrite of tests/test_0813 — restored the DM-corruption
+# coverage; part (b) implements the arithmetic here and re-unitizes those
+# tests. See docs/reviews/2026-07/REMEDIATION-WORKLIST.md (BF-10).
 class UnitAwareDerivativeMatrix:
     """
     Wrapper for SymPy Matrix derivatives that provides unit-aware indexing.

@@ -6997,8 +6997,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             fid_h = cbc.lam._solver_field_id
             bvalue = self.mesh.boundaries[cbc.boundary].value
             bd_is = dm.getLabel("UW_Boundaries").getStratumIS(bvalue)
+            # Guard for parallel: a rank owning no points with this label value
+            # gets back a valid non-None PETSc.IS with size 0 (bool(bd_is) = True,
+            # bd_is.handle != 0). Calling .getIndices() on that IS segfaults.
+            # `if bd_is` catches the null-handle case; `.getSize() > 0` catches
+            # the valid-but-empty case that None / handle checks miss (issue #291).
             keep = set()
-            if bd_is is not None:
+            if bd_is and bd_is.getSize() > 0:
                 for bp in bd_is.getIndices().tolist():
                     keep.update(dm.getTransitiveClosure(bp)[0].tolist())
             iset = interior_pts.setdefault(fid_h, set())

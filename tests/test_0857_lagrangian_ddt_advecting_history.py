@@ -215,3 +215,38 @@ def test_lagrangian_swarm_advecting_history_with_step_averaging():
         got1[interior], 0.5 * T2(x0[interior], y0[interior]) + 0.5 * T1(x0[interior], y0[interior]),
         atol=1e-8,
     )
+
+
+def test_lagrangian_object_viewers_do_not_raise():
+    """Regression (2026-07 audit, BF-15 / READ-46): ``_object_viewer`` on
+    both Lagrangian DDt classes referenced ``self.psi`` and
+    ``self.dt_physical``, which are never set — every view raised
+    AttributeError. The viewer must render from ``psi_fn``."""
+    pytest.importorskip("IPython")
+    mesh = _make_mesh()
+    T = _linear_scalar_field(mesh, "T_view", 1.0, 2.0)
+    V = _constant_velocity(mesh)
+
+    lag_ddt = ddt_module.Lagrangian(
+        mesh=mesh,
+        psi_fn=T.sym,
+        V_fn=V.sym,
+        vtype=uw.VarType.SCALAR,
+        degree=1,
+        continuous=True,
+        order=1,
+        fill_param=2,
+    )
+    lag_ddt._object_viewer()
+
+    swarm = uw.swarm.Swarm(mesh)
+    lag_swarm_ddt = ddt_module.Lagrangian_Swarm(
+        swarm=swarm,
+        psi_fn=T.sym,
+        vtype=uw.VarType.SCALAR,
+        degree=1,
+        continuous=True,
+        order=1,
+    )
+    swarm.populate(fill_param=2)
+    lag_swarm_ddt._object_viewer()

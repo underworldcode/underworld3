@@ -67,7 +67,7 @@ def _boundary_field_nodes(solver, boundary, field_id=0):
     v0, v1 = dm.getDepthStratum(0)
     fS, fE = dm.getHeightStratum(1)
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-    if sis is None or sis.handle == 0:
+    if not (sis and sis.getSize() > 0):
         return [], lsec, csec, cvec, v0, v1
     facets = [int(z) for z in sis.getIndices()]
     seen = set(); out = []
@@ -103,7 +103,7 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     if normal is None:
         # accumulate area-weighted facet normals to the closure nodes
         sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-        facets = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
+        facets = [] if not (sis and sis.getSize() > 0) else [int(z) for z in sis.getIndices()]
         fS, fE = dm.getHeightStratum(1)
         acc = {}
         for f in facets:
@@ -151,7 +151,7 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     def vcoord(q): return cvec[csec.getOffset(q) // dim]
     nodeR = {_key(x, dim): float(r) for x, r in zip(xs, R)}
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-    strat = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
+    strat = [] if not (sis and sis.getSize() > 0) else [int(z) for z in sis.getIndices()]
     local_elems = []
     for e in [q for q in strat if e0 <= q < e1]:
         a, b = (int(c) for c in dm.getCone(e))

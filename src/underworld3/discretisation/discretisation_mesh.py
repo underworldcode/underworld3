@@ -3664,72 +3664,22 @@ class Mesh(Stateful, uw_object):
 
     @points.setter
     def points(self, value):
+        """Removed. Move mesh nodes with :meth:`deform`.
+
+        The deprecated setter rebound ``self._coords`` to a plain ndarray,
+        silently discarding the ``NDArray_With_Callback`` wrapper: the
+        deform callback never fired, so PETSc coordinates, kd-trees and
+        dependent caches were never updated — writes looked accepted but
+        changed nothing downstream (2026-07 audit, BF-18 / READ-43).
+        Rather than repair an already-deprecated write path, it now
+        refuses loudly.
         """
-        Set mesh node coordinates from physical units.
-
-        .. deprecated:: 0.99.0
-            Use :attr:`X.coords` instead.
-
-        When the mesh has coordinate scaling applied (via model units),
-        this property automatically converts from physical coordinates
-        to internal model coordinates for PETSc storage.
-
-        Args:
-            value (numpy.ndarray or UnitAwareArray): Node coordinates in physical units
-        """
-        import warnings
-        import underworld3 as uw
-
-        warnings.warn(
-            "mesh.points is deprecated, use mesh.X.coords instead", DeprecationWarning, stacklevel=2
+        raise AttributeError(
+            "Assigning to mesh.points has been removed: it never propagated "
+            "the new coordinates to PETSc (2026-07 audit, BF-18). "
+            "Use mesh.deform(new_coords) to move mesh nodes; read "
+            "coordinates via mesh.X.coords."
         )
-
-        # PRINCIPLE (2025-11-27): When units are active, require unit-aware input
-        # to avoid ambiguity about whether values are dimensional or non-dimensional.
-        has_unit_info = hasattr(value, 'magnitude') or hasattr(value, 'value')
-        model = uw.get_default_model()
-        units_active = model.has_units() and uw.is_nondimensional_scaling_active()
-        mesh_has_units = hasattr(self, 'units') and self.units is not None
-
-        if not has_unit_info and mesh_has_units and units_active:
-            # Plain array assigned when units are active - ambiguous
-            mesh_units = self.units
-            raise ValueError(
-                f"Cannot assign plain array to mesh coordinates when units are active.\n"
-                f"\n"
-                f"The mesh has coordinate units '{mesh_units}', but the assigned\n"
-                f"value has no unit information. This is ambiguous: should the values be\n"
-                f"interpreted as dimensional (in {mesh_units}) or non-dimensional?\n"
-                f"\n"
-                f"Solutions:\n"
-                f"  1. Wrap with units: UnitAwareArray(coords, units='{mesh_units}')\n"
-                f"  2. Use uw.quantity() for coordinate values\n"
-                f"  3. For non-dimensional values, assign directly to mesh._coords\n"
-            )
-
-        # Handle unit-aware input
-        if has_unit_info:
-            # Extract numerical value from unit-aware object
-            if hasattr(value, 'magnitude'):
-                coord_values = value.magnitude
-            elif hasattr(value, 'value'):
-                coord_values = value.value
-            else:
-                coord_values = value
-
-            # Convert to non-dimensional units if needed
-            if units_active and mesh_has_units:
-                coord_values = uw.scaling.non_dimensionalise(value)
-        else:
-            coord_values = value
-
-        # Apply inverse scaling to convert physical coordinates to model coordinates
-        if hasattr(self.CoordinateSystem, "_scaled") and self.CoordinateSystem._scaled:
-            scale_factor = self.CoordinateSystem._length_scale
-            model_coords = coord_values / scale_factor
-            self._coords = model_coords
-        else:
-            self._coords = coord_values
 
     @property
     def physical_coordinates(self):

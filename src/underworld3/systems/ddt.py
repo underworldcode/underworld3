@@ -1021,13 +1021,6 @@ class Eulerian(uw_object):
         super()._object_viewer()
 
         ## feedback on this instance
-        # display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
-        # display(
-        #     Latex(
-        #         r"$\quad\Delta t_{\textrm{phys}} = $ "
-        #         + sympy.sympify(self.dt_physical)._repr_latex_()
-        #     )
-        # )
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def _setup_projections(self):
@@ -1934,10 +1927,7 @@ class SemiLagrangian(uw_object):
         _update_bdf_values(
             self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
         )
-        # SemiLagrangian's update_pre_solve uses theta=0.5 directly
-        # (it doesn't take a theta argument in __init__), so the setter
-        # matches that.
-        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
     @property
     def psi_fn(self):
@@ -3135,13 +3125,9 @@ class Lagrangian(uw_object):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
-        display(
-            Latex(
-                r"$\quad\Delta t_{\textrm{phys}} = $ "
-                + sympy.sympify(self.dt_physical)._repr_latex_()
-            )
-        )
+        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
+        # so the viewer reports the expression and history depth only.
+        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     @property
@@ -3496,13 +3482,9 @@ class Lagrangian_Swarm(uw_object):
         super()._object_viewer()
 
         ## feedback on this instance
-        display(Latex(r"$\quad\psi = $ " + self.psi._repr_latex_()))
-        display(
-            Latex(
-                r"$\quad\Delta t_{\textrm{phys}} = $ "
-                + sympy.sympify(self.dt_physical)._repr_latex_()
-            )
-        )
+        # Note: dt_physical is not tracked on the Lagrangian DDt classes,
+        # so the viewer reports the expression and history depth only.
+        display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     @property
