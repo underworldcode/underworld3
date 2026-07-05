@@ -1930,10 +1930,7 @@ class SemiLagrangian(uw_object):
         _update_bdf_values(
             self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
         )
-        # SemiLagrangian's update_pre_solve uses theta=0.5 directly
-        # (it doesn't take a theta argument in __init__), so the setter
-        # matches that.
-        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
     @property
     def psi_fn(self):
