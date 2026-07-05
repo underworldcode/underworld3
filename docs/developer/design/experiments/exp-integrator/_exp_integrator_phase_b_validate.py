@@ -10,7 +10,7 @@ with no homogeneous transient.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_exp_integrator_phase_b_validate.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_exp_integrator_phase_b_validate.py
 """
 
 import time

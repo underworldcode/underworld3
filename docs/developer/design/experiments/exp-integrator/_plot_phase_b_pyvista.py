@@ -11,12 +11,12 @@ If those files exist, skip the simulation and read back from disk.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_b_pyvista.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_plot_phase_b_pyvista.py
 
 Force re-capture::
 
     rm output/phase_b_*.h5 output/phase_b_*.xdmf
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_b_pyvista.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_plot_phase_b_pyvista.py
 """
 
 import os

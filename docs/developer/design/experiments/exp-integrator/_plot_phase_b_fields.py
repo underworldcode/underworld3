@@ -7,7 +7,7 @@ fields at peak forcing, and plots velocity vectors + strain-rate magnitude
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_b_fields.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_plot_phase_b_fields.py
 """
 
 import os

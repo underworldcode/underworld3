@@ -11,7 +11,7 @@ compare the field structure directly to the BDF/lumped Phase B plots.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_d_pyvista_split.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_plot_phase_d_pyvista_split.py
 """
 
 import os

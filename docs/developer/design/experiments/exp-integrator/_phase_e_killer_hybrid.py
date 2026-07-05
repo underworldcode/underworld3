@@ -15,7 +15,7 @@ Same setup as ``_phase_d_killer_split.py`` (θ=+15°, RES=32, τ_y values
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_phase_e_killer_hybrid.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_phase_e_killer_hybrid.py
 """
 
 import os

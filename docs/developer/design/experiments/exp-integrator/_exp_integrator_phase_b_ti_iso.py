@@ -15,7 +15,7 @@ which is TI-specific. Zero IC + smooth ramp-up is a cleaner test.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_exp_integrator_phase_b_ti_iso.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_exp_integrator_phase_b_ti_iso.py
 """
 
 import time

@@ -10,7 +10,7 @@ and reports the same metrics as the BDF/lumped-ETD captures.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_phase_d_killer_split.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_phase_d_killer_split.py
 """
 
 import os

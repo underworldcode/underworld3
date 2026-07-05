@@ -18,7 +18,7 @@ memory on per-step diagnostics.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_phase_b_etd1_at_tight_yield.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_phase_b_etd1_at_tight_yield.py
 """
 
 import os

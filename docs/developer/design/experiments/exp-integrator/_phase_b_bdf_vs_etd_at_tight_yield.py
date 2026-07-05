@@ -12,7 +12,7 @@ RES=32 — same setup as ``output/phase_b_th+15_ty0p05.*``.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_phase_b_bdf_vs_etd_at_tight_yield.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_phase_b_bdf_vs_etd_at_tight_yield.py
 """
 
 import os

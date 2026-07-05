@@ -15,7 +15,7 @@ to the BDF-1 baseline.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_b_bdf_vs_etd.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_plot_phase_b_bdf_vs_etd.py
 """
 
 import os
