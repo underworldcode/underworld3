@@ -1122,18 +1122,29 @@ def create_quantity(value, units: Union[str, Any], backend: Optional[str] = None
     """
     Create a dimensional quantity from a value and units.
 
+    .. deprecated:: 2026-07
+        ``uw.quantity`` is THE quantity factory (maintainer decision D14):
+        it returns a :class:`~underworld3.function.quantities.UWQuantity`,
+        which composes with expressions and non-dimensionalisation. This
+        function returns a raw Pint ``Quantity`` and will be removed after one
+        deprecation cycle.
+
     Args:
         value: Numeric value or array
         units: Units specification (string or units object)
         backend: Backend to use ('pint' or 'sympy'), defaults to 'pint'
 
     Returns:
-        Dimensional quantity
+        Dimensional quantity (raw Pint ``Quantity``)
 
     Examples:
         >>> velocity_qty = create_quantity([1.0, 2.0], "m/s")
         >>> pressure_qty = create_quantity(101325, "Pa")
     """
+    warnings.warn(
+        "create_quantity is deprecated; use uw.quantity(value, units) — note "
+        "it returns a UWQuantity rather than a raw Pint Quantity",
+        DeprecationWarning, stacklevel=2)
     # backend parameter is deprecated - Pint is the only supported backend
     if backend is not None and backend.lower() != "pint":
         raise ValueError(f"Unknown backend: {backend}. Only 'pint' is supported.")

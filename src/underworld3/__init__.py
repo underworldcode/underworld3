@@ -219,7 +219,9 @@ from .model import (
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel
-from .function import quantity, expression, with_units, expand, unwrap
+# uw.quantity is THE quantity factory (returns UWQuantity, exposed alongside
+# for isinstance checks); uw.create_quantity is deprecated (see units.py).
+from .function import quantity, UWQuantity, expression, with_units, expand, unwrap
 from .coordinates import uwdiff  # Differentiation helper for UWCoordinates
 from .utilities import retention_curves
 
