@@ -2332,22 +2332,25 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         except (TypeError, ValueError, AttributeError):
             return 1.0
 
-    def add_constraint_bc(self, boundary, g=0.0, normal=None, screening=None,
-                          augmentation=None, augmentation_base=1.0e4, degree=None):
+    def add_constraint_bc(self, conds=None, boundary=None, normal=None, screening=None,
+                          augmentation=None, augmentation_base=1.0e4, degree=None,
+                          g=None):
         r"""Register a multiplier-enforced normal-velocity constraint on ``boundary``.
 
         Adds a scalar multiplier field ``h`` coupled into the saddle-point system
-        so that :math:`\mathbf{u}\cdot\mathbf{n}=g` is enforced on ``boundary`` in
-        the coupled solve; at convergence ``h`` on the boundary is the normal
-        traction (dynamic topography), recoverable via :meth:`multiplier` /
-        :meth:`topography`.
+        so that :math:`\mathbf{u}\cdot\mathbf{n}=\mathrm{conds}` is enforced on
+        ``boundary`` in the coupled solve; at convergence ``h`` on the boundary
+        is the normal traction (dynamic topography), recoverable via
+        :meth:`multiplier` / :meth:`topography`.
 
         Parameters
         ----------
+        conds : float or sympy expression, optional
+            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n}`,
+            in the canonical value-first BC order. Default ``None`` means zero
+            (free-slip).
         boundary : str
             Mesh boundary label (e.g. ``"Upper"``).
-        g : float or sympy expression, default 0.0
-            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n} = g`.
         normal : sympy matrix, optional
             Row-vector constraint normal. Defaults to ``mesh.Gamma_P1``.
         screening : float or sympy expression, optional
@@ -2366,12 +2369,25 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             independent of this value (the multiplier carries the exact
             constraint); larger values reduce the iteration count up to a broad
             plateau, well below the roundoff limit.
+        g : float or sympy expression, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Returns
         -------
         h : MeshVariable
             The scalar multiplier field.
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_constraint_bc(boundary, g=...)``
+        is detected conservatively (first positional argument a string while
+        the second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see
+        ``SolverBaseClass._value_first_bc_args``.
         """
+        conds, boundary = self._value_first_bc_args(
+            "add_constraint_bc", conds, boundary, alias=g)
+        g = conds if conds is not None else 0.0
         # Parallel-safe: the interior-multiplier reduction
         # (_constrain_interior_multipliers_in_section) is rank-local section
         # surgery (it uses the distributed boundary label IS and iterates the

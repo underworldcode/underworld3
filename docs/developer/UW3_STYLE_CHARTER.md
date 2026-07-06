@@ -82,8 +82,8 @@ These settle the June-2026 drift (see `docs/reviews/2026-07/API-CONSISTENCY-REVI
 
 | Topic | Rule |
 |---|---|
-| BC argument order | `add_<kind>_bc(value, boundary, ...)` — value first, matching the original trio, the published examples/benchmarks, and previous major versions (maintainer decision 2026-07-04). The newer boundary-first methods (`add_nitsche_bc`, `add_rotated_freeslip_bc`, `add_constraint_bc`) migrate to it; their current signatures are shimmed. |
-| BC value parameter | ONE name across all BC methods ⟨pending maintainer confirmation: `conds` (implied by the original-order decision) vs `value`⟩. Until decided, do not introduce a third spelling. |
+| BC argument order | `add_<kind>_bc(conds, boundary, ...)` — value first, matching the original trio, the published examples/benchmarks, and previous major versions (maintainer decision 2026-07-04). The newer boundary-first methods (`add_nitsche_bc`, `add_rotated_freeslip_bc`, `add_constraint_bc`) migrate to it; their current signatures are shimmed. |
+| BC value parameter | ONE name across all BC methods: **`conds`** (maintainer decision 2026-07-06, recorded in `docs/reviews/2026-07/REMEDIATION-WORKLIST.md`). Other spellings (`g`, `value`, ...) exist only as deprecated keyword aliases where they existed before the decision; never introduce a new spelling. |
 | Direction selection | Component masking via `None`/`sympy.oo` entries in the value vector; `direction=` only for a scalar constraint along a vector (defaults to outward normal); `normal=` strictly overrides the geometric surface-normal source. `components=` is deprecated — never in new code. |
 | Solver capabilities | Anything that configures or reads one solver is a METHOD on that solver, lazily importing its `utilities/*` implementation (the `boundary_flux` pattern) — never a free function as the documented entry point. |
 | Namespaces | Every user-facing module is exported from its subpackage `__init__`/`__all__` in the PR that creates it. No deep-import-only features. |

@@ -1447,12 +1447,12 @@ class SolverBaseClass(uw_object):
                   "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])\n")
 
         if isinstance(components, (tuple, list, int)):
-            # TODO: DECPRECATE
             import warnings
-            warnings.warn(category=DeprecationWarning,
-                          message="Using the 'components' argument is being DEPRECATED in the next release\n" +
-                                  "The same functionality can be setup with the 'conds' argument and using\n" +
-                                  "'sympy.oo' or 'None', see docstring")
+            warnings.warn(
+                "The 'components' argument is deprecated; select components "
+                "with None / sympy.oo entries in 'conds' instead, e.g. "
+                "conds=(None, 5, 1.2)",
+                DeprecationWarning, stacklevel=3)
             components = np.array(components, dtype=np.int32, ndmin=1)
 
         elif components is None:
@@ -1524,6 +1524,49 @@ class SolverBaseClass(uw_object):
             BC = namedtuple('EssentialBC', ['f_id', 'components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
             self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
 
+
+    def _value_first_bc_args(self, method, conds, boundary, alias=None,
+                             alias_name="g"):
+        """Normalize BC arguments to the canonical value-first order.
+
+        The canonical BC signature is ``method(conds, boundary, ...)`` with the
+        prescribed datum named ``conds`` (Style Charter, API conventions;
+        maintainer decisions D2/D3, 2026-07). Two legacy spellings are shimmed
+        here, each with exactly one DeprecationWarning:
+
+        * **boundary-first order** — detected conservatively: the first
+          positional argument is a string (a boundary label; a BC datum is
+          never a string — see :meth:`add_condition`) while the second is not.
+          The two arguments are swapped.
+        * **the** ``g=`` **keyword alias** for the datum — forwarded to
+          ``conds``. Supplying both ``conds`` and ``g`` is an error.
+
+        Returns the normalized ``(conds, boundary)`` pair; ``boundary`` is
+        required to be a string on exit.
+        """
+        legacy = False
+        if isinstance(conds, str) and not isinstance(boundary, str):
+            conds, boundary = boundary, conds
+            legacy = True
+        if alias is not None:
+            if conds is not None:
+                raise TypeError(
+                    f"{method}() received the boundary datum twice "
+                    f"(positionally and as '{alias_name}='); pass it once, "
+                    f"as 'conds'")
+            conds = alias
+            legacy = True
+        if legacy:
+            import warnings
+            warnings.warn(
+                f"{method}(boundary, {alias_name}=...) is deprecated; "
+                f"use {method}(conds, boundary, ...)",
+                DeprecationWarning, stacklevel=3)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"{method}() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        return conds, boundary
 
     # Use FE terminology note f_id is 0.
     @timing.routine_timer_decorator
@@ -3314,19 +3357,21 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1, local_h=True):
+    def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
+                       gamma=10.0, theta=1, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         For vector solvers (no pressure field), this constrains
-        :math:`\mathbf{u} \cdot \mathbf{d} = g` on the boundary using
-        Nitsche's method with penalty, consistency, and symmetry terms.
+        :math:`\mathbf{u} \cdot \mathbf{d} = \mathrm{conds}` on the boundary
+        using Nitsche's method with penalty, consistency, and symmetry terms.
 
         Parameters
         ----------
+        conds : sympy expression or float, optional
+            Prescribed velocity along the constraint direction. Default zero
+            (free-slip when the direction is the surface normal).
         boundary : str
             Boundary label.
-        g : sympy expression or float, optional
-            Prescribed velocity along constraint direction. Default zero.
         direction : sympy.Matrix or list, optional
             Constraint direction. Default ``None`` uses surface normal.
         gamma : float, default=10.0
@@ -3338,11 +3383,20 @@ class SNES_Vector(SolverBaseClass):
             (:meth:`Mesh.cell_size`) rather than the global minimum
             (:meth:`Mesh.get_min_radius`). See
             ``SNES_Stokes_SaddlePt.add_nitsche_bc`` for details.
+        g : sympy expression or float, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Warnings
         --------
         Exterior boundaries only. See ``SNES_Stokes_SaddlePt.add_nitsche_bc``
         for details on why internal boundaries are not supported.
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_nitsche_bc(boundary, g=...)`` is
+        detected conservatively (first positional argument a string while the
+        second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see :meth:`_value_first_bc_args`.
 
         See Also
         --------
@@ -3350,6 +3404,10 @@ class SNES_Vector(SolverBaseClass):
         """
         import sympy
         from collections import namedtuple
+
+        conds, boundary = self._value_first_bc_args(
+            "add_nitsche_bc", conds, boundary, alias=g)
+        g = conds
 
         self.is_setup = False
 
@@ -5167,7 +5225,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
 
-    def add_rotated_freeslip_bc(self, boundary, normal=None):
+    def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
         r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
         the boundary velocity DOFs into a per-node (normal, tangential) frame and
         imposing the rotated normal component as an exact Dirichlet constraint.
@@ -5181,6 +5239,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
+        conds : float or None, optional
+            Prescribed wall-normal velocity datum, in the canonical value-first
+            BC order (Style Charter, API conventions). Only the homogeneous
+            free-slip constraint :math:`\mathbf{u}\cdot\hat{\mathbf n}=0` is
+            implemented, so this must be zero (or ``None``, meaning zero); a
+            non-zero datum raises ``NotImplementedError`` (use
+            :meth:`add_nitsche_bc` or ``add_constraint_bc`` for prescribed
+            normal in/outflow).
         boundary : str
             Boundary label to constrain.
         normal : None or sympy 1×dim Matrix or array, optional
@@ -5197,7 +5263,38 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         face frees two tangential directions, a 3D edge frees one (the edge
         tangent), a corner is fully pinned. Registering delegates the solve to
         :mod:`underworld3.utilities.rotated_bc`.
+
+        The legacy boundary-first call ``add_rotated_freeslip_bc(boundary,
+        normal)`` is detected conservatively (the first positional argument is
+        a string — the datum is never a string) and shimmed with one
+        DeprecationWarning: the string becomes ``boundary`` and a second
+        positional argument, if present, becomes ``normal``.
         """
+        if isinstance(conds, str):
+            # legacy boundary-first call: (boundary[, normal])
+            if boundary is not None:
+                if normal is not None:
+                    raise TypeError(
+                        "add_rotated_freeslip_bc() received 'normal' twice "
+                        "(positionally, legacy order, and as a keyword)")
+                normal = boundary
+            boundary = conds
+            conds = None
+            import warnings
+            warnings.warn(
+                "add_rotated_freeslip_bc(boundary, normal) is deprecated; "
+                "use add_rotated_freeslip_bc(conds, boundary, normal=...) "
+                "with conds=0 (or boundary=... by keyword)",
+                DeprecationWarning, stacklevel=2)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_rotated_freeslip_bc() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        if conds is not None and sympy.sympify(conds) != 0:
+            raise NotImplementedError(
+                "add_rotated_freeslip_bc imposes u.n = 0 only; a non-zero "
+                "wall-normal datum is not implemented (use add_nitsche_bc or "
+                "add_constraint_bc for prescribed normal in/outflow)")
         self._rotated_freeslip_bcs.append((boundary, normal))
         self.is_setup = False
         return
@@ -5290,7 +5387,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return _dtf(self, boundary, self._rotated_freeslip_info, field,
                     buoyancy_scale=buoyancy_scale, mass=mass)
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
+    def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
+                       gamma=10.0, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -5298,9 +5396,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         and gives optimal convergence rates.
 
         By default, constrains the normal velocity component
-        :math:`\mathbf{u} \cdot \mathbf{n} = g` (free-slip when *g* = 0).
-        When *direction* is provided, constrains
-        :math:`\mathbf{u} \cdot \mathbf{d} = g` along that direction instead.
+        :math:`\mathbf{u} \cdot \mathbf{n} = \mathrm{conds}` (free-slip when
+        ``conds`` is zero). When *direction* is provided, constrains
+        :math:`\mathbf{u} \cdot \mathbf{d} = \mathrm{conds}` along that
+        direction instead.
 
         The method constructs boundary residuals and Jacobians for:
 
@@ -5313,11 +5412,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        boundary : str
-            Boundary label (e.g., ``"Upper"``, ``"Lower"``).
-        g : sympy expression or float, optional
+        conds : sympy expression or float, optional
             Prescribed velocity along the constraint direction. Default
             ``None`` means zero (:math:`\mathbf{u} \cdot \mathbf{d} = 0`).
+        boundary : str
+            Boundary label (e.g., ``"Upper"``, ``"Lower"``).
         direction : sympy.Matrix or list, optional
             Constraint direction vector. Default ``None`` uses the boundary
             surface normal (free-slip). Can be spatially varying (e.g.,
@@ -5347,18 +5446,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             adaptive mesh the local size scales the stabilisation correctly
             on every facet; on a uniform mesh the two coincide. Set ``False``
             to restore the legacy global-h behaviour exactly.
+        g : sympy expression or float, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Examples
         --------
         >>> # Free-slip (u.n = 0)
-        >>> stokes.add_nitsche_bc("Upper", gamma=10)
+        >>> stokes.add_nitsche_bc(0.0, "Upper", gamma=10)
 
         >>> # Prescribed normal inflow
-        >>> stokes.add_nitsche_bc("Left", g=1.0, gamma=10)
+        >>> stokes.add_nitsche_bc(1.0, "Left", gamma=10)
 
         >>> # Constrain along a specific direction (e.g. fault normal)
         >>> fault_normal = sympy.Matrix([0.6, 0.8])
-        >>> stokes.add_nitsche_bc("Fault", direction=fault_normal, gamma=10)
+        >>> stokes.add_nitsche_bc(0.0, "Fault", direction=fault_normal, gamma=10)
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_nitsche_bc(boundary, g=...)`` is
+        detected conservatively (first positional argument a string while the
+        second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see :meth:`_value_first_bc_args`.
 
         Warnings
         --------
@@ -5375,6 +5483,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         import sympy
         from collections import namedtuple
+
+        conds, boundary = self._value_first_bc_args(
+            "add_nitsche_bc", conds, boundary, alias=g)
+        g = conds
 
         self.is_setup = False
 
