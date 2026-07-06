@@ -1,5 +1,7 @@
 # Submesh Solver Architecture: Multi-Domain Equation Systems
 
+**Status**: Prototype (2026-04 – 2026-05). The subdomain (`extract_region`) and surface (`extract_surface`) flavours exist in `discretisation_mesh.py`; the resolution-level `coarsened_companion` flavour is not implemented.
+
 ## Context
 
 Underworld3 needs to support solving different equations on different subsets of a mesh while maintaining a unified field representation. Use cases include:

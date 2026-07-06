@@ -1,5 +1,7 @@
 # Consistent Jacobian tangent for nonlinear (viscoplastic) solves
 
+**Status**: Implemented — PR #258 (2026-07-02): opt-in `solver.consistent_jacobian`, default off (Picard tangent unchanged).
+
 ## The bug
 
 The SNES Jacobian assembly in `src/underworld3/cython/petsc_generic_snes_solvers.pyx`
