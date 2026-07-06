@@ -1230,19 +1230,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         # Use cached KDTree for interpolation (avoids redundant index construction)
         kd = meshVar._get_kdtree()
 
-        with self.swarm.access():
-            d, n = kd.query(self.swarm.data, k=1, sqr_dists=False)  # need actual distances
+        d, n = kd.query(self.swarm.data, k=1, sqr_dists=False)  # need actual distances
 
-            node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
-            w = np.zeros(meshVar.coords.shape[0])
+        node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
+        w = np.zeros(meshVar.coords.shape[0])
 
-            if not self._nn_proxy:
-                for i in range(self.local_size):
-                    # if b[i]:
-                    node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
-                    w[n[i]] += 1.0 / (1.0e-24 + d[i])
+        if not self._nn_proxy:
+            for i in range(self.local_size):
+                # if b[i]:
+                node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
+                w[n[i]] += 1.0 / (1.0e-24 + d[i])
 
-                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(-1, 1)
+            node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(-1, 1)
 
         # 2 - set NN vals on mesh var where w == 0.0
 
@@ -5176,9 +5175,8 @@ class NodalPointSwarm(Swarm):
 
         nswarm.dm.migrate(remove_sent_points=True)
 
-        with nswarm.access(nX0, nI0):
-            nX0.data[:, :] = coords
-            nI0.data[:, 0] = range(0, coords.shape[0])
+        nX0.data[:, :] = coords
+        nI0.data[:, 0] = range(0, coords.shape[0])
 
         self._nswarm = nswarm
         self._nX0 = nX0
@@ -5199,11 +5197,9 @@ class NodalPointSwarm(Swarm):
         step_limit=True,
     ):
 
-        with self.access(self._X0):
-            self._X0.data[...] = self._nX0.data[...]
+        self._X0.data[...] = self._nX0.data[...]
 
-        with self.access(self._nR0):
-            self._nR0.data[...] = uw.mpi.rank
+        self._nR0.data[...] = uw.mpi.rank
 
         super().advection(
             V_fn,
