@@ -1626,22 +1626,31 @@ class SolverBaseClass(uw_object):
         Returns the normalized ``(conds, boundary)`` pair; ``boundary`` is
         required to be a string on exit.
         """
-        legacy = False
+        legacy_order = False
+        legacy_alias = False
         if isinstance(conds, str) and not isinstance(boundary, str):
             conds, boundary = boundary, conds
-            legacy = True
+            legacy_order = True
         if alias is not None:
             if conds is not None:
                 raise TypeError(
                     f"{method}() received the boundary datum twice "
-                    f"(positionally and as '{alias_name}='); pass it once, "
+                    f"(as 'conds' and as '{alias_name}='); pass it once, "
                     f"as 'conds'")
             conds = alias
-            legacy = True
-        if legacy:
+            legacy_alias = True
+        if legacy_order or legacy_alias:
+            # Name the legacy form the caller actually used (Copilot review
+            # of #334: a one-size message misdescribed keyword-only calls).
+            if legacy_order and legacy_alias:
+                legacy_form = f"{method}(boundary, {alias_name}=...)"
+            elif legacy_order:
+                legacy_form = f"{method}(boundary, conds, ...) positional order"
+            else:
+                legacy_form = f"the '{alias_name}=' keyword of {method}()"
             import warnings
             warnings.warn(
-                f"{method}(boundary, {alias_name}=...) is deprecated; "
+                f"{legacy_form} is deprecated; "
                 f"use {method}(conds, boundary, ...)",
                 DeprecationWarning, stacklevel=3)
         if not isinstance(boundary, str):
