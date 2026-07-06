@@ -324,7 +324,19 @@ class SolverBaseClass(uw_object):
         ``setFromOptions`` / nullspace attach) via
         :func:`underworld3.utilities.custom_mg.inject_custom_mg`. See
         :mod:`underworld3.utilities.custom_mg`.
+
+        .. deprecated:: 2026-07
+            This is the legacy **serial-only, finest-only-reduction,
+            single-field** path; the Stokes velocity-block support described
+            above is delivered by :meth:`set_custom_fmg`, which is the
+            canonical entry point (parallel-capable, BC-per-level reduction).
         """
+        import warnings
+        warnings.warn(
+            "set_custom_mg is deprecated (legacy serial-only, single-field "
+            "custom-MG path); use set_custom_fmg(coarse_meshes, "
+            "builder=..., field_id=...) instead",
+            DeprecationWarning, stacklevel=2)
         if kind not in ("barycentric", "rbf"):
             raise ValueError("kind must be 'barycentric' or 'rbf'")
         if not coarse_meshes:
@@ -332,6 +344,41 @@ class SolverBaseClass(uw_object):
         self._custom_mg = {"coarse_meshes": list(coarse_meshes),
                            "kind": kind, "verbose": verbose}
         self.is_setup = False
+
+    def set_custom_fmg(self, coarse_meshes, *, builder="barycentric",
+                       field_id=None, verbose=False):
+        r"""Drive geometric multigrid with a prolongation built from
+        ``coarse_meshes`` — the canonical custom-MG entry point.
+
+        Registers a BC-per-level reduced hierarchy on the solver so the next
+        :meth:`solve` builds and installs it (build-time injection). Works in
+        parallel and on the **Stokes velocity block** (pass ``field_id=0`` on a
+        saddle-point solver). This supersedes the legacy
+        :meth:`set_custom_mg` path (serial-only, finest-only reduction,
+        single-field).
+
+        Parameters
+        ----------
+        coarse_meshes : list of Mesh
+            Coarsest-first list of coarse meshes (the finest level is the
+            solver's own mesh). They need only carry the same boundary labels
+            as the solver's mesh.
+        builder : {"barycentric", "rbf"}, default "barycentric"
+            Prolongation builder. ``barycentric`` is FE-exact; ``rbf`` is a
+            polyharmonic RBF (Shepard-normalised).
+        field_id : int, optional
+            Target field for a multi-field (saddle-point) solver; ``0`` is the
+            Stokes velocity block. ``None`` (default) for single-field solvers.
+        verbose : bool, default False
+            Print the per-level DOF counts at injection.
+
+        See Also
+        --------
+        underworld3.utilities.custom_mg.set_custom_fmg : the implementation.
+        """
+        from underworld3.utilities.custom_mg import set_custom_fmg as _set_custom_fmg
+        _set_custom_fmg(self, coarse_meshes, builder=builder,
+                        field_id=field_id, verbose=verbose)
 
     def add_update_callback(self, callback):
         r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
