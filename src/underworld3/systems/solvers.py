@@ -175,14 +175,23 @@ class SNES_Poisson(SNES_Scalar):
         The computational mesh.
     u_Field : MeshVariable, optional
         Pre-existing mesh variable for the solution. If None, one is created.
-    verbose : bool, optional
-        Enable verbose output during solve.
     degree : int, optional
         Polynomial degree for the solution field (default: 2).
+    verbose : bool, optional
+        Enable verbose output during solve.
     DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for time-dependent problems.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
+
+    Notes
+    -----
+    The constructor follows the family-wide parameter order
+    ``(mesh, u_Field, degree, verbose, ...)`` (Style Charter, API
+    conventions); SNES_Poisson historically inverted ``(verbose, degree)``.
+    A legacy positional call is detected by ``type(degree) is bool`` (a
+    polynomial degree is never a bool) and shimmed with one
+    DeprecationWarning.
 
     """
 
@@ -191,12 +200,22 @@ class SNES_Poisson(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
-        verbose=False,
         degree=2,
+        verbose=False,
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
-        ## Keep track
+        if type(degree) is bool:
+            # Legacy positional order (mesh, u_Field, verbose, degree): the
+            # bool in the degree slot is the legacy verbose flag; a legacy
+            # positional degree, if present, landed in the verbose slot.
+            import warnings
+            warnings.warn(
+                "SNES_Poisson(mesh, u_Field, verbose, degree) is deprecated; "
+                "use SNES_Poisson(mesh, u_Field, degree, verbose)",
+                DeprecationWarning, stacklevel=2)
+            degree, verbose = (
+                verbose if type(verbose) is not bool else 2), degree
 
         ## Parent class will set up default values etc
         super().__init__(
@@ -2332,22 +2351,25 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         except (TypeError, ValueError, AttributeError):
             return 1.0
 
-    def add_constraint_bc(self, boundary, g=0.0, normal=None, screening=None,
-                          augmentation=None, augmentation_base=1.0e4, degree=None):
+    def add_constraint_bc(self, conds=None, boundary=None, normal=None, screening=None,
+                          augmentation=None, augmentation_base=1.0e4, degree=None,
+                          g=None):
         r"""Register a multiplier-enforced normal-velocity constraint on ``boundary``.
 
         Adds a scalar multiplier field ``h`` coupled into the saddle-point system
-        so that :math:`\mathbf{u}\cdot\mathbf{n}=g` is enforced on ``boundary`` in
-        the coupled solve; at convergence ``h`` on the boundary is the normal
-        traction (dynamic topography), recoverable via :meth:`multiplier` /
-        :meth:`topography`.
+        so that :math:`\mathbf{u}\cdot\mathbf{n}=\mathrm{conds}` is enforced on
+        ``boundary`` in the coupled solve; at convergence ``h`` on the boundary
+        is the normal traction (dynamic topography), recoverable via
+        :meth:`multiplier` / :meth:`topography`.
 
         Parameters
         ----------
+        conds : float or sympy expression, optional
+            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n}`,
+            in the canonical value-first BC order. Default ``None`` means zero
+            (free-slip).
         boundary : str
             Mesh boundary label (e.g. ``"Upper"``).
-        g : float or sympy expression, default 0.0
-            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n} = g`.
         normal : sympy matrix, optional
             Row-vector constraint normal. Defaults to ``mesh.Gamma_P1``.
         screening : float or sympy expression, optional
@@ -2366,12 +2388,25 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             independent of this value (the multiplier carries the exact
             constraint); larger values reduce the iteration count up to a broad
             plateau, well below the roundoff limit.
+        g : float or sympy expression, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Returns
         -------
         h : MeshVariable
             The scalar multiplier field.
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_constraint_bc(boundary, g=...)``
+        is detected conservatively (first positional argument a string while
+        the second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see
+        ``SolverBaseClass._value_first_bc_args``.
         """
+        conds, boundary = self._value_first_bc_args(
+            "add_constraint_bc", conds, boundary, alias=g)
+        g = conds if conds is not None else 0.0
         # Parallel-safe: the interior-multiplier reduction
         # (_constrain_interior_multipliers_in_section) is rank-local section
         # surgery (it uses the distributed boundary label IS and iterates the

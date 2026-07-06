@@ -68,27 +68,8 @@ class SolverBaseClass(uw_object):
         self.compiled_extensions = None
         self.constants_manifest = []
 
-        # Jacobian tangent selection: False | True | "continuation".
-        #
-        #   False (default): differentiate the residual flux *as wrapped* — the
-        #     effective viscosity is frozen, giving a Picard / defect-correction
-        #     tangent. BIT-IDENTICAL to the long-standing behaviour. Globally
-        #     robust; load-bearing for the tuned hard-yield viscoplastic paths.
-        #   True: unwrap the flux before differentiation so the tangent captures
-        #     d(eta)/d(grad v) (full Newton). Fast near the solution; its yield
-        #     kink can stall the line search far from it.
-        #   "continuation": Picard -> Newton. Blend J(alpha) = J_picard +
-        #     alpha*(J_newton - J_picard) with alpha a constants[] parameter
-        #     ramped 0 -> 1 by a SNES monitor as the residual drops. Picard
-        #     locates the basin, Newton gives quadratic convergence inside it
-        #     (cf. Spiegelman et al. 2016; ASPECT defect-correction-then-Newton).
-        #     alpha=0 is bit-identical to Picard, so no recompile to switch.
-        #
-        # The Newton flux for a model whose flux has a non-smooth yield kink is
-        # the model's own smooth law (constitutive_model.flux_jacobian) when it
-        # provides one; otherwise the exact unwrapped flux.
-        #
-        # See docs/developer/design/jacobian-unwrap-constants-bug.md.
+        # Jacobian tangent selection — validated property, see the
+        # consistent_jacobian docstring below for the mode semantics.
         self.consistent_jacobian = False
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
@@ -156,6 +137,60 @@ class SolverBaseClass(uw_object):
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
         self._custom_mg = None
+
+    @property
+    def consistent_jacobian(self):
+        r"""Jacobian tangent selection: ``False`` | ``True`` | ``"continuation"``.
+
+        Selects the tangent used by :meth:`_jacobian_source` and the solve
+        dispatch; the residual is never affected, so the converged solution
+        always satisfies the exact constitutive law.
+
+        ``False`` (default)
+            Differentiate the residual flux *as wrapped* — the effective
+            viscosity is frozen, giving a Picard / defect-correction tangent.
+            Bit-identical to the long-standing behaviour. Globally robust;
+            load-bearing for the tuned hard-yield viscoplastic paths.
+        ``True``
+            Unwrap the flux before differentiation so the tangent captures
+            :math:`\partial\eta/\partial(\nabla v)` (full Newton). Fast near
+            the solution; its yield kink can stall the line search far from it.
+        ``"continuation"``
+            Picard :math:`\rightarrow` Newton. Blend
+            :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
+            - J_{\mathrm{picard}})` with :math:`\alpha` a ``constants[]``
+            parameter ramped :math:`0 \rightarrow 1` by a SNES monitor as the
+            residual drops. Picard locates the basin, Newton gives quadratic
+            convergence inside it (cf. Spiegelman et al. 2016; ASPECT
+            defect-correction-then-Newton). :math:`\alpha = 0` is bit-identical
+            to Picard, so no recompile is needed to switch.
+
+        The Newton flux for a model whose flux has a non-smooth yield kink is
+        the model's own smooth law (``constitutive_model.flux_jacobian``) when
+        it provides one; otherwise the exact unwrapped flux. See
+        ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+
+        Raises
+        ------
+        ValueError
+            On assignment of anything other than ``False``, ``True`` or
+            ``"continuation"``. Falsy values (``None``, ``0``, ``""``)
+            normalize to ``False`` (they already selected the Picard tangent).
+            Before validation, any other truthy value (``1``, ``"picard"``,
+            ``"Continuation"``) silently selected the full-Newton tangent.
+        """
+        return self._consistent_jacobian
+
+    @consistent_jacobian.setter
+    def consistent_jacobian(self, mode):
+        if not mode:
+            self._consistent_jacobian = False
+        elif mode is True or mode == "continuation":
+            self._consistent_jacobian = mode
+        else:
+            raise ValueError(
+                f"consistent_jacobian must be False, True or 'continuation'; "
+                f"got {mode!r}")
 
     def _jacobian_source(self, expr, newton_expr=None):
         """Prepare a residual flux for Jacobian differentiation.
@@ -289,7 +324,19 @@ class SolverBaseClass(uw_object):
         ``setFromOptions`` / nullspace attach) via
         :func:`underworld3.utilities.custom_mg.inject_custom_mg`. See
         :mod:`underworld3.utilities.custom_mg`.
+
+        .. deprecated:: 2026-07
+            This is the legacy **serial-only, finest-only-reduction,
+            single-field** path; the Stokes velocity-block support described
+            above is delivered by :meth:`set_custom_fmg`, which is the
+            canonical entry point (parallel-capable, BC-per-level reduction).
         """
+        import warnings
+        warnings.warn(
+            "set_custom_mg is deprecated (legacy serial-only, single-field "
+            "custom-MG path); use set_custom_fmg(coarse_meshes, "
+            "builder=..., field_id=...) instead",
+            DeprecationWarning, stacklevel=2)
         if kind not in ("barycentric", "rbf"):
             raise ValueError("kind must be 'barycentric' or 'rbf'")
         if not coarse_meshes:
@@ -297,6 +344,41 @@ class SolverBaseClass(uw_object):
         self._custom_mg = {"coarse_meshes": list(coarse_meshes),
                            "kind": kind, "verbose": verbose}
         self.is_setup = False
+
+    def set_custom_fmg(self, coarse_meshes, *, builder="barycentric",
+                       field_id=None, verbose=False):
+        r"""Drive geometric multigrid with a prolongation built from
+        ``coarse_meshes`` — the canonical custom-MG entry point.
+
+        Registers a BC-per-level reduced hierarchy on the solver so the next
+        :meth:`solve` builds and installs it (build-time injection). Works in
+        parallel and on the **Stokes velocity block** (pass ``field_id=0`` on a
+        saddle-point solver). This supersedes the legacy
+        :meth:`set_custom_mg` path (serial-only, finest-only reduction,
+        single-field).
+
+        Parameters
+        ----------
+        coarse_meshes : list of Mesh
+            Coarsest-first list of coarse meshes (the finest level is the
+            solver's own mesh). They need only carry the same boundary labels
+            as the solver's mesh.
+        builder : {"barycentric", "rbf"}, default "barycentric"
+            Prolongation builder. ``barycentric`` is FE-exact; ``rbf`` is a
+            polyharmonic RBF (Shepard-normalised).
+        field_id : int, optional
+            Target field for a multi-field (saddle-point) solver; ``0`` is the
+            Stokes velocity block. ``None`` (default) for single-field solvers.
+        verbose : bool, default False
+            Print the per-level DOF counts at injection.
+
+        See Also
+        --------
+        underworld3.utilities.custom_mg.set_custom_fmg : the implementation.
+        """
+        from underworld3.utilities.custom_mg import set_custom_fmg as _set_custom_fmg
+        _set_custom_fmg(self, coarse_meshes, builder=builder,
+                        field_id=field_id, verbose=verbose)
 
     def add_update_callback(self, callback):
         r"""Register a callback fired at the start of every nonlinear (SNES) iteration.
@@ -1447,12 +1529,12 @@ class SolverBaseClass(uw_object):
                   "sympy.Matrix, i.e. conds = sympy.Matrix([sympy.oo, 5, 1.2])\n")
 
         if isinstance(components, (tuple, list, int)):
-            # TODO: DECPRECATE
             import warnings
-            warnings.warn(category=DeprecationWarning,
-                          message="Using the 'components' argument is being DEPRECATED in the next release\n" +
-                                  "The same functionality can be setup with the 'conds' argument and using\n" +
-                                  "'sympy.oo' or 'None', see docstring")
+            warnings.warn(
+                "The 'components' argument is deprecated; select components "
+                "with None / sympy.oo entries in 'conds' instead, e.g. "
+                "conds=(None, 5, 1.2)",
+                DeprecationWarning, stacklevel=3)
             components = np.array(components, dtype=np.int32, ndmin=1)
 
         elif components is None:
@@ -1524,6 +1606,49 @@ class SolverBaseClass(uw_object):
             BC = namedtuple('EssentialBC', ['f_id', 'components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
             self.essential_bcs.append(BC(f_id, components,sympy_fn, label, -1,  'essential', -1))
 
+
+    def _value_first_bc_args(self, method, conds, boundary, alias=None,
+                             alias_name="g"):
+        """Normalize BC arguments to the canonical value-first order.
+
+        The canonical BC signature is ``method(conds, boundary, ...)`` with the
+        prescribed datum named ``conds`` (Style Charter, API conventions;
+        maintainer decisions D2/D3, 2026-07). Two legacy spellings are shimmed
+        here, each with exactly one DeprecationWarning:
+
+        * **boundary-first order** — detected conservatively: the first
+          positional argument is a string (a boundary label; a BC datum is
+          never a string — see :meth:`add_condition`) while the second is not.
+          The two arguments are swapped.
+        * **the** ``g=`` **keyword alias** for the datum — forwarded to
+          ``conds``. Supplying both ``conds`` and ``g`` is an error.
+
+        Returns the normalized ``(conds, boundary)`` pair; ``boundary`` is
+        required to be a string on exit.
+        """
+        legacy = False
+        if isinstance(conds, str) and not isinstance(boundary, str):
+            conds, boundary = boundary, conds
+            legacy = True
+        if alias is not None:
+            if conds is not None:
+                raise TypeError(
+                    f"{method}() received the boundary datum twice "
+                    f"(positionally and as '{alias_name}='); pass it once, "
+                    f"as 'conds'")
+            conds = alias
+            legacy = True
+        if legacy:
+            import warnings
+            warnings.warn(
+                f"{method}(boundary, {alias_name}=...) is deprecated; "
+                f"use {method}(conds, boundary, ...)",
+                DeprecationWarning, stacklevel=3)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"{method}() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        return conds, boundary
 
     # Use FE terminology note f_id is 0.
     @timing.routine_timer_decorator
@@ -2186,8 +2311,13 @@ class SolverBaseClass(uw_object):
         MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
         ``scale``. This is the field hand-off for downstream machinery (surface heat
         flux for coupling, or — with ``remove_mean=True`` and ``scale=-1/(\Delta\rho g)``
-        — dynamic topography). Returns ``field``."""
-        from underworld3.utilities.boundary_flux import boundary_flux_to_field as _bff
+        — dynamic topography). Returns ``field``.
+
+        Note that ``scale`` is a generic multiplier, NOT the ``buoyancy_scale``
+        taken by :meth:`dynamic_topography` / ``topography``: for topography the
+        relationship is ``scale = -1 / buoyancy_scale`` (there the division by
+        :math:`\Delta\rho\,g` and the minus sign are internal)."""
+        from underworld3.utilities.boundary_flux import boundary_flux_field as _bff
         return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
                     scale=scale, normal=normal)
 
@@ -3314,35 +3444,56 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, gamma=10.0, theta=1, local_h=True):
+    def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
+                       normal=None, gamma=10.0, theta=1, mask=None,
+                       local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         For vector solvers (no pressure field), this constrains
-        :math:`\mathbf{u} \cdot \mathbf{d} = g` on the boundary using
-        Nitsche's method with penalty, consistency, and symmetry terms.
+        :math:`\mathbf{u} \cdot \mathbf{d} = \mathrm{conds}` on the boundary
+        using Nitsche's method with penalty, consistency, and symmetry terms.
 
         Parameters
         ----------
+        conds : sympy expression or float, optional
+            Prescribed velocity along the constraint direction. Default zero
+            (free-slip when the direction is the surface normal).
         boundary : str
             Boundary label.
-        g : sympy expression or float, optional
-            Prescribed velocity along constraint direction. Default zero.
         direction : sympy.Matrix or list, optional
             Constraint direction. Default ``None`` uses surface normal.
+        normal : sympy.Matrix or list, optional
+            Boundary unit normal used in the Nitsche consistency and symmetry
+            terms — the same geometric-normal override as on the Stokes
+            variant. Default ``None`` uses the per-boundary,
+            deformation-tracking ``mesh.boundary_normal(boundary)``.
         gamma : float, default=10.0
             Dimensionless stabilisation parameter.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
+        mask : sympy expression, optional
+            Accepted for signature parity with the Stokes variant, but
+            one-sided masking is **not implemented** on vector solvers:
+            passing a mask raises ``NotImplementedError``.
         local_h : bool, default=True
             Scale the penalty by a local per-cell mesh size
             (:meth:`Mesh.cell_size`) rather than the global minimum
             (:meth:`Mesh.get_min_radius`). See
             ``SNES_Stokes_SaddlePt.add_nitsche_bc`` for details.
+        g : sympy expression or float, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Warnings
         --------
         Exterior boundaries only. See ``SNES_Stokes_SaddlePt.add_nitsche_bc``
         for details on why internal boundaries are not supported.
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_nitsche_bc(boundary, g=...)`` is
+        detected conservatively (first positional argument a string while the
+        second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see :meth:`_value_first_bc_args`.
 
         See Also
         --------
@@ -3350,6 +3501,16 @@ class SNES_Vector(SolverBaseClass):
         """
         import sympy
         from collections import namedtuple
+
+        conds, boundary = self._value_first_bc_args(
+            "add_nitsche_bc", conds, boundary, alias=g)
+        g = conds
+
+        if mask is not None:
+            raise NotImplementedError(
+                "mask= (one-sided internal-boundary application) is not "
+                "implemented on SNES_Vector.add_nitsche_bc; it is supported "
+                "on SNES_Stokes_SaddlePt.add_nitsche_bc only")
 
         self.is_setup = False
 
@@ -3361,10 +3522,17 @@ class SNES_Vector(SolverBaseClass):
         dim = mesh.cdim
 
         # Surface normal components — use this boundary's own deformation-
-        # tracking facet normal (see Mesh.boundary_normal); the legacy global
+        # tracking facet normal (see Mesh.boundary_normal) unless the caller
+        # overrides the geometric-normal source; the legacy global
         # mesh.Gamma_P1 stays radial on a deformed surface.
-        bnorm = mesh.boundary_normal(boundary)
-        n = [bnorm[i] for i in range(dim)]
+        if normal is not None:
+            if isinstance(normal, sympy.MatrixBase):
+                n = [normal[i] for i in range(dim)]
+            else:
+                n = list(normal)
+        else:
+            bnorm = mesh.boundary_normal(boundary)
+            n = [bnorm[i] for i in range(dim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
@@ -5167,7 +5335,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
     #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
 
-    def add_rotated_freeslip_bc(self, boundary, normal=None):
+    def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
         r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
         the boundary velocity DOFs into a per-node (normal, tangential) frame and
         imposing the rotated normal component as an exact Dirichlet constraint.
@@ -5181,6 +5349,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
+        conds : float or None, optional
+            Prescribed wall-normal velocity datum, in the canonical value-first
+            BC order (Style Charter, API conventions). Only the homogeneous
+            free-slip constraint :math:`\mathbf{u}\cdot\hat{\mathbf n}=0` is
+            implemented, so this must be zero (or ``None``, meaning zero); a
+            non-zero datum raises ``NotImplementedError`` (use
+            :meth:`add_nitsche_bc` or ``add_constraint_bc`` for prescribed
+            normal in/outflow).
         boundary : str
             Boundary label to constrain.
         normal : None or sympy 1×dim Matrix or array, optional
@@ -5197,7 +5373,38 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         face frees two tangential directions, a 3D edge frees one (the edge
         tangent), a corner is fully pinned. Registering delegates the solve to
         :mod:`underworld3.utilities.rotated_bc`.
+
+        The legacy boundary-first call ``add_rotated_freeslip_bc(boundary,
+        normal)`` is detected conservatively (the first positional argument is
+        a string — the datum is never a string) and shimmed with one
+        DeprecationWarning: the string becomes ``boundary`` and a second
+        positional argument, if present, becomes ``normal``.
         """
+        if isinstance(conds, str):
+            # legacy boundary-first call: (boundary[, normal])
+            if boundary is not None:
+                if normal is not None:
+                    raise TypeError(
+                        "add_rotated_freeslip_bc() received 'normal' twice "
+                        "(positionally, legacy order, and as a keyword)")
+                normal = boundary
+            boundary = conds
+            conds = None
+            import warnings
+            warnings.warn(
+                "add_rotated_freeslip_bc(boundary, normal) is deprecated; "
+                "use add_rotated_freeslip_bc(conds, boundary, normal=...) "
+                "with conds=0 (or boundary=... by keyword)",
+                DeprecationWarning, stacklevel=2)
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_rotated_freeslip_bc() requires a boundary label string; "
+                f"got {type(boundary).__name__}")
+        if conds is not None and sympy.sympify(conds) != 0:
+            raise NotImplementedError(
+                "add_rotated_freeslip_bc imposes u.n = 0 only; a non-zero "
+                "wall-normal datum is not implemented (use add_nitsche_bc or "
+                "add_constraint_bc for prescribed normal in/outflow)")
         self._rotated_freeslip_bcs.append((boundary, normal))
         self.is_setup = False
         return
@@ -5290,7 +5497,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return _dtf(self, boundary, self._rotated_freeslip_info, field,
                     buoyancy_scale=buoyancy_scale, mass=mass)
 
-    def add_nitsche_bc(self, boundary, g=None, direction=None, normal=None, gamma=10.0, theta=1, mask=None, local_h=True):
+    def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
+                       gamma=10.0, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -5298,9 +5506,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         and gives optimal convergence rates.
 
         By default, constrains the normal velocity component
-        :math:`\mathbf{u} \cdot \mathbf{n} = g` (free-slip when *g* = 0).
-        When *direction* is provided, constrains
-        :math:`\mathbf{u} \cdot \mathbf{d} = g` along that direction instead.
+        :math:`\mathbf{u} \cdot \mathbf{n} = \mathrm{conds}` (free-slip when
+        ``conds`` is zero). When *direction* is provided, constrains
+        :math:`\mathbf{u} \cdot \mathbf{d} = \mathrm{conds}` along that
+        direction instead.
 
         The method constructs boundary residuals and Jacobians for:
 
@@ -5313,11 +5522,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        boundary : str
-            Boundary label (e.g., ``"Upper"``, ``"Lower"``).
-        g : sympy expression or float, optional
+        conds : sympy expression or float, optional
             Prescribed velocity along the constraint direction. Default
             ``None`` means zero (:math:`\mathbf{u} \cdot \mathbf{d} = 0`).
+        boundary : str
+            Boundary label (e.g., ``"Upper"``, ``"Lower"``).
         direction : sympy.Matrix or list, optional
             Constraint direction vector. Default ``None`` uses the boundary
             surface normal (free-slip). Can be spatially varying (e.g.,
@@ -5347,18 +5556,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             adaptive mesh the local size scales the stabilisation correctly
             on every facet; on a uniform mesh the two coincide. Set ``False``
             to restore the legacy global-h behaviour exactly.
+        g : sympy expression or float, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Examples
         --------
         >>> # Free-slip (u.n = 0)
-        >>> stokes.add_nitsche_bc("Upper", gamma=10)
+        >>> stokes.add_nitsche_bc(0.0, "Upper", gamma=10)
 
         >>> # Prescribed normal inflow
-        >>> stokes.add_nitsche_bc("Left", g=1.0, gamma=10)
+        >>> stokes.add_nitsche_bc(1.0, "Left", gamma=10)
 
         >>> # Constrain along a specific direction (e.g. fault normal)
         >>> fault_normal = sympy.Matrix([0.6, 0.8])
-        >>> stokes.add_nitsche_bc("Fault", direction=fault_normal, gamma=10)
+        >>> stokes.add_nitsche_bc(0.0, "Fault", direction=fault_normal, gamma=10)
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_nitsche_bc(boundary, g=...)`` is
+        detected conservatively (first positional argument a string while the
+        second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see :meth:`_value_first_bc_args`.
 
         Warnings
         --------
@@ -5375,6 +5593,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         import sympy
         from collections import namedtuple
+
+        conds, boundary = self._value_first_bc_args(
+            "add_nitsche_bc", conds, boundary, alias=g)
+        g = conds
 
         self.is_setup = False
 

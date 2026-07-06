@@ -64,6 +64,13 @@ from .smoothing import (
     ADAPT_STRATEGIES,
 )
 
+from .bounding_surface import (
+    BoundingSurface,
+    register_radial_surfaces,
+    register_plane_surfaces,
+    register_box_face_surfaces,
+)
+
 # Make all functions available at module level for backward compatibility
 __all__ = [
     # Cartesian meshes
@@ -108,4 +115,9 @@ __all__ = [
     "mesh_metric_mismatch",
     "follow_metric",
     "ADAPT_STRATEGIES",
+    # Bounding surfaces (tangent-slip providers for deforming boundaries)
+    "BoundingSurface",
+    "register_radial_surfaces",
+    "register_plane_surfaces",
+    "register_box_face_surfaces",
 ]

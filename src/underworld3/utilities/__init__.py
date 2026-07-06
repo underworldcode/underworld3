@@ -84,3 +84,13 @@ from .unit_aware_array import (
 
 from . import retention_curves
 from . import memprobe
+
+# Solver-scoped capability modules (rotated strong free-slip, consistent
+# boundary-flux recovery, custom multigrid). Their documented entry points are
+# methods on the solvers, which lazy-import these implementations; exporting
+# the modules here makes the docstring cross-references resolvable without a
+# deep import (Style Charter, API conventions: namespaces).
+from . import rotated_bc
+from . import boundary_flux
+from . import custom_mg
+from .custom_mg import set_custom_fmg
