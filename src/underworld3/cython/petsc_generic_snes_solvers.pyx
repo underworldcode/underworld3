@@ -68,27 +68,8 @@ class SolverBaseClass(uw_object):
         self.compiled_extensions = None
         self.constants_manifest = []
 
-        # Jacobian tangent selection: False | True | "continuation".
-        #
-        #   False (default): differentiate the residual flux *as wrapped* — the
-        #     effective viscosity is frozen, giving a Picard / defect-correction
-        #     tangent. BIT-IDENTICAL to the long-standing behaviour. Globally
-        #     robust; load-bearing for the tuned hard-yield viscoplastic paths.
-        #   True: unwrap the flux before differentiation so the tangent captures
-        #     d(eta)/d(grad v) (full Newton). Fast near the solution; its yield
-        #     kink can stall the line search far from it.
-        #   "continuation": Picard -> Newton. Blend J(alpha) = J_picard +
-        #     alpha*(J_newton - J_picard) with alpha a constants[] parameter
-        #     ramped 0 -> 1 by a SNES monitor as the residual drops. Picard
-        #     locates the basin, Newton gives quadratic convergence inside it
-        #     (cf. Spiegelman et al. 2016; ASPECT defect-correction-then-Newton).
-        #     alpha=0 is bit-identical to Picard, so no recompile to switch.
-        #
-        # The Newton flux for a model whose flux has a non-smooth yield kink is
-        # the model's own smooth law (constitutive_model.flux_jacobian) when it
-        # provides one; otherwise the exact unwrapped flux.
-        #
-        # See docs/developer/design/jacobian-unwrap-constants-bug.md.
+        # Jacobian tangent selection — validated property, see the
+        # consistent_jacobian docstring below for the mode semantics.
         self.consistent_jacobian = False
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
@@ -156,6 +137,60 @@ class SolverBaseClass(uw_object):
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
         self._custom_mg = None
+
+    @property
+    def consistent_jacobian(self):
+        r"""Jacobian tangent selection: ``False`` | ``True`` | ``"continuation"``.
+
+        Selects the tangent used by :meth:`_jacobian_source` and the solve
+        dispatch; the residual is never affected, so the converged solution
+        always satisfies the exact constitutive law.
+
+        ``False`` (default)
+            Differentiate the residual flux *as wrapped* — the effective
+            viscosity is frozen, giving a Picard / defect-correction tangent.
+            Bit-identical to the long-standing behaviour. Globally robust;
+            load-bearing for the tuned hard-yield viscoplastic paths.
+        ``True``
+            Unwrap the flux before differentiation so the tangent captures
+            :math:`\partial\eta/\partial(\nabla v)` (full Newton). Fast near
+            the solution; its yield kink can stall the line search far from it.
+        ``"continuation"``
+            Picard :math:`\rightarrow` Newton. Blend
+            :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
+            - J_{\mathrm{picard}})` with :math:`\alpha` a ``constants[]``
+            parameter ramped :math:`0 \rightarrow 1` by a SNES monitor as the
+            residual drops. Picard locates the basin, Newton gives quadratic
+            convergence inside it (cf. Spiegelman et al. 2016; ASPECT
+            defect-correction-then-Newton). :math:`\alpha = 0` is bit-identical
+            to Picard, so no recompile is needed to switch.
+
+        The Newton flux for a model whose flux has a non-smooth yield kink is
+        the model's own smooth law (``constitutive_model.flux_jacobian``) when
+        it provides one; otherwise the exact unwrapped flux. See
+        ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
+
+        Raises
+        ------
+        ValueError
+            On assignment of anything other than ``False``, ``True`` or
+            ``"continuation"``. Falsy values (``None``, ``0``, ``""``)
+            normalize to ``False`` (they already selected the Picard tangent).
+            Before validation, any other truthy value (``1``, ``"picard"``,
+            ``"Continuation"``) silently selected the full-Newton tangent.
+        """
+        return self._consistent_jacobian
+
+    @consistent_jacobian.setter
+    def consistent_jacobian(self, mode):
+        if not mode:
+            self._consistent_jacobian = False
+        elif mode is True or mode == "continuation":
+            self._consistent_jacobian = mode
+        else:
+            raise ValueError(
+                f"consistent_jacobian must be False, True or 'continuation'; "
+                f"got {mode!r}")
 
     def _jacobian_source(self, expr, newton_expr=None):
         """Prepare a residual flux for Jacobian differentiation.
