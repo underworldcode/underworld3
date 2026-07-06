@@ -4151,20 +4151,20 @@ class Swarm(Stateful, uw_object):
         swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
 
         if migrate:
-            # Rank 0 reads the saved coordinates; the other ranks stage no
-            # points and migration routes each particle to the rank that
-            # owns its location. Reading the full dataset on every rank and
-            # then migrating restores one copy of the swarm per rank —
-            # migration is a scatter with no deduplication (issue #324).
-            # Same rank-0 routed-read design as SwarmVariable.read_timestep.
-            if uw.mpi.rank == 0:
-                with h5py.File(f"{swarm_file}", "r") as h5f:
-                    coordinates = h5f["coordinates"][:]
-            else:
-                coordinates = np.empty((0, self.mesh.cdim), dtype=np.float64)
+            # Keep-local restore: every rank reads the saved coordinates
+            # (plain read-only h5py) and add_particles_with_coordinates
+            # keeps only the points this rank owns — no communication, no
+            # rank-0 memory hotspot. The cost is np-fold read amplification,
+            # which scalable/striped parallel filesystems absorb, so this is
+            # the right default; rank-0-routed reading remains the pattern
+            # in SwarmVariable.read_timestep pending its own reconsideration.
+            # Reading everywhere and inserting via the *global* method with
+            # migration restores one copy of the swarm per rank — migration
+            # is a scatter with no deduplication (issue #324).
+            with h5py.File(f"{swarm_file}", "r") as h5f:
+                coordinates = h5f["coordinates"][:]
 
-            self.add_particles_with_global_coordinates(coordinates, migrate=False)
-            self.migrate(remove_sent_points=True, delete_lost_points=True)
+            self.add_particles_with_coordinates(coordinates)
         else:
             # No migration: every rank keeps a full copy of the saved swarm.
             # Skipping migration also preserves points that fall outside the
