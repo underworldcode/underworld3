@@ -504,8 +504,9 @@ def _edge_pairs(dm):
 
 
 def _winslow_spring(mesh, metric, pinned_labels, verbose,
-                    n_sweeps=300, relax=None, step_frac=None,
-                    boundary_slip=False, shape_w=1.0, size_w=8.0):
+                    max_cg_iters=300,
+                    boundary_slip=False, shape_w=1.0, size_w=8.0,
+                    n_sweeps=None):
     r"""Metric-driven mesh grading by elastic-spring equilibrium.
 
     Every mesh edge is a linear spring whose *rest length* is set
@@ -540,12 +541,20 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
     the mean edge length ⇒ only a benign mild regularisation toward
     uniform spacing (no grading change).
 
-    ``n_sweeps`` caps the CG iterations (CG converges far faster
-    than the old Jacobi sweep budget). ``relax`` / ``step_frac`` are
-    unused on the equilibrium path (the CG line search controls the
-    step and the inversion guard) and are kept only for signature
-    stability. ``n_iters`` / ``alpha`` do not apply.
+    ``max_cg_iters`` caps the CG iterations (CG converges far faster
+    than the old Jacobi sweep budget); ``n_sweeps`` is its deprecated
+    former name, accepted for one cycle with a DeprecationWarning.
+    The old ``relax`` / ``step_frac`` parameters were unused on the
+    equilibrium path (the CG line search controls the step and the
+    inversion guard) and have been removed. ``n_iters`` / ``alpha``
+    do not apply.
     """
+    if n_sweeps is not None:
+        warnings.warn(
+            "the 'n_sweeps' argument is renamed; use max_cg_iters= "
+            "(it caps the nonlinear-CG iterations, not Jacobi sweeps)",
+            DeprecationWarning, stacklevel=2)
+        max_cg_iters = n_sweeps
     pinned_labels = tuple(pinned_labels)
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
@@ -738,7 +747,7 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
         dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
     t0 = 0.5 * L0_mean / dmax
     c_arm = 1.0e-4
-    max_iter = int(n_sweeps)
+    max_iter = int(max_cg_iters)
     for it in range(max_iter):
         gnorm = _allsum((G * G).sum()) ** 0.5
         if gnorm <= 1.0e-8 * g0:
