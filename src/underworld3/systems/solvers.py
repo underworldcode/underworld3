@@ -175,14 +175,23 @@ class SNES_Poisson(SNES_Scalar):
         The computational mesh.
     u_Field : MeshVariable, optional
         Pre-existing mesh variable for the solution. If None, one is created.
-    verbose : bool, optional
-        Enable verbose output during solve.
     degree : int, optional
         Polynomial degree for the solution field (default: 2).
+    verbose : bool, optional
+        Enable verbose output during solve.
     DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for time-dependent problems.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
+
+    Notes
+    -----
+    The constructor follows the family-wide parameter order
+    ``(mesh, u_Field, degree, verbose, ...)`` (Style Charter, API
+    conventions); SNES_Poisson historically inverted ``(verbose, degree)``.
+    A legacy positional call is detected by ``type(degree) is bool`` (a
+    polynomial degree is never a bool) and shimmed with one
+    DeprecationWarning.
 
     """
 
@@ -191,12 +200,22 @@ class SNES_Poisson(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
-        verbose=False,
         degree=2,
+        verbose=False,
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
-        ## Keep track
+        if type(degree) is bool:
+            # Legacy positional order (mesh, u_Field, verbose, degree): the
+            # bool in the degree slot is the legacy verbose flag; a legacy
+            # positional degree, if present, landed in the verbose slot.
+            import warnings
+            warnings.warn(
+                "SNES_Poisson(mesh, u_Field, verbose, degree) is deprecated; "
+                "use SNES_Poisson(mesh, u_Field, degree, verbose)",
+                DeprecationWarning, stacklevel=2)
+            degree, verbose = (
+                verbose if type(verbose) is not bool else 2), degree
 
         ## Parent class will set up default values etc
         super().__init__(
