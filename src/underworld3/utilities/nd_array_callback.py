@@ -421,9 +421,9 @@ class NDArray_With_Callback(np.ndarray):
 
         Example
         -------
-        >>> with NDArray_With_Callback.delay_callbacks_global("mesh update"):
-        ...     mesh.data[0] = new_pos
-        ...     swarm.data += displacement
+        >>> with NDArray_With_Callback.delay_callbacks_global("field update"):
+        ...     temperature.array[...] = new_T
+        ...     material.array[...] = new_material
         # All callbacks from all arrays fire here
         """
 

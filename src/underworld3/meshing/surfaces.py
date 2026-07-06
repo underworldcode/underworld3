@@ -2122,7 +2122,8 @@ class SurfaceCollection:
 
         Args:
             mesh: The mesh to transfer normals to
-            coords: Optional coordinates to query. If None, uses mesh.data
+            coords: Optional coordinates to query. If None, uses the mesh's
+                own vertex coordinates (model space)
             normal_var: Optional existing MeshVariable
             variable_name: Name for new variable
 

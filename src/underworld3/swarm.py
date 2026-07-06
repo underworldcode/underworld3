@@ -317,7 +317,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         # add to swarms dict
 
         self.swarm._vars[self.clean_name] = self
-        self._is_accessed = False
 
         # Initialize proxy flags first before creating proxy variable
         self._updating_proxy = False  # Flag to prevent recursive proxy updates
@@ -1230,19 +1229,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         # Use cached KDTree for interpolation (avoids redundant index construction)
         kd = meshVar._get_kdtree()
 
-        with self.swarm.access():
-            d, n = kd.query(self.swarm.data, k=1, sqr_dists=False)  # need actual distances
+        d, n = kd.query(self.swarm.data, k=1, sqr_dists=False)  # need actual distances
 
-            node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
-            w = np.zeros(meshVar.coords.shape[0])
+        node_values = np.zeros((meshVar.coords.shape[0], self.num_components))
+        w = np.zeros(meshVar.coords.shape[0])
 
-            if not self._nn_proxy:
-                for i in range(self.local_size):
-                    # if b[i]:
-                    node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
-                    w[n[i]] += 1.0 / (1.0e-24 + d[i])
+        if not self._nn_proxy:
+            for i in range(self.local_size):
+                # if b[i]:
+                node_values[n[i], :] += self.data[i, :] / (1.0e-24 + d[i])
+                w[n[i]] += 1.0 / (1.0e-24 + d[i])
 
-                node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(-1, 1)
+            node_values[np.where(w > 0.0)[0], :] /= w[np.where(w > 0.0)[0]].reshape(-1, 1)
 
         # 2 - set NN vals on mesh var where w == 0.0
 
@@ -4594,147 +4592,6 @@ class Swarm(Stateful, uw_object):
             # that garbage (exposed by the SWARM-01 invalidation fix).
             var.data[...] = saved
 
-    def _legacy_access(self, *writeable_vars: SwarmVariable):
-        """
-        This context manager makes the underlying swarm variables data available to
-        the user. The data should be accessed via the variables `data` handle.
-
-        As default, all data is read-only. To enable writeable data, the user should
-        specify which variable they wish to modify.
-
-        At the conclusion of the users context managed block, numerous further operations
-        will be automatically executed. This includes swarm parallel migration routines
-        where the swarm's `particle_coordinates` variable has been modified. The swarm
-        variable proxy mesh variables will also be updated for modifed swarm variables.
-
-        Parameters
-        ----------
-        writeable_vars
-            The variables for which data write access is required.
-
-        Example
-        -------
-
-        >>> import underworld3 as uw
-        >>> someMesh = uw.discretisation.FeMesh_Cartesian()
-        >>> with someMesh._deform_mesh():
-        ...     someMesh.data[0] = [0.1,0.1]
-        >>> someMesh.data[0]
-        array([ 0.1,  0.1])
-        """
-        import time
-
-        uw.timing._incrementDepth()
-        stime = time.time()
-
-        deaccess_list = []
-        for var in self._vars.values():
-            # if already accessed within higher level context manager, continue.
-            if var._is_accessed == True:
-                continue
-            # set flag so variable status can be known elsewhere
-            var._is_accessed = True
-            # add to de-access list to rewind this later
-            deaccess_list.append(var)
-            # grab numpy object, setting read only if necessary
-            var._data = self.dm.getField(var.clean_name).reshape((-1, var.num_components))
-            assert var._data is not None
-            if var not in writeable_vars:
-                var._old_data_flag = var._data.flags.writeable
-                var._data.flags.writeable = False
-            else:
-                # increment variable state
-                var._increment()
-
-            # make *view* for each var component
-            if var._proxy:
-                for i in range(0, var.shape[0]):
-                    for j in range(0, var.shape[1]):
-                        var._data_container[i, j] = var._data_container[i, j]._replace(
-                            data=var._data[:, var._data_layout(i, j)],
-                        )
-
-        # if particles moving, update swarm state
-        if self._particle_coordinates in writeable_vars:
-            self._increment()
-
-        # Create a class which specifies the required context
-        # manager hooks (`__enter__`, `__exit__`).
-        class exit_manager:
-            def __init__(self, swarm):
-                self.em_swarm = swarm
-
-            def __enter__(self):
-
-                pass
-
-            def __exit__(self, *args):
-
-                for var in self.em_swarm.vars.values():
-                    # only de-access variables we have set access for.
-                    if var not in deaccess_list:
-                        continue
-                    # set this back, although possibly not required.
-                    if var not in writeable_vars:
-                        var._data.flags.writeable = var._old_data_flag
-                    var._data = None
-                    self.em_swarm.dm.restoreField(var.clean_name)
-                    var._is_accessed = False
-                # do particle migration if coords changes
-
-                if self.em_swarm._particle_coordinates in writeable_vars:
-                    # let's use the mesh index to update the particles owning cells.
-                    # note that the `petsc4py` interface is more convenient here as the
-                    # `SwarmVariable.data` interface is controlled by the context manager
-                    # that we are currently within, and it is therefore too easy to
-                    # get things wrong that way.
-                    #
-                    #
-
-                    # if uw.mpi.size > 1:
-                    #     coords = self.em_swarm.dm.getField("DMSwarmPIC_coor").reshape(
-                    #         (-1, self.em_swarm.dim)
-                    #     )
-
-                    #     self.em_swarm.dm.restoreField("DMSwarmPIC_coor")
-
-                    #     ## We'll need to identify the new processes here and update the particle rank value accordingly
-                    #
-
-                    # Even if only on one process, migrate needs to be called to remove particles that are
-                    # not in the domain.
-
-                    self.em_swarm.migrate(
-                        remove_sent_points=True,
-                        delete_lost_points=self.em_swarm._clip_to_mesh,
-                    )
-
-                    # void these things too
-                    self.em_swarm._index = None
-                    self.em_swarm._nnmapdict = {}
-
-                # do var updates
-                for var in self.em_swarm.vars.values():
-                    # if swarm migrated, update all.
-                    # if var updated, update var.
-                    if (self.em_swarm._particle_coordinates in writeable_vars) or (
-                        var in writeable_vars
-                    ):
-                        var._update()
-
-                    if var._proxy:
-                        for i in range(0, var.shape[0]):
-                            for j in range(0, var.shape[1]):
-                                # var._data_ij[i, j] = None
-                                var._data_container[i, j] = var._data_container[i, j]._replace(
-                                    data=f"SwarmVariable[...].data is only available within mesh.access() context",
-                                )
-
-                uw.timing._decrementDepth()
-                uw.timing.log_result(time.time() - stime, "Swarm.access", 1)
-
-        return exit_manager(self)
-
     def access(self, *writeable_vars: SwarmVariable):
         """
         Dummy access manager that provides deferred sync for backward compatibility.
@@ -5176,9 +5033,8 @@ class NodalPointSwarm(Swarm):
 
         nswarm.dm.migrate(remove_sent_points=True)
 
-        with nswarm.access(nX0, nI0):
-            nX0.data[:, :] = coords
-            nI0.data[:, 0] = range(0, coords.shape[0])
+        nX0.data[:, :] = coords
+        nI0.data[:, 0] = range(0, coords.shape[0])
 
         self._nswarm = nswarm
         self._nX0 = nX0
@@ -5199,11 +5055,9 @@ class NodalPointSwarm(Swarm):
         step_limit=True,
     ):
 
-        with self.access(self._X0):
-            self._X0.data[...] = self._nX0.data[...]
+        self._X0.data[...] = self._nX0.data[...]
 
-        with self.access(self._nR0):
-            self._nR0.data[...] = uw.mpi.rank
+        self._nR0.data[...] = uw.mpi.rank
 
         super().advection(
             V_fn,
