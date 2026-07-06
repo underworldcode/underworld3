@@ -3358,7 +3358,8 @@ class SNES_Vector(SolverBaseClass):
 
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
-                       gamma=10.0, theta=1, local_h=True, g=None):
+                       normal=None, gamma=10.0, theta=1, mask=None,
+                       local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         For vector solvers (no pressure field), this constrains
@@ -3374,10 +3375,19 @@ class SNES_Vector(SolverBaseClass):
             Boundary label.
         direction : sympy.Matrix or list, optional
             Constraint direction. Default ``None`` uses surface normal.
+        normal : sympy.Matrix or list, optional
+            Boundary unit normal used in the Nitsche consistency and symmetry
+            terms — the same geometric-normal override as on the Stokes
+            variant. Default ``None`` uses the per-boundary,
+            deformation-tracking ``mesh.boundary_normal(boundary)``.
         gamma : float, default=10.0
             Dimensionless stabilisation parameter.
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
+        mask : sympy expression, optional
+            Accepted for signature parity with the Stokes variant, but
+            one-sided masking is **not implemented** on vector solvers:
+            passing a mask raises ``NotImplementedError``.
         local_h : bool, default=True
             Scale the penalty by a local per-cell mesh size
             (:meth:`Mesh.cell_size`) rather than the global minimum
@@ -3409,6 +3419,12 @@ class SNES_Vector(SolverBaseClass):
             "add_nitsche_bc", conds, boundary, alias=g)
         g = conds
 
+        if mask is not None:
+            raise NotImplementedError(
+                "mask= (one-sided internal-boundary application) is not "
+                "implemented on SNES_Vector.add_nitsche_bc; it is supported "
+                "on SNES_Stokes_SaddlePt.add_nitsche_bc only")
+
         self.is_setup = False
 
         mesh = self.mesh
@@ -3419,10 +3435,17 @@ class SNES_Vector(SolverBaseClass):
         dim = mesh.cdim
 
         # Surface normal components — use this boundary's own deformation-
-        # tracking facet normal (see Mesh.boundary_normal); the legacy global
+        # tracking facet normal (see Mesh.boundary_normal) unless the caller
+        # overrides the geometric-normal source; the legacy global
         # mesh.Gamma_P1 stays radial on a deformed surface.
-        bnorm = mesh.boundary_normal(boundary)
-        n = [bnorm[i] for i in range(dim)]
+        if normal is not None:
+            if isinstance(normal, sympy.MatrixBase):
+                n = [normal[i] for i in range(dim)]
+            else:
+                n = list(normal)
+        else:
+            bnorm = mesh.boundary_normal(boundary)
+            n = [bnorm[i] for i in range(dim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
