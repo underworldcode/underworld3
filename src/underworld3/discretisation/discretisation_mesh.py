@@ -2984,9 +2984,8 @@ class Mesh(Stateful, uw_object):
             # traverse subdms, taking user generated data in the subdm
             # local vec, pushing it into a global sub vec
             for var, subiset, subdm in zip(self.vars.values(), isets, dms):
-                # Use access pattern to ensure vector is available
-                with self.access(var):
-                    lvec = var.vec
+                # var.vec lazily creates the PETSc local vector on first access
+                lvec = var.vec
                 subvec = a_global.getSubVector(subiset)
                 subdm.localToGlobal(lvec, subvec, addv=False)
                 a_global.restoreSubVector(subiset, subvec)

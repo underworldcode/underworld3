@@ -147,7 +147,7 @@ def _evaluate_impl(
     --------
     >>> # Works with both dimensional and non-dimensional coords
     >>> result = uw.function.evaluate(T.sym, T.coords)  # dimensional coords
-    >>> result = uw.function.evaluate(T.sym, mesh.data[:, :2])  # non-dimensional
+    >>> result = uw.function.evaluate(T.sym, mesh.X.coords[:, :2])  # non-dimensional
     >>> if hasattr(result, 'to'):
     ...     result_K = result.to('K')  # Unit conversion
     """
