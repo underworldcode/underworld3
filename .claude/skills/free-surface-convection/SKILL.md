@@ -32,7 +32,7 @@ Two Stokes solves per step on the SAME mesh, then a pointwise surface update:
    pinned by the stress-free condition → no pressure nullspace). The surface
    normal velocity `u_n` of this solve IS the kinematic rate `ḣ`.
 2. **Held-lid solve** — a second Stokes solve with a RIGID free-slip held lid
-   (`u_n = 0`, via `add_nitsche_bc(Upper, local_h=True)` — see [[project_nitsche_local_h_pr275]])
+   (`u_n = 0`, via `add_nitsche_bc(0.0, "Upper", local_h=True)` — see [[project_nitsche_local_h_pr275]])
    and a DRIVING-ONLY body force. Its surface normal stress `σ_nn` gives the
    equilibrium topography `h_∞ = -(σ_nn - mean)/ρg`. (The free solve forces
    `σ_nn = 0`, so the equilibrium MUST come from the held-lid stress.)

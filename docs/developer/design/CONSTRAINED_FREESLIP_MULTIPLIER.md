@@ -97,7 +97,7 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = mu
 stokes.bodyforce = buoyancy * unit_r
 stokes.add_dirichlet_bc((0.0, 0.0), "Lower")            # no-slip inner
 
-lam = stokes.add_constraint_bc("Upper", g=0.0)          # free-slip outer (Gamma_P1)
+lam = stokes.add_constraint_bc(0.0, "Upper")            # free-slip outer (Gamma_P1)
 stokes.solve()                                          # no constraint tuning needed
 
 topo = stokes.topography("Upper", buoyancy_scale=delta_rho_g)   # h = lambda/(drho g)
@@ -122,7 +122,7 @@ Key design points:
 - **Coupling registered once.** The boundary residual/Jacobian
   (`λ·n`, the AL stiffness `r(n⊗n)`, and the `uλ`/`λu` couplings) are registered
   a single time; nothing recompiles between solves.
-- **`add_constraint_bc(boundary, g=0, normal=None, augmentation=None)`** —
+- **`add_constraint_bc(conds, boundary, normal=None, augmentation=None)`** (value-first, Style Charter API conventions) —
   `normal` defaults to the smooth projected normals `mesh.Gamma_P1`;
   `augmentation` defaults to a viscosity-scaled `r = 10⁴·μ`.
 

@@ -49,10 +49,10 @@ def _solve():
     # aligned split at np=2 this puts one axis-aligned pair (Left/Right or
     # Bottom/Top) with all points on one rank and zero on the other — the
     # exact configuration that triggered #291's SIGSEGV.
-    s.add_constraint_bc("Left",   g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))
-    s.add_constraint_bc("Right",  g=0.0, normal=sympy.Matrix([[ 1.0, 0.0]]))
-    s.add_constraint_bc("Bottom", g=0.0, normal=sympy.Matrix([[ 0.0,-1.0]]))
-    s.add_constraint_bc("Top",    g=0.0, normal=sympy.Matrix([[ 0.0, 1.0]]))
+    s.add_constraint_bc(0.0, "Left",   normal=sympy.Matrix([[-1.0, 0.0]]))
+    s.add_constraint_bc(0.0, "Right",  normal=sympy.Matrix([[ 1.0, 0.0]]))
+    s.add_constraint_bc(0.0, "Bottom", normal=sympy.Matrix([[ 0.0,-1.0]]))
+    s.add_constraint_bc(0.0, "Top",    normal=sympy.Matrix([[ 0.0, 1.0]]))
     s.petsc_use_pressure_nullspace = True
     s.tolerance = 1.0e-8
     s.solve()

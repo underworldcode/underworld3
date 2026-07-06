@@ -241,8 +241,8 @@ def _solve_freeslip(mesh, method, gamma=10.0):
         stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
     else:
         local = method == "nitsche_local"
-        stokes.add_nitsche_bc("Top", gamma=gamma, local_h=local)
-        stokes.add_nitsche_bc("Bottom", gamma=gamma, local_h=local)
+        stokes.add_nitsche_bc(0.0, "Top", gamma=gamma, local_h=local)
+        stokes.add_nitsche_bc(0.0, "Bottom", gamma=gamma, local_h=local)
     stokes.tolerance = 1e-8
     stokes.petsc_options["snes_type"] = "ksponly"
     stokes.petsc_options["ksp_type"] = "fgmres"

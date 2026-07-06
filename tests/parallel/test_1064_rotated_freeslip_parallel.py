@@ -86,7 +86,7 @@ def _box_diagnostics():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -112,8 +112,8 @@ def _annulus_diagnostics():
     s.bodyforce = sympy.Matrix([[x / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0,
                                  y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
     nhat = sympy.Matrix([[x / r, y / r]])
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.tolerance = 1e-9
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
@@ -145,8 +145,8 @@ def _spherical3d_diagnostics():
     ylm = (3 * (z / r) ** 2 - 1) / 2
     s.bodyforce = ylm * (r - RI) * (RO - r) * 20.0 / r * sympy.Matrix([[x, y, z]])
     nhat = sympy.Matrix([[x / r, y / r, z / r]])
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.tolerance = 1e-7
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
@@ -179,8 +179,8 @@ def _annulus_fmg_diagnostics():
     s.bodyforce = sympy.Matrix([[x / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0,
                                  y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
     nhat = sympy.Matrix([[x / r, y / r]])
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.tolerance = 1e-9
     s.saddle_preconditioner = 1.0
     s.petsc_use_pressure_nullspace = True
@@ -222,7 +222,7 @@ def _box_nonlinear_diagnostics():
     s.petsc_use_pressure_nullspace = True
     s.consistent_jacobian = True                 # Newton tangent (few iterations)
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.solve()
 
     L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
@@ -247,7 +247,7 @@ def _box_sigma_diagnostics():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -291,7 +291,7 @@ def _box_topography_bdl2():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()

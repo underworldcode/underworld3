@@ -56,7 +56,7 @@ def test_rotated_freeslip_box_reproduces_essential():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -89,8 +89,8 @@ def test_rotated_freeslip_spherical_shell_3d():
     g = (r - RI) * (RO - r) * 20.0
     s.bodyforce = ylm * g / r * sympy.Matrix([[x, y, z]])
     nhat = sympy.Matrix([[x / r, y / r, z / r]])
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.tolerance = 1e-7
@@ -136,8 +136,8 @@ def test_rotated_freeslip_annulus_zero_leakage():
     s.bodyforce = sympy.Matrix([[x / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0,
                                  y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
     nhat = sympy.Matrix([[x / r, y / r]])
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -179,7 +179,7 @@ def test_rotated_freeslip_geometric_fmg_velocity_block():
     s.bodyforce = sol.fn_bodyforce
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
@@ -212,7 +212,7 @@ def test_rotated_freeslip_boundary_normal_traction_solcx():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -247,7 +247,7 @@ def test_rotated_freeslip_sigma_nn_lumped_no_overshoot():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -322,7 +322,7 @@ def test_rotated_freeslip_nonlinear_matches_essential(plaw_box_ref):
     mesh, vE, _ = plaw_box_ref
     s, vR, pR = _powerlaw_stokes(mesh, "nlP")           # default (Picard) tangent
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.solve()
     info = s._rotated_freeslip_info
     assert info["nonlinear_iterations"] > 1, "rotated solve did not genuinely iterate"
@@ -344,7 +344,7 @@ def test_rotated_freeslip_newton_tangent(plaw_box_ref):
     mesh, vE, ess_its = plaw_box_ref
     s, vR, pR = _powerlaw_stokes(mesh, "ntR", cj=True)
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.solve()
     its = s._rotated_freeslip_info["nonlinear_iterations"]
     assert its <= 2 * ess_its + 2, (
@@ -362,7 +362,7 @@ def test_rotated_freeslip_continuation_tangent(plaw_box_ref):
     mesh, vE, _ = plaw_box_ref
     s, vR, pR = _powerlaw_stokes(mesh, "ctR", cj="continuation")
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.solve()
     info = s._rotated_freeslip_info
     assert info["continuation_switched"], "continuation never switched Picard→Newton"
@@ -372,7 +372,7 @@ def test_rotated_freeslip_continuation_tangent(plaw_box_ref):
     # picard=N holds the α=0 (Picard) phase for >= N iterations before switching
     s2, _, _ = _powerlaw_stokes(mesh, "ctR2", cj="continuation")
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s2.add_rotated_freeslip_bc(wall)
+        s2.add_rotated_freeslip_bc(0, wall)
     s2.solve(picard=25)
     assert s2._rotated_freeslip_info["nonlinear_iterations"] >= 25, (
         "picard did not extend the continuation Picard phase")
@@ -386,7 +386,7 @@ def test_rotated_freeslip_picard_newton_unsupported_raises(plaw_box_ref):
     mesh, _, _ = plaw_box_ref
     s, v, p = _powerlaw_stokes(mesh, "prN", cj=True)
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     with pytest.raises(NotImplementedError, match="continuation"):
         s.solve(picard=3)
 
@@ -398,7 +398,7 @@ def test_rotated_freeslip_nonlinear_warm_start(plaw_box_ref):
     mesh, vE, _ = plaw_box_ref
     s, vR, pR = _powerlaw_stokes(mesh, "wsR", cj=True)     # Newton (fast)
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.solve()                              # cold
     s.solve(zero_init_guess=False)         # warm (step 2)
     assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-6
@@ -421,7 +421,7 @@ def test_rotated_freeslip_nonlinear_geometric_fmg():
 
     s, vR, pR = _powerlaw_stokes(fine, "nlfR", cj=True)
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
     s.solve()
 
@@ -454,8 +454,8 @@ def test_rotated_freeslip_nonlinear_annulus_zero_leakage():
                                  y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
     nhat = sympy.Matrix([[x / r, y / r]])
     s.consistent_jacobian = True                 # Newton tangent (few iterations)
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.petsc_use_pressure_nullspace = True
     s.tolerance = 1e-7
     s.solve()
@@ -491,7 +491,7 @@ def test_rotated_freeslip_dynamic_topography_field():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
