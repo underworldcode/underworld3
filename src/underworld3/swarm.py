@@ -397,7 +397,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             Array object with callback for automatic PETSc synchronization
         """
         if initial_data is None:
-            initial_data = self.unpack_uw_data_from_petsc(squeeze=False, sync=True)
+            initial_data = self.unpack_uw_data_from_petsc(squeeze=False)
 
         # Create NDArray_With_Callback (following swarm._points pattern)
         array_obj = uw.utilities.NDArray_With_Callback(
@@ -432,7 +432,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 return
 
             # Persist changes to PETSc (like swarm callback updates coordinates)
-            var.pack_uw_data_to_petsc(array, sync=True)
+            var.pack_uw_data_to_petsc(array)
 
         # Register the callback (following swarm.points pattern)
         array_obj.add_callback(variable_update_callback)
@@ -457,7 +457,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         """
         if initial_data is None:
             # Use unpack_raw to get flat format (-1, num_components)
-            initial_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=True)
+            initial_data = self.unpack_raw_data_from_petsc(squeeze=False)
 
             # Handle case where unpack returns None (swarm not initialized)
             if initial_data is None:
@@ -504,7 +504,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 canonical_array = canonical_array.reshape(-1, self.num_components)
 
             # STEP 1: Sync to PETSc using established method with correct shape
-            self.pack_raw_data_to_petsc(canonical_array, sync=True)
+            self.pack_raw_data_to_petsc(canonical_array)
 
             # Coordinate writes may strand particles on the wrong rank. Mark
             # the swarm for DEFERRED migration — migrate() itself is
@@ -1271,7 +1271,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
     #     return
 
-    def pack_uw_data_to_petsc(self, data_array, sync=True):
+    @staticmethod
+    def _warn_deprecated_sync(sync):
+        """One-cycle keyword shim for the removed no-op ``sync=`` argument on
+        the four pack/unpack methods (it never had an effect)."""
+        if sync is not None:
+            import warnings
+            warnings.warn(
+                "the 'sync' argument never had an effect and is deprecated; "
+                "remove it",
+                DeprecationWarning, stacklevel=3)
+
+    def pack_uw_data_to_petsc(self, data_array, sync=None):
         """
         Enhanced pack method that directly accesses PETSc field without access() context.
         Designed for the new swarmVariable.array interface.
@@ -1280,9 +1291,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         data_array : numpy.ndarray
             Array data to pack into PETSc field
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
         """
+        self._warn_deprecated_sync(sync)
         shape = self.shape
         data_array_3d = data_array.reshape(-1, *self.shape)
 
@@ -1301,11 +1313,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
             # Update the proxy mesh variable if one exists (for integral calculations)
             self._update()
-
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
 
         finally:
             # Always restore the field
@@ -1334,7 +1341,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     #     else:
     #         return data_array_3d
 
-    def unpack_uw_data_from_petsc(self, squeeze=True, sync=True):
+    def unpack_uw_data_from_petsc(self, squeeze=True, sync=None):
         """
         Enhanced unpack method that directly accesses PETSc field without access() context.
         Designed for the new swarmVariable.array interface.
@@ -1343,20 +1350,16 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         squeeze : bool
             Whether to squeeze singleton dimensions (default True)
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
         """
+        self._warn_deprecated_sync(sync)
         shape = self.shape
 
         # Direct PETSc field access without context manager
         petsc_data = self.swarm.dm.getField(self.clean_name).reshape((-1, self.num_components))
 
         try:
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
-
             # Unpack data using same layout as original method
             points = petsc_data.shape[0]
             data_array_3d = np.empty(shape=(points, *shape), dtype=petsc_data.dtype)
@@ -1375,7 +1378,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         else:
             return data_array_3d
 
-    def pack_raw_data_to_petsc(self, data_array, sync=True):
+    def pack_raw_data_to_petsc(self, data_array, sync=None):
         """
         Pack data array to PETSc using traditional data shape (-1, num_components).
         Direct PETSc access without access() context for backward compatibility.
@@ -1384,9 +1387,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         data_array : numpy.ndarray
             Array data in traditional flat format (-1, num_components)
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
         """
+        self._warn_deprecated_sync(sync)
         import numpy as np
 
         # Convert to expected shape: (-1, num_components)
@@ -1409,18 +1413,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # Update the proxy mesh variable if one exists (for integral calculations)
             self._update()
 
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
-
         finally:
             # Always restore the field
             self.swarm.dm.restoreField(self.clean_name)
 
         return
 
-    def unpack_raw_data_from_petsc(self, squeeze=True, sync=True):
+    def unpack_raw_data_from_petsc(self, squeeze=True, sync=None):
         """
         Unpack data from PETSc in traditional data shape (-1, num_components).
         Direct PETSc access without access() context for backward compatibility.
@@ -1429,14 +1428,15 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         ----------
         squeeze : bool
             Whether to remove singleton dimensions (default True)
-        sync : bool
-            Whether to sync parallel operations (default True)
+        sync : deprecated
+            Never had an effect; deprecated (one DeprecationWarning if passed).
 
         Returns
         -------
         numpy.ndarray
             Array data in traditional flat format (-1, num_components)
         """
+        self._warn_deprecated_sync(sync)
         import numpy as np
 
         # Check if swarm has any particles before accessing field
@@ -1457,11 +1457,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         try:
             # Return data in traditional flat format
             result = petsc_data.copy()
-
-            # Sync parallel operations if requested
-            if sync:
-                # TODO: Add parallel sync logic here if needed
-                pass
 
         finally:
             # Always restore the field
@@ -1522,7 +1517,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         import numpy as np
 
         # Get data directly from PETSc to avoid circular callback dependencies
-        raw_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=False)
+        raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
         data_size = raw_data.shape
 
         # What to do if there are no particles: never SILENTLY return zeros
@@ -2897,7 +2892,7 @@ class Swarm(Stateful, uw_object):
                     f"DMSwarm holds {self.dm.getLocalSize()} particles. The "
                     "particle layout changed while migration was disabled."
                 )
-            var.pack_raw_data_to_petsc(arr, sync=True)
+            var.pack_raw_data_to_petsc(arr)
             if self._coord_var is var:
                 self._needs_migration = True
             if hasattr(var, "_on_data_changed"):
