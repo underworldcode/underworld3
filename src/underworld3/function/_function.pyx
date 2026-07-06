@@ -892,8 +892,7 @@ def _clement_to_work_variable(expr, mesh, derivfns):
         result = np.full(n_nodes, result[0])
 
     # Store in work variable
-    with mesh.access(work_var):
-        work_var.data[:, 0] = result.flatten()
+    work_var.data[:, 0] = result.flatten()
 
     return work_var
 
