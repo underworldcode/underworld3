@@ -29,10 +29,10 @@ def test_constrained_solcx_matches_analytic():
     s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
     s.bodyforce = sol.fn_bodyforce
     # free-slip on all four walls via in-saddle multipliers
-    s.add_constraint_bc("Left",   g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))
-    s.add_constraint_bc("Right",  g=0.0, normal=sympy.Matrix([[ 1.0, 0.0]]))
-    s.add_constraint_bc("Bottom", g=0.0, normal=sympy.Matrix([[ 0.0, -1.0]]))
-    s.add_constraint_bc("Top",    g=0.0, normal=sympy.Matrix([[ 0.0,  1.0]]))
+    s.add_constraint_bc(0.0, "Left",   normal=sympy.Matrix([[-1.0, 0.0]]))
+    s.add_constraint_bc(0.0, "Right",  normal=sympy.Matrix([[ 1.0, 0.0]]))
+    s.add_constraint_bc(0.0, "Bottom", normal=sympy.Matrix([[ 0.0, -1.0]]))
+    s.add_constraint_bc(0.0, "Top",    normal=sympy.Matrix([[ 0.0,  1.0]]))
     s.petsc_use_pressure_nullspace = True
     s.tolerance = 1.0e-9
     s.solve()

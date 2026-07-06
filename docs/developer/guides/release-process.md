@@ -133,6 +133,33 @@ Step 8 is deliberately left to a human so the review gate on `main` is never
 bypassed. CI (`.github/workflows/release.yml`) publishes the GitHub Release from
 the committed `docs/release-notes/vX.Y.0.md`.
 
+### Documentation freshness sweeps (before step 6)
+
+Two "pull" documents go stale silently between releases; refresh both as part
+of every release cycle:
+
+1. **Docstring review queue** — regenerate and commit
+   `docs/docstrings/review_queue.md` (+ `inventory.json`):
+
+   ```bash
+   python scripts/docstring_sweep.py 'src/underworld3/**/*.py' 'src/underworld3/**/*.pyx'
+   ```
+
+   A stale queue misdirects documentation work both ways: it re-flags items
+   that have since been documented and omits API added since the last sweep.
+
+2. **Quarterly changelog** — sweep the merge history since the changelog's
+   last entry and backfill `docs/developer/CHANGELOG.md` at its conceptual
+   granularity (grouped by subsystem, not per PR):
+
+   ```bash
+   git log --first-parent --oneline <last-changelog-commit>..development
+   ```
+
+Both documents rotted over the January–June 2026 development burst (findings
+DOC-02 / DOC-03 in `docs/reviews/2026-07/DOCS-STANDARDS-COHERENCE.md`); this
+checklist item exists so that cannot happen unnoticed again.
+
 ## Release notes generation
 
 Steps 4–6 auto-populate two sections of the notes from the gate:

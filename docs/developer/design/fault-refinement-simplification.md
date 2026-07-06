@@ -1,5 +1,7 @@
 # Fault refinement — the simplification
 
+**Status**: Implemented — design note (2026-05-28). `smooth_mesh_interior` / `metric_density_from_gradient` (`meshing/smoothing.py`) and `fault_comb_metric` (`meshing/surfaces.py`) are in the tree.
+
 ```{note}
 Design note, 2026-05-28. Captures the convergence after the
 feature/elliptic-ma fault-meshing work: one mover, one metric form, one

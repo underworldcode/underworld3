@@ -101,19 +101,19 @@ def solve_response(method, solver_mode):
     stokes.add_natural_bc(y_l0 * unit_r, mesh.boundaries.Internal.name)
 
     if method == "nitsche":
-        stokes.add_nitsche_bc("Upper", normal=unit_r, gamma=NITSCHE_GAMMA)
-        stokes.add_nitsche_bc("Lower", normal=-unit_r, gamma=NITSCHE_GAMMA)
+        stokes.add_nitsche_bc(0.0, "Upper", normal=unit_r, gamma=NITSCHE_GAMMA)
+        stokes.add_nitsche_bc(0.0, "Lower", normal=-unit_r, gamma=NITSCHE_GAMMA)
     else:
         stokes.add_constraint_bc(
+            0.0,
             "Upper",
-            g=0.0,
             normal=unit_r,
             augmentation_base=1.0e4,
             degree=2,
         )
         stokes.add_constraint_bc(
+            0.0,
             "Lower",
-            g=0.0,
             normal=-unit_r,
             augmentation_base=1.0e4,
             degree=2,

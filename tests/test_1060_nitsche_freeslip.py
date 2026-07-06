@@ -67,8 +67,8 @@ def _solve_freeslip_box(method, res=8):
         stokes.add_natural_bc(1e4 * Gamma.dot(v.sym) * Gamma, "Top")
         stokes.add_natural_bc(1e4 * Gamma.dot(v.sym) * Gamma, "Bottom")
     elif method == "nitsche":
-        stokes.add_nitsche_bc("Top", gamma=10.0)
-        stokes.add_nitsche_bc("Bottom", gamma=10.0)
+        stokes.add_nitsche_bc(0.0, "Top", gamma=10.0)
+        stokes.add_nitsche_bc(0.0, "Bottom", gamma=10.0)
     else:
         raise ValueError(f"Unknown method: {method}")
 

@@ -25,6 +25,22 @@ Underworld3 is a Python library for computational geodynamics and geophysical mo
 - **Need coding standards?** → Reference [Style Guide](UW3_Style_and_Patterns_Guide.md)
 ```
 
+## Documentation Authority Map
+
+One governing document per topic (this records the [UW3 Style Charter](UW3_STYLE_CHARTER.md)
+§10 authority map — the Charter itself wins on any conflict). Other documents on the
+same topic are reference or historical material subordinate to the governing document.
+
+| Topic | Governing document |
+|-------|--------------------|
+| Coding style & API conventions | [UW3 Style Charter](UW3_STYLE_CHARTER.md) (detailed reference: [Style Guide](UW3_Style_and_Patterns_Guide.md)) |
+| Data access | [subsystems/data-access.md](subsystems/data-access.md) (internals reference: [NDArray System](UW3_Developers_NDArrays.md)) |
+| Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
+| Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
+| Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
+| Docstring format | NumPy/Sphinx with RST `:math:` — Charter §6 and the [Style Guide docstring section](UW3_Style_and_Patterns_Guide.md) |
+| Documentation file format | MyST Markdown (`.md`) for Sphinx — CLAUDE.md "Documentation Requests" section |
+
 ## Documentation Structure
 
 This documentation is organized into focused sections:
@@ -98,6 +114,7 @@ This developer documentation covers Underworld3 version 0.99+. It includes both 
 
 guides/development-setup
 guides/contributing
+UW3_STYLE_CHARTER
 UW3_Style_and_Patterns_Guide
 ```
 

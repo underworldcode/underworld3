@@ -119,8 +119,8 @@ constraint in a per-node (n,t) frame → machine-zero leakage AND composes with 
 
 ```python
 nhat = mesh.CoordinateSystem.unit_e_0                    # exact radial normal (annulus/sphere)
-stokes.add_rotated_freeslip_bc("Upper", normal=nhat)
-stokes.add_rotated_freeslip_bc("Lower", normal=nhat)
+stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
+stokes.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
 stokes.petsc_use_pressure_nullspace = True               # enclosed -> pressure gauge
 stokes.solve()                                            # rigid-rotation gauge auto-removed
 # Convergence status: read stokes._rotated_freeslip_info = {ksp_reason,

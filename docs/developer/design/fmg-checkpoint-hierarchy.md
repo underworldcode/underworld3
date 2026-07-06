@@ -1,5 +1,6 @@
 ---
 title: "Persisting the FMG mesh hierarchy across checkpoints"
+status: "Implemented (2026-06-11, commit 3cd73cde) — FMG coarse-hierarchy sidecar restore in discretisation_mesh.py"
 ---
 
 # Persisting the geometric-multigrid hierarchy across checkpoints

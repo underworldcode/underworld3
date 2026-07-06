@@ -326,7 +326,7 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 
 ## Boundary Conditions: Free-slip
 
-**Prefer rotated strong free-slip** (`solver.add_rotated_freeslip_bc(boundary, normal=None)`)
+**Prefer rotated strong free-slip** (`solver.add_rotated_freeslip_bc(conds, boundary, normal=None)`, value-first: `conds=0` is the only implemented datum)
 to impose `v·n̂ = 0`:
 
 - Enforces zero wall-normal flow to **machine precision** (Nitsche / penalty leak ~1e-3).
@@ -351,7 +351,9 @@ strong `v_n=0`, reaction = σ_nn); the solve dispatch is in
 
 ## Data Access Patterns
 
-**Authoritative Reference**: `docs/developer/UW3_Style_and_Patterns_Guide.md`
+**Authoritative Reference**: `docs/developer/subsystems/data-access.md`
+(governing document per the Style Charter §10 authority map; see also the
+master authority index in `docs/developer/index.md`)
 **Pattern Checker**: Use `/check-patterns` to scan for deprecated patterns
 
 ### Quick Summary
@@ -361,7 +363,9 @@ strong `v_n=0`, reaction = σ_nn); the solve dispatch is in
 | `with swarm.access(var):` | **Deprecated** | Direct: `var.data[...]` |
 | `mesh.data` (coordinates) | **Deprecated** | `mesh.X.coords` |
 
-See `docs/developer/UW3_Style_and_Patterns_Guide.md` and `docs/developer/subsystems/data-access.md` for full patterns, array shapes, and cache safety details.
+See `docs/developer/subsystems/data-access.md` for full patterns, array shapes,
+and cache safety details (`docs/developer/UW3_Style_and_Patterns_Guide.md` is the
+broader style reference; where the two disagree, `data-access.md` governs).
 
 ---
 

@@ -1,5 +1,7 @@
 # Mesh adaptation by metric-driven node redistribution — mathematical formulation
 
+**Status**: Reference (current, 2026-05) — the mathematical formulation for the implemented `smooth_mesh_interior` family (`meshing/smoothing.py`).
+
 > **Scope.** This is the self-contained *mathematical* reference for the
 > topology-preserving mesh-adaptation family in UW3
 > (`uw.meshing.smooth_mesh_interior`). It derives the three solution

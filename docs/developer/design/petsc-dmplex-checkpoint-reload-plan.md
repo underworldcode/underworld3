@@ -1,5 +1,7 @@
 # PETSc DMPlex Checkpoint Reload Plan
 
+**Status**: Implemented — PR #146 (2026-05-20); the exact-reload path shipped as `write_timestep(..., petsc_reload=True)` (`discretisation_mesh.py`).
+
 ## Commit And Test Workflow
 
 Use small, meaningful commits while implementing this work.

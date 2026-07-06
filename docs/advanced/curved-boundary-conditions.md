@@ -41,7 +41,7 @@ Nitsche's method provides a variationally consistent alternative to penalty
 that is insensitive to the penalty magnitude and gives optimal convergence:
 
 ```python
-stokes.add_nitsche_bc("Upper", gamma=10)
+stokes.add_nitsche_bc(0.0, "Upper", gamma=10)
 ```
 
 The method automatically constructs penalty, consistency (stress flux),
@@ -51,13 +51,13 @@ resolution or viscosity.
 
 **Prescribed normal velocity:**
 ```python
-stokes.add_nitsche_bc("Inlet", g=1.0, gamma=10)
+stokes.add_nitsche_bc(1.0, "Inlet", gamma=10)
 ```
 
 **Custom constraint direction** (e.g., fault normal different from surface normal):
 ```python
 fault_normal = sympy.Matrix([0.6, 0.8])
-stokes.add_nitsche_bc("Fault", direction=fault_normal, gamma=10)
+stokes.add_nitsche_bc(0.0, "Fault", direction=fault_normal, gamma=10)
 ```
 
 **When to use:**
@@ -300,7 +300,7 @@ in 3D spherical models where penalty sensitivity becomes problematic.
 
 ## Tips for Success
 
-1. **Start with Nitsche**: `stokes.add_nitsche_bc("Upper", gamma=10)` — no penalty tuning needed
+1. **Start with Nitsche**: `stokes.add_nitsche_bc(0.0, "Upper", gamma=10)` — no penalty tuning needed
 2. **For penalty BCs, always normalize**: Analytical formulas need explicit normalization
 3. **Check orientation**: Ensure normals point outward (use `sign(r.dot(normal))`)
 4. **Verify visually**: Plot the normal field to catch errors
