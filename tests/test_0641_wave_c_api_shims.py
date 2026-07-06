@@ -130,9 +130,23 @@ class TestRotatedFreeslipValueFirst:
         assert _one_deprecation(rec) == 1
         assert stokes._rotated_freeslip_bcs[-1] == ("Top", n)
 
+    def test_zero_datum_accepted_in_any_numeric_form(self, mesh, stokes):
+        # Regression (#336): the zero guard must compare by VALUE. sympy's
+        # structural == treats Float(0.0) != Integer(0), so 0.0 was rejected
+        # even though the deprecation message itself recommends conds=0.
+        for zero in (0.0, sympy.Float(0), sympy.S.Zero, sympy.Integer(0)):
+            with _no_deprecation():
+                stokes.add_rotated_freeslip_bc(zero, "Top")
+            assert stokes._rotated_freeslip_bcs[-1] == ("Top", None)
+
     def test_nonzero_datum_not_implemented(self, mesh, stokes):
         with pytest.raises(NotImplementedError):
             stokes.add_rotated_freeslip_bc(1.0, "Top")
+
+    def test_symbolic_possibly_nonzero_datum_not_implemented(self, mesh, stokes):
+        # An expression sympy cannot prove zero must be rejected, not let through.
+        with pytest.raises(NotImplementedError):
+            stokes.add_rotated_freeslip_bc(sympy.Symbol("a"), "Top")
 
 
 class TestConstraintBCValueFirst:

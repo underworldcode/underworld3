@@ -5400,15 +5400,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             raise TypeError(
                 f"add_rotated_freeslip_bc() requires a boundary label string; "
                 f"got {type(boundary).__name__}")
-        # TODO(BUG): float zero is rejected as "non-zero" by this guard.
-        # sympy's == is structural, so sympy.sympify(0.0) != 0 evaluates True
-        # (Float(0.0) is not Integer(0)): the canonical value-first call
-        # add_rotated_freeslip_bc(0.0, boundary) — the very form this method's
-        # own deprecation message recommends — raises NotImplementedError,
-        # while conds=0 (int) and conds=None work. The guard should test
-        # value semantics, e.g. `sympy.sympify(conds).is_zero is not True`.
-        # Found by the WE-09 call-site sweep, 2026-07-07 (Wave C shim, #334); issue #336.
-        if conds is not None and sympy.sympify(conds) != 0:
+        # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
+        # structurally, but both are zero data. is_zero is True only when sympy
+        # can PROVE zero, so unprovable symbolic data is rejected too (#336).
+        if conds is not None and sympy.sympify(conds).is_zero is not True:
             raise NotImplementedError(
                 "add_rotated_freeslip_bc imposes u.n = 0 only; a non-zero "
                 "wall-normal datum is not implemented (use add_nitsche_bc or "
