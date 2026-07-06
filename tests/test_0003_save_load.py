@@ -236,6 +236,13 @@ def test_swarm_save_and_load(tmp_path):
     new_swarm = uw.swarm.Swarm(mesh)
     new_swarm.read_timestep("test", "swarm", 0, outputPath=tmp_path)
 
+    # Restore must reproduce the checkpoint exactly once — the parallel
+    # np-fold duplication regression (issue #324) is covered at np2/np4 by
+    # tests/parallel/test_0757_swarm_read_timestep_mpi.py.
+    saved_count = uw.mpi.comm.allreduce(max(swarm.dm.getLocalSize(), 0))
+    restored_count = uw.mpi.comm.allreduce(max(new_swarm.dm.getLocalSize(), 0))
+    assert restored_count == saved_count
+
 
 def test_swarmvariable_save_and_load(tmp_path):
     import underworld3 as uw
