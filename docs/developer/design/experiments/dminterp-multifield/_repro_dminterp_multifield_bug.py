@@ -20,7 +20,7 @@ underlying bug in `_dminterp_wrapper.pyx` /
 
 Usage:
     pixi run -e amr-dev python -u \
-        docs/developer/design/_repro_dminterp_multifield_bug.py
+        docs/developer/design/experiments/dminterp-multifield/_repro_dminterp_multifield_bug.py
 """
 
 import numpy as np

@@ -13,7 +13,7 @@ just bench 1 (the harmonic) — kept separate as the primary smoke test.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_exp_integrator_phase_b_benches.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_exp_integrator_phase_b_benches.py
 """
 
 from __future__ import annotations

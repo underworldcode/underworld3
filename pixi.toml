@@ -97,7 +97,6 @@ pytest-xdist = ">=3.8,<4"
 psutil = ">=5.9,<8"  # leak-loop regression test in tests/test_0111_swarm_lifecycle.py
 
 # Mesh generation
-pykdtree = ">=1.4,<2"
 meshio = ">=5.3,<6"
 
 # Utilities

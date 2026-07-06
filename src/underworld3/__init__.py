@@ -206,7 +206,6 @@ import underworld3.utilities
 import underworld3.model
 import underworld3.parameters
 import underworld3.materials
-import underworld3.discretisation.persistence
 import underworld3.checkpoint
 
 from .model import (
@@ -227,8 +226,7 @@ from .utilities import retention_curves
 # Unit utilities (top-level convenience for user code)
 from .function.unit_conversion import _extract_value
 
-# Currently on binder, pykdtree is hanging - fallback to previous implementation
-# import underworld3.kdtree
+# KDTree backend is ckdtree (nanoflann); see src/underworld3/kdtree.py
 import underworld3.ckdtree as kdtree
 import underworld3.cython
 import underworld3.scaling

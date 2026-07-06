@@ -27,7 +27,7 @@ Per-step diagnostics every 5 steps; runaway guard.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_phase_f_predictor_corrector.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_phase_f_predictor_corrector.py
 """
 
 import os

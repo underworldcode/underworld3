@@ -230,7 +230,9 @@ class Mesh(Stateful, uw_object):
     boundary_normals : dict, optional
         Outward normal vectors for each boundary.
     units : str or pint.Unit, optional
-        Physical units for mesh coordinates.
+        Deprecated and ignored (DeprecationWarning). Mesh coordinate units
+        always come from the model's reference quantities
+        (``model.set_reference_quantities``); query them via ``mesh.units``.
     verbose : bool, optional
         Print mesh construction information.
 
@@ -279,21 +281,24 @@ class Mesh(Stateful, uw_object):
         self.instance = Mesh.mesh_instances
         Mesh.mesh_instances += 1
 
-        # Get coordinate units from model (not user parameter)
-        # The model owns the unit system - all meshes use the same units
+        # Coordinate units come from the model (not a user parameter):
+        # the model owns the unit system so all meshes and variables agree.
         import underworld3 as uw
 
         model = uw.get_default_model()
 
-        # Ignore user-provided units parameter, get from model instead
-        if units is not None and units != model.get_coordinate_unit():
+        # Deprecated 2026-07 (WA-23/WC-11, units-family ruling D7): the
+        # `units=` kwarg was always ignored in favour of the model units;
+        # now it says so.
+        if units is not None:
             import warnings
 
             warnings.warn(
-                f"Ignoring units parameter '{units}'. Mesh coordinates will use "
-                f"model units '{model.get_coordinate_unit()}'. The model owns the "
-                "unit system to ensure consistency across all meshes and variables.",
-                UserWarning,
+                f"The 'units' mesh-constructor parameter is deprecated and "
+                f"ignored. Mesh coordinates use the model's units "
+                f"('{model.get_coordinate_unit()}', set via "
+                "model.set_reference_quantities). Remove the argument.",
+                DeprecationWarning,
                 stacklevel=3,
             )
 

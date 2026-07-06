@@ -163,7 +163,7 @@ def test_quantity_coordinate_lists_are_rejected():
     L_y = 500 * uw.units("m")
 
     mesh = uw.meshing.StructuredQuadBox(
-        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y), units="metre"
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(L_x, L_y)
     )
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1, units="kelvin")
     T.data[:, 0] = 1.0

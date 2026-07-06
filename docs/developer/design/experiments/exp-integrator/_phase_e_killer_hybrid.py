@@ -1,16 +1,21 @@
-"""Phase D: split-history ETD-2 vs Phase B lumped + BDF-1 baseline.
+"""Phase E: hybrid BDF/ETD integrator with spatial fault weight.
 
-Same setup as ``_phase_b_bdf_vs_etd_at_tight_yield.py``: bench_ti_vep_harmonic
-geometry at θ=+15°, τ_y=0.05, RES=32, 1.5 periods. Compares the new
-``TransverseIsotropicVEPSplitFlowModel`` (per-component (α_⊥, φ_⊥)/
-(α_∥, φ_∥)) against the existing BDF-1 trajectory cache.
+σ(x) = w(x)·σ_BDF + (1-w(x))·σ_ETD
 
-Saves the split-ETD trajectory to ``output/phase_b_etd-split_th+15_ty0p05.npz``
-and reports the same metrics as the BDF/lumped-ETD captures.
+w(x) = (1/τ_y(x) - 1/τ_y_bulk) / (1/τ_y_fault - 1/τ_y_bulk) ∈ [0, 1]
+
+Inside the fault zone (where yielding can happen), w → 1 and BDF
+takes over (its built-in elastic damping during yield is the right
+physics, lesson #9). Outside the fault (where τ_y(x) → τ_y_bulk and
+yielding is structurally unreachable), w → 0 and ETD takes over (its
+4× accuracy advantage on smooth VE matters in the bulk).
+
+Same setup as ``_phase_d_killer_split.py`` (θ=+15°, RES=32, τ_y values
+{0.05, 0.15}, 1.5 periods). Saves time-series with σ_∥ probe.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_phase_d_killer_split.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_phase_e_killer_hybrid.py
 """
 
 import os
@@ -37,8 +42,8 @@ RES = 32
 OUT_DIR = "output"
 
 
-def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
-    label = f"etd-split_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
+def run_hybrid(theta_deg, tau_y_at_fault, n_periods=1.5):
+    label = f"hybrid_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
 
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(RES, RES),
@@ -70,10 +75,15 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
     )
     tau_y_field = 1.0 / weakness
 
+    # Fault weight: 0 in bulk (where weakness = 1/τ_y_bulk),
+    #               1 inside fault (where weakness = 1/τ_y_fault).
+    weakness_min = 1.0 / TAU_Y_BULK
+    weakness_max = 1.0 / tau_y_at_fault
+    fault_weight = (weakness - weakness_min) / (weakness_max - weakness_min)
+
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p_sol)
-    # *** Phase D split-history ETD-2 ***
-    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPSplitFlowModel(
-        stokes.Unknowns,
+    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
+        stokes.Unknowns, integrator="hybrid", fault_weight=fault_weight,
     )
     cm = stokes.constitutive_model
     cm.Parameters.shear_viscosity_0 = ETA_0
@@ -150,12 +160,12 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
 
     print(
         f"  ran {len(iters)} steps in {time.time()-t0:.1f}s; "
-        f"split-ETD-2, τ_y_fault={tau_y_at_fault}",
+        f"hybrid (BDF/ETD), τ_y_fault={tau_y_at_fault}",
         flush=True,
     )
     if iters_arr.size > 0 and (iters_arr >= 0).any():
         print(
-            f"  SNES iters per step (split): mean={iters_arr[iters_arr>=0].mean():.1f} "
+            f"  SNES iters per step (hybrid): mean={iters_arr[iters_arr>=0].mean():.1f} "
             f"median={int(np.median(iters_arr[iters_arr>=0]))} "
             f"max={iters_arr[iters_arr>=0].max()} "
             f"diverged={int((reasons_arr<0).sum())}/{len(reasons_arr)}",
@@ -189,7 +199,7 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
 
     out_npz = os.path.join(
         OUT_DIR,
-        f"phase_b_etd-split_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p") + ".npz",
+        f"phase_b_hybrid_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p") + ".npz",
     )
     np.savez(
         out_npz,
@@ -210,18 +220,18 @@ def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    cases = [(15.0, 0.05), (15.0, 0.15)]   # tight + Phase B working regime
+    cases = [(15.0, 0.05), (15.0, 0.15)]
     for theta_deg, tau_y in cases:
         cache_name = (
-            f"phase_b_etd-split_th{theta_deg:+.0f}_ty{tau_y:.2f}".replace(".", "p")
+            f"phase_b_hybrid_th{theta_deg:+.0f}_ty{tau_y:.2f}".replace(".", "p")
             + ".npz"
         )
         cache = os.path.join(OUT_DIR, cache_name)
         if os.path.exists(cache):
-            print(f"=== split-ETD-2 cache hit: {cache} — skipping run ===", flush=True)
+            print(f"=== hybrid cache hit: {cache} — skipping run ===", flush=True)
             continue
-        print(f"=== Phase D split-ETD-2: θ=+{theta_deg:.0f}°, τ_y={tau_y} ===", flush=True)
-        run_split(theta_deg, tau_y, n_periods=1.5)
+        print(f"=== Phase E hybrid BDF/ETD: θ=+{theta_deg:.0f}°, τ_y={tau_y} ===", flush=True)
+        run_hybrid(theta_deg, tau_y, n_periods=1.5)
 
 
 if __name__ == "__main__":

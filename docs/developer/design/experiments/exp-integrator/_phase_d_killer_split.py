@@ -1,22 +1,19 @@
-"""Phase B: BDF-1 vs ETD-2 trajectory comparison at τ_y=0.05.
+"""Phase D: split-history ETD-2 vs Phase B lumped + BDF-1 baseline.
 
-The user asked whether the catastrophic ETD-2 runaway at τ_y=0.05 is
-specific to ETD-2 or a problem-class issue affecting BDF as well. This
-script runs the bench_ti_vep_harmonic geometry at τ_y=0.05 with both
-``integrator='bdf'`` (production BDF-1) and ``integrator='etd'``
-(ETD-2 trial) and saves matching time series so we can plot them on
-the same axes.
+Same setup as ``_phase_b_bdf_vs_etd_at_tight_yield.py``: bench_ti_vep_harmonic
+geometry at θ=+15°, τ_y=0.05, RES=32, 1.5 periods. Compares the new
+``TransverseIsotropicVEPSplitFlowModel`` (per-component (α_⊥, φ_⊥)/
+(α_∥, φ_∥)) against the existing BDF-1 trajectory cache.
 
-Running θ=+15° (the more demanding angled case) for 1.5 periods at
-RES=32 — same setup as ``output/phase_b_th+15_ty0p05.*``.
+Saves the split-ETD trajectory to ``output/phase_b_etd-split_th+15_ty0p05.npz``
+and reports the same metrics as the BDF/lumped-ETD captures.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_phase_b_bdf_vs_etd_at_tight_yield.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_phase_d_killer_split.py
 """
 
 import os
-import sys
 import time
 
 import numpy as np
@@ -27,7 +24,6 @@ from underworld3 import VarType
 from underworld3.function import expression
 
 
-# Match the ETD-2 demo parameters
 V0 = 0.5
 OMEGA = np.pi / 2.0
 DT = 0.05
@@ -41,19 +37,8 @@ RES = 32
 OUT_DIR = "output"
 
 
-def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
-    """Run one (integrator, θ, τ_y) trajectory and save a time-series npz.
-
-    integrator: 'bdf' (BDF-1) or 'etd' (ETD-2).
-    """
-    if integrator == "bdf":
-        order = 1
-    elif integrator == "etd":
-        order = 2
-    else:
-        raise ValueError(f"unknown integrator '{integrator}'")
-
-    label = f"{integrator}_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
+def run_split(theta_deg, tau_y_at_fault, n_periods=1.5):
+    label = f"etd-split_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
 
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(RES, RES),
@@ -86,8 +71,9 @@ def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
     tau_y_field = 1.0 / weakness
 
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p_sol)
-    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
-        stokes.Unknowns, integrator=integrator, order=order,
+    # *** Phase D split-history ETD-2 ***
+    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPSplitFlowModel(
+        stokes.Unknowns,
     )
     cm = stokes.constitutive_model
     cm.Parameters.shear_viscosity_0 = ETA_0
@@ -112,14 +98,13 @@ def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
     stokes.bodyforce = sympy.Matrix([0.0, 0.0])
 
     DFDt = stokes.Unknowns.DFDt
-    sigma_coords = DFDt.psi_star[0].coords
 
     T_END = n_periods * 2.0 * np.pi / OMEGA
     iters = []; reasons = []
     sigma_II_max_per_step = []
     u_y_max_per_step = []
-    sigma_xy_centre = []     # at fault centre, time series
-    sigma_par_centre = []    # resolved fault-plane shear at fault centre
+    sigma_xy_centre = []
+    sigma_par_centre = []
     centre = np.array([[cx, cy]])
     n_x_val = -float(np.sin(theta))
     n_y_val = float(np.cos(theta))
@@ -150,7 +135,6 @@ def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
         u_y_max_per_step.append(float(np.abs(u_arr[:, 1]).max()))
         sxy_centre = float(uw.function.evaluate(stokes.tau.sym[0, 1], centre).flatten()[0])
         sigma_xy_centre.append(sxy_centre)
-        # Resolved fault-plane shear |σ_∥| at fault centre.
         sxx_c = float(uw.function.evaluate(stokes.tau.sym[0, 0], centre).flatten()[0])
         syy_c = float(uw.function.evaluate(stokes.tau.sym[1, 1], centre).flatten()[0])
         T_x = sxx_c * n_x_val + sxy_centre * n_y_val
@@ -164,15 +148,14 @@ def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
     iters_arr = np.array(iters)
     reasons_arr = np.array(reasons)
 
-    integrator_label = "BDF-1" if integrator == "bdf" else "ETD-2"
     print(
         f"  ran {len(iters)} steps in {time.time()-t0:.1f}s; "
-        f"{integrator_label}, integrator='{integrator}', τ_y_fault={tau_y_at_fault}",
+        f"split-ETD-2, τ_y_fault={tau_y_at_fault}",
         flush=True,
     )
     if iters_arr.size > 0 and (iters_arr >= 0).any():
         print(
-            f"  SNES iters per step ({integrator}): mean={iters_arr[iters_arr>=0].mean():.1f} "
+            f"  SNES iters per step (split): mean={iters_arr[iters_arr>=0].mean():.1f} "
             f"median={int(np.median(iters_arr[iters_arr>=0]))} "
             f"max={iters_arr[iters_arr>=0].max()} "
             f"diverged={int((reasons_arr<0).sum())}/{len(reasons_arr)}",
@@ -204,10 +187,9 @@ def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
             flush=True,
         )
 
-    # Save the time series so we can replot/compare without rerunning
     out_npz = os.path.join(
         OUT_DIR,
-        f"phase_b_{integrator}_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p") + ".npz",
+        f"phase_b_etd-split_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p") + ".npz",
     )
     np.savez(
         out_npz,
@@ -224,28 +206,22 @@ def run_case(theta_deg, tau_y_at_fault, integrator, n_periods=1.5):
         wall_seconds=np.array(time.time() - t0),
     )
     print(f"  saved → {out_npz}", flush=True)
-    return out_npz
-
-
-def _cache_path(integrator, theta_deg, tau_y):
-    return os.path.join(
-        OUT_DIR,
-        f"phase_b_{integrator}_th{theta_deg:+.0f}_ty{tau_y:.2f}".replace(".", "p") + ".npz",
-    )
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    theta_deg = 15.0
-    tau_y = 0.05
-
-    for integrator in ("bdf", "etd"):
-        cache = _cache_path(integrator, theta_deg, tau_y)
+    cases = [(15.0, 0.05), (15.0, 0.15)]   # tight + Phase B working regime
+    for theta_deg, tau_y in cases:
+        cache_name = (
+            f"phase_b_etd-split_th{theta_deg:+.0f}_ty{tau_y:.2f}".replace(".", "p")
+            + ".npz"
+        )
+        cache = os.path.join(OUT_DIR, cache_name)
         if os.path.exists(cache):
-            print(f"=== {integrator.upper()} cache hit: {cache} — skipping run ===", flush=True)
+            print(f"=== split-ETD-2 cache hit: {cache} — skipping run ===", flush=True)
             continue
-        print(f"=== {integrator.upper()}: θ={theta_deg:+.0f}°, τ_y={tau_y} ===", flush=True)
-        run_case(theta_deg, tau_y, integrator, n_periods=1.5)
+        print(f"=== Phase D split-ETD-2: θ=+{theta_deg:.0f}°, τ_y={tau_y} ===", flush=True)
+        run_split(theta_deg, tau_y, n_periods=1.5)
 
 
 if __name__ == "__main__":

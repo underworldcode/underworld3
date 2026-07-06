@@ -26,7 +26,7 @@ Three integrators run on the *total* stress:
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_exp_integrator_phase_d_split.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_exp_integrator_phase_d_split.py
 """
 
 import os

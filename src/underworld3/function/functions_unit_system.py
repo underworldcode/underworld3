@@ -846,6 +846,13 @@ def evaluate(
     default ``monotone=False`` this is bit-identical to the historical
     ``evaluate``.
 
+    Coordinates are a plain ``(N, dim)`` array in model (non-dimensional)
+    units, or a ``UnitAwareArray``/``UWQuantity`` array which is
+    non-dimensionalised automatically. Python lists/tuples of individual
+    quantity objects (``[(x_qty, y_qty)]``) are NOT supported — convert
+    physical locations with :func:`underworld3.scaling.non_dimensionalise`
+    and pass a numpy array (units-family ruling, 2026-07).
+
     Parameters
     ----------
     monotone : bool or str, optional

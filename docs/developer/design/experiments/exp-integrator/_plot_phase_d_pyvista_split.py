@@ -1,26 +1,20 @@
-"""Phase B PyVista field plots — high-resolution snapshot at yield-active step.
+"""Phase D PyVista field plots — split-ETD-2 with explicit-parallel η_∥.
 
-Runs the bench_ti_vep_harmonic geometry with ETD-2 at **RES=32** for one
-yielding cycle and **checkpoints** the snapshot via ``mesh.write_timestep``
-(HDF5 + XDMF, ParaView-compatible) so we can replot without re-running.
-Renders 4-panel PyVista figures using the UW3 ``visualisation`` API.
+Identical pattern to ``_plot_phase_b_pyvista.py`` but uses
+``TransverseIsotropicVEPSplitFlowModel`` (Phase D split + lag, with the
+forcing_star-based η_∥ used for both α_∥/φ_∥ and the C_∥ multiplier).
 
-Capture-or-load pattern: each case checkpoints to
-``output/phase_b_<key>.{mesh, U, sigma, edot_II, ty, sigma_II, yield_ratio}.00000.h5``.
-If those files exist, skip the simulation and read back from disk.
+Captures the yield-active step from a 1.5-period run at θ=+15°, τ_y=0.05
+(also τ_y=0.15 for the easier baseline) and renders the same 4-panel
+PyVista figure (u_y heatmap, |ε̇|_II, |σ|_II, yield_ratio) so we can
+compare the field structure directly to the BDF/lumped Phase B plots.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_b_pyvista.py
-
-Force re-capture::
-
-    rm output/phase_b_*.h5 output/phase_b_*.xdmf
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_b_pyvista.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_plot_phase_d_pyvista_split.py
 """
 
 import os
-import sys
 import time
 
 import numpy as np
@@ -32,7 +26,6 @@ from underworld3.function import expression
 import underworld3.visualisation as vis
 
 
-# Geometric parameters (kept aligned with the killer test, but at RES=32)
 V0 = 0.5
 OMEGA = np.pi / 2.0
 DT = 0.05
@@ -47,18 +40,12 @@ OUT_DIR = "output"
 
 
 def _key(theta_deg, tau_y_at_fault):
-    return f"phase_b_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
+    return f"phase_d_split_th{theta_deg:+.0f}_ty{tau_y_at_fault:.2f}".replace(".", "p")
 
 
 def _meta_path(key):
     return os.path.join(OUT_DIR, key + ".meta.npz")
 
-
-# ---------------------------------------------------------------------------
-# Build a fresh model + plotting variables for a given (θ, τ_y).
-# Used by both the capture path and the load path so the mesh+var
-# discretisation is byte-identical.
-# ---------------------------------------------------------------------------
 
 def build_model(theta_deg, tau_y_at_fault, label_suffix=""):
     label = _key(theta_deg, tau_y_at_fault) + label_suffix
@@ -69,16 +56,13 @@ def build_model(theta_deg, tau_y_at_fault, label_suffix=""):
         qdegree=3,
     )
 
-    # Solver variables (degree=2 / degree=1)
     u = uw.discretisation.MeshVariable(
         f"U_{label}", mesh, 2, degree=2, vtype=VarType.VECTOR,
     )
     p_sol = uw.discretisation.MeshVariable(
-        f"P_{label}", mesh, 1, degree=1,
-        continuous=True, vtype=VarType.SCALAR,
+        f"P_{label}", mesh, 1, degree=1, continuous=True, vtype=VarType.SCALAR,
     )
 
-    # Fault geometry / spatial yield_stress field
     theta = np.radians(theta_deg)
     cx, cy = 0.5 * W, 0.5 * H
     dx = 0.5 * FAULT_LENGTH * np.cos(theta)
@@ -99,8 +83,6 @@ def build_model(theta_deg, tau_y_at_fault, label_suffix=""):
     )
     tau_y_field = 1.0 / weakness
 
-    # Scalar mesh variables for the four post-solve plottable fields.
-    # Same degree=1 / continuous so they share the canonical mesh nodes.
     edot_II_var = uw.discretisation.MeshVariable(
         f"edotII_{label}", mesh, 1, degree=1, continuous=True, vtype=VarType.SCALAR,
     )
@@ -114,10 +96,10 @@ def build_model(theta_deg, tau_y_at_fault, label_suffix=""):
         f"yieldRatio_{label}", mesh, 1, degree=1, continuous=True, vtype=VarType.SCALAR,
     )
 
-    # Solver (only built when capturing)
     stokes = uw.systems.Stokes(mesh, velocityField=u, pressureField=p_sol)
-    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPFlowModel(
-        stokes.Unknowns, integrator="etd",
+    # *** Phase D split-ETD-2 (explicit-parallel) ***
+    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicVEPSplitFlowModel(
+        stokes.Unknowns,
     )
     cm = stokes.constitutive_model
     cm.Parameters.shear_viscosity_0 = ETA_0
@@ -133,12 +115,6 @@ def build_model(theta_deg, tau_y_at_fault, label_suffix=""):
     stokes.tolerance = 1.0e-4
     stokes.petsc_options["ksp_type"] = "fgmres"
     stokes.petsc_options["snes_force_iteration"] = True
-    # Iteration monitoring (only printed during the capture phase; load
-    # path doesn't run the solver).
-    if os.environ.get("UW_SNES_MONITOR", "0") == "1":
-        stokes.petsc_options["snes_monitor"] = None
-        stokes.petsc_options["snes_converged_reason"] = None
-        stokes.petsc_options["snes_max_it"] = 50
 
     V_top = expression(rf"V_{{top,{label}}}", sympy.Float(0.0), "Top BC")
     stokes.add_essential_bc(sympy.Matrix([V_top, 0.0]), "Top")
@@ -156,16 +132,10 @@ def build_model(theta_deg, tau_y_at_fault, label_suffix=""):
     )
 
 
-# ---------------------------------------------------------------------------
-# Capture: run the sim, project plottable fields, write_timestep
-# ---------------------------------------------------------------------------
-
 def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
-    """Run + checkpoint a yield-active snapshot via mesh.write_timestep."""
     obj = build_model(theta_deg, tau_y_at_fault, label_suffix="_cap")
     mesh = obj["mesh"]; stokes = obj["stokes"]
-    u = obj["u"]
-    V_top = obj["V_top"]
+    u = obj["u"]; V_top = obj["V_top"]
     edot_II_var = obj["edot_II_var"]
     tau_y_var = obj["tau_y_var"]
     sigma_II_var = obj["sigma_II_var"]
@@ -178,15 +148,11 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
     sd = np.abs((sigma_coords[:, 0] - cx) * n_x + (sigma_coords[:, 1] - cy) * n_y)
     fault_mask = sd < 1.5 * FAULT_WIDTH
     E_sym = stokes.Unknowns.E
-    ty_at_psi_coords = np.asarray(
-        uw.function.evaluate(cm.Parameters.yield_stress.sym, sigma_coords)
-    ).flatten()
 
     T_END = n_periods * 2.0 * np.pi / OMEGA
-    best = None     # (in_fault_max, step_index)
-    saved = []      # full state history so we can rewind to the chosen step
-    iters = []      # SNES iteration count per step
-    reasons = []    # SNES convergence reason per step
+    best = None
+    saved = []
+    iters = []; reasons = []
     t_cur = 0.0
     t0 = time.time()
     while t_cur < T_END - 1e-9:
@@ -201,13 +167,10 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
 
         sigma_arr = np.asarray(DFDt.psi_star[0].array)
         sigma_II = np.sqrt(0.5 * (sigma_arr ** 2).sum(axis=(1, 2)))
-        # post-transient window
         recordable = t_end_step > 0.5 * 2.0 * np.pi / OMEGA
         in_fault_max = float(sigma_II[fault_mask].max()) if fault_mask.any() else 0.0
         if recordable and (best is None or in_fault_max > best[0]):
-            # Snapshot current state
             best = (in_fault_max, len(saved))
-        # Snapshot of solver+history state (cheap: arrays)
         saved.append(dict(
             t=t_end_step, v_top=v_now,
             u_arr=np.asarray(u.array).copy(),
@@ -217,17 +180,12 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
         t_cur = t_end_step
 
     if best is None:
-        # Edge case: didn't reach the post-transient window
         best = (saved[-1]["sigma_II"].max(), len(saved) - 1)
     chosen = saved[best[1]]
-
-    # Replant chosen state (so subsequent eval calls see the right u for ε̇)
     u.array[...] = chosen["u_arr"]
     DFDt.psi_star[0].array[...] = chosen["sigma_arr"]
     u._sync_lvec_to_gvec()
 
-    # Project the four scalar fields onto the plotting mesh variables.
-    # Use direct nodal evaluation (degree=1 continuous nodes).
     plot_coords = edot_II_var.coords
     edot_xx = np.asarray(uw.function.evaluate(E_sym[0, 0], plot_coords)).flatten()
     edot_xy = np.asarray(uw.function.evaluate(E_sym[0, 1], plot_coords)).flatten()
@@ -240,17 +198,14 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
     ).flatten()
     tau_y_var.array[:, 0, 0] = ty_at_plot
 
-    # σ_II at plot nodes — interpolate from psi_star[0] coords via kd-tree.
-    # psi_star[0] degree = u.degree-1 = 1 → typically same nodes as plot
-    # mesh, but in general we use uw.function.evaluate on psi_star[0].sym
-    # for safety.
-    sigma_sym_II = sympy.sqrt((DFDt.psi_star[0].sym * DFDt.psi_star[0].sym).trace() / 2)
+    sigma_sym_II = sympy.sqrt(
+        (DFDt.psi_star[0].sym * DFDt.psi_star[0].sym).trace() / 2
+    )
     try:
         sigma_II_at_plot = np.asarray(
             uw.function.evaluate(sigma_sym_II, plot_coords)
         ).flatten()
     except Exception:
-        # Fallback — kd-tree interpolation from psi_star coords
         from underworld3.kdtree import KDTree
         tree = KDTree(np.asarray(sigma_coords))
         sigma_II_at_plot = tree.rbf_interpolator_local(
@@ -260,7 +215,6 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
 
     yield_ratio_var.array[:, 0, 0] = sigma_II_at_plot / np.maximum(ty_at_plot, 1e-30)
 
-    # Write the checkpoint
     key = _key(theta_deg, tau_y_at_fault)
     os.makedirs(OUT_DIR, exist_ok=True)
     mesh.write_timestep(
@@ -268,14 +222,11 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
         meshVars=[u, edot_II_var, tau_y_var, sigma_II_var, yield_ratio_var],
         create_xdmf=True,
     )
-    # Also the raw stress (rank-2 sym tensor) — psi_star[0] is on the
-    # solver's DDt, save by writing its underlying mesh-variable
     DFDt.psi_star[0].write(
         os.path.join(OUT_DIR, key + ".mesh.sigma.00000.h5")
     )
 
-    iters_arr = np.array(iters)
-    reasons_arr = np.array(reasons)
+    iters_arr = np.array(iters); reasons_arr = np.array(reasons)
     metadata = dict(
         theta_deg=theta_deg,
         tau_y_at_fault=tau_y_at_fault,
@@ -285,11 +236,9 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
         wall_seconds=float(time.time() - t0),
         max_in_fault_sigma_II=float(best[0]),
         n_steps=len(saved),
-        iters=iters_arr,            # SNES iteration count per step
-        reasons=reasons_arr,        # SNES convergence reason per step (>0 OK)
+        iters=iters_arr, reasons=reasons_arr,
     )
     np.savez(os.path.join(OUT_DIR, key + ".meta.npz"), **metadata)
-
     n_diverged = int((reasons_arr < 0).sum())
     print(
         f"  ran {len(saved)} steps in {metadata['wall_seconds']:.1f}s; "
@@ -300,22 +249,16 @@ def capture(theta_deg, tau_y_at_fault, n_periods=1.5):
         flush=True,
     )
     print(
-        f"  SNES iterations per step: mean={iters_arr.mean():.1f} "
+        f"  SNES iters per step: mean={iters_arr.mean():.1f} "
         f"median={int(np.median(iters_arr))} max={iters_arr.max()} "
         f"diverged_steps={n_diverged}/{len(reasons_arr)}",
         flush=True,
     )
 
 
-# ---------------------------------------------------------------------------
-# Load: rebuild mesh + variables, read_timestep into them, return them
-# ---------------------------------------------------------------------------
-
 def load_into_fresh_model(theta_deg, tau_y_at_fault):
     obj = build_model(theta_deg, tau_y_at_fault, label_suffix="_load")
     key = _key(theta_deg, tau_y_at_fault)
-    # The plotting mesh variables — ``read_timestep`` interpolates from the
-    # checkpointed coords to the current mesh's coords (kd-tree RBF).
     obj["edot_II_var"].read_timestep(
         key, obj["edot_II_var"].clean_name.replace("_load", "_cap"),
         index=0, outputPath=OUT_DIR,
@@ -341,10 +284,6 @@ def load_into_fresh_model(theta_deg, tau_y_at_fault):
     return obj
 
 
-# ---------------------------------------------------------------------------
-# Plot via UW3 visualisation (PyVista)
-# ---------------------------------------------------------------------------
-
 def plot_panels(obj, out_path, off_screen=True):
     import pyvista as pv
 
@@ -359,7 +298,6 @@ def plot_panels(obj, out_path, off_screen=True):
     ty = obj["tau_y_var"]
     meta = obj["meta"]
 
-    # Build PV mesh once + add scalar fields as point_data
     pvmesh = vis.mesh_to_pv_mesh(mesh)
     pvmesh.point_data["sigma_II"] = vis.scalar_fn_to_pv_points(pvmesh, sII.sym)
     pvmesh.point_data["edot_II"] = vis.scalar_fn_to_pv_points(pvmesh, eII.sym)
@@ -368,21 +306,15 @@ def plot_panels(obj, out_path, off_screen=True):
     )
     pvmesh.point_data["tau_y"] = vis.scalar_fn_to_pv_points(pvmesh, ty.sym)
 
-    # Velocity arrows from the velocity-degree variable
     u_cloud = vis.meshVariable_to_pv_cloud(u)
     u_cloud.point_data["u"] = vis.vector_fn_to_pv_points(u_cloud, u.sym)
     u_speed = np.linalg.norm(u_cloud.point_data["u"][:, :2], axis=1)
     u_cloud.point_data["|u|"] = u_speed
-    # u_y as a separate scalar — the BC drives a horizontal shear so u_x
-    # is dominant everywhere; u_y concentrates where the fault forces a
-    # rotation of the velocity field toward the fault tangent direction.
-    # Plot u_y as the panel-1 colormap to make that pattern visible.
     pvmesh.point_data["u_y"] = vis.scalar_fn_to_pv_points(pvmesh, u.sym[1])
     pvmesh.point_data["|u|"] = vis.scalar_fn_to_pv_points(
         pvmesh, sympy.sqrt(u.sym.dot(u.sym))
     )
 
-    # Fault line for overlay
     n_x = float(meta["n_x"]); n_y = float(meta["n_y"])
     cx, cy = 0.5 * W, 0.5 * H
     L = FAULT_LENGTH
@@ -400,8 +332,6 @@ def plot_panels(obj, out_path, off_screen=True):
         p.camera.parallel_projection = True
         p.add_mesh(fault_line, color="red", line_width=4)
 
-    # Velocity — u_y heatmap (small but reveals fault-induced rotation)
-    # with full-vector arrows on top.
     pl.subplot(0, 0)
     uy_max = float(np.max(np.abs(pvmesh.point_data["u_y"])))
     pl.add_mesh(
@@ -418,14 +348,12 @@ def plot_panels(obj, out_path, off_screen=True):
     )
     _common(pl)
 
-    # |ε̇|_II
     pl.subplot(0, 1)
     pl.add_mesh(pvmesh, scalars="edot_II", cmap="viridis",
                 show_scalar_bar=True, scalar_bar_args={"title": "|ε̇|_II"})
     pl.add_text("|ε̇|_II", position="upper_edge", font_size=12, color="black")
     _common(pl)
 
-    # |σ|_II
     pl.subplot(1, 0)
     pl.add_mesh(pvmesh, scalars="sigma_II", cmap="magma",
                 show_scalar_bar=True, scalar_bar_args={"title": "|σ|_II"})
@@ -437,7 +365,6 @@ def plot_panels(obj, out_path, off_screen=True):
                 position="upper_edge", font_size=12, color="black")
     _common(pl)
 
-    # σ/τ_y ratio with active surface contour
     pl.subplot(1, 1)
     pl.add_mesh(pvmesh, scalars="yield_ratio", cmap="RdYlGn_r",
                 clim=(0.0, 1.2),
@@ -450,8 +377,8 @@ def plot_panels(obj, out_path, off_screen=True):
     _common(pl)
 
     pl.add_text(
-        f"ETD-2, RES={int(meta['RES'])}, θ={meta['theta_deg']:+.0f}°, "
-        f"τ_y_fault={meta['tau_y_at_fault']} "
+        f"Phase D split-ETD-2, RES={int(meta['RES'])}, "
+        f"θ={meta['theta_deg']:+.0f}°, τ_y_fault={meta['tau_y_at_fault']} "
         f"(t={meta['t']:.2f}, V_top={meta['v_top']:+.3f})",
         position="lower_edge", font_size=10, color="black",
     )
@@ -460,10 +387,6 @@ def plot_panels(obj, out_path, off_screen=True):
     pl.close()
     print(f"  wrote {out_path}", flush=True)
 
-
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 
 def capture_or_load(theta_deg, tau_y_at_fault, n_periods=1.5):
     if os.path.exists(_meta_path(_key(theta_deg, tau_y_at_fault))):
@@ -476,16 +399,14 @@ def capture_or_load(theta_deg, tau_y_at_fault, n_periods=1.5):
 
 
 def main():
-    cases = [(0.0, 0.15), (15.0, 0.15), (0.0, 0.05), (15.0, 0.05)]
+    cases = [(15.0, 0.05), (15.0, 0.15)]
     for theta, ty in cases:
         print(f"\n=== θ={theta:+.0f}°, τ_y={ty:.2f} ===", flush=True)
         obj = capture_or_load(theta, ty, n_periods=1.5)
-        out = os.path.join(
-            OUT_DIR,
-            f"exp_integrator_phase_b_pyvista_th{theta:+.0f}_ty{ty:.2f}".replace(".", "p")
-            + ".png",
+        out_path = os.path.join(
+            OUT_DIR, f"exp_integrator_phase_d_pyvista_split_th{theta:+.0f}_ty{ty:.2f}".replace(".", "p") + ".png",
         )
-        plot_panels(obj, out)
+        plot_panels(obj, out_path)
 
 
 if __name__ == "__main__":

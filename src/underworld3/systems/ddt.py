@@ -1381,7 +1381,9 @@ class SemiLagrangian(uw_object):
     smoothing : float, default=0.0
         Smoothing parameter for projections.
     preserve_moments : bool, default=False
-        Use moment-preserving projection (experimental).
+        Not implemented. Passing ``True`` raises ``NotImplementedError``.
+        (The moment-preserving projection this promised was never wired in;
+        the parameter is retained so existing call signatures keep working.)
     with_forcing_history : bool, default=False
         When True, allocate an additional ``forcing_star`` MeshVariable
         (matching ``psi_star[0]``'s shape, vtype, degree, continuity) to
@@ -1470,6 +1472,10 @@ class SemiLagrangian(uw_object):
         self._psi_fn = psi_fn
         self.V_fn = V_fn
         self.order = order
+        if preserve_moments:
+            raise NotImplementedError(
+                "preserve_moments is not currently implemented"
+            )
         self.preserve_moments = preserve_moments
         self.with_forcing_history = with_forcing_history
         # Monotonicity limiter for the SL trace-back result. Bound
@@ -1763,8 +1769,6 @@ class SemiLagrangian(uw_object):
         self._psi_star_projection_solver.smoothing = smoothing
 
         self._smoothing = smoothing
-
-        self.I = uw.maths.Integral(mesh, None)
 
         try:
             import underworld3 as _uw
@@ -2736,43 +2740,10 @@ class SemiLagrangian(uw_object):
 
             self.psi_star[i].array[...] = value_at_end_points
 
-            # disable this for now - Compute moments before update
-            if 0 and self.preserve_moments and self._workVar.num_components == 1:
-
-                self.I.fn = self.psi_star[i].sym[0]
-                Imean0 = self.I.evaluate()
-
-                self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
-                IL20 = np.sqrt(self.I.evaluate())
-
-
-            # disable this for now - Restore moments after update
-            if 0 and self.preserve_moments and self._workVar.num_components == 1:
-
-                self.I.fn = self.psi_star[i].sym[0]
-                Imean = self.I.evaluate()
-
-                self.I.fn = (self.psi_star[i].sym[0] - Imean) ** 2
-                IL2 = np.sqrt(self.I.evaluate())
-
-                # TODO: DELETE remove swarm.access / data, replace with direct array assignment
-                # with self.mesh.access(self.psi_star[i]):
-                #     self.psi_star[i].data[...] += Imean0 - Imean
-
-                self.psi_star[i].array[...] += Imean0 - Imean
-
-                self.I.fn = (self.psi_star[i].sym[0] - Imean0) ** 2
-                IL2 = np.sqrt(self.I.evaluate())
-
-                # TODO: DELETE remove swarm.access / data, replace with direct array assignment
-                # with self.mesh.access(self.psi_star[i]):
-                #     self.psi_star[i].data[...] = (
-                #         self.psi_star[i].data[...] - Imean0
-                #     ) * IL20 / IL2 + Imean0
-
-                self.psi_star[i].array[...] = (
-                    self.psi_star[i].array[...] - Imean0
-                ) * IL20 / IL2 + Imean0
+            # TODO(DESIGN): a moment-preserving correction (restore mean and L2
+            # moment of psi_star after the semi-Lagrangian update) was removed
+            # here as dead code — see git history for the sketch if the
+            # `preserve_moments` option is ever implemented.
 
         # Phase-2 ALE: consume the one-step v_mesh pulse. Subsequent
         # non-adapt steps will see no pending displacement and run a

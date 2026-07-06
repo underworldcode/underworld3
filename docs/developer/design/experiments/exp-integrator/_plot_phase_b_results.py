@@ -8,7 +8,7 @@ Outputs PNGs in ``output/exp_integrator_phase_b_*.png``.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_plot_phase_b_results.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_plot_phase_b_results.py
 """
 
 import os

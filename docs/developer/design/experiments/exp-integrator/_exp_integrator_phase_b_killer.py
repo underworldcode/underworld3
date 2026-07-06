@@ -16,7 +16,7 @@ Sweep: θ ∈ {0°, +15°, -15°} × τ_y ∈ {0.15, 0.30}.
 
 Run::
 
-    pixi run -e amr-dev python -u docs/developer/design/_exp_integrator_phase_b_killer.py
+    pixi run -e amr-dev python -u docs/developer/design/experiments/exp-integrator/_exp_integrator_phase_b_killer.py
 """
 
 from __future__ import annotations
