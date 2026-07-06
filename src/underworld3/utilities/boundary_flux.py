@@ -253,10 +253,21 @@ def write_boundary_scalar_field(solver, field, value_by_key, dim):
     return field
 
 
-def boundary_flux_to_field(solver, boundary, field, mass="lumped",
-                           remove_mean=False, scale=1.0, normal=None):
-    """See ``SolverBaseClass.boundary_flux_field``. Writes ``scale * flux`` onto the
-    scalar MeshVariable ``field`` at the boundary nodes (interior untouched)."""
+def boundary_flux_field(solver, boundary, field, mass="lumped",
+                        remove_mean=False, scale=1.0, normal=None):
+    r"""See ``SolverBaseClass.boundary_flux_field`` (the documented entry point;
+    this free function is its implementation and shares its name). Writes
+    ``scale * flux`` onto the scalar MeshVariable ``field`` at the boundary
+    nodes (interior untouched).
+
+    ``scale`` is a generic multiplier on the recovered flux. For dynamic
+    topography it is the **negated reciprocal** of the buoyancy scale used by
+    the expression-return paths: ``scale = -1 / buoyancy_scale``, where
+    ``buoyancy_scale`` is :math:`\Delta\rho\, g` as taken by
+    ``dynamic_topography`` / ``topography`` (there the division and the minus
+    sign are internal). The two parameters are deliberately NOT aliased —
+    treating them as one factor invites sign/reciprocal errors.
+    """
     dim = solver.mesh.dim
     xs, flux = boundary_flux(solver, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
     flux = np.asarray(flux)
@@ -270,3 +281,13 @@ def boundary_flux_to_field(solver, boundary, field, mass="lumped",
             "component, or use boundary_flux() directly for the full vector.")
     fmap = {_key(x, dim): scale * float(f) for x, f in zip(np.asarray(xs), flux.ravel())}
     return write_boundary_scalar_field(solver, field, fmap, dim)
+
+
+def boundary_flux_to_field(*args, **kwargs):
+    """Deprecated alias for :func:`boundary_flux_field` (renamed 2026-07 so the
+    free function matches the solver method it implements; kept one cycle)."""
+    import warnings
+    warnings.warn(
+        "boundary_flux_to_field is renamed; use boundary_flux_field(...)",
+        DeprecationWarning, stacklevel=2)
+    return boundary_flux_field(*args, **kwargs)

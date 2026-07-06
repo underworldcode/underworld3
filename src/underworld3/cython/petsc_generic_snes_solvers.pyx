@@ -2311,8 +2311,13 @@ class SolverBaseClass(uw_object):
         MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
         ``scale``. This is the field hand-off for downstream machinery (surface heat
         flux for coupling, or — with ``remove_mean=True`` and ``scale=-1/(\Delta\rho g)``
-        — dynamic topography). Returns ``field``."""
-        from underworld3.utilities.boundary_flux import boundary_flux_to_field as _bff
+        — dynamic topography). Returns ``field``.
+
+        Note that ``scale`` is a generic multiplier, NOT the ``buoyancy_scale``
+        taken by :meth:`dynamic_topography` / ``topography``: for topography the
+        relationship is ``scale = -1 / buoyancy_scale`` (there the division by
+        :math:`\Delta\rho\,g` and the minus sign are internal)."""
+        from underworld3.utilities.boundary_flux import boundary_flux_field as _bff
         return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
                     scale=scale, normal=normal)
 
