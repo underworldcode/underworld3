@@ -133,20 +133,32 @@ Step 8 is deliberately left to a human so the review gate on `main` is never
 bypassed. CI (`.github/workflows/release.yml`) publishes the GitHub Release from
 the committed `docs/release-notes/vX.Y.0.md`.
 
-### Documentation freshness sweep (before step 6)
+### Documentation freshness sweeps (before step 6)
 
-The docstring review queue is a "pull" document that goes stale silently between
-releases. Regenerate and commit `docs/docstrings/review_queue.md`
-(+ `inventory.json`) as part of every release cycle:
+Two "pull" documents go stale silently between releases; refresh both as part
+of every release cycle:
 
-```bash
-python scripts/docstring_sweep.py 'src/underworld3/**/*.py' 'src/underworld3/**/*.pyx'
-```
+1. **Docstring review queue** — regenerate and commit
+   `docs/docstrings/review_queue.md` (+ `inventory.json`):
 
-A stale queue misdirects documentation work both ways: it re-flags items that
-have since been documented and omits API added since the last sweep (this is
-what happened over the January–June 2026 gap — finding DOC-02 in
-`docs/reviews/2026-07/DOCS-STANDARDS-COHERENCE.md`).
+   ```bash
+   python scripts/docstring_sweep.py 'src/underworld3/**/*.py' 'src/underworld3/**/*.pyx'
+   ```
+
+   A stale queue misdirects documentation work both ways: it re-flags items
+   that have since been documented and omits API added since the last sweep.
+
+2. **Quarterly changelog** — sweep the merge history since the changelog's
+   last entry and backfill `docs/developer/CHANGELOG.md` at its conceptual
+   granularity (grouped by subsystem, not per PR):
+
+   ```bash
+   git log --first-parent --oneline <last-changelog-commit>..development
+   ```
+
+Both documents rotted over the January–June 2026 development burst (findings
+DOC-02 / DOC-03 in `docs/reviews/2026-07/DOCS-STANDARDS-COHERENCE.md`); this
+checklist item exists so that cannot happen unnoticed again.
 
 ## Release notes generation
 
