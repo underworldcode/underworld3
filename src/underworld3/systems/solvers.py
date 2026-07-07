@@ -1310,6 +1310,10 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         # split at a VEP yield kink.  See ``set_jacobian_F1_source``.
         self._F1_jacobian_source = None
 
+        # Last-seen constitutive effective_order (VE/VEP DDt history
+        # ramp-up); solve() re-wires the pointwise functions when it changes.
+        self._prev_effective_order = None
+
         return
 
     def set_jacobian_F1_source(self, F1_source, linesearch="cp"):
@@ -1461,8 +1465,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
             # Re-setup when effective_order changes (DDt history ramp-up)
             _current_eff_order = self.constitutive_model.effective_order
-            if not hasattr(self, '_prev_effective_order'):
-                self._prev_effective_order = None
             if _current_eff_order != self._prev_effective_order:
                 self._needs_function_rewire = True
                 self.constitutive_model._solver_is_setup = False
