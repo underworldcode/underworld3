@@ -2881,7 +2881,8 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
                    stol=None, stol_k=3,
                    fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
                    accel="cg", momentum=0.0,
-                   **_ignored):
+                   resolution_ratio=None,
+                   **_unknown_kwargs):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
     MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
     arXiv:1410.7872). **2D (triangle meshes) only** and parallel-safe.
@@ -2934,9 +2935,20 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     every accelerator fold-safe. (Previously controlled by the ``MMPDE_ACCEL`` /
     ``MMPDE_MOMENTUM`` environment variables, now removed — pass as kwargs, e.g.
     ``method_kwargs={"accel": "cg"}`` through ``smooth_mesh_interior``.)
+
+    ``resolution_ratio`` is accepted but unused: the strategy dispatch in
+    ``_smooth_mesh_interior_bare`` injects it into ``method_kwargs`` for
+    every mover, and MMPDE's clustering intensity comes from the metric
+    tensor itself. Any other unexpected keyword is warned about (READ-11:
+    it is a caller typo, not a tunable) rather than silently swallowed.
     """
     import sympy
     from petsc4py import PETSc
+    if _unknown_kwargs:
+        warnings.warn(
+            f"_mmpde_mover: ignoring unknown keyword argument(s) "
+            f"{sorted(_unknown_kwargs)} — not MMPDE tunables (typo?)",
+            stacklevel=2)
     pinned_labels = tuple(pinned_labels)
     cdim = mesh.cdim
     if cdim != 2:
