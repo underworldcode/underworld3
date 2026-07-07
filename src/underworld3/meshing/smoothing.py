@@ -656,6 +656,25 @@ def _edge_pairs(dm):
     return np.asarray(pairs, dtype=np.int64)
 
 
+def _mean_edge_length(dm, coords):
+    """Global mean edge length of the mesh at ``coords`` (the movers'
+    rank-mean of rank-local means — :func:`_global_mean`); 1.0 on a
+    rank with no complete local edges.
+
+    Callers that re-adapt repeatedly must measure this ONCE on the
+    undeformed mesh and cache it — re-measuring from an
+    already-refined mesh shrinks the value every adapt and compounds
+    refinement (see the ``_FOLLOW_METRIC_H0_CACHE`` note at the top of
+    the module)."""
+    ep = _edge_pairs(dm)
+    if ep.shape[0]:
+        h = float(np.linalg.norm(
+            coords[ep[:, 1]] - coords[ep[:, 0]], axis=1).mean())
+    else:
+        h = 1.0
+    return _global_mean(h)
+
+
 def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
                     max_cg_iters=300,
                     boundary_slip=False, shape_w=1.0, size_w=8.0,
@@ -2041,22 +2060,13 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         old0 = np.asarray(rest_coords_override).copy()
     else:
         old0 = np.asarray(mesh.X.coords).copy()
-    # h0 = undeformed mean edge length. If the caller passes
-    # `h0_override` (e.g. a value cached at the FIRST adapt on
-    # this mesh), use that — re-measuring from a deformed mesh
-    # makes h0 shrink as the mesh refines, which then shifts
-    # the eigenvalue clamps tighter and tighter and compounds
-    # refinement across repeated adapt cycles.
+    # h0 = undeformed mean edge length; `h0_override` lets the caller
+    # supply the value cached at the FIRST adapt (see the
+    # compounding-refinement note on _mean_edge_length).
     if h0_override is not None:
         h0 = float(h0_override)
     else:
-        ep = _edge_pairs(dm)
-        if ep.shape[0]:
-            h0 = float(np.linalg.norm(
-                old0[ep[:, 1]] - old0[ep[:, 0]], axis=1).mean())
-        else:
-            h0 = 1.0
-        h0 = _global_mean(h0)
+        h0 = _mean_edge_length(dm, old0)
     # CRITICAL no-op guard: uniform ρ ⇒ ∇ρ ≡ 0, but the L2
     # projection of the zero function leaves ~1e-18 round-off.
     # Normalising by that noisy max would make (|∇ρ|/gref)² ~ O(1)
@@ -4319,25 +4329,15 @@ def follow_metric(
     R = max(float(refinement), coar_val)
 
     # The spring caps refer to h0 — the **undeformed** mean edge
-    # length of the mesh. Critical: this must be captured ONCE
-    # (the first time follow_metric sees this mesh) and reused
-    # thereafter. Re-measuring it from a deformed (already-
-    # refined) mesh causes h0 to shrink each call, the spring
-    # caps to shrink with it, and refinement to compound at
-    # every adapt — the dt-crash bug surfaced 2026-05-22.
+    # length, captured ONCE per mesh and reused (the dt-crash /
+    # compounding-refinement bug, 2026-05-22 — full story on the
+    # _FOLLOW_METRIC_H0_CACHE declaration and _mean_edge_length).
     _key = id(mesh)
     h0 = _FOLLOW_METRIC_H0_CACHE.get(_key)
     rest_coords = _FOLLOW_METRIC_REST_CACHE.get(_key)
     if h0 is None:
-        ep = _edge_pairs(mesh.dm)
         coords = np.asarray(mesh.X.coords)
-        if ep.shape[0]:
-            h0 = float(np.linalg.norm(
-                coords[ep[:, 1]] - coords[ep[:, 0]],
-                axis=1).mean())
-        else:
-            h0 = 1.0
-        h0 = _global_mean(h0)
+        h0 = _mean_edge_length(mesh.dm, coords)
         _FOLLOW_METRIC_H0_CACHE[_key] = h0
         rest_coords = coords.copy()
         _FOLLOW_METRIC_REST_CACHE[_key] = rest_coords
