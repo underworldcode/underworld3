@@ -312,40 +312,7 @@ class Mesh(Stateful, uw_object):
         # === LENGTH SCALE FOR NON-DIMENSIONALIZATION ===
         # The length scale is IMMUTABLE after mesh creation to ensure
         # synchronization with all spatial operators (grad, div, curl)
-        self._length_scale = 1.0  # Default: no scaling
-        self._length_units = (
-            self.units if self.units else "dimensionless"
-        )  # Same as coordinate units
-
-        # Derive length scale from model reference quantities if available
-        if hasattr(model, "_reference_quantities") and model._reference_quantities:
-            # Priority order: domain_depth > length
-            if "domain_depth" in model._reference_quantities:
-                ref_qty = model._reference_quantities["domain_depth"]
-                # Convert to base units (SI: meters) for consistent scaling
-                try:
-                    base_qty = ref_qty.to_base_units()
-                    self._length_scale = float(base_qty.magnitude)
-                    self._length_units = str(base_qty.units)
-                except:
-                    # Fallback if to_base_units() fails
-                    self._length_scale = float(ref_qty.magnitude)
-                    self._length_units = (
-                        str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
-                    )
-            elif "length" in model._reference_quantities:
-                ref_qty = model._reference_quantities["length"]
-                # Convert to base units (SI: meters) for consistent scaling
-                try:
-                    base_qty = ref_qty.to_base_units()
-                    self._length_scale = float(base_qty.magnitude)
-                    self._length_units = str(base_qty.units)
-                except:
-                    # Fallback if to_base_units() fails
-                    self._length_scale = float(ref_qty.magnitude)
-                    self._length_units = (
-                        str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
-                    )
+        self._derive_length_scale_from_model(model)
 
         # Mesh coordinate version tracking for swarm coordination
         self._mesh_version = 0
@@ -359,217 +326,20 @@ class Mesh(Stateful, uw_object):
         # sensitive coordinate changes.
         self._mesh_update_lock = threading.RLock()
 
-        comm = PETSc.COMM_WORLD
-        regions = None  # May be set from h5 metadata or mesh generator
+        name, boundaries, coordinate_system_type, regions = self._load_dm_from_file(
+            plex_or_meshfile,
+            boundaries,
+            coordinate_system_type,
+            markVertices,
+            useRegions,
+            useMultipleTags,
+            verbose,
+            kwargs,
+        )
 
-        if isinstance(plex_or_meshfile, PETSc.DMPlex):
-            isDistributed = plex_or_meshfile.isDistributed()
-            if verbose and uw.mpi.rank == 0:
-                print(
-                    f"Constructing UW mesh from DMPlex object (distributed == {isDistributed})",
-                    flush=True,
-                )
-            if verbose:
-                plex_or_meshfile.view()
-
-            name = "plexmesh"
-            self.dm = plex_or_meshfile
-            self.sf0 = None  # Should we build one ?
-
-            # Don't set from options — don't want to redistribute the dm
-            # or change any settings as this should be left to the user
-
-        else:
-            comm = kwargs.get("comm", PETSc.COMM_WORLD)
-            name = plex_or_meshfile
-            basename, ext = os.path.splitext(plex_or_meshfile)
-
-            # Note: should be able to handle a .geo as well on this pathway
-            if ext.lower() == ".msh":
-                if verbose and uw.mpi.rank == 0:
-                    print(f"Constructing UW mesh from gmsh {plex_or_meshfile}", flush=True)
-
-                self.sf0, self.dm = _from_gmsh(
-                    plex_or_meshfile,
-                    comm,
-                    markVertices=markVertices,
-                    useRegions=useRegions,
-                    useMultipleTags=useMultipleTags,
-                )
-
-            elif ext.lower() == ".h5":
-                if verbose and uw.mpi.rank == 0:
-                    print(
-                        f"Constructing UW mesh from DMPlex h5 file {plex_or_meshfile}",
-                        flush=True,
-                    )
-                self.sf0, self.dm = _from_plexh5(plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True)
-
-                ## We can check if there is boundary metadata in the h5 file and we
-                ## should use it if it is present.
-
-                import h5py, json
-
-                f = h5py.File(plex_or_meshfile, "r")
-
-                # boundaries_dict = {i.name: i.value for i in cs_mesh.boundaries}
-                # string_repr = json.dumps(boundaries_dict)
-
-                try:
-                    json_str = f["metadata"].attrs["boundaries"]
-                    bdr_dict = json.loads(json_str)
-                    boundaries = Enum("Boundaries", bdr_dict)
-                except KeyError:
-                    pass
-
-                try:
-                    json_str = f["metadata"].attrs["coordinate_system_type"]
-                    coord_type_dict = json.loads(json_str)
-                    coordinate_system_type = CoordinateSystemType(coord_type_dict["value"])
-                except KeyError:
-                    pass
-
-                regions = None
-                try:
-                    json_str = f["metadata"].attrs["regions"]
-                    rgn_dict = json.loads(json_str)
-                    regions = Enum("Regions", rgn_dict)
-                except KeyError:
-                    pass
-
-                # Restore ellipsoid with quantities for geographic meshes
-                self._checkpoint_ellipsoid = None
-                try:
-                    json_str = f["metadata"].attrs["ellipsoid"]
-                    ellipsoid_raw = json.loads(json_str)
-                    for k, v in ellipsoid_raw.items():
-                        if isinstance(v, dict) and "value" in v and "unit" in v:
-                            ellipsoid_raw[k] = uw.quantity(v["value"], v["unit"])
-                    self._checkpoint_ellipsoid = ellipsoid_raw
-                except KeyError:
-                    pass
-
-                f.close()
-
-                # Restore the geometric-multigrid (FMG) coarse hierarchy from the
-                # sidecar, if present. We keep the *undistributed* coarsest level
-                # and the refinement count; the hierarchy is rebuilt below exactly
-                # the way a fresh refinement mesh is built — distribute the
-                # coarsest, then refine() locally — which is robust in serial and
-                # at any parallel decomposition. (See the splice block.)
-                self._sidecar_coarsest = None
-                try:
-                    with h5py.File(plex_or_meshfile, "r") as fh:
-                        n_coarse = int(
-                            fh["metadata"].attrs.get("hierarchy_coarse_levels", 0)
-                        )
-                except (KeyError, OSError):
-                    n_coarse = 0
-                if n_coarse > 0:
-                    sidecar = _hierarchy_sidecar_name(plex_or_meshfile, 0)
-                    if os.path.isfile(sidecar):
-                        self._sidecar_coarsest = _from_plexh5(
-                            sidecar, PETSc.COMM_WORLD
-                        )
-                        self._sidecar_n_coarse = n_coarse
-                        self._sidecar_meshfile = plex_or_meshfile
-
-                # Do not call setFromOptions() here. DMPlexTopologyLoad()
-                # returns the topology SF needed to reload checkpoint fields.
-                # setFromOptions() can repartition/reorder the DM before UW
-                # composes that SF with any later redistribution SF, leaving
-                # checkpoint field reloads mapped to stale point numbering.
-
-            else:
-                raise RuntimeError(
-                    "Mesh file %s has unknown format '%s'." % (plex_or_meshfile, ext[1:])
-                )
-
-        ## Patch up the boundaries to include the additional
-        ## definitions that we do / might need. Note: the
-        ## extend_enum decorator will replace existing members with
-        ## the new ones.
-
-        if boundaries is None:
-
-            class replacement_boundaries(Enum):
-                Null_Boundary = 666
-                All_Boundaries = 1001
-
-            boundaries = replacement_boundaries
-        else:
-
-            @extend_enum([boundaries])
-            class replacement_boundaries(Enum):
-                Null_Boundary = 666
-                All_Boundaries = 1001
-
-            boundaries = replacement_boundaries
-
-        self.filename = filename
-        self.boundaries = boundaries
-        # Bounding-surface objects (tangent-slip + restore), keyed by boundary
-        # label. SEPARATE from self.boundaries (the persisted gmsh/DMPlex
-        # labelling, untouched). Populated by analytic-geometry constructors;
-        # see docs/developer/design/boundary-slip-strategy.md.
-        self._bounding_surfaces = {}
-        self.boundary_normals = boundary_normals
-        self.regions = regions
-        self.parent = None       # Set by extract_region() for submeshes
-        self.subpoint_is = None  # IS mapping submesh points -> parent points
-
-        # Wrapped imported DMPlex meshes may only expose generic Gmsh labels
-        # such as "Face Sets". Rebuild named boundary labels from those sets so
-        # boundary APIs behave the same way as the standard Mesh(mesh_file) path.
-        if isinstance(plex_or_meshfile, PETSc.DMPlex) and self.boundaries is not None:
-            has_named_boundary_labels = any(self.dm.getLabel(b.name) for b in self.boundaries)
-            if not has_named_boundary_labels:
-                for stacked_label_name in ("Face Sets", "Edge Sets", "Vertex Sets"):
-                    if self.dm.getLabel(stacked_label_name):
-                        uw.adaptivity._dm_unstack_bcs(self.dm, self.boundaries, stacked_label_name)
-                        break
-
-        # options.delValue("dm_plex_gmsh_mark_vertices")
-        # options.delValue("dm_plex_gmsh_multiple_tags")
-        # options.delValue("dm_plex_gmsh_use_regions")
-        #
-
-        # Only for newly created dm (from mesh files)
-        # self.dm.setFromOptions()
-
-        # uw.adaptivity._dm_stack_bcs(self.dm, self.boundaries, "UW_Boundaries")
-
-        all_edges_label_dm = self.dm.getLabel("depth")
-        if all_edges_label_dm:
-            all_edges_IS_dm = all_edges_label_dm.getStratumIS(0)
-            # all_edges_IS_dm.view()
-
-        self.dm.createLabel("Null_Boundary")
-        all_edges_label = self.dm.getLabel("Null_Boundary")
-        if all_edges_label and all_edges_IS_dm:
-            all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
-
-        ## --- UW_Boundaries label
-        if self.boundaries is not None:
-
-            self.dm.removeLabel("UW_Boundaries")
-            uw.mpi.barrier()
-            self.dm.createLabel("UW_Boundaries")
-
-            stacked_bc_label = self.dm.getLabel("UW_Boundaries")
-
-            for b in self.boundaries:
-                bc_label_name = b.name
-                label = self.dm.getLabel(bc_label_name)
-
-                if label:
-                    label_is = label.getStratumIS(b.value)
-
-                    # Load this up on the stacked BC label
-                    if label_is:
-                        stacked_bc_label.setStratumIS(b.value, label_is)
-
-            uw.mpi.barrier()
+        self._patch_boundary_enum(
+            plex_or_meshfile, boundaries, boundary_normals, regions, filename
+        )
 
         ## ---
         ## Note - coarsening callback is tricky because the coarse meshes do not have the labels
@@ -602,154 +372,13 @@ class Mesh(Stateful, uw_object):
         self._nav_dm = None
 
         if getattr(self, "_sidecar_coarsest", None) is not None:
-
-            # Reloaded mesh with a persisted FMG hierarchy. Rebuild the geometric
-            # multigrid hierarchy exactly as a fresh refinement mesh does:
-            # distribute the coarsest level, then refine() it locally. refine()
-            # never moves points across the decomposition (only distribute()
-            # does), so a coarse cell and all of its children are guaranteed
-            # co-resident on one rank — precisely what the nested interpolator
-            # needs, and robust at any np. (Independently distributing pre-built
-            # levels misaligns at uneven np and aborts inside
-            # DMPlexComputeInterpolatorNested.)
-            #
-            # The refine-built fine carries *reference* coordinates, so the saved
-            # (deformed) fine coordinates are stamped onto it afterwards. The
-            # reference geometry rebuilt here (refine-of-coarsest) is bit-identical
-            # to the one at save time, so every distributed fine vertex maps to
-            # exactly one canonical vertex by an *exact* nearest-reference lookup,
-            # and the deformed value is read straight from the saved fine's
-            # canonical-ordered coordinates. (See the checkpoint-hierarchy design
-            # note.)
-            n_coarse = self._sidecar_n_coarse
-            cdim = self._sidecar_coarsest.getCoordinateDim()
-
-            # --- canonical (reference, deformed) coordinate pair, on rank 0 ---
-            # BOTH arrays are built rank-locally on COMM_SELF so they share ONE
-            # canonical ordering (serial .h5 load order == serial refine order,
-            # verified). That shared ordering is what makes deformed_canon[k] and
-            # reference_canon[k] the *same physical vertex* — the stamp pairs them
-            # by that index. (Reading the deformed coords from the COMM_WORLD
-            # undistributed load instead can use a different vertex ordering and
-            # silently scrambles the stamp.) COMM_SELF work is rank-local, so it
-            # cannot perturb the collective distribute of self._sidecar_coarsest.
-            if uw.mpi.rank == 0:
-                _df = _from_plexh5(self._sidecar_meshfile, PETSc.COMM_SELF)
-                deformed_canon = (
-                    _df.getCoordinatesLocal().array.reshape(-1, cdim).copy()
-                )
-                _cs = _from_plexh5(
-                    _hierarchy_sidecar_name(self._sidecar_meshfile, 0),
-                    PETSc.COMM_SELF,
-                )
-                for _ in range(n_coarse):
-                    _cs.setRefinementUniform()
-                    _cs = _cs.refine()
-                reference_canon = (
-                    _cs.getCoordinatesLocal().array.reshape(-1, cdim).copy()
-                )
-            else:
-                deformed_canon = None
-                reference_canon = None
-            deformed_canon = uw.mpi.comm.bcast(deformed_canon, root=0)
-            reference_canon = uw.mpi.comm.bcast(reference_canon, root=0)
-
-            # --- aligned hierarchy: distribute the coarsest, then local refine,
-            #     EXACTLY as the fresh refinement branch below does (proven to
-            #     build a correct nested geometric-MG hierarchy at any np):
-            #     setRefinementUniform() on the base before distribute(), then a
-            #     plain refine() loop. refine() flags the regular refinement
-            #     itself — setting it by hand on a non-uniformly-refined DM
-            #     instead corrupts the nested interpolator and the solve diverges.
-            self._sidecar_coarsest.setRefinementUniform()
-            if not self._sidecar_coarsest.isDistributed():
-                self.sf1 = self._sidecar_coarsest.distribute()
-            self.dm_hierarchy = [self._sidecar_coarsest]
-            for i in range(n_coarse):
-                dm_refined = self.dm_hierarchy[i].refine()
-                dm_refined.setCoarseDM(self.dm_hierarchy[i])
-                self.dm_hierarchy.append(dm_refined)
-
-            self.dm_h = self.dm_hierarchy[-1]
-            self.dm_h.setName("uw_hierarchical_dm")
-
-            # Working dm is a link-free clone of the finest level (mirrors the
-            # refinement branch). It must NOT carry a coarse-DM link or
-            # mesh.update_lvec()'s createFieldDecomposition recurses into the
-            # 0-field coarse levels and fails.
-            self.dm = self.dm_h.clone()
-
-            # Defer the deformed-coordinate stamp: the hierarchy and working dm
-            # are built with REFERENCE coordinates here, and the saved deformed
-            # coordinates are applied through the normal _deform_mesh() path at
-            # the END of __init__ (once self._coords and the rebuild machinery
-            # exist). A raw setCoordinatesLocal() at this point — before the
-            # coordinate cache/callbacks are set up — leaves the mesh in an
-            # inconsistent state and the geometric multigrid solve diverges. Stash
-            # the canonical (reference, deformed) pair for the deferred apply.
-            self._pending_hierarchy_stamp = (reference_canon, deformed_canon, cdim)
-            self._sidecar_coarsest = None
+            self._splice_hierarchy_from_sidecar()
 
         elif not refinement is None and refinement > 0:
-
-            self.dm.setRefinementUniform()
-
-            if not self.dm.isDistributed():
-                self.sf1 = self.dm.distribute()
-
-            # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
-
-            # This is preferable to the refineHierarchy call
-            # because we can repair the refined mesh at each
-            # step along the way
-
-            self.dm_hierarchy = [self.dm]
-            for i in range(refinement):
-                dm_refined = self.dm_hierarchy[i].refine()
-                dm_refined.setCoarseDM(self.dm_hierarchy[i])
-
-                if callable(refinement_callback):
-                    refinement_callback(dm_refined)
-
-                self.dm_hierarchy.append(dm_refined)
-
-            # self.dm_hierarchy = [self.dm] + self.dm_hierarchy
-
-            self.dm_h = self.dm_hierarchy[-1]
-            self.dm_h.setName("uw_hierarchical_dm")
-
-            # Is this needed here, after the above calls ?
-            if callable(refinement_callback):
-                for dm in self.dm_hierarchy:
-                    refinement_callback(dm)
-
-            # Single level equivalent dm (needed for aux vars ?? Check this - LM)
-            self.dm = self.dm_h.clone()
+            self._build_refined_hierarchy(refinement, refinement_callback)
 
         elif not coarsening is None and coarsening > 0:
-
-            # Does this have any effect on a coarsening strategy ?
-            self.dm.setRefinementUniform()
-
-            if not self.dm.isDistributed():
-                self.sf1 = self.dm.distribute()
-
-            self.dm_hierarchy = [self.dm]
-            for i in range(coarsening):
-                dm_coarsened = self.dm_hierarchy[i].coarsen()
-                self.dm_hierarchy[i].setCoarseDM(dm_coarsened)
-                self.dm_hierarchy.append(dm_coarsened)
-
-            # Coarsest mesh should be first in the hierarchy to be consistent
-            # with the way we manage refinements
-            self.dm_hierarchy.reverse()
-
-            self.dm_h = self.dm_hierarchy[-1]
-            self.dm_h.setName("uw_hierarchical_dm")
-
-            # Single level equivalent dm (needed for aux vars ?? Check this - LM)
-            self.dm = self.dm_h.clone()
-            # self.dm_hierarchy[0].view()
+            self._build_coarsened_hierarchy(coarsening)
 
         else:
             if not self.dm.isDistributed():
@@ -793,147 +422,9 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
-        # Validate that the DM's coordinate array is consistent with the
-        # coordinate dimension before reshaping. A mismatch here almost always
-        # means a STALE or CORRUPT cached mesh file — e.g. a cached .h5 that was
-        # written as a lower-dimension mesh (the classic symptom of a leaked
-        # ``dm_plex_gmsh_spacedim`` during generation; see _from_gmsh). Raise a
-        # clear, actionable error instead of an opaque numpy "cannot reshape"
-        # failure.
-        _coord_size = self.dm.getCoordinatesLocal().array.size
-        if self.cdim and _coord_size % self.cdim != 0:
-            _src = f" ('{self.filename}')" if getattr(self, "filename", None) else ""
-            raise RuntimeError(
-                f"Mesh coordinate array (size {_coord_size}) is not divisible by "
-                f"the coordinate dimension cdim={self.cdim}, so it cannot be a "
-                f"valid set of {self.cdim}-D node coordinates. This usually "
-                f"indicates a stale or corrupt cached mesh file{_src} (e.g. a "
-                f"cache written at a different space dimension). Delete the "
-                f"cached '.meshes/*.msh' and '.msh.h5' for this mesh and "
-                f"regenerate."
-            )
+        self._install_coordinate_array(verbose)
 
-        # Expose mesh points through special numpy array class with a callback
-        # on all setter operations
-
-        self._coords = uw.utilities.NDArray_With_Callback(
-            numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
-            owner=self,
-        )
-
-        # Navigation-only coord view. On manifold meshes the nav DM is
-        # a 1-cell-overlap clone with extra ghost vertices; navigation
-        # indices (kdtree, in-cell control points) read from these
-        # coords. On volume meshes _nav_dm is None and we reuse the
-        # main coords.
-        if self._nav_dm is not None:
-            self._nav_coords = numpy.array(
-                self._nav_dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
-            )
-        else:
-            self._nav_coords = self._coords
-
-        # The callback is to rebuild the mesh data structures - we already have a routine
-        # to handle that so we just wrap it here.
-
-        def mesh_update_callback(array, change_context):
-            mesh = array.owner
-            if mesh is None:
-                # This guard handles cases where the array is accessed during
-                # object teardown (e.g. at application exit or during mesh
-                # replacement), where the owning Python mesh object has already
-                # been garbage collected but the NDArray proxy still exists.
-                return
-
-            # ``NDArray_With_Callback.__array_finalize__`` propagates this
-            # callback (and the owner) to every view / fancy-index copy of the
-            # coordinate array. Only the mesh's *canonical* coordinate array
-            # represents an actual coordinate update; a derived sub-array (e.g.
-            # a boundary subset built inside the tangent-slip / bounding-surface
-            # / mover machinery) that merely inherited this callback must NOT
-            # trigger a full-mesh deform. Identity-gate on the canonical
-            # ``_coords`` — note this is NOT a size filter, so a genuinely
-            # malformed full coordinate update still reaches ``_deform_mesh``
-            # and surfaces loudly rather than being silently dropped.
-            if array is not mesh._coords:
-                return
-
-            if verbose:
-                uw.pprint(0, f"Mesh update callback - mesh deform")
-
-            coords = array.reshape(-1, mesh.cdim)
-            mesh._deform_mesh(coords, verbose=verbose)
-
-            # Increment mesh version to notify registered swarms of coordinate changes
-            with mesh._mesh_update_lock:
-                mesh._mesh_version += 1
-                if verbose:
-                    uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
-
-            return
-
-        self._coords.add_callback(mesh_update_callback)
-
-        # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
-        # A unique set of vectors / names for each mesh instance
-        #
-
-        self.CoordinateSystemType = coordinate_system_type
-
-        from sympy.vector import CoordSys3D
-
-        self._N = CoordSys3D(f"N")
-
-        # Tidy some of this printing without changing the
-        # underlying vector names (as these are part of the code generation system)
-
-        self._N.x._latex_form = r"\mathrm{\xi_0}"
-        self._N.y._latex_form = r"\mathrm{\xi_1}"
-        self._N.z._latex_form = r"\mathrm{\xi_2}"
-        self._N.i._latex_form = r"\mathbf{\hat{\mathbf{e}}_0}"
-        self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
-        self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
-
-        self._Gamma = CoordSys3D(r"\Gamma")
-
-        self._Gamma.x._latex_form = r"\Gamma_x"
-        self._Gamma.y._latex_form = r"\Gamma_y"
-        self._Gamma.z._latex_form = r"\Gamma_z"
-
-        # Now add the appropriate coordinate system for the mesh's natural geometry
-        # This step will usually over-write the defaults we just defined
-        # For geographic meshes loaded from checkpoint, pre-set the ellipsoid
-        # so the CoordinateSystem __init__ picks it up.
-        if hasattr(self, "_checkpoint_ellipsoid") and self._checkpoint_ellipsoid is not None:
-            self._checkpoint_ellipsoid_pending = self._checkpoint_ellipsoid
-
-        self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
-
-        # This was in the _jit extension but ... if
-        # not here then the tests fail sometimes (caching ?)
-
-        self._N.x._ccodestr = "petsc_x[0]"
-        self._N.y._ccodestr = "petsc_x[1]"
-        self._N.z._ccodestr = "petsc_x[2]"
-
-        # Surface integrals also have normal vector information as petsc_n
-
-        self._Gamma.x._ccodestr = "petsc_n[0]"
-        self._Gamma.y._ccodestr = "petsc_n[1]"
-        self._Gamma.z._ccodestr = "petsc_n[2]"
-
-        # Time coordinate — PETSc passes this as petsc_t to all pointwise
-        # functions. Solvers set dm.time before each solve via solve(time=t).
-        # Users reference it as mesh.t in expressions (e.g. V0 * sympy.sin(omega * mesh.t))
-        from ..utilities.unit_aware_coordinates import TimeSymbol
-
-        self._t = TimeSymbol("t")
-        self._t._units = None  # patched below by _patch_time_units
-
-        # Add unit awareness to coordinate symbols if mesh has units or model has scales
-        from ..utilities.unit_aware_coordinates import patch_coordinate_units
-
-        patch_coordinate_units(self)
+        self._setup_symbolic_coordinates(coordinate_system_type)
 
         try:
             self.isSimplex = self.dm.isSimplex()
@@ -1087,6 +578,628 @@ class Mesh(Stateful, uw_object):
         # Register with default model for orchestration and store reference
         self._model = uw.get_default_model()
         self._model._register_mesh(self)
+
+    # --- Mesh.__init__ construction phases -------------------------------
+    # The eight methods below are the named phases of mesh construction,
+    # called in sequence from __init__ (pure code motion from the former
+    # monolithic constructor). They are internal: each assumes the state
+    # established by the preceding phases and is not safe to call again
+    # on a fully constructed mesh.
+
+    def _derive_length_scale_from_model(self, model):
+        """Set the immutable length scale used for non-dimensionalisation.
+
+        The length scale ties mesh coordinates to the model's reference
+        quantities so that all spatial operators (grad, div, curl) share
+        one consistent scaling. Priority order: ``domain_depth`` over
+        ``length``; default 1.0 (no scaling) when the model defines
+        neither.
+
+        Parameters
+        ----------
+        model : uw.Model
+            The orchestration model whose reference quantities define
+            the scale.
+        """
+        self._length_scale = 1.0  # Default: no scaling
+        self._length_units = (
+            self.units if self.units else "dimensionless"
+        )  # Same as coordinate units
+
+        # Derive length scale from model reference quantities if available
+        if hasattr(model, "_reference_quantities") and model._reference_quantities:
+            # Priority order: domain_depth > length
+            if "domain_depth" in model._reference_quantities:
+                ref_qty = model._reference_quantities["domain_depth"]
+                # Convert to base units (SI: meters) for consistent scaling
+                try:
+                    base_qty = ref_qty.to_base_units()
+                    self._length_scale = float(base_qty.magnitude)
+                    self._length_units = str(base_qty.units)
+                except:
+                    # Fallback if to_base_units() fails
+                    self._length_scale = float(ref_qty.magnitude)
+                    self._length_units = (
+                        str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
+                    )
+            elif "length" in model._reference_quantities:
+                ref_qty = model._reference_quantities["length"]
+                # Convert to base units (SI: meters) for consistent scaling
+                try:
+                    base_qty = ref_qty.to_base_units()
+                    self._length_scale = float(base_qty.magnitude)
+                    self._length_units = str(base_qty.units)
+                except:
+                    # Fallback if to_base_units() fails
+                    self._length_scale = float(ref_qty.magnitude)
+                    self._length_units = (
+                        str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
+                    )
+
+    def _load_dm_from_file(
+        self,
+        plex_or_meshfile,
+        boundaries,
+        coordinate_system_type,
+        markVertices,
+        useRegions,
+        useMultipleTags,
+        verbose,
+        kwargs,
+    ):
+        """Build ``self.dm`` from a DMPlex object or a mesh file.
+
+        Dispatches on the constructor's first argument: an existing
+        ``PETSc.DMPlex`` is wrapped as-is; a ``.msh`` file is imported via
+        gmsh; a ``.h5`` DMPlex checkpoint is reloaded together with any
+        boundary / coordinate-system / region / ellipsoid metadata and the
+        FMG coarse-hierarchy sidecar it carries.
+
+        Returns
+        -------
+        tuple
+            ``(name, boundaries, coordinate_system_type, regions)`` — the
+            mesh name derived from the source, plus the metadata possibly
+            restored from an ``.h5`` checkpoint (unchanged from the passed
+            arguments otherwise).
+        """
+        comm = PETSc.COMM_WORLD
+        regions = None  # May be set from h5 metadata or mesh generator
+
+        if isinstance(plex_or_meshfile, PETSc.DMPlex):
+            isDistributed = plex_or_meshfile.isDistributed()
+            if verbose and uw.mpi.rank == 0:
+                print(
+                    f"Constructing UW mesh from DMPlex object (distributed == {isDistributed})",
+                    flush=True,
+                )
+            if verbose:
+                plex_or_meshfile.view()
+
+            name = "plexmesh"
+            self.dm = plex_or_meshfile
+            self.sf0 = None  # Should we build one ?
+
+            # Don't set from options — don't want to redistribute the dm
+            # or change any settings as this should be left to the user
+
+        else:
+            comm = kwargs.get("comm", PETSc.COMM_WORLD)
+            name = plex_or_meshfile
+            basename, ext = os.path.splitext(plex_or_meshfile)
+
+            # Note: should be able to handle a .geo as well on this pathway
+            if ext.lower() == ".msh":
+                if verbose and uw.mpi.rank == 0:
+                    print(f"Constructing UW mesh from gmsh {plex_or_meshfile}", flush=True)
+
+                self.sf0, self.dm = _from_gmsh(
+                    plex_or_meshfile,
+                    comm,
+                    markVertices=markVertices,
+                    useRegions=useRegions,
+                    useMultipleTags=useMultipleTags,
+                )
+
+            elif ext.lower() == ".h5":
+                if verbose and uw.mpi.rank == 0:
+                    print(
+                        f"Constructing UW mesh from DMPlex h5 file {plex_or_meshfile}",
+                        flush=True,
+                    )
+                self.sf0, self.dm = _from_plexh5(plex_or_meshfile, PETSc.COMM_WORLD, return_sf=True)
+
+                ## We can check if there is boundary metadata in the h5 file and we
+                ## should use it if it is present.
+
+                import h5py, json
+
+                f = h5py.File(plex_or_meshfile, "r")
+
+                try:
+                    json_str = f["metadata"].attrs["boundaries"]
+                    bdr_dict = json.loads(json_str)
+                    boundaries = Enum("Boundaries", bdr_dict)
+                except KeyError:
+                    pass
+
+                try:
+                    json_str = f["metadata"].attrs["coordinate_system_type"]
+                    coord_type_dict = json.loads(json_str)
+                    coordinate_system_type = CoordinateSystemType(coord_type_dict["value"])
+                except KeyError:
+                    pass
+
+                regions = None
+                try:
+                    json_str = f["metadata"].attrs["regions"]
+                    rgn_dict = json.loads(json_str)
+                    regions = Enum("Regions", rgn_dict)
+                except KeyError:
+                    pass
+
+                # Restore ellipsoid with quantities for geographic meshes
+                self._checkpoint_ellipsoid = None
+                try:
+                    json_str = f["metadata"].attrs["ellipsoid"]
+                    ellipsoid_raw = json.loads(json_str)
+                    for k, v in ellipsoid_raw.items():
+                        if isinstance(v, dict) and "value" in v and "unit" in v:
+                            ellipsoid_raw[k] = uw.quantity(v["value"], v["unit"])
+                    self._checkpoint_ellipsoid = ellipsoid_raw
+                except KeyError:
+                    pass
+
+                f.close()
+
+                # Restore the geometric-multigrid (FMG) coarse hierarchy from the
+                # sidecar, if present. We keep the *undistributed* coarsest level
+                # and the refinement count; the hierarchy is rebuilt by
+                # _splice_hierarchy_from_sidecar exactly the way a fresh
+                # refinement mesh is built — distribute the coarsest, then
+                # refine() locally — which is robust in serial and at any
+                # parallel decomposition.
+                self._sidecar_coarsest = None
+                try:
+                    with h5py.File(plex_or_meshfile, "r") as fh:
+                        n_coarse = int(
+                            fh["metadata"].attrs.get("hierarchy_coarse_levels", 0)
+                        )
+                except (KeyError, OSError):
+                    n_coarse = 0
+                if n_coarse > 0:
+                    sidecar = _hierarchy_sidecar_name(plex_or_meshfile, 0)
+                    if os.path.isfile(sidecar):
+                        self._sidecar_coarsest = _from_plexh5(
+                            sidecar, PETSc.COMM_WORLD
+                        )
+                        self._sidecar_n_coarse = n_coarse
+                        self._sidecar_meshfile = plex_or_meshfile
+
+                # Do not call setFromOptions() here. DMPlexTopologyLoad()
+                # returns the topology SF needed to reload checkpoint fields.
+                # setFromOptions() can repartition/reorder the DM before UW
+                # composes that SF with any later redistribution SF, leaving
+                # checkpoint field reloads mapped to stale point numbering.
+
+            else:
+                raise RuntimeError(
+                    "Mesh file %s has unknown format '%s'." % (plex_or_meshfile, ext[1:])
+                )
+
+        return name, boundaries, coordinate_system_type, regions
+
+    def _patch_boundary_enum(
+        self, plex_or_meshfile, boundaries, boundary_normals, regions, filename
+    ):
+        """Extend the boundary enum and rebuild the DM's boundary labels.
+
+        Patches the user-supplied boundary enum with the members every UW
+        mesh needs (``Null_Boundary`` — every vertex, value 666 — and
+        ``All_Boundaries``, value 1001), records the boundary / region
+        metadata attributes on the mesh, rebuilds named boundary labels for
+        wrapped DMPlex imports that only expose stacked Gmsh label sets,
+        and builds the ``Null_Boundary`` and stacked ``UW_Boundaries``
+        labels used by the boundary-condition machinery.
+        """
+        ## Patch up the boundaries to include the additional
+        ## definitions that we do / might need. Note: the
+        ## extend_enum decorator will replace existing members with
+        ## the new ones.
+
+        if boundaries is None:
+
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+
+            boundaries = replacement_boundaries
+        else:
+
+            @extend_enum([boundaries])
+            class replacement_boundaries(Enum):
+                Null_Boundary = 666
+                All_Boundaries = 1001
+
+            boundaries = replacement_boundaries
+
+        self.filename = filename
+        self.boundaries = boundaries
+        # Bounding-surface objects (tangent-slip + restore), keyed by boundary
+        # label. SEPARATE from self.boundaries (the persisted gmsh/DMPlex
+        # labelling, untouched). Populated by analytic-geometry constructors;
+        # see docs/developer/design/boundary-slip-strategy.md.
+        self._bounding_surfaces = {}
+        self.boundary_normals = boundary_normals
+        self.regions = regions
+        self.parent = None       # Set by extract_region() for submeshes
+        self.subpoint_is = None  # IS mapping submesh points -> parent points
+
+        # Wrapped imported DMPlex meshes may only expose generic Gmsh labels
+        # such as "Face Sets". Rebuild named boundary labels from those sets so
+        # boundary APIs behave the same way as the standard Mesh(mesh_file) path.
+        if isinstance(plex_or_meshfile, PETSc.DMPlex) and self.boundaries is not None:
+            has_named_boundary_labels = any(self.dm.getLabel(b.name) for b in self.boundaries)
+            if not has_named_boundary_labels:
+                for stacked_label_name in ("Face Sets", "Edge Sets", "Vertex Sets"):
+                    if self.dm.getLabel(stacked_label_name):
+                        uw.adaptivity._dm_unstack_bcs(self.dm, self.boundaries, stacked_label_name)
+                        break
+
+        all_edges_label_dm = self.dm.getLabel("depth")
+        if all_edges_label_dm:
+            all_edges_IS_dm = all_edges_label_dm.getStratumIS(0)
+
+        self.dm.createLabel("Null_Boundary")
+        all_edges_label = self.dm.getLabel("Null_Boundary")
+        if all_edges_label and all_edges_IS_dm:
+            all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
+
+        ## --- UW_Boundaries label
+        if self.boundaries is not None:
+
+            self.dm.removeLabel("UW_Boundaries")
+            uw.mpi.barrier()
+            self.dm.createLabel("UW_Boundaries")
+
+            stacked_bc_label = self.dm.getLabel("UW_Boundaries")
+
+            for b in self.boundaries:
+                bc_label_name = b.name
+                label = self.dm.getLabel(bc_label_name)
+
+                if label:
+                    label_is = label.getStratumIS(b.value)
+
+                    # Load this up on the stacked BC label
+                    if label_is:
+                        stacked_bc_label.setStratumIS(b.value, label_is)
+
+            uw.mpi.barrier()
+
+    def _splice_hierarchy_from_sidecar(self):
+        """Rebuild the FMG hierarchy of a reloaded mesh from its sidecar.
+
+        Reloaded mesh with a persisted FMG hierarchy: rebuild the geometric
+        multigrid hierarchy exactly as a fresh refinement mesh does —
+        distribute the coarsest level, then refine() it locally. refine()
+        never moves points across the decomposition (only distribute()
+        does), so a coarse cell and all of its children are guaranteed
+        co-resident on one rank — precisely what the nested interpolator
+        needs, and robust at any np. (Independently distributing pre-built
+        levels misaligns at uneven np and aborts inside
+        DMPlexComputeInterpolatorNested.)
+
+        The refine-built fine carries *reference* coordinates, so the saved
+        (deformed) fine coordinates are stamped onto it afterwards. The
+        reference geometry rebuilt here (refine-of-coarsest) is bit-identical
+        to the one at save time, so every distributed fine vertex maps to
+        exactly one canonical vertex by an *exact* nearest-reference lookup,
+        and the deformed value is read straight from the saved fine's
+        canonical-ordered coordinates. (See the checkpoint-hierarchy design
+        note.)
+        """
+        n_coarse = self._sidecar_n_coarse
+        cdim = self._sidecar_coarsest.getCoordinateDim()
+
+        # --- canonical (reference, deformed) coordinate pair, on rank 0 ---
+        # BOTH arrays are built rank-locally on COMM_SELF so they share ONE
+        # canonical ordering (serial .h5 load order == serial refine order,
+        # verified). That shared ordering is what makes deformed_canon[k] and
+        # reference_canon[k] the *same physical vertex* — the stamp pairs them
+        # by that index. (Reading the deformed coords from the COMM_WORLD
+        # undistributed load instead can use a different vertex ordering and
+        # silently scrambles the stamp.) COMM_SELF work is rank-local, so it
+        # cannot perturb the collective distribute of self._sidecar_coarsest.
+        if uw.mpi.rank == 0:
+            _df = _from_plexh5(self._sidecar_meshfile, PETSc.COMM_SELF)
+            deformed_canon = (
+                _df.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+            )
+            _cs = _from_plexh5(
+                _hierarchy_sidecar_name(self._sidecar_meshfile, 0),
+                PETSc.COMM_SELF,
+            )
+            for _ in range(n_coarse):
+                _cs.setRefinementUniform()
+                _cs = _cs.refine()
+            reference_canon = (
+                _cs.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+            )
+        else:
+            deformed_canon = None
+            reference_canon = None
+        deformed_canon = uw.mpi.comm.bcast(deformed_canon, root=0)
+        reference_canon = uw.mpi.comm.bcast(reference_canon, root=0)
+
+        # --- aligned hierarchy: distribute the coarsest, then local refine,
+        #     EXACTLY as _build_refined_hierarchy does (proven to
+        #     build a correct nested geometric-MG hierarchy at any np):
+        #     setRefinementUniform() on the base before distribute(), then a
+        #     plain refine() loop. refine() flags the regular refinement
+        #     itself — setting it by hand on a non-uniformly-refined DM
+        #     instead corrupts the nested interpolator and the solve diverges.
+        self._sidecar_coarsest.setRefinementUniform()
+        if not self._sidecar_coarsest.isDistributed():
+            self.sf1 = self._sidecar_coarsest.distribute()
+        self.dm_hierarchy = [self._sidecar_coarsest]
+        for i in range(n_coarse):
+            dm_refined = self.dm_hierarchy[i].refine()
+            dm_refined.setCoarseDM(self.dm_hierarchy[i])
+            self.dm_hierarchy.append(dm_refined)
+
+        self.dm_h = self.dm_hierarchy[-1]
+        self.dm_h.setName("uw_hierarchical_dm")
+
+        # Working dm is a link-free clone of the finest level (mirrors the
+        # refinement branch). It must NOT carry a coarse-DM link or
+        # mesh.update_lvec()'s createFieldDecomposition recurses into the
+        # 0-field coarse levels and fails.
+        self.dm = self.dm_h.clone()
+
+        # Defer the deformed-coordinate stamp: the hierarchy and working dm
+        # are built with REFERENCE coordinates here, and the saved deformed
+        # coordinates are applied through the normal _deform_mesh() path at
+        # the END of __init__ (once self._coords and the rebuild machinery
+        # exist). A raw setCoordinatesLocal() at this point — before the
+        # coordinate cache/callbacks are set up — leaves the mesh in an
+        # inconsistent state and the geometric multigrid solve diverges. Stash
+        # the canonical (reference, deformed) pair for the deferred apply.
+        self._pending_hierarchy_stamp = (reference_canon, deformed_canon, cdim)
+        self._sidecar_coarsest = None
+
+    def _build_refined_hierarchy(self, refinement, refinement_callback):
+        """Distribute the DM and build a uniformly refined FMG hierarchy.
+
+        Each level is a plain ``refine()`` of the previous one (never
+        ``refineHierarchy`` — the per-level loop lets the optional
+        ``refinement_callback`` repair each refined mesh, e.g. snapping
+        new boundary vertices back onto a curved surface). The working
+        ``self.dm`` becomes a link-free clone of the finest level.
+        """
+        self.dm.setRefinementUniform()
+
+        if not self.dm.isDistributed():
+            self.sf1 = self.dm.distribute()
+
+        # This is preferable to the refineHierarchy call
+        # because we can repair the refined mesh at each
+        # step along the way
+
+        self.dm_hierarchy = [self.dm]
+        for i in range(refinement):
+            dm_refined = self.dm_hierarchy[i].refine()
+            dm_refined.setCoarseDM(self.dm_hierarchy[i])
+
+            if callable(refinement_callback):
+                refinement_callback(dm_refined)
+
+            self.dm_hierarchy.append(dm_refined)
+
+        self.dm_h = self.dm_hierarchy[-1]
+        self.dm_h.setName("uw_hierarchical_dm")
+
+        # Is this needed here, after the above calls ?
+        if callable(refinement_callback):
+            for dm in self.dm_hierarchy:
+                refinement_callback(dm)
+
+        # Single level equivalent dm (needed for aux vars ?? Check this - LM)
+        self.dm = self.dm_h.clone()
+
+    def _build_coarsened_hierarchy(self, coarsening):
+        """Distribute the DM and build a coarsened FMG hierarchy.
+
+        Builds ``coarsening`` successively coarser levels below the input
+        mesh, then reverses the list so the coarsest mesh is first —
+        consistent with the ordering the refinement path produces. The
+        working ``self.dm`` becomes a link-free clone of the finest level.
+
+        Note: coarsening callbacks are not supported — the coarse meshes
+        do not carry the boundary labels a callback would need.
+        """
+        # Does this have any effect on a coarsening strategy ?
+        self.dm.setRefinementUniform()
+
+        if not self.dm.isDistributed():
+            self.sf1 = self.dm.distribute()
+
+        self.dm_hierarchy = [self.dm]
+        for i in range(coarsening):
+            dm_coarsened = self.dm_hierarchy[i].coarsen()
+            self.dm_hierarchy[i].setCoarseDM(dm_coarsened)
+            self.dm_hierarchy.append(dm_coarsened)
+
+        # Coarsest mesh should be first in the hierarchy to be consistent
+        # with the way we manage refinements
+        self.dm_hierarchy.reverse()
+
+        self.dm_h = self.dm_hierarchy[-1]
+        self.dm_h.setName("uw_hierarchical_dm")
+
+        # Single level equivalent dm (needed for aux vars ?? Check this - LM)
+        self.dm = self.dm_h.clone()
+
+    def _install_coordinate_array(self, verbose):
+        """Expose the DM's coordinates as the mesh's canonical coord array.
+
+        Validates the raw coordinate buffer against ``cdim``, wraps it as
+        an ``NDArray_With_Callback`` (``self._coords``) whose setter
+        callback routes every user coordinate write through the full
+        ``_deform_mesh`` rebuild, and builds the navigation-only coord
+        view used by the point-location indices on manifold meshes.
+        """
+        # Validate that the DM's coordinate array is consistent with the
+        # coordinate dimension before reshaping. A mismatch here almost always
+        # means a STALE or CORRUPT cached mesh file — e.g. a cached .h5 that was
+        # written as a lower-dimension mesh (the classic symptom of a leaked
+        # ``dm_plex_gmsh_spacedim`` during generation; see _from_gmsh). Raise a
+        # clear, actionable error instead of an opaque numpy "cannot reshape"
+        # failure.
+        _coord_size = self.dm.getCoordinatesLocal().array.size
+        if self.cdim and _coord_size % self.cdim != 0:
+            _src = f" ('{self.filename}')" if getattr(self, "filename", None) else ""
+            raise RuntimeError(
+                f"Mesh coordinate array (size {_coord_size}) is not divisible by "
+                f"the coordinate dimension cdim={self.cdim}, so it cannot be a "
+                f"valid set of {self.cdim}-D node coordinates. This usually "
+                f"indicates a stale or corrupt cached mesh file{_src} (e.g. a "
+                f"cache written at a different space dimension). Delete the "
+                f"cached '.meshes/*.msh' and '.msh.h5' for this mesh and "
+                f"regenerate."
+            )
+
+        # Expose mesh points through special numpy array class with a callback
+        # on all setter operations
+
+        self._coords = uw.utilities.NDArray_With_Callback(
+            numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
+            owner=self,
+        )
+
+        # Navigation-only coord view. On manifold meshes the nav DM is
+        # a 1-cell-overlap clone with extra ghost vertices; navigation
+        # indices (kdtree, in-cell control points) read from these
+        # coords. On volume meshes _nav_dm is None and we reuse the
+        # main coords.
+        if self._nav_dm is not None:
+            self._nav_coords = numpy.array(
+                self._nav_dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
+            )
+        else:
+            self._nav_coords = self._coords
+
+        # The callback is to rebuild the mesh data structures - we already have a routine
+        # to handle that so we just wrap it here.
+
+        def mesh_update_callback(array, change_context):
+            mesh = array.owner
+            if mesh is None:
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or during mesh
+                # replacement), where the owning Python mesh object has already
+                # been garbage collected but the NDArray proxy still exists.
+                return
+
+            # ``NDArray_With_Callback.__array_finalize__`` propagates this
+            # callback (and the owner) to every view / fancy-index copy of the
+            # coordinate array. Only the mesh's *canonical* coordinate array
+            # represents an actual coordinate update; a derived sub-array (e.g.
+            # a boundary subset built inside the tangent-slip / bounding-surface
+            # / mover machinery) that merely inherited this callback must NOT
+            # trigger a full-mesh deform. Identity-gate on the canonical
+            # ``_coords`` — note this is NOT a size filter, so a genuinely
+            # malformed full coordinate update still reaches ``_deform_mesh``
+            # and surfaces loudly rather than being silently dropped.
+            if array is not mesh._coords:
+                return
+
+            if verbose:
+                uw.pprint(0, f"Mesh update callback - mesh deform")
+
+            coords = array.reshape(-1, mesh.cdim)
+            mesh._deform_mesh(coords, verbose=verbose)
+
+            # Increment mesh version to notify registered swarms of coordinate changes
+            with mesh._mesh_update_lock:
+                mesh._mesh_version += 1
+                if verbose:
+                    uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
+
+            return
+
+        self._coords.add_callback(mesh_update_callback)
+
+    def _setup_symbolic_coordinates(self, coordinate_system_type):
+        """Create the sympy coordinate systems and their JIT code bindings.
+
+        Builds the generic Cartesian ``CoordSys3D`` (``N``, mapped to
+        ``petsc_x`` in generated kernels) and the boundary-normal system
+        (``Gamma``, mapped to ``petsc_n`` in surface integrals), attaches
+        the mesh's natural :class:`CoordinateSystem`, the time symbol
+        ``mesh.t`` (``petsc_t``), and patches unit awareness onto the
+        coordinate symbols.
+        """
+        # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
+        # A unique set of vectors / names for each mesh instance
+        #
+
+        self.CoordinateSystemType = coordinate_system_type
+
+        from sympy.vector import CoordSys3D
+
+        self._N = CoordSys3D(f"N")
+
+        # Tidy some of this printing without changing the
+        # underlying vector names (as these are part of the code generation system)
+
+        self._N.x._latex_form = r"\mathrm{\xi_0}"
+        self._N.y._latex_form = r"\mathrm{\xi_1}"
+        self._N.z._latex_form = r"\mathrm{\xi_2}"
+        self._N.i._latex_form = r"\mathbf{\hat{\mathbf{e}}_0}"
+        self._N.j._latex_form = r"\mathbf{\hat{\mathbf{e}}_1}"
+        self._N.k._latex_form = r"\mathbf{\hat{\mathbf{e}}_2}"
+
+        self._Gamma = CoordSys3D(r"\Gamma")
+
+        self._Gamma.x._latex_form = r"\Gamma_x"
+        self._Gamma.y._latex_form = r"\Gamma_y"
+        self._Gamma.z._latex_form = r"\Gamma_z"
+
+        # Now add the appropriate coordinate system for the mesh's natural geometry
+        # This step will usually over-write the defaults we just defined
+        # For geographic meshes loaded from checkpoint, pre-set the ellipsoid
+        # so the CoordinateSystem __init__ picks it up.
+        if hasattr(self, "_checkpoint_ellipsoid") and self._checkpoint_ellipsoid is not None:
+            self._checkpoint_ellipsoid_pending = self._checkpoint_ellipsoid
+
+        self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
+
+        # This was in the _jit extension but ... if
+        # not here then the tests fail sometimes (caching ?)
+
+        self._N.x._ccodestr = "petsc_x[0]"
+        self._N.y._ccodestr = "petsc_x[1]"
+        self._N.z._ccodestr = "petsc_x[2]"
+
+        # Surface integrals also have normal vector information as petsc_n
+
+        self._Gamma.x._ccodestr = "petsc_n[0]"
+        self._Gamma.y._ccodestr = "petsc_n[1]"
+        self._Gamma.z._ccodestr = "petsc_n[2]"
+
+        # Time coordinate — PETSc passes this as petsc_t to all pointwise
+        # functions. Solvers set dm.time before each solve via solve(time=t).
+        # Users reference it as mesh.t in expressions (e.g. V0 * sympy.sin(omega * mesh.t))
+        from ..utilities.unit_aware_coordinates import TimeSymbol
+
+        self._t = TimeSymbol("t")
+        self._t._units = None  # patched below by _patch_time_units
+
+        # Add unit awareness to coordinate symbols if mesh has units or model has scales
+        from ..utilities.unit_aware_coordinates import patch_coordinate_units
+
+        patch_coordinate_units(self)
 
     @property
     def dim(self) -> int:
