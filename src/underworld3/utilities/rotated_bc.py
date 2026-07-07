@@ -437,6 +437,47 @@ def _gather_fields_to_global(solver):
     return U
 
 
+def _project_out_normal_component(u, Q, Qt, normal_rows):
+    """Impose the strong ``v_n = 0`` constraint exactly on the composite vector
+    ``u``, in place: rotate to the boundary frame (``û = Q u``), zero the
+    constrained normal rows, rotate back (``u = Qᵀ û``). Q is orthogonal, so this
+    is the exact projection onto the constraint-satisfying subspace."""
+    uh = u.duplicate()                       # transient projection buffer
+    Q.mult(u, uh)
+    _zero_rows_local(uh, normal_rows)
+    Qt.mult(uh, u)
+    uh.destroy()
+
+
+def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
+                              max_halvings=8):
+    """Backtracking line search on ‖F̂‖ for the rotated Newton/Picard update
+    ``u + α d`` (full step α=1 first, halved on failure). Cheap insurance far from
+    the solution; α=1 is accepted immediately near it. Every trial iterate is
+    projected back onto the strong v_n=0 constraint before its residual is
+    measured.
+
+    Owns all its temporaries' destroys: on acceptance the input ``u`` is destroyed
+    and replaced by the accepted iterate. Returns ``(u, improved)``; ``improved``
+    is False when no step reduced the residual below ``rnorm`` — the iteration has
+    stalled (typically because it is already at the solution) and the caller should
+    stop rather than accept a non-decreasing step."""
+    alpha = 1.0
+    for _ls in range(max_halvings):
+        utry = u.copy()
+        utry.axpy(alpha, d)
+        _project_out_normal_component(utry, Q, Qt, normal_rows)
+        Ftry = rotated_residual(utry)
+        fnorm = Ftry.norm()
+        Ftry.destroy()
+        if fnorm < rnorm:
+            u.destroy()
+            return utry, True
+        utry.destroy()
+        alpha *= 0.5
+    return u, False
+
+
 def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=True,
                                      verbose=False, zero_init_guess=True, picard=0,
                                      rtol=None, atol=1.0e-11, stol=1.0e-8, max_it=50):
@@ -524,11 +565,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         u.set(0.0)
     else:
         u = _gather_fields_to_global(solver)
-    uh = u.duplicate()                       # transient projection buffer
-    Q.mult(u, uh)
-    _zero_rows_local(uh, normal_rows)
-    Qt.mult(uh, u)
-    uh.destroy()
+    _project_out_normal_component(u, Q, Qt, normal_rows)
 
     J, Jp = snes.getJacobian()[:2]
     pres_is = solver._subdict["pressure"][0]
@@ -606,41 +643,19 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         # are at the solution — the exit for a warm start that is already converged
         # (otherwise the relative test above, with a tiny r0, chatters near machine
         # level). ‖u‖=0 on a cold start ⇒ this never fires prematurely (d is large).
-        if d.norm() <= stol * (u.norm() + 1e-30):
-            converged = True
-            dhat.destroy()
-            d.destroy()
-            bhat.destroy()
-            Fhat.destroy()
-            break
-        # backtracking line search on ‖F̂‖ (full Newton/Picard step first). Cheap
-        # insurance far from the solution; α=1 is accepted immediately near it. If no
-        # step reduces the residual, the iteration has stalled (typically already at
-        # the solution) → stop rather than accept a non-decreasing step.
-        alpha = 1.0
+        step_converged = d.norm() <= stol * (u.norm() + 1e-30)
         improved = False
-        for _ls in range(8):
-            utry = u.copy()
-            utry.axpy(alpha, d)
-            uth = utry.duplicate()               # transient projection buffer
-            Q.mult(utry, uth)
-            _zero_rows_local(uth, normal_rows)
-            Qt.mult(uth, utry)
-            uth.destroy()
-            Ftry = rotated_residual(utry)
-            if Ftry.norm() < rnorm:
-                u.destroy()
-                u = utry
-                improved = True
-                Ftry.destroy()
-                break
-            utry.destroy()
-            Ftry.destroy()
-            alpha *= 0.5
+        if not step_converged:
+            u, improved = _backtracking_line_search(
+                u, d, rnorm, rotated_residual, Q, Qt, normal_rows)
+        # every per-iteration temporary dies HERE, on all exit paths
         dhat.destroy()
         d.destroy()
         bhat.destroy()
         Fhat.destroy()
+        if step_converged:
+            converged = True
+            break
         if not improved:
             break
 
