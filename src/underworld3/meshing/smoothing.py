@@ -3718,19 +3718,28 @@ def metric_density_from_gradient(
     field : scalar MeshVariable or sympy scalar expression
         The field whose gradient drives refinement (e.g. ``T``).
     refinement : float, optional
-        Target COARSEST:FINEST edge-length ratio ``R = h_max/h_min``
-        the metric grades to. When ``> 1`` this **overrides** ``amp``
-        (and the strategy default). Because the mover equidistributes
-        ``ρ`` (so cell edge ``h ∝ ρ^{-1/d}``), the full ``t∈[0,1]``
-        range gives ``h_max/h_min = (1 + amp)^{power/d}``; this is
-        inverted to set ``amp = R^{d/power} - 1``. So ``R`` is a
-        predictable, **mesh-independent** resolution knob (``R=2`` ⇒
-        finest cells ~2× smaller than the coarsest). The *realised*
-        ratio tracks ``R`` until the fixed node budget saturates it
-        (large ``R`` is capped — going further needs h-refinement to
-        add nodes, not just redistribution). ``None`` (default) ⇒ use
-        ``amp`` / the ``strategy`` preset. Exposed in the convection
-        harness as ``--resolution-ratio``.
+        Maximum local refinement factor on the background cell size:
+        the metric targets the cell-size envelope
+        ``h ∈ [h0/refinement, h0·coarsening]``. When given, the
+        **envelope branch** is taken: ρ is built directly from the
+        percentile rank of ``|∇field|`` with ``geomean(ρ) = 1`` by
+        construction (see the inline commentary at the envelope
+        branch), and ``amp`` / ``lo_percentile`` / ``hi_percentile``
+        / ``mode`` / ``power`` are **ignored**. The realised ratio
+        tracks the request until the fixed node budget saturates it
+        (going further needs h-refinement — more nodes, not
+        redistribution). ``None`` (default) ⇒ the legacy
+        ``amp``-based percentile-ramp path below. This is the knob
+        :func:`follow_metric` exposes.
+    coarsening : float or "auto", default "auto"
+        Envelope-branch partner of ``refinement``: maximum local
+        coarsening factor (``h_max = h0·coarsening``). ``"auto"``
+        picks the budget-conserving minimum ``refinement**(1/d)``.
+        Ignored when ``refinement`` is None.
+    metric_choice : {"front-following", "gradient-uniform", "arc-length"}
+        Envelope-branch spatial distribution rule (see the inline
+        commentary at the envelope branch). Ignored when
+        ``refinement`` is None.
     amp : float, default 8.0
         Bunching intensity: ``ρ_max = (1 + amp)^power`` where
         ``|∇field|`` is strongest. Larger ⇒ stronger
@@ -3815,14 +3824,6 @@ def metric_density_from_gradient(
 
     cdim = mesh.cdim
 
-    # `refinement` R = target COARSEST:FINEST edge-length ratio (h_max/h_min).
-    # The mover equidistributes ρ=(1+amp·t)^power, so cell edge h ∝ ρ^(-1/d) and
-    # the full t∈[0,1] range gives h_max/h_min = (1+amp)^(power/d). Invert that to
-    # set amp, so R is a predictable, mesh-independent edge-length ratio. This
-    # OVERRIDES the strategy's amp (R is the explicit resolution knob).
-    # (Previously `refinement` was accepted but unused — a silent no-op.)
-    if refinement is not None and float(refinement) > 1.0:
-        amp = float(refinement) ** (cdim / float(power)) - 1.0
     X = mesh.CoordinateSystem.X
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
@@ -3944,6 +3945,10 @@ def metric_density_from_gradient(
     # * "gradient-uniform" — ρ ∝ |∇field|², clipped to the
     #   envelope. Targets uniform per-cell Δfield (the natural
     #   goal for advection-diffusion accuracy).
+    # * "arc-length" — smooth arc-length monitor
+    #   ρ = √(1 + (A·|∇field|/g_hi)²), clipped to the envelope.
+    #   Grades continuously from ρ=1 in flat regions (no clip
+    #   kink) → cleaner OT / Monge–Ampère meshes.
     #
     # ``coarsening="auto"`` uses the budget-conserving minimum
     # ``refinement^(1/d)`` — the smallest coarsening that
@@ -4137,6 +4142,11 @@ def follow_metric(
       diffusion accuracy). The clipping makes the achieved
       grading regress to the front-following profile when the
       gradient distribution is concentrated.
+    * "arc-length" — smooth arc-length monitor
+      :math:`\rho = \sqrt{1 + (A\,|\nabla\text{field}|/g_{hi})^2}`,
+      clipped to the envelope. Grades continuously from
+      :math:`\rho = 1` in flat regions (no clip kink), giving
+      cleaner OT / Monge–Ampère meshes.
 
     Auto coarsening (the budget-conserving default)
     -----------------------------------------------
@@ -4184,12 +4194,15 @@ def follow_metric(
         :math:`\text{refinement}^{1/d}`. Larger values free more
         budget for smoother grading at the cost of a wider
         cell-size spread.
-    metric : {"front-following", "gradient-uniform"}, default "front-following"
+    metric : {"front-following", "gradient-uniform", "arc-length"}, default "front-following"
         Strategic equidistribution rule. ``"front-following"``
         concentrates cells where the gradient is steepest (mild
         grading). ``"gradient-uniform"`` aims for the same
         per-cell field change everywhere (best for advection-
-        diffusion accuracy).
+        diffusion accuracy). ``"arc-length"`` is a smooth
+        arc-length monitor — grades continuously from flat
+        regions with no clip kink (cleaner OT / Monge–Ampère
+        meshes).
     skip_threshold : float, default 0.9
         Alignment threshold for the adapt-on-demand skip. If the
         existing mesh's :func:`mesh_metric_mismatch` alignment is
