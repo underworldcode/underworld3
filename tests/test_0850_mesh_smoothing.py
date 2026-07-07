@@ -212,14 +212,14 @@ class TestMMPDEDimensionGuard:
         """The guard reads only mesh.cdim, before metric parsing or DM
         access, so a minimal cdim stand-in locks the contract
         deterministically (same pattern as test_0762's non2d tests)."""
-        from underworld3.meshing.smoothing import _winslow_mmpde
+        from underworld3.meshing.smoothing import _mmpde_mover
 
         class _Mesh3D:
             cdim = 3
 
         with pytest.raises(NotImplementedError,
                            match="MMPDE mesh movement is currently 2D-only"):
-            _winslow_mmpde(_Mesh3D(), metric=1, pinned_labels=(),
+            _mmpde_mover(_Mesh3D(), metric=1, pinned_labels=(),
                            verbose=False)
 
     def test_mmpde_2d_smoke_still_works(self):

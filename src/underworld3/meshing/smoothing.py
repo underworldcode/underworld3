@@ -37,7 +37,7 @@ Two operators:
     being investigated.
 
 The optimal-transport / Monge–Ampère mesh-potential approach
-(``_winslow_elliptic``, preserved, not the default) was
+(``_monge_ampere_mover``, preserved, not the default) was
 exhaustively investigated 2026-05-16 and found to cap at the same
 ~1.07 for every variant (linear / recovered-Hessian / convex-branch
 BFO / outer composition). That *every* dissimilar method
@@ -306,7 +306,7 @@ def _min_incident_edge(dm, coords):
     """Per-vertex minimum incident edge length (local-chart
     v-pStart order). Used as an optional secondary per-node cap on
     the spring step (the primary tangle guard is the coherent global
-    signed-area backtrack in ``_winslow_spring``)."""
+    signed-area backtrack in ``_spring_equilibrium_mover``)."""
     pStart, pEnd = dm.getDepthStratum(0)
     eStart, eEnd = dm.getDepthStratum(1)
     h = np.full(pEnd - pStart, np.inf)
@@ -577,7 +577,7 @@ def _edge_pairs(dm):
     return np.asarray(pairs, dtype=np.int64)
 
 
-def _winslow_spring(mesh, metric, pinned_labels, verbose,
+def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
                     max_cg_iters=300,
                     boundary_slip=False, shape_w=1.0, size_w=8.0,
                     n_sweeps=None):
@@ -885,7 +885,7 @@ def _winslow_spring(mesh, metric, pinned_labels, verbose,
 #  ingredient worth understanding, and (b) the elastic-spring
 #  redistribution may work as a *preconditioner* for the MA solve
 #  (a graded starting mesh might let MA escape the weak branch) —
-#  an open investigation. Call _winslow_elliptic() directly to use.
+#  an open investigation. Call _monge_ampere_mover() directly to use.
 # ======================================================================
 
 # Cached MA solver state keyed by (mesh-id, pinned-labels, topology):
@@ -1015,7 +1015,7 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
     The Picard loop fixes the mesh ⇒ the operator is constant across
     the ~25 inner solves; ``snes_lag_jacobian=-2`` /
     ``snes_lag_preconditioner=-2`` build the PC **once per
-    ``_winslow_elliptic`` call** and reuse it for every inner solve
+    ``_monge_ampere_mover`` call** and reuse it for every inner solve
     (the GAMG hierarchy / Jacobi diagonal is *not* rebuilt per
     iteration — that per-iter GAMG re-setup was the original ~0.9 s
     Hessian cost). ``_deform_mesh`` resets ``is_setup`` so the lag
@@ -1242,7 +1242,7 @@ def _hessian_recovery_class():
     return _HESSIAN_CLASS
 
 
-def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
+def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
                       n_outer=1, n_picard=25, relax=1.0,
                       step_frac=None, picard_relax=0.4,
                       outer_tol=1.0e-3, boundary_slip=False,
@@ -1504,7 +1504,7 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
             break
 
 
-def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
+def _ot_improvement_step(mesh, metric, pinned_labels, verbose,
                              n_outer=1, relax=1.0,
                              step_frac=0.3,
                              outer_tol=1.0e-4,
@@ -1532,7 +1532,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
     deformed mesh applies another improvement step. Compose
     freely with spring / smoothing / anisotropic.
 
-    Differences from ``_winslow_elliptic`` (the convex-branch
+    Differences from ``_monge_ampere_mover`` (the convex-branch
     BFO Picard):
 
     * Linear: one weighted-Poisson per outer iter, no inner
@@ -1544,7 +1544,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
       asymmetry; the iteration is on the current mesh, ρ is at
       its physical position).
 
-    Parameters mirror ``_winslow_elliptic`` where they apply.
+    Parameters mirror ``_monge_ampere_mover`` where they apply.
     ``n_outer`` composes outer improvement steps; the source
     drives toward zero so the per-iter motion naturally
     diminishes.
@@ -1565,7 +1565,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "_winslow_equidistribute: 2D meshes only for now.")
+            "_ot_improvement_step: 2D meshes only for now.")
 
     # Boundary slip uses the projected boundary-normal field
     # (mesh.Gamma_P1). This is reliable only for *radial* coordinate
@@ -1632,7 +1632,7 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
     else:
         phi, ps, gradphi, gproj, vol_field = cache
 
-    # See _winslow_elliptic for the rationale on this combined check —
+    # See _monge_ampere_mover for the rationale on this combined check —
     # ``linear_solver="direct"`` silently routes to the iterative path
     # under MPI, so honour the warm-start there too.
     _zig = not (linear_solver == "gamg"
@@ -1750,8 +1750,8 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                          metric_refresh_per_iter=False):
     r"""Anisotropic metric-tensor mesh redistribution — approach (3).
 
-    The settled scalar equidistribution paths (``_winslow_spring``,
-    ``_winslow_elliptic``) cannot do coherent *anisotropic* bulk
+    The settled scalar equidistribution paths (``_spring_equilibrium_mover``,
+    ``_monge_ampere_mover``) cannot do coherent *anisotropic* bulk
     transport on a fixed topology — a scalar potential is isotropic,
     so an annulus radial feature over-collapses one pinned-boundary
     sliver layer while the tangential edges sit frozen (see the
@@ -1795,14 +1795,14 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     ``_CofDiff``-style ``DiffusionModel`` pattern) and the
     factor-once-reuse direct solver. **Linear** — one solve per
     component per outer step, no Picard (much cheaper than the BFO
-    ``_winslow_elliptic``). Homogeneous Dirichlet ``u=0`` on the
+    ``_monge_ampere_mover``). Homogeneous Dirichlet ``u=0`` on the
     pinned boundary makes the per-component operator non-singular —
     no ``constant_nullspace``, side-stepping the GAMG-pure-Neumann
     fragility entirely (``boundary_slip=True`` falls back to the
     pure-Neumann + ring-projection treatment of
-    ``_winslow_elliptic``). ``n_outer`` composes the map (re-project
+    ``_monge_ampere_mover``). ``n_outer`` composes the map (re-project
     ``∇ρ`` / rebuild ``D`` on the moved mesh — the standard MMPDE
-    outer iteration). Reuses ``_winslow_elliptic``'s coherent global
+    outer iteration). Reuses ``_monge_ampere_mover``'s coherent global
     signed-area backtrack, ``boundary_slip`` and ``move_anisotropy``.
 
     .. warning::
@@ -1819,7 +1819,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
        (radial/tangential edge split + minA/meanA, *not* the
        anisotropy-blind d/n).
 
-    Parameters mirror ``_winslow_elliptic`` where shared.
+    Parameters mirror ``_monge_ampere_mover`` where shared.
 
     The **decoupled direct** Winslow form (each physical coordinate
     M-harmonic, independently) has no Rado–Kneser–Choquet
@@ -1944,7 +1944,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
 
         # boundary_slip ⇒ pure-Neumann per component (constant
         # nullspace, ring-projected in the move — exactly the
-        # _winslow_elliptic slip treatment). Default (pinned) ⇒
+        # _monge_ampere_mover slip treatment). Default (pinned) ⇒
         # homogeneous Dirichlet u=0 → non-singular, no nullspace.
         singular = bool(boundary_slip)
         usolvers, ufields = [], []
@@ -1979,7 +1979,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     else:
         grho, gproj, Df, usolvers, ufields = cache
 
-    # See _winslow_elliptic for rationale — ``linear_solver="direct"``
+    # See _monge_ampere_mover for rationale — ``linear_solver="direct"``
     # silently falls back to the iterative path under MPI, so honour
     # the warm-start there too.
     _zig = not (linear_solver == "gamg"
@@ -1988,7 +1988,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     # ---- build the eigen-clamped metric tensor field D ONCE ------
     # on the *undeformed* mesh (the design metric), then hold it
     # fixed and Lagrangian (the field rides material points through
-    # _deform_mesh, exactly as _winslow_spring computes its
+    # _deform_mesh, exactly as _spring_equilibrium_mover computes its
     # rest-lengths / A0 once). Re-projecting ∇ρ on the progressively
     # distorted mesh inside the outer loop is a positive feedback —
     # D blows up on squashed cells → catastrophic over-collapse
@@ -2215,7 +2215,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             ).reshape(-1)
 
         # Directional move-weighting (opt-in; same frame + default
-        # None ⇒ unchanged as _winslow_elliptic).
+        # None ⇒ unchanged as _monge_ampere_mover).
         if move_anisotropy is not None and cdim == 2:
             w_r, w_t = (float(move_anisotropy[0]),
                         float(move_anisotropy[1]))
@@ -2310,7 +2310,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         # remedy is to integrate the mesh PDE as a damped gradient
         # flow: under-relax the displacement and compose over
         # n_outer steps (the metric is re-projected each step). This
-        # is the exact analogue of _winslow_elliptic's picard_relax
+        # is the exact analogue of _monge_ampere_mover's picard_relax
         # (the BFO path needs ω≈0.4 or its Hessian grows unbounded).
         step = float(relax) * disp
 
@@ -2880,7 +2880,7 @@ def _min_incident_edge_nd(cells, coords):
     return v
 
 
-def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+def _mmpde_mover(mesh, metric, pinned_labels, verbose,
                    n_outer=150, p=1.5, theta=1.0 / 3.0, tau=1.0,
                    step_frac=0.2, area_floor_frac=0.01,
                    boundary_slip=False, outer_tol=1.0e-7, tol=1.0e-3,
@@ -2971,7 +2971,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
         Msym = sympy.eye(cdim) * Msym[0, 0]
     if Msym.shape != (cdim, cdim):
         raise ValueError(
-            f"_winslow_mmpde metric must be {cdim}x{cdim} (or a scalar "
+            f"_mmpde_mover metric must be {cdim}x{cdim} (or a scalar "
             f"density), got {Msym.shape}")
 
     def _eval_M_analytic(pts):
@@ -3199,7 +3199,7 @@ def _winslow_mmpde(mesh, metric, pinned_labels, verbose,
     _valid_accel = ("none", "heavyball", "hb-restart", "cg")
     if _accel not in _valid_accel:
         raise ValueError(
-            f"_winslow_mmpde: unknown accel {accel!r}; "
+            f"_mmpde_mover: unknown accel {accel!r}; "
             f"choose from {_valid_accel}")
     _mmpde_beta = float(momentum)
     if _accel in ("heavyball", "hb-restart") and _mmpde_beta == 0.0:
@@ -3510,10 +3510,10 @@ def _smooth_mesh_interior_bare(
                       f"alignment r={mm['alignment']:.3f})",
                       flush=True)
         if method == "spring":
-            _winslow_spring(mesh, metric, pinned_labels, verbose,
+            _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
                             boundary_slip=boundary_slip, **mk)
         elif method in ("ma", "monge-ampere", "monge_ampere"):
-            _winslow_elliptic(mesh, metric, pinned_labels, verbose,
+            _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
                               boundary_slip=boundary_slip, **mk)
         elif method in ("ot", "equidistribute", "improve"):
             # The OT / equidistribution mover is incomplete — e.g. its boundary
@@ -3529,7 +3529,7 @@ def _smooth_mesh_interior_bare(
                 "method='mmpde' with a scalar metric. Prefer 'mmpde' for "
                 "production adaptive meshing.",
                 DeprecationWarning, stacklevel=2)
-            _winslow_equidistribute(mesh, metric, pinned_labels,
+            _ot_improvement_step(mesh, metric, pinned_labels,
                                      verbose,
                                      boundary_slip=boundary_slip,
                                      **mk)
@@ -3538,7 +3538,7 @@ def _smooth_mesh_interior_bare(
                                  verbose,
                                  boundary_slip=boundary_slip, **mk)
         elif method in ("mmpde", "variational"):
-            _winslow_mmpde(mesh, metric, pinned_labels, verbose,
+            _mmpde_mover(mesh, metric, pinned_labels, verbose,
                            boundary_slip=boundary_slip, **mk)
         else:
             raise ValueError(
@@ -4414,3 +4414,36 @@ def follow_metric(
     remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
     return _state["moved"]
 
+
+# ---------------------------------------------------------------------------
+# One-cycle deprecated aliases (renamed 2026-07, READ-06): the ``_winslow_``
+# prefix was a misnomer on four of the five prefixed movers — only
+# ``_winslow_anisotropic`` actually solves a Winslow (M-weighted Laplace)
+# coordinate map. The old names are kept for one release cycle because they
+# appear in exploratory scripts (scripts/) and external user scripts.
+# ---------------------------------------------------------------------------
+def _deprecated_mover_alias(new_func, old_name):
+    """Wrap ``new_func`` so calls through ``old_name`` still work but emit
+    a DeprecationWarning naming the replacement."""
+    import functools
+
+    @functools.wraps(new_func)
+    def _alias(*args, **kwargs):
+        warnings.warn(
+            f"{old_name} was renamed to {new_func.__name__} (READ-06: the "
+            f"mover is not a Winslow smooth); the old name is a one-cycle "
+            f"deprecated alias.",
+            DeprecationWarning, stacklevel=2)
+        return new_func(*args, **kwargs)
+
+    return _alias
+
+
+_winslow_spring = _deprecated_mover_alias(
+    _spring_equilibrium_mover, "_winslow_spring")
+_winslow_elliptic = _deprecated_mover_alias(
+    _monge_ampere_mover, "_winslow_elliptic")
+_winslow_equidistribute = _deprecated_mover_alias(
+    _ot_improvement_step, "_winslow_equidistribute")
+_winslow_mmpde = _deprecated_mover_alias(
+    _mmpde_mover, "_winslow_mmpde")

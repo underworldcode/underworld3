@@ -5,7 +5,7 @@ This module factors the production pattern that was inlined in
 reusable library function. The public entry point is :meth:`Mesh.OT_adapt`
 (see ``discretisation/discretisation_mesh.py``); this module holds the
 algorithm and the boundary-slip helpers it shares with the OT mover
-(``_winslow_equidistribute`` in ``smoothing.py``).
+(``_ot_improvement_step`` in ``smoothing.py``).
 
 The algorithm, per adapt event:
 
