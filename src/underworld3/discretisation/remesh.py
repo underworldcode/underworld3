@@ -189,21 +189,50 @@ def _gather_transfer_vars(mesh: "Mesh") -> dict:
     return buckets
 
 
-def _snapshot_remap_data(remap_vars):
-    """Copy the current ``.data`` array of every REMAP var (defensive copy)."""
+def _snapshot_var_data(vars_):
+    """Copy the current ``.data`` array of each given var (defensive copy).
+
+    Used for both the REMAP bucket and the operator-managed bucket in
+    :func:`remesh_with_field_transfer`. Vars that cannot be snapshotted
+    are omitted from the returned dict.
+    """
     out = {}
-    for var in remap_vars:
+    for var in vars_:
         try:
             arr = np.asarray(var.data)
             if arr.size == 0:
                 continue
             out[var] = arr.copy()
         except Exception:
-            # If a var's data is not addressable yet (lazy alloc, etc.),
-            # skip it — nothing to snapshot. The transfer pass will just
-            # not touch it.
+            # Sanctioned swallow: a var whose storage is unallocated or
+            # size-0 on this rank (lazy allocation / empty local partition)
+            # has nothing to snapshot. It is absent from the returned dict,
+            # so the transfer pass never touches it (the write-back twin,
+            # _write_var_data, skips the same vars).
             pass
     return out
+
+
+def _write_var_data(var, values):
+    """Overwrite ``var``'s DOF values in place, tolerating unwritable storage.
+
+    Parameters
+    ----------
+    var : MeshVariable
+        Target variable; its full ``.data`` buffer is overwritten.
+    values : array_like or float
+        Replacement values, broadcastable to ``var.data``'s shape
+        (a scalar such as ``0.0`` zeros the whole buffer).
+    """
+    try:
+        np.asarray(var.data)[...] = values
+    except Exception:
+        # Sanctioned swallow: a var whose storage is unallocated or size-0
+        # on this rank (lazy allocation / empty local partition) has nowhere
+        # to write. Skipping leaves the variable exactly as the snapshot
+        # pass found it — the same vars are skipped by _snapshot_var_data,
+        # so no transfer is silently half-applied.
+        pass
 
 
 def _remap_one_var(var, old_X, new_X, mesh):
@@ -317,10 +346,10 @@ def _remesh_with_field_transfer_impl(
     managed_vars = buckets["managed"]
 
     old_X = np.asarray(mesh.X.coords).copy()
-    old_data = _snapshot_remap_data(remap_vars)
+    old_data = _snapshot_var_data(remap_vars)
     # Snapshot managed vars too — needed when a hook opts out of ALE
     # for this adapt and falls back to REMAP (see RemeshContext docs).
-    managed_snapshot = _snapshot_remap_data(managed_vars)
+    managed_snapshot = _snapshot_var_data(managed_vars)
 
     # Run the mover. It is allowed to call _deform_mesh many times; .data
     # is untouched by _deform_mesh, so REMAP snapshots stay valid.
@@ -366,10 +395,7 @@ def _remesh_with_field_transfer_impl(
     # API. REINIT is for *framework-stamped* stateless vars.
     if extra_zero:
         for var in extra_zero:
-            try:
-                np.asarray(var.data)[...] = 0.0
-            except Exception:
-                pass
+            _write_var_data(var, 0.0)
 
     return True
 
@@ -439,10 +465,7 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     # then deform forward and write the resampled values back.
     mesh._deform_mesh(old_X)
     for var, data in old_data.items():
-        try:
-            np.asarray(var.data)[...] = data
-        except Exception:
-            pass
+        _write_var_data(var, data)
 
     resampled = {}
     for var in vars_:
@@ -471,10 +494,7 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():
-        try:
-            np.asarray(var.data)[...] = val
-        except Exception:
-            pass
+        _write_var_data(var, val)
 
 
 # Public alias for operator-hook use.
