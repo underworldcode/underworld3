@@ -3960,20 +3960,13 @@ class Mesh(Stateful, uw_object):
 
         output_base_name = os.path.join(outputPath, filename)
 
-        # check the directory where we will write checkpoint
-        dir_path = os.path.dirname(output_base_name)  # get directory
-
-        # check if path exists
-        if os.path.exists(os.path.abspath(dir_path)):  # easier to debug abs
-            pass
-        else:
-            raise RuntimeError(f"{os.path.abspath(dir_path)} does not exist")
-
-        # check if we have write access
-        if os.access(os.path.abspath(dir_path), os.W_OK):
-            pass
-        else:
-            raise RuntimeError(f"No write access to {os.path.abspath(dir_path)}")
+        # Fail early, with the absolute path in the message, if the output
+        # directory is missing or read-only — clearer than a mid-write error.
+        abs_dir = os.path.abspath(os.path.dirname(output_base_name))
+        if not os.path.exists(abs_dir):
+            raise RuntimeError(f"{abs_dir} does not exist")
+        if not os.access(abs_dir, os.W_OK):
+            raise RuntimeError(f"No write access to {abs_dir}")
 
         # Checkpoint the mesh file itself if required
 
