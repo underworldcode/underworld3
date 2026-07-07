@@ -259,10 +259,26 @@ def _zero_rows_local(vec, normal_rows):
 def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbose=False):
     """Assemble + solve the rotated strong-free-slip Stokes saddle. Fills the
     solver's velocity/pressure fields with the (rotated-back, gauge-removed)
-    solution. Returns a dict with the rotation Q and reaction data for σ_nn.
+    solution.
 
     Called from ``SNES_Stokes_SaddlePt.solve`` after ``_build`` (so the SNES/DM
-    exist); when used standalone it builds the solver itself."""
+    exist); when used standalone it builds the solver itself.
+
+    Returns
+    -------
+    dict
+        The solve result consumed by ``boundary_normal_traction`` /
+        ``dynamic_topography_field`` (as their ``solve_result`` argument), with keys:
+
+        * ``"Q"``, ``"Qt"`` — the rotation and its transpose (PETSc Mats);
+        * ``"A"``, ``"b"`` — the unrotated operator and RHS, kept so the reaction
+          ``A·u − b`` can be reconstructed (linear path only);
+        * ``"U"``, ``"Uhat"`` — the Cartesian and rotated-frame solutions;
+        * ``"normal_rows"`` — global rows of the constrained normal components;
+        * ``"boundaries"`` — the boundary specs the rotation was built from;
+        * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
+        * ``"ksp_reason"``, ``"ksp_its"`` — outer KSP converged-reason and iteration count.
+    """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
         solver._setup_discretisation()
@@ -524,6 +540,24 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     * ``consistent_jacobian is False`` (default, frozen/Picard) — the whole solve is
       already the frozen tangent, so ``picard`` is inherently satisfied (matches the
       standard path, whose post-warmup Newton phase also uses the frozen tangent here).
+
+    Returns
+    -------
+    dict
+        The solve result consumed by ``boundary_normal_traction`` /
+        ``dynamic_topography_field`` (as their ``solve_result`` argument), with keys:
+
+        * ``"Q"``, ``"Qt"`` — the rotation and its transpose (PETSc Mats);
+        * ``"reaction"`` — the converged Cartesian residual F(u), stashed as the
+          constraint reaction for σ_nn recovery (this path has no ``"A"``/``"b"``);
+        * ``"U"`` — the Cartesian solution;
+        * ``"normal_rows"`` — global rows of the constrained normal components;
+        * ``"boundaries"`` — the boundary specs the rotation was built from;
+        * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
+        * ``"ksp_reason"`` — converged-reason of the LAST Newton increment's KSP;
+        * ``"ksp_its"`` — list of linear iteration counts, one per Newton iteration;
+        * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count and status;
+        * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired.
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -673,7 +707,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
                    f"in {iters + 1} iterations (rel |F̂| = {rel:.2e}); the fields hold "
                    f"the last (unconverged) iterate.")
 
-    Fc.destroy()                             # residual output buffer (reaction is kept for info)
+    Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
     _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
     if Ahat is not None:
         Ahat.destroy()                       # the reused rotated operator
@@ -1001,9 +1035,11 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
     return viol < tol
 
 
-def boundary_normal_traction(solver, boundary, info, mass="lumped"):
+def boundary_normal_traction(solver, boundary, solve_result, mass="lumped"):
     """Boundary normal traction σ_nn on `boundary` from the constraint reaction of the
-    last rotated-free-slip solve. Returned mean-removed (the ρg·h gauge), as
+    last rotated-free-slip solve (``solve_result`` is the dict returned by
+    ``solve_rotated_freeslip`` / ``solve_rotated_freeslip_nonlinear`` — see their
+    Returns sections for the keys). Returned mean-removed (the ρg·h gauge), as
     ``(xs, sigma)`` with one entry per boundary velocity node on this rank.
 
     σ_nn is recovered from the CARTESIAN nodal reaction r_c = A·u − b: the nodal load
@@ -1034,13 +1070,13 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     # Cartesian nodal reaction r_c = F(u) at the converged state. The nonlinear
     # driver stashes it directly (the final ``computeFunction`` residual); the linear
     # one-shot reconstructs it as A·u−b (with A=J(0), b=−F(0), F affine ⇒ A·u−b=F(u)).
-    if info.get("reaction") is not None:
-        rc = info["reaction"]                    # owned by the result dict — do NOT destroy
+    if solve_result.get("reaction") is not None:
+        rc = solve_result["reaction"]            # owned by the result dict — do NOT destroy
         own_rc = False
     else:
-        A = info["A"]
-        b = info["b"]
-        U = info["U"]
+        A = solve_result["A"]
+        b = solve_result["b"]
+        U = solve_result["U"]
         rc = A.createVecLeft()
         A.mult(U, rc)
         rc.axpy(-1.0, b)
@@ -1053,7 +1089,7 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
-    normal = dict(_boundary_spec(s) for s in info["boundaries"]).get(boundary)
+    normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(boundary)
     nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
     xs = []
     Rn = []
@@ -1075,7 +1111,8 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
                         remove_mean=True, partial_reaction=False)
 
 
-def dynamic_topography_field(solver, boundary, info, field, buoyancy_scale=1.0, mass="lumped"):
+def dynamic_topography_field(solver, boundary, solve_result, field,
+                             buoyancy_scale=1.0, mass="lumped"):
     """Populate a scalar MeshVariable ``field`` with the dynamic topography
     :math:`h = -(\\sigma_{nn}-\\overline{\\sigma_{nn}})/(\\Delta\\rho\\,g)` on ``boundary``,
     recovered from the rotated-free-slip constraint reaction (lumped by default —
@@ -1089,7 +1126,7 @@ def dynamic_topography_field(solver, boundary, info, field, buoyancy_scale=1.0, 
     its own boundary nodes, matched by coordinate to the recovery output).
     """
     dim = solver.mesh.dim
-    xs, sig = boundary_normal_traction(solver, boundary, info, mass=mass)
+    xs, sig = boundary_normal_traction(solver, boundary, solve_result, mass=mass)
     # σ_nn is already mean-removed (the ρg·h gauge); topography h = -σ_nn / (Δρ g).
     def key(c):
         return tuple(round(float(t), 9) for t in np.asarray(c).ravel()[:dim])
