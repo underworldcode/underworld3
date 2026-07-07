@@ -468,6 +468,36 @@ def _backtracked_move(old_coords, step, free, tris, project,
     return new_coords, scale
 
 
+def _reweight_displacement_radial_tangential(disp, coords,
+                                             move_anisotropy):
+    """Directional move-weighting (approach (2), opt-in; 2D only).
+
+    The annulus node budget is anisotropic — radial is scarce and
+    pinned, tangential is abundant and free ("spare" angular nodes). A
+    scalar equidistribution is isotropic and cannot express "prefer
+    tangential"; rescale the realised displacement in the local
+    radial / tangential frame (``move_anisotropy = (w_r, w_θ)``) so
+    the same metric is met mostly by sliding nodes around rather than
+    crushing radially. Lightweight and solver-consistent — the mover's
+    operator algebra is untouched, only the realised move is
+    reweighted. Centre = the coordinate centroid (the origin for a
+    centred annulus). Degenerate radii (< 1e-30) keep a zero frame and
+    therefore a zero reweighted move."""
+    w_r, w_t = (float(move_anisotropy[0]),
+                float(move_anisotropy[1]))
+    ctr = coords.mean(axis=0)
+    rv = coords - ctr
+    rn = np.linalg.norm(rv, axis=1)
+    ok = rn > 1.0e-30
+    rhat = np.zeros_like(rv)
+    rhat[ok] = rv[ok] / rn[ok, None]
+    that = np.stack([-rhat[:, 1], rhat[:, 0]], axis=1)
+    d_r = (disp * rhat).sum(axis=1)
+    d_t = (disp * that).sum(axis=1)
+    return (w_r * d_r[:, None] * rhat
+            + w_t * d_t[:, None] * that)
+
+
 def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     r"""Geometric mismatch between the current mesh and what the
     equidistribution rule would prescribe from ``metric``.
@@ -1504,32 +1534,10 @@ def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
             uw.function.evaluate(gradphi.sym, old_coords)
         ).reshape(old_coords.shape)
 
-        # Directional move-weighting (approach (2), opt-in): the
-        # annulus node budget is anisotropic — radial is scarce and
-        # pinned, tangential is abundant and free ("spare" angular
-        # nodes). A scalar equidistribution is isotropic and cannot
-        # express "prefer tangential"; here we rescale the realised
-        # displacement in the local radial/tangential frame
-        # (move_anisotropy=(w_r, w_θ)) so the same metric is met
-        # mostly by sliding nodes around rather than crushing
-        # radially. This is the BFO-consistent lightweight version
-        # (the φ-Poisson operator / BFO branch algebra is untouched
-        # — only the move is reweighted). Centre = mesh centroid
-        # (origin for a centred annulus). Default None ⇒ unchanged.
+        # Directional move-weighting (opt-in; default None ⇒ unchanged).
         if move_anisotropy is not None and cdim == 2:
-            w_r, w_t = (float(move_anisotropy[0]),
-                        float(move_anisotropy[1]))
-            ctr = old_coords.mean(axis=0)
-            rv = old_coords - ctr
-            rn = np.linalg.norm(rv, axis=1)
-            ok = rn > 1.0e-30
-            rhat = np.zeros_like(rv)
-            rhat[ok] = rv[ok] / rn[ok, None]
-            that = np.stack([-rhat[:, 1], rhat[:, 0]], axis=1)
-            d_r = (disp * rhat).sum(axis=1)
-            d_t = (disp * that).sum(axis=1)
-            disp = (w_r * d_r[:, None] * rhat
-                    + w_t * d_t[:, None] * that)
+            disp = _reweight_displacement_radial_tangential(
+                disp, old_coords, move_anisotropy)
 
         step = _cap_step_to_edge_fraction(
             relax * disp, dm, old_coords, step_frac)
@@ -2233,22 +2241,10 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                 uw.function.evaluate(ufields[c].sym, old_coords)
             ).reshape(-1)
 
-        # Directional move-weighting (opt-in; same frame + default
-        # None ⇒ unchanged as _monge_ampere_mover).
+        # Directional move-weighting (opt-in; default None ⇒ unchanged).
         if move_anisotropy is not None and cdim == 2:
-            w_r, w_t = (float(move_anisotropy[0]),
-                        float(move_anisotropy[1]))
-            ctr = old_coords.mean(axis=0)
-            rv = old_coords - ctr
-            rn = np.linalg.norm(rv, axis=1)
-            ok = rn > 1.0e-30
-            rhat = np.zeros_like(rv)
-            rhat[ok] = rv[ok] / rn[ok, None]
-            that = np.stack([-rhat[:, 1], rhat[:, 0]], axis=1)
-            d_r = (disp * rhat).sum(axis=1)
-            d_t = (disp * that).sum(axis=1)
-            disp = (w_r * d_r[:, None] * rhat
-                    + w_t * d_t[:, None] * that)
+            disp = _reweight_displacement_radial_tangential(
+                disp, old_coords, move_anisotropy)
 
         # --- per-cell Lagrangian rest-size spring -----------------
         # When `rest_size_cap_max` / `rest_size_cap_min` are set,
