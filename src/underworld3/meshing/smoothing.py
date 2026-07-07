@@ -62,8 +62,40 @@ import warnings
 from typing import Optional, Sequence
 
 import numpy as np
+from mpi4py import MPI as _MPI
 
 import underworld3 as uw
+
+
+def _global_sum(value):
+    """Scalar MPI SUM of a rank-local value (as float; serial no-op)."""
+    if uw.mpi.size > 1:
+        return uw.mpi.comm.allreduce(float(value), op=_MPI.SUM)
+    return float(value)
+
+
+def _global_min(value):
+    """Scalar MPI MIN of a rank-local value (as float; serial no-op)."""
+    if uw.mpi.size > 1:
+        return uw.mpi.comm.allreduce(float(value), op=_MPI.MIN)
+    return float(value)
+
+
+def _global_max(value):
+    """Scalar MPI MAX of a rank-local value (as float; serial no-op)."""
+    if uw.mpi.size > 1:
+        return uw.mpi.comm.allreduce(float(value), op=_MPI.MAX)
+    return float(value)
+
+
+def _global_mean(value):
+    """Mean over RANKS of a rank-local scalar (allreduce / size; serial
+    no-op). NOTE: this is the movers' historical rank-mean of rank-local
+    means — cheap and adequate for the scale factors it feeds (h0, patch
+    normalisers), not an ownership-weighted global mean. Kept bit-for-bit."""
+    if uw.mpi.size > 1:
+        return uw.mpi.comm.allreduce(float(value)) / uw.mpi.size
+    return float(value)
 
 
 # Cached adjacency keyed by (mesh-id, pinned-label-tuple, topology).
@@ -412,12 +444,8 @@ def _backtracked_move(old_coords, step, free, tris, project,
             trial = old_coords.copy()
             trial[free] += scale * step[free]
             trial = project(trial)
-            a1min = float(
+            a1min = _global_min(
                 (_signed_areas(trial, tris) * orient).min())
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                a1min = uw.mpi.comm.allreduce(
-                    a1min, op=_MPI.MIN)
             if a1min > area_floor:
                 new_coords = trial
                 break
@@ -526,15 +554,12 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     # then diverges across ranks and the (collective) mover deadlocks. Reducing
     # the moments makes every rank agree. Serial: identical to np.corrcoef (the
     # 1/n normalisation cancels in the ratio).
-    if _uw.mpi.size > 1:
-        _ar = lambda v: _uw.mpi.comm.allreduce(float(v))
-    else:
-        _ar = float
-    n_c = _ar(log_density.size)
-    sx = _ar(log_density.sum()); sy = _ar(log_rho.sum())
-    sxx = _ar((log_density * log_density).sum())
-    syy = _ar((log_rho * log_rho).sum())
-    sxy = _ar((log_density * log_rho).sum())
+    n_c = _global_sum(log_density.size)
+    sx = _global_sum(log_density.sum())
+    sy = _global_sum(log_rho.sum())
+    sxx = _global_sum((log_density * log_density).sum())
+    syy = _global_sum((log_rho * log_rho).sum())
+    sxy = _global_sum((log_density * log_rho).sum())
     var_x = sxx / n_c - (sx / n_c) ** 2
     var_y = syy / n_c - (sy / n_c) ** 2
     if var_x > 1.0e-24 and var_y > 1.0e-24:
@@ -683,9 +708,8 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
     L_cur = np.linalg.norm(e_vec, axis=1)
     sum_L = float(L_cur.sum())
     n_e = float(L_cur.size)
-    if uw.mpi.size > 1:
-        sum_L = uw.mpi.comm.allreduce(sum_L)
-        n_e = uw.mpi.comm.allreduce(n_e)
+    sum_L = _global_sum(sum_L)
+    n_e = _global_sum(n_e)
     Lbar = sum_L / max(n_e, 1.0)          # uniform edge rest length
     L0 = np.full_like(L_cur, Lbar)
     L0_mean = Lbar
@@ -704,9 +728,8 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
         inv = 1.0 / rho_c
         sA = float(a_init.sum())
         sI = float(inv.sum())
-        if uw.mpi.size > 1:
-            sA = uw.mpi.comm.allreduce(sA)
-            sI = uw.mpi.comm.allreduce(sI)
+        sA = _global_sum(sA)
+        sI = _global_sum(sI)
         A0 = (sA / max(sI, 1.0e-30)) * inv     # ΣA0 = Σa_init
         A0 = np.maximum(A0, 1.0e-30)
         ti0, ti1, ti2 = tris[:, 0], tris[:, 1], tris[:, 2]
@@ -731,18 +754,10 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
         orient = np.sign(np.median(_signed_areas(coords, tris)))
         orient = orient if orient != 0.0 else 1.0
 
-    def _allsum(s):
-        if uw.mpi.size > 1:
-            return uw.mpi.comm.allreduce(float(s))
-        return float(s)
-
     def _feasible(X):
         if tris is None:
             return True
-        amin = float((_signed_areas(X, tris) * orient).min())
-        if uw.mpi.size > 1:
-            from mpi4py import MPI as _MPI
-            amin = uw.mpi.comm.allreduce(amin, op=_MPI.MIN)
+        amin = _global_min((_signed_areas(X, tris) * orient).min())
         return amin > 0.0
 
     have_area = (A0 is not None) and (cdim == 2)
@@ -756,11 +771,11 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
         ev = X[v1] - X[v0]
         L = np.sqrt((ev * ev).sum(axis=1))
         re = (L - Lbar) / Lbar               # relative edge error
-        E = shape_w * _allsum((re * re).sum())
+        E = shape_w * _global_sum((re * re).sum())
         if have_area:
             area = orient * _tri_signed(X)
             ra = (area - A0) / A0            # relative area error
-            E += size_w * _allsum((ra * ra).sum())
+            E += size_w * _global_sum((ra * ra).sum())
         return E
 
     def _energy_grad(X):
@@ -768,7 +783,7 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
         L = np.sqrt((ev * ev).sum(axis=1))
         Ls = np.maximum(L, 1.0e-30)
         re = (L - Lbar) / Lbar
-        E = shape_w * _allsum((re * re).sum())
+        E = shape_w * _global_sum((re * re).sum())
         G = np.zeros_like(X)
         # equal-spring shape term: 2·shape_w·re/(Lbar·L)·ev
         ce = (2.0 * shape_w * re / (Lbar * Ls))[:, None]
@@ -780,7 +795,7 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
                        - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
             area = orient * S
             ra = (area - A0) / A0
-            E += size_w * _allsum((ra * ra).sum())
+            E += size_w * _global_sum((ra * ra).sum())
             # ∂(area)/∂· = orient · ∂S/∂· (signed-area vertex grads)
             fac = (2.0 * size_w * ra / A0 * orient)[:, None]
             gA = np.empty_like(a)
@@ -808,28 +823,25 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
 
     X = _project(coords.copy())
     E, G = _energy_grad(X)
-    g0 = max(_allsum((G * G).sum()) ** 0.5, 1.0e-30)
+    g0 = max(_global_sum((G * G).sum()) ** 0.5, 1.0e-30)
     r = -G
     s = r * invdeg
     s[~free] = 0.0
     d = s.copy()
-    delta_new = _allsum((r * s).sum())
-    dmax = max(float(np.linalg.norm(d[free_idx], axis=1).max()),
-               1.0e-30)
-    if uw.mpi.size > 1:
-        from mpi4py import MPI as _MPI
-        dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
+    delta_new = _global_sum((r * s).sum())
+    dmax = _global_max(max(float(np.linalg.norm(
+        d[free_idx], axis=1).max()), 1.0e-30))
     t0 = 0.5 * L0_mean / dmax
     c_arm = 1.0e-4
     max_iter = int(max_cg_iters)
     for it in range(max_iter):
-        gnorm = _allsum((G * G).sum()) ** 0.5
+        gnorm = _global_sum((G * G).sum()) ** 0.5
         if gnorm <= 1.0e-8 * g0:
             break
-        slope = _allsum((G * d).sum())       # = −(r·d)
+        slope = _global_sum((G * d).sum())       # = −(r·d)
         if slope >= 0.0:                     # not descent → restart
             d = s.copy()
-            slope = _allsum((G * d).sum())
+            slope = _global_sum((G * d).sum())
             if slope >= 0.0:
                 break
         t = t0
@@ -851,8 +863,8 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
         s_new = r_new * invdeg
         s_new[~free] = 0.0
         delta_old = delta_new
-        delta_mid = _allsum((r_new * s).sum())
-        delta_new = _allsum((r_new * s_new).sum())
+        delta_mid = _global_sum((r_new * s).sum())
+        delta_new = _global_sum((r_new * s_new).sum())
         beta = max(0.0, (delta_new - delta_mid)
                    / max(delta_old, 1.0e-30))   # preconditioned PR⁺
         X, E, G = Xt, Et, Gt
@@ -863,8 +875,8 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
         if verbose and (it % 25 == 0 or it == max_iter - 1):
             ev = X[v1] - X[v0]
             L = np.sqrt((ev * ev).sum(axis=1))
-            rms = (_allsum(((L - L0) ** 2).sum())
-                   / max(_allsum(L0.size), 1.0)) ** 0.5
+            rms = (_global_sum(((L - L0) ** 2).sum())
+                   / max(_global_sum(L0.size), 1.0)) ** 0.5
             uw.pprint(
                 f"  spring PCG iter {it+1}/{max_iter}: "
                 f"E={E:.4e}  rms(L-L0)/L0="
@@ -1381,10 +1393,7 @@ def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
         rho_t = np.asarray(
             uw.function.evaluate(metric, old_coords)).reshape(-1)
         b = rho_t * patch
-        inv_sqrt_b_mean = float(np.mean(1.0 / np.sqrt(b)))
-        if uw.mpi.size > 1:
-            inv_sqrt_b_mean = uw.mpi.comm.allreduce(
-                inv_sqrt_b_mean) / uw.mpi.size
+        inv_sqrt_b_mean = _global_mean(np.mean(1.0 / np.sqrt(b)))
         c = 1.0 / (inv_sqrt_b_mean ** 2)
 
         # Target-side ρ evaluation: substitute X[i] → X[i] +
@@ -1441,10 +1450,7 @@ def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
                 gproj.solve()   # update target-side ρ for next iter
             change = float(np.abs(
                 np.asarray(phi.array) - phi_prev).max())
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                change = uw.mpi.comm.allreduce(
-                    change, op=_MPI.MAX)
+            change = _global_max(change)
             if prev_change is not None and change < 1.0e-6:
                 break
             prev_change = change
@@ -1495,7 +1501,7 @@ def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
         d = float(np.linalg.norm(
             new_coords - old_coords, axis=1).max())
         if uw.mpi.size > 1:
-            d = uw.mpi.comm.allreduce(d ** 2) ** 0.5
+            d = _global_sum(d ** 2) ** 0.5
         if verbose:
             uw.pprint(
                 f"  equidistribute MA outer {outer+1}/{n_outer}: "
@@ -1661,9 +1667,7 @@ def _ot_improvement_step(mesh, metric, pinned_labels, verbose,
         else:
             patch = _patch_volumes(tris, old_coords, n_verts, vol_field)
         # Normalise so the mean over the domain is the cell mean.
-        patch_mean = float(np.mean(patch))
-        if uw.mpi.size > 1:
-            patch_mean = uw.mpi.comm.allreduce(patch_mean) / uw.mpi.size
+        patch_mean = _global_mean(np.mean(patch))
         # Write current V values into the MeshVariable.
         _va = vol_field.array
         _va[...] = (patch / max(patch_mean, 1e-30)).reshape(_va.shape)
@@ -1677,10 +1681,8 @@ def _ot_improvement_step(mesh, metric, pinned_labels, verbose,
         Vrho_pos = np.clip(Vrho, 1e-30, None)
         wnum = float(np.sum(rho_at_y * np.log(Vrho_pos)))
         wden = float(np.sum(rho_at_y))
-        if uw.mpi.size > 1:
-            from mpi4py import MPI as _MPI
-            wnum = uw.mpi.comm.allreduce(wnum, op=_MPI.SUM)
-            wden = uw.mpi.comm.allreduce(wden, op=_MPI.SUM)
+        wnum = _global_sum(wnum)
+        wden = _global_sum(wden)
         ln_K = wnum / max(wden, 1e-30)
         K_val = float(np.exp(ln_K))
 
@@ -1712,15 +1714,13 @@ def _ot_improvement_step(mesh, metric, pinned_labels, verbose,
         d = float(np.linalg.norm(
             new_coords - old_coords, axis=1).max())
         if uw.mpi.size > 1:
-            d = uw.mpi.comm.allreduce(d ** 2) ** 0.5
+            d = _global_sum(d ** 2) ** 0.5
 
         # Per-iter "imbalance" diagnostic — std of log(V·ρ/K).
         imb = float(np.std(np.log(Vrho_pos) - ln_K))
         if uw.mpi.size > 1:
-            from mpi4py import MPI as _MPI
-            imb_sq = uw.mpi.comm.allreduce(imb * imb, op=_MPI.SUM)
-            cnt = uw.mpi.comm.allreduce(int(Vrho_pos.size),
-                                         op=_MPI.SUM)
+            imb_sq = _global_sum(imb * imb)
+            cnt = int(_global_sum(Vrho_pos.size))
             imb = (imb_sq / max(cnt, 1)) ** 0.5
 
         if verbose:
@@ -2023,8 +2023,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
                 old0[ep[:, 1]] - old0[ep[:, 0]], axis=1).mean())
         else:
             h0 = 1.0
-        if uw.mpi.size > 1:
-            h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+        h0 = _global_mean(h0)
     # CRITICAL no-op guard: uniform ρ ⇒ ∇ρ ≡ 0, but the L2
     # projection of the zero function leaves ~1e-18 round-off.
     # Normalising by that noisy max would make (|∇ρ|/gref)² ~ O(1)
@@ -2083,10 +2082,10 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             uw.function.evaluate(grho.sym, Dcoords)
         ).reshape(-1, cdim)
         gn = np.linalg.norm(gvec, axis=1)
+        # Local max first, THEN the (collective) reduction — every rank
+        # must participate even if it owns no D-mesh points.
         gmax = float(gn.max()) if gn.size else 0.0
-        if uw.mpi.size > 1:
-            from mpi4py import MPI as _MPI
-            gmax = uw.mpi.comm.allreduce(gmax, op=_MPI.MAX)
+        gmax = _global_max(gmax)
         gref = gmax if gmax > g_eps else 1.0
         # Density branches (same as legacy code path)
         if resolution_ratio > 1.0:
@@ -2096,11 +2095,8 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             ).reshape(-1)
             s_log_ = np.log(np.clip(rho_v_, 1.0e-12, None))
             if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                tot = uw.mpi.comm.allreduce(
-                    float(s_log_.sum()), op=_MPI.SUM)
-                cnt = uw.mpi.comm.allreduce(
-                    int(s_log_.size), op=_MPI.SUM)
+                tot = _global_sum(s_log_.sum())
+                cnt = _global_sum(s_log_.size)
                 ln_g_ = tot / max(cnt, 1)
             else:
                 ln_g_ = float(s_log_.mean())
@@ -2121,10 +2117,8 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             ).reshape(-1)
             r_lo_ = float(np.percentile(rho_v_, 10.0))
             r_hi_ = float(np.percentile(rho_v_, 90.0))
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                r_lo_ = uw.mpi.comm.allreduce(r_lo_, op=_MPI.MIN)
-                r_hi_ = uw.mpi.comm.allreduce(r_hi_, op=_MPI.MAX)
+            r_lo_ = _global_min(r_lo_)
+            r_hi_ = _global_max(r_hi_)
             q_ = np.clip(
                 (rho_v_ - r_lo_) / max(r_hi_ - r_lo_, 1e-30),
                 0.0, 1.0)
@@ -2333,7 +2327,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         d = float(np.linalg.norm(
             new_coords - old_coords, axis=1).max())
         if uw.mpi.size > 1:
-            d = uw.mpi.comm.allreduce(d ** 2) ** 0.5
+            d = _global_sum(d ** 2) ** 0.5
         if verbose:
             uw.pprint(
                 f"  anisotropic mover outer {outer+1}/{n_outer}: "
@@ -3132,8 +3126,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     a0 = signed_vol(coords, cells_all)
     orient = np.sign(np.median(a0)) or 1.0
     a0_own_med = float(np.median(np.abs(signed_vol(coords, cells_own))))
-    if parallel:
-        a0_own_med = uw.mpi.comm.allreduce(a0_own_med) / uw.mpi.size
+    a0_own_med = _global_mean(a0_own_med)
     a_min_floor = float(area_floor_frac) * a0_own_med
     # Representative background cell size h0 (mean reference edge length over
     # owned cells), used to make the convergence test SCALE-RELATIVE: a move
@@ -3143,8 +3136,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     # adapt ran to the n_outer cap.)
     _ecols = np.linalg.norm(Eh, axis=1)            # (n_own, cdim) edge lengths
     h0_scale = float(np.mean(_ecols)) if _ecols.size else 1.0
-    if parallel:
-        h0_scale = uw.mpi.comm.allreduce(h0_scale) / uw.mpi.size
+    h0_scale = _global_mean(h0_scale)
 
     def _halo_sync(X):
         """Make ghost vertices exact copies of their owners."""
@@ -3169,17 +3161,10 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         G = (theta * np.sqrt(detM) * S ** q
              + (1.0 - 2.0 * theta) * dq * r ** p * detM ** ((1 - p) / 2))
         K = np.abs(detE) / fact
-        loc = float(np.sum(K * G))
-        if parallel:
-            loc = uw.mpi.comm.allreduce(loc)
-        return loc
+        return _global_sum(np.sum(K * G))
 
     def _min_area(X):
-        amin = float((signed_vol(X, cells_own) * orient).min())
-        if parallel:
-            from mpi4py import MPI as _MPI
-            amin = uw.mpi.comm.allreduce(amin, op=_MPI.MIN)
-        return amin
+        return _global_min((signed_vol(X, cells_own) * orient).min())
 
     prevI = _energy(coords)
     _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
@@ -3209,11 +3194,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     _prev_dir = np.zeros_like(coords)
 
     def _gdot(a, b, mask):
-        s = float(np.sum(a[mask] * b[mask]))
-        if parallel:
-            from mpi4py import MPI as _MPI
-            s = uw.mpi.comm.allreduce(s, op=_MPI.SUM)
-        return s
+        return _global_sum(np.sum(a[mask] * b[mask]))
 
     for outer in range(n_outer):
         # Mesh-owned tangent slip (see boundary-slip-strategy.md): the
@@ -3366,11 +3347,8 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             scale *= 0.5
         else:
             accepted = coords; Inew = prevI; scale = 0.0
-        dmax = float(np.linalg.norm(
+        dmax = _global_max(np.linalg.norm(
             (accepted - coords)[is_owned_v], axis=1).max(initial=0.0))
-        if parallel:
-            from mpi4py import MPI as _MPI
-            dmax = uw.mpi.comm.allreduce(dmax, op=_MPI.MAX)
         _prev_disp = accepted - coords   # accepted move, for next-iter momentum
         coords = accepted
         mesh._deform_mesh(coords)
@@ -3490,11 +3468,8 @@ def _smooth_mesh_interior_bare(
             # already identical on every rank; the OR-reduction below is the
             # belt-and-suspenders guarantee that **if any rank needs to remesh,
             # all ranks remesh** (and all skip together otherwise).
-            _need_adapt = mm["misalignment"] >= float(skip_threshold)
-            if uw.mpi.size > 1:
-                from mpi4py import MPI as _MPI
-                _need_adapt = bool(uw.mpi.comm.allreduce(
-                    int(_need_adapt), op=_MPI.MAX))
+            _need_adapt = bool(_global_max(
+                mm["misalignment"] >= float(skip_threshold)))
             if not _need_adapt:
                 if verbose and uw.mpi.rank == 0:
                     print(f"  smooth_mesh_interior: skipping "
@@ -3617,8 +3592,7 @@ def _smooth_mesh_interior_bare(
             disp = float(np.linalg.norm(
                 new_int - coords[int_owned_local]))
             if parallel:
-                disp = uw.mpi.comm.allreduce(
-                    disp ** 2) ** 0.5
+                disp = _global_sum(disp ** 2) ** 0.5
             uw.pprint(
                 f"  smooth_mesh_interior sweep "
                 f"{sweep+1}/{n_iters}: "
@@ -4309,8 +4283,7 @@ def follow_metric(
                 axis=1).mean())
         else:
             h0 = 1.0
-        if uw.mpi.size > 1:
-            h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
+        h0 = _global_mean(h0)
         _FOLLOW_METRIC_H0_CACHE[_key] = h0
         rest_coords = coords.copy()
         _FOLLOW_METRIC_REST_CACHE[_key] = rest_coords
@@ -4397,11 +4370,7 @@ def follow_metric(
                                            tris_polish))
                 q = (4.0 * np.sqrt(3.0) * A
                      / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
-                q_min = float(q.min())
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    q_min = uw.mpi.comm.allreduce(
-                        q_min, op=_MPI.MIN)
+                q_min = _global_min(q.min())
                 if verbose:
                     uw.pprint(
                         f"  follow_metric polish iter {_polish_iter}: "
