@@ -460,8 +460,6 @@ class SNES_Poisson(SNES_Scalar):
             plain_value = float(value.value)
 
             # If ND scaling is active, scale the constant
-            import underworld3 as uw
-
             if uw.is_nondimensional_scaling_active():
                 # The source term should have same dimensionality as the unknown field
                 # Access via self.Unknowns.u (Poisson) or self.Unknowns.DuDt.u (Stokes)
@@ -490,11 +488,9 @@ class SNES_Poisson(SNES_Scalar):
                 # Check if model has reference quantities defined
                 # If yes: enforce units everywhere
                 # If no: allow plain numbers (user is responsible for consistency)
-                import underworld3 as uw
+                orchestration_model = uw.get_default_model()
 
-                model = uw.get_default_model()
-
-                if model.has_units():
+                if orchestration_model.has_units():
                     # Reference quantities defined - enforce units everywhere
                     raise ValueError(
                         f"Units requirement enforced: Model has reference quantities defined.\n"
@@ -1506,8 +1502,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             # 3. PROJECT actual stress and SHIFT history
             if uw.mpi.rank == 0 and verbose:
                 print(f"Stokes solver - store stress and shift history", flush=True)
-
-            import numpy as np
 
             _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
 
