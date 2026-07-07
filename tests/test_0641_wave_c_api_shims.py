@@ -97,8 +97,20 @@ class TestStokesNitscheValueFirst:
         assert bc_old.fn_F == bc_new.fn_F
         assert bc_old.fn_p == bc_new.fn_p
 
+    def test_alias_only_warning_names_the_keyword(self, mesh, stokes):
+        # Copilot review of #334: the warning must describe the legacy form
+        # the caller actually used - a keyword-only call is not "positional".
+        with pytest.warns(DeprecationWarning, match=r"the 'g=' keyword of add_nitsche_bc\(\)") as rec:
+            stokes.add_nitsche_bc(boundary="Top", g=0.5)
+        assert _one_deprecation(rec) == 1
+
+    def test_positional_order_warning_names_the_order(self, mesh, stokes):
+        with pytest.warns(DeprecationWarning, match=r"positional order is deprecated") as rec:
+            stokes.add_nitsche_bc("Top", 0.5)
+        assert _one_deprecation(rec) == 1
+
     def test_datum_given_twice_is_an_error(self, mesh, stokes):
-        with pytest.raises(TypeError, match="conds"):
+        with pytest.raises(TypeError, match="as 'conds' and as 'g='"):
             stokes.add_nitsche_bc(0.5, "Top", g=0.5)
 
     def test_missing_boundary_is_an_error(self, mesh, stokes):
@@ -130,9 +142,23 @@ class TestRotatedFreeslipValueFirst:
         assert _one_deprecation(rec) == 1
         assert stokes._rotated_freeslip_bcs[-1] == ("Top", n)
 
+    def test_zero_datum_accepted_in_any_numeric_form(self, mesh, stokes):
+        # Regression (#336): the zero guard must compare by VALUE. sympy's
+        # structural == treats Float(0.0) != Integer(0), so 0.0 was rejected
+        # even though the deprecation message itself recommends conds=0.
+        for zero in (0.0, sympy.Float(0), sympy.S.Zero, sympy.Integer(0)):
+            with _no_deprecation():
+                stokes.add_rotated_freeslip_bc(zero, "Top")
+            assert stokes._rotated_freeslip_bcs[-1] == ("Top", None)
+
     def test_nonzero_datum_not_implemented(self, mesh, stokes):
         with pytest.raises(NotImplementedError):
             stokes.add_rotated_freeslip_bc(1.0, "Top")
+
+    def test_symbolic_possibly_nonzero_datum_not_implemented(self, mesh, stokes):
+        # An expression sympy cannot prove zero must be rejected, not let through.
+        with pytest.raises(NotImplementedError):
+            stokes.add_rotated_freeslip_bc(sympy.Symbol("a"), "Top")
 
 
 class TestConstraintBCValueFirst:

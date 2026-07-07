@@ -1626,22 +1626,31 @@ class SolverBaseClass(uw_object):
         Returns the normalized ``(conds, boundary)`` pair; ``boundary`` is
         required to be a string on exit.
         """
-        legacy = False
+        legacy_order = False
+        legacy_alias = False
         if isinstance(conds, str) and not isinstance(boundary, str):
             conds, boundary = boundary, conds
-            legacy = True
+            legacy_order = True
         if alias is not None:
             if conds is not None:
                 raise TypeError(
                     f"{method}() received the boundary datum twice "
-                    f"(positionally and as '{alias_name}='); pass it once, "
+                    f"(as 'conds' and as '{alias_name}='); pass it once, "
                     f"as 'conds'")
             conds = alias
-            legacy = True
-        if legacy:
+            legacy_alias = True
+        if legacy_order or legacy_alias:
+            # Name the legacy form the caller actually used (Copilot review
+            # of #334: a one-size message misdescribed keyword-only calls).
+            if legacy_order and legacy_alias:
+                legacy_form = f"{method}(boundary, {alias_name}=...)"
+            elif legacy_order:
+                legacy_form = f"{method}(boundary, conds, ...) positional order"
+            else:
+                legacy_form = f"the '{alias_name}=' keyword of {method}()"
             import warnings
             warnings.warn(
-                f"{method}(boundary, {alias_name}=...) is deprecated; "
+                f"{legacy_form} is deprecated; "
                 f"use {method}(conds, boundary, ...)",
                 DeprecationWarning, stacklevel=3)
         if not isinstance(boundary, str):
@@ -5400,15 +5409,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             raise TypeError(
                 f"add_rotated_freeslip_bc() requires a boundary label string; "
                 f"got {type(boundary).__name__}")
-        # TODO(BUG): float zero is rejected as "non-zero" by this guard.
-        # sympy's == is structural, so sympy.sympify(0.0) != 0 evaluates True
-        # (Float(0.0) is not Integer(0)): the canonical value-first call
-        # add_rotated_freeslip_bc(0.0, boundary) — the very form this method's
-        # own deprecation message recommends — raises NotImplementedError,
-        # while conds=0 (int) and conds=None work. The guard should test
-        # value semantics, e.g. `sympy.sympify(conds).is_zero is not True`.
-        # Found by the WE-09 call-site sweep, 2026-07-07 (Wave C shim, #334); issue #336.
-        if conds is not None and sympy.sympify(conds) != 0:
+        # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
+        # structurally, but both are zero data. is_zero is True only when sympy
+        # can PROVE zero, so unprovable symbolic data is rejected too (#336).
+        if conds is not None and sympy.sympify(conds).is_zero is not True:
             raise NotImplementedError(
                 "add_rotated_freeslip_bc imposes u.n = 0 only; a non-zero "
                 "wall-normal datum is not implemented (use add_nitsche_bc or "
