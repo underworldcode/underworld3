@@ -293,6 +293,24 @@ def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
     return vel
 
 
+def _invalidate_solution_cache(u):
+    """Drop the cached data view of a just-solved variable.
+
+    PETSc may replace the underlying vector buffers during a solve, so the
+    lazily-built ``.data`` / ``.array`` view on the unknown must be rebuilt
+    on next access. Handles both EnhancedMeshVariable (the base variable
+    sits behind ``_base_var``) and a bare ``_MeshVariable``.
+
+    Parameters
+    ----------
+    u : MeshVariable
+        The solver unknown whose cached view is invalidated.
+    """
+    target_var = getattr(u, "_base_var", u)
+    if hasattr(target_var, "_canonical_data"):
+        target_var._canonical_data = None
+
+
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import Eulerian as Eulerian_DDt
@@ -952,10 +970,7 @@ class SNES_TransientDarcy(SNES_Darcy):
         SNES_Scalar.solve(self, zero_init_guess, _force_setup,
                           divergence_retries=divergence_retries)
 
-        # Invalidate cached data views
-        target_var = getattr(self.u, "_base_var", self.u)
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+        _invalidate_solution_cache(self.u)
 
         # Post-solve: shift history
         self.DuDt.update_post_solve(timestep, verbose=verbose)
@@ -4111,12 +4126,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
 
-        # Invalidate cached data views - PETSc may have replaced underlying buffers
-        # This ensures .data and .array properties return fresh data from PETSc
-        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
-        target_var = getattr(self.u, "_base_var", self.u)
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+        _invalidate_solution_cache(self.u)
 
         self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
@@ -4429,10 +4439,7 @@ class SNES_Diffusion(SNES_Scalar):
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
 
-        # Invalidate cached data views - PETSc may have replaced underlying buffers
-        target_var = getattr(self.u, "_base_var", self.u)
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+        _invalidate_solution_cache(self.u)
 
         self.DuDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
