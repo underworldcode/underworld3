@@ -2130,6 +2130,76 @@ class Mesh(Stateful, uw_object):
             self._deform_mesh(new_sub_coords)
         self._parent_mesh_version = self.parent._mesh_version
 
+    # --- shared DM-replacement helpers (submesh re-extraction + adapt) ---
+
+    def _destroy_variable_petsc_state(self, var):
+        """Destroy a variable's PETSc vectors and drop its cached data views.
+
+        Required before re-initialising variables on a REPLACED DM (submesh
+        re-extraction, adaptation): a stale lvec/gvec still carries field_ids
+        from the old DM, and createSubDM on the new DM fails while any
+        variable holds one (#48).
+        """
+        if var._lvec is not None:
+            var._lvec.destroy()
+            var._lvec = None
+        if var._gvec is not None:
+            var._gvec.destroy()
+            var._gvec = None
+        if hasattr(var, '_canonical_data'):
+            var._canonical_data = None
+        if hasattr(var, '_cached_data_array'):
+            var._cached_data_array = None
+
+    def _reinit_variable_on_new_dm(self, var):
+        """Re-create a variable's discretisation and vectors on the current DM.
+
+        The variable's data comes back zeroed; transferring old values is the
+        caller's responsibility — see :meth:`_idw_transfer_to_var` (submesh
+        re-extraction) and :meth:`adapt`'s symbol re-evaluation, the two
+        deliberately different transfer strategies.
+        """
+        var._setup_ds()
+        var._set_vec(available=True)
+
+    def _idw_transfer_to_var(self, old_coords, old_data, var):
+        """Inverse-distance-weighted transfer of backed-up DOF values.
+
+        Submesh re-extraction's transfer strategy: each new DOF value is the
+        1/d-weighted average of its dim+1 nearest old DOFs. (:meth:`adapt`
+        instead re-evaluates each variable's SYMBOL at the new DOF
+        coordinates — an intentional difference, do not merge the two.)
+        """
+        tree = uw.kdtree.KDTree(old_coords)
+        nnn = 3 if self.dim == 2 else 4
+        dists, indices = tree.query(var.coords, k=nnn, sqr_dists=False)
+
+        # Inverse distance weighting
+        weights = 1.0 / (dists + 1e-30)
+        weights /= weights.sum(axis=1, keepdims=True)
+        new_data = numpy.zeros_like(var.data)
+        for i in range(nnn):
+            new_data += weights[:, i:i+1] * old_data[indices[:, i]]
+
+        var.pack_raw_data_to_petsc(new_data, sync=True)
+
+    def _invalidate_caches_after_dm_change(self, reason):
+        """Mark solvers for rebuild and drop geometry-keyed caches.
+
+        Shared tail of every DM replacement (submesh re-extraction,
+        adaptation): solvers must not trust their assembled SNES/DM, and the
+        evaluation / DMInterpolation caches keyed on the old geometry must
+        not serve stale results.
+        """
+        for solver in self._equation_systems_register:
+            if solver is not None and hasattr(solver, 'is_setup'):
+                solver.is_setup = False
+
+        self._evaluation_hash = None
+        self._evaluation_interpolated_results = None
+        if hasattr(self, '_dminterpolation_cache'):
+            self._dminterpolation_cache.invalidate_all(reason=reason)
+
     def _re_extract_from_parent(self, verbose=False):
         """Re-extract this submesh from the adapted parent mesh.
 
@@ -2198,41 +2268,20 @@ class Mesh(Stateful, uw_object):
         # Invalidate DOF maps
         self._dof_maps = {}
 
-        # Reinitialise variables on the new DM
+        # Reinitialise variables on the new DM.
+        # TODO(DESIGN): adapt() destroys ALL variable vectors upfront before
+        # any _setup_ds (#48); this per-variable destroy order predates that
+        # fix and has not bitten on submeshes — align when next touched.
         for var_name, old_var in old_vars.items():
             try:
-                if old_var._lvec is not None:
-                    old_var._lvec.destroy()
-                    old_var._lvec = None
-                if old_var._gvec is not None:
-                    old_var._gvec.destroy()
-                    old_var._gvec = None
-                if hasattr(old_var, '_canonical_data'):
-                    old_var._canonical_data = None
-                if hasattr(old_var, '_cached_data_array'):
-                    old_var._cached_data_array = None
-
-                old_var._setup_ds()
-                old_var._set_vec(available=True)
+                self._destroy_variable_petsc_state(old_var)
+                self._reinit_variable_on_new_dm(old_var)
 
                 # Interpolate from backed-up data via kd-tree IDW
                 if var_name in old_var_backups:
                     try:
                         old_coords, old_data = old_var_backups[var_name]
-                        new_coords = old_var.coords
-
-                        tree = uw.kdtree.KDTree(old_coords)
-                        nnn = 3 if self.dim == 2 else 4
-                        dists, indices = tree.query(new_coords, k=nnn, sqr_dists=False)
-
-                        # Inverse distance weighting
-                        weights = 1.0 / (dists + 1e-30)
-                        weights /= weights.sum(axis=1, keepdims=True)
-                        new_data = numpy.zeros_like(old_var.data)
-                        for i in range(nnn):
-                            new_data += weights[:, i:i+1] * old_data[indices[:, i]]
-
-                        old_var.pack_raw_data_to_petsc(new_data, sync=True)
+                        self._idw_transfer_to_var(old_coords, old_data, old_var)
                         if verbose:
                             uw.pprint(0, f"  Submesh variable '{var_name}' transferred")
                     except Exception as e2:
@@ -2245,16 +2294,8 @@ class Mesh(Stateful, uw_object):
                 if verbose:
                     uw.pprint(0, f"  Warning: failed to reinitialise '{var_name}': {e}")
 
-        # Mark solvers for rebuild
-        for solver in self._equation_systems_register:
-            if solver is not None and hasattr(solver, 'is_setup'):
-                solver.is_setup = False
-
-        # Clear caches
-        self._evaluation_hash = None
-        self._evaluation_interpolated_results = None
-        if hasattr(self, '_dminterpolation_cache'):
-            self._dminterpolation_cache.invalidate_all(reason="submesh_re_extraction")
+        # Mark solvers for rebuild and clear geometry-keyed caches
+        self._invalidate_caches_after_dm_change(reason="submesh_re_extraction")
 
         self._parent_mesh_version = self.parent._mesh_version
 
@@ -6219,23 +6260,13 @@ class Mesh(Stateful, uw_object):
         # data — if some variables still hold lvecs with stale field_ids from the
         # pre-adaptation DM, createSubDM will fail on the new DM.  (Fixes #48)
         for old_var in old_vars_data.values():
-            if old_var._lvec is not None:
-                old_var._lvec.destroy()
-                old_var._lvec = None
-            if old_var._gvec is not None:
-                old_var._gvec.destroy()
-                old_var._gvec = None
-            if hasattr(old_var, '_canonical_data'):
-                old_var._canonical_data = None
-            if hasattr(old_var, '_cached_data_array'):
-                old_var._cached_data_array = None
+            self._destroy_variable_petsc_state(old_var)
 
         # Reinitialize MeshVariables on the new mesh
         # Note: Variables are reset to zero. Users should reinitialize with data.
         for var_name, old_var in old_vars_data.items():
             try:
-                old_var._setup_ds()
-                old_var._set_vec(available=True)
+                self._reinit_variable_on_new_dm(old_var)
 
                 # Restore transferred data if available
                 if var_name in transferred_data:
@@ -6270,18 +6301,8 @@ class Mesh(Stateful, uw_object):
                 if verbose:
                     print(f"[{uw.mpi.rank}] Warning: cell-size refresh failed: {e}", flush=True)
 
-        # Mark solvers for rebuild
-        for solver in self._equation_systems_register:
-            if solver is not None and hasattr(solver, '_rebuild_after_mesh_update'):
-                solver.is_setup = False
-                if verbose:
-                    print(f"[{uw.mpi.rank}] Solver marked for rebuild", flush=True)
-
-        # Clear caches
-        self._evaluation_hash = None
-        self._evaluation_interpolated_results = None
-        if hasattr(self, '_dminterpolation_cache'):
-            self._dminterpolation_cache.invalidate_all(reason="mesh_adaptation")
+        # Mark solvers for rebuild and clear geometry-keyed caches
+        self._invalidate_caches_after_dm_change(reason="mesh_adaptation")
 
         # Re-extract registered submeshes from the adapted parent
         for submesh in list(self._registered_submeshes):
