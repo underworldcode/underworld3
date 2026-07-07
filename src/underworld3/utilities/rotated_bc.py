@@ -69,6 +69,14 @@ _VELOCITY_FIELD = 0
 _PRESSURE_FIELD = 1
 
 
+def _boundary_spec(spec):
+    """Normalize one entry of a rotated-free-slip boundary list to ``(name, normal)``:
+    a bare boundary name means the geometric facet normal (``normal=None``); a
+    ``(name, normal)`` pair carries an analytic/constant normal override (see
+    ``_boundary_velocity_nodes`` for the normal conventions)."""
+    return spec if isinstance(spec, tuple) else (spec, None)
+
+
 def _point_coord(dm, dim, cvec, csec, v0, v1, q):
     """Coordinate of a DMPlex point (vertex → its coord; higher point → mean of
     its closure vertices)."""
@@ -184,11 +192,10 @@ def build_rotation(solver, boundaries):
     l2g = dm.getLGMap()
     dim = solver.mesh.dim
 
-    # gather all normals per velocity node across the boundaries. Each entry of
-    # `boundaries` is a name (geometric normal) or a (name, normal) pair.
+    # gather all normals per velocity node across the boundaries
     node_normals = {}
     for spec in boundaries:
-        name, normal = spec if isinstance(spec, tuple) else (spec, None)
+        name, normal = _boundary_spec(spec)
         for q, nrm in _boundary_velocity_nodes(solver, name, normal=normal):
             node_normals.setdefault(q, []).append(nrm)
 
@@ -950,8 +957,7 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
-    normal = dict((nm, nrm) for nm, nrm in
-                  [(s if isinstance(s, tuple) else (s, None)) for s in info["boundaries"]]).get(boundary)
+    normal = dict(_boundary_spec(s) for s in info["boundaries"]).get(boundary)
     nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
     xs = []; Rn = []
     for q, nrm in nodes:
