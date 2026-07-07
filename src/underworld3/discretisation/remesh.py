@@ -391,6 +391,15 @@ def _remesh_with_field_transfer_impl(
         try:
             hook(ctx)
         except Exception as exc:
+            # Best-effort hook contract: the generic REMAP pass above has
+            # already secured every registered variable, so a failing
+            # on_remesh hook can only lose an operator-private refinement
+            # (e.g. an ALE history update degrades to the plain CARRY
+            # values). One broken operator must not abort the transfer of
+            # the remaining hooks' state mid-adapt, so dispatch continues;
+            # the failure is reported only under verbose=True.
+            # TODO(DESIGN): consider warning unconditionally — a silently
+            # degraded ALE history is hard to diagnose downstream.
             if verbose:
                 uw.pprint(
                     f"  remesh_with_field_transfer: hook raised: {exc}")
