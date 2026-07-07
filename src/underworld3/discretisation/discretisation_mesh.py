@@ -1483,6 +1483,81 @@ class Mesh(Stateful, uw_object):
                 q=shape_q, angle_deg=largest_angle, aspect=aspect, volume=area)
         return metrics
 
+    def _print_variable_table(self):
+        """Print the variable name / components / degree / type table (rank 0)."""
+        if len(self.vars) > 0:
+            uw.pprint(f"| Variable Name       | component | degree |     type        |")
+            uw.pprint(f"| ---------------------------------------------------------- |")
+            for vname in self.vars.keys():
+                v = self.vars[vname]
+                uw.pprint(
+                    f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
+                )
+
+            uw.pprint(f"| ---------------------------------------------------------- |")
+            uw.pprint("\n")
+        else:
+            uw.pprint(f"No variables are defined on the mesh\n")
+
+    def _print_boundary_table(self, with_sizes=False):
+        """Print the boundary-label table (rank 0).
+
+        ``with_sizes=True`` adds the min/max per-rank stratum sizes; those
+        gathers are collective, so in that mode every rank must call this
+        together.
+        """
+        import numpy as np
+
+        if len(self.boundaries) > 0:
+            if with_sizes:
+                uw.pprint(f"| Boundary Name            | ID    | Min Size | Max Size |")
+                uw.pprint(f"| ------------------------------------------------------ |")
+            else:
+                uw.pprint(f"| Boundary Name            | ID    |")
+                uw.pprint(f"| -------------------------------- |")
+        else:
+            uw.pprint(f"No boundary labels are defined on the mesh\n")
+
+        i = 0
+        for bd in self.boundaries:
+            l = self.dm.getLabel(bd.name)
+            if l:
+                i = l.getStratumSize(bd.value)
+            else:
+                i = 0
+
+            if with_sizes:
+                ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+                uw.pprint(f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |")
+            else:
+                uw.pprint(f"| {bd.name:<20}     | {bd.value:<5} |")
+
+        if with_sizes:
+            # TODO(DESIGN): this All_Boundaries row re-gathers the FINAL loop
+            # iteration's stratum size (quirk preserved from the original
+            # inline table) instead of querying the All_Boundaries label.
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+            uw.pprint(f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |")
+        else:
+            uw.pprint(f"| {'All_Boundaries':<20}     | 1001  |")
+
+        ## UW_Boundaries (stacked label): total of the per-boundary strata
+        l = self.dm.getLabel("UW_Boundaries")
+        i = 0
+        if l:
+            for bd in self.boundaries:
+                i += l.getStratumSize(bd.value)
+
+        if with_sizes:
+            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
+            uw.pprint(f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |")
+            uw.pprint(f"| ------------------------------------------------------ |")
+        else:
+            uw.pprint(f"| {'UW_Boundaries':<20}     | --    |")
+            uw.pprint(f"| -------------------------------- |")
+
+        uw.pprint("\n")
+
     def view(self, level=0):
         """
         Displays mesh information at different levels.
@@ -1570,60 +1645,13 @@ class Mesh(Stateful, uw_object):
             except Exception:
                 pass
 
-            if len(self.vars) > 0:
-                uw.pprint(f"| Variable Name       | component | degree |     type        |")
-                uw.pprint(f"| ---------------------------------------------------------- |")
-                for vname in self.vars.keys():
-                    v = self.vars[vname]
-                    uw.pprint(
-                        f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
-                    )
+            self._print_variable_table()
 
-                uw.pprint(f"| ---------------------------------------------------------- |")
-                uw.pprint("\n")
-            else:
-                uw.pprint(f"No variables are defined on the mesh\n")
+            ## Boundary information — sizes are omitted at level 0, so no
+            ## collective gathers are needed (they were dead results here).
+            self._print_boundary_table(with_sizes=False)
 
-            ## Boundary information
-
-            if len(self.boundaries) > 0:
-                uw.pprint(f"| Boundary Name            | ID    |")
-                uw.pprint(f"| -------------------------------- |")
-            else:
-                uw.pprint(f"No boundary labels are defined on the mesh\n")
-
-            for bd in self.boundaries:
-                l = self.dm.getLabel(bd.name)
-                if l:
-                    i = l.getStratumSize(bd.value)
-                else:
-                    i = 0
-
-                ii = uw.utilities.gather_data(np.array([i]), dtype="int")
-
-                uw.pprint(f"| {bd.name:<20}     | {bd.value:<5} |")
-
-            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
-
-            uw.pprint(f"| {'All_Boundaries':<20}     | 1001  |")
-
-            ## UW_Boundaries:
-            l = self.dm.getLabel("UW_Boundaries")
-            i = 0
-            if l:
-                for bd in self.boundaries:
-                    i += l.getStratumSize(bd.value)
-
-            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
-
-            uw.pprint(f"| {'UW_Boundaries':<20}     | --    |")
-
-            uw.pprint(f"| -------------------------------- |")
-            uw.pprint("\n")
-
-            ## Information on the mesh DM
-            # self.dm.view()
-            print(f"Use view(1) to view detailed mesh information.\n")
+            uw.pprint(f"Use view(1) to view detailed mesh information.\n")
 
         elif level == 1:
             if uw.mpi.rank == 0:
@@ -1636,63 +1664,10 @@ class Mesh(Stateful, uw_object):
                 num_cells = nend - nstart
                 print(f"Number of cells: {num_cells}\n")
 
-                if len(self.vars) > 0:
-                    print(f"| Variable Name       | component | degree |     type        |")
-                    print(f"| ---------------------------------------------------------- |")
-                    for vname in self.vars.keys():
-                        v = self.vars[vname]
-                        print(
-                            f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
-                        )
+            self._print_variable_table()
 
-                    print(f"| ---------------------------------------------------------- |")
-                    print("\n", flush=True)
-                else:
-                    print(f"No variables are defined on the mesh\n", flush=True)
-
-            ## Boundary information
-
-            if len(self.boundaries) > 0:
-                uw.pprint(f"| Boundary Name            | ID    | Min Size | Max Size |")
-                uw.pprint(f"| ------------------------------------------------------ |")
-            else:
-                uw.pprint(f"No boundary labels are defined on the mesh\n")
-
-            for bd in self.boundaries:
-                l = self.dm.getLabel(bd.name)
-                if l:
-                    i = l.getStratumSize(bd.value)
-                else:
-                    i = 0
-
-                ii = uw.utilities.gather_data(np.array([i]), dtype="int")
-
-                uw.pprint(f"| {bd.name:<20}     | {bd.value:<5} | {ii.min():<8} | {ii.max():<8} |")
-
-            # ## PETSc marked boundaries:
-            # l = self.dm.getLabel("All_Boundaries")
-            # if l:
-            #     i = l.getStratumSize(1001)
-            # else:
-            #     i = 0
-
-            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
-
-            uw.pprint(f"| {'All_Boundaries':<20}     | 1001  | {ii.min():<8} | {ii.max():<8} |")
-
-            ## UW_Boundaries:
-            l = self.dm.getLabel("UW_Boundaries")
-            i = 0
-            if l:
-                for bd in self.boundaries:
-                    i += l.getStratumSize(bd.value)
-
-            ii = uw.utilities.gather_data(np.array([i]), dtype="int")
-
-            uw.pprint(f"| {'UW_Boundaries':<20}     | --    | {ii.min():<8} | {ii.max():<8} |")
-
-            uw.pprint(f"| ------------------------------------------------------ |")
-            uw.pprint("\n")
+            ## Boundary information (with collective size gathers)
+            self._print_boundary_table(with_sizes=True)
 
             ## Information on the mesh DM
             self.dm.view()
@@ -1712,19 +1687,7 @@ class Mesh(Stateful, uw_object):
         uw.pprint(f"\n")
         uw.pprint(f"Mesh # {self.instance}: {self.name}\n")
 
-        if len(self.vars) > 0:
-            uw.pprint(f"| Variable Name       | component | degree |     type        |")
-            uw.pprint(f"| ---------------------------------------------------------- |")
-            for vname in self.vars.keys():
-                v = self.vars[vname]
-                uw.pprint(
-                    f"| {v.clean_name:<20}|{v.num_components:^10} |{v.degree:^7} | {v.vtype.name:^15} |"
-                )
-
-            uw.pprint(f"| ---------------------------------------------------------- |")
-            uw.pprint("\n")
-        else:
-            uw.pprint(f"No variables are defined on the mesh\n")
+        self._print_variable_table()
 
         ## Boundary information on each proc
 
