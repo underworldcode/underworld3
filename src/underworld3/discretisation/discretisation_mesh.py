@@ -1370,7 +1370,7 @@ class Mesh(Stateful, uw_object):
         cdim = self.cdim
         cStart, cEnd = dm.getHeightStratum(0)
         pStart, pEnd = dm.getDepthStratum(0)
-        X = np.asarray(
+        vertex_coords = np.asarray(
             dm.getCoordinatesLocal().array).reshape(-1, cdim)
 
         def _reduce(val, op):
@@ -1380,97 +1380,108 @@ class Mesh(Stateful, uw_object):
                     val, op=getattr(_MPI, op))
             return val
 
-        tris = []
+        tri_vertex_lists = []
         is_simplex2d = cdim == 2
         if is_simplex2d:
-            for cc in range(cStart, cEnd):
-                cl = dm.getTransitiveClosure(cc)[0]
-                vs = [p - pStart for p in cl
-                      if pStart <= p < pEnd]
-                if len(vs) != 3:
+            for cell_id in range(cStart, cEnd):
+                closure_points = dm.getTransitiveClosure(cell_id)[0]
+                cell_vertices = [p - pStart for p in closure_points
+                                 if pStart <= p < pEnd]
+                if len(cell_vertices) != 3:
                     is_simplex2d = False
                     break
-                tris.append(vs)
+                tri_vertex_lists.append(cell_vertices)
 
-        if not is_simplex2d or not tris:
+        if not is_simplex2d or not tri_vertex_lists:
             try:
-                vol = np.abs(np.array(
-                    [dm.computeCellGeometryFVM(cc)[0]
-                     for cc in range(cStart, cEnd)]))
+                volume = np.abs(np.array(
+                    [dm.computeCellGeometryFVM(cell_id)[0]
+                     for cell_id in range(cStart, cEnd)]))
             except Exception:
-                vol = np.array([1.0])
-            if not vol.size:
-                vol = np.array([1.0])
-            n = _reduce(int(vol.size), "SUM")
-            vmin = _reduce(float(vol.min()), "MIN")
-            vsum = _reduce(float(vol.sum()), "SUM")
-            res = dict(
-                n_cells=n, element="non-2D-simplex",
-                vol_min_over_mean=vmin / (vsum / max(n, 1)),
+                volume = np.array([1.0])
+            if not volume.size:
+                volume = np.array([1.0])
+            n_cells = _reduce(int(volume.size), "SUM")
+            vol_min = _reduce(float(volume.min()), "MIN")
+            vol_sum = _reduce(float(volume.sum()), "SUM")
+            metrics = dict(
+                n_cells=n_cells, element="non-2D-simplex",
+                vol_min_over_mean=vol_min / (vol_sum / max(n_cells, 1)),
                 shape_metrics=None,
                 note="shape quality / angle / aspect need a 2-D "
                      "triangle mesh; only volume spread reported")
             if per_cell:
-                res["per_cell"] = dict(volume=vol)
-            return res
+                metrics["per_cell"] = dict(volume=volume)
+            return metrics
 
-        tri = np.asarray(tris, dtype=np.int64)
-        v0, v1, v2 = X[tri[:, 0]], X[tri[:, 1]], X[tri[:, 2]]
-        a = np.linalg.norm(v1 - v2, axis=1)
-        b = np.linalg.norm(v2 - v0, axis=1)
-        cl_ = np.linalg.norm(v0 - v1, axis=1)
+        tri = np.asarray(tri_vertex_lists, dtype=np.int64)
+        v0, v1, v2 = (vertex_coords[tri[:, 0]],
+                      vertex_coords[tri[:, 1]],
+                      vertex_coords[tri[:, 2]])
+        # Triangle side lengths, each named for the vertex it is opposite
+        edge_a = np.linalg.norm(v1 - v2, axis=1)
+        edge_b = np.linalg.norm(v2 - v0, axis=1)
+        edge_c = np.linalg.norm(v0 - v1, axis=1)
         # 2-D triangle area from the z-component of the edge cross product
         # (numpy 2.0 removed the 2-D np.cross that returned this scalar).
         _e1, _e2 = v1 - v0, v2 - v0
         _cross_z = _e1[:, 0] * _e2[:, 1] - _e1[:, 1] * _e2[:, 0]
-        A = np.maximum(0.5 * np.abs(_cross_z), 1.0e-300)
-        q = 4.0 * np.sqrt(3.0) * A / (a * a + b * b + cl_ * cl_)
+        area = np.maximum(0.5 * np.abs(_cross_z), 1.0e-300)
+        shape_q = 4.0 * np.sqrt(3.0) * area / (
+            edge_a * edge_a + edge_b * edge_b + edge_c * edge_c)
 
-        def _ang(o, p, r):
+        def _angle_deg(opposite, side1, side2):
+            # Interior angle opposite the side `opposite`, law of cosines
             return np.degrees(np.arccos(np.clip(
-                (p * p + r * r - o * o) / (2.0 * p * r),
+                (side1 * side1 + side2 * side2 - opposite * opposite)
+                / (2.0 * side1 * side2),
                 -1.0, 1.0)))
-        ang = np.maximum.reduce(
-            [_ang(a, b, cl_), _ang(b, cl_, a), _ang(cl_, a, b)])
-        Lmax = np.maximum.reduce([a, b, cl_])
-        aspect = Lmax * Lmax / (2.0 * A)
-        rel = A / A.mean()
+        largest_angle = np.maximum.reduce(
+            [_angle_deg(edge_a, edge_b, edge_c),
+             _angle_deg(edge_b, edge_c, edge_a),
+             _angle_deg(edge_c, edge_a, edge_b)])
+        longest_edge = np.maximum.reduce([edge_a, edge_b, edge_c])
+        aspect = longest_edge * longest_edge / (2.0 * area)
+        rel_area = area / area.mean()
 
-        et = {}
-        for ti, (i, j, k) in enumerate(tri):
+        # Neighbour size-jump: map each (undirected) edge to the triangles
+        # sharing it; interior edges (exactly two triangles) contribute the
+        # adjacent-cell area ratio — the gradation the solver actually sees.
+        edge_to_tris = {}
+        for tri_idx, (i, j, k) in enumerate(tri):
             for u, w in ((i, j), (j, k), (k, i)):
-                et.setdefault((min(u, w), max(u, w)),
-                              []).append(ti)
-        jr = np.array([max(A[t]) / min(A[t])
-                       for t in et.values() if len(t) == 2]
-                      or [1.0])
+                edge_to_tris.setdefault((min(u, w), max(u, w)),
+                                        []).append(tri_idx)
+        size_jump = np.array([max(area[t]) / min(area[t])
+                              for t in edge_to_tris.values() if len(t) == 2]
+                             or [1.0])
 
-        n = _reduce(int(tri.shape[0]), "SUM")
-        qsum = _reduce(float(q.sum()), "SUM")
-        Asum = _reduce(float(A.sum()), "SUM")
-        res = dict(
-            n_cells=n, element="2D-simplex",
-            q_min=_reduce(float(q.min()), "MIN"),
-            q_mean=qsum / max(n, 1),
-            q_p01=float(np.percentile(q, 1)),
-            q_p05=float(np.percentile(q, 5)),
-            n_q_lt_0p3=_reduce(int((q < 0.3).sum()), "SUM"),
-            n_q_lt_0p2=_reduce(int((q < 0.2).sum()), "SUM"),
-            angle_max_deg=_reduce(float(ang.max()), "MAX"),
-            n_angle_gt_150=_reduce(int((ang > 150).sum()), "SUM"),
-            n_angle_gt_165=_reduce(int((ang > 165).sum()), "SUM"),
+        n_cells = _reduce(int(tri.shape[0]), "SUM")
+        q_sum = _reduce(float(shape_q.sum()), "SUM")
+        area_sum = _reduce(float(area.sum()), "SUM")
+        metrics = dict(
+            n_cells=n_cells, element="2D-simplex",
+            q_min=_reduce(float(shape_q.min()), "MIN"),
+            q_mean=q_sum / max(n_cells, 1),
+            q_p01=float(np.percentile(shape_q, 1)),
+            q_p05=float(np.percentile(shape_q, 5)),
+            n_q_lt_0p3=_reduce(int((shape_q < 0.3).sum()), "SUM"),
+            n_q_lt_0p2=_reduce(int((shape_q < 0.2).sum()), "SUM"),
+            angle_max_deg=_reduce(float(largest_angle.max()), "MAX"),
+            n_angle_gt_150=_reduce(int((largest_angle > 150).sum()), "SUM"),
+            n_angle_gt_165=_reduce(int((largest_angle > 165).sum()), "SUM"),
             aspect_max=_reduce(float(aspect.max()), "MAX"),
             aspect_p99=float(np.percentile(aspect, 99)),
-            sizejump_max=float(jr.max()),
-            sizejump_p99=float(np.percentile(jr, 99)),
+            sizejump_max=float(size_jump.max()),
+            sizejump_p99=float(np.percentile(size_jump, 99)),
             n_big_thin=_reduce(
-                int(((rel > 2.0) & (aspect > 4.0)).sum()), "SUM"),
-            vol_min_over_mean=(_reduce(float(A.min()), "MIN")
-                               / (Asum / max(n, 1))))
+                int(((rel_area > 2.0) & (aspect > 4.0)).sum()), "SUM"),
+            vol_min_over_mean=(_reduce(float(area.min()), "MIN")
+                               / (area_sum / max(n_cells, 1))))
         if per_cell:
-            res["per_cell"] = dict(
-                q=q, angle_deg=ang, aspect=aspect, volume=A)
-        return res
+            metrics["per_cell"] = dict(
+                q=shape_q, angle_deg=largest_angle, aspect=aspect, volume=area)
+        return metrics
 
     def view(self, level=0):
         """
