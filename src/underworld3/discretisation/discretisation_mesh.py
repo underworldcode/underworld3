@@ -6102,9 +6102,8 @@ class Mesh(Stateful, uw_object):
         --------
         >>> # Define metric from fault distance
         >>> metric = uw.discretisation.MeshVariable("H", mesh, 1)
-        >>> with mesh.access(metric):
-        ...     # Smaller H near fault, larger far away
-        ...     metric.data[:, 0] = 0.01 + 0.09 * fault.distance_from(mesh.data)
+        >>> # Smaller H near fault, larger far away
+        >>> metric.data[:, 0] = 0.01 + 0.09 * fault.distance_from(mesh.X.coords)
         >>> mesh.adapt(metric, verbose=True)
         >>> stokes.solve()  # Solver rebuilds automatically
         """
