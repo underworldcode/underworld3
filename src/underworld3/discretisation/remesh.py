@@ -363,7 +363,7 @@ def _remesh_with_field_transfer_impl(
         return False
 
     # The one-shot REMAP dance for the generic per-variable pass.
-    _remap_var_set(mesh, remap_vars, old_X, new_X, old_data, verbose=verbose)
+    remap_var_set(mesh, remap_vars, old_X, new_X, old_data, verbose=verbose)
 
     # Operator hooks (Phase 2 ALE etc.). Currently fired even when
     # remap_vars is empty so a CARRY-only DDt still gets its v_mesh.
@@ -427,15 +427,14 @@ def _iter_active_hooks(mesh):
         yield cb
 
 
-def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
+def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """One-shot REMAP dance for a set of variables.
 
     Used by the generic per-variable pass in
-    :func:`remesh_with_field_transfer` AND exposed (as
-    :func:`remap_var_set`) so an operator's ``on_remesh`` hook can
-    force-REMAP its CARRY-managed vars on an adapt that is
-    ALE-incompatible (e.g. an OT_adapt reset, where the linear
-    ``Δx/dt → v_mesh`` interpretation breaks down).
+    :func:`remesh_with_field_transfer`, and public so an operator's
+    ``on_remesh`` hook can force-REMAP its CARRY-managed vars on an
+    adapt that is ALE-incompatible (e.g. an OT_adapt reset, where the
+    linear ``Δx/dt → v_mesh`` interpretation breaks down).
 
     Contract: on entry the mesh is at ``new_X`` and each var's
     ``.data`` may hold *either* the original snapshot value (CARRY:
@@ -486,7 +485,7 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         except Exception as exc:
             if verbose:
                 uw.pprint(
-                    f"  _remap_var_set: skipping "
+                    f"  remap_var_set: skipping "
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
         resampled[var] = np.asarray(val).reshape(
@@ -496,9 +495,6 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     for var, val in resampled.items():
         _write_var_data(var, val)
 
-
-# Public alias for operator-hook use.
-remap_var_set = _remap_var_set
 
 
 def _mark_reinit_stale(var):
