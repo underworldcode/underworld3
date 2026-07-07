@@ -204,6 +204,57 @@ def _hierarchy_sidecar_name(mesh_filename, level):
     return f"{base}.hierarchy.L{level}{ext}"
 
 
+def _mesh_coords_update_callback(array, change_context):
+    """Setter callback for a mesh's canonical coordinate array.
+
+    Routes every user write to ``mesh.X.coords`` through the full
+    ``_deform_mesh`` geometry rebuild and bumps ``_mesh_version`` so
+    registered swarms see the coordinate change. Installed by
+    :meth:`Mesh._install_coords_array` — the ONE callback shared by all
+    sites that (re)create the coordinate array (construction, submesh
+    re-extraction, adaptation), so the teardown guard and the identity
+    gate below cannot silently diverge between copies again.
+
+    Verbosity is read from the owning mesh's ``_coords_callback_verbose``
+    flag (set at install time).
+    """
+    mesh = array.owner
+    if mesh is None:
+        # This guard handles cases where the array is accessed during
+        # object teardown (e.g. at application exit or during mesh
+        # replacement), where the owning Python mesh object has already
+        # been garbage collected but the NDArray proxy still exists.
+        return
+
+    # ``NDArray_With_Callback.__array_finalize__`` propagates this
+    # callback (and the owner) to every view / fancy-index copy of the
+    # coordinate array. Only the mesh's *canonical* coordinate array
+    # represents an actual coordinate update; a derived sub-array (e.g.
+    # a boundary subset built inside the tangent-slip / bounding-surface
+    # / mover machinery) that merely inherited this callback must NOT
+    # trigger a full-mesh deform. Identity-gate on the canonical
+    # ``_coords`` — note this is NOT a size filter, so a genuinely
+    # malformed full coordinate update still reaches ``_deform_mesh``
+    # and surfaces loudly rather than being silently dropped.
+    if array is not mesh._coords:
+        return
+
+    verbose = getattr(mesh, "_coords_callback_verbose", False)
+    if verbose:
+        uw.pprint(0, f"Mesh update callback - mesh deform")
+
+    coords = array.reshape(-1, mesh.cdim)
+    mesh._deform_mesh(coords, verbose=verbose)
+
+    # Increment mesh version to notify registered swarms of coordinate changes
+    with mesh._mesh_update_lock:
+        mesh._mesh_version += 1
+        if verbose:
+            uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
+
+    return
+
+
 class Mesh(Stateful, uw_object):
     r"""
     Unstructured mesh with PETSc DMPlex backend.
@@ -1070,12 +1121,8 @@ class Mesh(Stateful, uw_object):
             )
 
         # Expose mesh points through special numpy array class with a callback
-        # on all setter operations
-
-        self._coords = uw.utilities.NDArray_With_Callback(
-            numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
-            owner=self,
-        )
+        # on all setter operations (see _mesh_coords_update_callback).
+        self._install_coords_array(verbose=verbose)
 
         # Navigation-only coord view. On manifold meshes the nav DM is
         # a 1-cell-overlap clone with extra ghost vertices; navigation
@@ -1089,46 +1136,24 @@ class Mesh(Stateful, uw_object):
         else:
             self._nav_coords = self._coords
 
-        # The callback is to rebuild the mesh data structures - we already have a routine
-        # to handle that so we just wrap it here.
+    def _install_coords_array(self, verbose=False):
+        """(Re)wrap the DM's local coordinates as the canonical coord array.
 
-        def mesh_update_callback(array, change_context):
-            mesh = array.owner
-            if mesh is None:
-                # This guard handles cases where the array is accessed during
-                # object teardown (e.g. at application exit or during mesh
-                # replacement), where the owning Python mesh object has already
-                # been garbage collected but the NDArray proxy still exists.
-                return
-
-            # ``NDArray_With_Callback.__array_finalize__`` propagates this
-            # callback (and the owner) to every view / fancy-index copy of the
-            # coordinate array. Only the mesh's *canonical* coordinate array
-            # represents an actual coordinate update; a derived sub-array (e.g.
-            # a boundary subset built inside the tangent-slip / bounding-surface
-            # / mover machinery) that merely inherited this callback must NOT
-            # trigger a full-mesh deform. Identity-gate on the canonical
-            # ``_coords`` — note this is NOT a size filter, so a genuinely
-            # malformed full coordinate update still reaches ``_deform_mesh``
-            # and surfaces loudly rather than being silently dropped.
-            if array is not mesh._coords:
-                return
-
-            if verbose:
-                uw.pprint(0, f"Mesh update callback - mesh deform")
-
-            coords = array.reshape(-1, mesh.cdim)
-            mesh._deform_mesh(coords, verbose=verbose)
-
-            # Increment mesh version to notify registered swarms of coordinate changes
-            with mesh._mesh_update_lock:
-                mesh._mesh_version += 1
-                if verbose:
-                    uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
-
-            return
-
-        self._coords.add_callback(mesh_update_callback)
+        Creates ``self._coords`` as an ``NDArray_With_Callback`` view of
+        the DM's local coordinate buffer and attaches the shared
+        module-level :func:`_mesh_coords_update_callback`. Every site
+        that replaces the coordinate buffer uses this ONE installer —
+        initial construction (:meth:`_install_coordinate_array`), submesh
+        re-extraction (:meth:`_re_extract_from_parent`) and adaptation
+        (:meth:`adapt`) — so the callback's teardown guard and identity
+        gate are identical everywhere.
+        """
+        self._coords_callback_verbose = bool(verbose)
+        self._coords = uw.utilities.NDArray_With_Callback(
+            numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
+            owner=self,
+        )
+        self._coords.add_callback(_mesh_coords_update_callback)
 
     def _setup_symbolic_coordinates(self, coordinate_system_type):
         """Create the sympy coordinate systems and their JIT code bindings.
@@ -2139,24 +2164,8 @@ class Mesh(Stateful, uw_object):
             self.dm = new_subdm
             self.subpoint_is = new_subdm.getSubpointIS()
 
-            # Rebuild coordinates
-            self._coords = uw.utilities.NDArray_With_Callback(
-                numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
-                owner=self,
-            )
-
-            def mesh_update_callback(array, change_context):
-                mesh = array.owner
-                if mesh is None:
-                    return
-
-                coords = array.reshape(-1, mesh.cdim)
-                mesh._deform_mesh(coords, verbose=False)
-                with mesh._mesh_update_lock:
-                    mesh._mesh_version += 1
-                return
-
-            self._coords.add_callback(mesh_update_callback)
+            # Rebuild coordinates with the shared coordinate-update callback
+            self._install_coords_array(verbose=False)
 
             self._mesh_version += 1
             self._topology_version += 1
@@ -6179,26 +6188,11 @@ class Mesh(Stateful, uw_object):
             self.dm = new_dm
             self.dm.setName(f"uw_{self.name}")
 
-            # Update coordinates array
-            self._coords = uw.utilities.NDArray_With_Callback(
-                numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
-                owner=self,
-            )
-
-            # Rebuild the callback for mesh deformation
-            def mesh_update_callback(array, change_context):
-                if verbose:
-                    uw.pprint(0, f"Mesh update callback - mesh deform")
-
-                coords = array.reshape(-1, array.owner.cdim)
-                self._deform_mesh(coords, verbose=verbose)
-                with self._mesh_update_lock:
-                    self._mesh_version += 1
-                    if verbose:
-                        uw.pprint(0, f"Mesh version incremented to {self._mesh_version}")
-                return
-
-            self._coords.add_callback(mesh_update_callback)
+            # Update coordinates array with the shared coordinate-update
+            # callback. The unified callback adds the teardown guard and the
+            # canonical-array identity gate this site's inline copy had
+            # silently dropped (READ-16).
+            self._install_coords_array(verbose=verbose)
 
             # Increment mesh version (marks swarms as stale)
             self._mesh_version += 1
