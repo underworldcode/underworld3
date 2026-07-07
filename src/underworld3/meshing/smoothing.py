@@ -2000,10 +2000,6 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         old0 = np.asarray(rest_coords_override).copy()
     else:
         old0 = np.asarray(mesh.X.coords).copy()
-    gproj.solve()
-    Dcoords = np.asarray(Df.coords)
-    gvec = np.asarray(
-        uw.function.evaluate(grho.sym, Dcoords)).reshape(-1, cdim)
     # h0 = undeformed mean edge length. If the caller passes
     # `h0_override` (e.g. a value cached at the FIRST adapt on
     # this mesh), use that — re-measuring from a deformed mesh
@@ -2021,11 +2017,6 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
             h0 = 1.0
         if uw.mpi.size > 1:
             h0 = uw.mpi.comm.allreduce(h0) / uw.mpi.size
-    gn = np.linalg.norm(gvec, axis=1)
-    gmax = float(gn.max()) if gn.size else 0.0
-    if uw.mpi.size > 1:
-        from mpi4py import MPI as _MPI
-        gmax = uw.mpi.comm.allreduce(gmax, op=_MPI.MAX)
     # CRITICAL no-op guard: uniform ρ ⇒ ∇ρ ≡ 0, but the L2
     # projection of the zero function leaves ~1e-18 round-off.
     # Normalising by that noisy max would make (|∇ρ|/gref)² ~ O(1)
@@ -2036,8 +2027,12 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     # exact isotropic no-op while AMP>0 is bit-identical to the
     # verified ma_metric_tensor_viz construction.
     g_eps = 1.0e-9
-    gref = gmax if gmax > g_eps else 1.0
     base = 1.0 / h0 ** 2
+    # Metric-build state shared with the closure below: bound (via
+    # ``nonlocal``) by ``_build_M_tensor()``, whose pre-loop call is the
+    # single build site (the per-iteration refresh path rebinds the same
+    # names when ``metric_refresh_per_iter`` is on).
+    Dcoords = gvec = gn = gmax = gref = None
 
     # --- isotropic density: which redistribution model ------------
     # Three regimes, in precedence order:
@@ -2158,107 +2153,9 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         Df.array[:, 1, 0] = Dout_[:, 1, 0]
         Df.array[:, 1, 1] = Dout_[:, 1, 1]
 
-    if resolution_ratio > 1.0:
-        R = float(resolution_ratio)
-        rho_v = np.asarray(
-            uw.function.evaluate(metric, Dcoords)).reshape(-1)
-        s_log = np.log(np.clip(rho_v, 1.0e-12, None))
-        if uw.mpi.size > 1:
-            from mpi4py import MPI as _MPI
-            tot = uw.mpi.comm.allreduce(float(s_log.sum()),
-                                        op=_MPI.SUM)
-            cnt = uw.mpi.comm.allreduce(int(s_log.size),
-                                        op=_MPI.SUM)
-            ln_g = tot / max(cnt, 1)
-        else:
-            ln_g = float(s_log.mean())
-        # --- temporal damping of the normaliser G (EMA in log
-        # space) -------------------------------------------------
-        # G is recomputed from the *instantaneous* field every
-        # adaptation event; during a violent transient that lurches
-        # the whole ρ/G distribution sideways across the *fixed*
-        # eigen-clamp band → mass clamp-saturation → the mesh
-        # visibly "wobbles". Low-pass ln G across events (G is a
-        # geometric quantity ⇒ average in log space) so the band
-        # stays centred. This smooths **only the one global
-        # intensity scalar** — the spatial ρ(x) pattern still
-        # tracks the current field every event, so *where* it
-        # refines stays fully responsive. a=geom_mean_smoothing:
-        # a≥1 ⇒ no damping (instantaneous, the original behaviour);
-        # 0<a<1 ⇒ EMA, lnG_eff = a·lnG_now + (1−a)·lnG_prev (a≈0.25
-        # strong); the first event seeds the state (no history yet).
-        # Carried in _GEMA_STATE under the _ANISO_CACHE key so it
-        # persists across adaptation events but is per-run/per-mesh.
-        a = float(geom_mean_smoothing)
-        if 0.0 < a < 1.0:
-            prev = _GEMA_STATE.get(key)
-            if prev is not None:
-                ln_g = a * ln_g + (1.0 - a) * prev
-            _GEMA_STATE[key] = ln_g
-        # ρ̂ = ρ/G (geometric mean 1 ⇒ ⟨ln ρ̂⟩=0, budget-centred);
-        # iso = base·ρ̂ → refine where ρ̂>1, coarsen where ρ̂<1,
-        # the two complementary by construction (no coarsen knob).
-        iso = base * np.exp(s_log - ln_g)
-        lam_lo = base / R ** 2
-        lam_hi = base * R ** 2
-        # Anisotropic-bump magnitude. Default: ride the local
-        # density (M = iso·(I+β·bump) — the clean scale-invariant
-        # form). aniso_to_base=True keys it to constant `base`
-        # instead (M = iso·I + base·β·bump), matching the legacy
-        # cc=2 regime that produced a markedly solver-friendlier
-        # mesh: it stops a coarsened-near-front cell from being
-        # large AND strongly stretched (the clustered poor cells
-        # the equidist form makes during a violent transient).
-        aniso_keyed = (np.full(Dcoords.shape[0], base)
-                       if aniso_to_base else iso)
-    elif coarsen_cap > 1.0:
-        rho_v = np.asarray(
-            uw.function.evaluate(metric, Dcoords)).reshape(-1)
-        r_lo = float(np.percentile(rho_v, 10.0))
-        r_hi = float(np.percentile(rho_v, 90.0))
-        if uw.mpi.size > 1:
-            from mpi4py import MPI as _MPI
-            r_lo = uw.mpi.comm.allreduce(r_lo, op=_MPI.MIN)
-            r_hi = uw.mpi.comm.allreduce(r_hi, op=_MPI.MAX)
-        q = np.clip((rho_v - r_lo) / max(r_hi - r_lo, 1.0e-30),
-                    0.0, 1.0)
-        iso = base * float(coarsen_cap) ** (q - 1.0)   # q=1 → base
-        lam_lo = base / float(coarsen_cap)             # coarsest
-        lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
-        aniso_keyed = np.full(Dcoords.shape[0], base)
-    else:
-        iso = np.full(Dcoords.shape[0], base)
-        lam_lo = base                                  # coarsest
-        lam_hi = 1.0 / (h0 / np.sqrt(aniso_cap)) ** 2  # finest
-        aniso_keyed = np.full(Dcoords.shape[0], base)
-
-    Dout = np.empty((Dcoords.shape[0], 2, 2))
-    eye2 = np.eye(2)
-    for i in range(Dcoords.shape[0]):
-        g = gvec[i]
-        gni = gn[i]
-        bi = iso[i]
-        ai = aniso_keyed[i]
-        if gni > g_eps and gmax > g_eps:
-            gh = g / gni
-            # iso·I (equidistribution density) + anisotropic bump
-            # (regime 1: keyed to local iso ⇒ the whole metric is
-            # one scale-invariant density·shape field, clamp = rail;
-            # regimes 2/3: keyed to base ⇒ aniso_cap/beta retain
-            # their exact validated meaning).
-            M = bi * eye2 + ai * beta * (gni / gref) ** 2 \
-                * np.outer(gh, gh)
-        else:
-            M = bi * eye2
-        w, V = np.linalg.eigh(M)
-        w = np.clip(w, lam_lo, lam_hi)
-        if metric_role == "Minv":
-            w = 1.0 / w
-        Dout[i] = (V * w) @ V.T
-    Df.array[:, 0, 0] = Dout[:, 0, 0]
-    Df.array[:, 0, 1] = Dout[:, 0, 1]
-    Df.array[:, 1, 0] = Dout[:, 1, 0]
-    Df.array[:, 1, 1] = Dout[:, 1, 1]
+    # Build D once here, on the undeformed mesh. (This call replaced a
+    # ~100-line inline duplicate of the closure body — READ-02.)
+    _build_M_tensor()
 
     # Pre-compute the undeformed-mesh median cell area, used by the
     # backtrack's sliver guard. Captured ONCE before the iteration
