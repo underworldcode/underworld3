@@ -2821,6 +2821,12 @@ class Mesh(Stateful, uw_object):
                 try:
                     self._assemble_cell_size(var)
                 except Exception:
+                    # Sanctioned swallow: this fires inside a remesh
+                    # transaction where the variable may be mid-teardown
+                    # (vecs destroyed, sizes transiently inconsistent).
+                    # deform()/adapt() re-fill the field explicitly right
+                    # after, so a failed opportunistic refresh here only
+                    # delays the update — it must not abort the remesh.
                     pass
 
             var._remesh_reinit_callback = _refresh
@@ -3332,6 +3338,12 @@ class Mesh(Stateful, uw_object):
                 try:
                     self._assemble_boundary_normal(_var, _nm)
                 except Exception:
+                    # Sanctioned swallow: a normal refresh can fail for a
+                    # boundary whose label vanished from the current DM
+                    # (e.g. after region extraction); the deform itself is
+                    # complete and must not be rolled back for one BC aid.
+                    # Consequence of skipping: that Nitsche/penalty BC
+                    # keeps its setup-time normal until next refresh.
                     pass
         # Likewise refresh the local cell-size field (Nitsche penalty scaling)
         # so its cell-constant data tracks the deformed geometry.
@@ -3339,6 +3351,10 @@ class Mesh(Stateful, uw_object):
             try:
                 self._assemble_cell_size(self._cell_size_variable)
             except Exception:
+                # Sanctioned swallow: same contract as the normal refresh
+                # above — a failed size re-fill leaves the penalty scaling
+                # one geometry behind rather than aborting a completed
+                # deform. The next deform/adapt re-fills it.
                 pass
         return result
 
@@ -6281,6 +6297,10 @@ class Mesh(Stateful, uw_object):
             try:
                 self._assemble_cell_size(self._cell_size_variable)
             except Exception as e:
+                # Sanctioned swallow (verbose-only report): the adaptation is
+                # already committed; a failed size re-fill leaves the Nitsche
+                # penalty scaling one geometry behind rather than losing the
+                # adapted mesh. The next deform/adapt re-fills it.
                 if verbose:
                     print(f"[{uw.mpi.rank}] Warning: cell-size refresh failed: {e}", flush=True)
 
@@ -6292,6 +6312,11 @@ class Mesh(Stateful, uw_object):
             try:
                 submesh._re_extract_from_parent(verbose=verbose)
             except Exception as e:
+                # Sanctioned swallow (verbose-only report): one submesh
+                # failing to re-extract must not abort the parent's completed
+                # adaptation or the other submeshes' re-extraction; the failed
+                # submesh keeps its pre-adapt DM and will loudly mismatch on
+                # first parent-version check.
                 if verbose:
                     print(f"[{uw.mpi.rank}] Warning: submesh re-extraction failed: {e}", flush=True)
 
