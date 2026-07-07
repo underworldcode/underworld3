@@ -15,6 +15,7 @@ MUMPS LU is opt-in via ``solver._rotated_use_lu``.
 ``underworld3.utilities.boundary_flux``.
 """
 import numpy as np
+import sympy
 from petsc4py import PETSc
 
 # Rank-safe printing only (mpi.pprint). Safe at module top: underworld3.mpi is a
@@ -121,26 +122,20 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     sym_fn = None
     const_normal = None
     if normal is not None:
-        try:
-            import sympy
-            if isinstance(normal, sympy.Matrix):
-                from underworld3.function.expressions import unwrap
-                comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
-                                              return_self=False))
-                         for k in range(dim)]
-                stray = set().union(*[c.free_symbols for c in comps]) \
-                    - set(solver.mesh.X)
-                if stray:
-                    raise ValueError(
-                        f"analytic normal for boundary '{boundary}' contains "
-                        f"symbols {sorted(map(str, stray))} that are not mesh "
-                        "coordinates — express it in mesh.X (e.g. radial X/|X|).")
-                sym_fn = sympy.lambdify(list(solver.mesh.X), comps, "numpy")
-        except ValueError:
-            raise
-        except Exception:
-            sym_fn = None
-        if sym_fn is None:
+        if isinstance(normal, sympy.Matrix):
+            from underworld3.function.expressions import unwrap
+            comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
+                                          return_self=False))
+                     for k in range(dim)]
+            stray = set().union(*[c.free_symbols for c in comps]) \
+                - set(solver.mesh.X)
+            if stray:
+                raise ValueError(
+                    f"analytic normal for boundary '{boundary}' contains "
+                    f"symbols {sorted(map(str, stray))} that are not mesh "
+                    "coordinates — express it in mesh.X (e.g. radial X/|X|).")
+            sym_fn = sympy.lambdify(list(solver.mesh.X), comps, "numpy")
+        else:
             const_normal = np.asarray(normal, dtype=float).ravel()
 
     nacc = {}
