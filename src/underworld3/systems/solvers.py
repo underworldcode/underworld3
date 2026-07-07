@@ -87,74 +87,48 @@ def expression(*args, **kwargs):
 
 def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
     """
-    Helper function to apply unit-aware scaling to timestep estimates.
+    Convert a nondimensional timestep estimate to physical time units.
 
-    Detects the units of the velocity field and applies appropriate time scaling
-    to convert nondimensional timestep to physical time units.
+    Multiplies by the model's fundamental time scale when one is configured;
+    otherwise the nondimensional value is returned unchanged.
 
     Parameters
     ----------
     dt_nondimensional : float or np.ndarray
-        The nondimensional timestep estimate
-    field : MeshVariable or SymPy expression (often a Matrix)
-        The velocity field - units are detected from this
-    mesh : Mesh
-        The mesh (may have reference to model with time scales)
+        The nondimensional timestep estimate.
+    field, mesh : unused
+        Retained for call-site stability: the estimate_dt implementation in
+        ``cython/petsc_generic_snes_solvers.pyx`` calls this helper with
+        ``(dt_nd, self.u, self.mesh)``. (An earlier version inspected the
+        field's units before scaling, but both branches multiplied by the
+        same ``fundamental_scales['time']``, so the inspection changed
+        nothing and was removed.)
 
     Returns
     -------
     float or UWQuantity
-        Timestep with physical time units if detectable, otherwise nondimensional
+        Timestep with physical time units if a time scale is configured,
+        otherwise the nondimensional input.
     """
     try:
         from ..function.quantities import UWQuantity
-        from ..units import get_units
-        import sympy
 
-        # Extract a component from field if it's a Matrix (common for velocity)
-        field_to_check = field
-        if isinstance(field, sympy.MatrixBase):
-            # Extract first component: V_fn[0] or V_fn[0,0]
-            if field.shape[0] > 0:
-                field_to_check = field[0] if len(field.shape) == 1 else field[0, 0]
-
-        # Try to get units from the field expression
-        field_units = get_units(field_to_check)
-
-        if field_units is not None:
-            # Field has units - verify it has time dimension (as expected for velocity)
-            # Get dimensionality: e.g., {'[length]': 1, '[time]': -1} for velocity
-            field_dimensionality = field_units.dimensionality
-
-            # Check if this has time dimension (velocity should have time^-1)
-            if '[time]' in field_dimensionality:
-                # Velocity field has time dimension - use model time scale for result
-                # Don't try to match the velocity's specific time units (fragile string parsing)
-                # Instead, always return in model's fundamental time scale and let user convert
-                model = uw.get_default_model()
-                if model and hasattr(model, "fundamental_scales"):
-                    model_time_scale = model.fundamental_scales.get("time")
-                    if model_time_scale is not None:
-                        # Apply scaling: dt_physical = dt_nd * time_scale
-                        dt_physical = dt_nondimensional * model_time_scale
-
-                        # Return as UWQuantity
-                        if not isinstance(dt_physical, UWQuantity):
-                            dt_physical = UWQuantity._from_pint(dt_physical)
-                        return dt_physical
-
-        # Fallback: check if model has time scales (old behavior)
-        model = uw.get_default_model()
-        if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
-            time_scale = model.fundamental_scales.get("time")
+        orchestration_model = uw.get_default_model()
+        if (
+            orchestration_model
+            and hasattr(orchestration_model, "fundamental_scales")
+            and orchestration_model.fundamental_scales
+        ):
+            time_scale = orchestration_model.fundamental_scales.get("time")
             if time_scale is not None:
                 dt_physical = dt_nondimensional * time_scale
                 if not isinstance(dt_physical, UWQuantity):
                     dt_physical = UWQuantity._from_pint(dt_physical)
                 return dt_physical
-
-    except Exception as e:
-        # Silently fall back to nondimensional
+    except Exception:
+        # Sanctioned swallow: units machinery unavailable or misconfigured
+        # (no default model, Pint conversion failure) — a timestep estimate
+        # must always come back, so fall back to the nondimensional value.
         pass
 
     return dt_nondimensional
