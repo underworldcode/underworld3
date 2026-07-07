@@ -131,8 +131,16 @@ class RemeshContext:
     :func:`remap_var_set` with this dict and its own var list.
 
     ``scratch`` is a free-form dict where adapt ops or hooks publish
-    flags / per-step state (e.g. ``ale_opt_out``, a stashed
-    ``v_mesh``). Keys are by convention.
+    flags / per-step state. Two keys are in use:
+
+    * ``"ale_opt_out"`` — published by ``OT_adapt``
+      (:mod:`underworld3.meshing._ot_adapt`, from inside ``do_move`` via
+      ``mesh._remesh_pending_scratch``) on a reset adapt; consumed by
+      the ``DuDt`` ``on_remesh`` hook (:mod:`underworld3.systems.ddt`),
+      which falls back to REMAP for its managed history vars.
+    * ``"v_mesh"`` — the Phase 2 ALE convention: an ALE-style operator
+      hook stashes the mesh velocity here for the next solve to
+      consume. No producer exists yet.
     """
 
     mesh: "Mesh"
@@ -422,7 +430,7 @@ def _iter_active_hooks(mesh):
         live.append((ref, cb))
     # Prune dead refs once per dispatch.
     if isinstance(refs, list):
-        refs[:] = [ref for ref, _ in live] if live else []
+        refs[:] = [ref for ref, _ in live]
     for _, cb in live:
         yield cb
 
