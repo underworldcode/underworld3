@@ -73,7 +73,16 @@ from underworld3.utilities._api_tools import (
 
 from underworld3.function import expression as public_expression
 
-expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
+
+def expression(*args, **kwargs):
+    """UWexpression factory with per-instance unique symbol names.
+
+    Solver residual templates re-create expressions carrying the same LaTeX
+    symbol every time they are rebuilt; unique name generation keeps each
+    instance distinct so symbols from different solvers/meshes cannot collide
+    (see docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md).
+    """
+    return public_expression(*args, _unique_name_generation=True, **kwargs)
 
 
 def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
