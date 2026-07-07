@@ -282,14 +282,6 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     Ahat = Aorig.ptap(Qt)
     bhat = b.duplicate(); Q.mult(b, bhat)
 
-    # pin one pressure DOF (datum) — row only, keeps B^T coupling
-    gsec = dm.getGlobalSection()
-    pin = None; pS, pE = gsec.getChart()
-    for q in range(pS, pE):
-        if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0 \
-                and gsec.getFieldOffset(q, _PRESSURE_FIELD) >= 0:
-            pin = gsec.getFieldOffset(q, _PRESSURE_FIELD); break
-
     # constrain rotated normal rows (v_n=0): zero the matrix rows/cols AND the RHS
     # at those rows — zeroRowsColumns does NOT touch the RHS, so a nonzero b there
     # would leak straight into the solution (û_i = b_i / diag), independent of the
@@ -310,9 +302,21 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     # when a hierarchy is registered (set_custom_fmg), else GAMG. Direct LU only when
     # explicitly opted in via solver._rotated_use_lu.
     if getattr(solver, "_rotated_use_lu", False):
-        # NOTE: the pressure `pin` is a naive per-rank global search (parallel-unsafe;
-        # LU is opt-in only — see the follow-up in rotated_bc). The RHS write below
-        # still uses ownership-relative indexing so it does not overflow the local slice.
+        # Pin one pressure DOF (datum) — row only, keeps the B^T coupling. Only the
+        # direct solve needs it; the iterative path fixes the pressure gauge with the
+        # constant-pressure null space instead.
+        # TODO(BUG): the datum search is a naive per-rank scan of the rank's OWN
+        # global-section chart, so at np>1 each rank pins a different pressure DOF
+        # (or none, pin=None → zeroRows([None]) fails). Parallel-unsafe; tolerated
+        # only because LU is opt-in via solver._rotated_use_lu.
+        gsec = dm.getGlobalSection()
+        pin = None
+        pS, pE = gsec.getChart()
+        for q in range(pS, pE):
+            if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0 \
+                    and gsec.getFieldOffset(q, _PRESSURE_FIELD) >= 0:
+                pin = gsec.getFieldOffset(q, _PRESSURE_FIELD)
+                break
         Ahat.zeroRows([pin], diag=1.0)
         if pin is not None:
             _zero_rows_local(bhat, [pin])
