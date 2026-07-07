@@ -1758,6 +1758,61 @@ class Mesh(Stateful, uw_object):
 
         return new_dm_hierarchy
 
+    def _surviving_labels(self, subdm, candidates):
+        """Return the candidate labels that survive on an extracted submesh DM.
+
+        Both submesh flavours (:meth:`extract_region`, :meth:`extract_surface`)
+        need the subset of the parent's boundary / region labels that still
+        mark points on the filtered DM, to build the submesh's boundary enum.
+
+        Uses the safe probe order for submesh DMs: enumerate the SUBMESH's
+        labels by index (probing parent labels by name on a submesh DM can
+        hard-abort PETSc), and check each label's live value set via
+        ``getValueIS()`` BEFORE asking for a stratum — calling
+        ``getStratumIS(v)`` for a value not in the live set can also
+        hard-abort on some labels (cf. the "Centre" pseudo-label).
+
+        Parameters
+        ----------
+        subdm : PETSc.DMPlex
+            The filtered / extracted submesh DM.
+        candidates : dict
+            Parent label names mapped to their stratum values, in the order
+            the surviving enum members should keep.
+
+        Returns
+        -------
+        dict
+            The subset of ``candidates`` present on ``subdm`` with a
+            non-empty stratum, preserving candidate order.
+        """
+        present = set()
+        for i in range(subdm.getNumLabels()):
+            name = subdm.getLabelName(i)
+            if name not in candidates:
+                continue  # internal PETSc label (celltype, depth, ...)
+            lab = subdm.getLabel(name)
+            if lab is None:
+                continue
+            try:
+                vis = lab.getValueIS()
+                vals = (
+                    set(int(v) for v in vis.getIndices())
+                    if vis is not None else set()
+                )
+            except Exception:
+                # Sanctioned swallow: a label whose value set cannot be
+                # queried on the submesh is treated as not-surviving rather
+                # than aborting the whole extraction.
+                continue
+            value = candidates[name]
+            if value not in vals:
+                continue
+            lsis = lab.getStratumIS(value)
+            if lsis is not None and lsis.getSize() > 0:
+                present.add(name)
+        return {name: v for name, v in candidates.items() if name in present}
+
     def extract_region(self, label_name, label_value=None):
         """Extract a submesh containing only cells with the given region label.
 
@@ -1813,25 +1868,17 @@ class Mesh(Stateful, uw_object):
 
         # Build boundaries enum from labels that survived the filter
         # (DMPlexFilter preserves parent labels on the submesh)
-        surviving = {}
+        candidates = {}
         if self.boundaries is not None:
             for b in self.boundaries:
                 if b.name in ("Null_Boundary", "All_Boundaries"):
                     continue
-                label = subdm.getLabel(b.name)
-                if label:
-                    sis = label.getStratumIS(b.value)
-                    if sis and sis.getSize() > 0:
-                        surviving[b.name] = b.value
-
+                candidates[b.name] = b.value
         if self.regions is not None:
             for r in self.regions:
-                label = subdm.getLabel(r.name)
-                if label:
-                    sis = label.getStratumIS(r.value)
-                    if sis and sis.getSize() > 0:
-                        surviving[r.name] = r.value
+                candidates[r.name] = r.value
 
+        surviving = self._surviving_labels(subdm, candidates)
         sub_boundaries = Enum("Boundaries", surviving) if surviving else None
 
         # Get the subpoint IS before wrapping (the Mesh constructor may modify the DM)
@@ -1979,36 +2026,17 @@ class Mesh(Stateful, uw_object):
             composed_indices, comm=surf_dm.getComm(),
         )
 
-        # Surviving boundaries: enumerate the SUBMESH's labels by index
-        # (probing parent labels by name on a submesh DM can hard-abort), and
-        # get each label's live value set before asking for any stratum.
+        # Surviving boundaries on the surface submesh (safe getValueIS-first
+        # probe; see _surviving_labels). "Centre" is additionally excluded
+        # here: it is a pseudo-label with no persisted stratum.
         sub_boundaries = None
         if self.boundaries is not None:
-            parent_by_name = {b.name: b.value for b in self.boundaries}
-            surviving = {}
-            for i in range(surf_dm.getNumLabels()):
-                name = surf_dm.getLabelName(i)
-                if name not in parent_by_name:
-                    continue  # internal PETSc label (celltype, depth)
-                if name in ("Null_Boundary", "All_Boundaries", "Centre"):
-                    continue
-                lab = surf_dm.getLabel(name)
-                if lab is None:
-                    continue
-                try:
-                    vis = lab.getValueIS()
-                    vals = (
-                        set(int(v) for v in vis.getIndices())
-                        if vis is not None else set()
-                    )
-                except Exception:
-                    continue
-                pv = parent_by_name[name]
-                if pv not in vals:
-                    continue
-                lsis = lab.getStratumIS(pv)
-                if lsis is not None and lsis.getSize() > 0:
-                    surviving[name] = pv
+            candidates = {
+                b.name: b.value
+                for b in self.boundaries
+                if b.name not in ("Null_Boundary", "All_Boundaries", "Centre")
+            }
+            surviving = self._surviving_labels(surf_dm, candidates)
             sub_boundaries = Enum("Boundaries", surviving) if surviving else None
 
         # Construct the surface Mesh (dim = parent.dim - 1, cdim preserved).
@@ -2031,20 +2059,12 @@ class Mesh(Stateful, uw_object):
         surf_mesh.regions = self.regions
         surf_mesh._dof_maps = {}
 
-        # Vertex map (sub_rows -> parent_rows for coincident verts). Inlined
-        # via a KDTree on the coordinate arrays rather than
-        # ``_build_vertex_map`` (which assumes ``X._get_kdtree`` — broken for
-        # both submesh flavours, UW3 issue #197). Surface vertices are an
-        # exact subset of the parent's, so the 1e-10 match is bit-exact.
-        import underworld3 as _uw
-        sub_coords = numpy.asarray(surf_mesh._coords)
-        parent_coords = numpy.asarray(self._coords)
-        tree = _uw.kdtree.KDTree(sub_coords)
-        dists, indices = tree.query(parent_coords, sqr_dists=False)
-        dists = numpy.asarray(dists).reshape(-1)
-        indices = numpy.asarray(indices).reshape(-1)
-        matched = dists < 1.0e-10
-        surf_mesh._vertex_map = (indices[matched], numpy.where(matched)[0])
+        # Vertex map (sub_rows -> parent_rows for coincident vertices) — the
+        # same coordinate-coincidence build as extract_region. Surface
+        # vertices are an exact subset of the parent's, so the 1e-10 match
+        # is bit-exact. (The issue-#197 breakage that once forced an inline
+        # copy here was fixed in _build_vertex_map itself.)
+        surf_mesh._build_vertex_map()
 
         # Register with parent for coordinate sync notifications
         self._registered_submeshes.add(surf_mesh)
