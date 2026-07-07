@@ -556,7 +556,8 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
         * ``"ksp_reason"`` — converged-reason of the LAST Newton increment's KSP;
         * ``"ksp_its"`` — list of linear iteration counts, one per Newton iteration;
-        * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count and status;
+        * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count (the number
+          of Newton increments solved, ``== len(ksp_its)``) and status;
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired.
     """
     if getattr(solver, "snes", None) is None:
@@ -698,13 +699,19 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     if continuation:
         solver._set_newton_alpha(0.0)
 
+    # The true outer-iteration COUNT is the number of Newton increments solved — one
+    # linear solve per increment, so len(lin_its). The loop index `iters` undercounts
+    # by one on the step-norm / line-search-stall / max_it exits (the increment of the
+    # final pass is solved before the break) and matches only on the residual exit.
+    newton_its = len(lin_its)
+
     # The loop can exhaust max_it or stall in the line search (`not improved`) without
     # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
     # on divergence — so an unconverged iterate left in the fields is not silent.
     if not converged:
         rel = (rnorm / (r0 + 1e-300)) if r0 is not None else float("nan")
         mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
-                   f"in {iters + 1} iterations (rel |F̂| = {rel:.2e}); the fields hold "
+                   f"in {newton_its} iterations (rel |F̂| = {rel:.2e}); the fields hold "
                    f"the last (unconverged) iterate.")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
@@ -716,7 +723,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
-            "nonlinear_iterations": iters, "converged": converged,
+            "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its,
             "continuation_switched": continuation and phase == "newton"}
 
