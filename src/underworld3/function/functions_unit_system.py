@@ -841,11 +841,14 @@ def evaluate(
     Returns
     -------
     UWQuantity, UnitAwareArray, or numpy.ndarray
-        If non-dimensional scaling is active, a plain ndarray. If the
-        expression carries units, a ``UWQuantity`` (scalar) or
-        ``UnitAwareArray``. Otherwise a plain ndarray. With
-        ``check_extrapolated=True``, a ``(values, extrapolated_mask)``
-        pair.
+        Unit-aware whenever the expression carries units, regardless of
+        whether non-dimensional scaling is active (gateway principle:
+        the user always sees dimensional values when units are known):
+        a ``UWQuantity`` for scalar results, a ``UnitAwareArray``
+        otherwise, re-dimensionalised via the active scaling when one
+        applies. A plain ndarray when the expression carries no units.
+        With ``check_extrapolated=True``, a
+        ``(values, extrapolated_mask)`` pair.
 
     Examples
     --------
