@@ -1,8 +1,8 @@
-"""Development version of underworld3.utilities.rotated_bc — reusable rotated
-strong free-slip for the Stokes saddle. Productizes the validated prototypes:
-build a per-node rotation Q from boundary normals, rotate the assembled saddle
-Â=Q A Qᵀ / b̂=Q b, impose v_n=0 on the rotated normal rows, solve, rotate back
-u=Qᵀû, remove the rigid-rotation gauge, and expose σ_nn as the constraint reaction.
+"""Rotated strong free-slip for the Stokes saddle (the implementation behind
+``solver.add_rotated_freeslip_bc``): build a per-node rotation Q from boundary
+normals, rotate the assembled saddle Â=Q A Qᵀ / b̂=Q b, impose v_n=0 on the
+rotated normal rows, solve, rotate back u=Qᵀû, remove the rigid-rotation gauge,
+and expose σ_nn as the constraint reaction.
 
 The rotated saddle is solved by a self-contained fieldsplit-Schur KSP by default: the
 velocity block is geometric FMG on the custom prolongation (``set_custom_fmg``) when a
