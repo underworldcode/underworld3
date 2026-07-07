@@ -92,11 +92,11 @@ features:
   - key: fmg
     title: "Geometric Multigrid / FMG Preconditioner"
     owner: "@lmoresi"
-    # Claimed `supported`, but there is no dedicated tier_a/b validation suite
-    # yet. The gate will report an empty selection and DOWNGRADE this to
-    # experimental — exactly the signal we want: FMG cannot be announced as
-    # supported until it has a tier_a test. Add one, then this row goes green.
-    claim: supported
+    # Tests pass (11/11 tier_a/b matching 'multigrid') but these are general
+    # Stokes tests, not a purpose-built FMG validation suite. Downgraded to
+    # preview for v3.1.0 to be conservative — upgrade to supported once a
+    # dedicated FMG tier_a benchmark exists.
+    claim: preview
     summary: >
       Automatic geometric full-multigrid preconditioning for the SNES solvers
       on refinement meshes (the `preconditioner` property).
