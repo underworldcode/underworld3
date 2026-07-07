@@ -5105,38 +5105,29 @@ class Mesh(Stateful, uw_object):
 
         insiders = numpy.ndarray(shape=(cells.shape[0], num_cell_faces), dtype=bool)
 
-        if tol > 0.0:
-            # Face-relative tolerance branch (parallel evaluation locator).
-            # Takes precedence over on_boundary: a non-zero tol expresses
-            # a geometric tolerance on the face-normal separation²; the
-            # absolute on_boundary floor (~1e-12) is far below it and the
-            # strict on_boundary=False (>0) is what tol is widening.
-            for f in range(num_cell_faces):
-                control_points_o = self.faces_outer_control_points[f, cells]
-                control_points_i = self.faces_inner_control_points[f, cells]
-                value = (
-                    ((control_points_o - points) ** 2).sum(axis=1)
-                    - ((control_points_i - points) ** 2).sum(axis=1)
-                )
+        # One loop computes the per-face inside/outside discriminator
+        # (squared distance to the outer control point minus squared
+        # distance to the inner one — positive means the query is on the
+        # cell's side of the face); the acceptance test then depends on
+        # the tolerance mode. A non-zero tol takes precedence over
+        # on_boundary: it expresses a geometric tolerance relative to the
+        # face-normal separation² (parallel evaluation locator), far wider
+        # than on_boundary=True's absolute -1e-12 on-face floor, while
+        # on_boundary=False is the strict-inside test (diff > 0).
+        for f in range(num_cell_faces):
+            control_points_o = self.faces_outer_control_points[f, cells]
+            control_points_i = self.faces_inner_control_points[f, cells]
+            diff = (
+                ((control_points_o - points) ** 2).sum(axis=1)
+                - ((control_points_i - points) ** 2).sum(axis=1)
+            )
+            if tol > 0.0:
                 sep2 = ((control_points_o - control_points_i) ** 2).sum(axis=1)
-                insiders[:, f] = value > -tol * sep2
-        elif on_boundary:
-            _face_tol = -1e-12
-            for f in range(num_cell_faces):
-                control_points_o = self.faces_outer_control_points[f, cells]
-                control_points_i = self.faces_inner_control_points[f, cells]
-                insiders[:, f] = (
-                    ((control_points_o - points) ** 2).sum(axis=1)
-                    - ((control_points_i - points) ** 2).sum(axis=1)
-                ) >= _face_tol
-        else:
-            for f in range(num_cell_faces):
-                control_points_o = self.faces_outer_control_points[f, cells]
-                control_points_i = self.faces_inner_control_points[f, cells]
-                insiders[:, f] = (
-                    ((control_points_o - points) ** 2).sum(axis=1)
-                    - ((control_points_i - points) ** 2).sum(axis=1)
-                ) > 0
+                insiders[:, f] = diff > -tol * sep2
+            elif on_boundary:
+                insiders[:, f] = diff >= -1e-12
+            else:
+                insiders[:, f] = diff > 0
 
         result = numpy.all(insiders, axis=1)
 
