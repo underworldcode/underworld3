@@ -357,6 +357,80 @@ def _signed_areas(coords, tris):
                   - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
 
 
+def _cap_step_to_edge_fraction(step, dm, coords, step_frac):
+    """Per-vertex displacement cap: ``|step_i| <= step_frac * h_i`` with
+    ``h_i`` the shortest edge incident on vertex ``i``.
+
+    Prevents a mover step from creating LOCAL cell folds near sharp
+    features (where the source is strongest) without killing the global
+    motion the way the coherent global signed-area backtrack does.
+    No-op when ``step_frac`` is ``None`` or non-finite. (The MMPDE mover
+    has its own, structurally different per-node cap — do not fold it in
+    here.)"""
+    if step_frac is None or not np.isfinite(step_frac):
+        return step
+    h = _min_incident_edge(dm, coords)
+    mag = np.linalg.norm(step, axis=1)
+    cap = float(step_frac) * h
+    clip = np.isfinite(cap) & (mag > cap) & (mag > 0.0)
+    sc = np.ones_like(mag)
+    sc[clip] = cap[clip] / mag[clip]
+    return step * sc[:, None]
+
+
+def _backtracked_move(old_coords, step, free, tris, project,
+                      area_floor=0.0):
+    """Coherent global signed-area backtrack shared by the MA / OT /
+    anisotropic movers.
+
+    Apply ``step`` to the ``free`` vertices at a global scale, halving
+    the scale (up to 10 times) until no triangle inverts and none drops
+    to (or below) ``area_floor``. The min-area test is reduced globally
+    (MPI MIN) so every rank takes the same accept/backtrack branch — the
+    loop is collective. ``project`` re-imposes the boundary-slip
+    constraint on each trial (slip vertices snap back to their bounding
+    surface).
+
+    ``area_floor=0.0`` reproduces the historical flip-only acceptance
+    (``a1min > 0``) bit-for-bit; the anisotropic mover passes a positive
+    floor (a fraction of the undeformed median cell area) so
+    near-degenerate slivers are rejected as well as inverted cells.
+    ``tris is None`` (non-triangle mesh) applies the step unguarded.
+
+    Returns
+    -------
+    (new_coords, scale) : (ndarray, float)
+        ``scale == 0.0`` means no acceptable move was found and
+        ``new_coords`` equals ``old_coords``.
+    """
+    scale = 1.0
+    new_coords = old_coords.copy()
+    if tris is not None:
+        a0 = _signed_areas(old_coords, tris)
+        orient = np.sign(np.median(a0)) or 1.0
+        for _bt in range(10):
+            trial = old_coords.copy()
+            trial[free] += scale * step[free]
+            trial = project(trial)
+            a1min = float(
+                (_signed_areas(trial, tris) * orient).min())
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                a1min = uw.mpi.comm.allreduce(
+                    a1min, op=_MPI.MIN)
+            if a1min > area_floor:
+                new_coords = trial
+                break
+            scale *= 0.5
+        else:
+            scale = 0.0
+            new_coords = old_coords.copy()
+    else:
+        new_coords[free] += step[free]
+        new_coords = project(new_coords)
+    return new_coords, scale
+
+
 def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     r"""Geometric mismatch between the current mesh and what the
     equidistribution rule would prescribe from ``metric``.
@@ -1408,42 +1482,13 @@ def _winslow_elliptic(mesh, metric, pinned_labels, verbose,
             disp = (w_r * d_r[:, None] * rhat
                     + w_t * d_t[:, None] * that)
 
-        step = relax * disp
-        if step_frac is not None and np.isfinite(step_frac):
-            h = _min_incident_edge(dm, old_coords)
-            mag = np.linalg.norm(step, axis=1)
-            cap = step_frac * h
-            clip = np.isfinite(cap) & (mag > cap) & (mag > 0.0)
-            sc = np.ones_like(mag)
-            sc[clip] = cap[clip] / mag[clip]
-            step = step * sc[:, None]
+        step = _cap_step_to_edge_fraction(
+            relax * disp, dm, old_coords, step_frac)
 
         free = ~is_pinned
-        scale = 1.0
-        new_coords = old_coords.copy()
-        if tris is not None:
-            a0 = _signed_areas(old_coords, tris)
-            orient = np.sign(np.median(a0)) or 1.0
-            for _bt in range(10):
-                trial = old_coords.copy()
-                trial[free] += scale * step[free]
-                trial = _project(trial)      # slip → ring (∥ only)
-                a1min = float(
-                    (_signed_areas(trial, tris) * orient).min())
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    a1min = uw.mpi.comm.allreduce(
-                        a1min, op=_MPI.MIN)
-                if a1min > 0.0:
-                    new_coords = trial
-                    break
-                scale *= 0.5
-            else:
-                scale = 0.0
-                new_coords = old_coords.copy()
-        else:
-            new_coords[free] += step[free]
-            new_coords = _project(new_coords)
+        # _project: slip → ring (∥ only)
+        new_coords, scale = _backtracked_move(
+            old_coords, step, free, tris, _project)
 
         mesh._deform_mesh(new_coords)
 
@@ -1654,50 +1699,13 @@ def _winslow_equidistribute(mesh, metric, pinned_labels, verbose,
             gradphi.sym, old_coords)
         ).reshape(old_coords.shape)
 
-        step = float(relax) * disp
-
-        # Per-vertex displacement cap: |step_i| ≤ step_frac · h_i,
-        # where h_i is the shortest edge incident on vertex i.
-        # This prevents the OT step from creating LOCAL cell folds
-        # near features (where the source is sharp) without killing
-        # the global motion (the way the global signed-area
-        # backtrack does).
-        if step_frac is not None and np.isfinite(step_frac):
-            h = _min_incident_edge(dm, old_coords)
-            mag = np.linalg.norm(step, axis=1)
-            cap = float(step_frac) * h
-            clip = np.isfinite(cap) & (mag > cap) & (mag > 0.0)
-            sc = np.ones_like(mag)
-            sc[clip] = cap[clip] / mag[clip]
-            step = step * sc[:, None]
+        step = _cap_step_to_edge_fraction(
+            float(relax) * disp, dm, old_coords, step_frac)
 
         # --- coherent global signed-area backtrack -------------
         free = ~is_pinned
-        scale = 1.0
-        new_coords = old_coords.copy()
-        if tris is not None:
-            a0 = _signed_areas(old_coords, tris)
-            orient = np.sign(np.median(a0)) or 1.0
-            for _bt in range(10):
-                trial = old_coords.copy()
-                trial[free] += scale * step[free]
-                trial = _project(trial)
-                a1min = float(
-                    (_signed_areas(trial, tris) * orient).min())
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    a1min = uw.mpi.comm.allreduce(
-                        a1min, op=_MPI.MIN)
-                if a1min > 0.0:
-                    new_coords = trial
-                    break
-                scale *= 0.5
-            else:
-                scale = 0.0
-                new_coords = old_coords.copy()
-        else:
-            new_coords[free] += step[free]
-            new_coords = _project(new_coords)
+        new_coords, scale = _backtracked_move(
+            old_coords, step, free, tris, _project)
 
         mesh._deform_mesh(new_coords)
 
@@ -2307,47 +2315,18 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         step = float(relax) * disp
 
         # --- coherent global signed-area backtrack + slip + move --
+        # Positive area floor: the flip-only test (`a1min > 0`) misses
+        # near-degenerate cells with three near-collinear vertices, so
+        # require min area > 1% of the **undeformed-mesh** median cell
+        # area (`_a0_undeformed_med`, captured before the iteration
+        # loop, so the same absolute floor is enforced throughout). A
+        # refinement of 3 in 2D legitimately shrinks cells by 3²=9× in
+        # area, so 1% rejects degenerate slivers (1000× smaller)
+        # without rejecting legitimate refinement.
         free = ~is_pinned
-        scale = 1.0
-        new_coords = old_coords.copy()
-        if tris is not None:
-            a0 = _signed_areas(old_coords, tris)
-            orient = np.sign(np.median(a0)) or 1.0
-            # Minimum acceptable cell area for the backtrack. The
-            # original test (`a1min > 0`) only catches *flipped*
-            # cells; near-degenerate cells with three near-collinear
-            # vertices pass it but produce invisible sliver
-            # triangles. Require min area > a fixed fraction of
-            # the **undeformed-mesh** median cell area
-            # (`_a0_undeformed_med`, captured before the iteration
-            # loop). A refinement of 3 in 2D legitimately shrinks
-            # cells by 3²=9× in area, so a floor at 1% of the
-            # undeformed median rejects degenerate slivers (which
-            # are 1000× smaller) without rejecting legitimate
-            # refinement.
-            a_min_floor = 0.01 * _a0_undeformed_med
-            for _bt in range(10):
-                trial = old_coords.copy()
-                trial[free] += scale * step[free]
-                trial = _project(trial)
-                a_signed = _signed_areas(trial, tris) * orient
-                a1min = float(a_signed.min())
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    a1min = uw.mpi.comm.allreduce(
-                        a1min, op=_MPI.MIN)
-                # Accept only if no cell flipped AND no cell
-                # collapsed below the area floor.
-                if a1min > a_min_floor:
-                    new_coords = trial
-                    break
-                scale *= 0.5
-            else:
-                scale = 0.0
-                new_coords = old_coords.copy()
-        else:
-            new_coords[free] += step[free]
-            new_coords = _project(new_coords)
+        new_coords, scale = _backtracked_move(
+            old_coords, step, free, tris, _project,
+            area_floor=0.01 * _a0_undeformed_med)
 
         mesh._deform_mesh(new_coords)
 
