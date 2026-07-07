@@ -33,6 +33,7 @@ operator hook; that is deliberately out of scope here.
 from __future__ import annotations
 
 import enum
+import os
 import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
@@ -51,6 +52,24 @@ __all__ = [
     "remesh_with_field_transfer",
     "remap_var_set",
 ]
+
+
+# Monotone-limiting mode for the REMAP transfer, read ONCE at import time
+# from the ``REMESH_MONOTONE`` environment variable. On a freshly-adapted
+# mesh the NEW boundary DOFs sit a sagitta OUTSIDE the OLD boundary cell
+# (arc vs chord), so the old P2/P3 field, FE-evaluated there, overshoots
+# wildly — in parallel the migrate lands those points in a containing cell
+# on another rank and the overshoot is delivered as a "valid" (un-flagged)
+# value. That is the parallel free-slip v.n "leak": a corrupt boundary T/V
+# remap, NOT a BC bug. The default ``"clamp"`` bounds each resampled value
+# to its k-NN source-nodal range; it is bit-identical to plain FE in smooth
+# regions and parallel-safe (rank-local) — the same limiter as the
+# SemiLagrangian trace-back fix. Set REMESH_MONOTONE to "off" (or "0",
+# "none", "false", "") to disable, or to any other mode accepted by
+# ``uw.function.global_evaluate(..., monotone=...)`` (e.g. "pick").
+REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "clamp")
+if REMESH_MONOTONE.lower() in ("", "0", "off", "none", "false"):
+    REMESH_MONOTONE = False
 
 
 class RemeshPolicy(str, enum.Enum):
@@ -112,8 +131,16 @@ class RemeshContext:
     :func:`remap_var_set` with this dict and its own var list.
 
     ``scratch`` is a free-form dict where adapt ops or hooks publish
-    flags / per-step state (e.g. ``ale_opt_out``, a stashed
-    ``v_mesh``). Keys are by convention.
+    flags / per-step state. Two keys are in use:
+
+    * ``"ale_opt_out"`` — published by ``OT_adapt``
+      (:mod:`underworld3.meshing._ot_adapt`, from inside ``do_move`` via
+      ``mesh._remesh_pending_scratch``) on a reset adapt; consumed by
+      the ``DuDt`` ``on_remesh`` hook (:mod:`underworld3.systems.ddt`),
+      which falls back to REMAP for its managed history vars.
+    * ``"v_mesh"`` — the Phase 2 ALE convention: an ALE-style operator
+      hook stashes the mesh velocity here for the next solve to
+      consume. No producer exists yet.
     """
 
     mesh: "Mesh"
@@ -170,21 +197,50 @@ def _gather_transfer_vars(mesh: "Mesh") -> dict:
     return buckets
 
 
-def _snapshot_remap_data(remap_vars):
-    """Copy the current ``.data`` array of every REMAP var (defensive copy)."""
+def _snapshot_var_data(vars_):
+    """Copy the current ``.data`` array of each given var (defensive copy).
+
+    Used for both the REMAP bucket and the operator-managed bucket in
+    :func:`remesh_with_field_transfer`. Vars that cannot be snapshotted
+    are omitted from the returned dict.
+    """
     out = {}
-    for var in remap_vars:
+    for var in vars_:
         try:
             arr = np.asarray(var.data)
             if arr.size == 0:
                 continue
             out[var] = arr.copy()
         except Exception:
-            # If a var's data is not addressable yet (lazy alloc, etc.),
-            # skip it — nothing to snapshot. The transfer pass will just
-            # not touch it.
+            # Sanctioned swallow: a var whose storage is unallocated or
+            # size-0 on this rank (lazy allocation / empty local partition)
+            # has nothing to snapshot. It is absent from the returned dict,
+            # so the transfer pass never touches it (the write-back twin,
+            # _write_var_data, skips the same vars).
             pass
     return out
+
+
+def _write_var_data(var, values):
+    """Overwrite ``var``'s DOF values in place, tolerating unwritable storage.
+
+    Parameters
+    ----------
+    var : MeshVariable
+        Target variable; its full ``.data`` buffer is overwritten.
+    values : array_like or float
+        Replacement values, broadcastable to ``var.data``'s shape
+        (a scalar such as ``0.0`` zeros the whole buffer).
+    """
+    try:
+        np.asarray(var.data)[...] = values
+    except Exception:
+        # Sanctioned swallow: a var whose storage is unallocated or size-0
+        # on this rank (lazy allocation / empty local partition) has nowhere
+        # to write. Skipping leaves the variable exactly as the snapshot
+        # pass found it — the same vars are skipped by _snapshot_var_data,
+        # so no transfer is silently half-applied.
+        pass
 
 
 def _remap_one_var(var, old_X, new_X, mesh):
@@ -269,8 +325,13 @@ def remesh_with_field_transfer(
     # (smooth_mesh_interior called from inside that pipeline) consult
     # this flag and skip their own wrap.
     if getattr(mesh, "_in_remesh_transfer", False):
-        # Surface the outer scratch dict so a nested do_move can still
-        # publish (e.g. an inner op flags "this is the reset adapt").
+        # Nested call: run the mover only. The OUTER wrapper owns
+        # snapshot / transfer / hook dispatch, and it already set
+        # mesh._remesh_pending_scratch, so an inner adapt op can still
+        # publish flags there (e.g. OT_adapt marking a reset adapt).
+        # The True return here is unconditional and meaningless — nested
+        # callers cannot use it to tell whether the mesh actually moved;
+        # only the outer call's return value carries that information.
         do_move()
         return True
     mesh._in_remesh_transfer = True
@@ -298,10 +359,10 @@ def _remesh_with_field_transfer_impl(
     managed_vars = buckets["managed"]
 
     old_X = np.asarray(mesh.X.coords).copy()
-    old_data = _snapshot_remap_data(remap_vars)
+    old_data = _snapshot_var_data(remap_vars)
     # Snapshot managed vars too — needed when a hook opts out of ALE
     # for this adapt and falls back to REMAP (see RemeshContext docs).
-    managed_snapshot = _snapshot_remap_data(managed_vars)
+    managed_snapshot = _snapshot_var_data(managed_vars)
 
     # Run the mover. It is allowed to call _deform_mesh many times; .data
     # is untouched by _deform_mesh, so REMAP snapshots stay valid.
@@ -315,7 +376,7 @@ def _remesh_with_field_transfer_impl(
         return False
 
     # The one-shot REMAP dance for the generic per-variable pass.
-    _remap_var_set(mesh, remap_vars, old_X, new_X, old_data, verbose=verbose)
+    remap_var_set(mesh, remap_vars, old_X, new_X, old_data, verbose=verbose)
 
     # Operator hooks (Phase 2 ALE etc.). Currently fired even when
     # remap_vars is empty so a CARRY-only DDt still gets its v_mesh.
@@ -330,6 +391,15 @@ def _remesh_with_field_transfer_impl(
         try:
             hook(ctx)
         except Exception as exc:
+            # Best-effort hook contract: the generic REMAP pass above has
+            # already secured every registered variable, so a failing
+            # on_remesh hook can only lose an operator-private refinement
+            # (e.g. an ALE history update degrades to the plain CARRY
+            # values). One broken operator must not abort the transfer of
+            # the remaining hooks' state mid-adapt, so dispatch continues;
+            # the failure is reported only under verbose=True.
+            # TODO(DESIGN): consider warning unconditionally — a silently
+            # degraded ALE history is hard to diagnose downstream.
             if verbose:
                 uw.pprint(
                     f"  remesh_with_field_transfer: hook raised: {exc}")
@@ -347,10 +417,7 @@ def _remesh_with_field_transfer_impl(
     # API. REINIT is for *framework-stamped* stateless vars.
     if extra_zero:
         for var in extra_zero:
-            try:
-                np.asarray(var.data)[...] = 0.0
-            except Exception:
-                pass
+            _write_var_data(var, 0.0)
 
     return True
 
@@ -377,20 +444,19 @@ def _iter_active_hooks(mesh):
         live.append((ref, cb))
     # Prune dead refs once per dispatch.
     if isinstance(refs, list):
-        refs[:] = [ref for ref, _ in live] if live else []
+        refs[:] = [ref for ref, _ in live]
     for _, cb in live:
         yield cb
 
 
-def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
+def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     """One-shot REMAP dance for a set of variables.
 
     Used by the generic per-variable pass in
-    :func:`remesh_with_field_transfer` AND exposed (as
-    :func:`remap_var_set`) so an operator's ``on_remesh`` hook can
-    force-REMAP its CARRY-managed vars on an adapt that is
-    ALE-incompatible (e.g. an OT_adapt reset, where the linear
-    ``Δx/dt → v_mesh`` interpretation breaks down).
+    :func:`remesh_with_field_transfer`, and public so an operator's
+    ``on_remesh`` hook can force-REMAP its CARRY-managed vars on an
+    adapt that is ALE-incompatible (e.g. an OT_adapt reset, where the
+    linear ``Δx/dt → v_mesh`` interpretation breaks down).
 
     Contract: on entry the mesh is at ``new_X`` and each var's
     ``.data`` may hold *either* the original snapshot value (CARRY:
@@ -420,10 +486,7 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     # then deform forward and write the resampled values back.
     mesh._deform_mesh(old_X)
     for var, data in old_data.items():
-        try:
-            np.asarray(var.data)[...] = data
-        except Exception:
-            pass
+        _write_var_data(var, data)
 
     resampled = {}
     for var in vars_:
@@ -432,24 +495,11 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
             continue
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
-            #
-            # monotone='clamp' bounds each resampled value to its k-NN
-            # source-nodal range. On a freshly-adapted mesh the NEW boundary
-            # DOFs sit a sagitta OUTSIDE the OLD boundary cell (arc vs chord),
-            # so the old P2/P3 field, FE-evaluated there, overshoots wildly —
-            # in parallel the migrate lands those points in a containing cell
-            # on another rank and the overshoot is delivered as a "valid"
-            # (un-flagged) value. That is the parallel free-slip v.n "leak":
-            # a corrupt boundary T/V remap, NOT a BC bug. The clamp bounds it
-            # to the physical nodal range, is bit-identical to plain FE in
-            # smooth regions, and is parallel-safe (rank-local). Same limiter
-            # as the SemiLagrangian trace-back fix.
-            import os as _os
-            _mono = _os.environ.get("REMESH_MONOTONE", "clamp")
-            if _mono.lower() in ("", "0", "off", "none", "false"):
-                _mono = False
+            # REMESH_MONOTONE (module constant, see its comment) bounds the
+            # boundary-overshoot failure mode of the plain FE evaluation.
             try:
-                val = uw.function.global_evaluate(var.sym, target, monotone=_mono)
+                val = uw.function.global_evaluate(
+                    var.sym, target, monotone=REMESH_MONOTONE)
             except (ValueError, NotImplementedError):
                 # monotone needs a single-MeshVariable expr; composite /
                 # unsupported vars fall back to plain FE (still transferred).
@@ -457,7 +507,7 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         except Exception as exc:
             if verbose:
                 uw.pprint(
-                    f"  _remap_var_set: skipping "
+                    f"  remap_var_set: skipping "
                     f"{getattr(var, 'name', var)!r} ({exc})")
             continue
         resampled[var] = np.asarray(val).reshape(
@@ -465,14 +515,8 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
 
     mesh._deform_mesh(new_X)
     for var, val in resampled.items():
-        try:
-            np.asarray(var.data)[...] = val
-        except Exception:
-            pass
+        _write_var_data(var, val)
 
-
-# Public alias for operator-hook use.
-remap_var_set = _remap_var_set
 
 
 def _mark_reinit_stale(var):
