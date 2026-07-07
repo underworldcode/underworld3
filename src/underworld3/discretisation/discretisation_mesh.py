@@ -5384,9 +5384,8 @@ class Mesh(Stateful, uw_object):
         at PR #207's absolute -1e-12 floor — the FE-evaluation-natural
         semantics. Pass ``on_boundary=False`` for strict-inside (a
         point exactly on a face returns -1). ``tol > 0`` admits on-face
-        points at an absolute -1e-12 floor (matches PR #207). ``tol > 0``
-        admits on-face points at a face-relative tolerance, taking
-        precedence over ``on_boundary``.
+        points at a face-relative tolerance, taking precedence over
+        ``on_boundary``.
 
         Parameters:
         -----------
