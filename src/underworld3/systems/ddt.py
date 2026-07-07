@@ -50,6 +50,9 @@ See Also
 underworld3.systems.solvers : PDE solvers using these time derivatives.
 """
 
+import math
+import warnings
+
 import sympy
 from sympy import sympify
 import numpy as np
@@ -62,7 +65,9 @@ from underworld3 import VarType
 
 import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
+from underworld3.utilities.unit_aware_array import UnitAwareArray
 from underworld3.checkpoint.state import SnapshottableState
+from underworld3.discretisation.remesh import RemeshPolicy, remap_var_set
 
 from petsc4py import PETSc
 
@@ -660,6 +665,7 @@ class Symbolic(uw_object):
         return
 
     def _object_viewer(self):
+        # Local import: IPython is an optional, notebook-only dependency.
         from IPython.display import Latex, display
 
         # Display the primary variable
@@ -1016,6 +1022,7 @@ class Eulerian(uw_object):
         return
 
     def _object_viewer(self):
+        # Local import: IPython is an optional, notebook-only dependency.
         from IPython.display import Latex, Markdown, display
 
         super()._object_viewer()
@@ -1048,7 +1055,6 @@ class Eulerian(uw_object):
                     self.mesh, self.psi_star[0], verbose=False
                 )
         elif self.vtype == uw.VarType.SYM_TENSOR or self.vtype == uw.VarType.TENSOR:
-            import math
             dim = self.mesh.dim
             if self.vtype == uw.VarType.SYM_TENSOR:
                 Nc = math.comb(dim + 1, 2)  # 3 in 2D, 6 in 3D
@@ -1081,7 +1087,6 @@ class Eulerian(uw_object):
 
         if getattr(self, '_psi_star_use_multicomponent', False):
             # Flatten tensor to (1, Nc) row for multicomponent solver
-            import sympy
             indep = self._psi_star_indep_indices
             row = sympy.Matrix([[self.psi_fn[i, j] for (i, j) in indep]])
             self._psi_star_projection_solver.uw_function = row
@@ -1170,7 +1175,6 @@ class Eulerian(uw_object):
         if dt is not None:
             self._dt_history = [float(dt)] * self.order
         elif self.order >= 2:
-            import warnings
             warnings.warn(
                 "set_initial_history called with order >= 2 but no "
                 "dt — variable-dt BDF coefficients will be wrong on "
@@ -1638,7 +1642,6 @@ class SemiLagrangian(uw_object):
                 units=None,
             )
             # Phase-2: operator-managed history; see psi_star block below
-            from underworld3.discretisation.remesh import RemeshPolicy
             self.forcing_star.remesh_policy = RemeshPolicy.CARRY
             self.forcing_star._remesh_managed_by = self
 
@@ -1672,7 +1675,6 @@ class SemiLagrangian(uw_object):
         # explicit REMAP for an opt-out adapt like OT's reset). This
         # avoids interpolation diffusion of the history each adapt —
         # critical for preserving the time-scheme order at order >= 2.
-        from underworld3.discretisation.remesh import RemeshPolicy
         for _v in self.psi_star:
             _v.remesh_policy = RemeshPolicy.CARRY
             _v._remesh_managed_by = self
@@ -1719,7 +1721,6 @@ class SemiLagrangian(uw_object):
                 )
 
         elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
-            import math
             dim = self.mesh.dim
             if vtype == uw.VarType.SYM_TENSOR:
                 Nc = math.comb(dim + 1, 2)
@@ -1742,7 +1743,6 @@ class SemiLagrangian(uw_object):
                 varsymbol=r"{\psi^{*}_{\mathrm{flat}}}",
             )
             # Phase-2: operator-managed history flattening view
-            from underworld3.discretisation.remesh import RemeshPolicy
             self._psi_star_flat_var.remesh_policy = RemeshPolicy.CARRY
             self._psi_star_flat_var._remesh_managed_by = self
             self._psi_star_projection_solver = uw.systems.solvers.SNES_MultiComponent_Projection(
@@ -1758,7 +1758,6 @@ class SemiLagrangian(uw_object):
         # (self.Unknowns.u carried as a symbol from solver to solver)
 
         if getattr(self, '_psi_star_use_multicomponent', False):
-            import sympy
             indep = self._psi_star_indep_indices
             fn = self._workVar.sym
             row = sympy.Matrix([[fn[i, j] for (i, j) in indep]])
@@ -1834,7 +1833,6 @@ class SemiLagrangian(uw_object):
         the SUM divided by the next ``dt``, which is the correct
         node-frame velocity for that step.
         """
-        from underworld3.discretisation.remesh import remap_var_set
 
         # Which DDt-owned vars do I own? Collect from the mesh.vars
         # registry by managed-by identity (matches the stamping in
@@ -1957,7 +1955,6 @@ class SemiLagrangian(uw_object):
         fallback path so substitution semantics are consistent.
         """
         if getattr(self, '_psi_star_use_multicomponent', False):
-            import sympy
             indep = self._psi_star_indep_indices
             row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
             if self._psi_snapshot_enabled and self._psi_snapshot is not None:
@@ -2033,6 +2030,7 @@ class SemiLagrangian(uw_object):
         self.psi_fn = self._psi_fn
 
     def _object_viewer(self):
+        # Local import: IPython is an optional, notebook-only dependency.
         from IPython.display import Latex, Markdown, display
 
         super()._object_viewer()
@@ -2058,7 +2056,6 @@ class SemiLagrangian(uw_object):
         be called manually after setting initial conditions.
         """
         # Evaluate psi_fn at psi_star node positions and store in psi_star[0]
-        from underworld3.utilities.unit_aware_array import UnitAwareArray
 
         coords = self.psi_star[0].coords
         if hasattr(coords, "magnitude"):
@@ -2132,7 +2129,6 @@ class SemiLagrangian(uw_object):
         if dt is not None:
             self._dt_history = [float(dt)] * self.order
         elif self.order >= 2:
-            import warnings
             warnings.warn(
                 "set_initial_history called with order >= 2 but no "
                 "dt — variable-dt BDF coefficients will be wrong on "
@@ -2164,7 +2160,6 @@ class SemiLagrangian(uw_object):
         Returns ``True`` if ALE is active (caller should subtract
         v_mesh at each V_fn evaluation), ``False`` otherwise.
         """
-        from underworld3.discretisation.remesh import RemeshPolicy
         disp = self._pending_v_mesh_disp
         if disp is None:
             return False
@@ -2226,8 +2221,7 @@ class SemiLagrangian(uw_object):
         expression ``psi_fn`` (e.g. a flux with derivatives).
         """
         try:
-            import numpy as _np
-            comps = list(self.psi_fn)            # sympy Matrix, row-major
+            comps = list(self.psi_fn)  # sympy Matrix, row-major
             if len(comps) != 1:                  # scoped to scalar fields
                 return None
             hit = uw.discretisation.meshVariable_lookup_by_symbol(
@@ -2235,9 +2229,9 @@ class SemiLagrangian(uw_object):
             if hit is None:
                 return None
             var, comp = hit
-            vflat = _np.asarray(var.array)
+            vflat = np.asarray(var.array)
             vflat = vflat.reshape(vflat.shape[0], -1)
-            out = _np.array(_np.asarray(self.psi_star[0].array))
+            out = np.array(np.asarray(self.psi_star[0].array))
             oflat = out.reshape(out.shape[0], -1)
             if vflat.shape[0] != oflat.shape[0] or oflat.shape[1] != 1:
                 return None
@@ -2386,7 +2380,6 @@ class SemiLagrangian(uw_object):
         # - evaluate() assumes plain numpy is [0-1] non-dimensional
         # Solution: use uw.non_dimensionalise() for proper conversion, OR pass
         # unit-aware coords to evaluate() which handles conversion internally.
-        from underworld3.utilities.unit_aware_array import UnitAwareArray
 
         psi_star_0_coords = self.psi_star[0].coords
 
@@ -2567,7 +2560,6 @@ class SemiLagrangian(uw_object):
 
             # CRITICAL: Preserve UnitAwareArray through slicing
             # Slicing can sometimes return plain numpy views - need to preserve wrapper
-            from underworld3.utilities.unit_aware_array import UnitAwareArray
 
             if isinstance(v_result, UnitAwareArray):
                 # Slice and rewrap to preserve units
@@ -2857,8 +2849,6 @@ class SemiLagrangian(uw_object):
         if forcing_fn is None:
             return  # constitutive model hasn't wired the forcing source yet
 
-        from underworld3.utilities.unit_aware_array import UnitAwareArray
-
         coords = self.forcing_star.coords
         # Use non-dimensional coords for evaluate() (mirrors the psi_star
         # path in update_pre_solve)
@@ -3120,6 +3110,7 @@ class Lagrangian(uw_object):
         _update_am_values(self._am_coeffs, self.effective_order, 0.5)
 
     def _object_viewer(self):
+        # Local import: IPython is an optional, notebook-only dependency.
         from IPython.display import Latex, Markdown, display
 
         super()._object_viewer()
@@ -3477,6 +3468,7 @@ class Lagrangian_Swarm(uw_object):
         _update_am_values(self._am_coeffs, self.effective_order, 0.5)
 
     def _object_viewer(self):
+        # Local import: IPython is an optional, notebook-only dependency.
         from IPython.display import Latex, Markdown, display
 
         super()._object_viewer()
