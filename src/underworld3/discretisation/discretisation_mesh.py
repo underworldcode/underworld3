@@ -4825,6 +4825,73 @@ class Mesh(Stateful, uw_object):
         return
 
     # Note - need to add this to the mesh rebuilding triggers
+    def _facet_outward_unit_normal(
+        self, facet_point_coords, facet_centroid, cell_centroid,
+        cell_point_coords=None,
+    ):
+        """Outward unit normal of a cell facet, for each dimension/embedding case.
+
+        Used by the in-cell / in-domain control-point builders
+        (:meth:`_mark_faces_inside_and_out`,
+        :meth:`_mark_local_boundary_faces_inside_and_out`): the returned
+        normal orients the mirrored inner/outer control-point pair each
+        facet gets. The four cases are:
+
+        - ``dim == 1``: 1-manifold (annulus / shell boundary loop as a
+          surface submesh) — a cell is an edge, its facets are end
+          vertices. The outward direction is along the edge, away from
+          the cell centroid (the sign fix below orients it).
+        - ``dim == 2, cdim == 2``: 2-D volume mesh — perpendicular to the
+          edge in the plane of the mesh.
+        - ``dim == 2, cdim == 3``: 2-manifold in 3-space — perpendicular
+          to the edge, lying in the cell's tangent plane (the natural
+          generalisation of the 2-D rule, where the implicit z-hat is
+          replaced by the explicit cell normal). Needs
+          ``cell_point_coords`` (three cell vertices) to build the cell
+          normal.
+        - otherwise: 3-D simplex / hex face — face normal from two
+          in-face edges.
+
+        Parameters
+        ----------
+        facet_point_coords : ndarray
+            Coordinates of the facet's vertices.
+        facet_centroid, cell_centroid : ndarray
+            Centroids used to orient the normal outward.
+        cell_point_coords : ndarray, optional
+            Coordinates of the owning cell's vertices; required only for
+            the 2-manifold-in-3-space case.
+
+        Returns
+        -------
+        ndarray
+            Unit normal pointing from the cell centroid out through the
+            facet.
+        """
+        if self.dim == 1:
+            normal = facet_centroid - cell_centroid
+        elif self.dim == 2 and self.cdim == 2:
+            vector = facet_point_coords[1] - facet_point_coords[0]
+            normal = numpy.array((-vector[1], vector[0]))
+        elif self.dim == 2 and self.cdim == 3:
+            cell_normal = numpy.cross(
+                cell_point_coords[1] - cell_point_coords[0],
+                cell_point_coords[2] - cell_point_coords[0],
+            )
+            edge_vector = facet_point_coords[1] - facet_point_coords[0]
+            normal = numpy.cross(cell_normal, edge_vector)
+        else:
+            normal = numpy.cross(
+                (facet_point_coords[1] - facet_point_coords[0]),
+                (facet_point_coords[2] - facet_point_coords[0]),
+            )
+
+        # Orient outward: flip if the normal points from the facet centroid
+        # back toward the cell centroid; normalise to unit length.
+        inward_outward = numpy.sign(normal.dot(facet_centroid - cell_centroid))
+        normal *= inward_outward / numpy.sqrt(normal.dot(normal))
+        return normal
+
     def _mark_faces_inside_and_out(self):
         """
         Create a collection of control point pairs that are slightly inside
@@ -4894,42 +4961,12 @@ class Mesh(Stateful, uw_object):
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
 
-                # Compute face normal from point coordinates (already plain numpy arrays)
-                point_data = point_coords
-
-                if self.dim == 1:
-                    # 1-manifold (annulus / shell boundary loop as a surface
-                    # submesh): a cell is an edge, its faces are end vertices.
-                    # Outward direction is along the edge, away from the cell
-                    # centroid (the sign fix below orients it).
-                    normal = face_centroid - cell_centroid
-                elif self.dim == 2 and self.cdim == 2:
-                    # 2-D volume mesh — perpendicular to edge in the
-                    # plane of the mesh.
-                    vector = point_data[1] - point_data[0]
-                    normal = numpy.array((-vector[1], vector[0]))
-                elif self.dim == 2 and self.cdim == 3:
-                    # 2-manifold in 3-space — perpendicular to the
-                    # edge, lying in the cell's tangent plane (the
-                    # natural generalisation of the 2-D rule, where
-                    # the implicit z-hat is replaced by the explicit
-                    # cell normal).
-                    cell_normal = numpy.cross(
-                        cell_point_coords[1] - cell_point_coords[0],
-                        cell_point_coords[2] - cell_point_coords[0],
-                    )
-                    edge_vector = point_data[1] - point_data[0]
-                    normal = numpy.cross(cell_normal, edge_vector)
-                else:
-                    # 3-D simplex / hex face — face normal from two
-                    # in-face edges.
-                    normal = numpy.cross(
-                        (point_data[1] - point_data[0]),
-                        (point_data[2] - point_data[0]),
-                    )
-
-                inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
-                normal *= inward_outward / numpy.sqrt(normal.dot(normal))
+                # Face normal from point coordinates (already plain numpy
+                # arrays); dimension-case dispatch lives in the helper.
+                normal = self._facet_outward_unit_normal(
+                    point_coords, face_centroid, cell_centroid,
+                    cell_point_coords=cell_point_coords,
+                )
 
                 # Compute control points (all arrays are already plain numpy, no units)
                 outside_control_point = 1e-3 * normal + face_centroid
@@ -5178,39 +5215,19 @@ class Mesh(Stateful, uw_object):
             face_centroid = point_coords.mean(axis=0)
             cell_centroid = nav_centroids[cell - cStart]
 
-            if self.dim == 1:
-                # 1-manifold (annulus / shell boundary loop extracted as a
-                # surface submesh): a "cell" is an edge whose faces are its
-                # two end vertices (face_num_points == 1). The outward
-                # direction at a face vertex is along the edge, away from the
-                # cell centroid; the inward/outward sign fix below orients it.
-                normal = face_centroid - cell_centroid
-            elif self.dim == 2 and self.cdim == 2:
-                # 2-D volume mesh
-                vector = point_coords[1] - point_coords[0]
-                normal = numpy.array((-vector[1], vector[0]))
-            elif self.dim == 2 and self.cdim == 3:
-                # Bounded 2-manifold in 3-space (e.g. a partial-surface
-                # patch). In-tangent-plane perpendicular to the
-                # boundary edge — needs the cell's third vertex to
-                # build the cell normal.
+            # Dimension-case dispatch lives in _facet_outward_unit_normal;
+            # only the tangent-plane case (bounded 2-manifold in 3-space,
+            # e.g. a partial-surface patch) needs the owning cell's vertex
+            # coordinates, fetched lazily to keep the common cases cheap.
+            cell_point_coords = None
+            if self.dim == 2 and self.cdim == 3:
                 cell_points = nav_dm.getTransitiveClosure(cell)[0][-cell_num_points:]
                 cell_point_coords = nav_coords[cell_points - pStart]
-                cell_normal = numpy.cross(
-                    cell_point_coords[1] - cell_point_coords[0],
-                    cell_point_coords[2] - cell_point_coords[0],
-                )
-                edge_vector = point_coords[1] - point_coords[0]
-                normal = numpy.cross(cell_normal, edge_vector)
-            else:
-                # 3-D simplex / hex face
-                normal = numpy.cross(
-                    (point_coords[1] - point_coords[0]),
-                    (point_coords[2] - point_coords[0]),
-                )
 
-            inward_outward = numpy.sign(normal.dot(face_centroid - cell_centroid))
-            normal *= inward_outward / numpy.sqrt(normal.dot(normal))
+            normal = self._facet_outward_unit_normal(
+                point_coords, face_centroid, cell_centroid,
+                cell_point_coords=cell_point_coords,
+            )
 
             # Control points near centroid
 
