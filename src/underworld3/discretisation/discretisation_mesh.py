@@ -892,14 +892,19 @@ class Mesh(Stateful, uw_object):
                         uw.adaptivity._dm_unstack_bcs(self.dm, self.boundaries, stacked_label_name)
                         break
 
-        all_edges_label_dm = self.dm.getLabel("depth")
-        if all_edges_label_dm:
-            all_edges_IS_dm = all_edges_label_dm.getStratumIS(0)
-
+        # Null_Boundary marks EVERY vertex with the reserved value 666 —
+        # the catch-all stratum used when a condition applies mesh-wide.
+        # Note: getStratumIS(0) on the "depth" label fetches the depth-0
+        # points, i.e. VERTICES (the old name "all_edges" was wrong).
+        depth_label = self.dm.getLabel("depth")
         self.dm.createLabel("Null_Boundary")
-        all_edges_label = self.dm.getLabel("Null_Boundary")
-        if all_edges_label and all_edges_IS_dm:
-            all_edges_label.setStratumIS(boundaries.Null_Boundary.value, all_edges_IS_dm)
+        null_boundary_label = self.dm.getLabel("Null_Boundary")
+        if depth_label and null_boundary_label:
+            vertex_stratum_is = depth_label.getStratumIS(0)
+            if vertex_stratum_is:
+                null_boundary_label.setStratumIS(
+                    boundaries.Null_Boundary.value, vertex_stratum_is
+                )
 
         ## --- UW_Boundaries label
         if self.boundaries is not None:

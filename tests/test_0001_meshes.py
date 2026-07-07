@@ -174,3 +174,24 @@ def test_create_solid_usbIB_3d_mesh():
     )
 
     return
+
+
+@pytest.mark.tier_a
+def test_null_boundary_marks_every_vertex():
+    """Null_Boundary (value 666) covers the depth-0 (vertex) stratum.
+
+    Regression for D-37/READ-41: the label was built from a variable that
+    was only assigned inside an `if` guard (NameError-risk when the DM has
+    no "depth" label) and misnamed "all_edges" when getStratumIS(0)
+    actually fetches vertices. The rewrite must still mark every vertex.
+    """
+    from underworld3.meshing import StructuredQuadBox
+
+    mesh = StructuredQuadBox(elementRes=(4, 4))
+
+    label = mesh.dm.getLabel("Null_Boundary")
+    assert label is not None
+
+    p_start, p_end = mesh.dm.getDepthStratum(0)
+    n_vertices = p_end - p_start
+    assert label.getStratumSize(mesh.boundaries.Null_Boundary.value) == n_vertices
