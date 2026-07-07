@@ -1845,7 +1845,9 @@ class SemiLagrangian(_DDtBase):
         self._v_mesh_var = None
         try:
             self.mesh.register_remesh_hook(self)
-        except Exception:
+        except AttributeError:
+            # Sanctioned swallow: an older Mesh without the remesh-hook
+            # registry — this DDt then simply runs without adapt-time ALE.
             pass
 
         return
@@ -3020,7 +3022,9 @@ class Lagrangian(_DDtBase):
         # SemiLagrangian.
         try:
             self.mesh.register_remesh_hook(self)
-        except Exception:
+        except AttributeError:
+            # Sanctioned swallow: an older Mesh without the remesh-hook
+            # registry — this DDt then simply runs without adapt-time ALE.
             pass
 
         return
