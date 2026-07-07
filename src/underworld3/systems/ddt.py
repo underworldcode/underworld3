@@ -507,7 +507,204 @@ def _build_weighted_sum(coeffs, psi_fn, psi_star_syms):
     return result
 
 
-class Symbolic(uw_object):
+
+class _DDtBase(uw_object):
+    r"""Shared machinery for the DDt history-manager flavors.
+
+    The five flavors (:class:`Symbolic`, :class:`Eulerian`,
+    :class:`SemiLagrangian`, :class:`Lagrangian`,
+    :class:`Lagrangian_Swarm`) share the same BDF/Adams-Moulton
+    coefficient bookkeeping, effective-order startup ramp,
+    fixed-structure ``bdf()`` / ``adams_moulton_flux()`` expressions,
+    model registration and snapshot-restore validation. Each flavor owns
+    its storage (sympy expressions, mesh variables or swarm variables in
+    ``psi_star``) and its ``update_*`` sequencing.
+
+    Deliberate per-flavor divergences are passed explicitly, never
+    averaged away:
+
+    - **AM theta**: Symbolic / Eulerian / SemiLagrangian carry a
+      user-settable ``theta``; the swarm-based Lagrangian flavors have
+      no theta parameter and always use the Crank-Nicolson value 0.5.
+    - **History symbols**: Symbolic stores raw sympy matrices in
+      ``psi_star``; the storage-backed flavors store variables and
+      contribute ``.sym`` (see :meth:`_history_syms`).
+    - **ETD-2 exp coefficients** exist only on the flavors used by the
+      Maxwell / viscoelastic relaxation path (``with_exp=True``:
+      Symbolic, Eulerian, SemiLagrangian).
+    """
+
+    def _init_history_tracking(self, order):
+        """Deferred-initialisation and variable-dt bookkeeping attributes."""
+        # History tracking: deferred initialization and effective order
+        self._history_initialised = False
+        self._n_solves_completed = 0
+        self._dt = None  # current timestep (set by solver or update_pre_solve)
+        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+
+    def _init_coefficient_expressions(self, order, theta, with_exp):
+        """Create BDF/AM (and optionally ETD-2 exp) coefficient UWexpressions.
+
+        The coefficients are routed through PetscDS constants[] (see the
+        module-level coefficient helpers), so order ramp-up and variable
+        dt only change values, never the compiled symbolic structure.
+        All sets are initialised to the order-1 / viscous startup values.
+
+        Parameters
+        ----------
+        order : int
+            Maximum BDF/AM order (creates ``order + 1`` coefficients each).
+        theta : float
+            Adams-Moulton order-1 implicitness for the startup values —
+            ``self.theta`` for flavors that expose it, 0.5
+            (Crank-Nicolson) for the Lagrangian flavors that don't.
+        with_exp : bool
+            Also create the ETD-2 ``[α, φ]`` coefficients used by
+            Maxwell-relaxation integration; values are pushed via
+            PetscDSSetConstants every step in ``update_exp_coefficients``
+            (Symbolic, Eulerian, SemiLagrangian only).
+        """
+        self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
+        self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
+        if with_exp:
+            self._exp_coeffs = _create_exp_coefficients(self.instance_number)
+        # Initialise to order-1 / viscous values
+        _update_bdf_values(self._bdf_coeffs, 1, None, [])
+        _update_am_values(self._am_coeffs, 1, theta)
+        if with_exp:
+            _update_exp_values(self._exp_coeffs, None, None)
+
+    def _register_with_default_model(self):
+        """Register with the active default model as a snapshot state-bearer.
+
+        Safe if no model is active.
+        """
+        try:
+            uw.get_default_model()._register_state_bearer(self)
+        except (ImportError, AttributeError):
+            # Narrowed per Copilot review on #195: only swallow the
+            # genuine bootstrap modes (uw attributes not yet wired during
+            # underworld3 init, or older Model without the registry
+            # method). Anything else propagates rather than silently
+            # masking a registration bug — exactly the silent-state-
+            # loss failure mode the design note warns against.
+            pass
+
+    # ----- Snapshot / restore helpers (see checkpoint/state.py) -----
+
+    def _core_state_kwargs(self):
+        """Common evolution-tracking fields for the State dataclasses."""
+        return dict(
+            dt_history=list(self._dt_history),
+            history_initialised=bool(self._history_initialised),
+            n_solves_completed=int(self._n_solves_completed),
+            dt=self._dt,
+        )
+
+    def _validate_state_schema(self, s, state_cls):
+        """Reject snapshots with a different schema or history depth."""
+        if s._schema_version != state_cls._schema_version:
+            raise ValueError(
+                f"{state_cls.__name__} schema version mismatch: snapshot "
+                f"{s._schema_version} vs current "
+                f"{state_cls._schema_version}"
+            )
+        if len(s.dt_history) != len(self._dt_history):
+            raise ValueError(
+                f"dt_history length mismatch ({len(s.dt_history)} vs "
+                f"{len(self._dt_history)}); order changed since snapshot?"
+            )
+
+    def _validate_psi_star_names(self, snapshot_names):
+        """Verify the snapshot still binds to this instance's variables."""
+        current_names = [ps.clean_name for ps in self.psi_star]
+        if snapshot_names and snapshot_names != current_names:
+            raise ValueError(
+                f"psi_star variable names changed since snapshot: "
+                f"{snapshot_names} vs {current_names}"
+            )
+
+    def _restore_core_state(self, s, am_theta):
+        """Write the captured core state back and re-derive coefficients.
+
+        Re-deriving the BDF/AM coefficient values means downstream reads
+        see values consistent with the restored primary state without
+        waiting for the next ``update_pre_solve``. ``am_theta`` carries
+        the per-flavor Adams-Moulton implicitness (``self.theta`` where
+        the flavor exposes it, 0.5 for the Lagrangian flavors).
+        """
+        self._dt_history = list(s.dt_history)
+        self._history_initialised = bool(s.history_initialised)
+        self._n_solves_completed = int(s.n_solves_completed)
+        self._dt = s.dt
+        _update_bdf_values(
+            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
+        )
+        _update_am_values(self._am_coeffs, self.effective_order, am_theta)
+
+    # ----- Order bookkeeping and the fixed-structure operators -----
+
+    @property
+    def effective_order(self):
+        """Current effective BDF order, accounting for history startup.
+
+        For BDF order k, k distinct history values are needed. During
+        startup, ``effective_order`` ramps from 1 to ``self.order`` as
+        successive solves populate the history slots with distinct values.
+        """
+        # BDF-k requires k completed solves to have k distinct history values.
+        # With 0 or 1 completed solves → order 1. Order 2 needs ≥2 solves.
+        return min(self.order, max(1, self._n_solves_completed))
+
+    @property
+    def bdf_coefficients(self):
+        """Current BDF coefficients [c0, c1, ...] accounting for variable timesteps."""
+        return _bdf_coefficients(self.effective_order, self._dt, self._dt_history)
+
+    def _history_syms(self):
+        """History terms as sympy expressions for the weighted sums.
+
+        Storage-backed flavors contribute each history variable's
+        ``.sym``; :class:`Symbolic` overrides this to return its raw
+        sympy matrices.
+        """
+        return [ps.sym for ps in self.psi_star]
+
+    def bdf(self, order: Optional[int] = None):
+        r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
+
+        Returns a fixed-structure symbolic expression using UWexpression
+        coefficients. The coefficient values are updated each step in
+        ``update_pre_solve`` — no JIT recompilation needed when the
+        order ramps up or the timestep changes.
+
+        Parameters
+        ----------
+        order : int, optional
+            Ignored (kept for API compatibility). The effective order is
+            controlled by the coefficient values.
+        """
+        return _build_weighted_sum(self._bdf_coeffs, self.psi_fn, self._history_syms())
+
+    def adams_moulton_flux(self, order: Optional[int] = None):
+        r"""Adams-Moulton flux approximation for implicit time integration.
+
+        Returns a fixed-structure symbolic expression using UWexpression
+        coefficients. Values are updated each step in ``update_pre_solve``.
+
+        Parameters
+        ----------
+        order : int, optional
+            Ignored (kept for API compatibility).
+        """
+        return _build_weighted_sum(self._am_coeffs, self.psi_fn, self._history_syms())
+
+    def initiate_history_fn(self):
+        """Deprecated: use ``initialise_history`` instead."""
+        self.initialise_history()
+
+
+class Symbolic(_DDtBase):
     r"""
     Symbolic history manager for time derivative approximations.
 
@@ -583,11 +780,7 @@ class Symbolic(uw_object):
         self.smoothing = smoothing
         self.order = order
 
-        # History tracking: deferred initialization and effective order
-        self._history_initialised = False
-        self._n_solves_completed = 0
-        self._dt = None  # current timestep (set by solver or update_pre_solve)
-        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+        self._init_history_tracking(order)
 
         # Ensure psi_fn is a sympy Matrix.
         if not isinstance(psi_fn, sympy.Matrix):
@@ -605,32 +798,11 @@ class Symbolic(uw_object):
         # Create the history list: each element is a Matrix of shape _shape.
         self.psi_star = [sympy.zeros(*self._shape) for _ in range(order)]
 
-        # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
-        self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
-        self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # ETD-2 (exponential) coefficients [α, φ] for Maxwell-relaxation integration.
-        # Treated as a peer to the BDF/AM coefficient sets; values are pushed via
-        # PetscDSSetConstants every step in update_exp_coefficients().
-        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
-        # Initialise to order-1 / viscous values
-        _update_bdf_values(self._bdf_coeffs, 1, None, [])
-        _update_am_values(self._am_coeffs, 1, self.theta)
-        _update_exp_values(self._exp_coeffs, None, None)
+        self._init_coefficient_expressions(order, self.theta, with_exp=True)
 
         # Register with the active default model as a Snapshottable
         # state-bearer. Safe if no model is active.
-        try:
-            import underworld3 as _uw
-
-            _uw.get_default_model()._register_state_bearer(self)
-        except (ImportError, AttributeError):
-            # Narrowed per Copilot review on #195: only swallow the
-            # genuine bootstrap modes (import not yet wired during
-            # underworld3 init, or older Model without the registry
-            # method). Anything else propagates rather than silently
-            # masking a registration bug — exactly the silent-state-
-            # loss failure mode the design note warns against.
-            pass
+        self._register_with_default_model()
 
         return
 
@@ -649,44 +821,21 @@ class Symbolic(uw_object):
     def state(self) -> "DDtSymbolicState":
         """Return a snapshot-of-state dataclass for this DDt instance."""
         return DDtSymbolicState(
-            dt_history=list(self._dt_history),
-            history_initialised=bool(self._history_initialised),
-            n_solves_completed=int(self._n_solves_completed),
-            dt=self._dt,
+            **self._core_state_kwargs(),
             psi_star=list(self.psi_star),
         )
 
     @state.setter
     def state(self, s: "DDtSymbolicState") -> None:
         """Write a captured state back. Reconciles derived coefficients."""
-        if s._schema_version != DDtSymbolicState._schema_version:
-            raise ValueError(
-                f"DDtSymbolicState schema version mismatch: snapshot "
-                f"{s._schema_version} vs current "
-                f"{DDtSymbolicState._schema_version}"
-            )
-        if len(s.dt_history) != len(self._dt_history):
-            raise ValueError(
-                f"dt_history length mismatch ({len(s.dt_history)} vs "
-                f"{len(self._dt_history)}); order changed since snapshot?"
-            )
+        self._validate_state_schema(s, DDtSymbolicState)
         if len(s.psi_star) != len(self.psi_star):
             raise ValueError(
                 f"psi_star length mismatch ({len(s.psi_star)} vs "
                 f"{len(self.psi_star)}); order changed since snapshot?"
             )
-        self._dt_history = list(s.dt_history)
-        self._history_initialised = bool(s.history_initialised)
-        self._n_solves_completed = int(s.n_solves_completed)
-        self._dt = s.dt
         self.psi_star = list(s.psi_star)
-        # Re-derive BDF/AM coefficients so downstream reads see values
-        # consistent with the restored primary state without waiting
-        # for the next update_pre_solve.
-        _update_bdf_values(
-            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
-        )
-        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
+        self._restore_core_state(s, am_theta=self.theta)
 
     @property
     def psi_fn(self):
@@ -716,18 +865,6 @@ class Symbolic(uw_object):
         history_latex = ", ".join([sympy.latex(elem) for elem in self.psi_star])
         display(Latex(rf"$\quad {self._psi_star_symbol} = \left[{history_latex}\right]$"))
 
-    @property
-    def effective_order(self):
-        """Current effective BDF order, accounting for history startup.
-
-        For BDF order k, k distinct history values are needed. During
-        startup, ``effective_order`` ramps from 1 to ``self.order`` as
-        successive solves populate the history slots with distinct values.
-        """
-        # BDF-k requires k completed solves to have k distinct history values.
-        # With 0 or 1 completed solves → order 1. Order 2 needs ≥2 solves.
-        return min(self.order, max(1, self._n_solves_completed))
-
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to the first history slot ``psi_star[0]``."""
         # Update the first history element with a copy of the current ψ.
@@ -745,10 +882,6 @@ class Symbolic(uw_object):
             self.psi_star[i] = self.psi_star[0].copy()
         self._history_initialised = True
         return
-
-    def initiate_history_fn(self):
-        """Deprecated: use ``initialise_history`` instead."""
-        self.initialise_history()
 
     def update(
         self,
@@ -805,39 +938,9 @@ class Symbolic(uw_object):
 
         return
 
-    @property
-    def bdf_coefficients(self):
-        """Current BDF coefficients [c0, c1, ...] accounting for variable timesteps."""
-        return _bdf_coefficients(self.effective_order, self._dt, self._dt_history)
-
-    def bdf(self, order: Optional[int] = None):
-        r"""Backward differentiation approximation of the time-derivative of ψ.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. The coefficient values are updated each step in
-        ``update_pre_solve`` — no JIT recompilation needed when the
-        order ramps up or the timestep changes.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility). The effective order is
-            controlled by the coefficient values.
-        """
-        return _build_weighted_sum(self._bdf_coeffs, self.psi_fn, self.psi_star)
-
-    def adams_moulton_flux(self, order: Optional[int] = None):
-        r"""Adams-Moulton flux approximation for implicit time integration.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._am_coeffs, self.psi_fn, self.psi_star)
+    def _history_syms(self):
+        """Symbolic stores raw sympy matrices in ``psi_star`` — return them as-is."""
+        return list(self.psi_star)
 
     def update_exp_coefficients(self, dt, tau_eff):
         r"""Update the ETD-2 (exponential) coefficient values for this step.
@@ -852,7 +955,7 @@ class Symbolic(uw_object):
         _update_exp_values(self._exp_coeffs, dt, tau_eff)
 
 
-class Eulerian(uw_object):
+class Eulerian(_DDtBase):
     r"""
     Eulerian (mesh-based) history manager for time derivatives.
 
@@ -948,9 +1051,7 @@ class Eulerian(uw_object):
         self.smoothing = smoothing
         self.evalf = evalf
 
-        # History tracking: deferred initialization and effective order
-        self._history_initialised = False
-        self._n_solves_completed = 0
+        self._init_history_tracking(order)
 
         # meshVariables are required for:
         #
@@ -970,8 +1071,6 @@ class Eulerian(uw_object):
             self._psi_meshVar = None
 
         self.order = order
-        self._dt = None  # current timestep (set by solver or update_pre_solve)
-        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
 
         psi_star = []
         self.psi_star = psi_star
@@ -988,27 +1087,11 @@ class Eulerian(uw_object):
                 )
             )
 
-        # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
-        self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
-        self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
-        # Initialise to order-1 / viscous values
-        _update_bdf_values(self._bdf_coeffs, 1, None, [])
-        _update_am_values(self._am_coeffs, 1, self.theta)
-        _update_exp_values(self._exp_coeffs, None, None)
+        self._init_coefficient_expressions(order, self.theta, with_exp=True)
 
-        try:
-            import underworld3 as _uw
-
-            _uw.get_default_model()._register_state_bearer(self)
-        except (ImportError, AttributeError):
-            # Narrowed per Copilot review on #195: only swallow the
-            # genuine bootstrap modes (import not yet wired during
-            # underworld3 init, or older Model without the registry
-            # method). Anything else propagates rather than silently
-            # masking a registration bug — exactly the silent-state-
-            # loss failure mode the design note warns against.
-            pass
+        # Register with the active default model as a Snapshottable
+        # state-bearer. Safe if no model is active.
+        self._register_with_default_model()
 
         return
 
@@ -1016,40 +1099,15 @@ class Eulerian(uw_object):
     def state(self) -> "DDtEulerianState":
         """Return a snapshot-of-state dataclass for this Eulerian DDt."""
         return DDtEulerianState(
-            dt_history=list(self._dt_history),
-            history_initialised=bool(self._history_initialised),
-            n_solves_completed=int(self._n_solves_completed),
-            dt=self._dt,
+            **self._core_state_kwargs(),
             psi_star_var_names=[ps.clean_name for ps in self.psi_star],
         )
 
     @state.setter
     def state(self, s: "DDtEulerianState") -> None:
-        if s._schema_version != DDtEulerianState._schema_version:
-            raise ValueError(
-                f"DDtEulerianState schema version mismatch: snapshot "
-                f"{s._schema_version} vs current "
-                f"{DDtEulerianState._schema_version}"
-            )
-        if len(s.dt_history) != len(self._dt_history):
-            raise ValueError(
-                f"dt_history length mismatch ({len(s.dt_history)} vs "
-                f"{len(self._dt_history)}); order changed since snapshot?"
-            )
-        current_names = [ps.clean_name for ps in self.psi_star]
-        if s.psi_star_var_names and s.psi_star_var_names != current_names:
-            raise ValueError(
-                f"psi_star variable names changed since snapshot: "
-                f"{s.psi_star_var_names} vs {current_names}"
-            )
-        self._dt_history = list(s.dt_history)
-        self._history_initialised = bool(s.history_initialised)
-        self._n_solves_completed = int(s.n_solves_completed)
-        self._dt = s.dt
-        _update_bdf_values(
-            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
-        )
-        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
+        self._validate_state_schema(s, DDtEulerianState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        self._restore_core_state(s, am_theta=self.theta)
 
     @property
     def psi_fn(self):
@@ -1137,18 +1195,6 @@ class Eulerian(uw_object):
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
 
-    @property
-    def effective_order(self):
-        """Current effective BDF order, accounting for history startup.
-
-        For BDF order k, k distinct history values are needed. During
-        startup, ``effective_order`` ramps from 1 to ``self.order`` as
-        successive solves populate the history slots with distinct values.
-        """
-        # BDF-k requires k completed solves to have k distinct history values.
-        # With 0 or 1 completed solves → order 1. Order 2 needs ≥2 solves.
-        return min(self.order, max(1, self._n_solves_completed))
-
     def update_history_fn(self):
         r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection."""
         ### update first value in history chain
@@ -1224,10 +1270,6 @@ class Eulerian(uw_object):
                 stacklevel=2,
             )
         return
-
-    def initiate_history_fn(self):
-        """Deprecated: use ``initialise_history`` instead."""
-        self.initialise_history()
 
     def update(
         self,
@@ -1316,43 +1358,12 @@ class Eulerian(uw_object):
 
         return
 
-    @property
-    def bdf_coefficients(self):
-        """Current BDF coefficients [c0, c1, ...] accounting for variable timesteps."""
-        return _bdf_coefficients(self.effective_order, self._dt, self._dt_history)
-
-    def bdf(self, order=None):
-        r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._bdf_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
-
-    def adams_moulton_flux(self, order=None):
-        r"""Adams-Moulton flux approximation for implicit time integration.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
-
     def update_exp_coefficients(self, dt, tau_eff):
         r"""Update the ETD-2 (exponential) coefficient values for this step."""
         _update_exp_values(self._exp_coeffs, dt, tau_eff)
 
 
-class SemiLagrangian(uw_object):
+class SemiLagrangian(_DDtBase):
     r"""
     Semi-Lagrangian history manager using nodal swarm.
 
@@ -1590,11 +1601,7 @@ class SemiLagrangian(uw_object):
         self._forcing_vtype = None
         self._forcing_indep_indices = None
 
-        # History tracking: deferred initialization and effective order
-        self._history_initialised = False
-        self._n_solves_completed = 0
-        self._dt = None  # current timestep (set by solver or update_pre_solve)
-        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+        self._init_history_tracking(order)
 
         # Source snapshot machinery (opt-in via enable_source_snapshot()).
         # Used when psi_fn references psi_star[0] itself (e.g. VE/VEP stress
@@ -1687,14 +1694,7 @@ class SemiLagrangian(uw_object):
             self.forcing_star.remesh_policy = RemeshPolicy.CARRY
             self.forcing_star._remesh_managed_by = self
 
-        # BDF/AM/exp coefficient UWexpressions — routed through PetscDS constants[]
-        self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
-        self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        self._exp_coeffs = _create_exp_coefficients(self.instance_number)
-        # Initialise to order-1 / viscous values
-        _update_bdf_values(self._bdf_coeffs, 1, None, [])
-        _update_am_values(self._am_coeffs, 1, self.theta)
-        _update_exp_values(self._exp_coeffs, None, None)
+        self._init_coefficient_expressions(order, self.theta, with_exp=True)
 
         # Working variable that has a potentially different discretisation from psi_star
         # We project from this to psi_star and we use this variable to define the
@@ -1811,18 +1811,9 @@ class SemiLagrangian(uw_object):
 
         self._smoothing = smoothing
 
-        try:
-            import underworld3 as _uw
-
-            _uw.get_default_model()._register_state_bearer(self)
-        except (ImportError, AttributeError):
-            # Narrowed per Copilot review on #195: only swallow the
-            # genuine bootstrap modes (import not yet wired during
-            # underworld3 init, or older Model without the registry
-            # method). Anything else propagates rather than silently
-            # masking a registration bug — exactly the silent-state-
-            # loss failure mode the design note warns against.
-            pass
+        # Register with the active default model as a Snapshottable
+        # state-bearer. Safe if no model is active.
+        self._register_with_default_model()
 
         # Phase-2 remesh redesign: register the adapt-time hook.
         # ``on_remesh`` accumulates Δx into ``_pending_v_mesh_disp``
@@ -1923,10 +1914,7 @@ class SemiLagrangian(uw_object):
     @property
     def state(self) -> "DDtSemiLagrangianState":
         return DDtSemiLagrangianState(
-            dt_history=list(self._dt_history),
-            history_initialised=bool(self._history_initialised),
-            n_solves_completed=int(self._n_solves_completed),
-            dt=self._dt,
+            **self._core_state_kwargs(),
             psi_star_var_names=[ps.clean_name for ps in self.psi_star],
             forcing_star_var_name=(
                 self.forcing_star.clean_name
@@ -1937,37 +1925,15 @@ class SemiLagrangian(uw_object):
 
     @state.setter
     def state(self, s: "DDtSemiLagrangianState") -> None:
-        if s._schema_version != DDtSemiLagrangianState._schema_version:
-            raise ValueError(
-                f"DDtSemiLagrangianState schema version mismatch: snapshot "
-                f"{s._schema_version} vs current "
-                f"{DDtSemiLagrangianState._schema_version}"
-            )
-        if len(s.dt_history) != len(self._dt_history):
-            raise ValueError(
-                f"dt_history length mismatch ({len(s.dt_history)} vs "
-                f"{len(self._dt_history)}); order changed since snapshot?"
-            )
-        current_names = [ps.clean_name for ps in self.psi_star]
-        if s.psi_star_var_names and s.psi_star_var_names != current_names:
-            raise ValueError(
-                f"psi_star variable names changed since snapshot: "
-                f"{s.psi_star_var_names} vs {current_names}"
-            )
+        self._validate_state_schema(s, DDtSemiLagrangianState)
+        self._validate_psi_star_names(s.psi_star_var_names)
         if s.with_forcing_history != bool(self.with_forcing_history):
             raise ValueError(
                 f"with_forcing_history flag differs between snapshot "
                 f"({s.with_forcing_history}) and current "
                 f"({self.with_forcing_history})"
             )
-        self._dt_history = list(s.dt_history)
-        self._history_initialised = bool(s.history_initialised)
-        self._n_solves_completed = int(s.n_solves_completed)
-        self._dt = s.dt
-        _update_bdf_values(
-            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
-        )
-        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
+        self._restore_core_state(s, am_theta=self.theta)
 
     @property
     def psi_fn(self):
@@ -2079,18 +2045,6 @@ class SemiLagrangian(uw_object):
 
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
-    @property
-    def effective_order(self):
-        """Current effective BDF order, accounting for history startup.
-
-        For BDF order k, k distinct history values are needed. During
-        startup, ``effective_order`` ramps from 1 to ``self.order`` as
-        successive solves populate the history slots with distinct values.
-        """
-        # BDF-k requires k completed solves to have k distinct history values.
-        # With 0 or 1 completed solves → order 1. Order 2 needs ≥2 solves.
-        return min(self.order, max(1, self._n_solves_completed))
-
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
 
@@ -2170,10 +2124,6 @@ class SemiLagrangian(uw_object):
                 stacklevel=2,
             )
         return
-
-    def initiate_history_fn(self):
-        """Deprecated: use ``initialise_history`` instead."""
-        self.initialise_history()
 
     def _activate_ale_for_traceback(self, dt_for_calc):
         """Populate ``self._v_mesh_var`` for the upcoming ALE trace-back.
@@ -2813,37 +2763,6 @@ class SemiLagrangian(uw_object):
 
         return
 
-    @property
-    def bdf_coefficients(self):
-        """Current BDF coefficients [c0, c1, ...] accounting for variable timesteps."""
-        return _bdf_coefficients(self.effective_order, self._dt, self._dt_history)
-
-    def bdf(self, order=None):
-        r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._bdf_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
-
-    def adams_moulton_flux(self, order=None):
-        r"""Adams-Moulton flux approximation for implicit time integration.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
-
     def update_exp_coefficients(self, dt, tau_eff):
         r"""Update the scalar ETD-2 (exponential) coefficient UWexpressions.
 
@@ -2953,7 +2872,7 @@ class SemiLagrangian(uw_object):
 ## it is if there is an existing swarm that we can re-purpose.
 
 
-class Lagrangian(uw_object):
+class Lagrangian(_DDtBase):
     r"""
     Swarm-based Lagrangian history manager for material tracking.
 
@@ -3048,11 +2967,7 @@ class Lagrangian(uw_object):
         self.verbose = verbose
         self.order = order
 
-        # History tracking: deferred initialization and effective order
-        self._history_initialised = False
-        self._n_solves_completed = 0
-        self._dt = None  # current timestep (set by solver or update_pre_solve)
-        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+        self._init_history_tracking(order)
 
         psi_star = []
         self.psi_star = psi_star
@@ -3069,27 +2984,15 @@ class Lagrangian(uw_object):
                 )
             )
 
-        # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
-        self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
-        self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
-        _update_bdf_values(self._bdf_coeffs, 1, None, [])
-        _update_am_values(self._am_coeffs, 1, 0.5)
+        # No user-settable theta on the swarm-based Lagrangian flavors:
+        # Crank-Nicolson (0.5) is their fixed Adams-Moulton value.
+        self._init_coefficient_expressions(order, 0.5, with_exp=False)
 
         dudt_swarm.populate(fill_param)
 
-        try:
-            import underworld3 as _uw
-
-            _uw.get_default_model()._register_state_bearer(self)
-        except (ImportError, AttributeError):
-            # Narrowed per Copilot review on #195: only swallow the
-            # genuine bootstrap modes (import not yet wired during
-            # underworld3 init, or older Model without the registry
-            # method). Anything else propagates rather than silently
-            # masking a registration bug — exactly the silent-state-
-            # loss failure mode the design note warns against.
-            pass
+        # Register with the active default model as a Snapshottable
+        # state-bearer. Safe if no model is active.
+        self._register_with_default_model()
 
         # Phase-1 remesh redesign: register the adapt-time hook on the
         # mesh. Lagrangian's psi_star history lives on a swarm, not on
@@ -3120,40 +3023,16 @@ class Lagrangian(uw_object):
     @property
     def state(self) -> "DDtLagrangianState":
         return DDtLagrangianState(
-            dt_history=list(self._dt_history),
-            history_initialised=bool(self._history_initialised),
-            n_solves_completed=int(self._n_solves_completed),
-            dt=self._dt,
+            **self._core_state_kwargs(),
             psi_star_var_names=[ps.clean_name for ps in self.psi_star],
         )
 
     @state.setter
     def state(self, s: "DDtLagrangianState") -> None:
-        if s._schema_version != DDtLagrangianState._schema_version:
-            raise ValueError(
-                f"DDtLagrangianState schema version mismatch: snapshot "
-                f"{s._schema_version} vs current "
-                f"{DDtLagrangianState._schema_version}"
-            )
-        if len(s.dt_history) != len(self._dt_history):
-            raise ValueError(
-                f"dt_history length mismatch ({len(s.dt_history)} vs "
-                f"{len(self._dt_history)}); order changed since snapshot?"
-            )
-        current_names = [ps.clean_name for ps in self.psi_star]
-        if s.psi_star_var_names and s.psi_star_var_names != current_names:
-            raise ValueError(
-                f"psi_star variable names changed since snapshot: "
-                f"{s.psi_star_var_names} vs {current_names}"
-            )
-        self._dt_history = list(s.dt_history)
-        self._history_initialised = bool(s.history_initialised)
-        self._n_solves_completed = int(s.n_solves_completed)
-        self._dt = s.dt
-        _update_bdf_values(
-            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
-        )
-        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
+        self._validate_state_schema(s, DDtLagrangianState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        # No theta parameter on this flavor — fixed Crank-Nicolson value.
+        self._restore_core_state(s, am_theta=0.5)
 
     def _object_viewer(self):
         # Local import: IPython is an optional, notebook-only dependency.
@@ -3166,13 +3045,6 @@ class Lagrangian(uw_object):
         # so the viewer reports the expression and history depth only.
         display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
         display(Latex(rf"$\quad$History steps = {self.order}"))
-
-    @property
-    def effective_order(self):
-        """Current effective BDF order, accounting for history startup."""
-        # BDF-k requires k completed solves to have k distinct history values.
-        # With 0 or 1 completed solves → order 1. Order 2 needs ≥2 solves.
-        return min(self.order, max(1, self._n_solves_completed))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -3202,10 +3074,6 @@ class Lagrangian(uw_object):
 
         self._history_initialised = True
         return
-
-    def initiate_history_fn(self):
-        """Deprecated: use ``initialise_history`` instead."""
-        self.initialise_history()
 
     ## Note: We may be able to eliminate this
     ## The SL updater and the Lag updater have
@@ -3294,39 +3162,8 @@ class Lagrangian(uw_object):
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
 
-    @property
-    def bdf_coefficients(self):
-        """Current BDF coefficients [c0, c1, ...] accounting for variable timesteps."""
-        return _bdf_coefficients(self.effective_order, self._dt, self._dt_history)
 
-    def bdf(self, order=None):
-        r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._bdf_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
-
-    def adams_moulton_flux(self, order=None):
-        r"""Adams-Moulton flux approximation for implicit time integration.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
-
-
-class Lagrangian_Swarm(uw_object):
+class Lagrangian_Swarm(_DDtBase):
     r"""
     Swarm-based Lagrangian history manager (user-provided swarm).
 
@@ -3432,11 +3269,7 @@ class Lagrangian_Swarm(uw_object):
         self.order = order
         self.step_averaging = step_averaging
 
-        # History tracking: deferred initialization and effective order
-        self._history_initialised = False
-        self._n_solves_completed = 0
-        self._dt = None  # current timestep (set by solver or update_pre_solve)
-        self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+        self._init_history_tracking(order)
 
         psi_star = []
         self.psi_star = psi_star
@@ -3453,65 +3286,29 @@ class Lagrangian_Swarm(uw_object):
                 )
             )
 
-        # BDF/AM coefficient UWexpressions — routed through PetscDS constants[]
-        self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
-        self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
-        # Initialise to order-1 values
-        _update_bdf_values(self._bdf_coeffs, 1, None, [])
-        _update_am_values(self._am_coeffs, 1, 0.5)
+        # No user-settable theta on the swarm-based Lagrangian flavors:
+        # Crank-Nicolson (0.5) is their fixed Adams-Moulton value.
+        self._init_coefficient_expressions(order, 0.5, with_exp=False)
 
-        try:
-            import underworld3 as _uw
-
-            _uw.get_default_model()._register_state_bearer(self)
-        except (ImportError, AttributeError):
-            # Narrowed per Copilot review on #195: only swallow the
-            # genuine bootstrap modes (import not yet wired during
-            # underworld3 init, or older Model without the registry
-            # method). Anything else propagates rather than silently
-            # masking a registration bug — exactly the silent-state-
-            # loss failure mode the design note warns against.
-            pass
+        # Register with the active default model as a Snapshottable
+        # state-bearer. Safe if no model is active.
+        self._register_with_default_model()
 
         return
 
     @property
     def state(self) -> "DDtLagrangianSwarmState":
         return DDtLagrangianSwarmState(
-            dt_history=list(self._dt_history),
-            history_initialised=bool(self._history_initialised),
-            n_solves_completed=int(self._n_solves_completed),
-            dt=self._dt,
+            **self._core_state_kwargs(),
             psi_star_var_names=[ps.clean_name for ps in self.psi_star],
         )
 
     @state.setter
     def state(self, s: "DDtLagrangianSwarmState") -> None:
-        if s._schema_version != DDtLagrangianSwarmState._schema_version:
-            raise ValueError(
-                f"DDtLagrangianSwarmState schema version mismatch: snapshot "
-                f"{s._schema_version} vs current "
-                f"{DDtLagrangianSwarmState._schema_version}"
-            )
-        if len(s.dt_history) != len(self._dt_history):
-            raise ValueError(
-                f"dt_history length mismatch ({len(s.dt_history)} vs "
-                f"{len(self._dt_history)}); order changed since snapshot?"
-            )
-        current_names = [ps.clean_name for ps in self.psi_star]
-        if s.psi_star_var_names and s.psi_star_var_names != current_names:
-            raise ValueError(
-                f"psi_star variable names changed since snapshot: "
-                f"{s.psi_star_var_names} vs {current_names}"
-            )
-        self._dt_history = list(s.dt_history)
-        self._history_initialised = bool(s.history_initialised)
-        self._n_solves_completed = int(s.n_solves_completed)
-        self._dt = s.dt
-        _update_bdf_values(
-            self._bdf_coeffs, self.effective_order, self._dt, self._dt_history
-        )
-        _update_am_values(self._am_coeffs, self.effective_order, 0.5)
+        self._validate_state_schema(s, DDtLagrangianSwarmState)
+        self._validate_psi_star_names(s.psi_star_var_names)
+        # No theta parameter on this flavor — fixed Crank-Nicolson value.
+        self._restore_core_state(s, am_theta=0.5)
 
     def _object_viewer(self):
         # Local import: IPython is an optional, notebook-only dependency.
@@ -3524,13 +3321,6 @@ class Lagrangian_Swarm(uw_object):
         # so the viewer reports the expression and history depth only.
         display(Latex(r"$\quad\psi = $ " + sympy.sympify(self.psi_fn)._repr_latex_()))
         display(Latex(rf"$\quad$History steps = {self.order}"))
-
-    @property
-    def effective_order(self):
-        """Current effective BDF order, accounting for history startup."""
-        # BDF-k requires k completed solves to have k distinct history values.
-        # With 0 or 1 completed solves → order 1. Order 2 needs ≥2 solves.
-        return min(self.order, max(1, self._n_solves_completed))
 
     def initialise_history(self):
         r"""Initialize all history slots to the current value of :math:`\psi`.
@@ -3560,10 +3350,6 @@ class Lagrangian_Swarm(uw_object):
 
         self._history_initialised = True
         return
-
-    def initiate_history_fn(self):
-        """Deprecated: use ``initialise_history`` instead."""
-        self.initialise_history()
 
     ## Note: We may be able to eliminate this
     ## The SL updater and the Lag updater have
@@ -3653,33 +3439,3 @@ class Lagrangian_Swarm(uw_object):
 
         return
 
-    @property
-    def bdf_coefficients(self):
-        """Current BDF coefficients [c0, c1, ...] accounting for variable timesteps."""
-        return _bdf_coefficients(self.effective_order, self._dt, self._dt_history)
-
-    def bdf(self, order=None):
-        r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._bdf_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
-
-    def adams_moulton_flux(self, order=None):
-        r"""Adams-Moulton flux approximation for implicit time integration.
-
-        Returns a fixed-structure symbolic expression using UWexpression
-        coefficients. Values are updated each step in ``update_pre_solve``.
-
-        Parameters
-        ----------
-        order : int, optional
-            Ignored (kept for API compatibility).
-        """
-        return _build_weighted_sum(self._am_coeffs, self.psi_fn, [ps.sym for ps in self.psi_star])
