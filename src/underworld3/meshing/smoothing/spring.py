@@ -163,6 +163,13 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
     # global freeze (the Jacobi relaxation's failure mode).
     free_idx = np.nonzero(free)[0]
     n_free = int(free_idx.size)
+    # TODO(BUG): rank-LOCAL early return before the collective CG loop.
+    # Under MPI, a rank whose local vertices are all pinned returns here
+    # while the other ranks proceed into _global_sum/_global_min
+    # collectives -> deadlock. Consistent with the documented
+    # serial-exact status of this path, but a latent parallel hazard;
+    # the exit decision should be reduced globally (as the OT/MA movers
+    # do) before this mover is promoted to parallel-exact.
     if n_free == 0:
         mesh._deform_mesh(coords)
         return
