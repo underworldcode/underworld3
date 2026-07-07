@@ -325,8 +325,13 @@ def remesh_with_field_transfer(
     # (smooth_mesh_interior called from inside that pipeline) consult
     # this flag and skip their own wrap.
     if getattr(mesh, "_in_remesh_transfer", False):
-        # Surface the outer scratch dict so a nested do_move can still
-        # publish (e.g. an inner op flags "this is the reset adapt").
+        # Nested call: run the mover only. The OUTER wrapper owns
+        # snapshot / transfer / hook dispatch, and it already set
+        # mesh._remesh_pending_scratch, so an inner adapt op can still
+        # publish flags there (e.g. OT_adapt marking a reset adapt).
+        # The True return here is unconditional and meaningless — nested
+        # callers cannot use it to tell whether the mesh actually moved;
+        # only the outer call's return value carries that information.
         do_move()
         return True
     mesh._in_remesh_transfer = True
