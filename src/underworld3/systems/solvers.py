@@ -3975,6 +3975,17 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             meshes it's the geometric factor only. Off by
             default to preserve historical behaviour; safe to
             enable everywhere once validated.
+        percentile : float, default 0.0
+            How the per-element timesteps are reduced to one global
+            value. ``0`` (the default) takes the strict global
+            MINIMUM — a single cell sets the limit. A value ``> 0``
+            takes that global percentile of the per-element dt
+            instead (``50`` = median), so a few anisotropic sliver
+            cells (velocity *across* a thin cell) cannot collapse
+            the timestep. SLCN is unconditionally stable, and
+            ``direction_aware`` already credits cells stretched
+            *along* the flow — together they give an
+            orientation-aware, sliver-robust timestep.
 
         Returns
         -------
