@@ -2578,8 +2578,11 @@ def smooth_mesh_interior(
         positive and finite. ``None`` (default) ⇒ the
         graph-Laplacian Jacobi path, unchanged behaviour
         bit-for-bit.
-    method : {"spring", "ma"}, default "spring"
-        Metric-grading solver (ignored when ``metric is None``):
+    method : {"spring", "ma", "anisotropic", "mmpde"}, default "spring"
+        Metric-grading solver (ignored when ``metric is None``).
+        ``"mmpde"`` is the recommended production mover for adaptive
+        meshing; ``"ot"`` is accepted but deprecated (incomplete —
+        prefer ``"mmpde"`` with a scalar metric):
 
         * ``"spring"`` — *volumetric* elastic-spring equilibrium:
           equal edge springs (shape regulariser, equant cells, no
@@ -2610,6 +2613,10 @@ def smooth_mesh_interior(
           recommended production mover for adaptive meshing.
           **Currently 2D-only** (triangle meshes) — a 3D mesh
           raises ``NotImplementedError``.
+        * ``"ot"`` (deprecated) — one linear OT-improvement step,
+          composable; boundary slip is gated to radial geometries.
+          Kept for the internal ``mesh.OT_adapt`` reset path; new
+          code should use ``"mmpde"``.
 
         With a fixed node count neither can exceed ≈1.3–1.8×
         deep/near grading (the optimal-transport ≈10× needs *more
@@ -3541,11 +3548,12 @@ def _smooth_mesh_interior_bare(
                 f"smooth_mesh_interior: unknown method {method!r}; "
                 f"use 'spring' (default, fast volumetric), "
                 f"'ma' (Monge–Ampère, isotropic, ~60× costlier), "
-                f"'ot' / 'equidistribute' (linear OT-improvement "
-                f"step, composable) or "
                 f"'anisotropic' (tensor metric — reshapes cells / "
                 f"removes slivers; does not beat the node-count "
-                f"cap).")
+                f"cap), 'mmpde' (variational moving mesh — the "
+                f"recommended production mover) or "
+                f"'ot' / 'equidistribute' (deprecated linear "
+                f"OT-improvement step).")
         return
 
     dm = mesh.dm
