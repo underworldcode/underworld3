@@ -160,6 +160,65 @@ def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
     return dt_nondimensional
 
 
+def _nondimensionalise_timestep(value):
+    """Convert a dimensional (time-valued) timestep to its nondimensional value.
+
+    Parameters
+    ----------
+    value : float, sympy expression, Pint Quantity, or UWQuantity
+        Timestep. A Pint/UWQuantity with time dimensionality is divided by
+        the model's fundamental time scale; any other input is returned
+        unchanged (assumed already nondimensional).
+
+    Returns
+    -------
+    float or the original object
+        The nondimensional magnitude when the conversion applies, otherwise
+        ``value`` unchanged.
+    """
+    if not hasattr(value, "dimensionality"):
+        return value
+    try:
+        from ..scaling import units as ureg
+
+        if value.dimensionality != ureg.second.dimensionality:
+            return value
+        orchestration_model = uw.get_default_model()
+        if not (
+            orchestration_model
+            and hasattr(orchestration_model, "fundamental_scales")
+            and orchestration_model.fundamental_scales
+        ):
+            return value
+        time_scale = orchestration_model.fundamental_scales.get("time")
+        if time_scale is None:
+            return value
+
+        # Physical time / time scale = nondimensional time.
+        # Must use to_reduced_units() to convert both quantities to the same
+        # base units before extracting the magnitude. Otherwise Pint keeps
+        # different unit bases (megayear/second) and .magnitude returns the
+        # unconverted number!
+        result = value / time_scale
+        if hasattr(result, "_pint_qty"):
+            # UWQuantity - reduce via the internal Pint quantity
+            pint_result = result._pint_qty.to_reduced_units()
+        elif hasattr(result, "to_reduced_units"):
+            # Raw Pint Quantity
+            pint_result = result.to_reduced_units()
+        else:
+            pint_result = result
+
+        if hasattr(pint_result, "magnitude"):
+            return float(pint_result.magnitude)
+        return float(pint_result)
+    except Exception:
+        # Sanctioned swallow: units machinery unavailable or misconfigured —
+        # fall back to using the value as-is (legacy behaviour of the
+        # delta_t setters this was extracted from).
+        return value
+
+
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import Eulerian as Eulerian_DDt
@@ -3820,57 +3879,21 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        # Note: comparison must handle potential UWexpressions / UWQuantities
-        # Use .data or float() to get numeric values for stable comparison
+        # Skip the (expensive) function rewire when the timestep is unchanged.
+        # The comparison must tolerate UWexpressions / UWQuantities, hence the
+        # float() coercion via .data.
         try:
             old_dt = float(self._delta_t.data)
             new_dt = float(value.data) if hasattr(value, 'data') else float(value)
             if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
                 return
-        except:
+        except (TypeError, ValueError):
+            # Non-numeric (e.g. symbolic) timestep: no stable comparison is
+            # possible — fall through and assign.
             pass
 
         self._needs_function_rewire = True
-
-        # Handle Pint Quantities with time dimensions
-        if hasattr(value, "dimensionality"):
-            # This is a Pint Quantity - check if it has time dimensions
-            try:
-                from ..scaling import units as ureg
-
-                time_dim = ureg.second.dimensionality
-                if value.dimensionality == time_dim:
-                    # Convert physical time to nondimensional using model time scale
-                    model = uw.get_default_model()
-                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
-                        time_scale = model.fundamental_scales.get("time")
-                        if time_scale is not None:
-                            # Physical time / time scale = nondimensional time
-                            # Must use to_reduced_units() to convert both quantities
-                            # to same base units before extracting magnitude.
-                            # Otherwise Pint keeps different unit bases (megayear/second)
-                            # and .magnitude returns the unconverted number!
-                            result = value / time_scale
-
-                            # Get the internal Pint quantity for proper unit conversion
-                            if hasattr(result, "_pint_qty"):
-                                # UWQuantity - access internal Pint quantity
-                                pint_result = result._pint_qty.to_reduced_units()
-                            elif hasattr(result, "to_reduced_units"):
-                                # Raw Pint Quantity
-                                pint_result = result.to_reduced_units()
-                            else:
-                                pint_result = result
-
-                            # Extract the dimensionless magnitude
-                            if hasattr(pint_result, "magnitude"):
-                                value = float(pint_result.magnitude)
-                            else:
-                                value = float(pint_result)
-            except Exception:
-                pass  # If anything fails, try to use value as-is
-
-        self._delta_t.sym = value
+        self._delta_t.sym = _nondimensionalise_timestep(value)
 
     @timing.routine_timer_decorator
     def estimate_dt(self, direction_aware: bool = False, percentile: float = 0.0):
@@ -4326,57 +4349,21 @@ class SNES_Diffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        # Note: comparison must handle potential UWexpressions / UWQuantities
-        # Use .data or float() to get numeric values for stable comparison
+        # Skip the (expensive) function rewire when the timestep is unchanged.
+        # The comparison must tolerate UWexpressions / UWQuantities, hence the
+        # float() coercion via .data.
         try:
             old_dt = float(self._delta_t.data)
             new_dt = float(value.data) if hasattr(value, 'data') else float(value)
             if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
                 return
-        except:
+        except (TypeError, ValueError):
+            # Non-numeric (e.g. symbolic) timestep: no stable comparison is
+            # possible — fall through and assign.
             pass
 
         self._needs_function_rewire = True
-
-        # Handle Pint Quantities with time dimensions
-        if hasattr(value, "dimensionality"):
-            # This is a Pint Quantity - check if it has time dimensions
-            try:
-                from ..scaling import units as ureg
-
-                time_dim = ureg.second.dimensionality
-                if value.dimensionality == time_dim:
-                    # Convert physical time to nondimensional using model time scale
-                    model = uw.get_default_model()
-                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
-                        time_scale = model.fundamental_scales.get("time")
-                        if time_scale is not None:
-                            # Physical time / time scale = nondimensional time
-                            # Must use to_reduced_units() to convert both quantities
-                            # to same base units before extracting magnitude.
-                            # Otherwise Pint keeps different unit bases (megayear/second)
-                            # and .magnitude returns the unconverted number!
-                            result = value / time_scale
-
-                            # Get the internal Pint quantity for proper unit conversion
-                            if hasattr(result, "_pint_qty"):
-                                # UWQuantity - access internal Pint quantity
-                                pint_result = result._pint_qty.to_reduced_units()
-                            elif hasattr(result, "to_reduced_units"):
-                                # Raw Pint Quantity
-                                pint_result = result.to_reduced_units()
-                            else:
-                                pint_result = result
-
-                            # Extract the dimensionless magnitude
-                            if hasattr(pint_result, "magnitude"):
-                                value = float(pint_result.magnitude)
-                            else:
-                                value = float(pint_result)
-            except Exception:
-                pass  # If anything fails, try to use value as-is
-
-        self._delta_t.sym = value
+        self._delta_t.sym = _nondimensionalise_timestep(value)
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
