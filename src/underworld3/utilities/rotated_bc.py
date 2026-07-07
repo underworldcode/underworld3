@@ -235,6 +235,15 @@ def build_rotation(solver, boundaries):
     return Q, Qt, sorted(set(normal_rows))
 
 
+def _zero_rows_local(vec, normal_rows):
+    """Zero ``vec`` at the global rows ``normal_rows`` using ownership-relative
+    local indices (indexing the local slice with global rows overflows on any rank
+    whose ownership does not start at 0 — the np>1 crash class)."""
+    rs, re = vec.getOwnershipRange()
+    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
+    a = vec.getArray(); a[loc] = 0.0; vec.setArray(a)
+
+
 # --------------------------------------------------------------------------- #
 #  The rotated solve
 # --------------------------------------------------------------------------- #
@@ -291,14 +300,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     # diagonal-based Schur approximations and MG smoothing exactly in the boundary
     # strip. Any positive diagonal is exact — the solution rows are explicitly
     # zeroed after the solve.
-    # zeroRowsColumns takes GLOBAL row indices (correct); the RHS write must use
-    # OWNERSHIP-RELATIVE local indices (bhat.getArray() is this rank's local slice,
-    # so indexing it with global rows overflows on any rank whose ownership does not
-    # start at 0 — the np>1 crash that masqueraded as a hang).
+    # zeroRowsColumns takes GLOBAL row indices (correct); the RHS write goes through
+    # _zero_rows_local (ownership-relative indexing — the np>1 crash class).
     Ahat.zeroRowsColumns(normal_rows, diag=_velocity_diag_scale(Ahat, solver))
-    brs, bre = bhat.getOwnershipRange()
-    bloc = np.asarray([g - brs for g in normal_rows if brs <= g < bre], dtype=np.int64)
-    ba = bhat.getArray(); ba[bloc] = 0.0; bhat.setArray(ba)
+    _zero_rows_local(bhat, normal_rows)
 
     # ITERATIVE by default (LU is almost never right): a self-contained fieldsplit-
     # Schur solve whose velocity block is geometric FMG on the custom prolongation
@@ -309,8 +314,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         # LU is opt-in only — see the follow-up in rotated_bc). The RHS write below
         # still uses ownership-relative indexing so it does not overflow the local slice.
         Ahat.zeroRows([pin], diag=1.0)
-        if pin is not None and brs <= pin < bre:
-            ba = bhat.getArray(); ba[pin - brs] = 0.0; bhat.setArray(ba)
+        if pin is not None:
+            _zero_rows_local(bhat, [pin])
         ksp = PETSc.KSP().create(); ksp.setOperators(Ahat); ksp.setType("preonly")
         pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
         Uhat = dm.createGlobalVec(); ksp.solve(bhat, Uhat)   # returned in info → own it
@@ -389,15 +394,6 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
         if hasattr(target_var, "_canonical_data"):
             target_var._canonical_data = None
     return removed
-
-
-def _zero_rows_local(vec, normal_rows):
-    """Zero ``vec`` at the global rows ``normal_rows`` using ownership-relative
-    local indices (indexing the local slice with global rows overflows on any rank
-    whose ownership does not start at 0 — the np>1 crash class)."""
-    rs, re = vec.getOwnershipRange()
-    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
-    a = vec.getArray(); a[loc] = 0.0; vec.setArray(a)
 
 
 def _gather_fields_to_global(solver):
@@ -825,9 +821,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # made these DOFs fully decoupled (row AND column zeroed), û_i affects no other
     # equation → setting them to exactly 0 here makes the strong v_n=0 BC exact
     # independent of the iterative tolerance, without perturbing the rest.
-    rs, re = Uhat.getOwnershipRange()
-    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
-    ua = Uhat.getArray(); ua[loc] = 0.0; Uhat.setArray(ua)
+    _zero_rows_local(Uhat, normal_rows)
     if verbose:
         kind = "custom-FMG" if ctx["custom_Pl"] is not None else "GAMG"
         schur = "1/mu-mass" if ctx["Mp"] is not None else "selfp"
@@ -873,10 +867,8 @@ def _rotated_nullspace(solver, Q, normal_rows):
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
     # constraint (zero at the constrained rows), then orthonormalise. This is what
     # keeps the wall-normal velocity exact under an iterative solve.
-    rs, re = vecs[0].getOwnershipRange()
-    loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
     for w in vecs:
-        wa = w.getArray(); wa[loc] = 0.0; w.setArray(wa)
+        _zero_rows_local(w, normal_rows)
     ortho = []
     for w in vecs:
         for u in ortho:
