@@ -4344,7 +4344,7 @@ class Mesh(Stateful, uw_object):
         restore.
         """
         coords = numpy.asarray(self.X.coords).copy()
-        var_arrays: Dict[str, numpy.ndarray] = {}
+        var_arrays: dict[str, numpy.ndarray] = {}
         for var in self.vars.values():
             var._sync_lvec_to_gvec()
             # Variables created but never touched have _gvec=None (lazy
