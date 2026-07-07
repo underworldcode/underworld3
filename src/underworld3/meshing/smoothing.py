@@ -1154,6 +1154,40 @@ def _use_iterative_solver(solver, singular=False, elliptic=True):
                 pass
 
 
+def _solver_wiring(linear_solver):
+    """Option-wiring function for a cached mover sub-solver.
+
+    ``linear_solver="gamg"`` wires the iterative, parallel-scalable
+    option set (:func:`_use_iterative_solver`); anything else wires the
+    serial MUMPS factor-once set (:func:`_use_direct_solver`, which
+    itself falls back to the iterative path under MPI — the
+    MUMPS-heap-corruption guard)."""
+    if linear_solver == "gamg":
+        def _wire(s, singular=False, elliptic=True):
+            _use_iterative_solver(s, singular, elliptic)
+    else:
+        def _wire(s, singular=False, elliptic=True):
+            _use_direct_solver(s, singular, elliptic)
+    return _wire
+
+
+def _warm_start_krylov(linear_solver):
+    """True when a mover's inner solves should WARM-START the Krylov
+    iteration from the previous solution (pass ``zero_init_guess=False``):
+
+    * the GAMG path always — the hierarchy is built once (lagged) and
+      the solution changes slowly under relaxation, so the warm start
+      leaves only a handful of Krylov iterations per inner solve;
+    * the "direct" path under MPI — :func:`_use_direct_solver` silently
+      routes to the iterative solver there (MUMPS-heap-corruption
+      guard), so the warm start pays exactly as it does for GAMG.
+
+    The serial direct path is an exact factorisation, indifferent to
+    the initial guess."""
+    return (linear_solver == "gamg"
+            or (linear_solver == "direct" and uw.mpi.size > 1))
+
+
 def _patch_volumes(tris, coords, n_verts, vol_field=None):
     """Per-vertex dual-patch area: a node's share (1/3) of every
     incident triangle's |area|. ρ_cur ∝ 1/patch for the (opt-in,
@@ -1344,12 +1378,7 @@ def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
 
     cache = _WINSLOW_CACHE.get(key)
     if cache is None:
-        if linear_solver == "gamg":
-            def _wire(s, singular=False, elliptic=True):
-                _use_iterative_solver(s, singular, elliptic)
-        else:
-            def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular, elliptic)
+        _wire = _solver_wiring(linear_solver)
         phi = uw.discretisation.MeshVariable(
             f"winslow_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1446,17 +1475,7 @@ def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
 
         hsolver.u.array[...] = 0.0
 
-        # The GAMG path warm-starts the Krylov solve from the previous
-        # Picard φ (it changes slowly under ω-relaxation) → a handful
-        # of CG iters on the once-built hierarchy. The exact direct
-        # path is indifferent to the initial guess.
-        # Under MPI, ``linear_solver="direct"`` silently falls back to
-        # the iterative path inside ``_use_direct_solver`` (the
-        # MUMPS-heap-corruption guard at smoothing.py:914); honour the
-        # warm-start in that case too — otherwise the parallel mover
-        # pays extra Krylov iterations per Picard step for nothing.
-        _zig = not (linear_solver == "gamg"
-                    or (linear_solver == "direct" and uw.mpi.size > 1))
+        zero_init_guess = not _warm_start_krylov(linear_solver)
         prev_change = None
         # If target-side ρ is on, gradphi needs to be tracking the
         # current φ inside the Picard loop (it's used by ps.f via
@@ -1466,7 +1485,7 @@ def _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
             gradphi.array[...] = 0.0
         for it in range(n_picard):
             phi_prev = np.asarray(phi.array).copy()
-            ps.solve(zero_init_guess=_zig)
+            ps.solve(zero_init_guess=zero_init_guess)
             phi.array[...] = ((1.0 - omega) * phi_prev
                               + omega * np.asarray(phi.array))
             hsolver.solve()
@@ -1626,12 +1645,7 @@ def _ot_improvement_step(mesh, metric, pinned_labels, verbose,
 
     cache = _OT_CACHE.get(key)
     if cache is None:
-        if linear_solver == "gamg":
-            def _wire(s, singular=False, elliptic=True):
-                _use_iterative_solver(s, singular, elliptic)
-        else:
-            def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular, elliptic)
+        _wire = _solver_wiring(linear_solver)
         phi = uw.discretisation.MeshVariable(
             f"ot_phi_{id(mesh)}", mesh,
             vtype=uw.VarType.SCALAR, degree=phi_degree,
@@ -1662,11 +1676,7 @@ def _ot_improvement_step(mesh, metric, pinned_labels, verbose,
     else:
         phi, ps, gradphi, gproj, vol_field = cache
 
-    # See _monge_ampere_mover for the rationale on this combined check —
-    # ``linear_solver="direct"`` silently routes to the iterative path
-    # under MPI, so honour the warm-start there too.
-    _zig = not (linear_solver == "gamg"
-                or (linear_solver == "direct" and uw.mpi.size > 1))
+    zero_init_guess = not _warm_start_krylov(linear_solver)
 
     for outer in range(n_outer):
         dm = mesh.dm
@@ -1719,7 +1729,7 @@ def _ot_improvement_step(mesh, metric, pinned_labels, verbose,
         ps.f = sympy.Matrix([[f_src]])
 
         # --- solve weighted Poisson ----------------------------
-        ps.solve(zero_init_guess=_zig)
+        ps.solve(zero_init_guess=zero_init_guess)
         gproj.solve()
         disp = np.asarray(uw.function.evaluate(
             gradphi.sym, old_coords)
@@ -1926,12 +1936,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
 
     cache = _ANISO_CACHE.get(key)
     if cache is None:
-        if linear_solver == "gamg":
-            def _wire(s, singular=False, elliptic=True):
-                _use_iterative_solver(s, singular, elliptic)
-        else:
-            def _wire(s, singular=False, elliptic=True):
-                _use_direct_solver(s, singular, elliptic)
+        _wire = _solver_wiring(linear_solver)
 
         X = mesh.CoordinateSystem.X
         # Projected ∇ρ — first derivative only (UW3-clean), the
@@ -2003,11 +2008,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
     else:
         grho, gproj, Df, usolvers, ufields = cache
 
-    # See _monge_ampere_mover for rationale — ``linear_solver="direct"``
-    # silently falls back to the iterative path under MPI, so honour
-    # the warm-start there too.
-    _zig = not (linear_solver == "gamg"
-                or (linear_solver == "direct" and uw.mpi.size > 1))
+    zero_init_guess = not _warm_start_krylov(linear_solver)
 
     # ---- build the eigen-clamped metric tensor field D ONCE ------
     # on the *undeformed* mesh (the design metric), then hold it
@@ -2227,7 +2228,7 @@ def _winslow_anisotropic(mesh, metric, pinned_labels, verbose,
         # --- solve the cdim displacement components ----------------
         disp = np.zeros_like(old_coords)
         for c in range(cdim):
-            usolvers[c].solve(zero_init_guess=_zig)
+            usolvers[c].solve(zero_init_guess=zero_init_guess)
             disp[:, c] = np.asarray(
                 uw.function.evaluate(ufields[c].sym, old_coords)
             ).reshape(-1)
