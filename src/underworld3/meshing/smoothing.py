@@ -488,11 +488,12 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     a 2× coarsen needed = -0.35). Scale-invariant under
     ``ρ → αρ``.
 
-    Returns ``{"rms": ..., "max": ..., "median_abs": ...}``
-    summarising ``|δ|`` over cells. A mesh already at the
-    mover's achievable equidistribution gives ~0; the
-    pre-adapted mesh against a strongly-peaked metric gives
-    O(1) or larger.
+    Returns a 5-key dict: ``rms`` / ``max`` / ``median_abs``
+    summarise ``|δ|`` over cells (a mesh already at the mover's
+    achievable equidistribution gives ~0; a pre-adapted mesh
+    against a strongly-peaked metric gives O(1) or larger), plus
+    ``alignment`` / ``misalignment`` — the magnitude-free signal
+    the ``skip_threshold`` machinery consumes (see Returns).
 
     Cheap: one ``metric`` evaluate at cell centroids + a few
     NumPy reductions. Used by
@@ -519,7 +520,21 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     Returns
     -------
     dict
-        ``{"rms": float, "max": float, "median_abs": float}``.
+        ``{"rms", "max", "median_abs", "alignment", "misalignment"}``
+        (all float):
+
+        * ``rms`` / ``max`` / ``median_abs`` — moments of ``|δ|``
+          over cells.
+        * ``alignment`` — Pearson r of ``log(1/A_c)`` vs
+          ``log(ρ_c)``, computed from GLOBALLY reduced moment sums
+          so every rank sees the same value (a rank-local corrcoef
+          would diverge across ranks and deadlock the collective
+          mover).
+        * ``misalignment`` — ``sqrt(1 − max(0, r)²)``: 0 = cell
+          density perfectly aligned with the metric, 1 = orthogonal
+          (a negative correlation clamps to r=0 ⇒ misalignment 1.0).
+          This is the skip criterion consumed by
+          ``smooth_mesh_interior(skip_threshold=...)``.
     """
     import underworld3 as _uw
 
