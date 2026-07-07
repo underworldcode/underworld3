@@ -33,6 +33,7 @@ operator hook; that is deliberately out of scope here.
 from __future__ import annotations
 
 import enum
+import os
 import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
@@ -51,6 +52,24 @@ __all__ = [
     "remesh_with_field_transfer",
     "remap_var_set",
 ]
+
+
+# Monotone-limiting mode for the REMAP transfer, read ONCE at import time
+# from the ``REMESH_MONOTONE`` environment variable. On a freshly-adapted
+# mesh the NEW boundary DOFs sit a sagitta OUTSIDE the OLD boundary cell
+# (arc vs chord), so the old P2/P3 field, FE-evaluated there, overshoots
+# wildly — in parallel the migrate lands those points in a containing cell
+# on another rank and the overshoot is delivered as a "valid" (un-flagged)
+# value. That is the parallel free-slip v.n "leak": a corrupt boundary T/V
+# remap, NOT a BC bug. The default ``"clamp"`` bounds each resampled value
+# to its k-NN source-nodal range; it is bit-identical to plain FE in smooth
+# regions and parallel-safe (rank-local) — the same limiter as the
+# SemiLagrangian trace-back fix. Set REMESH_MONOTONE to "off" (or "0",
+# "none", "false", "") to disable, or to any other mode accepted by
+# ``uw.function.global_evaluate(..., monotone=...)`` (e.g. "pick").
+REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "clamp")
+if REMESH_MONOTONE.lower() in ("", "0", "off", "none", "false"):
+    REMESH_MONOTONE = False
 
 
 class RemeshPolicy(str, enum.Enum):
@@ -432,24 +451,11 @@ def _remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
             continue
         try:
             # global_evaluate resolves off-rank targets via swarm migration.
-            #
-            # monotone='clamp' bounds each resampled value to its k-NN
-            # source-nodal range. On a freshly-adapted mesh the NEW boundary
-            # DOFs sit a sagitta OUTSIDE the OLD boundary cell (arc vs chord),
-            # so the old P2/P3 field, FE-evaluated there, overshoots wildly —
-            # in parallel the migrate lands those points in a containing cell
-            # on another rank and the overshoot is delivered as a "valid"
-            # (un-flagged) value. That is the parallel free-slip v.n "leak":
-            # a corrupt boundary T/V remap, NOT a BC bug. The clamp bounds it
-            # to the physical nodal range, is bit-identical to plain FE in
-            # smooth regions, and is parallel-safe (rank-local). Same limiter
-            # as the SemiLagrangian trace-back fix.
-            import os as _os
-            _mono = _os.environ.get("REMESH_MONOTONE", "clamp")
-            if _mono.lower() in ("", "0", "off", "none", "false"):
-                _mono = False
+            # REMESH_MONOTONE (module constant, see its comment) bounds the
+            # boundary-overshoot failure mode of the plain FE evaluation.
             try:
-                val = uw.function.global_evaluate(var.sym, target, monotone=_mono)
+                val = uw.function.global_evaluate(
+                    var.sym, target, monotone=REMESH_MONOTONE)
             except (ValueError, NotImplementedError):
                 # monotone needs a single-MeshVariable expr; composite /
                 # unsupported vars fall back to plain FE (still transferred).
