@@ -317,7 +317,29 @@ from .ddt import Eulerian as Eulerian_DDt
 from .ddt import Symbolic as Symbolic_DDt
 
 
-class SNES_Poisson(SNES_Scalar):
+class _ConstitutiveModelStateMixin:
+    """Single definition of the constitutive-model readiness flag.
+
+    The solver base classes live in ``cython/petsc_generic_snes_solvers.pyx``,
+    so the shared property is provided here as a mixin (previously defined
+    verbatim on both SNES_Poisson and SNES_Stokes).
+    """
+
+    @property
+    def constitutive_model_is_setup(self):
+        """Whether the constitutive model is configured for this solver.
+
+        Returns False when no constitutive model has been assigned yet.
+        """
+        constitutive_model = getattr(self, "_constitutive_model", None)
+        return (constitutive_model is not None
+                and constitutive_model._solver_is_setup)
+
+    # Legacy abbreviated alias, kept for existing user code.
+    CM_is_setup = constitutive_model_is_setup
+
+
+class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
     r"""Poisson equation solver.
 
     Provides a discrete representation of the Poisson equation:
@@ -506,11 +528,6 @@ class SNES_Poisson(SNES_Scalar):
         else:
             # Accept other types (might be symbolic)
             self._f = sympy.Matrix((value,))
-
-    @property
-    def CM_is_setup(self):
-        """Whether the constitutive model is configured for this solver."""
-        return self._constitutive_model._solver_is_setup
 
 
 class SNES_Darcy(SNES_Scalar):
@@ -1172,7 +1189,7 @@ class SNES_Richards(SNES_TransientDarcy):
 ## --------------------------------
 
 
-class SNES_Stokes(SNES_Stokes_SaddlePt):
+class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     r"""
     Stokes equation solver for incompressible viscous flow.
 
@@ -1628,11 +1645,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._p_f0 = self.PF0.sym
 
         return
-
-    @property
-    def CM_is_setup(self):
-        """Whether the constitutive model is configured for this solver."""
-        return self._constitutive_model._solver_is_setup
 
     @property
     def strainrate(self):
