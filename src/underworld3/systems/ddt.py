@@ -184,6 +184,48 @@ def _as_float(value):
         return None
 
 
+def _to_nondim_ndarray(value, units=None):
+    """Reduce a possibly unit-carrying array to a plain non-dimensional ndarray.
+
+    The semi-Lagrangian trace-back, the DM point-location and all variable
+    storage operate in the mesh's NON-DIMENSIONAL coordinate/value space
+    (UW3 issue #267): every array entering that arithmetic must be a plain
+    ndarray of non-dimensional values. This is the single reduction used
+    by every coordinate / velocity / forcing unwrap in this module.
+
+    Parameters
+    ----------
+    value : array-like, UnitAwareArray, or Pint quantity
+        The array to reduce. A plain ndarray with ``units=None`` is
+        assumed to be non-dimensional already and is returned unchanged.
+    units : pint.Unit or str, optional
+        Units known out-of-band (e.g. from ``uw.get_units``) to attach
+        to a plain array before non-dimensionalising. Ignored when
+        ``value`` already carries units; ``None`` or ``"dimensionless"``
+        means no attachment.
+
+    Returns
+    -------
+    numpy.ndarray or original type
+        Non-dimensional plain array (unit-carrying input), or ``value``
+        unchanged (plain input with no ``units`` supplied).
+    """
+    carries_units = isinstance(value, UnitAwareArray) or hasattr(value, "magnitude")
+    if not carries_units and units and str(units) != "dimensionless":
+        value = UnitAwareArray(np.asarray(value), units=units)
+        carries_units = True
+    if not carries_units:
+        return value
+    nd = uw.non_dimensionalise(value)
+    if isinstance(nd, UnitAwareArray):
+        return np.array(nd)
+    if hasattr(nd, "magnitude"):
+        return nd.magnitude
+    if hasattr(nd, "value"):
+        return nd.value
+    return np.asarray(nd)
+
+
 def _bdf_coefficients(order, dt_current, dt_history):
     r"""Compute BDF coefficients, handling variable timesteps.
 
@@ -2057,15 +2099,7 @@ class SemiLagrangian(uw_object):
         """
         # Evaluate psi_fn at psi_star node positions and store in psi_star[0]
 
-        coords = self.psi_star[0].coords
-        if hasattr(coords, "magnitude"):
-            coords_nd = uw.non_dimensionalise(coords)
-            if isinstance(coords_nd, UnitAwareArray):
-                coords_nd = np.array(coords_nd)
-            elif hasattr(coords_nd, 'magnitude'):
-                coords_nd = coords_nd.magnitude
-        else:
-            coords_nd = coords
+        coords_nd = _to_nondim_ndarray(self.psi_star[0].coords)
 
         try:
             eval_result = uw.function.evaluate(self.psi_fn, coords_nd)
@@ -2374,29 +2408,10 @@ class SemiLagrangian(uw_object):
         #    psi_star[0] already contains the projected actual stress from
         #    the previous solve and we want to advect *that*, not the flux.
 
-        # CRITICAL FIX (2025-11-28): Handle coordinates correctly for unit-aware mode.
-        # Previous bug: extracting .magnitude gives METERS (e.g., 1000000), but:
-        # - mesh.get_closest_cells() expects [0-1] non-dimensional coords
-        # - evaluate() assumes plain numpy is [0-1] non-dimensional
-        # Solution: use uw.non_dimensionalise() for proper conversion, OR pass
-        # unit-aware coords to evaluate() which handles conversion internally.
-
-        psi_star_0_coords = self.psi_star[0].coords
-
-        # For mesh internal operations, need non-dimensional [0-1] coordinates
-        if hasattr(psi_star_0_coords, "magnitude"):
-            # Unit-aware coords - need to non-dimensionalize (not just extract magnitude!)
-            psi_star_0_coords_nd = uw.non_dimensionalise(psi_star_0_coords)
-            # Extract to plain numpy for mesh operations
-            if isinstance(psi_star_0_coords_nd, UnitAwareArray):
-                psi_star_0_coords_nd = np.array(psi_star_0_coords_nd)
-            elif hasattr(psi_star_0_coords_nd, 'magnitude'):
-                psi_star_0_coords_nd = psi_star_0_coords_nd.magnitude
-            else:
-                psi_star_0_coords_nd = np.array(psi_star_0_coords_nd)
-        else:
-            # Plain numpy - assume already non-dimensional
-            psi_star_0_coords_nd = psi_star_0_coords
+        # mesh.get_closest_cells() and evaluate() both expect plain
+        # non-dimensional coordinates — never raw .magnitude, which would
+        # be dimensional metres (see _to_nondim_ndarray and issue #267).
+        psi_star_0_coords_nd = _to_nondim_ndarray(self.psi_star[0].coords)
 
         cellid = self.mesh.get_closest_cells(
             psi_star_0_coords_nd,
@@ -2570,33 +2585,12 @@ class SemiLagrangian(uw_object):
             else:
                 v_at_node_pts = v_result[:, 0, :]
 
-            # Non-dimensionalize velocities when working with dimensionless coordinates
-            # This prevents dimensional mismatch: velocities in m/s mixed with coords in [0,1]
-            # CRITICAL: evaluate now returns UnitAwareArray with units attached
             # Non-dimensionalise velocities to the DM/ND space (see the dt note
             # above): the trace-back arithmetic and the subsequent point-location
             # both work in the mesh's ND coordinates, so velocity must be ND too.
-            if isinstance(v_at_node_pts, UnitAwareArray):
-                # Velocities already carry units from evaluate - non-dimensionalise
-                v_nondim = uw.non_dimensionalise(v_at_node_pts, model)
-                if isinstance(v_nondim, UnitAwareArray):
-                    v_at_node_pts = np.array(v_nondim)
-                elif hasattr(v_nondim, "value"):
-                    v_at_node_pts = v_nondim.value
-                else:
-                    v_at_node_pts = v_nondim
-            else:
-                # Plain array from evaluate - attach the field's units then ND it
-                v_units = uw.get_units(self.V_fn)
-                if v_units and v_units != "dimensionless":
-                    v_with_units = UnitAwareArray(v_at_node_pts, units=v_units)
-                    v_nondim = uw.non_dimensionalise(v_with_units, model)
-                    if isinstance(v_nondim, UnitAwareArray):
-                        v_at_node_pts = np.array(v_nondim)
-                    elif hasattr(v_nondim, "value"):
-                        v_at_node_pts = v_nondim.value
-                    else:
-                        v_at_node_pts = v_nondim
+            v_at_node_pts = _to_nondim_ndarray(
+                v_at_node_pts, units=uw.get_units(self.V_fn)
+            )
 
             # Departure point in the mesh's ND (DM) coordinate space. coords_nd is
             # the ND reduction of the (possibly dimensional) node coordinates —
@@ -2640,25 +2634,9 @@ class SemiLagrangian(uw_object):
 
             # Non-dimensionalise mid-point velocities to the DM/ND space, same as
             # the node velocities above (the trace-back works in ND coords). See #267.
-            if isinstance(v_at_mid_pts, UnitAwareArray):
-                v_nondim = uw.non_dimensionalise(v_at_mid_pts, model)
-                if isinstance(v_nondim, UnitAwareArray):
-                    v_at_mid_pts = np.array(v_nondim)
-                elif hasattr(v_nondim, "value"):
-                    v_at_mid_pts = v_nondim.value
-                else:
-                    v_at_mid_pts = v_nondim
-            else:
-                v_units = uw.get_units(self.V_fn)
-                if v_units and v_units != "dimensionless":
-                    v_with_units = UnitAwareArray(v_at_mid_pts, units=v_units)
-                    v_nondim = uw.non_dimensionalise(v_with_units, model)
-                    if isinstance(v_nondim, UnitAwareArray):
-                        v_at_mid_pts = np.array(v_nondim)
-                    elif hasattr(v_nondim, "value"):
-                        v_at_mid_pts = v_nondim.value
-                    else:
-                        v_at_mid_pts = v_nondim
+            v_at_mid_pts = _to_nondim_ndarray(
+                v_at_mid_pts, units=uw.get_units(self.V_fn)
+            )
 
             # Calculate upstream coordinates: current position - velocity * timestep
             # (all in the mesh's ND coordinate space)
@@ -2849,17 +2827,9 @@ class SemiLagrangian(uw_object):
         if forcing_fn is None:
             return  # constitutive model hasn't wired the forcing source yet
 
-        coords = self.forcing_star.coords
         # Use non-dimensional coords for evaluate() (mirrors the psi_star
         # path in update_pre_solve)
-        if hasattr(coords, "magnitude"):
-            coords_nd = uw.non_dimensionalise(coords)
-            if isinstance(coords_nd, UnitAwareArray):
-                coords_nd = np.array(coords_nd)
-            elif hasattr(coords_nd, 'magnitude'):
-                coords_nd = coords_nd.magnitude
-        else:
-            coords_nd = coords
+        coords_nd = _to_nondim_ndarray(self.forcing_star.coords)
 
         def _eval_nd(component_expr):
             """Evaluate component at coords and non-dimensionalise to a
@@ -2868,13 +2838,7 @@ class SemiLagrangian(uw_object):
             # If the evaluation returned units (model is unit-aware),
             # non-dimensionalise before storing — keeps forcing_star's
             # internal storage non-dimensional like psi_star.
-            if isinstance(result, UnitAwareArray) or hasattr(result, "magnitude"):
-                result = uw.non_dimensionalise(result)
-                if isinstance(result, UnitAwareArray):
-                    result = np.array(result)
-                elif hasattr(result, "magnitude"):
-                    result = result.magnitude
-            return np.asarray(result).flatten()
+            return np.asarray(_to_nondim_ndarray(result)).flatten()
 
         vtype = self._forcing_vtype
         if vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
