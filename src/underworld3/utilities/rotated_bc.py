@@ -248,7 +248,9 @@ def _zero_rows_local(vec, normal_rows):
     whose ownership does not start at 0 — the np>1 crash class)."""
     rs, re = vec.getOwnershipRange()
     loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
-    a = vec.getArray(); a[loc] = 0.0; vec.setArray(a)
+    a = vec.getArray()
+    a[loc] = 0.0
+    vec.setArray(a)
 
 
 # --------------------------------------------------------------------------- #
@@ -275,19 +277,25 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     # petsc4py's computeJacobian(x, J) would silently pass J as its own Pmat and
     # the mass block would never be assembled.
     snes.setUp()
-    U0 = dm.getGlobalVec(); U0.set(0.0)
+    U0 = dm.getGlobalVec()
+    U0.set(0.0)
     J, Jp = snes.getJacobian()[:2]
     snes.computeJacobian(U0, J, Jp)
     Aorig = J.copy()
-    F0 = dm.getGlobalVec(); snes.computeFunction(U0, F0)
-    b = F0.copy(); b.scale(-1.0)
-    dm.restoreGlobalVec(U0); dm.restoreGlobalVec(F0)   # borrowed temporaries → return to pool
+    F0 = dm.getGlobalVec()
+    snes.computeFunction(U0, F0)
+    b = F0.copy()
+    b.scale(-1.0)
+    # borrowed temporaries → return to pool
+    dm.restoreGlobalVec(U0)
+    dm.restoreGlobalVec(F0)
 
     Q, Qt, normal_rows = build_rotation(solver, boundaries)
 
     # rotate: Â = Q A Qᵀ, b̂ = Q b
     Ahat = Aorig.ptap(Qt)
-    bhat = b.duplicate(); Q.mult(b, bhat)
+    bhat = b.duplicate()
+    Q.mult(b, bhat)
 
     # constrain rotated normal rows (v_n=0): zero the matrix rows/cols AND the RHS
     # at those rows — zeroRowsColumns does NOT touch the RHS, so a nonzero b there
@@ -327,10 +335,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         Ahat.zeroRows([pin], diag=1.0)
         if pin is not None:
             _zero_rows_local(bhat, [pin])
-        ksp = PETSc.KSP().create(); ksp.setOperators(Ahat); ksp.setType("preonly")
-        pc = ksp.getPC(); pc.setType("lu"); pc.setFactorSolverType("mumps")
-        Uhat = dm.createGlobalVec(); ksp.solve(bhat, Uhat)   # returned in info → own it
-        ksp_reason = ksp.getConvergedReason(); ksp_its = ksp.getIterationNumber()
+        ksp = PETSc.KSP().create()
+        ksp.setOperators(Ahat)
+        ksp.setType("preonly")
+        pc = ksp.getPC()
+        pc.setType("lu")
+        pc.setFactorSolverType("mumps")
+        Uhat = dm.createGlobalVec()      # returned in the result dict → own it
+        ksp.solve(bhat, Uhat)
+        ksp_reason = ksp.getConvergedReason()
+        ksp_its = ksp.getIterationNumber()
         _warn_if_ksp_diverged(ksp, kind="rotated direct-LU")
     else:
         Mp = _pressure_mass_schur_pmat(solver)
@@ -339,8 +353,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         ksp_its = ctx["ksp"].getIterationNumber()
         _destroy_rotated_ksp_ctx(ctx)
 
-    # rotate back u = Qᵀ û  (U is returned in info → create, don't borrow from the pool)
-    U = dm.createGlobalVec(); Qt.mult(Uhat, U)
+    # rotate back u = Qᵀ û  (U is returned in the result dict → create, don't
+    # borrow from the pool)
+    U = dm.createGlobalVec()
+    Qt.mult(Uhat, U)
 
     removed = _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
 
@@ -379,7 +395,8 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
                 w.axpy(-w.dot(q), q)
             nrm = w.norm()
             if nrm > 1e-14:
-                w.scale(1.0 / nrm); ortho.append(w)
+                w.scale(1.0 / nrm)
+                ortho.append(w)
             else:
                 w.destroy()
         for q in ortho:
@@ -411,7 +428,8 @@ def _gather_fields_to_global(solver):
     """Composite global vector built from the solver's current velocity/pressure
     field values (the warm-start initial guess for the nonlinear driver)."""
     dm = solver.dm
-    U = dm.createGlobalVec(); U.set(0.0)
+    U = dm.createGlobalVec()
+    U.set(0.0)
     for name, var in solver.fields.items():
         sg = U.getSubVector(solver._subdict[name][0])
         solver._subdict[name][1].localToGlobal(var.vec, sg)
@@ -467,7 +485,9 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
       standard path, whose post-warmup Newton phase also uses the frozen tangent here).
     """
     if getattr(solver, "snes", None) is None:
-        solver._setup_pointwise_functions(); solver._setup_discretisation(); solver._setup_solver()
+        solver._setup_pointwise_functions()
+        solver._setup_discretisation()
+        solver._setup_solver()
     dm = solver.dm
     snes = solver.snes
     snes.setUp()
@@ -500,11 +520,15 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     # initial guess (cartesian, composite): warm-start from the fields or zero, then
     # impose v_n=0 exactly on it so the iteration starts feasible.
     if zero_init_guess:
-        u = dm.createGlobalVec(); u.set(0.0)
+        u = dm.createGlobalVec()
+        u.set(0.0)
     else:
         u = _gather_fields_to_global(solver)
-    uh = u.duplicate(); Q.mult(u, uh); _zero_rows_local(uh, normal_rows); Qt.mult(uh, u)
-    uh.destroy()                             # transient projection buffer
+    uh = u.duplicate()                       # transient projection buffer
+    Q.mult(u, uh)
+    _zero_rows_local(uh, normal_rows)
+    Qt.mult(uh, u)
+    uh.destroy()
 
     J, Jp = snes.getJacobian()[:2]
     pres_is = solver._subdict["pressure"][0]
@@ -515,16 +539,25 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     # 1/mu pressure-mass Schur pmat (values refreshed in place), the constraint
     # diagonal scale (frozen at the first tangent — only the magnitude matters),
     # and the KSP/PC context (fieldsplit ISs, FMG hierarchy, GAMG setup survive).
-    Ahat = None; Mp = None; ctx = None; diag_scale = None; lin_its = []
+    Ahat = None
+    Mp = None
+    ctx = None
+    diag_scale = None
+    lin_its = []
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
         if keep_cartesian:
             Fc.copy(reaction)                # stash the Cartesian reaction for σ_nn
-        Fh = Fc.duplicate(); Q.mult(Fc, Fh); _zero_rows_local(Fh, normal_rows)
+        Fh = Fc.duplicate()
+        Q.mult(Fc, Fh)
+        _zero_rows_local(Fh, normal_rows)
         return Fh
 
-    r0 = None; last_reason = 0; iters = 0; converged = False
+    r0 = None
+    last_reason = 0
+    iters = 0
+    converged = False
     phase = "picard" if continuation else "newton"
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
@@ -537,12 +570,15 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         # residual convergence (relative to the initial residual, plus an absolute
         # floor so an already-converged warm start does not chase machine noise).
         if rnorm <= rtol * r0 + atol:
-            converged = True; Fhat.destroy(); break
+            converged = True
+            Fhat.destroy()
+            break
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
         # (Newton, α=1) tangent once the residual has dropped into Newton's basin (the
         # loose newton_switch_rtol) and at least `picard` Picard iterations have run.
         if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
-            solver._set_newton_alpha(1.0); phase = "newton"
+            solver._set_newton_alpha(1.0)
+            phase = "newton"
             if verbose:
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
                            f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
@@ -558,34 +594,53 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         if diag_scale is None:
             diag_scale = _velocity_diag_scale(Ahat, solver)
         Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
-        bhat = Fhat.copy(); bhat.scale(-1.0)
+        bhat = Fhat.copy()
+        bhat.scale(-1.0)
         dhat, last_reason, ctx = _solve_rotated_iterative(
             solver, Ahat, bhat, Q, Qt, normal_rows,
             custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
         lin_its.append(ctx["ksp"].getIterationNumber())
-        d = dm.createGlobalVec(); Qt.mult(dhat, d)
+        d = dm.createGlobalVec()
+        Qt.mult(dhat, d)
         # step-norm convergence (SNES_CONVERGED_SNORM): a tiny Newton step means we
         # are at the solution — the exit for a warm start that is already converged
         # (otherwise the relative test above, with a tiny r0, chatters near machine
         # level). ‖u‖=0 on a cold start ⇒ this never fires prematurely (d is large).
         if d.norm() <= stol * (u.norm() + 1e-30):
             converged = True
-            dhat.destroy(); d.destroy(); bhat.destroy(); Fhat.destroy()
+            dhat.destroy()
+            d.destroy()
+            bhat.destroy()
+            Fhat.destroy()
             break
         # backtracking line search on ‖F̂‖ (full Newton/Picard step first). Cheap
         # insurance far from the solution; α=1 is accepted immediately near it. If no
         # step reduces the residual, the iteration has stalled (typically already at
         # the solution) → stop rather than accept a non-decreasing step.
-        alpha = 1.0; improved = False
+        alpha = 1.0
+        improved = False
         for _ls in range(8):
-            utry = u.copy(); utry.axpy(alpha, d)
-            uth = utry.duplicate(); Q.mult(utry, uth); _zero_rows_local(uth, normal_rows); Qt.mult(uth, utry)
+            utry = u.copy()
+            utry.axpy(alpha, d)
+            uth = utry.duplicate()               # transient projection buffer
+            Q.mult(utry, uth)
+            _zero_rows_local(uth, normal_rows)
+            Qt.mult(uth, utry)
             uth.destroy()
             Ftry = rotated_residual(utry)
             if Ftry.norm() < rnorm:
-                u.destroy(); u = utry; improved = True; Ftry.destroy(); break
-            utry.destroy(); Ftry.destroy(); alpha *= 0.5
-        dhat.destroy(); d.destroy(); bhat.destroy(); Fhat.destroy()
+                u.destroy()
+                u = utry
+                improved = True
+                Ftry.destroy()
+                break
+            utry.destroy()
+            Ftry.destroy()
+            alpha *= 0.5
+        dhat.destroy()
+        d.destroy()
+        bhat.destroy()
+        Fhat.destroy()
         if not improved:
             break
 
@@ -630,7 +685,8 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     Qv = Q.createSubMatrix(vel_is, vel_is)
     nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
     Ps = solver._custom_mg["hierarchy"].build(solver)
-    Pfine = Qv.matMult(Ps[-1]); Pfine.zeroRows(nrows_blk, diag=0.0)
+    Pfine = Qv.matMult(Ps[-1])
+    Pfine.zeroRows(nrows_blk, diag=0.0)
     return list(Ps[:-1]) + [Pfine]
 
 
@@ -722,7 +778,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         if nsp is None:
             nsp = _rotated_nullspace(solver, Q, normal_rows)
         if nsp is not None:
-            Ahat.setNullSpace(nsp); Ahat.setTransposeNullSpace(nsp)
+            Ahat.setNullSpace(nsp)
+            Ahat.setTransposeNullSpace(nsp)
 
         # UNIQUE prefix per KSP (see _ROT_SOLVE_COUNT) so concurrent rotated solves
         # do not share global-options state; the keys are removed after setup.
@@ -768,9 +825,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         for k, v in cfg.items():
             opts[pfx + k] = v
         try:
-            ksp = PETSc.KSP().create(comm=dm.comm); ksp.setOptionsPrefix(pfx)
+            ksp = PETSc.KSP().create(comm=dm.comm)
+            ksp.setOptionsPrefix(pfx)
             ksp.setOperators(Ahat)
-            pc = ksp.getPC(); pc.setType("fieldsplit")
+            pc = ksp.getPC()
+            pc.setType("fieldsplit")
             pc.setFieldSplitIS(("vel", vel_is), ("pres", pres_is))
             ksp.setFromOptions()
             if Mp is not None:
@@ -780,7 +839,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             if custom_Pl is not None:                 # geometric FMG via custom P
                 vel_pc = pc.getFieldSplitSubKSP()[0].getPC()
                 A_vv, P_vv = vel_pc.getOperators()
-                vel_pc.reset(); vel_pc.setOperators(A_vv, P_vv)
+                vel_pc.reset()
+                vel_pc.setOperators(A_vv, P_vv)
                 custom_mg._configure_pcmg(vel_pc, custom_Pl)
                 # The Galerkin-coarsened ROTATED velocity block inherits every
                 # rigid-rotation nullspace mode of the constrained problem (a
@@ -824,7 +884,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     if nsp is not None:
         nsp.remove(bhat)                              # project EVERY rhs
 
-    Uhat = Ahat.createVecRight(); Uhat.set(0.0)
+    Uhat = Ahat.createVecRight()
+    Uhat.set(0.0)
     ksp.solve(bhat, Uhat)
     _warn_if_ksp_diverged(ksp, kind="rotated fieldsplit-Schur")
     # An identity constraint row in an ITERATIVE solve only drives its residual
@@ -862,15 +923,20 @@ def _rotated_nullspace(solver, Q, normal_rows):
     vecs = []
     # constant pressure (Q = identity on pressure → unchanged)
     if getattr(solver, "_petsc_use_pressure_nullspace", False):
-        pv = dm.createGlobalVec(); pv.set(0.0)     # persists inside the returned NullSpace
+        pv = dm.createGlobalVec()                  # persists inside the returned NullSpace
+        pv.set(0.0)
         pis = solver._subdict["pressure"][0]
-        sp = pv.getSubVector(pis); sp.set(1.0); pv.restoreSubVector(pis, sp)
-        pv.normalize(); vecs.append(pv)
+        sp = pv.getSubVector(pis)
+        sp.set(1.0)
+        pv.restoreSubVector(pis, sp)
+        pv.normalize()
+        vecs.append(pv)
     # rigid rotations (rotated), each only if it satisfies the constraints.
     # COLLECTIVE: all ranks walk the same mode list, same order.
     for tg in _rigid_rotation_modes(solver):
         if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
-            tr = tg.duplicate(); Q.mult(tg, tr)    # tr persists in the NullSpace
+            tr = tg.duplicate()                    # tr persists in the NullSpace
+            Q.mult(tg, tr)
             vecs.append(tr)
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
     if not vecs:
@@ -886,7 +952,8 @@ def _rotated_nullspace(solver, Q, normal_rows):
             w.axpy(-w.dot(u), u)
         nrm = w.norm()
         if nrm > 1e-14:
-            w.scale(1.0 / nrm); ortho.append(w)
+            w.scale(1.0 / nrm)
+            ortho.append(w)
     return PETSc.NullSpace().create(constant=False, vectors=ortho, comm=dm.comm)
 
 
@@ -900,16 +967,22 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
     a per-rank ``not normal_rows`` — in parallel a rank may own no boundary node
     (empty normal_rows) while others do, and an early return there would desync the
     collective norms below and deadlock."""
-    tr = tg.duplicate(); Q.mult(tg, tr)
+    tr = tg.duplicate()
+    Q.mult(tg, tr)
     full = tr.norm()                              # parallel norm
     # norm of tr restricted to the constrained rows: zero everything else, then .norm()
     rs, re = tr.getOwnershipRange()
     loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
-    trc = tr.duplicate(); trc.set(0.0)
-    tra = trc.getArray(); tga = tr.getArray()
-    tra[loc] = tga[loc]; trc.setArray(tra)
+    trc = tr.duplicate()
+    trc.set(0.0)
+    tra = trc.getArray()
+    tga = tr.getArray()
+    tra[loc] = tga[loc]
+    trc.setArray(tra)
     viol = trc.norm() / (full + 1e-30)            # parallel (collective on all ranks)
-    tr.destroy(); trc.destroy()                   # transient duplicates
+    # transient duplicates
+    tr.destroy()
+    trc.destroy()
     return viol < tol
 
 
@@ -947,11 +1020,19 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     # driver stashes it directly (the final ``computeFunction`` residual); the linear
     # one-shot reconstructs it as A·u−b (with A=J(0), b=−F(0), F affine ⇒ A·u−b=F(u)).
     if info.get("reaction") is not None:
-        rc = info["reaction"]; own_rc = False    # owned by info — do NOT destroy
+        rc = info["reaction"]                    # owned by the result dict — do NOT destroy
+        own_rc = False
     else:
-        A = info["A"]; b = info["b"]; U = info["U"]
-        rc = A.createVecLeft(); A.mult(U, rc); rc.axpy(-1.0, b); own_rc = True
-    rcl = dm.getLocalVec(); dm.globalToLocal(rc, rcl); rca = np.asarray(rcl.getArray())
+        A = info["A"]
+        b = info["b"]
+        U = info["U"]
+        rc = A.createVecLeft()
+        A.mult(U, rc)
+        rc.axpy(-1.0, b)
+        own_rc = True
+    rcl = dm.getLocalVec()
+    dm.globalToLocal(rc, rcl)
+    rca = np.asarray(rcl.getArray())
 
     lsec = dm.getLocalSection()
     csec = dm.getCoordinateSection()
@@ -959,7 +1040,8 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     v0, v1 = dm.getDepthStratum(0)
     normal = dict(_boundary_spec(s) for s in info["boundaries"]).get(boundary)
     nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
-    xs = []; Rn = []
+    xs = []
+    Rn = []
     for q, nrm in nodes:
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         rcv = rca[lo:lo + dim]                    # Cartesian reaction at this node (local)
@@ -968,7 +1050,8 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     dm.restoreLocalVec(rcl)
     if own_rc:
         rc.destroy()                          # reconstructed A·u−b (linear path) — free it
-    xs = np.array(xs); Rn = np.array(Rn)
+    xs = np.array(xs)
+    Rn = np.array(Rn)
     # σ_nn = −(nodal reaction), de-smeared by the SHARED boundary-mass primitive and
     # mean-removed (the ρg·h gauge). partial_reaction=False: the reaction here comes from
     # the ASSEMBLED global operator Q(A·u−b), already complete at every node (ranks agree
@@ -1024,7 +1107,8 @@ def _rigid_rotation_modes(solver):
     modes = []
     for f in fields:
         v.data[...] = f
-        tg = dm.getGlobalVec(); tg.set(0.0)
+        tg = dm.getGlobalVec()
+        tg.set(0.0)
         sg = tg.getSubVector(vis)
         solver._subdict["velocity"][1].localToGlobal(v.vec, sg)
         tg.restoreSubVector(vis, sg)
