@@ -169,7 +169,12 @@ def _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
     # collectives -> deadlock. Consistent with the documented
     # serial-exact status of this path, but a latent parallel hazard;
     # the exit decision should be reduced globally (as the OT/MA movers
-    # do) before this mover is promoted to parallel-exact.
+    # do) before this mover is promoted to parallel-exact. Tracked in
+    # issue #346 (mover retired in favour of method='mmpde'; not being
+    # hardened). NOTE: any collective-exit fix must also guard the
+    # rank-local reductions below for n_free == 0 — e.g. the dmax
+    # line-search seed takes .max() over d[free_idx], which raises on a
+    # zero-size array once a starved rank is made to participate.
     if n_free == 0:
         mesh._deform_mesh(coords)
         return

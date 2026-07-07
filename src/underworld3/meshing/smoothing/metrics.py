@@ -144,6 +144,16 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
         metric, centroids)).reshape(-1)
     rho = np.maximum(rho, 1.0e-12)   # guard
     inv_rho = 1.0 / rho
+    # TODO(BUG): A_target (and A_mean below) are built from rank-LOCAL
+    # sums, so under MPI the delta moments returned here (rms / max /
+    # median_abs) are partition-dependent diagnostics measured against a
+    # per-rank equidistribution target, not the global one the docstring
+    # describes. The skip signal consumed by smooth_mesh_interior
+    # (alignment / misalignment) is NOT affected — it is computed from
+    # globally reduced moment sums further down. Fix: reduce
+    # A_actual.sum(), inv_rho.sum() and the cell count globally before
+    # forming A_target / A_mean (delta stays a local array; its moments
+    # then need global reductions too).
     A_target = A_actual.sum() * inv_rho / inv_rho.sum()
     if resolution_ratio is not None:
         R = float(resolution_ratio)

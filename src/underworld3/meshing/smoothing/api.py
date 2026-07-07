@@ -411,6 +411,14 @@ def _smooth_mesh_interior_bare(
             method_kwargs = {}
         else:
             method_kwargs = dict(method_kwargs)
+        # TODO(BUG): this injection is unconditional, but only the
+        # 'anisotropic' and 'mmpde' movers accept resolution_ratio —
+        # strategy= combined with the default method='spring' (or
+        # 'ma'/'ot') raises TypeError at the mover call. Pre-existing
+        # at the Wave D base (verified by signature-binding probe);
+        # spring/MA/OT are retired in favour of 'mmpde' (see #346
+        # context), so the fix is to inject only for movers that
+        # accept it (or route strategy= to a surviving mover).
         method_kwargs.setdefault(
             "resolution_ratio", _s["resolution_ratio"])
     if skip_threshold is _UNSET:
@@ -742,10 +750,12 @@ def follow_metric(
         regions with no clip kink (cleaner OT / Monge–Ampère
         meshes).
     skip_threshold : float, default 0.9
-        Alignment threshold for the adapt-on-demand skip. If the
-        existing mesh's :func:`mesh_metric_mismatch` alignment is
-        ≥ this threshold, no adaptation happens and the function
-        returns ``False``.
+        Misalignment threshold for the adapt-on-demand skip. If the
+        existing mesh's :func:`mesh_metric_mismatch` ``misalignment``
+        (``= sqrt(1 - max(0, r)**2)``, 0 = perfectly aligned) is
+        *below* this threshold, no adaptation happens and the
+        function returns ``False``. The default 0.9 corresponds to
+        skipping once alignment ``r`` exceeds ~0.44.
     gradient_smoothing_length : float or Pint Quantity, optional
         Length scale for screened-Poisson smoothing of the
         projected ``|∇field|`` before building the metric.

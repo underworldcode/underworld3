@@ -242,6 +242,13 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         if Ms.shape[0] == 0:
             return Ms                                   # rank owns no cells
         w, Vc = np.linalg.eigh(Ms)
+        # TODO(BUG): if EVERY eigenvalue on this rank is NaN/inf (e.g. a
+        # fully-degenerate metric evaluation), np.nanmax(w) is non-finite,
+        # max(wmax, 1.0) propagates the NaN, the floor is non-finite and
+        # the nan_to_num/clip projection below emits NaN tensors instead
+        # of the intended benign SPD fallback. Pre-existing (preserved
+        # verbatim by the Wave D split); guard wmax with a finite default
+        # (e.g. wmax = 1.0 when not finite) when next touching numerics.
         wmax = float(np.nanmax(w))
         floor = max(wmax, 1.0) * 1.0e-8
         # Per-tensor SPD test: a cell is "bad" only if one of its OWN
