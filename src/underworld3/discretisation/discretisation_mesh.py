@@ -657,35 +657,30 @@ class Mesh(Stateful, uw_object):
             self.units if self.units else "dimensionless"
         )  # Same as coordinate units
 
-        # Derive length scale from model reference quantities if available
+        # Derive length scale from model reference quantities if available.
+        # Priority order: domain_depth > length (first match wins).
         if hasattr(model, "_reference_quantities") and model._reference_quantities:
-            # Priority order: domain_depth > length
-            if "domain_depth" in model._reference_quantities:
-                ref_qty = model._reference_quantities["domain_depth"]
+            for key in ("domain_depth", "length"):
+                if key not in model._reference_quantities:
+                    continue
+                ref_qty = model._reference_quantities[key]
                 # Convert to base units (SI: meters) for consistent scaling
                 try:
                     base_qty = ref_qty.to_base_units()
                     self._length_scale = float(base_qty.magnitude)
                     self._length_units = str(base_qty.units)
-                except:
-                    # Fallback if to_base_units() fails
+                except (AttributeError, TypeError, ValueError):
+                    # Sanctioned fallback rather than raise: a reference
+                    # quantity stored as a plain number (no .to_base_units,
+                    # AttributeError) or with a unit pint cannot reduce
+                    # (pint errors subclass TypeError/AttributeError) still
+                    # yields a usable scale in its OWN units — mesh
+                    # construction must not fail on unit bookkeeping.
                     self._length_scale = float(ref_qty.magnitude)
                     self._length_units = (
                         str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
                     )
-            elif "length" in model._reference_quantities:
-                ref_qty = model._reference_quantities["length"]
-                # Convert to base units (SI: meters) for consistent scaling
-                try:
-                    base_qty = ref_qty.to_base_units()
-                    self._length_scale = float(base_qty.magnitude)
-                    self._length_units = str(base_qty.units)
-                except:
-                    # Fallback if to_base_units() fails
-                    self._length_scale = float(ref_qty.magnitude)
-                    self._length_units = (
-                        str(ref_qty.units) if hasattr(ref_qty, "units") else "dimensionless"
-                    )
+                break
 
     def _load_dm_from_file(
         self,
