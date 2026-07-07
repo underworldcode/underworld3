@@ -1196,20 +1196,34 @@ class Eulerian(_DDtBase):
         self._psi_star_projection_solver.smoothing = self.smoothing
 
     def update_history_fn(self):
-        r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection."""
-        ### update first value in history chain
-        ### avoids projecting if function can be evaluated
-        try:
+        r"""Copy current :math:`\psi` to ``psi_star[0]`` via evaluation or projection.
+
+        Three routes, in order of preference: direct nodal copy when
+        tracking a mesh variable with the same layout; pointwise
+        evaluation of ``psi_fn``; an L2 projection for expressions that
+        ``evaluate`` cannot handle (e.g. containing derivatives).
+        """
+        if self._psi_meshVar is not None:
             try:
                 self.psi_star[0].data[...] = self._psi_meshVar.data[...]
-            except:
-                self.psi_star[0].data[...] = uw.function.evaluate(
-                    self.psi_fn,
-                    self.psi_star[0].coords,
-                    evalf=self.evalf,
-                ).reshape(-1, max(self.psi_fn.shape))
+                return
+            except ValueError:
+                # Sanctioned fallthrough: the tracked variable's nodal
+                # layout differs from psi_star's (different degree /
+                # continuity), so the direct copy cannot broadcast —
+                # evaluate psi_fn at psi_star's own nodes instead.
+                pass
 
-        except:
+        try:
+            self.psi_star[0].data[...] = uw.function.evaluate(
+                self.psi_fn,
+                self.psi_star[0].coords,
+                evalf=self.evalf,
+            ).reshape(-1, max(self.psi_fn.shape))
+        except Exception:
+            # Sanctioned fallback: evaluate() cannot interpolate
+            # expressions containing derivatives (e.g. flux terms) —
+            # project them onto psi_star[0] instead.
             self._setup_projections()
             self._psi_star_projection_solver.solve()
 
