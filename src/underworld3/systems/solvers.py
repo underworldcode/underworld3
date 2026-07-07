@@ -219,6 +219,106 @@ def _nondimensionalise_timestep(value):
         return value
 
 
+def _global_max_diffusivity(constitutive_K, mesh):
+    r"""Global (all-rank) maximum of the diffusivity over the mesh.
+
+    Shared by the transient solvers' ``estimate_dt``: the diffusive CFL
+    limit needs one representative :math:`\kappa_{\max}` for
+    :math:`\delta t = h^2 / \kappa_{\max}`.
+
+    Parameters
+    ----------
+    constitutive_K : sympy expression, UWexpression, or number
+        The constitutive model's ``.K`` (diffusivity, or kinematic
+        viscosity for Navier-Stokes).
+    mesh : Mesh
+        Supplies the sampling points (cell centroids) and the coordinate
+        basis.
+
+    Returns
+    -------
+    float
+        Nondimensional global maximum (MPI allreduce MAX across ranks).
+    """
+    from mpi4py import MPI
+
+    K = constitutive_K
+    if isinstance(K, sympy.Expr) or hasattr(K, "sym"):
+        K_sym = K.sym if hasattr(K, "sym") else K
+        if uw.function.fn_is_constant_expr(K_sym):
+            diffusivity = uw.function.evaluate(
+                K_sym, np.zeros((1, mesh.dim)))
+        else:
+            # Spatially varying: sample at cell centroids, take the max.
+            diffusivity = uw.function.evaluate(
+                sympy.sympify(K_sym), mesh._centroids, mesh.N)
+            diffusivity = diffusivity.max()
+    else:
+        diffusivity = K
+
+    # If unit-aware (UnitAwareArray), nondimensionalise so the value is
+    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # physical-units number, which would be wrong here.
+    if hasattr(diffusivity, "units") and diffusivity.units is not None:
+        diffusivity = uw.non_dimensionalise(diffusivity)
+    elif hasattr(diffusivity, "magnitude"):
+        # Plain UWQuantity without units context - use magnitude
+        diffusivity = diffusivity.magnitude
+
+    local_max = float(np.asarray(diffusivity).max())
+    return uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
+
+
+def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
+    """Nondimensional velocities sampled at element centroids.
+
+    Shared by the ``estimate_dt`` implementations: the advective CFL limit
+    needs per-element centroid velocities in the same (nondimensional)
+    scale as ``mesh._radii``.
+
+    Parameters
+    ----------
+    V_fn : sympy Matrix expression
+        Velocity function to sample.
+    mesh : Mesh
+        Supplies the centroid sample points.
+    basis : optional
+        Coordinate basis forwarded to ``uw.function.evaluate`` (the
+        Navier-Stokes caller passes ``mesh.N``; the others use the default).
+    ensure_2d : bool, default True
+        Squeeze evaluate's singleton axes ((N, 1, dim) -> (N, dim)) and
+        re-expand a single-element result to 2-D. The Navier-Stokes caller
+        historically skips this and reduces the raw array.
+
+    Returns
+    -------
+    numpy.ndarray
+        Velocity samples, shape ``(N, dim)`` when ``ensure_2d``.
+    """
+    if basis is not None:
+        vel = uw.function.evaluate(V_fn, mesh._centroids, basis)
+    else:
+        vel = uw.function.evaluate(V_fn, mesh._centroids)
+
+    # If unit-aware (UnitAwareArray), nondimensionalise so the values are
+    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # physical-units numbers, which would be wrong here.
+    if hasattr(vel, "units") and vel.units is not None:
+        vel = uw.non_dimensionalise(vel)
+    elif hasattr(vel, "magnitude"):
+        # Plain UWQuantity without units context - use magnitude
+        vel = vel.magnitude
+
+    vel = np.asarray(vel)
+    if ensure_2d:
+        # Squeeze singleton axes from evaluate ((N,1,dim) -> (N,dim)) and
+        # handle the single-element edge case (ensure 2D).
+        vel = np.squeeze(vel)
+        if vel.ndim == 1:
+            vel = vel.reshape(1, -1)
+    return vel
+
+
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import Eulerian as Eulerian_DDt
@@ -818,33 +918,8 @@ class SNES_TransientDarcy(SNES_Darcy):
         float or pint.Quantity
             Diffusive timestep :math:`\delta t = (\Delta x)^2 / K_{\max}`.
         """
-        from mpi4py import MPI
-
-        K = self.constitutive_model.K
-
-        if isinstance(K, sympy.Expr) or hasattr(K, "sym"):
-            K_sym = K.sym if hasattr(K, "sym") else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym, np.zeros((1, self.mesh.dim))
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym), self.mesh._centroids, self.mesh.N
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            diffusivity = diffusivity.magnitude
-
-        diffusivity = float(np.asarray(diffusivity).max())
-
-        comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
         min_dx = self.mesh.get_min_radius()
 
@@ -1968,27 +2043,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         from mpi4py import MPI
 
-        # Evaluate velocity at element centroids (consistent with AdvDiff)
-        vel = uw.function.evaluate(self.u.sym, self.mesh._centroids)
-
-        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(vel, "units") and vel.units is not None:
-            vel = uw.non_dimensionalise(vel)
-        elif hasattr(vel, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            vel = vel.magnitude
-
-        # Ensure vel is a plain numpy array
-        vel = np.asarray(vel)
-
-        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
-        vel = np.squeeze(vel)
-
-        # Handle edge case of single element (ensure 2D)
-        if vel.ndim == 1:
-            vel = vel.reshape(1, -1)
+        # Velocity at element centroids (consistent with AdvDiff)
+        vel = _centroid_velocities_nd(self.u.sym, self.mesh)
 
         # Get per-element velocity magnitudes
         vel_magnitudes = np.linalg.norm(vel, axis=1)
@@ -3933,68 +3989,15 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ### required modules
         from mpi4py import MPI
 
-        # Use the unified .K property from the constitutive model
-        # This provides diffusivity for diffusion models
-        K = self.constitutive_model.K
-
-        # Evaluate the diffusivity (handles constant and spatially-varying cases)
-        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
-            K_sym = K.sym if hasattr(K, 'sym') else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            diffusivity = diffusivity.magnitude
-
-        # Ensure diffusivity is a plain numpy scalar
-        max_diffusivity = float(np.asarray(diffusivity).max())
-
-        ## get global max diffusivity value
         comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ### get the velocity values at element centroids (nondimensional)
-        vel = uw.function.evaluate(
-            self.V_fn,
-            self.mesh._centroids,
-        )
+        ## global max diffusivity (unified .K property: diffusivity for
+        ## diffusion models)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
-        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(vel, "units") and vel.units is not None:
-            vel = uw.non_dimensionalise(vel)
-        elif hasattr(vel, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            vel = vel.magnitude
-
-        # Ensure vel is a plain numpy array
-        vel = np.asarray(vel)
-
-        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
-        vel = np.squeeze(vel)
-
-        # Handle edge case of single element (ensure 2D)
-        if vel.ndim == 1:
-            vel = vel.reshape(1, -1)
+        ### velocity values at element centroids (nondimensional)
+        vel = _centroid_velocities_nd(self.V_fn, self.mesh)
 
         # Get per-element velocity magnitudes
         vel_magnitudes = np.linalg.norm(vel, axis=1)
@@ -4382,46 +4385,10 @@ class SNES_Diffusion(SNES_Scalar):
             with reference scales is available, otherwise nondimensional.
         """
 
-        ### required modules
-        from mpi4py import MPI
-
-        # Use the unified .K property from the constitutive model
-        # This provides diffusivity for diffusion models
-        K = self.constitutive_model.K
-
-        # Evaluate the diffusivity (handles constant and spatially-varying cases)
-        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
-            K_sym = K.sym if hasattr(K, 'sym') else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            diffusivity = diffusivity.magnitude
-
-        # Ensure diffusivity is a plain numpy scalar
-        diffusivity = float(np.asarray(diffusivity).max())
-
-        ## get global max diffusivity value
-        comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+        ## global max diffusivity (unified .K property: diffusivity for
+        ## diffusion models)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
         ## get mesh spacing (nondimensional, consistent with diffusivity)
         min_dx = self.mesh.get_min_radius()
@@ -4963,64 +4930,25 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         ### required modules
         from mpi4py import MPI
 
-        # For Navier-Stokes, diffusivity is the kinematic viscosity: ν = η/ρ
-        # Use the unified .K property from the constitutive model (returns viscosity)
-        K = self.constitutive_model.K
-
-        # Evaluate the viscosity (handles constant and spatially-varying cases)
-        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
-            K_sym = K.sym if hasattr(K, 'sym') else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            diffusivity = diffusivity.magnitude
-
-        # Ensure diffusivity is a plain numpy scalar
-        max_diffusivity = float(np.asarray(diffusivity).max())
-
-        ## get global max diffusivity value
         comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ### get the velocity values
-        vel = uw.function.evaluate(
-            self.u.sym,
-            self.mesh._centroids,
-            self.mesh.N,
-        )
+        # For Navier-Stokes, diffusivity is the kinematic viscosity: ν = η/ρ
+        # (the unified .K property of the constitutive model returns viscosity)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
-        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(vel, "units") and vel.units is not None:
-            vel = uw.non_dimensionalise(vel)
-        elif hasattr(vel, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            vel = vel.magnitude
-
-        # Ensure vel is a plain numpy array
-        vel = np.asarray(vel)
+        ### get the velocity values at element centroids.
+        # ensure_2d=False preserves the historical reduction below, which
+        # operates on the raw (un-squeezed) evaluate result.
+        vel = _centroid_velocities_nd(
+            self.u.sym, self.mesh, basis=self.mesh.N, ensure_2d=False)
 
         ### get global velocity from velocity field
+        # TODO(DESIGN): if evaluate returns the (N, 1, dim) packed shape here,
+        # this axis-1 norm reduces over the singleton axis, making max_magvel
+        # the maximum |component| rather than the maximum vector magnitude
+        # (the other estimate_dt implementations squeeze first). Preserved
+        # as-is (Wave D is behaviour-neutral); revisit with a numerical check.
         max_magvel = np.linalg.norm(vel, axis=1).max()
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
