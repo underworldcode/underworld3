@@ -2274,6 +2274,69 @@ class SemiLagrangian(uw_object):
         except Exception:
             return None
 
+    def _velocity_nd_at(
+        self,
+        coords,
+        use_global: bool = False,
+        evalf: bool = False,
+        subtract_v_mesh: bool = False,
+    ):
+        r"""Evaluate the advecting velocity at ``coords``, reduced to ND space.
+
+        Shared by the node-point and mid-point legs of the RK2
+        characteristic trace-back in :meth:`update_pre_solve` — the two
+        legs differ only in evaluator routing, which is what the
+        parameters express. Returns a plain ``(N, dim)`` array of
+        NON-DIMENSIONAL velocity values, ready for the trace-back
+        arithmetic ``x_dep = x - v·dt`` in the mesh's ND coordinate
+        space (issue #267).
+
+        Parameters
+        ----------
+        coords : numpy.ndarray
+            ND sample coordinates, shape ``(N, dim)``.
+        use_global : bool, optional
+            Node points are rank-local, so the node leg uses
+            ``uw.function.evaluate``; mid-points may have left the
+            local partition, so the mid-point leg routes through
+            ``uw.function.global_evaluate`` (which also forwards
+            ``evalf``).
+        evalf : bool, optional
+            Forwarded to ``global_evaluate`` only (matching the
+            original per-leg call signatures).
+        subtract_v_mesh : bool, optional
+            Phase-2 ALE: subtract the mesh velocity ``v_mesh = Δx/dt``
+            sampled from ``self._v_mesh_var`` at the same points, so the
+            trace-back runs along ``V − v_mesh``. Done after evaluation
+            (rather than symbolically as ``V_fn − v_mesh.sym``) so the
+            subtraction inherits the same unit treatment as ``V_fn``.
+        """
+        if use_global:
+            v_result = uw.function.global_evaluate(self.V_fn, coords, evalf=evalf)
+            if subtract_v_mesh:
+                v_mesh = uw.function.global_evaluate(
+                    self._v_mesh_var.sym, coords, evalf=evalf
+                )
+                v_result = v_result - v_mesh
+        else:
+            v_result = uw.function.evaluate(self.V_fn, coords)
+            if subtract_v_mesh:
+                v_mesh = uw.function.evaluate(self._v_mesh_var.sym, coords)
+                v_result = v_result - v_mesh
+
+        # Slicing can drop the UnitAwareArray wrapper — rewrap before the
+        # ND reduction so the units are not silently lost.
+        if isinstance(v_result, UnitAwareArray):
+            v_at_pts = v_result[:, 0, :]
+            if not isinstance(v_at_pts, UnitAwareArray):
+                v_at_pts = UnitAwareArray(v_at_pts, units=v_result.units)
+        else:
+            v_at_pts = v_result[:, 0, :]
+
+        # Non-dimensionalise to the DM/ND space: the trace-back arithmetic
+        # and the subsequent point-location both work in ND coordinates.
+        return _to_nondim_ndarray(v_at_pts, units=uw.get_units(self.V_fn))
+
     def update(
         self,
         dt: float,
@@ -2557,39 +2620,10 @@ class SemiLagrangian(uw_object):
             _ale_this_iter = _ale_active and not (store_result and i == 0)
 
             # Use shifted ND coords to avoid quad mesh boundary issues
-            # node_coords_nd is slightly shifted toward cell centroids (lines 703-709)
-            # evaluate() treats plain numpy as ND [0-1] coordinates
-            v_result = uw.function.evaluate(
-                self.V_fn,
-                node_coords_nd,
-            )
-            # Phase-2 ALE: subtract the mesh velocity at the same
-            # sample points. Done after V_fn evaluation (rather than
-            # by symbolic V_fn − v_mesh.sym) so the existing unit
-            # bookkeeping below treats v_result as a plain V-shaped
-            # array; the subtraction inherits the same unit treatment.
-            if _ale_this_iter:
-                _vm = uw.function.evaluate(
-                    self._v_mesh_var.sym, node_coords_nd)
-                v_result = v_result - _vm
-
-            # CRITICAL: Preserve UnitAwareArray through slicing
-            # Slicing can sometimes return plain numpy views - need to preserve wrapper
-
-            if isinstance(v_result, UnitAwareArray):
-                # Slice and rewrap to preserve units
-                v_at_node_pts = v_result[:, 0, :]
-                if not isinstance(v_at_node_pts, UnitAwareArray):
-                    # Slicing lost the wrapper - rewrap it
-                    v_at_node_pts = UnitAwareArray(v_at_node_pts, units=v_result.units)
-            else:
-                v_at_node_pts = v_result[:, 0, :]
-
-            # Non-dimensionalise velocities to the DM/ND space (see the dt note
-            # above): the trace-back arithmetic and the subsequent point-location
-            # both work in the mesh's ND coordinates, so velocity must be ND too.
-            v_at_node_pts = _to_nondim_ndarray(
-                v_at_node_pts, units=uw.get_units(self.V_fn)
+            # (node_coords_nd is slightly shifted toward cell centroids —
+            # see the centroid-shift block above)
+            v_at_node_pts = self._velocity_nd_at(
+                node_coords_nd, subtract_v_mesh=_ale_this_iter
             )
 
             # Departure point in the mesh's ND (DM) coordinate space. coords_nd is
@@ -2607,35 +2641,14 @@ class SemiLagrangian(uw_object):
             if self.mesh.return_coords_to_bounds is not None:
                 mid_pt_coords = self.mesh.return_coords_to_bounds(mid_pt_coords)
 
-            v_mid_result = uw.function.global_evaluate(
-                self.V_fn,
+            # Mid-point velocities may lie off-rank, so route through
+            # global_evaluate (with evalf forwarded), unlike the on-node
+            # evaluation above.
+            v_at_mid_pts = self._velocity_nd_at(
                 mid_pt_coords,
+                use_global=True,
                 evalf=evalf,
-            )
-            # Phase-2 ALE: subtract mesh velocity at midpoint coords
-            # (mid_pt_coords are off-node interior points of the new
-            # mesh — global_evaluate of v_mesh.sym handles partition
-            # routing identically to V_fn). Per-i gating per the
-            # explanation above the v_result subtraction.
-            if _ale_this_iter:
-                _vm_mid = uw.function.global_evaluate(
-                    self._v_mesh_var.sym, mid_pt_coords, evalf=evalf)
-                v_mid_result = v_mid_result - _vm_mid
-
-            # CRITICAL: Preserve UnitAwareArray through slicing
-            if isinstance(v_mid_result, UnitAwareArray):
-                # Slice and rewrap to preserve units
-                v_at_mid_pts = v_mid_result[:, 0, :]
-                if not isinstance(v_at_mid_pts, UnitAwareArray):
-                    # Slicing lost the wrapper - rewrap it
-                    v_at_mid_pts = UnitAwareArray(v_at_mid_pts, units=v_mid_result.units)
-            else:
-                v_at_mid_pts = v_mid_result[:, 0, :]
-
-            # Non-dimensionalise mid-point velocities to the DM/ND space, same as
-            # the node velocities above (the trace-back works in ND coords). See #267.
-            v_at_mid_pts = _to_nondim_ndarray(
-                v_at_mid_pts, units=uw.get_units(self.V_fn)
+                subtract_v_mesh=_ale_this_iter,
             )
 
             # Calculate upstream coordinates: current position - velocity * timestep
