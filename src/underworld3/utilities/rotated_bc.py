@@ -62,8 +62,11 @@ def _warn_if_ksp_diverged(ksp, kind):
 # --------------------------------------------------------------------------- #
 #  Rotation construction
 # --------------------------------------------------------------------------- #
-def _velocity_field_id(solver):
-    return 0  # velocity is field 0 in the Stokes saddle
+
+# PETSc section field ids of the Stokes saddle unknowns (fixed by the solver's
+# DM field registration order: velocity first, pressure second).
+_VELOCITY_FIELD = 0
+_PRESSURE_FIELD = 1
 
 
 def _point_coord(dm, dim, cvec, csec, v0, v1, q):
@@ -96,7 +99,6 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
     lsec = dm.getLocalSection()
-    VEL = _velocity_field_id(solver)
     interior_ref = cvec.mean(axis=0)
     # Boundary facets via the consolidated "UW_Boundaries" label (per-boundary labels do
     # not survive mesh adaptation); raises a clear error for an unknown boundary name.
@@ -153,7 +155,7 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
         for q in (int(c) for c in clo):
-            if lsec.getFieldDof(q, VEL) <= 0:
+            if lsec.getFieldDof(q, _VELOCITY_FIELD) <= 0:
                 continue
             if normal is not None:
                 if sym_fn is not None:
@@ -180,7 +182,6 @@ def build_rotation(solver, boundaries):
     dm = solver.dm
     lsec = dm.getLocalSection()
     l2g = dm.getLGMap()
-    VEL = _velocity_field_id(solver)
     dim = solver.mesh.dim
 
     # gather all normals per velocity node across the boundaries. Each entry of
@@ -211,7 +212,7 @@ def build_rotation(solver, boundaries):
 
     normal_rows = []
     for q, nrms in node_normals.items():
-        lo = lsec.getFieldOffset(q, VEL)
+        lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
         if any(g < 0 for g in grows):
             continue
@@ -274,10 +275,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
 
     # pin one pressure DOF (datum) — row only, keeps B^T coupling
     gsec = dm.getGlobalSection()
-    PRE = 1; pin = None; pS, pE = gsec.getChart()
+    pin = None; pS, pE = gsec.getChart()
     for q in range(pS, pE):
-        if gsec.getFieldDof(q, PRE) > 0 and gsec.getFieldOffset(q, PRE) >= 0:
-            pin = gsec.getFieldOffset(q, PRE); break
+        if gsec.getFieldDof(q, _PRESSURE_FIELD) > 0 \
+                and gsec.getFieldOffset(q, _PRESSURE_FIELD) >= 0:
+            pin = gsec.getFieldOffset(q, _PRESSURE_FIELD); break
 
     # constrain rotated normal rows (v_n=0): zero the matrix rows/cols AND the RHS
     # at those rows — zeroRowsColumns does NOT touch the RHS, so a nonzero b there
@@ -948,7 +950,7 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
         rc = A.createVecLeft(); A.mult(U, rc); rc.axpy(-1.0, b); own_rc = True
     rcl = dm.getLocalVec(); dm.globalToLocal(rc, rcl); rca = np.asarray(rcl.getArray())
 
-    lsec = dm.getLocalSection(); VEL = _velocity_field_id(solver)
+    lsec = dm.getLocalSection()
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
@@ -957,7 +959,7 @@ def boundary_normal_traction(solver, boundary, info, mass="lumped"):
     nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
     xs = []; Rn = []
     for q, nrm in nodes:
-        lo = lsec.getFieldOffset(q, VEL)
+        lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         rcv = rca[lo:lo + dim]                    # Cartesian reaction at this node (local)
         xs.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
         Rn.append(float(np.dot(nrm, rcv)))        # R_i = n̂·r_c  (corner-correct)
