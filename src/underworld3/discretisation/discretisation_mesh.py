@@ -241,7 +241,7 @@ def _mesh_coords_update_callback(array, change_context):
 
     verbose = getattr(mesh, "_coords_callback_verbose", False)
     if verbose:
-        uw.pprint(0, f"Mesh update callback - mesh deform")
+        uw.pprint(f"Mesh update callback - mesh deform")
 
     coords = array.reshape(-1, mesh.cdim)
     mesh._deform_mesh(coords, verbose=verbose)
@@ -250,7 +250,7 @@ def _mesh_coords_update_callback(array, change_context):
     with mesh._mesh_update_lock:
         mesh._mesh_version += 1
         if verbose:
-            uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
+            uw.pprint(f"Mesh version incremented to {mesh._mesh_version}")
 
     return
 
@@ -2202,7 +2202,7 @@ class Mesh(Stateful, uw_object):
         label_value = self._extract_label_value
 
         if verbose:
-            uw.pprint(0, f"Re-extracting submesh '{label_name}' from adapted parent...")
+            uw.pprint(f"Re-extracting submesh '{label_name}' from adapted parent...")
 
         # Extract new DM
         new_subdm = petsc_dm_filter_by_label(self.parent.dm, label_name, label_value)
@@ -2257,16 +2257,16 @@ class Mesh(Stateful, uw_object):
                         old_coords, old_data = old_var_backups[var_name]
                         self._idw_transfer_to_var(old_coords, old_data, old_var)
                         if verbose:
-                            uw.pprint(0, f"  Submesh variable '{var_name}' transferred")
+                            uw.pprint(f"  Submesh variable '{var_name}' transferred")
                     except Exception as e2:
                         if verbose:
-                            uw.pprint(0, f"  Submesh variable '{var_name}' reset (transfer failed: {e2})")
+                            uw.pprint(f"  Submesh variable '{var_name}' reset (transfer failed: {e2})")
                 else:
                     if verbose:
-                        uw.pprint(0, f"  Submesh variable '{var_name}' reset")
+                        uw.pprint(f"  Submesh variable '{var_name}' reset")
             except Exception as e:
                 if verbose:
-                    uw.pprint(0, f"  Warning: failed to reinitialise '{var_name}': {e}")
+                    uw.pprint(f"  Warning: failed to reinitialise '{var_name}': {e}")
 
         # Mark solvers for rebuild and clear geometry-keyed caches
         self._invalidate_caches_after_dm_change(reason="submesh_re_extraction")
@@ -2274,7 +2274,7 @@ class Mesh(Stateful, uw_object):
         self._parent_mesh_version = self.parent._mesh_version
 
         if verbose:
-            uw.pprint(0, f"  Submesh re-extracted: {self.dm.getChart()}")
+            uw.pprint(f"  Submesh re-extracted: {self.dm.getChart()}")
 
     def _build_dof_map(self, parent_var, sub_var):
         """Build a DOF-level index mapping between parent and submesh variables.
