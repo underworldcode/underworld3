@@ -3441,12 +3441,14 @@ class Mesh(Stateful, uw_object):
 
         Example
         -------
-        >>> import underworld3 as uw
-        >>> someMesh = uw.discretisation.FeMesh_Cartesian()
-        >>> with someMesh._deform_mesh():
-        ...     someMesh.data[0] = [0.1,0.1]
-        >>> someMesh.data[0]
-        array([ 0.1,  0.1])
+        Legacy pattern only — new code writes ``var.data[...]`` directly
+        (see docs/developer/subsystems/data-access.md)::
+
+            >>> import underworld3 as uw
+            >>> mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+            >>> T = uw.discretisation.MeshVariable("T", mesh, 1)
+            >>> with mesh._legacy_access(T):
+            ...     T.data[:, 0] = 1.0
         """
 
         import time
