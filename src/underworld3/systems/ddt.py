@@ -216,6 +216,12 @@ def _to_nondim_ndarray(value, units=None):
         carries_units = True
     if not carries_units:
         return value
+    # TODO(BUG): a raw pint.Quantity input reaches uw.non_dimensionalise(),
+    # which crashes when reference scales are active (units.py protocol 5,
+    # invalid `dimensionality=` kwarg). Pre-existing — the unified unwrap
+    # sites had the same hasattr("magnitude") gate, and the DDt data paths
+    # only ever supply UnitAwareArray/plain ndarray from uw.function
+    # evaluate/global_evaluate. Fix belongs in units.py. See #328.
     nd = uw.non_dimensionalise(value)
     if isinstance(nd, UnitAwareArray):
         return np.array(nd)
