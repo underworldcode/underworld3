@@ -2157,7 +2157,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # ordinary Stokes solve, so the base assembly is unaffected.
         self._block_constraint_bcs = []
 
-        # Guarded automatic pressure gauge (see _maybe_install_auto_gauge). On an
+        # Guarded automatic pressure gauge (see _install_auto_pressure_gauge). On an
         # enclosed constrained problem the constant pressure and constant
         # multiplier are gauge-free; the solver lands on a partition-dependent
         # level for each, so the raw fields are not reproducible across ranks.
@@ -2255,7 +2255,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         partition-reproducible by construction on enclosed problems.
         """
         self._warn_if_monolithic_direct()
-        self._maybe_install_auto_gauge()
+        self._install_auto_pressure_gauge()
         return super().solve(*args, **kwargs)
 
     def _warn_if_monolithic_direct(self):
@@ -2289,7 +2289,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
                 stacklevel=2,
             )
 
-    def _maybe_install_auto_gauge(self):
+    def _install_auto_pressure_gauge(self):
         """Pin the (p, h) gauge consistently on an enclosed constrained problem.
 
         Conservative — installs ``set_pressure_gauge`` on the first constraint
@@ -2426,7 +2426,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # tests/parallel/test_1063_constrained_freeslip_parallel.py.
         # NOTE: on enclosed problems the constant pressure and constant multiplier
         # are gauge-free and land on a partition-dependent level. The automatic
-        # pressure gauge (auto_pressure_gauge, see _maybe_install_auto_gauge) pins
+        # pressure gauge (auto_pressure_gauge, see _install_auto_pressure_gauge) pins
         # the raw PRESSURE reproducibly, but the raw multiplier h keeps its own
         # gauge level — read dynamic topography via topography(..., reference="mean"),
         # which is gauge-invariant and partition-reproducible by construction.
