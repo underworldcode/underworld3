@@ -190,18 +190,18 @@ def _from_plexh5(
         return sf0, h5plex
 
 
-def _hierarchy_sidecar_name(mesh_filename, level):
-    """Filename for a coarse hierarchy sidecar of a mesh checkpoint.
+def _hierarchy_sidecar_name(mesh_filename):
+    """Filename for the coarse hierarchy sidecar of a mesh checkpoint.
 
     The geometric-multigrid (FMG) hierarchy is persisted as a single extra
-    single-DM HDF5 file holding the **coarsest** level (``level=0``) beside the
-    main mesh checkpoint — PETSc's ``HDF5_PETSC`` format does not support several
-    DMPlex objects in one file. The intermediate coarse levels are rebuilt by
-    refinement on reload, so only ``mymesh.hierarchy.L0.h5`` is written. The
-    ``level`` argument is kept for forward-compatibility.
+    single-DM HDF5 file holding the **coarsest** level beside the main mesh
+    checkpoint — PETSc's ``HDF5_PETSC`` format does not support several
+    DMPlex objects in one file. The intermediate coarse levels are rebuilt
+    by refinement on reload, so only ``mymesh.hierarchy.L0.h5`` is ever
+    written (the ``L0`` suffix names that coarsest level).
     """
     base, ext = os.path.splitext(mesh_filename)
-    return f"{base}.hierarchy.L{level}{ext}"
+    return f"{base}.hierarchy.L0{ext}"
 
 
 def _mesh_coords_update_callback(array, change_context):
@@ -814,7 +814,7 @@ class Mesh(Stateful, uw_object):
                 except (KeyError, OSError):
                     n_coarse = 0
                 if n_coarse > 0:
-                    sidecar = _hierarchy_sidecar_name(plex_or_meshfile, 0)
+                    sidecar = _hierarchy_sidecar_name(plex_or_meshfile)
                     if os.path.isfile(sidecar):
                         self._sidecar_coarsest = _from_plexh5(
                             sidecar, PETSc.COMM_WORLD
@@ -968,7 +968,7 @@ class Mesh(Stateful, uw_object):
                 _df.getCoordinatesLocal().array.reshape(-1, cdim).copy()
             )
             _cs = _from_plexh5(
-                _hierarchy_sidecar_name(self._sidecar_meshfile, 0),
+                _hierarchy_sidecar_name(self._sidecar_meshfile),
                 PETSc.COMM_SELF,
             )
             for _ in range(n_coarse):
@@ -4542,7 +4542,7 @@ class Mesh(Stateful, uw_object):
         # file). Collective write. See _hierarchy_sidecar_name and the .h5 reload.
         if len(self.dm_hierarchy) > 1:
             coarse_dm = self.dm_hierarchy[0]
-            sidecar = _hierarchy_sidecar_name(filename, 0)
+            sidecar = _hierarchy_sidecar_name(filename)
             cviewer = PETSc.ViewerHDF5().create(sidecar, "w", comm=PETSc.COMM_WORLD)
             cviewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
             saved_name = coarse_dm.getName()
