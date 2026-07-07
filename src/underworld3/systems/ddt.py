@@ -507,7 +507,6 @@ def _build_weighted_sum(coeffs, psi_fn, psi_star_syms):
     return result
 
 
-
 class _DDtBase(uw_object):
     r"""Shared machinery for the DDt history-manager flavors.
 
@@ -736,11 +735,14 @@ class Symbolic(_DDtBase):
     verbose : bool, optional
         Enable verbose output (default ``False``).
     bcs : list, optional
-        Boundary conditions (default ``[]``).
+        Accepted for interface parity with the projection-backed flavors
+        (``Eulerian`` / ``SemiLagrangian``); Symbolic has no projection
+        solver, so this is stored but unused (default ``[]``).
     order : int, optional
         Order of time integration (1-3) (default ``1``).
     smoothing : float, optional
-        Smoothing parameter (default ``0.0``).
+        Accepted for interface parity with the projection-backed flavors;
+        stored but unused by Symbolic (default ``0.0``).
 
     Notes
     -----
@@ -775,6 +777,11 @@ class Symbolic(_DDtBase):
     ):
         super().__init__()
         self.theta = theta
+        # bcs / smoothing are interface-parity parameters (see the class
+        # docstring): stored so callers can treat all DDt flavors alike,
+        # never read by Symbolic itself. The evalf argument threaded
+        # through the update methods is likewise ignored here (there is
+        # no numerical evaluation of a purely symbolic history).
         self.bcs = bcs
         self.verbose = verbose
         self.smoothing = smoothing
