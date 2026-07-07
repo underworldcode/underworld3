@@ -17,6 +17,10 @@ MUMPS LU is opt-in via ``solver._rotated_use_lu``.
 import numpy as np
 from petsc4py import PETSc
 
+# Rank-safe printing only (mpi.pprint). Safe at module top: underworld3.mpi is a
+# leaf module loaded before underworld3.utilities in the package __init__.
+from underworld3 import mpi
+
 # Shared Consistent-Boundary-Flux machinery (the σ_nn recovery is a rotated-frame reading
 # of the same primitive): the consolidated-label boundary stratum, the lumped/consistent
 # boundary-mass de-smear, and the scalar-field hand-off all live in `boundary_flux`.
@@ -49,7 +53,6 @@ def _warn_if_ksp_diverged(ksp, kind):
         rnorm = float(ksp.getResidualNorm())
     except Exception:
         rnorm = float("nan")
-    from underworld3 import mpi
     mpi.pprint(f"[rotated_bc] WARNING: {kind} KSP did NOT converge "
                f"(reason={reason}, iterations={its}, |r|={rnorm:.3e}); "
                f"proceeding with the last iterate.")
@@ -525,7 +528,6 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         if r0 is None:
             r0 = rnorm
         if verbose:
-            from underworld3 import mpi
             mpi.pprint(f"[rotated_bc] nonlinear iter {iters:2d}  |F̂|={rnorm:.6e}  "
                        f"rel={rnorm/(r0+1e-300):.3e}  [{phase}]")
         # residual convergence (relative to the initial residual, plus an absolute
@@ -538,7 +540,6 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         if continuation and phase == "picard" and rnorm <= switch_rtol * r0 and iters >= picard:
             solver._set_newton_alpha(1.0); phase = "newton"
             if verbose:
-                from underworld3 import mpi
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
                            f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
         snes.computeJacobian(u, J, Jp)       # Jp carries the 1/mu mass (Schur pmat)
@@ -593,7 +594,6 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
     # on divergence — so an unconverged iterate left in the fields is not silent.
     if not converged:
-        from underworld3 import mpi
         rel = (rnorm / (r0 + 1e-300)) if r0 is not None else float("nan")
         mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
                    f"in {iters + 1} iterations (rel |F̂| = {rel:.2e}); the fields hold "
@@ -832,7 +832,6 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
     ua = Uhat.getArray(); ua[loc] = 0.0; Uhat.setArray(ua)
     if verbose:
-        from underworld3 import mpi
         kind = "custom-FMG" if ctx["custom_Pl"] is not None else "GAMG"
         schur = "1/mu-mass" if ctx["Mp"] is not None else "selfp"
         mpi.pprint(f"[rotated_bc] velocity block = {kind}; Schur pre = {schur}; "
