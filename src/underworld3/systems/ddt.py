@@ -1710,12 +1710,15 @@ class SemiLagrangian(_DDtBase):
 
         self._init_coefficient_expressions(order, self.theta, with_exp=True)
 
-        # Working variable that has a potentially different discretisation from psi_star
-        # We project from this to psi_star and we use this variable to define the
-        # advection sample points
-
+        # Working variable that has a potentially different discretisation
+        # from psi_star (swarm_degree / swarm_continuous rather than
+        # degree / continuous): we project from this to psi_star, and it
+        # defines the advection sample points. Kept per-instance, hence
+        # the instance-number suffix. (The name previously carried a
+        # trailing loop index leaked from the psi_star loop — accidental,
+        # not meaningful.)
         self._workVar = uw.discretisation.MeshVariable(
-            f"W_{self.instance_number}_{i}",
+            f"psi_work_sl_{self.instance_number}",
             self.mesh,
             vtype=vtype,
             degree=self.swarm_degree,
