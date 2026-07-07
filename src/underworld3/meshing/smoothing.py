@@ -1,61 +1,70 @@
-"""Mesh smoothing utilities.
+"""Mesh smoothing and fixed-topology mesh adaptation ("movers").
 
-Currently provides a Winslow-style Jacobi smoother for interior
-vertex positions: each interior vertex is moved toward the average
-position of its edge neighbours, with boundary vertices held fixed.
+Every operation here moves mesh VERTICES only: topology, vertex ids,
+DOF layout, and the parallel partition are preserved (adding or
+removing resolution needs a remesh — ``mesh.adapt`` — not a mover).
+Public entry points: :func:`smooth_mesh_interior` (dispatch over
+``method=``), :func:`follow_metric` (two-knob adapter),
+:func:`metric_density_from_gradient` (metric builder) and
+:func:`mesh_metric_mismatch` (alignment diagnostic).
 
-Use after a mesh deformation has left some cells highly distorted
-(e.g. free-surface evolution that has crushed cells near the
-surface). Topology is unchanged — vertex indices, DOFs, and the
-parallel partition are all preserved; only coordinates move.
+The movers, one paragraph each:
 
-Parallel: a PETSc parallel AIJ matrix represents the vertex-vertex
-adjacency. Each rank inserts entries for every edge it sees locally
-using GLOBAL vertex indices; ``mat.assemble()`` combines cross-rank
-contributions so that owned-vertex rows are complete after assembly.
-Without this, UW3's default cell-overlap-0 distribution under-counts
-neighbours for vertices on the rank partition boundary, producing
-visibly wrong updates along the rank cut.
+* **Graph-Laplacian Jacobi** (``metric=None``, the no-metric default):
+  each interior vertex is blended toward the mean of its edge
+  neighbours over a few sweeps. Equalises connectivity → equant cells;
+  use to clean up distortion left by a deformation (e.g. free-surface
+  motion). Parallel-exact: the vertex-vertex adjacency is a PETSc AIJ
+  Mat assembled with GLOBAL vertex indices, so partition-boundary rows
+  are complete and results are bit-identical at any rank count.
 
-Two operators:
-  - ``metric=None`` (default): the graph-Laplacian Jacobi sweeps
-    described above — equalises connectivity, makes cells equant.
-  - ``metric=<expr>``: an **elastic-spring network** relaxed
-    toward equilibrium (the default metric path). Every edge is a
-    spring whose *rest length* is ``∝ ρ_tgt^(-1/dim)`` (finer where
-    ``ρ_tgt = metric`` is large), normalised so the mean rest
-    length equals the current mean edge length (scale preserved —
-    pure redistribution). A position-based Jacobi relaxation moves
-    interior nodes toward rest-length-consistent positions; a
-    coherent global signed-area backtrack prevents inversion. A
-    Lagrangian density (``r0`` set once to the original radius,
-    then ``f(r0.sym)``) keeps the rest lengths fixed per material
-    point. **Status: under development** — the fixed-topology
-    Jacobi relaxation currently reaches only weak grading
-    (deep/near ≈ 1.03 for an 8× target) and can stall against the
-    tangle guard; a proper equilibrium solve / preconditioning is
-    being investigated.
+* **Spring equilibrium** (``method="spring"``, the default metric
+  path; :func:`_spring_equilibrium_mover`): every edge is an
+  equal-rest-length spring (shape regulariser, equant cells) plus a
+  per-cell target-area constraint ``A0 ∝ 1/ρ_tgt`` (the size grading),
+  minimised to mechanical equilibrium by preconditioned nonlinear CG
+  (Polak–Ribière⁺) with a fold-rejecting Armijo line search. Fast and
+  robust — the workhorse for restoring a design grading. Limitation:
+  edge forces are accumulated rank-locally, so this path is
+  serial-exact (partition-boundary nodes under-count forces under
+  MPI; a future PR can assemble forces cross-rank like the Jacobi
+  adjacency Mat).
 
-The optimal-transport / Monge–Ampère mesh-potential approach
-(``_monge_ampere_mover``, preserved, not the default) was
-exhaustively investigated 2026-05-16 and found to cap at the same
-~1.07 for every variant (linear / recovered-Hessian / convex-branch
-BFO / outer composition). That *every* dissimilar method
-(graph-Laplacian, weighted-Laplacian, MA-all-variants, elastic
-spring) converges to deep/near ≈ 1.03–1.07 while the *exact*
-equidistribution at the same fixed topology is ~10× points to a
-common missing ingredient (large coherent long-range node
-transport is throttled by pinned-boundary + tangle-guard local
-relaxation). Open investigation: elastic-spring redistribution as
-a *preconditioner* for the MA solve. See ``scripts/ma_*.py`` and
-the project memory.
+* **Monge–Ampère** (``method="ma"``; :func:`_monge_ampere_mover`):
+  Benamou–Froese–Oberman convex-branch MA equidistribution with a
+  variationally-recovered Hessian. Highest-fidelity *isotropic*
+  refinement, ~60× costlier than the spring; preserved for reference,
+  not a production choice — see the MA section banner below for the
+  2026-05-16 investigation summary (all variants cap at the same
+  fixed-topology grading).
 
-Future extensions (separate PRs):
-  - PR B: nicer pinning API (per-boundary explicit lists, callable
-    masks)
-  - parallel-exact spring forces (cross-rank edge-force assembly,
-    mirroring the Jacobi-path adjacency Mat); currently the spring
-    path is serial-exact (rank-boundary nodes under-count forces)
+* **OT improvement step** (``method="ot"``;
+  :func:`_ot_improvement_step`): one linear weighted-Poisson
+  equidistribution-flow step with respect to the *current* mesh,
+  freely composable. Incomplete (boundary slip is gated to radial
+  geometries) and deprecated — superseded by ``"mmpde"`` with a
+  scalar metric.
+
+* **Anisotropic Winslow** (``method="anisotropic"``;
+  :func:`_winslow_anisotropic`): the one genuine Winslow smooth here —
+  an M-weighted Laplace solve of the coordinate map with an
+  eigen-clamped, gradient-derived metric *tensor*. Reshapes cells
+  (short across a feature, long along it) and removes slivers; single
+  primary knob ``resolution_ratio``. Improves alignment / quality,
+  not grading magnitude.
+
+* **MMPDE** (``method="mmpde"``; :func:`_mmpde_mover`): Huang–Kamenski
+  variational moving mesh driven by a full tensor (or scalar) metric —
+  non-folding by construction, and it genuinely clusters and aligns to
+  the metric. **Recommended for production adaptive meshing**, though
+  it is not the API default (``method`` defaults to ``"spring"``).
+  Currently 2D (triangle meshes) only; parallel-safe.
+
+With a fixed node count no mover exceeds ≈1.3–1.8× deep/near grading
+(the exact optimal-transport ~10× needs *more nodes* — a topology
+change, i.e. ``mesh.adapt``). See
+``docs/developer/subsystems/mesh-metric-redistribution.md`` and
+``docs/developer/design/anisotropic-mmpde-mover.md``.
 """
 
 import warnings
