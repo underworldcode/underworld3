@@ -70,6 +70,8 @@ jobs:
           file: container/Containerfile
           platforms: linux/amd64,linux/arm64
           no-cache: ${{ inputs.force_rebuild || false }}
+          build-args: |
+            SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # tags: |
