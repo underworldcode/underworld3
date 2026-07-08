@@ -37,9 +37,12 @@ RUN micromamba install -y -v -n base -f /tmp/env.yaml && \
 # activate mamba env during podman build
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
-# pyvista - taken from pyvista docker files
+# pyvista - vtk-osmesa only available for amd64; arm64 falls back to conda-forge vtk
 # see https://github.com/pyvista/pyvista/tree/main/docker
-RUN pip install --no-cache-dir --extra-index-url https://wheels.vtk.org vtk-osmesa
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+    pip install --no-cache-dir --extra-index-url https://wheels.vtk.org vtk-osmesa; \
+    fi
 
 # install UW3
 COPY --chown=$MAMBA_USER:$MAMBA_USER \
