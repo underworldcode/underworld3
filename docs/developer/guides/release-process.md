@@ -112,33 +112,84 @@ Run it any time (intended on `development`):
 ./uw dev release-check 1,2,3    # full
 ```
 
+## Release schedule and code freeze
+
+Underworld3 targets one release per quarter, aligned with AuScope reporting
+cycles. A typical quarter looks like this:
+
+```
+Week 1–8   Development: feature work, PRs into development
+Week 9     CODE FREEZE: no new feature PRs merged into development
+           Begin release branch, run validation (steps 3–8)
+Week 10    Release notes, PR to main, review (steps 9–10)
+Week 11    Merge + tag (steps 11–13)
+Week 12    Post-release: containers, Binder, HPC scaling run
+```
+
+**Code freeze** is the moment the release branch is cut off `development`
+(step 3). From that point `development` can continue receiving new feature PRs
+normally — they simply won't be in this release. Only targeted bug fixes for
+regressions *found during validation* are cherry-picked onto the release branch;
+everything else waits for the next cycle.
+
+The branch cut typically happens **2–3 weeks before the end of the quarter**
+(or before the steering committee review if one is scheduled that quarter):
+2 weeks is realistic when no major failures are expected; 3 weeks when HPC
+scaling tests are planned or when the previous validation surfaced complex bugs
+to investigate. The planned cut date should be announced to contributors at
+least one week in advance so they know which PRs will make it in.
+
 ## Quarterly checklist
 
-Run `./uw dev release` from the **main checkout on `development`**. Every
-state-changing step is confirmed; the tool stops **before** the production tag so
-`main`'s branch protection (PR + review) stays intact.
+Run from the **`development`** branch on `underworld3-release`. Every
+state-changing step requires manual confirmation; the tool stops **before**
+the production tag so `main`'s branch protection (PR + review) stays intact.
 
-| # | Step | Automated? |
-|---|------|------------|
+### Release branching strategy
+
+This workflow is adapted from the underworld2 release guidelines. Time goes left to right.
+
+```text
+main]     v3.0.1 ──────────────── v3.1.0 ──────────
+                \                /
+release]         m ── rc ── s ───┘
+                /            \
+dev ]    ── A ─────── B ─── C ─── s' ──────────→
+```
+
+- `A, B, C` = commits on `development`; `m, rc, s` = commits on the release branch
+- `m` = merge commit: release branch starts at `A`, then merges in `main` (catches hotfixes)
+- `rc` = release candidate tag (e.g. `v3.1.0rc1`)
+- `s` = skip markers + release notes commits
+- `s'` = cherry-pick of release notes and manifest changes back to `development`
+
+| # | Step | How |
+|---|------|-----|
 | 1 | Preflight: on `development`, clean tree, fetched, ahead of `main` | auto |
 | 2 | Pick the next version (`vX.Y.0`) | confirm |
-| 3 | Tag + push the RC on `development` (`vX.Y.0rcN`) — RC tags are allowed here | confirm |
-| 4 | Full validation: `test_levels.sh 1,2,3 --isolation` + the per-feature gate | auto |
-| 5 | Aggregate results → achieved maturity per feature (results to `$TMPDIR`) | auto |
-| 6 | Scaffold `docs/release-notes/vX.Y.0.md` with auto Supported / Preview sections | confirm |
-| 7 | Open the `development → main` PR with the rendered notes | confirm |
-| 8 | **After the PR merges**: `git tag vX.Y.0 && git push` → CI publishes the release | manual |
+| 3 | Create `release/vX.Y.0` off `development` HEAD and push | manual |
+| 4 | Merge `main` into the release branch (catches hotfixes since last release) | manual |
+| 5 | Tag + push the RC on the release branch (`vX.Y.0rcN`) | confirm |
+| 6a | Serial validation: `test_levels.sh 1,2,3 --isolation` + the per-feature gate | auto |
+| 6b | MPI validation: `test_levels.sh 1,2,3 --isolation --parallel` | auto |
+| 7 | Aggregate results → achieved maturity per feature | auto |
+| 8 | If tests fail: add skip markers on the release branch with detailed in-source reasons | manual |
+| 9 | Scaffold `docs/release-notes/vX.Y.0.md` | confirm |
+| 10 | Open PR `release/vX.Y.0 → main` with the rendered release notes | confirm |
+| 11 | **After PR merges**: `git tag vX.Y.0 && git push` → CI publishes the release | manual |
+| 12 | Cherry-pick release notes + manifest changes back to `development` (not skip markers) | manual |
+| 13 | Delete the release branch | manual |
 
-Step 8 is deliberately left to a human so the review gate on `main` is never
+Step 11 is deliberately left to a human so the review gate on `main` is never
 bypassed. CI (`.github/workflows/release.yml`) publishes the GitHub Release from
 the committed `docs/release-notes/vX.Y.0.md`.
 
 The CI style gates must also be green on the release branch — the
-`development → main` PR (step 7) runs `.github/workflows/style-gates.yml`
+`release/vX.Y.0 → main` PR (step 10) runs `.github/workflows/style-gates.yml`
 automatically; see [style-gates.md](style-gates.md) for the checks and the
 shrink-only allowlist policy.
 
-### Documentation freshness sweeps (before step 6)
+### Documentation freshness sweeps (before step 9)
 
 Two "pull" documents go stale silently between releases; refresh both as part
 of every release cycle:
@@ -161,9 +212,8 @@ of every release cycle:
    git log --first-parent --oneline <last-changelog-commit>..development
    ```
 
-Both documents rotted over the January–June 2026 development burst (findings
-DOC-02 / DOC-03 in `docs/reviews/2026-07/DOCS-STANDARDS-COHERENCE.md`); this
-checklist item exists so that cannot happen unnoticed again.
+Both documents go stale silently and can misdirect documentation work if not
+refreshed regularly; this checklist item ensures they are updated each release cycle.
 
 ## Release notes generation
 
@@ -203,8 +253,20 @@ since the last one — the pool you can choose to announce:
 
 It lists each merged `feature/*` PR (date, number, branch) and reminds you how
 many features the manifest currently declares. Use it to decide which merges
-become manifest entries (and at what maturity) for the upcoming release. It
-detects PR-*merge* commits only — squash-merged PRs won't appear.
+become manifest entries (and at what maturity) for the upcoming release.
+
+**Two known blind spots:**
+
+1. **Squash-merged PRs** — GitHub's squash-merge produces a single non-merge
+   commit, so `git log --merges` does not find it.
+2. **Direct commits to `development`** — commits pushed without a branch or PR
+   have no merge commit at all and are completely invisible.
+
+Check for these manually with:
+
+```bash
+git log --first-parent --no-merges --format="%h %an %s" <last-tag>..HEAD
+```
 
 This is the feature-level counterpart to the test-level drift check below:
 `feature-audit` answers "what merged that we might announce", while
@@ -217,6 +279,59 @@ its coverage is invisible to the gate. `scripts/check_manifest_coverage.py` (run
 in `development` CI) warns when a `tier_a`-marked test file is not referenced by
 any feature's `validation.paths`. Start as a warning; promote to an error once
 coverage is established.
+
+## Post-release tasks
+
+These are not in the automated checklist but should be done within a week of
+the production tag landing on `main`.
+
+### Container image
+
+The Docker workflow (`.github/workflows/docker-image.yaml`) fires on pushes to
+`main` and `development` but **not** on the `vX.Y.Z` release tag. This means
+there is no `:vX.Y.Z` image unless one is built manually. Until the workflow is
+extended to trigger on tags, after each release:
+
+1. Confirm the `main`-triggered build completed and `:main`/`:latest` are up to
+   date on the container registry.
+2. Optionally re-tag the resulting image as `:vX.Y.Z` so users can pin to a
+   specific release:
+   ```bash
+   docker pull ghcr.io/underworldcode/underworld3:main
+   docker tag ghcr.io/underworldcode/underworld3:main \
+              ghcr.io/underworldcode/underworld3:vX.Y.Z
+   docker push ghcr.io/underworldcode/underworld3:vX.Y.Z
+   ```
+3. Update any tutorial or Binder links that reference `:latest` if they should
+   pin to the new release version.
+
+### Binder / JupyterHub links
+
+After the container is updated, test that the Binder badge in the README (or
+any tutorial landing page) resolves correctly against the new `main`. If Binder
+links reference a specific branch or tag, update them to point at `vX.Y.Z` or
+`main` as appropriate.
+
+### HPC scaling tests
+
+The serial test suite (`test_levels.sh --isolation`) and the local MPI pass
+(`--parallel`, 2–4 ranks) do not cover production-scale behaviour. Run scaling
+benchmarks on a supported HPC facility (NCI Gadi or Pawsey Setonix) on two
+cadences:
+
+**Routine (every ~6 months / every two releases)**
+Run a representative benchmark (e.g. a Stokes problem with a fixed mesh size)
+at 1, 128, and 1024 ranks and compare wall time against the previous release.
+If parallel efficiency drops unexpectedly (>20% slower at the same rank count),
+file an issue before the next release cycle starts.
+
+**Full sweep (annually or after major solver changes)**
+Extend the benchmark up to ~10,000 CPUs to validate the upper scaling envelope
+and catch communication-overhead regressions that only appear at large rank
+counts.
+
+Record results in `docs/developer/CHANGELOG.md` under a "Scaling" entry after
+each run so there is a baseline for the next comparison.
 
 ## See also
 
