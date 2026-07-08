@@ -4,7 +4,210 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ---
 
+## 2026 Q3 (July – September)
+
+### July 2026 Quality Campaign — Audit, Style Charter, Remediation Waves (July 2026)
+
+**A systematic post-development-burst quality campaign**: six adversarially
+verified review dimensions (loose ends, API consistency, readability, swarm
+subsystem, docs coherence, branch triage) produced a ranked remediation
+worklist, and the first waves have landed (#317, #322, #325, #326, #309–#312,
+#334).
+
+- **UW3 Style Charter** adopted as the normative coding contract for every
+  development session, human or AI (`docs/developer/UW3_STYLE_CHARTER.md`),
+  with the campaign's review documents under `docs/reviews/2026-07/` (#317).
+  The maintainer's 18 decision rulings are recorded in the worklist (#322).
+- **Track-0 bug fixes**: RBF derivative path now uses the requested component
+  rather than component 0 (#312); `CellWiseIntegral` evaluates on the mesh DS
+  instead of a mis-cloned P1 DM (#311); Lagrangian history writes use the
+  modern data layout (#310); honest 2D-only guard on the MMPDE mover (#309);
+  and a medium-severity batch — parallel `BoxInternalBoundary`, SL theta
+  restore, viewer crash, projection double-count, units-boundary honesty (#326).
+- **Wave A deletions**: the `persistence.py` stub module removed
+  (behaviour-neutral), the unsupported coordinate-units feature family pruned
+  with the mesh `units=` kwarg deprecated, and the design-directory experiment
+  artifacts re-filed under `design/experiments/` (#325).
+- **Wave C API harmonization**: the newer BC methods (`add_nitsche_bc`,
+  `add_rotated_freeslip_bc`, `add_constraint_bc`) migrated to the canonical
+  value-first signature `(conds, boundary, ...)` with one-warning deprecation
+  shims for the legacy boundary-first / `g=` spellings; `conds` is the single
+  BC datum name across all BC methods (#334).
+
+### Rotated Strong Free-Slip, Boundary Traction and Dynamic Topography (July 2026)
+
+**New `solver.add_rotated_freeslip_bc(...)`** imposes free-slip
+(v·n̂ = 0) to machine precision by rotating boundary velocity DOFs into a
+per-node (normal, tangential) frame and constraining the rotated normal
+component exactly — correct on curved, tilted, and deformed boundaries (#293).
+
+- The constraint **reaction** is the consistent boundary normal traction
+  σ_nn: `boundary_normal_traction()` / `dynamic_topography()` recover surface
+  topography with no augmented-Lagrangian splitting (#293), and the rotated
+  path now runs **inside the nonlinear SNES**, with a numerical nonlinearity
+  probe that fails fast instead of silently returning a single linearisation
+  for a nonlinear rheology (#298).
+- Schur-preconditioning parity: native 1/μ-mass USER Schur preconditioner,
+  3D rotation nullspace, and an SVD-robust FMG coarse solve took the Zhong
+  spherical benchmark from 44 outer iterations to 1 (#306).
+- A general **consistent boundary flux (CBF) primitive** recovers boundary
+  fluxes for any solver — surface heat flux / Nusselt number for scalar
+  diffusion, boundary traction σ·n for Stokes (#294).
+- Recorded as the preferred free-slip BC in the project guidance (#300);
+  conda PETSc floor raised to ≥ 3.25 for FMG/rotation API consistency (#304).
+- **Bug fix**: the zero-datum guard in `add_rotated_freeslip_bc` now uses
+  `is_zero` instead of sympy structural equality, so the value-first call
+  `add_rotated_freeslip_bc(0.0, boundary)` — the exact form the deprecation
+  message recommends — is accepted for all numeric zero forms (#336, #339).
+  The Wave C deprecation shim messages now correctly name the legacy form
+  the caller actually used (#339).
+
+### Generalized Geometric Multigrid via Custom Prolongation (July 2026)
+
+**Geometric multigrid decoupled from the nested `refine()` hierarchy**: custom
+(barycentric or RBF) prolongation operators drive PCMG across independent —
+possibly non-nested — coarse/fine mesh pairs, with coarse operators assembled
+by Galerkin RAP (#290).
+
+- Ties native FMG iteration-for-iteration on nested hierarchies while
+  supporting graded and adapted meshes that native FMG cannot nest.
+- Native geometric FMG is locked out for single-field solvers where its DM
+  assumptions are invalid (#297).
+
+### Consistent Jacobian Tangent — Opt-In Newton (July 2026)
+
+**New opt-in `solver.consistent_jacobian`** (default `False` keeps the
+bit-identical Picard tangent) fixes the unwrap-before-differentiate order so
+the assembled Jacobian sees the strain-rate dependence of nonlinear
+viscosities, plus a `"continuation"` mode that stages Picard → Newton for
+robustness far from the solution (#258).
+
+### Swarm Correctness: Stale Caches and Parallel Checkpoint Restore (July 2026)
+
+**Swarm data-pipeline hardening across serial and parallel paths.**
+
+- Three stale-cache bugs after swarm particle addition fixed (#216), followed
+  by the campaign's Track-0 batch: cache invalidation ahead of the migrate()
+  early return, migration-suppression semantics, empty-rank KDTree guards,
+  and a pre-solve proxy refresh (#313).
+- Parallel `read_timestep` restores each particle exactly once via a
+  rank-0-routed read (#329); reduction return types aligned to the
+  MeshVariable per-component contract, `NodalPointSwarm` deprecated, and the
+  never-functional `recycle_rate > 1` machinery excised (#323).
+
+### NumPy 2 and Environment Support (July 2026)
+
+**NumPy ≥ 2.0 supported** (#301), with a follow-up fix for 2-D `np.cross` on
+`UnitAwareArray` under numpy 2 (#305). The repository now ships its Claude
+Code skills for AI-assisted development sessions (#299). `UWQuantity` handles
+offset temperature units (degC/degF) correctly (#295), and boundary rebuilds
+avoid a PETSc IS size query that could abort on empty strata (#288).
+
+---
+
 ## 2026 Q2 (April – June)
+
+### Mesh Adaptation: Metric-Driven Movers and MMPDE Robustness (May – June 2026)
+
+**A family of metric-driven mesh-adaptation movers** landed and hardened:
+`smooth_mesh_interior` (Winslow Jacobi smoother, #190), `follow_metric` with
+optimal-transport movers and `mesh.OT_adapt()` (#209), and anisotropic movers
+with mesh-owned boundary tangent-slip and MPI robustness (#228).
+
+- Parallel adaptive "seam-spike" fixed: mover heap corruption, point-locator
+  hardening, and a redesigned remesh field transfer (#213).
+- MMPDE metric hardening: SPD floor stops silent NaN-bail on deformed meshes
+  (#259); monotone RBF metric bake from nodal values (#266).
+- Deformed-mesh correctness: boundary normals and domain-membership tests
+  track mesh deformation (#264); `on_boundary` acceptance for on-face point
+  queries (#207); gmsh `spacedim` no longer leaks across imports (#238).
+
+### Moving-Mesh Field Transfer and deform() (June 2026)
+
+**Mesh coordinate mutation made foolproof**: a capability gate plus the
+public `mesh.deform()` entry point, with semi-Lagrangian CARRY field transfer
+across deformation (#246, locked by regression test in #249).
+
+- Old-frame semi-Lagrangian reach-back for moving meshes (SLCN / SL-BDF2)
+  traces advected histories in the pre-deformation frame (#251).
+- Evaluate / DMInterp / topology caches are invalidated on mesh deformation
+  (#188).
+
+### Semi-Lagrangian Accuracy and Timestep Controls (May 2026)
+
+**Fixed the semi-Lagrangian trace-back FE overshoot and added a monotone
+limiter** to the DDt schemes (#186), exposed as `monotone_mode` on
+`AdvDiffusionSLCN` (#189) and promoted to a universal evaluator flag (#208).
+
+- `theta` exposed on the SemiLagrangian DDt for backward-Euler /
+  Crank-Nicolson selection (#187).
+- Tensor evaluate path in `_project_to_work_variable` (#185); NavierStokes
+  SLCN projection shape mismatch fixed (#183); vector DMInterpolation
+  overshoot at cell-shared boundaries fixed (#164).
+- `estimate_dt` gained opt-in median/percentile cell reduction for
+  sliver-robust timesteps (#220).
+
+### Snapshot and Checkpoint Toolkit (May 2026)
+
+**A snapshot toolkit — "git stash for timesteps"**: in-memory snapshots
+(#195), `Model.tracker` for snapshot-managed run state (#196), and an on-disk
+snapshot format v1.1 with a metadata wrapper around PETSc bulk data (#198,
+docs in #199). PETSc DMPlex checkpoint reload for mesh variables landed as
+the underlying primitive (#146, T. Gollapalli).
+
+### Stokes_Constrained: Multiplier Free-Slip and Parallel Correctness (June 2026)
+
+**In-saddle Lagrange-multiplier free-slip with surface topography recovery**
+in `Stokes_Constrained` (#224), then made parallel-correct.
+
+- `selfp` Schur preconditioner default, viscosity-scaled penalty, and
+  nullspace re-setup fix (#229); over-conservative serial guard removed
+  (#240); gauge, convergence, knockout, and rotation-gauge fixes (#265).
+
+### Boundary Conditions: Local-h Nitsche and Boundary-Slip Surfaces (June 2026)
+
+**Nitsche penalty scaled by local per-cell mesh size** rather than the global
+minimum radius, restoring correct stiffness on graded and adapted meshes
+(#275).
+
+- `mesh.boundary_slip` API with `BoundingSurface` objects for boundary
+  tangent-slip (#225); `Surface.influence_function` respects finite edges
+  (#241).
+
+### Units System: Quantity Interoperability and the ND Boundary Contract (June 2026)
+
+**UWQuantity operands now work across the API surface**: MeshVariable
+arithmetic (#283), the Stokes bodyforce setter (#284), and units-active
+semi-Lagrangian trace-back (#277).
+
+- The non-dimensional ↔ units boundary contract is documented as a design
+  contract (#278).
+- Tutorials and examples repaired for strict units: thermal convection
+  (#263), dimensionality demo (#261), unit-aware coordinate evaluation (#262).
+
+### Memory, Evaluation and Solver Infrastructure (May – June 2026)
+
+**Comprehensive memory-leak fixes** in solver setup, interpolation caching,
+and SubDM synchronisation (#178), Cython deallocation and callback hardening
+(#181), and a `memprobe` diagnostic module (#179); cached spatial indexing
+(KDTree) consolidated (#182).
+
+- `global_evaluate`: faithful parallel `evaluate()` fixing out-of-domain
+  mislocation (#222); swarm particle loss across rank boundaries during
+  advection fixed (#177); empty-partition reshape crash in parallel
+  `read_timestep` fixed (#221).
+- Manifold-mesh PDE support with `Mesh.extract_surface` for solving on
+  embedded surfaces (#237).
+- Exponential time-differencing VE/VEP integrators, ETD-1 default (#161);
+  per-iteration SNES update callbacks with pressure gauge and
+  boundary-correct scatter (#250); SolCx analytic solution ported as
+  `uw.function.analytic.SolCx` with its exact stress tensor (#223, #226);
+  projection gained unit-aware `smoothing_length` (#234) and an opt-in
+  `linear_solver()` (#281).
+- XDMF output moved to PETSc-native topology with explicit cell-to-vertex
+  connectivity for ParaView (#218, #205); Gadi Singularity container build
+  files (#133); maturity-gated release tooling `./uw dev` (#233); `-uw_*`
+  CLI overrides applied on all platforms (#280).
 
 ### DDt.set_initial_history — Public API for BDF Restart (April 2026)
 
